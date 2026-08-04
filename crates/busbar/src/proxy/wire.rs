@@ -62,15 +62,47 @@ pub(crate) fn ingress_relayed_response_header_names(
 /// TRANSPARENCY: stamp which routing POLICY chose which TARGET onto a successful response, mirroring
 /// the `x-busbar-*` header convention (e.g. the bedrock/anthropic request-id headers above):
 /// `x-busbar-route-policy: <policy name>` and `x-busbar-route-target: <chosen lane model>`. Emitted
-/// ONLY when a non-default policy actually produced the order (`policy_name == Some`); a default
-/// `route: weighted` pool (or a policy that Abstained → SWRR) attaches NOTHING, so the zero-cost path
-/// adds no header. Both values are bounded, operator-defined strings (a fixed policy enumeration + a
-/// configured model name), never request-derived data.
+/// ONLY when BOTH gates pass:
+///   1. OUTER (task #139): the operator opted in via `advanced.response_headers.route_policy`
+///      (default `false`) — [`crate::proxy::route_policy_headers_enabled`]. Before this gate existed
+///      the header fired unconditionally whenever a non-default policy chose the lane, with no config
+///      toggle at all; it is a fingerprintable observable (same class as `Server-Timing: busbar`), so
+///      it now defaults off.
+///   2. INNER (unchanged): a non-default policy actually produced the order (`policy_name == Some`);
+///      a default `route: weighted` pool (or a policy that Abstained → SWRR) attaches NOTHING even
+///      when the outer gate is on, so the zero-cost path adds no header.
+///
+/// Both values are bounded, operator-defined strings (a fixed policy enumeration + a configured model
+/// name), never request-derived data.
 pub(crate) fn maybe_attach_route_policy(
     rb: axum::http::response::Builder,
     policy_name: Option<&'static str>,
     target_model: &str,
 ) -> axum::http::response::Builder {
+    maybe_attach_route_policy_gated(
+        rb,
+        crate::proxy::route_policy_headers_enabled(),
+        policy_name,
+        target_model,
+    )
+}
+
+/// The pure, DETERMINISTICALLY-testable core of [`maybe_attach_route_policy`], with the outer gate
+/// passed in as a plain `bool` instead of read from the process-wide `OnceLock`. Split out so unit
+/// tests can drive all four (`enabled` × `policy_name`) combinations directly, without mutating
+/// [`crate::proxy::ROUTE_POLICY_HEADERS_ENABLED`] — a global `OnceLock` can be set at most ONCE for
+/// the life of the test binary, so exercising both the `true` and `false` outer-gate outcomes through
+/// the real accessor within one process is inherently order-dependent (see the `OnceLock` handling in
+/// `observability.rs`'s own tests, which uses the same "test the pure core, not the global" split).
+fn maybe_attach_route_policy_gated(
+    rb: axum::http::response::Builder,
+    route_policy_headers_enabled: bool,
+    policy_name: Option<&'static str>,
+    target_model: &str,
+) -> axum::http::response::Builder {
+    if !route_policy_headers_enabled {
+        return rb;
+    }
     match policy_name {
         Some(name) => rb
             .header(HDR_ROUTE_POLICY, name)
@@ -791,4 +823,90 @@ pub(crate) fn mid_stream_error_bytes(
 /// std `DefaultHasher`, whose seed is randomized), so session affinity pins consistently.
 pub(crate) fn stable_hash(s: &str) -> u64 {
     crate::store::fnv1a_u64(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read back both `x-busbar-route-*` headers from a built response (empty strings when absent),
+    /// as a `(policy, target)` pair, so every case below can assert on a plain tuple.
+    fn built_route_headers(rb: axum::http::response::Builder) -> (String, String) {
+        let resp = rb.body(axum::body::Body::empty()).unwrap();
+        let get = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+        (get(HDR_ROUTE_POLICY), get(HDR_ROUTE_TARGET))
+    }
+
+    /// task #139, RED-then-GREEN for the OUTER gate: before this gate existed,
+    /// `maybe_attach_route_policy` fired the headers unconditionally whenever a non-default policy
+    /// chose the lane (`policy_name == Some`) — no config toggle at all. This is that red case,
+    /// pinned green: even with a policy name present, `enabled == false` must suppress BOTH headers.
+    #[test]
+    fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name() {
+        let rb = axum::http::Response::builder();
+        let (policy, target) = built_route_headers(maybe_attach_route_policy_gated(
+            rb,
+            false,
+            Some("cheapest"),
+            "claude",
+        ));
+        assert_eq!(
+            policy, "",
+            "route-policy header must be absent when the outer gate is off"
+        );
+        assert_eq!(
+            target, "",
+            "route-target header must be absent when the outer gate is off"
+        );
+    }
+
+    /// The INNER gate is unchanged by task #139: even with the outer gate ON, a default
+    /// (`policy_name == None`) routing decision attaches nothing — the zero-cost SWRR path stays
+    /// header-free regardless of the operator's opt-in.
+    #[test]
+    fn route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled() {
+        let rb = axum::http::Response::builder();
+        let (policy, target) =
+            built_route_headers(maybe_attach_route_policy_gated(rb, true, None, "claude"));
+        assert_eq!(
+            policy, "",
+            "no policy name -> no header, regardless of the outer gate"
+        );
+        assert_eq!(
+            target, "",
+            "no policy name -> no header, regardless of the outer gate"
+        );
+    }
+
+    /// GREEN: BOTH gates open (opted in + a non-default policy fired) is the only combination that
+    /// emits the pair, and it carries the exact policy name / target model passed in.
+    #[test]
+    fn route_policy_headers_present_only_when_both_gates_open() {
+        let rb = axum::http::Response::builder();
+        let (policy, target) = built_route_headers(maybe_attach_route_policy_gated(
+            rb,
+            true,
+            Some("cheapest"),
+            "claude",
+        ));
+        assert_eq!(policy, "cheapest");
+        assert_eq!(target, "claude");
+    }
+
+    /// The FOURTH combination (outer off, inner off) is also silent — completing the 2x2 matrix so no
+    /// combination is left unpinned.
+    #[test]
+    fn route_policy_headers_absent_when_both_gates_closed() {
+        let rb = axum::http::Response::builder();
+        let (policy, target) =
+            built_route_headers(maybe_attach_route_policy_gated(rb, false, None, "claude"));
+        assert_eq!(policy, "");
+        assert_eq!(target, "");
+    }
 }

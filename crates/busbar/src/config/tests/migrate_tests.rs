@@ -890,3 +890,77 @@ pools:
         out.warnings
     );
 }
+
+/// task #139: `observability.emit_server_timing` -> `advanced.response_headers.server_timing`. The
+/// key is REMOVED from `observability` (else `deny_unknown_fields` rejects the migrated document —
+/// see `test_migrated_configs_boot_parse`-style coverage) and reappears nested under the new
+/// `advanced.response_headers` block, alongside any advanced fields that were already present.
+#[test]
+fn migrate_emit_server_timing_moves_to_advanced_response_headers() {
+    let raw = r#"
+providers: {}
+models: {}
+advanced:
+  rate_sweep_interval: 64
+observability:
+  emit_server_timing: true
+  otlp_endpoint: "http://otel:4318/v1/traces"
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // The old key is GONE from `observability` (a raw pass-through would `deny_unknown_fields`-reject
+    // at boot instead of silently keeping stale semantics).
+    assert!(
+        dig(&doc, &["observability", "emit_server_timing"]).is_none(),
+        "the old key must not survive migration: {doc:?}"
+    );
+    // The new key carries the SAME value, in its new home.
+    assert_eq!(
+        dig(&doc, &["advanced", "response_headers", "server_timing"]).and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    // A pre-existing sibling `advanced:` field (rate_sweep_interval) is preserved, not clobbered by
+    // the cross-section splice.
+    assert_eq!(
+        dig(&doc, &["advanced", "rate_sweep_interval"]).and_then(|v| v.as_u64()),
+        Some(64)
+    );
+    // The sibling otlp_endpoint rename still fires in the same run (the two migrations don't collide).
+    assert_eq!(
+        dig(&doc, &["observability", "otlp_url"]).and_then(|v| v.as_str()),
+        Some("http://otel:4318/v1/traces")
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("emit_server_timing -> advanced.response_headers.server_timing")),
+        "a change entry must name the rename; got {:?}",
+        out.changes
+    );
+
+    // The migrated document must boot-parse cleanly (deny_unknown_fields would catch a stray key).
+    let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
+    assert!(
+        deploy.is_ok(),
+        "migrated config must boot-parse: {:?}",
+        deploy.err().map(|e| e.to_string())
+    );
+}
+
+/// A config that never set `emit_server_timing` (or had no `observability:` block at all) migrates
+/// with NO `advanced.response_headers` block synthesized — the migrator must not manufacture config
+/// the operator never wrote.
+#[test]
+fn migrate_emit_server_timing_absent_is_a_no_op() {
+    let raw = "providers: {}\nmodels: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["advanced"]).is_none(),
+        "no advanced: block should be synthesized: {doc:?}"
+    );
+    assert!(
+        !out.changes.iter().any(|c| c.contains("response_headers")),
+        "no change entry expected when the old key was absent; got {:?}",
+        out.changes
+    );
+}

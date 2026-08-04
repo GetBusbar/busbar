@@ -520,7 +520,7 @@ async fn split_admin_listener_no_double_exposure() {
         app,
         limits::translate_body_max_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_EMIT_SERVER_TIMING,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
 
     async fn get(router: Router, path: &str, token: Option<&str>) -> u16 {
@@ -1648,6 +1648,104 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         "the 413 must carry the error envelope; got {v}"
     );
 
+    server.abort();
+}
+
+// ── task #139: response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ─
+//
+// Drives a REAL request through the REAL layer stack (like the 413 test above), rather than calling
+// `server_timing` or `maybe_attach_route_policy` directly, so the assertion is on what actually ships
+// on the wire — a composition-gate bug (the layer silently staying installed, or never installed even
+// when enabled) would not be caught by a unit test that calls the middleware function by hand.
+
+/// RED (pre-task-#139 behavior, pinned here as the regression this test guards against): the
+/// `server_timing` middleware layer used to be installed UNCONDITIONALLY — an `Arc<AtomicU64>`
+/// allocation, an `Instant::now()`, and a task-local `.scope()` on every request regardless of the
+/// flag, with only the response header itself suppressed when disabled. GREEN: with
+/// `server_timing_enabled == false` the layer is not installed at all (see
+/// `apply_common_layers`'s composition gate) and the `Server-Timing` response header is absent by
+/// default; with `true` the layer IS installed and the header is present, carrying the
+/// `busbar;dur=<ms>` shape.
+#[tokio::test]
+async fn server_timing_header_absent_by_default_present_when_enabled() {
+    crate::metrics::init();
+    let client = reqwest::Client::new();
+
+    // Default OFF.
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let r = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers().get("server-timing").is_none(),
+        "Server-Timing must be ABSENT by default (advanced.response_headers.server_timing defaults \
+         false): {:?}",
+        r.headers().get("server-timing")
+    );
+    server.abort();
+
+    // Explicitly enabled.
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let r = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    let st = r
+        .headers()
+        .get("server-timing")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    server.abort();
+    let st = st.expect("Server-Timing must be PRESENT when server_timing_enabled == true");
+    assert!(
+        st.starts_with("busbar;dur="),
+        "unexpected Server-Timing shape: {st}"
+    );
+}
+
+/// GREEN: `x-busbar-route-policy` / `x-busbar-route-target` are ABSENT by default on a real request
+/// through the real stack — `advanced.response_headers.route_policy` defaults `false`, and nothing in
+/// this test process ever calls `proxy::configure_route_policy_headers(true)`
+/// (`route_policy_headers_enabled()` returns `false` when unconfigured — see its doc comment), so this
+/// end-to-end check needs no global-state setup. The `enabled == true` direction (and the "still
+/// absent for a default policy even when enabled" inner-gate direction) is covered deterministically
+/// by `proxy::wire::tests` against the pure `maybe_attach_route_policy_gated` core instead of here:
+/// `ROUTE_POLICY_HEADERS_ENABLED` is a process-wide `OnceLock` that can be set at most once for the
+/// life of this test binary, so flipping it to `true` in an end-to-end test would permanently leak
+/// into every other test that shares this process.
+#[tokio::test]
+async fn route_policy_headers_absent_by_default_on_the_live_stack() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new().build();
+    let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let r = reqwest::Client::new()
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers().get("x-busbar-route-policy").is_none(),
+        "x-busbar-route-policy must be ABSENT by default"
+    );
+    assert!(
+        r.headers().get("x-busbar-route-target").is_none(),
+        "x-busbar-route-target must be ABSENT by default"
+    );
     server.abort();
 }
 

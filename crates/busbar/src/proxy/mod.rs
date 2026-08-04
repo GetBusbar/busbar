@@ -34,6 +34,28 @@ use crate::store::{now, Permit};
 const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
 const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
 
+/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
+/// (`advanced.response_headers.route_policy`, task #139; default `false`). Set SYNCHRONOUSLY once at
+/// boot by [`configure_route_policy_headers`], mirroring `metrics::ENABLED` / `metrics::enabled()`:
+/// a settled decision read at every emission site, never rebuilt by a config apply (restart-to-apply,
+/// same as `advanced.response_headers.server_timing`). Unset ⇒ `false`: any test or build that never
+/// calls `configure_route_policy_headers` has the headers off, matching the documented default.
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
+/// boot, before the router is built (see `main.rs::run`); `OnceLock::set` silently no-ops on any
+/// later call, which is fine — the flag is documented restart-to-apply.
+pub(crate) fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+/// Did the operator opt in to the `x-busbar-route-*` headers? Gates
+/// [`wire::maybe_attach_route_policy`] — the header is a fingerprintable observable (same class as
+/// `Server-Timing: busbar`), so it defaults OFF.
+pub(crate) fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
 /// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
 /// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
 pub(crate) const APPLICATION_JSON: &str = "application/json";

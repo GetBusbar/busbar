@@ -11,8 +11,11 @@ auth:
   admin_auth:
     - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 
-observability:
-  emit_server_timing: true
+# Response headers busbar injects are opt-in and default OFF (task #139); see
+# docs/observability.md#response-headers. This demo opts into the latency probe.
+advanced:
+  response_headers:
+    server_timing: true
 
 providers:
   bedrock:

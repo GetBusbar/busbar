@@ -5893,7 +5893,7 @@ async fn serve_with_plugins_dir(
         app,
         256 * 1024 * 1024,
         0,
-        crate::config::DEFAULT_EMIT_SERVER_TIMING,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -5923,7 +5923,7 @@ async fn serve_with_plugins_dir_and_hook_env(
         app,
         256 * 1024 * 1024,
         0,
-        crate::config::DEFAULT_EMIT_SERVER_TIMING,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -6969,7 +6969,7 @@ async fn test_admin_v1_plugin_install_rejections() {
             app,
             256 * 1024 * 1024,
             0,
-            crate::config::DEFAULT_EMIT_SERVER_TIMING,
+            crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let strict_addr = listener.local_addr().unwrap();
@@ -9284,12 +9284,12 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The `observability` section is live EXCEPT three fields the gap-sweep for
-/// `max_inbound_concurrent` also turned up: `emit_server_timing` is baked into router middleware
-/// state at boot, `request_log_webhook_url` seeds a process-global `OnceLock` that silently no-ops
-/// after the first `main()` call, and `otlp_url` feeds a one-shot `tracing_subscriber` init. None of
-/// the three are rebuilt by a config apply. Assert all three are flagged (dotted, same reasoning as
-/// `limits.*`).
+/// The `observability` section is live EXCEPT two fields the gap-sweep for
+/// `max_inbound_concurrent` also turned up: `request_log_webhook_url` seeds a process-global
+/// `OnceLock` that silently no-ops after the first `main()` call, and `otlp_url` feeds a one-shot
+/// `tracing_subscriber` init. The `advanced.response_headers` block (task #139; formerly
+/// `observability.emit_server_timing`) is boot-frozen the same way. None of the three are rebuilt by
+/// a config apply. Assert all three are flagged (dotted, same reasoning as `limits.*`).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
     let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
@@ -9301,9 +9301,11 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .body(
             serde_json::json!({
                 "observability": {
-                    "emit_server_timing": true,
                     "request_log_webhook_url": "https://example.com/hook",
                     "otlp_url": "https://otel.example.com:4317"
+                },
+                "advanced": {
+                    "response_headers": { "server_timing": true, "route_policy": true }
                 }
             })
             .to_string(),
@@ -9320,8 +9322,9 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(
-        flagged.contains(&"observability.emit_server_timing"),
-        "router-baked middleware state must be flagged reload-to-apply: {flagged:?}"
+        flagged.contains(&"advanced.response_headers"),
+        "router-baked middleware state / OnceLock-seeded response-header toggles must be flagged \
+         reload-to-apply: {flagged:?}"
     );
     assert!(
         flagged.contains(&"observability.request_log_webhook_url"),

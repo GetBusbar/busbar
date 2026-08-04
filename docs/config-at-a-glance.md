@@ -142,7 +142,7 @@ global_hooks:                               # hook instances firing on EVERY req
 security:                       # SSRF metadata denylist tuning  → #security
   { allow_metadata_hosts: [], allow_all_metadata: false }
 observability:                  # opt-in sinks  → #observability
-  { otlp_url: null, request_log_webhook_url: null, emit_server_timing: false }
+  { otlp_url: null, request_log_webhook_url: null }
 limits:                         # global operational caps  → #limits
   { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
 health:                         # process-wide probe fallbacks  → #health-probing
@@ -152,7 +152,8 @@ metrics:                        # OPT-IN — omit the block and metrics are OFF 
 routing: { default_policy_timeout_ms: 1 }
 advanced:                       # internal tuning (normally omitted)  → #advanced
   { rate_sweep_interval: 256, usage_flush_interval_ms: 100,
-    worker_threads: 4, upstream_http1_only: false, upstream_h2_prior_knowledge: false }
+    worker_threads: 4, upstream_http1_only: false, upstream_h2_prior_knowledge: false,
+    response_headers: { server_timing: false, route_policy: false } }  # opt-in headers → observability.md#response-headers
 config:                         # config-management policy (durable-by-default)  → #config
   { locked: false, overlay: { file: busbar-overlay.json } }
 providers_file: providers.yaml  # provider catalog pointer (1.5.3 ← BUSBAR_PROVIDERS)

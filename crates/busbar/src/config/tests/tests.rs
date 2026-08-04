@@ -278,6 +278,39 @@ fn test_observability_otlp_url_rename() {
     );
 }
 
+/// task #139: `observability.emit_server_timing` MOVED to
+/// `advanced.response_headers.server_timing`. The old location is now an `unknown field` boot error
+/// (`deny_unknown_fields` on `ObservabilityCfg`) — LOUD and fail-closed, exactly the `otlp_endpoint`
+/// treatment above; `busbar --migrate-config` moves it (see `migrate_tests.rs`).
+#[test]
+fn test_emit_server_timing_moved_to_advanced_response_headers() {
+    let err = serde_yaml::from_str::<ObservabilityCfg>("emit_server_timing: true")
+        .expect_err("the removed emit_server_timing key must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown field") && msg.contains("emit_server_timing"),
+        "{msg}"
+    );
+}
+
+/// `advanced.response_headers:` — both toggles parse, default to `false`, and a typo'd field is a
+/// loud `deny_unknown_fields` reject (never a silent no-op).
+#[test]
+fn test_response_headers_cfg_defaults_and_parses() {
+    let default = ResponseHeadersCfg::default();
+    assert!(!default.server_timing, "server_timing defaults OFF");
+    assert!(!default.route_policy, "route_policy defaults OFF");
+
+    let cfg: ResponseHeadersCfg = serde_yaml::from_str("server_timing: true\nroute_policy: true")
+        .expect("both toggles parse");
+    assert!(cfg.server_timing);
+    assert!(cfg.route_policy);
+
+    let err = serde_yaml::from_str::<ResponseHeadersCfg>("server_timing: true\ntypo_field: 1")
+        .expect_err("a typo'd field must be rejected, not silently ignored");
+    assert!(err.to_string().contains("unknown field"));
+}
+
 /// A minimal config without a `pools:` section parses fine: pools are optional (direct model
 /// routing). Only providers + models are required. Provider credentials are secret references.
 #[test]
@@ -2042,11 +2075,13 @@ fn serde_default_fns_return_their_documented_constants() {
     assert_eq!(default_max_hops(), 3);
     assert_eq!(default_listen(), "0.0.0.0:8080");
     assert_eq!(default_max_keys_per_principal(), 0);
-    // `default_emit_server_timing`'s documented default is `false` (privacy-by-default: the header
-    // is a fingerprintable observable, see the field's own doc comment) — the "replace with false"
-    // mutant is a genuine EQUIVALENT mutant (the correct value IS false, so that specific mutation
-    // is behaviorally indistinguishable from correct code); only "replace with true" is a real gap.
-    assert!(!default_emit_server_timing());
+    // `default_response_headers_server_timing` / `default_response_headers_route_policy`'s documented
+    // default is `false` for BOTH (privacy-by-default: every busbar-injected response header is a
+    // fingerprintable observable, see each field's own doc comment) — the "replace with false" mutant
+    // is a genuine EQUIVALENT mutant (the correct value IS false); only "replace with true" is a real
+    // gap.
+    assert!(!default_response_headers_server_timing());
+    assert!(!default_response_headers_route_policy());
 }
 
 /// `to_policy_with_floor`'s anti-downgrade-floor sanity warning must fire ONLY for a

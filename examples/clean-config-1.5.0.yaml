@@ -114,7 +114,7 @@ plugins:
 
 # ── SECURITY / OBSERVABILITY / LIMITS ──
 security:      { blocked_metadata_hosts: [], allow_metadata_hosts: [], allow_all_metadata: false }
-observability: { otlp_url: null, request_log_webhook_url: null, emit_server_timing: false }
+observability: { otlp_url: null, request_log_webhook_url: null }
 limits:        { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432,
                  max_inbound_concurrent: 8192, hard_down_cooldown_secs: 1800,
                  reasoning_effort_budgets: { minimal: 1024, low: 4096, medium: 8192, high: 16384 } }
@@ -123,3 +123,6 @@ limits:        { upstream_request_timeout_secs: 300, request_body_max_bytes: 335
 advanced:
   rate_sweep_interval: 256
   usage_flush_interval_ms: 100
+  # Every busbar-injected response header is opt-in and defaults OFF (task #139); see
+  # docs/observability.md#response-headers. Uncomment to opt in:
+  # response_headers: { server_timing: false, route_policy: false }

@@ -252,16 +252,24 @@ pools:
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
 
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
-# Prometheus `/metrics` is always on and needs no config. These sinks/toggles are opt-in:
+# Prometheus `/metrics` is always on and needs no config. These sinks are opt-in:
 #   otlp_url                 - export OpenTelemetry traces (OTLP/HTTP) to a collector.
 #   request_log_webhook_url  — fire-and-forget a JSON request-log POST per request.
-#   emit_server_timing       — emit the `Server-Timing: busbar;dur=<ms>` response header (default
-#                              false; set true to enable). It is an in-band busbar fingerprint, off
-#                              by design so it cannot undercut backend indistinguishability.
 # observability:
 #   otlp_url: "http://localhost:4318/v1/traces"
 #   request_log_webhook_url: "https://logs.example.com/busbar"
-#   emit_server_timing: true
+
+# ── Response headers (optional; see docs/observability.md#response-headers) ────────────────────────
+# Every busbar-INJECTED response header is an opt-in toggle under `advanced.response_headers`, default
+# OFF (each is an in-band busbar fingerprint, off by design so none can undercut backend
+# indistinguishability). Restart-to-apply.
+#   server_timing  — emit `Server-Timing: busbar;dur=<ms>` (busbar's own added latency).
+#   route_policy   — emit `x-busbar-route-policy` / `x-busbar-route-target` when a non-default
+#                    routing policy chose the lane.
+# advanced:
+#   response_headers:
+#     server_timing: true
+#     route_policy: true
 
 # ── Groups: the ONE limit tree (optional) ────────────────────────────────────────────────────────
 # Named enforcement buckets forming an acyclic tree (parent chains AND together). A
