@@ -123,10 +123,19 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await?;
-        let (binding, token) = self
-            .gov
-            .issue_self(&principal.id, self.allowed_pools.clone(), exp, now)
-            .map_err(|e| e.to_string())?;
+        // Offloaded (H1): `issue_self` holds a std::sync::Mutex across synchronous store I/O, so
+        // request-path callers must never invoke it directly on the reactor. See
+        // `governance::mint_self_offloaded`.
+        let (binding, token) = crate::governance::mint_self_offloaded(
+            self.gov.clone(),
+            crate::governance::SelfMintOp::Issue,
+            principal.id.clone(),
+            self.allowed_pools.clone(),
+            exp,
+            now,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(IssuedKey {
             secret: token,
             key_id: binding.id,
@@ -142,10 +151,18 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await?;
-        let (binding, token) = self
-            .gov
-            .refresh_self(&principal.id, self.allowed_pools.clone(), exp, now)
-            .map_err(|e| e.to_string())?;
+        // Offloaded (H1): `refresh_self` holds the same std::sync::Mutex across synchronous store
+        // I/O (write + delete). See `governance::mint_self_offloaded`.
+        let (binding, token) = crate::governance::mint_self_offloaded(
+            self.gov.clone(),
+            crate::governance::SelfMintOp::Refresh,
+            principal.id.clone(),
+            self.allowed_pools.clone(),
+            exp,
+            now,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(IssuedKey {
             secret: token,
             key_id: binding.id,

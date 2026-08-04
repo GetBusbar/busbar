@@ -578,6 +578,51 @@ pub(crate) mod revocation;
 pub(crate) mod signing;
 mod state;
 
+/// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelfMintOp {
+    Issue,
+    Refresh,
+}
+
+/// THE single async door onto the self-serve mint path (`GovState::issue_self` /
+/// `GovState::refresh_self`), Steps 4 (H1). Both mint fns take `self_mint_lock` — a plain
+/// `std::sync::Mutex`, NOT a `tokio::sync::Mutex` — and, still holding it, perform SYNCHRONOUS
+/// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
+/// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
+/// from an `async fn` therefore runs a blocking critical section INLINE on whatever Tokio worker
+/// is executing the handler: under concurrent logins against a slow store, that worker stalls
+/// every other task queued on it, including unrelated data-plane requests. `spawn_blocking` moves
+/// the ENTIRE lock+I/O critical section onto the blocking pool instead, so the mutex is only ever
+/// held on a blocking thread — mirrors `admin/mod.rs`'s `rotate_key`/`config_transaction` pattern
+/// exactly (the `Arc<GovState>` cloned into the closure, the sync call made there, a `JoinError`
+/// on `.await` mapped to a `StoreError` rather than panicking or unwrapping).
+///
+/// REQUEST-PATH CALLERS (today: the `POST /auth/token` token-exchange handlers in
+/// `auth/self_keys.rs`) MUST route through this — never call `GovState::issue_self` /
+/// `GovState::refresh_self` directly from an `async fn` on the reactor. This is NOT for the hot
+/// data-plane proxy path: that path performs no per-request store I/O (metering is write-behind,
+/// flushed on its own `spawn_blocking` tick), so it must never be wrapped in `spawn_blocking`.
+pub(crate) async fn mint_self_offloaded(
+    gov: Arc<GovState>,
+    op: SelfMintOp,
+    user_sub: String,
+    allowed_pools: Option<Vec<String>>,
+    exp: u64,
+    now: u64,
+) -> StoreResult<(VirtualKey, String)> {
+    tokio::task::spawn_blocking(move || match op {
+        SelfMintOp::Issue => gov.issue_self(&user_sub, allowed_pools, exp, now),
+        SelfMintOp::Refresh => gov.refresh_self(&user_sub, allowed_pools, exp, now),
+    })
+    .await
+    .unwrap_or_else(|e| {
+        Err(StoreError(format!(
+            "self-serve mint task failed to join: {e}"
+        )))
+    })
+}
+
 /// THE GOVERNANCE RE-KEY for a ROLE-CARRYING principal (an external auth module's verdict): a
 /// synthesized `VirtualKey` built from the principal's roles under the identifying MODULE's
 /// `role_bindings` table (S4: bindings are nested by module - `bindings` here is
