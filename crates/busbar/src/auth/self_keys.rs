@@ -171,7 +171,6 @@ impl SelfGroupProvisioner for HandleProvisioner {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let current = self.handle.load();
-        eprintln!("DBG-PROV ensure_leaf leaf={leaf:?} parent={parent:?} already_present={}", current.cost.group_named(leaf).is_some());
         // IDEMPOTENT no-op: the leaf is already a live enforcement bucket (the steady-state re-login
         // path — no swap, no overlay churn, no usage reset).
         if current.cost.group_named(leaf).is_some() {
@@ -181,8 +180,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
         // `child_default`, validated at the door (cost rebuilt in the candidate snapshot).
         let planned =
             crate::admin::v1::json::plan_mint_group(&current, leaf, Some(parent), &self.actor)
-                .map_err(|e| { eprintln!("DBG-PROV plan_mint_group ERR: {}", e.message()); e.message() })?;
-        eprintln!("DBG-PROV plan_mint_group planned_is_some={}", planned.is_some());
+                .map_err(|e| e.message())?;
         let Some(installed) = planned else {
             // `plan_mint_group` returns `None` only when the group already exists (a race with the
             // `group_named` check above lost) — nothing to commit.
@@ -193,9 +191,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
             leaf.to_string(),
             self.actor.clone(),
         );
-        let r = self.handle.commit_and_swap(installed, persist);
-        eprintln!("DBG-PROV commit_and_swap result_ok={} now_present={}", r.is_ok(), self.handle.load().cost.group_named(leaf).is_some());
-        r
+        self.handle.commit_and_swap(installed, persist)
     }
 }
 

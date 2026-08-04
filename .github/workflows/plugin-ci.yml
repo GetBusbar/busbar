@@ -525,8 +525,16 @@ jobs:
           N=$(printf '%s' "$MOD" | xxd -r -p | b64url)
           printf '{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"gate-key-1","n":"%s","e":"AQAB"}]}' "$N" > "$WORKDIR/jwks.json"
           # Self-signed TLS for the JWKS host (the plugin does a real HTTPS JWKS fetch).
+          # `basicConstraints=critical,CA:FALSE` is REQUIRED, not cosmetic: OpenSSL 3.x's `req -x509`
+          # (ubuntu-latest) DEFAULTS a self-signed cert to CA:TRUE. The oidc plugin fetches this JWKS
+          # over rustls (reqwest), which REFUSES a CA cert presented as the server's end-entity leaf
+          # (`CaUsedAsEndEntity`) — so the JWKS fetch fails, the token is Rejected, and POST /auth/token
+          # returns 401 "not authenticated" (NOT a BadSubject). Forcing an END-ENTITY cert here is what
+          # makes the real rustls JWKS fetch succeed (the same reason the core's rust e2e uses rcgen,
+          # which emits an EE cert). The cert is still added as `ca_cert_pem` so it is trusted as a root.
           openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORKDIR/tls.key" -out "$WORKDIR/tls.crt" \
-            -days 2 -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
+            -days 2 -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
+            -addext "basicConstraints=critical,CA:FALSE" 2>/dev/null
           ISS="https://idp.ci.local/"; AUD="ci-audience"; SUB="alice"; EXP=$(( $(date +%s) + 3600 ))
           HDR=$(printf '%s' '{"alg":"RS256","typ":"JWT","kid":"gate-key-1"}' | b64url)
           PL=$(printf '%s' "{\"iss\":\"$ISS\",\"aud\":\"$AUD\",\"sub\":\"$SUB\",\"groups\":[\"eng\"],\"exp\":$EXP,\"iat\":$(( $(date +%s) - 10 ))}" | b64url)
@@ -632,7 +640,12 @@ jobs:
             echo "hitting sanitize_self_sub's ':' rejection — reconcile the prefix vs the sanitizer." >&2
             cat "$WORKDIR/busbar.log" >&2; exit 1
           fi
-          [ "$GROUP" = "user:$SUB" ] || { echo "group '$GROUP' != 'user:$SUB'" >&2; exit 1; }
+          # The self-serve budget group is ALWAYS `user:` + the WHOLE (module-namespaced) principal id,
+          # which for the oidc plugin is `oidc:<sub>` — so the leaf is `user:oidc:<sub>`, NOT `user:<sub>`
+          # (see the step note above re the `oidc:<sub>` principal id, and core's self_keys_tests.rs which
+          # asserts exactly `user:oidc:alice`). The internal ':' is legitimate and cannot escape the
+          # `user:` namespace.
+          [ "$GROUP" = "user:oidc:$SUB" ] || { echo "group '$GROUP' != 'user:oidc:$SUB'" >&2; exit 1; }
           echo "  self-scoped key issued (group=$GROUP)"
 
           # One-key idempotency: a second POST returns the SAME key_id.
