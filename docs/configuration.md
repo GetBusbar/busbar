@@ -58,14 +58,32 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
-| `BUSBAR_PROVIDERS` | `main.rs` | Path to `providers.yaml`. Default: `/etc/busbar/providers.yaml`. |
-| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. |
+| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var** — it locates config.yaml itself. |
+| `BUSBAR_PROVIDERS` | `main.rs` | **Deprecated (1.5.3)** — use the top-level `providers_file:` key. Path to `providers.yaml`; still honored (with a warning) for one release. Default: `providers.yaml` next to `config.yaml`. |
 | `BUSBAR_STATE_FILE` | `state_persist.rs` | State-snapshot path. Empty string disables persistence; unset defaults to `busbar-state.json` next to the config file. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
 | *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
 
 `BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` under `auth.admin_auth`. Any variable name works.
+
+**Operational env vars moved into `config.yaml` (1.5.3).** `BUSBAR_PROVIDERS` → `providers_file:`, `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`. Each old env var still works for one release (with a deprecation warning). Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native. See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+
+### `config`
+
+The top-level `config:` block is config-**management** policy: whether the admin API may mutate config at runtime, and where those mutations persist. It is distinct from `store:` (the data-plane store). Absent ⇒ **durable-by-default**: mutable, with an overlay file next to `config.yaml`, so admin-API mutations survive a restart.
+
+```yaml
+config:
+  locked: false                 # false = mutable (admin API may change config); true = immutable/GitOps
+  overlay:
+    file: busbar-overlay.json    # where mutations persist; relative paths resolve next to config.yaml
+    # `overlay: false` disables persistence entirely — valid ONLY with `locked: true`.
+```
+
+- **`locked: true`** — admin-API config mutations are refused at runtime; change config by editing `config.yaml` + `POST /config/reload`. The overlay is ignored.
+- **Boot invariant — `locked` XOR a writable overlay.** A mutable config with no writable overlay (you set `overlay: false`, or the config dir is read-only) **refuses to boot**, with a message naming the two fixes (a writable `config.overlay.file`, or `config.locked: true`). This makes a silently-non-durable mutation unreachable.
+- The `overlay:` map names its backend by key (`file:` today), mirroring `store: { module, settings }`, so a future durable-store overlay backend is additive.
 
 ---
 
@@ -1548,6 +1566,36 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | A provider `api_key` reference resolves empty at boot (lane will fail auth) |
 | `allowed_pools` on a virtual key (admin API) names a pool not currently configured |
 | The ephemeral `memory` store with minted keys: keys, usage, and the revocation denylist reset on restart (choose a durable `store.module` for persistence) |
+
+---
+
+### `advanced`
+
+Internal tuning knobs — normally omitted; each field defaults to its historical value.
+
+```yaml
+advanced:
+  rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
+  usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
+  worker_threads: 4                 # tokio worker pool size (1.5.3 ← BUSBAR_WORKER_THREADS); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (1.5.3 ← BUSBAR_UPSTREAM_HTTP1_ONLY)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (1.5.3 ← BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE)
+```
+
+`worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
+once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
+not live-mutable via `PUT /config/settings` — a change takes effect on the next restart. The corresponding
+env vars are honored for one release as a deprecated fallback.
+
+### `providers_file`
+
+Top-level pointer to the provider catalog (1.5.3 ← `BUSBAR_PROVIDERS`). Relative paths resolve against the
+config.yaml directory; absent ⇒ `providers.yaml` next to config.yaml. The two-file model is unchanged — this
+just names the catalog that config.yaml's `providers:` map references.
+
+```yaml
+providers_file: providers.yaml
+```
 
 ---
 

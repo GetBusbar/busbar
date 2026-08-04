@@ -150,8 +150,12 @@ health:                         # process-wide probe fallbacks  → #health-prob
 metrics:                        # OPT-IN — omit the block and metrics are OFF  → #metrics
   { buffer_seconds: 60, key_gauge_limit: 2000 }   # buffer_seconds REQUIRED when the metrics block is present
 routing: { default_policy_timeout_ms: 1 }
-advanced:                       # internal tuning (normally omitted)
-  { rate_sweep_interval: 256, usage_flush_interval_ms: 100 }
+advanced:                       # internal tuning (normally omitted)  → #advanced
+  { rate_sweep_interval: 256, usage_flush_interval_ms: 100,
+    worker_threads: 4, upstream_http1_only: false, upstream_h2_prior_knowledge: false }
+config:                         # config-management policy (durable-by-default)  → #config
+  { locked: false, overlay: { file: busbar-overlay.json } }
+providers_file: providers.yaml  # provider catalog pointer (1.5.3 ← BUSBAR_PROVIDERS)
 ```
 
 ## Not config, but adjacent

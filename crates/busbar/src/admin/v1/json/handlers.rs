@@ -454,13 +454,11 @@ pub(crate) async fn rollback_plugin(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        // A rollback must PERSIST its pin — an ephemeral (no-overlay) busbar has nowhere durable to
+        // A rollback must PERSIST its pin — a locked (no-overlay) busbar has nowhere durable to
         // record the operator's decision, and a restart would silently re-upgrade. Refuse loudly.
         let Some(overlay_path) = current.overlay_path.clone() else {
             return Err(AdminError::Validation(
-                "plugin rollback requires config persistence (BUSBAR_CONFIG_OVERLAY); without it \
-                 the pin cannot be recorded and a restart would silently re-upgrade the plugin"
-                    .into(),
+                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         };
         let snapshot = current.clone();
@@ -1551,7 +1549,7 @@ pub(crate) async fn reset_overlay_section(
             };
             let built = crate::load_config_from_disk(
                 &config_path,
-                &providers_path,
+                Some(&providers_path),
                 false,
                 crate::config::EnvSubst::Strict,
             )
@@ -2204,7 +2202,7 @@ pub(crate) fn rebuild_app_from_disk(
     };
     let mut loaded = crate::load_config_from_disk(
         &config_path,
-        &providers_path,
+        Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
     )?;
@@ -2863,17 +2861,15 @@ pub(crate) async fn put_config_settings(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        // The caller EXPLICITLY required durability. `persist_root` on a `None` overlay path is a
-        // silent no-op `Ok` (`overlay.rs`), so honouring the request is impossible and reporting
-        // success would be the lie this endpoint used to tell. Refuse — the same precondition, and
-        // the same reasoning, as `plugins/rollback`.
-        if requested_persist && current.overlay_path.is_none() {
+        // 1.5.3: a config with no overlay backend is a LOCKED config (the boot invariant guarantees a
+        // MUTABLE config always has a writable overlay). Refuse ANY settings PUT up front — there is no
+        // "apply in memory only" outcome anymore, because a live-but-non-durable mutation is exactly
+        // the silent-loss failure this release removes. `requested_persist` is now irrelevant: the
+        // config is either mutable-and-durable or locked. (Same reasoning as `plugins/rollback`.)
+        let _ = requested_persist;
+        if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
-                "\"persist\": true was requested, but this busbar has no config overlay \
-                 (BUSBAR_CONFIG_OVERLAY is unset), so the change cannot be stored and would not \
-                 survive a restart. Set BUSBAR_CONFIG_OVERLAY and retry, or omit \"persist\" to \
-                 apply the change in memory only, or use POST /config/apply for a live-only change."
-                    .into(),
+                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
         // Everything below reads the overlay file and re-runs the disk-load pipeline, so it is
@@ -2903,7 +2899,7 @@ pub(crate) async fn put_config_settings(
             // the on-disk overlay.
             let next = crate::load_config_from_disk(
                 &config_path,
-                &providers_path,
+                Some(&providers_path),
                 false,
                 crate::config::EnvSubst::Strict,
             )
@@ -2981,33 +2977,10 @@ pub(crate) async fn put_config_settings(
                 &actor,
             );
             record_group_version(&installed, &actor, "config.settings (root section applied)");
-            // `installed.overlay_path` is the SAME path the request started with — the reset/PUT
-            // paths preserve it verbatim across a rebuild — so it is the authoritative answer to
-            // "was there anywhere to persist this?" for the response we are about to build.
-            let (reload_to_apply, note) = if installed.overlay_path.is_none() {
-                // No overlay: `persist_root` was a no-op (it warns; see `overlay::persist_root`).
-                // `reload_to_apply`'s published meaning is "durably stored but not yet live" — since
-                // NOTHING was stored, listing fields there would be the precise lie this fix exists
-                // to remove. Its own field names move into the note instead.
-                let note = if reload_to_apply.is_empty() {
-                    "applied live, IN MEMORY ONLY: this busbar has no config overlay \
-                     (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field here \
-                     reverts on the next restart or POST /config/reload. Set BUSBAR_CONFIG_OVERLAY \
-                     and re-send with \"persist\": true to store the change durably."
-                        .to_string()
-                } else {
-                    format!(
-                        "applied live, IN MEMORY ONLY: this busbar has no config overlay \
-                         (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field \
-                         here reverts on the next restart or POST /config/reload. Fields {} cannot \
-                         take effect without a restart, and a restart discards them. Set \
-                         BUSBAR_CONFIG_OVERLAY and re-send with \"persist\": true to store the \
-                         change durably.",
-                        reload_to_apply.join(", ")
-                    )
-                };
-                (Vec::new(), note)
-            } else if reload_to_apply.is_empty() {
+            // 1.5.3: past the up-front guard, a mutable config ALWAYS has a writable overlay, so the
+            // change was durably persisted (`persist_root` returned `Ok` or the whole transaction
+            // would have failed). The old "IN MEMORY ONLY" branch is gone — that state is unreachable.
+            let (reload_to_apply, note) = if reload_to_apply.is_empty() {
                 (reload_to_apply, "applied live".to_string())
             } else {
                 let note = format!(

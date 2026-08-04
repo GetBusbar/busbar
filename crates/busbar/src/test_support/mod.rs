@@ -726,6 +726,10 @@ pub(crate) struct TestApp {
     groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     base_group_names: std::collections::HashSet<String>,
     overlay_path: Option<std::path::PathBuf>,
+    /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
+    /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
+    /// temp overlay so mutation tests are durable-by-default, mirroring production boot.
+    explicit_no_overlay: bool,
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     hook_env: Option<crate::hooks::HookEnv>,
@@ -756,6 +760,7 @@ impl TestApp {
             groups_registry: std::collections::BTreeMap::new(),
             base_group_names: std::collections::HashSet::new(),
             overlay_path: None,
+            explicit_no_overlay: false,
             plugins_dir: None,
             plugins_cfg: None,
             hook_env: None,
@@ -798,6 +803,16 @@ impl TestApp {
     /// Enable config-overlay persistence at `path` (for testing runtime-change durability).
     pub(crate) fn overlay_path(mut self, path: std::path::PathBuf) -> Self {
         self.overlay_path = Some(path);
+        self.explicit_no_overlay = false;
+        self
+    }
+
+    /// 1.5.3: build a LOCKED app (`config.locked: true` at runtime) — no overlay backend, so every
+    /// config mutation is refused. Overrides the durable-by-default overlay `build()` otherwise
+    /// provides. The only supported way for a test to reach `overlay_path: None`.
+    pub(crate) fn no_overlay(mut self) -> Self {
+        self.overlay_path = None;
+        self.explicit_no_overlay = true;
         self
     }
     /// Register a hook definition in the `hooks:` registry (for the Admin API v1 hooks read surface).
@@ -1072,7 +1087,23 @@ impl TestApp {
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
             providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
-            overlay_path: self.overlay_path,
+            // 1.5.3 durable-by-default: unless a test explicitly asked for a LOCKED app
+            // (`.no_overlay()`), give it a writable temp overlay so config mutations persist — the same
+            // guarantee production boot enforces via the `locked` XOR overlay invariant. An explicit
+            // `.overlay_path(...)` still wins.
+            overlay_path: self.overlay_path.or_else(|| {
+                if self.explicit_no_overlay {
+                    None
+                } else {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static SEQ: AtomicU64 = AtomicU64::new(0);
+                    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+                    Some(std::env::temp_dir().join(format!(
+                        "busbar-test-overlay-{}-{n}.json",
+                        std::process::id()
+                    )))
+                }
+            }),
             config_version: 0,
             max_keys_per_principal: 0,
             max_auto_provisioned_groups: 0,
