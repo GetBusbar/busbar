@@ -504,9 +504,15 @@ oidc_mint_jwt() {
 # Uses python's ssl-wrapped http.server with an openssl-minted self-signed cert for 127.0.0.1.
 oidc_start_https_jwks() {
   local port="$1"
+  # `basicConstraints=critical,CA:FALSE` is REQUIRED: OpenSSL 3.x `req -x509` defaults a self-signed
+  # cert to CA:TRUE, and the oidc plugin fetches this JWKS over rustls (reqwest), which REFUSES a CA
+  # cert presented as the server's end-entity leaf (`CaUsedAsEndEntity`) — the JWKS fetch then fails and
+  # POST /auth/token returns 401 "not authenticated". Forcing an END-ENTITY cert makes the real rustls
+  # JWKS fetch succeed. Kept in sync with plugin-ci.yml's token-exchange e2e (same fix, same reason).
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "${OIDC_WORK}/tls.key" \
     -out "${OIDC_WORK}/tls.crt" -days 2 -subj "/CN=127.0.0.1" \
-    -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
+    -addext "subjectAltName=IP:127.0.0.1" \
+    -addext "basicConstraints=critical,CA:FALSE" 2>/dev/null
   local script="${OIDC_WORK}/jwks_server.py"
   cat >"$script" <<PYEOF
 import http.server, ssl
@@ -803,7 +809,9 @@ EOF
       echo "    header. The integrator must reconcile the prefix vs the sanitizer for the 200 path." >&2
       exit 1
     fi
-    [ "$group1" = "user:${SUB}" ] || { echo "  Phase B: group is '${group1}', expected 'user:${SUB}'" >&2; exit 1; }
+    # The self group is ALWAYS `user:` + the WHOLE module-namespaced principal id; the oidc plugin's is
+    # `oidc:<sub>`, so the leaf is `user:oidc:<sub>` (core's self_keys_tests.rs asserts `user:oidc:alice`).
+    [ "$group1" = "user:oidc:${SUB}" ] || { echo "  Phase B: group is '${group1}', expected 'user:oidc:${SUB}'" >&2; exit 1; }
     ok "self-scoped key issued: group=${group1}, exp=${exp1}"
     # TTL reflects key_ttl (7d = 604800s), within a generous skew of 'now'.
     local want_ttl=604800 got_ttl=$((exp1 - now))
