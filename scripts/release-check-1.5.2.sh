@@ -934,6 +934,8 @@ auth:
   signing_key: { file: "${work}/signing.key" }
   chain:
     - keys
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
   methods:
     github:
       browser_login:
@@ -974,13 +976,13 @@ EOF
 
   echo "  busbar --validate on the github token-exchange config..."
   BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
-    MOCK_KEY=unused BUSBAR_GH_CLIENT_SECRET=gate-gh-secret \
+    MOCK_KEY=unused BUSBAR_GH_CLIENT_SECRET=gate-gh-secret BUSBAR_ADMIN_TOKEN=gate-admin \
     "$BUSBAR_BIN" --validate
   ok "config-validate CLEAN (auth.methods.github + browser_login + role_bindings.github resolve; plugin loads)"
 
   echo "  booting busbar + driving the github GET /auth/token browser-redirect flow..."
   BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
-    MOCK_KEY=unused BUSBAR_GH_CLIENT_SECRET=gate-gh-secret RUST_LOG=warn \
+    MOCK_KEY=unused BUSBAR_GH_CLIENT_SECRET=gate-gh-secret BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
     "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
   local bpid=$!; BG_PIDS+=("$bpid")
   wait_for_http "http://127.0.0.1:${LISTEN}/healthz" 30
@@ -1090,6 +1092,8 @@ auth:
   signing_key: { file: "${work}/signing.key" }
   chain:
     - keys
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
   methods:
     ldap:
       browser_login: {}
@@ -1129,12 +1133,12 @@ mock:
 EOF
 
   echo "  busbar --validate on the ldap credential-flow config..."
-  BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" MOCK_KEY=unused \
+  BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin \
     "$BUSBAR_BIN" --validate
   ok "config-validate CLEAN (auth.methods.ldap credential method + role_bindings.ldap resolve; plugin loads)"
 
   echo "  booting busbar + driving the ldap credential-form flow..."
-  BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" MOCK_KEY=unused RUST_LOG=warn \
+  BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin RUST_LOG=warn \
     "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
   local bpid=$!; BG_PIDS+=("$bpid")
   wait_for_http "http://127.0.0.1:${LISTEN}/healthz" 30
