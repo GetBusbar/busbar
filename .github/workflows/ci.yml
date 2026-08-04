@@ -38,6 +38,15 @@ jobs:
         run: scripts/structure-lint.sh --selftest
       - name: Structure lint
         run: scripts/structure-lint.sh
+      # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
+      # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
+      # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
+      # verdict before proving the scanner still catches the real antipattern), then it scans
+      # scripts/release-check*.sh and verifies the 1.5.2 watchdog is intact.
+      - name: Release-script lint self-test
+        run: scripts/release-script-lint.sh --selftest
+      - name: Release-script lint
+        run: scripts/release-script-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
