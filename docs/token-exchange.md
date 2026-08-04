@@ -79,6 +79,12 @@ That's the shape — **full per-method config** (issuer, audience, claim mapping
 walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
 [GitHub](/plugins/auth/github/) · [LDAP](/plugins/auth/ldap/).
 
+> With Entra ID, `"<sso-group>"` above is **not** necessarily your security group's display
+> name — what it must be depends on `role_claim` (app role Value string vs. security group
+> Object ID GUID). This trips people up constantly; see
+> [Entra ID: app roles vs. security groups](configuration.md#auth-plugins) for the full
+> explanation before you bind a role.
+
 ## Key facts
 
 - **One key per person.** Deterministic from the verified identity, so it re-shows on every

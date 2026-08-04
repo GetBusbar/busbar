@@ -295,7 +295,8 @@ degrades — see [Fail-closed loading](#fail-closed-loading), below.
 The first-party **`oidc`** module (`busbar-auth-oidc-plugin`, released from `GetBusbar/auth-oidc`)
 is exactly such a plugin — see
 [configuration.md](configuration.md#auth-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
-(including an Entra ID example).
+(including an Entra ID example, and the **app roles vs. security groups** gotcha that trips up most
+first-time Entra setups).
 
 ### First-party auth plugins
 

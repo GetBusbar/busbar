@@ -345,6 +345,34 @@ Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, a
 own setup guide. For the first-party OIDC/SSO plugin — JWKS verification, claim-to-role mapping, and a
 full Microsoft Entra ID (Azure AD) example — see the **[OIDC auth plugin](/plugins/auth/oidc/)**.
 
+> **Entra ID gotcha: app roles vs. security groups.** The single most common OIDC misconfiguration.
+> The `oidc` plugin's `role_claim` setting picks ONE of two, entirely different Entra objects — mixing
+> them up produces a token that verifies fine but binds to nothing (silent no-match, not an error):
+>
+> | `role_claim` | Reads | Claim value | Where you define it in Entra |
+> |---|---|---|---|
+> | `roles` | **App roles** | The role's **Value** string, verbatim (e.g. `busbar.dev`) | App registration → App roles (allowed member types: Users/Groups), then assign it under Enterprise application → Users and groups |
+> | `groups` | **Security groups** | The group's **Object ID** — a GUID, never the display name | App registration → Token configuration → Add groups claim → Security groups (must be enabled, it's off by default) |
+>
+> A security group named `busbar.dev` does **not** satisfy `role_claim: roles` — app roles and security
+> groups are different Entra objects, full stop. It only matches under `role_claim: groups`, bound by
+> its GUID:
+> ```yaml
+> # role_claim: roles (app role) — binding key is the role's Value, human-readable
+> role_bindings:
+>   oidc:
+>     "busbar.dev": { group: engineering }
+>
+> # role_claim: groups (security group) — binding key is the group's Object ID (GUID)
+> role_bindings:
+>   oidc:
+>     "3fa85f64-5717-4562-b3fc-2c963f66afa6": { group: engineering }
+> ```
+> **Recommended pattern:** keep `role_claim: roles` for a readable config, then **assign the app role to
+> your security group** (Enterprise application → Users and groups → add the group → assign the role) —
+> members inherit the role through the group, so you manage access by group membership while
+> `role_bindings` keeps naming a human-readable role instead of a GUID.
+
 ---
 
 ### `groups`
