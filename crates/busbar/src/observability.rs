@@ -15,10 +15,10 @@ use std::time::Duration;
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
 // `reqwest::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
+use crate::limits::admission::AdmissionGate;
 use crate::net_guard::{
     is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6, is_unique_local_v6,
 };
-use tokio::sync::Semaphore;
 
 /// The configured webhook URL, stored as an `Arc<String>` so the per-request fast path in
 /// `fire_request_log` clones a reference-count bump (8 bytes) rather than heap-copying the whole URL
@@ -35,10 +35,9 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 // via `observability.max_inflight_webhook_deliveries` (default 64).
 
 /// The in-flight delivery limiter, sized ONCE from config when the webhook is configured. A
-/// `OnceLock<Semaphore>` (not a compile-time `const_new`) so its permit count can be the operator's
+/// `OnceLock<AdmissionGate>` (not a compile-time constant) so its permit count can be the operator's
 /// `observability.max_inflight_webhook_deliveries`. `webhook_inflight()` initializes it to the
-/// installed limit on first touch and falls back to the historical default (64) otherwise, preserving
-/// the `'static`-permit RAII design (`InflightGuard`).
+/// installed limit on first touch and falls back to the historical default (64) otherwise.
 ///
 /// KNOWN GAP, tracked for post-1.5.0 (not fixed here — see the `reload_to_apply` gap-sweep for
 /// `limits.max_inbound_concurrent` / `observability.emit_server_timing` /
@@ -49,11 +48,12 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 /// unconditionally restart-scoped would be a lie in the cases it is still live, so it is
 /// intentionally left UNFLAGGED and documented only (`docs/configuration.md`), same triage class as
 /// `limits.request_body_max_bytes`'s half-live inbound/egress split.
-static WEBHOOK_INFLIGHT: OnceLock<Semaphore> = OnceLock::new();
+static WEBHOOK_INFLIGHT: OnceLock<AdmissionGate> = OnceLock::new();
 
-fn webhook_inflight() -> &'static Semaphore {
-    WEBHOOK_INFLIGHT
-        .get_or_init(|| Semaphore::new(crate::limits::max_inflight_webhook_deliveries()))
+fn webhook_inflight() -> &'static AdmissionGate {
+    WEBHOOK_INFLIGHT.get_or_init(|| {
+        AdmissionGate::new(crate::limits::max_inflight_webhook_deliveries(), "webhook")
+    })
 }
 
 /// Per-delivery timeout for the webhook POST, independent of the (much larger) upstream request
@@ -61,21 +61,6 @@ fn webhook_inflight() -> &'static Semaphore {
 /// `observability.webhook_delivery_timeout_secs` (default 2).
 fn webhook_delivery_timeout() -> Duration {
     Duration::from_secs(crate::limits::webhook_delivery_timeout_secs())
-}
-
-/// RAII release of one `WEBHOOK_INFLIGHT` slot. We acquire the permit synchronously WITHOUT awaiting
-/// (`try_acquire`) and `forget()` it so the slot is held across the spawned delivery without
-/// fighting the borrow checker over the `'static` semaphore. Releasing via this guard's `Drop`
-/// (rather than a manual `add_permits(1)` at the tail of the task) means the slot is returned even
-/// if the delivery task PANICS — a manual release at the end of the closure would be skipped on
-/// unwind, permanently leaking the slot and, after `max_inflight_webhook_deliveries()` panics,
-/// silently dropping every subsequent log forever.
-struct InflightGuard;
-
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        webhook_inflight().add_permits(1);
-    }
 }
 
 /// Return `url` with any URL userinfo (`scheme://user:pass@host/...`) masked, SAFE to put in a log
@@ -488,17 +473,14 @@ pub(crate) fn fire_request_log(payload: Value) {
     // the drop on a metric (not a per-drop warn, which would itself flood the log under sustained
     // saturation) so an operator can alert on "the webhook is overwhelmed; request logs are being
     // shed" instead of mistaking the silence for a healthy/disabled webhook.
-    let Ok(permit) = webhook_inflight().try_acquire() else {
+    let Some(permit) = webhook_inflight().try_enter() else {
         metrics::counter!(crate::metrics::WEBHOOK_LOGS_DROPPED_TOTAL).increment(1);
         return;
     };
-    // The permit borrows the 'static semaphore; forget it and hand the slot to an `InflightGuard`
-    // moved into the task, so the slot is released on the guard's Drop — even if the delivery task
-    // panics — rather than via a manual `add_permits` that an unwind would skip (leaking the slot).
-    permit.forget();
-    let guard = InflightGuard;
+    // Move the OWNED permit straight into the spawned task: the slot releases via the permit's own
+    // `Drop` the instant the task ends, panic or not — no separate guard type needed.
     tokio::spawn(async move {
-        let _guard = guard;
+        let _permit = permit;
         // Serialize the payload INSIDE the spawned task, not on the request-serving thread. The
         // full-Value `to_string()` is a heap allocation plus a complete JSON walk; doing it before
         // `tokio::spawn` charged it to the async executor thread on the hot path of every served
@@ -1587,26 +1569,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_inflight_guard_releases_slot_on_drop() {
-        // The RAII guard returns its semaphore slot on Drop. Mirror the production acquire/forget
-        // pattern, then drop the guard and confirm the slot is reusable (no leak).
+        // The owned permit returns its `AdmissionGate` slot on Drop.
         //
-        // Asserted as a round-trip DELTA bracketing the whole acquire/forget/drop block, not as a
-        // `before - 1` snapshot mid-flight: `webhook_inflight()` is a process-global semaphore, and
-        // any concurrent test that fires a webhook delivery (or drops its own InflightGuard) between
-        // two reads shifts the absolute count out from under a mid-flight assertion. The delta is
-        // the actual contract this test is named for and is concurrency-safe by construction.
+        // Asserted as a round-trip DELTA bracketing the whole acquire/drop block, not as a
+        // `before - 1` snapshot mid-flight: `webhook_inflight()` is a process-global gate, and any
+        // concurrent test that fires a webhook delivery (or drops its own permit) between two reads
+        // shifts the absolute count out from under a mid-flight assertion. The delta is the actual
+        // contract this test is named for and is concurrency-safe by construction.
         let before = webhook_inflight().available_permits();
         {
-            let permit = webhook_inflight()
-                .try_acquire()
+            let _permit = webhook_inflight()
+                .try_enter()
                 .expect("a slot should be free");
-            permit.forget();
-            let _guard = InflightGuard; // drops at end of scope -> add_permits(1)
-        }
+        } // permit drops at end of scope -> slot returned
         assert_eq!(
             webhook_inflight().available_permits(),
             before,
-            "InflightGuard::drop must return the slot even though the permit was forgotten"
+            "dropping the owned permit must return the slot"
         );
     }
 
