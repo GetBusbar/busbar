@@ -34,8 +34,24 @@ use std::sync::Arc;
 
 /// The live plugin-route declarations the built-in exporters contribute (design §5) — today just the
 /// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
-/// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot, so a config
-/// apply that adds/removes `export.prometheus` mounts/unmounts `/metrics` with no router rebuild.
+/// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
+///
+/// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
+/// version of this comment claimed they were:
+///
+/// - **Removing** `export.prometheus` takes effect immediately. The path stays registered on the
+///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
+///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
+/// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
+///   router once, at boot (`plugin_routes.rs`, `on(filter, plugin_route_dispatch)`), and a config
+///   apply swaps only `Arc<App>` — the router is never rebuilt. If no `prometheus` instance existed
+///   at boot, `/metrics` was never registered, so it keeps 404ing however many times the operator
+///   PUTs the config. The metrics recorder is additionally `OnceLock`-guarded and installed once.
+///
+/// This is the SAME boot-frozen mechanism already documented for `max_inbound_concurrent` in
+/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields` — but unlike that field, the
+/// `export:` named map has no restart-required signal, so the operator is told nothing. Closing that
+/// gap (or genuinely hot-mounting the route) is tracked as audit finding E1.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     prometheus::route_decl(cfg).into_iter().collect()
 }
