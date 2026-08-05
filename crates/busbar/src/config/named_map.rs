@@ -129,11 +129,32 @@ impl NamedMapSection {
     /// the same structs. (Before this existed the API only checked "is it an object with a
     /// non-empty `module`", accepted an unknown field, persisted it verbatim, and then DROPPED it at
     /// the next rebuild with only a log line — two paths, two grammars.)
+    ///
+    /// `serde` alone is not the whole grammar: a field typed `Option<String>` accepts EVERY string,
+    /// including tokens `config_validate` refuses to boot. So the VALUE-level rules that boot
+    /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
+    /// check below ([`Scope::parse_ceiling`](crate::admin::v1::contract::Scope::parse_ceiling)).
     pub(crate) fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
-                .map(NamedDef::IdentityProvider)
-                .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}")),
+                .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
+                .and_then(|cfg: IdentityProviderCfg| {
+                    // The CEILING TOKEN, checked with the very function `config_validate`'s
+                    // chain-entry rule uses. `resolve_auth` copies this value onto every resolved
+                    // `AuthChainEntry`, so an unknown token here is a HARD BOOT ERROR — without this
+                    // the API answered 200 and the gateway then refused to start.
+                    if let Some(token) = cfg.max_admin_scope.as_deref() {
+                        crate::admin::v1::contract::Scope::parse_ceiling(
+                            &format!("`identity-providers.{name}`"),
+                            token,
+                        )?;
+                    }
+                    // A MISPLACED SECRET, by the rule `resolve_auth` applies — which only ever sees
+                    // providers already REFERENCED from a chain, so a definition written through the
+                    // API and not yet referenced slipped past it.
+                    super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
+                    Ok(NamedDef::IdentityProvider(cfg))
+                }),
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),

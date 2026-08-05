@@ -12699,6 +12699,13 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
 /// alone through the admin API, and RAISING it is refused outright (409 `conflict`) — including on
 /// a brand-new provider, whose baseline is the most restrictive default, so an escalating ceiling
 /// cannot ride in on a create either. Every attempt is audited.
+///
+/// AND the token must be one the ENGINE accepts: exactly `read-only` or `full`. There is no `none`
+/// — omit the key for the most restrictive default (`read-only`), and to grant NO admin authority
+/// through a provider grant no `admin_scope` under that provider's `role_bindings:`. An unknown
+/// token is a hard boot error (`config_validate`'s chain-entry rule, reached because `resolve_auth`
+/// copies the definition's ceiling onto every resolved chain entry), so accepting it here would
+/// answer 200 to a write that leaves the deployment unbootable.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     let (dir, addr, handle) = {
@@ -12742,7 +12749,14 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         "the refused PUT stored nothing"
     );
 
-    // (b) The most restrictive ceilings are accepted (this is the documented external-IdP shape).
+    // (b) A ceiling token the ENGINE does not accept is refused by the API too. The accepted values
+    // are exactly `read-only` and `full` — the two `Scope::parse` knows; `config_validate`'s
+    // chain-entry rule turns anything else into a HARD BOOT ERROR, because `resolve_auth` copies the
+    // definition's ceiling onto every resolved chain entry. `none` in particular is NOT a value:
+    // there is no "no admin authority" ceiling. Omit the key for the most restrictive default
+    // (`read-only`); to grant no admin authority through a provider, grant no `admin_scope` under
+    // that provider's `role_bindings:`. Accepting `none` here reported success on a write that left
+    // the deployment unbootable at the next restart.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -12752,8 +12766,42 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     .unwrap();
     assert_eq!(
         r.status().as_u16(),
+        400,
+        "`none` is not a ceiling the engine accepts, so the API must refuse it"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected read-only or full"),
+        "the refusal names the accepted values: {body}"
+    );
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "the refused PUT stored nothing"
+    );
+
+    // (b2) The most restrictive ceiling the engine DOES accept is `read-only` — applied.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"read-only"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
         200,
-        "`none` can never be a raise: {:?}",
+        "`read-only` can never be a raise: {:?}",
         r.text().await
     );
 
@@ -12776,7 +12824,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     .await
     .unwrap();
     assert_eq!(
-        still["max_admin_scope"], "none",
+        still["max_admin_scope"], "read-only",
         "the live ceiling is untouched by the refused raise: {still}"
     );
 
@@ -12803,6 +12851,88 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
             .any(|i| i["outcome"] == "applied" && i["action"] == "identity-provider.replace"),
         "the accepted change is audited: {audit}"
     );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AN UNREFERENCED DEFINITION IS STILL VALIDATED. Most of the identity-provider rules live in
+/// `resolve_auth`, which only ever sees providers already NAMED by `auth.chain:`/`auth.admin_auth:`
+/// — so a definition written through the admin API and not yet referenced used to escape them: the
+/// API answered 200, persisted the definition into the overlay, and the error surfaced only later,
+/// when something finally named the provider (or, for a `config.yaml` edit that named it, at the
+/// next BOOT, which then failed). The definition-side write path now runs the same rules on the same
+/// shared functions, so the value is refused where it is written.
+#[tokio::test]
+async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() {
+    let (dir, addr, handle) = {
+        let (dir, _overlay, addr, handle) = named_map_app("unreferenced", false).await;
+        (dir, addr, handle)
+    };
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    // `token:` is the built-in `admin-tokens` operator credential. On any other module it is inert —
+    // a MISPLACED SECRET the config grammar fails loud on (`resolve_auth`). Nothing references
+    // `stray` yet, so nothing used to check it.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/stray"
+    )))
+    .body(r#"{"module":"keys","token":{"env":"BUSBAR_STRAY_TOKEN"}}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "a `token:` on a non-`admin-tokens` module is a misplaced secret, referenced or not"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("meaningless on `module: keys`"),
+        "the refusal states the placement rule: {body}"
+    );
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/stray"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "the refused PUT stored no credential"
+    );
+
+    // Same for a ceiling token the engine cannot boot with, on a provider in no chain: the chain-entry
+    // rule in `config_validate` never sees this definition, so the DEFINITION-side check is the only
+    // thing standing between the operator and an unbootable next restart.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/stray"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"none"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "an unreferenced provider's ceiling is checked where it is written"
+    );
+
+    // The legal shape is accepted.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/stray"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"read-only"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

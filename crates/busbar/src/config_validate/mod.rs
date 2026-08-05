@@ -1153,19 +1153,20 @@ pub(crate) fn validate_with_unset(
         // external chain - is a LOUD boot warning: it is the explicit opt-in requires.
         for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
             if let Some(scope) = entry.max_admin_scope.as_deref() {
-                match crate::admin::v1::contract::Scope::parse(scope) {
-                    None => errors.push(format!(
-                        "auth chain entry '{}' has unknown max_admin_scope '{scope}': expected \
-                         read-only or full",
-                        entry.module
-                    )),
-                    Some(crate::admin::v1::contract::Scope::Full) => tracing::warn!(
+                // The SAME check the admin named-map write path runs (`Scope::parse_ceiling`), so
+                // the API can never accept a ceiling this rule would refuse to boot.
+                match crate::admin::v1::contract::Scope::parse_ceiling(
+                    &format!("auth chain entry '{}'", entry.module),
+                    scope,
+                ) {
+                    Err(e) => errors.push(e),
+                    Ok(crate::admin::v1::contract::Scope::Full) => tracing::warn!(
                         module = %entry.module,
                         "auth chain entry grants max_admin_scope: full - principals identified by \
                          this module can hold FULL admin authority (the default ceiling is \
                          read-only); make sure this chain is trusted end to end"
                     ),
-                    Some(_) => {}
+                    Ok(_) => {}
                 }
             }
             // `token:` is the admin-tokens operator credential; on any other module it is inert
