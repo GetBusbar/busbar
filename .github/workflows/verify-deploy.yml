@@ -571,7 +571,12 @@ jobs:
             echo "::error::(i) https://getbusbar.com/install.sh served an EMPTY body — nothing to inspect. Fix: redeploy the marketing site."
             exit 1
           }
-          if grep -nE 'api\.github\.com' /tmp/busbar-installsh-live; then
+          # Strip COMMENTS before matching. The correct install.sh names api.github.com in a
+          # comment explaining that it is deliberately NOT used, so a naive grep fails on the
+          # very version that fixes the bug. A check that goes red on the fix is worse than no
+          # check: on a daily schedule it trains everyone to ignore red, which is exactly how
+          # install.sh rotted in the first place.
+          if sed 's/#.*$//' /tmp/busbar-installsh-live | grep -nE 'api\.github\.com'; then
             echo "FAIL: the LIVE install.sh calls api.github.com (lines above)"
             echo "::error::(i) https://getbusbar.com/install.sh resolves the release tag via api.github.com. THE FAILURE MODE: unauthenticated GitHub API calls are rate-limited PER SOURCE IP, so users behind shared/corporate/NAT/cloud IPs get 'curl: (56) The requested URL returned error: 403' and the installer dies with 'busbar: could not determine the latest release tag'. This DOES NOT reproduce on a GitHub Actions runner (different rate-limit pool, credentials often in scope), which is why it went unnoticed in production. FIX: resolve the tag with no API and no auth — e.g. tag=\$(curl -fsS -o /dev/null -w '%{redirect_url}' https://github.com/GetBusbar/busbar/releases/latest); tag=\${tag##*/tag/}  — or serve a pinned version from getbusbar.com. Then redeploy the site."
             exit 1
