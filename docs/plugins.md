@@ -239,7 +239,7 @@ given. `path` is the full Vault v1 API path INCLUDING the KV v2 `data/` segment 
 404 (no secret there), a 403 (bad token / missing policy), and a 5xx (Vault itself unhealthy) each
 surface as a distinct, specific error — never collapsed into a generic failure.
 
-> **Not the built-in `keys` auth module.** A `kind: secret` plugin resolves *config secret
+> **Not the built-in `keys` identity provider.** A `kind: secret` plugin resolves *config secret
 > references* (fetching key material from a backend). The built-in `keys` module in `auth.chain`
 > is data-plane **virtual-key auth** — it verifies the Busbar-signed caller tokens minted through
 > the Admin API. Different layers: one supplies secret VALUES to the config, the other
@@ -283,11 +283,12 @@ fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
 busbar_plugin_sdk::export_auth_plugin!(open);
 ```
 
-An auth module returns **identity only** — who the caller is (`id` + `roles`). Policy (which pools,
-which group's limits, which admin scope) is resolved by Busbar from `auth.role_bindings.<module>`
-(nested by module) and capped by `auth.chain.<module>.max_admin_scope`, never asserted by the
-module. Crucially, `<module>` is the value the plugin returns from **`name()`** — its runtime
-identity — NOT the config alias you write in `auth.chain`. Bind roles under that name.
+An identity provider returns **identity only** — who the caller is (`id` + `roles`). Policy (which
+pools, which group's limits, which admin scope) is resolved by Busbar from
+`auth.role_bindings.<provider>` and capped by that provider's `max_admin_scope`, never asserted by
+the plugin. As of 1.5.3 `<provider>` is the NAME you chose in the top-level `identity-providers:`
+map — the definition key you also write in `auth.chain:` — which is what lets one plugin back two
+providers with independent bindings and ceilings.
 
 Like every configured plugin, an auth plugin that cannot load is a hard error and never silently
 degrades — see [Fail-closed loading](#fail-closed-loading), below.
@@ -535,7 +536,7 @@ establishes first-party trust, not the hosting repo.
 The guarantee is uniform across every plugin kind: a configured plugin that cannot load — a
 missing or untrusted tarball, the wrong `kind`, a `dlopen`/ABI failure, or a reference to a plugin
 while `plugins.enabled: false` — is a **hard boot / config-apply error**, named at the flag or file.
-A dropped store, secret backend, auth module, or security gate never silently disappears or
+A dropped store, secret backend, identity provider, or security gate never silently disappears or
 degrades to open. `busbar --validate` catches every one of these manifest-only, before boot, so a
 clean validate means a clean load.
 

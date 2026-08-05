@@ -12,15 +12,24 @@ A `socket:` hook talks to an operator-run binary over a local Unix domain socket
 Measured end to end through busbar's transport against this exact example binary
 (separate process, 3 candidates, 50k samples): **~7.9 µs median, p99 ~12 µs**.
 
+> **Grammar note (1.5.0 / 1.5.3).** The built-in `socket:` / `webhook:` hook transports were
+> retired in 1.5.0 — a hook is now always a signed `kind: hook` plugin, and the out-of-process
+> posture is the first-party `busbar-webrequest-hook` forwarder. 1.5.3 then made hooks
+> **named definitions**: define once under the top-level `hooks:` map, reference by BARE NAME from
+> `pools.hooks:` / `pools.<p>.hooks:`. The wire contract below is unchanged; only where the instance
+> is written moved. The blocks below are in the current 1.5.3 shape.
+
 ```yaml
+hooks:                           # DEFINE once (1.5.3 named-definition map)
+  smart-router:
+    module: smart-router-hook    # your signed kind:hook plugin (the compiled binary, in-process)
+    kind: gate                   # it decides (returns `order`); a tap only watches
+    timeout_ms: 1                # the default hard deadline; raise for slow hooks
+    on_error: weighted           # a broken ordering hook falls back to the weighted floor
+
 pools:
   my-smart-model:
-    hooks:
-      # 1.5.0: a hook instance is an INLINE module ref where it runs (no hooks: registry block).
-      - { module: socket, settings: { path: /run/busbar/router.sock },
-          kind: gate,            # it decides (returns `order`); a tap only watches
-          timeout_ms: 1,         # the default hard deadline; raise for slow hooks
-          on_error: weighted }   # a broken ordering hook falls back to the weighted floor
+    hooks: [smart-router]        # REFERENCE by bare name
     members:
       # cost comes from the top-level rate_card (the only cost source), not the member.
       - model: claude-fable
@@ -49,11 +58,17 @@ portable everywhere, written in whatever your team already ships. Sub-millisecon
 co-located; plus the network if it is not.
 
 ```yaml
+hooks:
+  smart-router:
+    module: busbar-webrequest-hook            # the first-party HTTPS forwarder plugin
+    settings: { url: "http://127.0.0.1:8787/" }   # SSRF-guarded: loopback ok, remote must be https
+    kind: gate
+    timeout_ms: 1
+    on_error: weighted
+
 pools:
   my-smart-model:
-    hooks:
-      - { module: webhook, settings: { url: "http://127.0.0.1:8787/" },
-          kind: gate, timeout_ms: 1, on_error: weighted }
+    hooks: [smart-router]
     members:
       - model: claude-fable
         tier: fable          # best and most expensive ...

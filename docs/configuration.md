@@ -5,7 +5,7 @@ Busbar reads **two YAML files** at startup:
 | File | Default path | Env override | Purpose |
 |---|---|---|---|
 | Provider catalog | `/etc/busbar/providers.yaml` | `BUSBAR_PROVIDERS` | Shipped map of provider names → protocol, base URL, error map. Operators rarely edit this. |
-| Deployment config | `/etc/busbar/config.yaml` | `BUSBAR_CONFIG` | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and observability. |
+| Deployment config | `/etc/busbar/config.yaml` | `BUSBAR_CONFIG` | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and telemetry export. |
 
 Both files support `${VAR}` environment interpolation before YAML is parsed. A missing or malformed env var reference is a fatal startup error, Busbar refuses to boot rather than run with an incomplete config.
 
@@ -284,12 +284,10 @@ belongs to ONE IdP registration, so it belongs on that provider.) See
 ```yaml
 identity-providers:
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
-
-identity-providers:
   ad:
     module: ad                                            # a `kind: auth` plugin
     settings: { server: "ldaps://corp", base_dn: "dc=corp" }
-    max_admin_scope: full                                 # PER-PROVIDER admin ceiling
+    max_admin_scope: none                                 # PER-PROVIDER admin ceiling
 
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
@@ -304,7 +302,7 @@ auth:
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
-| `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed — never a silently-skipped auth module). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error**. |
+| `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed — never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error**. |
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 
@@ -312,21 +310,13 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `module` | string | **yes** | — | Which auth module backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings) — the NAME is the instance. |
+| `module` | string | **yes** | — | Which `kind: auth` plugin (or built-in) backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings) — the NAME is the instance. |
 | `settings` | map | no | `{}` | The module's own opaque config, pushed verbatim (SecretRef-typed values resolve first). |
 | `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants: `none` \| `read-only` \| `full`. Omitted = the MOST RESTRICTIVE default; the built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. |
 | `token` | secret reference | no | none | The operator ADMIN credential — only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
 | `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). |
 
 **Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3) — whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
-
-**Per-entry typed fields** (alongside the module's opaque `settings`):
-
-| Field | Default | Notes |
-|---|---|---|
-| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
-| `token` | none | The operator admin credential, for the built-in `admin-tokens` module only (a secret reference). |
-| `settings` | `{}` | The module's own opaque configuration, passed to the auth plugin verbatim. |
 
 **Token extraction order (data plane):** `Authorization: Bearer`, then `x-api-key`, then
 `x-goog-api-key`. Blank values are treated as absent.
@@ -351,37 +341,41 @@ silently forced a virtual key onto every data-plane request, so that posture was
 `aws_secret_access_key` (shown once). Busbar verifies the inbound SigV4 signature natively
 (including body-hash integrity), then applies the key's group limits and pool ACL.
 
-#### `auth.role_bindings`: module-scoped role policy
+#### `auth.role_bindings`: provider-scoped role policy
 
-A role asserted by an auth module earns exactly what the binding under THAT module grants,
-nothing else: `ad.platform` and `oidc.platform` are distinct grants, and a module can never ride
-another module's binding. An unbound role grants nothing (fail closed).
+A role asserted by an identity provider earns exactly what the binding under THAT provider NAME
+grants, nothing else: `ad.platform` and `oidc.platform` are distinct grants, and a provider can never
+ride another provider's binding. An unbound role grants nothing (fail closed). Because the nesting key
+is the provider NAME (not the backing module's name), two named providers may share one `module:` and
+still hold independent grants.
 
 | Field | Notes |
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting module's `max_admin_scope` ceiling caps it (a `read-only` ceiling reduces a `full` grant to `read-only`). |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling reduces a `full` grant to `read-only`; a `none` ceiling — the recommended posture for an external IdP — reduces it to nothing). |
 
-Admin access is therefore EITHER a role's `admin_scope` (through an IdP module in `admin_auth`)
+Admin access is therefore EITHER a role's `admin_scope` (through an identity provider named in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
 (`PUT /api/v1/admin/auth`) with an anti-lockout guard; see the [Admin API guide](./admin-api.md).
 
-#### auth plugins
+#### identity-provider plugins
 
-Any `auth.chain` module name that is not the built-in `keys` is a **`kind: auth` plugin** —
-an identity provider loaded in-process at boot over the signed plugin ABI, the same trust and
-loader path as store and secret plugins (see [plugins.md](plugins.md#auth-plugins-kind-auth)).
-Install it like any other plugin: set `plugins.enabled: true`, drop the signed tarball in the
-plugins directory, then name the module in the chain. Its `settings:` map is passed to the plugin
-verbatim as its config.
+Any `identity-providers:` definition whose `module:` is not a built-in (`keys` / `admin-tokens`) is a
+**`kind: auth` plugin** — an identity provider loaded in-process at boot over the signed plugin ABI,
+the same trust and loader path as store and secret plugins (see
+[plugins.md](plugins.md#auth-plugins-kind-auth)). Install it like any other plugin: set
+`plugins.enabled: true`, drop the signed tarball in the plugins directory, define the provider under
+`identity-providers:`, then name that provider in `auth.chain:` / `auth.admin_auth:`. Its `settings:`
+map is passed to the plugin verbatim as its config.
 
-Role policy is nested under the plugin's **runtime module name** — the value the plugin returns from
-`name()`, which may differ from the chain alias you gave it. Bind roles under that runtime name.
+Role policy is nested under the **provider NAME you chose** in `identity-providers:` — the definition
+key, not the plugin's own runtime `name()`. That is what lets the same plugin back two providers with
+independent bindings and independent `max_admin_scope` ceilings.
 
 A verified caller presents its IdP-issued token as `Authorization: Bearer <token>`; the auth plugin
-validates it and asserts the token's claims as roles, which Busbar maps through `role_bindings.<module>`
-to pools, limits, and (optionally) an admin scope capped by the module's `max_admin_scope`.
+validates it and asserts the token's claims as roles, which Busbar maps through `role_bindings.<provider>`
+to pools, limits, and (optionally) an admin scope capped by that provider's `max_admin_scope`.
 
 Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, and so on) and ships its
 own setup guide. For the first-party OIDC/SSO plugin — JWKS verification, claim-to-role mapping, and a
@@ -461,18 +455,21 @@ same app object, and steps 4 and 5 below live on **different** blades. Follow it
 
    ```yaml
    public_url: "https://busbar.example.com"
-   auth:
-     signing_key: { file: /run/secrets/busbar-signing.key }
-     chain: [keys]
-     methods:
-       oidc:
-         issuer:   "https://login.microsoftonline.com/<tenant-id>/v2.0"  # step 1: tenant ID
+   identity-providers:
+     oidc:                                                              # the provider NAME
+       module: oidc                                                     # the `kind: auth` plugin
+       settings:
+         issuer:   "https://login.microsoftonline.com/<tenant-id>/v2.0" # step 1: tenant ID
          audience: "<client-id>"                                        # step 1: client ID
          role_claim: roles                                              # step 4: app roles
-         browser_login:
-           client_secret: { env: OIDC_CLIENT_SECRET }                   # step 2: secret Value
+       browser_login:
+         client_secret: { env: OIDC_CLIENT_SECRET }                     # step 2: secret Value
+       max_admin_scope: none                                            # no admin authority via SSO
+   auth:
+     signing_key: { file: /run/secrets/busbar-signing.key }
+     chain: [keys, oidc]                                                # bare provider NAMES
      role_bindings:
-       oidc:
+       oidc:                                                            # keyed by PROVIDER NAME
          "busbar.dev": { group: engineering }                           # step 4: app role's Value
    groups:
      engineering:
@@ -904,29 +901,54 @@ Guard rails, applied automatically: the budget is clamped to leave at least 1024
 
 #### Pool `hooks`: ordering and gates
 
-A pool names the hooks it wants in ONE ordered `hooks: [...]` list, inline, where they run. There
-is NO top-level `hooks:` registry block in 1.5.0: a hook instance is defined at its point of use.
-Two spellings per entry:
+**1.5.3: hooks are DEFINED once, at the top level, and REFERENCED by bare name.** The top-level
+`hooks:` map is the definition surface — `<instance-name>: { module, settings, … }`. Every ATTACH
+point (the reserved all-pools `pools.hooks:` list and each pool's own `hooks:` list) carries BARE
+NAMES only. Inline hook instances are gone, and so is the removed top-level `global_hooks:` list.
+The SAME module may back several named hooks: a different scope or different settings is a new NAME,
+and the name is the instance.
 
-- a **bare name** is a built-in ordering strategy: `weighted` \| `cheapest` \| `fastest` \|
-  `least_busy` \| `usage` (at most one per pool: it sets the base ranking; the default is
-  `weighted`, the zero-cost SWRR baseline);
-- a **module ref** is a `kind: hook` plugin instance:
-  `{ module: <kind: hook plugin>, settings: {...}, kind?, timeout_ms?, on_error?,
-  on_empty?, prompt?, user?, priority?, at? }`. `module:` names a loaded `kind: hook` plugin by
-  its signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook` transports; a hook
-  is now always a signed plugin). Out-of-process forwarding to an HTTPS sidecar is the first-party
-  `busbar-webrequest` plugin (`settings.url`). Any module ref requires `plugins.enabled: true`
-  and the tarball installed in `plugins.dir`.
+A pool's `hooks:` list therefore holds two kinds of bare name:
+
+- a **built-in ordering strategy**: `weighted` \| `cheapest` \| `fastest` \| `least_busy` \| `usage`
+  (at most one per pool: it sets the base ranking; the default is `weighted`, the zero-cost SWRR
+  baseline);
+- a **defined hook name** — a key of the top-level `hooks:` map. Its `module:` names a loaded
+  `kind: hook` plugin by signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook`
+  transports; a hook is now always a signed plugin), so it requires `plugins.enabled: true` and the
+  tarball installed in `plugins.dir`. Out-of-process forwarding to an HTTPS sidecar is the
+  first-party `busbar-webrequest-hook` plugin (`settings.url`). An unresolvable `module:`, or a
+  reference to a name that no `hooks:` entry defines, is a fail-closed boot error.
 
 ```yaml
 plugins: { enabled: true, dir: /etc/busbar/plugins }
+
+hooks:                                                 # the DEFINITION map (define once)
+  audit:
+    module: busbar-audit-hook
+    kind: tap
+    phase: [request, response]                         # a LIST of stages; omit = all four
+    on_error: nothing
+  pii:
+    module: busbar-webrequest-hook                     # forwards to an HTTPS sidecar
+    settings: { url: "https://sidecar.internal/pii" }
+    groups: [engineering]                              # SCOPE: omit or [] = every caller
+    kind: gate
+    timeout_ms: 5
+    prompt: ro
+    on_error: reject
+  rank:
+    module: busbar-webrequest-hook                     # the SAME module, a second named hook
+    settings: { url: "https://router.internal/rank" }
+    kind: gate
+    timeout_ms: 5
+    on_error: nothing
+
 pools:
+  hooks: [audit]                                       # RESERVED: attaches to EVERY pool
+  upstream_credentials: own                            # RESERVED: the all-pools default
   smart:
-    hooks:
-      - cheapest                                       # base ordering strategy
-      - { module: busbar-webrequest, settings: { url: "https://router.internal/rank" },
-          kind: gate, timeout_ms: 5, on_error: nothing }
+    hooks: [cheapest, pii, rank]                       # base strategy + two gates, BY NAME
     members:
       - model: claude-sonnet-4-5
         weight: 2
@@ -942,36 +964,43 @@ pools:
         weight: 1
         tier: overflow
         tags: ["cheap"]
-
-global_hooks:                                          # fire on EVERY request, ordered
-  - { module: busbar-webrequest, settings: { url: "https://sidecar.internal/pii" },
-      kind: gate, timeout_ms: 5, on_error: reject, prompt: ro }
 ```
+
+**The two reserved keys at the `pools:` level.** `hooks` and `upstream_credentials` are RESERVED: a
+pool may not be named either (a startup error). They carry the all-pools default, and they combine
+with a pool's own value differently, by TYPE:
+
+| Reserved key | Type | Combine rule |
+|---|---|---|
+| `pools.hooks` | LIST | **ADDITIVE**: a pool fires `pools.hooks` ∪ its own `hooks:`. Deduped by name — a hook named in BOTH lists fires exactly ONCE, at its first position. |
+| `pools.upstream_credentials` | SCALAR (`own` \| `passthrough`) | **OVERRIDE**: a pool's own `upstream_credentials:` replaces the all-pools default outright. `own` (the default) sends the configured provider credential upstream; `passthrough` forwards the caller's own. This is where the retired `auth.upstream_credentials` went — whose credential reaches the provider is a ROUTING property. |
 
 **Semantics:**
 
 - The `cheapest` strategy derives each member's cost scalar from the top-level `rate_card`
   (members carry no cost fields).
-- All decision gates (the pool's and any `global_hooks`) fire **concurrently** per request and
-  reconcile deterministically: any `reject` wins (the lowest-`priority` gate's status/message
+- All decision gates (the pool's own and every all-pools attach) fire **concurrently** per request
+  and reconcile deterministically: any `reject` wins (the lowest-`priority` gate's status/message
   surfaces), `restrict`s intersect (an empty intersection applies that gate's `on_empty`,
   fail-closed by default), and with multiple `order`s the last in the chain wins. A restriction
   persists across every failover hop.
 
-**Module-ref typed fields** (alongside the module's opaque `settings`; full model in
+**Hook definition fields** (`hooks.<name>`, alongside the module's opaque `settings`; full model in
 [Hooks](hooks.md)):
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `tap` \| `gate` | `gate` in a pool list, `tap` in `global_hooks` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
-| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `module` | string | **required** | The `kind: hook` plugin backing this named instance, by signed-manifest name/alias. The same module may back several named hooks. |
+| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest-hook`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `groups` | list<string> | `[]` (every caller) | SCOPE: the caller groups this hook fires for. A USER is a leaf group (e.g. `user:bob`); membership walks the [`groups:`](#groups) tree, matching the caller's own group or any ancestor. |
+| `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST** — 1.5.3 generalized the single-valued tap `at:` into it (`route`→`candidate`, `attempt`→`routing`, `completion`→`response`). Omitting `phase:` means exactly those four core stages. |
+| `kind` | `tap` \| `gate` | `gate` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
 | `timeout_ms` | integer | `1` | Hard wall-clock deadline for a gate decision. Raise it when the hook does I/O. On timeout the decision is coerced to `on_error`. |
 | `on_error` | keyword or ref | `nothing` | Fallback when a gate times out / errors / saturates: a bare terminal (`nothing` \| `weighted` \| `reject` \| `first`) or a structured hook reference `{ hook: <name> }` (a chain, proven terminating at boot). A gate's deliberate `reject` reply is a decision, not a failure. |
 | `on_empty` | string | `reject` | A restrict gate's empty-intersection behavior: `reject` (fail closed, 503) or `weighted` (advisory escape). |
 | `prompt` | `no` \| `ro` \| `rw` | `no` | Prompt-content grant: `ro` sends the prompt read-only; `rw` additionally allows a `rewrite` reply. `rw` on a tap is a startup error. |
 | `user` | `no` \| `ro` | `no` | Caller-identity grant: governance key id/name (never the secret) + the body's end-user field. |
 | `priority` | integer | `0` | Chain ordering key: orders the rewrite transform chain and tie-breaks the reconcile. |
-| `at` | string | `request` | TAP observation stage: `request` \| `route` \| `attempt` \| `completion`. Inert on a gate. |
 
 The per-member `tier` and `tags` fields documented in [Members and weights](#members-and-weights)
 feed the ordering strategies and gate candidates. Gate observability: see
@@ -1509,9 +1538,16 @@ pools:
     on_exhausted: reject
 
 # ---------------------------------------------------------------------------
-# Export: the single telemetry-egress surface (traces + per-request logging).
+# Export: the single telemetry-egress surface — metrics, traces and per-request
+# logging are all NAMED instances here (1.5.3 deleted `observability:` and the
+# top-level `metrics:` block). Prometheus is OPT-IN: omit the instance and busbar
+# records nothing and does not mount /metrics. When it IS present,
+# `buffer_seconds` is REQUIRED — how many seconds of observations to retain
+# (quantiles cover that window; _sum and _count stay cumulative), which is what
+# bounds the memory cost of metrics.
 # ---------------------------------------------------------------------------
 export:
+  metrics: { module: prometheus,          settings: { buffer_seconds: 60 } }
   traces:  { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
   req-log: { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
 
@@ -1523,16 +1559,6 @@ advanced:
   response_headers:
     server_timing: true
     route_policy: true
-
-# ---------------------------------------------------------------------------
-# Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
-# nothing and does not mount /metrics. When the block IS present, `buffer_seconds`
-# is REQUIRED (omit the whole block and no buffer_seconds is needed): it is how
-# many seconds of observations to retain (quantiles cover that window; _sum and
-# _count stay cumulative), and it bounds the memory metrics cost.
-# ---------------------------------------------------------------------------
-metrics:
-  buffer_seconds: 60
 ```
 
 Then mint a key for each caller (shown once; bind it to a group):
@@ -1560,7 +1586,8 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
-| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block, `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
+| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block — one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through — `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
+| Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): boot refuses, naming the key AND its 1.5.3 home, with the `busbar --migrate-config` breadcrumb |
 | `path` malformed | `path` does not begin with `/` |
 | Model name reserved | Model named `admin` |
 | `provider` reference missing | `models.<name>.provider` does not name a configured provider |

@@ -2,7 +2,7 @@
 
 Busbar exposes its liveness, per-lane topology, and Prometheus metrics on three endpoints. This page documents each, plus the signals worth alerting on.
 
-Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failover](/docs/failover/) · [Configuration](/docs/configuration/#observability).
+Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failover](/docs/failover/) · [Configuration](/docs/configuration/#export).
 
 ## /healthz
 
@@ -62,13 +62,19 @@ Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same 
 
 ### Metrics are opt-in
 
-Metrics are **off unless you ask for them.** With no `metrics:` block busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all — a scrape of either gets the same 404 as any other unknown path. Opting in is one block, and `buffer_seconds` is **required**:
+Metrics are **off unless you ask for them.** With no `module: prometheus` instance under `export:` busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all — a scrape of either gets the same 404 as any other unknown path. Opting in is one `export:` instance, and `buffer_seconds` is **required**:
 
 ```yaml
-metrics:
-  buffer_seconds: 60       # REQUIRED — how many seconds of observations to retain
-  key_gauge_limit: 2000    # optional (default 2000)
+export:
+  metrics:                      # the INSTANCE NAME — yours to choose
+    module: prometheus
+    settings:
+      buffer_seconds: 60        # REQUIRED — how many seconds of observations to retain
+      key_gauge_limit: 2000     # optional (default 2000)
 ```
+
+(1.5.3 retired the top-level `metrics:` block into this instance; at most ONE `prometheus` instance
+is allowed, since it owns the one well-known `/metrics` route.)
 
 `buffer_seconds` is the retention window. Busbar folds buffered observations into their aggregate form on a timer and drops anything older, so:
 
@@ -76,7 +82,7 @@ metrics:
 * **`_sum` and `_count` are cumulative** and unaffected by the window — totals and rates never lose anything;
 * **memory is bounded by the window, not by uptime.** Retention is one window's traffic, whether or not anything ever scrapes you.
 
-There is no default because the right value is a memory-for-fidelity trade only you can make: every second of buffer holds that second's raw observations in memory (at very high request rates, a few MB per second). Pick the window your dashboards actually query. `buffer_seconds: 0` is rejected at boot — it would retain nothing while still paying the recording cost; omit the whole block instead.
+There is no default because the right value is a memory-for-fidelity trade only you can make: every second of buffer holds that second's raw observations in memory (at very high request rates, a few MB per second). Pick the window your dashboards actually query. `buffer_seconds: 0` is rejected at boot — it would retain nothing while still paying the recording cost; omit the whole instance instead.
 
 `key_gauge_limit` bounds the per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) emitted on a single `/metrics` scrape. A fleet with many virtual keys can otherwise produce one time series per key, unbounded — Prometheus cardinality that never shrinks back down. Busbar emits at most `key_gauge_limit` per-key series per scrape (highest-spend keys first) and logs a warning when it truncates; aggregate totals (`_sum`, `_count`) are never affected, only the per-key breakdown. Raise it if your dashboards need finer per-key visibility than the default gives at your key count; the trade is the same one `buffer_seconds` makes — more fidelity for more memory and scrape payload.
 
@@ -164,7 +170,7 @@ one-line change to that constant — never a per-call-site literal.
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
 filters. Stderr takes `RUST_LOG` (default `info` — hot-path spans off). OTLP floors at
-`DEBUG` unconditionally, specifically so pointing `observability.otlp_endpoint` at a collector gets
+`DEBUG` unconditionally, specifically so pointing an `export:` `module: otlp` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way — set
 `RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on stderr, or configure OTLP to
