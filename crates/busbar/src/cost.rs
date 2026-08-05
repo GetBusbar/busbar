@@ -54,7 +54,8 @@ pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
 /// the construction `project_groups` uses, NOT a prefix test.
 ///
 /// A GROUP NAME MAY CONTAIN `@` (and `#`). Nothing rejects it: `validate_groups` checks
-/// parent-existence / acyclicity / amount > 0, `build_with_group` checks empty + length, and
+/// parent-existence / acyclicity / pool refs (the `amount > 0` rule lives in
+/// `config_validate::validate`, not here), `build_with_group` checks empty + length, and
 /// `sanitize_self_sub` (the SSO auto-provisioning path that mints `user:<sub>` leaves) rejects only
 /// empty / `/` / control characters / the reserved prefixes — an IdP subject is normally an EMAIL,
 /// so `user:alice@corp.com` is the ORDINARY case, not a pathological one. Any code that splits a

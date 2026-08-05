@@ -762,7 +762,8 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
 /// approximated window from LOOSENING the operator's cap.
 ///
 /// Rounds DOWN, never up — rounding up is the loosening direction this whole path exists to
-/// forbid — with a FLOOR OF 1, because `budget: 0` is rejected by `validate_groups` and a migration
+/// forbid — with a FLOOR OF 1, because `budget: 0` is rejected by `config_validate::validate`
+/// (`config_validate/mod.rs`, the `limit.amount == 0` arm, NOT `validate_groups`) and a migration
 /// must not emit a config that refuses to boot. A non-integer / unreadable amount (nothing 1.4.x
 /// could write, but the migrator never panics on a hand-edited document) passes through untouched
 /// rather than being guessed at.
