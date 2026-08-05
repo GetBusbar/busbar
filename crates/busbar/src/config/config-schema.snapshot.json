@@ -759,6 +759,10 @@
           "optional": true,
           "type": "HashMap<String, HookCfg>"
         },
+        "named_maps": {
+          "optional": true,
+          "type": "BTreeMap<String, BTreeMap<String, serde_json::Value>>"
+        },
         "plugin_versions": {
           "optional": true,
           "type": "BTreeMap<String, String>"
