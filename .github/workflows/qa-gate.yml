@@ -9,22 +9,91 @@
 # the other.
 #
 # BRANCH MODEL: `dev` gets only the cheap per-push CI (ci.yml) — push there often. Promoting
-# dev→`qa` is what spends this ~2h, real-money full-plugin gate; it is the pre-release soak. A
-# green qa is what earns a promotion qa→`main`, where tag-on-main.yml auto-cuts the release.
-# This intentionally does NOT run on `dev`, `main`, or PRs — `scripts/release-check.sh` documents
-# itself as a pre-release gate, not a per-commit one (it can take up to ~2 hours). `qa` is where
-# that cost belongs: proving the promoted commit is release-ready before it ever reaches `main`.
+# dev→`qa` is what spends this real-money full-plugin gate; it is the pre-release soak. A green qa
+# is what earns a promotion qa→`main`, where tag-on-main.yml auto-cuts the release. This
+# intentionally does NOT run on `dev`, `main`, or PRs — `scripts/release-check.sh` documents itself
+# as a pre-release gate, not a per-commit one. `qa` is where that cost belongs: proving the promoted
+# commit is release-ready before it ever reaches `main`.
+#
+# ── THIS FILE IS A DISPATCHER, NOT THE GATE ──────────────────────────────────────────────────────
+#
+# `workflow_run` ALWAYS loads the workflow file from the DEFAULT branch. Whatever this file looks
+# like on `main` is what auto-fires, regardless of what is on `qa`. Measured on qa c736177: the
+# auto-fired gate ran ONE job while the whole segmentation umbrella sat unused on `qa`. So a gate
+# improvement could not gate the release that shipped it, and it failed SILENTLY: the run went
+# green, it had just done less than anyone thought.
+#
+# Hence: this file checks out the TRIGGERING SHA and invokes `scripts/qa-gate-run.sh` FROM THAT
+# CHECKOUT. Gate logic rides the commit it gates; change the script on `qa` and the next auto-fired
+# gate runs the new logic with no `main` edit and no dormancy window. What stays here is only what
+# GitHub must read before a checkout exists, or what is structural to the run graph: `on:`,
+# `concurrency`, permissions, env/secrets, `runs-on`, `timeout-minutes`, the `needs`/`if` graph,
+# and the `strategy.matrix` EXPRESSION (its CONTENTS come from the script, as a job output).
+#
+# ── THE SHAPE OF THE RUN, AND WHY ────────────────────────────────────────────────────────────────
+#
+#     build ─┐                      compile ONCE, upload target/ as an artifact
+#     fast ──┼─→ slow (matrix)  ─┐  one leg per live-mock segment, HYDRATES, never rebuilds
+#            └─→ loader        ──┼─→ umbrella (if: !cancelled())
+#                                ┘
+#
+# On a green run wall clock is max(job), not sum(job), so matrix WIDTH and BALANCE are the entire
+# win, and per-job FIXED COST is the entire risk, because it is paid N times. This workspace builds
+# with `lto = "fat"` + `codegen-units = 1`; ten legs each paying that link would make wall clock
+# WORSE than the old sequential gate while looking like progress. `build` pays it once and every leg
+# hydrates from the artifact. See qa-gate-run.sh's `hydrate` for the mtime trap that makes a naive
+# artifact restore a silent no-op, and for why Swatinem/rust-cache alone cannot do this job.
+#
+# `fast` does NOT gate `build`; they are siblings. Serialising a cheap tier in FRONT of the long
+# pole would spend 100% of its duration on every green run and save nothing. But `slow` needs BOTH,
+# which costs zero wall clock for as long as fast < build, while still keeping the real-money legs
+# from starting behind a broken fast tier. That inequality is load-bearing, so `fast` carries a
+# deliberately tight timeout-minutes: if it ever grows into the pole, it fails instead of quietly
+# eating the budget.
+#
+# THE CEILING ON ALL OF THIS is the account-wide concurrent-job cap. If the matrix is wider than the
+# runners available, legs queue and wall clock silently becomes sum-of-batches again. That is why
+# reserved segments get no runner of their own (qa-gate-run.sh reports them inside `fast`) and why
+# legs are spent only on work that actually runs.
+#
+# ── WHAT THIS DOES *NOT* YET BUY, STATED PLAINLY ────────────────────────────────────────────────
+#
+# This change removes ONE pole: the N-times rebuild of the busbar workspace. Two others are still
+# standing, and neither is fixable from this file:
+#
+#   1. release-check.sh does not partition yet. `--segment <id>` is accepted and LABELLED, but the
+#      script still runs its FULL coverage-preserving gate for every label (its own header says so,
+#      with a TODO). So today a fan-out of N segments runs the whole ~2h gate N times in parallel:
+#      wall clock is unchanged, and cost goes up. The fan-out only converts into wall clock once
+#      that per-segment phase partitioning lands. This workflow is built to be READY for it, not to
+#      deliver it alone.
+#   2. The plugin SIBLING workspaces are each built cold, per leg. They are separate workspaces with
+#      separate target dirs, so the build-once artifact cannot help them, and nothing here caches
+#      them. Once (1) lands, `cargo build/test --workspace --release` inside each sibling becomes
+#      the new long pole. The lever is a per-sibling dependency cache in the `slow` leg, keyed by
+#      the checkout dir — which means the matrix needs to know that dir. qa-gate-run.sh's `matrix`
+#      already forwards any extra qa/segments.toml columns through, so a `checkout_dir` field on
+#      the manifest is enough to wire it without reworking anything here.
+#
+# So: do not read a green run of this workflow as "the gate now takes 15 minutes". It takes
+# max(job), and until (1) lands max(job) is still a full release-check.sh.
 name: qa-gate
 
 on:
-  # Runs AFTER ci.yml succeeds, not on every push directly -- this is a real ~2h, real-money e2e
-  # run; no point spending it on a commit that hasn't even cleared the cheaper gate yet. Only
-  # fires when the CI run that just finished was itself triggered by a push to `qa` (see the
-  # `if:` on the job below), and only on conclusion == success.
+  # Runs AFTER ci.yml succeeds, not on every push directly -- this is a real, real-money e2e run; no
+  # point spending it on a commit that hasn't even cleared the cheaper gate yet. Only fires when the
+  # CI run that just finished was itself triggered by a push to `qa` (see the `if:` on the jobs
+  # below), and only on conclusion == success.
   workflow_run:
     workflows: ["CI"]
     types: [completed]
   workflow_dispatch: {}
+
+# NO `permissions:` block, deliberately. The sibling-clone steps authenticate to OTHER GetBusbar
+# repos with `github.token`, and what that token can reach depends on the repo/org default. Pinning
+# it here would be a silent scope change riding along in a wall-clock rewrite, and the failure mode
+# is a warn-and-continue clone that quietly removes a plugin from the gate. Leave the auth surface
+# exactly as the gate that ran before this change had it.
 
 # release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
 #
@@ -39,20 +108,33 @@ concurrency:
   group: qa-gate-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
+env:
+  BUILD_ARTIFACT: qa-gate-target-${{ github.run_id }}
+  TARBALL: /tmp/busbar-target.tzst
+
 jobs:
-  release-check:
-    name: release-check.sh (full plugin gate)
-    # Only run for a REAL CI success on `qa` (never on a failed/cancelled CI run, and never
-    # for CI runs from other branches/PRs) -- workflow_dispatch always runs regardless.
+  # ── fast: cheap tier + the matrix that drives the fan-out. Sibling of `build`, never in front of
+  # it. Also the job that converts qa/segments.toml into strategy.matrix contents, because it has
+  # the triggering SHA checked out and finishes long before anything needs the answer.
+  fast:
+    name: fast tier + matrix
+    # Only run for a REAL CI success on `qa` (never on a failed/cancelled CI run, and never for CI
+    # runs from other branches/PRs) -- workflow_dispatch always runs regardless. Downstream jobs
+    # inherit this decision through `needs` (a skipped dependency skips its dependents), so the
+    # condition is stated on the two root jobs only.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # Deliberately tight. `slow` needs this job, so it is free ONLY while it stays shorter than
+    # `build`. If it grows into the long pole, this timeout makes that a failure, not a silent
+    # regression against the wall-clock budget.
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Checkout busbar
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           path: busbarAI
           # workflow_run doesn't check out the triggering commit by default (it defaults to the
@@ -60,121 +142,172 @@ jobs:
           # to the normal ref resolution on workflow_dispatch (no workflow_run event present).
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
-      # REGISTRY-DRIVEN sibling checkouts: plugins.yaml (via plugin-registry-check.sh --list) is
-      # the single source of truth for which first-party plugin repos exist — this loop clones
-      # every one of them next to busbarAI/, exactly where release-check.sh expects its ../<dir>
-      # sibling checkouts. Adding a plugin = one plugins.yaml entry; no more hand-written per-repo
-      # checkout steps that drift (the 1.5.0 ship found the hand-written list covering 6 of 8).
-      #
-      # Per-entry knobs the old hand-written steps carried now live in the registry:
-      #   - checkout_dir: clone destination when it differs from the repo name. No entry needs it
-      #     today (the last user, the Valkey store, was renamed repo-and-directory in 1.5.3); the
-      #     knob stays for the next repo rename.
-      #   - checkout_ref: non-default branch to clone (headroom-hook pins `dev` — it carries the
-      #     sibling-relative-path dependency fix this build actually needs; mirrors busbar's own
-      #     main/dev split. Formerly a hand-written `ref: dev` here — see plugins.yaml).
-      # A failed clone warns-and-continues (same intent as the old steps' continue-on-error);
-      # release-check.sh itself decides what's fatal (release_gate: required → hard fail there).
-      - name: Checkout all first-party plugin siblings (registry-driven from plugins.yaml)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -u
-          # Capture the feed first (not process substitution into the loop): a registry parse
-          # failure must fail THIS step loudly, never degrade to a silent zero-clone loop.
-          registry="$(./busbarAI/scripts/plugin-registry-check.sh --list)"
-          [ -n "$registry" ] || { echo "empty registry feed" >&2; exit 1; }
-          # feed fields: repo dir alias kind service release_gate gate checkout_ref — this loop
-          # only needs repo, dir, and the ref.
-          while IFS=$'\t' read -r repo dir _ _ _ _ _ ref; do
-            args=(--depth 1)
-            if [ "$ref" != "-" ]; then
-              args+=(--branch "$ref")
-            fi
-            echo "::group::clone GetBusbar/${repo} -> ${dir}$([ "$ref" != "-" ] && echo " (ref: ${ref})")"
-            if ! gh repo clone "GetBusbar/${repo}" "${dir}" -- "${args[@]}"; then
-              echo "::warning::clone of GetBusbar/${repo} failed — release-check.sh will skip or fail its phase"
-            fi
-            echo "::endgroup::"
-          done <<<"$registry"
-          ls -la
-
-      # busbar-admin (busbarctl) is NOT a plugin, so it is not in plugins.yaml — but release-check.sh
-      # runs its integration.sh against the freshly-built busbar (the reverse of the plugin phases,
-      # bidirectional testing). Explicit checkout as a sibling.
-      - name: Checkout busbar-admin (busbarctl — reverse-direction integration)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/busbar-admin
-          path: busbar-admin
-        continue-on-error: true
-
-      - name: Build the store-sqlite-plugin cdylib from the sibling checkout
-        run: cargo build --release -p busbar-store-sqlite-plugin
-        working-directory: store-sqlite
-        continue-on-error: true
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: busbarAI
-
-      - name: Confirm Docker is available (Postgres/Valkey phases need it)
-        run: docker ps
+      # REGISTRY-DRIVEN MATRIX, NO HAND-WRITTEN LEGS. qa/segments.toml is the source of truth;
+      # qa-segments.sh --list already emits it as TSV expressly so CI can build its matrix. This
+      # step turns that into JSON on a job output. Repartitioning the manifest (splitting `plugins`
+      # into one segment per plugin repo, arming a reserved slot, adding a segment) therefore needs
+      # ZERO edits here: this workflow only ever names `needs.fast.outputs.matrix`.
+      - id: matrix
+        name: Build the fan-out matrix from qa/segments.toml
         working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh matrix
 
-      - name: Run the real end-to-end release gate
-        run: ./scripts/release-check.sh
+      - name: Fast-tier segments + reserved-slot report
         working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh fast
 
-      # hook-test-plugin and secret-example-plugin are hermetic in-tree dev-fixture cdylibs
-      # plugin-loader's own tests dlopen (hook_plugin_path()/secret_example_plugin_path()) — but
-      # neither is a declared Cargo dependency of busbar-plugin-loader (they're only ever loaded at
-      # runtime via dlopen from inside a test), so the SCOPED `cargo test -p busbar-plugin-loader`
-      # step below never builds them on its own, no matter what profile-dir path that step's own
-      # cdylib-discovery helpers check. Build them explicitly first; both crates hard-panic (via
-      # their own path-discovery helpers) under CI if this step is ever skipped or reordered, so a
-      # future regression here fails loud rather than silently losing this coverage again.
-      - name: Build the in-tree hook-test-plugin and secret-example-plugin cdylibs
-        run: cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
-        working-directory: busbarAI
-
-      - name: Run the loader-mechanism tests against the real sibling-built store-sqlite-plugin
-        env:
-          DEV_GATE: "1"
-        run: cargo test --release -p busbar-plugin-loader
-        working-directory: busbarAI
-
-  # QA-GATE SEGMENTATION umbrella (1.5.3 unit G; design §6 + qa-gate-test-catalog-1.5.3.md §1/§3).
-  # qa-gate is a REGISTRY-DRIVEN umbrella of independent segments — qa/segments.toml is the single
-  # source of truth (mirroring how the release-check job above loops the plugins.yaml feed). This job
-  # introduces the umbrella WITHOUT disturbing the proven ~2h release-check job above: it self-tests
-  # the manifest shape, then fans out the FAST tier (the catalog's per-cadence split: fast segments
-  # are cheap in-process/fixture/script; the live-mock segments — core-data-plane + plugins — are the
-  # PRESERVED coverage the release-check job above already runs in full, so no coverage is lost and
-  # the real-money 2h gate is not doubled).
-  #
-  # SELF-MEASURING: `--run` records each segment's wall-clock and prints a timing summary SORTED
-  # LONGEST-FIRST, so the very first qa run makes the long pole (Amdahl) obvious. The live-mock pole
-  # (release-check ~2h) shows up as that job's own duration above; when we shard it per-segment/
-  # per-plugin (a documented additive refinement to release-check.sh's --segment), those legs join
-  # this summary — this instrumentation is exactly what tells us whether that sharding is worth it.
-  qa-segmentation:
-    name: qa-gate segmentation umbrella (fast tier + timing)
+  # ── build: the build-once stage. The single most important job in this graph (see the fixed-cost
+  # note in the header). Everything downstream hydrates its target/ from this artifact.
+  build:
+    name: build once (shared by every leg)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
+          path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-      # Prove the umbrella's shape before running anything (segmentation self-test).
-      - name: Segmentation self-test
-        run: scripts/qa-segments.sh --selftest
-      # Fan out the fast-tier active segments (export/hook-bindings scaffold PASS(pending) until unit
-      # D's admin API lands; config-stability runs the real gate; reserved smart-router PASS/SKIP),
-      # printing the longest-first timing summary.
-      - name: Run fast-tier segments (+ timing summary)
-        run: scripts/qa-segments.sh --run --tier fast
+      - uses: dtolnay/rust-toolchain@stable
+      # rust-cache still earns its place HERE: it makes this one build faster run-over-run by
+      # restoring the dependency graph. It cannot replace the artifact below, because it
+      # deliberately drops workspace-member artifacts, and `busbar` IS where fat LTO is paid.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: busbarAI
+
+      - name: Build once + prune + pack
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh build "$TARBALL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: ${{ env.TARBALL }}
+          # This tarball exists only to be handed to the sibling jobs in THIS run.
+          retention-days: 1
+          compression-level: 0 # already zstd-compressed; re-zipping it just burns critical path
+
+  # ── slow: the live-mock fan-out. One independently-reported leg per active live-mock segment.
+  # Matrix CONTENTS come entirely from qa/segments.toml via the `fast` job's output.
+  slow:
+    name: ${{ matrix.segment.id }}
+    needs: [build, fast]
+    runs-on: ubuntu-latest
+    # Still generous, on purpose. release-check.sh today runs its FULL coverage-preserving gate for
+    # any --segment label; per-segment PHASE PARTITIONING is the documented additive refinement that
+    # actually converts this fan-out into wall clock. Until that lands, a leg can still be long, and
+    # a too-tight timeout here would turn a known-slow gate red rather than slow.
+    timeout-minutes: 180
+    strategy:
+      # NO cross-segment masking: every segment runs and reports independently, which is the
+      # umbrella's stated design property (qa/segments.toml, "green-on-completion"). One red plugin
+      # must not hide the state of the other nine.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.fast.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: busbarAI
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: /tmp
+      - name: Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh hydrate "$TARBALL"
+
+      - name: Sibling checkouts (registry-driven from plugins.yaml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh siblings
+
+      - name: Confirm Docker is available (Postgres/Valkey/MySQL/Vault phases need it)
+        working-directory: busbarAI
+        run: docker ps
+
+      - name: Run segment ${{ matrix.segment.id }}
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh segment "${{ matrix.segment.id }}"
+
+  # ── loader: coverage that lives in NEITHER release-check.sh NOR the segment manifest. These steps
+  # were inline in the old single release-check job; folding that job into the fan-out would have
+  # silently dropped them. Coverage is the constraint, wall clock only the objective, so they keep
+  # their own job, and cheap, because it hydrates the same build-once artifact.
+  loader:
+    name: plugin-loader mechanism tests
+    needs: [build, fast]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: busbarAI
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: /tmp
+      - name: Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh hydrate "$TARBALL"
+
+      - name: Sibling checkouts (registry-driven from plugins.yaml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh siblings
+
+      - name: Loader-mechanism tests against the real sibling-built store-sqlite-plugin
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh loader
+
+  # ── umbrella: the single required status. It must report even when a leg FAILED, so it cannot use
+  # the default `if` (which requires every `needs` to have succeeded). `!cancelled()` rather than
+  # `always()`: with cancel-in-progress a superseded run would otherwise end in a RED umbrella
+  # instead of an honest `cancelled`, and a red gate nobody should act on is its own kind of noise.
+  # It also has to RE-STATE the trigger condition, because `!cancelled()` breaks the `needs`-skip
+  # cascade: without it this job would run, and pass over a graph of skipped jobs, on every
+  # dev/main CI completion that the root jobs correctly skip.
+  umbrella:
+    name: qa-gate umbrella
+    needs: [build, fast, slow, loader]
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # `needs.slow.result` collapses the WHOLE matrix to one value, so this is red if any leg is.
+      # 'skipped' is treated as red on purpose: with fail-fast: false the only way a leg skips is a
+      # dependency failure or a cancel, and a gate that reports green over a tier that never ran is
+      # exactly the silent-dormancy failure this rewrite exists to kill.
+      - name: Assert every tier reported green
+        run: |
+          set -u
+          fails=0
+          check() {
+            printf '  %-10s %s\n' "$1" "$2"
+            [ "$2" = "success" ] || fails=$((fails+1))
+          }
+          echo "qa-gate tier results:"
+          check build  "${{ needs.build.result }}"
+          check fast   "${{ needs.fast.result }}"
+          check slow   "${{ needs.slow.result }}"
+          check loader "${{ needs.loader.result }}"
+          if [ "$fails" -ne 0 ]; then
+            echo "qa-gate umbrella: RED ($fails tier(s) not green). DO NOT PROMOTE qa→main" >&2
+            exit 1
+          fi
+          echo "qa-gate umbrella: GREEN"
