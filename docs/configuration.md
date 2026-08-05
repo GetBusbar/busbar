@@ -287,7 +287,9 @@ identity-providers:
   ad:
     module: ad                                            # a `kind: auth` plugin
     settings: { server: "ldaps://corp", base_dn: "dc=corp" }
-    max_admin_scope: none                                 # PER-PROVIDER admin ceiling
+    # max_admin_scope:                                    # PER-PROVIDER admin ceiling:
+    #                                                     # `read-only` | `full` ONLY.
+    #                                                     # OMITTED = read-only (most restrictive)
 
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
@@ -312,7 +314,7 @@ auth:
 |---|---|---|---|---|
 | `module` | string | **yes** | — | Which `kind: auth` plugin (or built-in) backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings) — the NAME is the instance. |
 | `settings` | map | no | `{}` | The module's own opaque config, pushed verbatim (SecretRef-typed values resolve first). |
-| `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants: `none` \| `read-only` \| `full`. Omitted = the MOST RESTRICTIVE default; the built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. |
+| `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants. The accepted tokens are exactly `read-only` \| `full`; any other value (including `none`) is an unknown scope token and fails `--validate`/boot. OMIT the key to get the MOST RESTRICTIVE default (`read-only`) — there is no lower ceiling to write. The built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. To give a provider NO admin authority at all, leave this omitted and grant no `admin_scope` under its `role_bindings`. |
 | `token` | secret reference | no | none | The operator ADMIN credential — only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
 | `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). |
 
@@ -353,7 +355,7 @@ still hold independent grants.
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling reduces a `full` grant to `read-only`; a `none` ceiling — the recommended posture for an external IdP — reduces it to nothing). |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting provider's `max_admin_scope` ceiling caps it (a `read-only` ceiling — the default, and the recommended posture for an external IdP — reduces a `full` grant to `read-only`). Omitting `admin_scope` here is how a role gets no admin authority at all. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an identity provider named in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
@@ -464,7 +466,8 @@ same app object, and steps 4 and 5 below live on **different** blades. Follow it
          role_claim: roles                                              # step 4: app roles
        browser_login:
          client_secret: { env: OIDC_CLIENT_SECRET }                     # step 2: secret Value
-       max_admin_scope: none                                            # no admin authority via SSO
+       # max_admin_scope omitted ⇒ read-only, the most restrictive ceiling; with no
+       # `admin_scope` in the role_bindings below, SSO grants no admin authority at all.
    auth:
      signing_key: { file: /run/secrets/busbar-signing.key }
      chain: [keys, oidc]                                                # bare provider NAMES

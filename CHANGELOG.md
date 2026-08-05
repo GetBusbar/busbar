@@ -31,6 +31,24 @@ item under **Changed**.
   One generic, section-parameterized handler serves all of it, so the `tools:` (1.5.4 MCP) and
   `agents:` (1.5.6 A2A) registries get the identical surface additively, with no breaking change.
 
+- **`config:` — a top-level block that makes config mutability EXPLICIT.** `config.locked` (refuse
+  every config-mutating admin call) plus a pluggable overlay backend (`config.overlay.file`,
+  defaulting to a file beside `config.yaml`). The default posture is DURABLE: mutable, with a writable
+  file overlay, so an admin-API mutation survives a restart out of the box with no extra
+  configuration. A boot invariant enforces the pair — `locked` XOR a writable overlay — so a mutable
+  config with nowhere to persist refuses to boot with an actionable message (name a writable overlay,
+  or set `config.locked: true`) rather than accepting mutations it will silently lose on restart. The
+  read-only config directory is the case this was written for.
+
+- **Plugins can register HTTP endpoints.** A plugin implementing `handle_http` serves paths under its
+  own confined namespace; a collision between two plugins is a boot error rather than a
+  last-writer-wins surprise, and scrape-time endpoints dispatch on the same seam.
+
+- **An overlay named-map entry that no longer parses is now VISIBLE.** `NamedDefView.unparseable`
+  (additive) surfaces it through the admin read, derived at READ time with the same parse the applier
+  uses, so what you see is exactly the set the applier drops. Previously such an entry was logged once
+  at boot and then invisible forever. Nothing is auto-deleted.
+
 ### Changed
 
 - **BREAKING (config + artifact): the first-party Redis-protocol store plugin is now Valkey.** The
@@ -47,6 +65,27 @@ item under **Changed**.
   floor), and an old `busbar-store-redis` tarball left in `plugins.dir` alongside the new one does
   not conflict with it (different name, different alias) — it simply sits there inert unless a config
   still names it. Delete it.
+- **BREAKING (config): `hooks:` — define a hook once, attach it by bare name.** `hooks:` is now a
+  top-level named-definition map (`name -> {module, settings, groups, phase, kind, prompt,
+  on_error}`), and the NAME is the instance: the same module can back several hooks that differ by
+  scope or settings (`pii-eng` vs `pii-all`). Attachment moved to bare-name lists — the reserved
+  `pools.hooks:` all-pools attach plus each pool's own `hooks:`, combined ADDITIVELY (a hook named in
+  both fires once, at its section-level position). `global_hooks:` and the inline hook-instance form
+  are REMOVED. A hook definition also gains `groups:` (narrow it to callers in those groups and their
+  descendants; omitted or `[]` = all callers) and a LIST-valued `phase:` that generalizes the tap's
+  old single-valued `at:`. Only which hooks are SELECTED changed; the firing mechanics are untouched.
+  A pool may not be named `hooks`. **Migration:** `busbar --migrate-config` lifts the 1.x `hooks:`
+  registry into named definitions, turns `global_hooks:` into the reserved `pools.hooks:` list, and
+  rewrites every inline pool instance into a definition plus a bare-name reference; it is idempotent,
+  and the ambiguous top-level `hooks:` key is disambiguated BY SHAPE, so a 1.x registry still loud-fails
+  rather than being mistaken for a definition map.
+- **BREAKING (config): the hook tap stage vocabulary is renamed `request` / `candidate` / `routing` /
+  `response`.** The old tap `at: route` / `at: attempt` / `at: completion` spellings are gone, so there
+  is ONE phase vocabulary across taps, gates, and the observability design. This is a HARD rename with
+  no serde aliases: an old value fails at config parse with a message naming both the old and the new
+  value and pointing at the migrator. **Migration:** `busbar --migrate-config` rewrites the old `at:`
+  strings in `global_hooks` and in every pool's hook list. The admin `HookRead.at` description and the
+  committed `openapi.json` were regenerated to match.
 - **BREAKING (config): `identity-providers:` — define an identity provider once, reference it by bare
   name.** A new top-level named-definition map (`name -> {module, settings, max_admin_scope, token,
   browser_login}`); `auth.chain:` and `auth.admin_auth:` are now lists of bare NAMES referencing it.
@@ -85,6 +124,29 @@ item under **Changed**.
   all-pools default, with a per-pool `pools.<p>.upstream_credentials` override. Whose credential
   reaches the upstream is a routing property, not an inbound-auth one. Scalar combine semantics: a
   pool's value REPLACES the section default. **Migration:** handled by `--migrate-config`.
+- **BREAKING (config): every busbar-injected response header is now an opt-in
+  `advanced.response_headers.*` toggle, default OFF.** A default deployment is header-invisible.
+  `observability.emit_server_timing` is retired — `busbar;dur` is now
+  `advanced.response_headers.server_timing`, and the old key is a boot error. The `x-busbar-route-*`
+  headers are likewise gated. The middleware is COMPOSITION-gated, installed only when something is
+  enabled, so a deployment with the default posture pays no per-request cost for the machinery at
+  all. A lint (`scripts/response-header-lint.sh`, wired into CI) fails the build on any ungated
+  header emission, and `docs/observability.md#response-headers` is the canonical list.
+  **Migration:** handled by `--migrate-config`.
+- **Operational configuration moved OUT of environment variables and INTO `config.yaml`,** so a
+  deployment is described by one file rather than by a file plus a set of env vars the file never
+  mentions: `BUSBAR_PROVIDERS` → `providers_file`, `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`,
+  `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` →
+  `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` →
+  `advanced.upstream_h2_prior_knowledge`. Each old variable still works for one release as a
+  deprecation fallback; the config key wins where both are set. `BUSBAR_CONFIG` itself is unchanged —
+  something has to say where the file is.
+- **Admin config mutation is DURABLE BY DEFAULT.** With the new `config:` block's default file
+  overlay, a mutation made through the admin API is persisted and survives a restart without any
+  further setup. The `persist` request field is now inert — durability is a property of the
+  deployment's overlay, not of the individual call — and its `openapi.json` description, doc comment
+  and `docs/admin-api.md` row were corrected to say so rather than continuing to describe a knob that
+  does nothing.
 - **1.5.3 FREEZE (forward-compat).** 1.5.3 is the break-once config release; these semantics are now
   pinned by tests so a later release cannot silently redefine them:
   - the hook-name word space (`RESERVED_HOOK_NAMES` ∪ the bare pool-strategy keywords) is CLOSED —
@@ -106,6 +168,117 @@ item under **Changed**.
 - **Config-facing naming: `module:` everywhere.** The admin hooks API's `plugin:` field is now
   `module:` on the wire, matching `hooks.<n>.module` / `identity-providers.<n>.module` /
   `export.<n>.module` / `store.module`. `plugin` is still accepted on read for overlay back-compat.
+
+### Fixed
+
+- **Admin reads projected module `settings:` bags VERBATIM, values and all.** `GET
+  /identity-providers/{name}`, `GET /export/{name}`, `GET /hooks/{name}/status` (which served the
+  hook's own echo of the SECRET-RESOLVED bag) and `GET /config/settings` (which served
+  `store.settings`) all returned whatever the operator had put in those bags — an OIDC
+  `client_secret`, a webhook `auth_header`, a store password — even though the view's own doc claimed
+  secrets were never projected. All four now project `settings_keys`: sorted key NAMES, no values, so
+  "what is configured" introspection survives with nothing for a value to ride out on. Hook settings
+  drift is likewise reported as a boolean plus the drifting KEY NAMES. A lint
+  (`scripts/settings-leak-lint.sh`, wired into CI) now fails the build on any new admin-facing raw
+  settings bag, allowlisted only per declaration with a written reason.
+- **`POST /admin/auth/cache/flush` could return 200 having revoked nothing.** The credential cache had
+  no invalidation epoch, so an authentication already in flight across the flush re-inserted its
+  PRE-flush verdict afterwards and the flushed entry kept resolving — the window being however long
+  the identity module's own network round-trip takes, which for the shipped OIDC module is a blocking
+  JWKS fetch. A cache-generation token is now captured before the module call and re-checked on
+  insert, and the token is a distinct type only the cache can mint, so a new call site cannot insert
+  without one.
+- **`DELETE /keys/{id}` reported failure while the key kept working.** The delete tombstoned durably
+  and then called a full-table `refresh()`; a transient store blip there was returned as a 500, but
+  `refresh()` is what stops the credential resolving, so the caller saw an error and reasonably
+  concluded nothing had happened while the key went on authenticating. The single cache entry is now
+  evicted FIRST and unconditionally, and a refresh failure is reported as degraded-but-APPLIED. Key
+  rotation had the identical shape — the store was already rotated (old credential durably dead) but
+  the admin got a 500 and no new secret; it now says so, and names re-rotate rather than retry as the
+  correct next action.
+- **An exhausted all-time budget could start admitting again.** The sweep that reclaims unbacked
+  budget cells recovered a group name by splitting the bucket id on `@`, citing an invariant that does
+  not hold — an SSO email subject legitimately contains one. An email-named group's all-time cell was
+  therefore judged unbacked and swept, and because hydration is boot-only, its lifetime spend reset to
+  0 on the next read. The check is now a set membership against `capped_bucket_ids`, built where the
+  buckets themselves are emitted, so it cannot disagree with the model the engine enforces against,
+  and no delimiter assumption survives on that path.
+- **Deleting one principal reclaimed another's budget cells.** Reclamation matched a bare
+  `group:<name>@` PREFIX, so deleting `user:alice` also reclaimed `user:alice@corp.com`. Now an exact
+  match anchored at both ends against the limit-window vocabulary. Separately, group budget cells were
+  exempt from the sweep unconditionally AND `delete_group` never reclaimed them (its sibling
+  `delete_key` did) — so under SSO auto-provisioning every subject ever seen left a permanently
+  resident, admin-invisible cell. The exemption is now narrowed to cells whose group still exists and
+  still carries a cap, and deletion reclaims.
+- **The admin API accepted config the file parser rejects.** A `PUT /api/v1/admin/export/{name}` (or a
+  `PATCH …/settings`) carrying an unknown field was accepted, persisted verbatim to the overlay, and
+  then silently DROPPED at rebuild with only a log line — while the code's own doc promised "a typo is
+  the same loud reject the file would give". There is now exactly ONE parse site: the section owns its
+  typed `deny_unknown_fields` parse and it runs inside the transaction, before anything is persisted
+  or swapped, so the two surfaces cannot disagree about what the grammar is.
+- **An explicit `max_admin_scope: full` was silently ignored.** The per-provider ceiling map was BUILT
+  keyed by the backing plugin's module name but READ by provider name, so an operator's explicit
+  ceiling never matched and the lookup fell through to the default (fail-closed to `read-only`);
+  worse, a config in which one provider's NAME equals another's MODULE could hand out the wrong
+  provider's ceiling. It is now keyed by provider name throughout, with coverage for name ≠ module and
+  for the collision — every pre-existing test hand-injected name == module, which is why the suite
+  could not see it.
+- **`--migrate-config` could silently lose what the operator wrote.** Six ways, all fixed: a
+  non-Mapping `auth:` block (`auth: null`, `auth: []` — real hand-edited shapes) was removed outright,
+  leaving the migrated document with no `auth:` and no ledger entry; the intended `observability:`
+  deletion happened without being recorded in the change ledger; the identity-provider dedupe keyed
+  only on MODULE and merged everything EXCEPT `settings`, so one module used on both chains with
+  different settings lost the second plane's (admins would have authenticated against the wrong
+  issuer); a pool written `hooks: baa-gate` (a scalar where a list was expected) migrated to a pool
+  with NO hooks and still PASSED `--validate`, because an absent `hooks:` is the legal default, so a
+  rejecting compliance gate shipped silently gone; an unrecognized 1.4.x `budget_period` fell through
+  to the ALL-TIME window, turning a recurring cap into a lifetime one (`weekly` is a period the tree
+  itself names); and a `yearly` budget amount was carried onto the `month` window unchanged, a silent
+  12× increase. A malformed value now keeps its position and gets a TODO naming the shape, the
+  key-removal step confirms the shape BEFORE removing, absent and malformed are distinct cases the
+  compiler forces you to handle, unmappable periods approximate to the longest ROLLING window and say
+  so, and a rescaled budget rounds DOWN with a floor of 1.
+- **`config.locked: true` was not actually enforced on two endpoints.** `PUT /admin-auth` and `POST
+  /config/apply` skipped the locked refusal every other config-mutating handler applies, contradicting
+  the documented "every config-mutating admin call is refused" invariant. Both now refuse.
+- **Persist paths returned a lying `Ok` when there was nowhere to persist.** `clear_section` and the
+  plugin-version persist returned success on a `None` overlay, as `persist_root`/`persist`/
+  `persist_groups` also did; every one of them now errors with the no-writable-overlay message, and a
+  locked config refuses the mutation up front.
+- **A durable-by-default deployment could refuse to boot in a perfectly writable directory.** The
+  overlay writability probe's no-directory-component branch tried to open a not-yet-existing bare
+  overlay path WITHOUT create, so running with a bare `BUSBAR_CONFIG=config.yaml` from the config
+  directory was reported non-writable. An empty parent is now treated as the cwd and uses the same
+  create-then-remove probe as the directory branch; the probe filename also carries a process-global
+  nonce alongside the pid so concurrent probes sharing a cwd cannot collide.
+- **`GET /config/settings` did a synchronous overlay file read on the async reactor** on every call —
+  routine under durable-by-default. Moved onto `spawn_blocking` with the tracing dispatcher
+  propagated so the endpoint-attributed warning survives, and a join failure is now a 500 rather than
+  an `unwrap_or_default()` that fabricated a "no overrides" 200.
+- **Two export sinks were unbounded or wrongly shared.** The `request-log-file` exporter spawned one
+  blocking append per request per sink with NO cap, so a stalled mount accumulated tasks and owned
+  buffers without bound; it now takes a slot from its own admission gate and sheds, counted, matching
+  the webhook exporter. And every named `request-log-webhook` instance shared ONE gate sized to the
+  MAX of their configured caps, so a slow sink could consume permits an operator had deliberately
+  capped low on another; each named instance now owns its own gate at its own size.
+- **Reading hook settings drift resolved secret references** — blocking FFI on a polled async admin
+  GET — and, because a resolved value was compared against an unresolved one, a hook with any secret
+  reference in its settings reported drift on every poll forever. Drift is now classified by SHAPE,
+  sharing one classifier with the configure push so the read path and the push cannot disagree about
+  what a reference is; the function no longer takes the handle that made resolution possible.
+- **`advanced.worker_threads: 0` was silently dropped** instead of being diagnosed, unlike the
+  equivalent environment variable, which validated it. It is now warned about consistently.
+- **The plugin ABI baited an out-of-bounds read.** `busbar_plugin_kind()` returns a pointer with no length
+  and the loader reads it as a C string, while `plugin-abi` shipped `kind::*` constants that were NOT
+  NUL-terminated — exactly what a hand-written plugin would naturally return, and inches from
+  `symbol::*` constants that got the terminator right. Added `kind::*_NUL` siblings and corrected the
+  function-pointer doc, which listed a stale set of plugin kinds and omitted `export`.
+- **Documentation that contradicted the code.** The hook `phase:` field doc said an omitted `phase:`
+  meant request-only, while the code and the 1.5.3 freeze lock both say the core stages; the doc is
+  corrected and the behavior is not. `RootSettings`' doc enumerated a retired `metrics` field — rather
+  than spot-fix it, a test now parses the struct's real fields and requires every backticked name in
+  that sentence to exist. The `--help` default for `BUSBAR_PROVIDERS` and a stale
+  `BUSBAR_CONFIG_OVERLAY` group-persistence note were also corrected.
 
 ## [1.5.2], 2026-08-02
 

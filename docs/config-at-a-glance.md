@@ -66,7 +66,8 @@ identity-providers:             # DEFINE each IdP ONCE; every chain references i
   oidc:
     module: oidc                # a kind:auth plugin
     settings: { issuer: "https://login.example/" }
-    max_admin_scope: none       # per-provider ADMIN ceiling; omitted = read-only (most restrictive)
+    # max_admin_scope:          # per-provider ADMIN ceiling: `read-only` | `full` ONLY.
+    #                           # OMITTED = read-only (the most restrictive default)
 
 auth:
   chain: [keys, oidc]           # ordered DATA-PLANE auth, as bare PROVIDER NAMES.

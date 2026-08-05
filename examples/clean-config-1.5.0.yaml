@@ -30,7 +30,8 @@ identity-providers:
   # corp-ad:
   #   module: ad                                             # a `kind: auth` plugin
   #   settings: { server: "ldaps://corp", base_dn: "dc=corp" }
-  #   max_admin_scope: none                                  # omitted = read-only (most restrictive)
+  #   max_admin_scope: read-only                             # `read-only` | `full` ONLY; OMIT it
+  #                                                          # for read-only (most restrictive)
   #   browser_login: { client_id: busbar-web }               # presence ⇒ a hosted-login button
 
 # ── AUTH: identity (roles) + signed keys ──
