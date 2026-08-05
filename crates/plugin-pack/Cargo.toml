@@ -27,4 +27,4 @@ serde_json = "1"
 # document at PACK time, not at UI-render time on some operator's machine. Tooling-only (this
 # crate never ships in the engine binary), so a full validator dependency here costs nothing at
 # runtime.
-jsonschema = "0.30"
+jsonschema = "0.49"
