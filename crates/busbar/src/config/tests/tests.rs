@@ -3323,6 +3323,34 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Routing));
 }
 
+/// AUDIT MED-2 — THE `phase:` FIELD DOC MUST NOT CONTRADICT THE A3 FREEZE. The field doc said an
+/// omitted `phase:`/`at:` falls back to `request`, while `fires_at_stage` (and the A3 doc on
+/// `CORE_HOOK_PHASES`, and the test above) say it fires at ALL FOUR core stages. A3 is the frozen
+/// semantic, so the DOC was the defect. Read as a source assertion because a doc comment is exactly
+/// the thing no runtime assertion can reach — and a wrong doc on a FROZEN semantic is what an
+/// operator (and the next reader of this file) actually acts on.
+///
+/// RED-BEFORE-GREEN: the pre-fix file contains the contradicting sentence this test rejects.
+#[test]
+fn the_phase_field_doc_agrees_with_the_a3_freeze() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/mod.rs"))
+        .expect("this crate's config/mod.rs is readable");
+    assert!(
+        !src.contains("falls back to `at` (or `request` when that is also"),
+        "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \
+         `fires_at_stage` fires at all four CORE_HOOK_PHASES and A3 froze that"
+    );
+    // And the doc positively states the frozen answer, so the next reader is not left guessing.
+    let phase_doc_start = src
+        .find("1.5.3 named-hook PHASE set")
+        .expect("the `phase:` field doc exists");
+    let phase_doc = &src[phase_doc_start..phase_doc_start + 700];
+    assert!(
+        phase_doc.contains("FOUR CORE STAGES") && phase_doc.contains("A3"),
+        "the `phase:` field doc must name the frozen A3 answer for an omitted phase+at"
+    );
+}
+
 /// FREEZE BLOCKER A4 — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
 /// pool's own `hooks:` fires ONCE, at its FIRST (section-level) position.
 ///

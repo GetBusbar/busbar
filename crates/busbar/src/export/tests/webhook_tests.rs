@@ -12,6 +12,11 @@ use super::*;
 /// [`Target`] rather than read from a process-global, so it is an argument here.
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// A stand-in per-instance in-flight delivery cap. 1.5.3 + audit MED-5: the cap is carried on each
+/// named instance's [`Target`] (one `AdmissionGate` PER INSTANCE, sized to that instance's own
+/// `settings.max_inflight_deliveries`), so it too is an argument here.
+const TEST_MAX_INFLIGHT: usize = 4;
+
 /// The SSRF guard + auth-header wiring is relocated INTO the exporter: [`push_target`] accepts a
 /// valid external `https://` target, REJECTS an internal (cloud-metadata) one via the reused
 /// [`crate::observability::validate_webhook_url`], and carries a generic-webhook auth header onto the
@@ -28,6 +33,7 @@ fn push_target_validates_and_carries_auth_header() {
         "https://logs.example.com/busbar",
         None,
         TEST_TIMEOUT,
+        TEST_MAX_INFLIGHT,
     );
     assert_eq!(
         targets.len(),
@@ -43,6 +49,7 @@ fn push_target_validates_and_carries_auth_header() {
         "https://169.254.169.254/latest/meta-data/",
         None,
         TEST_TIMEOUT,
+        TEST_MAX_INFLIGHT,
     );
     assert_eq!(
         targets.len(),
@@ -56,6 +63,7 @@ fn push_target_validates_and_carries_auth_header() {
         "http://hook.example.com/log",
         None,
         TEST_TIMEOUT,
+        TEST_MAX_INFLIGHT,
     );
     assert_eq!(targets.len(), 1, "the https-only guard rejects plaintext");
 
@@ -65,6 +73,7 @@ fn push_target_validates_and_carries_auth_header() {
         "https://hook.example.com/events",
         Some(("Authorization".to_string(), "Bearer sekret".to_string())),
         TEST_TIMEOUT,
+        TEST_MAX_INFLIGHT,
     );
     assert_eq!(targets.len(), 2);
     let (name, value) = targets[1].auth.as_ref().expect("auth header carried");
@@ -150,27 +159,89 @@ fn build_request_log_shape() {
     assert_eq!(p["latency_ms"], 42_u64);
 }
 
-/// Delivering with NO webhook configured is a harmless no-op (no panic, no spawn leak) — the
-/// allocation-guarded default path.
+/// Delivering with NO webhook configured is a harmless no-op — the allocation-guarded default path
+/// EVERY request-finish takes on an unconfigured deployment.
+///
+/// AUDIT MED-3: this test used to call `deliver_logs` and assert NOTHING, so the no-op it claims to
+/// prove was unmeasured — deleting the `TARGETS` guard left it green. The no-op is now asserted on
+/// what it OBSERVABLY means: no webhook is configured, and the call spawns NO delivery task. Neuter
+/// the guard (make the unset `TARGETS` read fall through to a delivery, e.g. via `.expect`) and this
+/// test fails instead of passing.
 #[tokio::test]
 async fn deliver_logs_is_noop_when_unconfigured() {
-    // TARGETS is an unset process-global here (no `configure` with a valid URL ran), so this returns
-    // immediately.
+    // The precondition this test measures against: TARGETS is an unset process-global (no
+    // `configure` with a valid URL runs anywhere in this binary).
+    assert!(
+        !request_log_configured(),
+        "this test measures the UNCONFIGURED path; something configured a webhook sink"
+    );
+    let rt = tokio::runtime::Handle::current();
+    let tasks_before = rt.metrics().num_alive_tasks();
+
     deliver_logs(crate::export::build_request_log(0, "openai", "p", "ok", 1));
+
+    // Yield once so a spawned task would have been polled (and, if it completed, still counted at
+    // spawn time — `num_alive_tasks` rises the moment `tokio::spawn` runs).
+    tokio::task::yield_now().await;
+    assert_eq!(
+        rt.metrics().num_alive_tasks(),
+        tasks_before,
+        "an unconfigured deliver_logs must not spawn a delivery task"
+    );
 }
 
-/// The in-flight delivery limiter returns its slot on permit Drop (relocated `AdmissionGate` gate).
+/// AUDIT MED-5 — ONE ADMISSION GATE PER NAMED INSTANCE, sized to THAT instance's own configured cap.
+/// Two named webhook sinks (the documented "app logs + SIEM" shape) are two independent delivery
+/// budgets: a stalled SIEM must not consume the permits an operator capped low on the fast sink, and
+/// the low cap must actually be enforced on the instance that declares it.
+///
+/// RED-BEFORE-GREEN: pre-fix there was ONE process-global `webhook_inflight()` gate, sized (via
+/// `LimitsResolved`) to the MAXIMUM `max_inflight_deliveries` across instances — so `Target` had no
+/// `gate` for this test to reach at all, and the cap-1 sink below was in fact admitting 3.
 #[tokio::test]
-async fn inflight_guard_releases_slot_on_drop() {
-    let before = webhook_inflight().available_permits();
-    {
-        let _permit = webhook_inflight()
-            .try_enter()
-            .expect("a slot should be free");
-    }
-    assert_eq!(
-        webhook_inflight().available_permits(),
-        before,
-        "dropping the owned permit must return the slot"
+async fn each_webhook_instance_gets_its_own_admission_gate() {
+    let mut targets = Vec::new();
+    push_target(
+        &mut targets,
+        "https://fast.example.com/log",
+        None,
+        TEST_TIMEOUT,
+        1,
     );
+    push_target(
+        &mut targets,
+        "https://siem.example.com/log",
+        None,
+        TEST_TIMEOUT,
+        3,
+    );
+    assert_eq!(targets.len(), 2);
+
+    // Each gate is sized to ITS OWN instance's cap, not to the max across instances.
+    assert_eq!(targets[0].gate.available_permits(), 1);
+    assert_eq!(targets[1].gate.available_permits(), 3);
+
+    // Saturating the slow sink leaves the fast sink's budget untouched (no cross-instance starving).
+    let held: Vec<_> = (0..3)
+        .map(|_| targets[1].gate.try_enter().expect("its own 3 slots"))
+        .collect();
+    assert!(
+        targets[1].gate.try_enter().is_none(),
+        "the slow sink is saturated at ITS cap"
+    );
+    assert_eq!(
+        targets[0].gate.available_permits(),
+        1,
+        "a saturated sibling must not consume this instance's budget"
+    );
+    let permit = targets[0]
+        .gate
+        .try_enter()
+        .expect("the fast sink still admits its own delivery");
+
+    // And every permit returns its slot on Drop (the fire-and-forget task holds an owned permit).
+    drop(held);
+    drop(permit);
+    assert_eq!(targets[1].gate.available_permits(), 3);
+    assert_eq!(targets[0].gate.available_permits(), 1);
 }

@@ -526,12 +526,17 @@ pub(crate) struct HookView {
 /// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
 /// `{module, settings}` spine and differ only by optional kind-specific fields, which are
 /// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
-/// `{name, module, settings}` while `/identity-providers` additionally carries its ceiling — and a
-/// new section adds fields here (additive) instead of a parallel view + a parallel handler.
+/// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling —
+/// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
 ///
-/// SECRETS ARE NEVER PROJECTED, by construction: an `identity-providers.<name>.token:` is a SECRET
-/// REFERENCE, and this view reports only WHETHER one is configured — there is no field the reference
-/// (let alone a resolved value) could ride out on.
+/// SECRETS ARE NEVER PROJECTED, by construction — and that claim covers the `settings:` bag too,
+/// which is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET
+/// REFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator
+/// legitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),
+/// so projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets
+/// through `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps
+/// the introspection the read surface exists for ("what is configured here?") with no field a value
+/// could ride out on — the same discipline `token_configured` already applies to the reference.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedDefView {
@@ -539,8 +544,12 @@ pub(crate) struct NamedDefView {
     pub(crate) name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
     pub(crate) module: String,
-    /// The module's opaque settings bag, verbatim. Operator/API-owned; never interpreted here.
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values — the
+    /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
+    /// never a place a VALUE can leak from: a settings value may be a credential (see the type doc),
+    /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
+    /// values are readable only where they are writable — the config file and the config overlay.
+    pub(crate) settings_keys: Vec<String>,
     /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
     /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
     /// for a section that carries no ceiling.

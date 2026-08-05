@@ -1935,9 +1935,12 @@ pub(crate) struct HookCfg {
     #[serde(default)]
     pub(crate) groups: Vec<String>,
     /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. GENERALIZES the single
-    /// tap `at:` to a list. EMPTY (the default) falls back to `at` (or `request` when that is also
-    /// unset), so today's single-stage behavior is preserved byte-for-byte. Consulted by
-    /// [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
+    /// tap `at:` to a list. EMPTY (the default) falls back to `at:`, which pins exactly one stage and
+    /// so preserves today's single-stage behavior byte-for-byte; with BOTH omitted the hook fires at
+    /// THE FOUR CORE STAGES and only those — the frozen meaning of an omitted `phase:`, see FREEZE
+    /// BLOCKER A3 on [`CORE_HOOK_PHASES`]. (`--migrate-config` therefore writes an EXPLICIT
+    /// `phase: [request]` onto a legacy tap that carried neither, so migrating never widens one.)
+    /// Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
     #[serde(default)]
     pub(crate) phase: Vec<HookStage>,
 }

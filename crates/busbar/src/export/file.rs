@@ -8,9 +8,20 @@
 //! `export.request-log-file`; absent ⇒ no file sink.
 
 use crate::config::ExportCfg;
+use crate::limits::admission::AdmissionGate;
 use serde_json::Value;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
+
+/// How many blocking append tasks ONE file sink may have in flight at once. Every append is a
+/// `spawn_blocking` holding an owned `String`, and they SERIALIZE on the sink's `Mutex` — so on a
+/// slow or stalled filesystem (a full disk, a hung NFS/EBS mount) an unbounded fan-out accumulates
+/// one blocked blocking-pool thread and one owned line per request, without limit. Bounded the same
+/// way the sibling webhook exporter is bounded (an [`AdmissionGate`]: shed the log, count the shed,
+/// never block the request path). Deliberately a compiled-in constant rather than a new setting: the
+/// file exporter's config surface is frozen for 1.5.3, and this is a resource FLOOR that no
+/// deployment has a reason to tune (the value matches the webhook exporter's default cap).
+const MAX_INFLIGHT_FILE_APPENDS: usize = 64;
 
 /// One configured JSONL sink (path + optional rotate size in MiB). The `Mutex` serializes concurrent
 /// appends so two request-finish tasks never interleave a line.
@@ -18,6 +29,10 @@ struct FileSink {
     path: String,
     rotate_bytes: Option<u64>,
     lock: Mutex<()>,
+    /// This sink's OWN in-flight append cap — one gate PER named instance, exactly as each named
+    /// webhook instance owns its own (a stalled audit-mount sink must not shed the local tail file's
+    /// lines, or vice versa).
+    gate: AdmissionGate,
 }
 
 /// Every configured `module: request-log-file` instance, in config order, set once at boot. Unset ⇒
@@ -38,6 +53,7 @@ pub(crate) fn configure(cfg: &ExportCfg) {
                 path: f.path.clone(),
                 rotate_bytes: f.rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
                 lock: Mutex::new(()),
+                gate: AdmissionGate::new(MAX_INFLIGHT_FILE_APPENDS, "request-log-file"),
             })
             .collect(),
     );
@@ -52,6 +68,9 @@ pub(crate) fn configured() -> bool {
 /// Append one request-log line to the JSONL file. No-op when unconfigured. Fire-and-forget: the blocking
 /// filesystem write is offloaded to the blocking pool so it never stalls the async request-finish path,
 /// and any I/O error is logged (once) rather than propagated — telemetry must not affect serving.
+/// BOUNDED per sink by [`MAX_INFLIGHT_FILE_APPENDS`]: a stalled filesystem sheds logs (counted on
+/// `busbar_file_logs_dropped_total` + `busbar_admission_denied_total{gate="request-log-file"}`)
+/// rather than accumulating tasks and owned lines without limit.
 pub(crate) fn deliver(payload: &Value) {
     let Some(sinks) = SINKS.get() else {
         return;
@@ -65,7 +84,15 @@ pub(crate) fn deliver(payload: &Value) {
 /// Append one already-serialized line to ONE sink, off the async path. Split out of [`deliver`] so
 /// the fan-out over named instances stays a plain loop.
 fn append_one(sink: &'static FileSink, line: String) {
+    // Take an append slot WITHOUT waiting; drop this log (counted) rather than block the request
+    // path or pile up an unbounded backlog of blocked blocking-pool tasks when the sink is saturated.
+    // Same posture — and the same mechanic — as the webhook exporter's shed.
+    let Some(permit) = sink.gate.try_enter() else {
+        metrics::counter!(crate::metrics::FILE_LOGS_DROPPED_TOTAL).increment(1);
+        return;
+    };
     tokio::task::spawn_blocking(move || {
+        let _permit = permit; // slot releases on task end via the owned permit's Drop.
         let _guard = sink.lock.lock().unwrap_or_else(|e| e.into_inner());
         // Best-effort size bound (design §8 `rotate_mb`): when the file exceeds the configured size,
         // roll over by truncation rather than a rename (which would bypass the durable-write choke
@@ -92,3 +119,7 @@ fn append_one(sink: &'static FileSink, line: String) {
         }
     });
 }
+
+#[cfg(test)]
+#[path = "tests/file_tests.rs"]
+mod tests;

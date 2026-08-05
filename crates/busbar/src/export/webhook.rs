@@ -32,6 +32,12 @@ struct Target {
     /// `export:` map holds NAMED instances, so two webhook sinks can legitimately want different
     /// deadlines — the timeout is therefore per target here, not a process-global read.
     timeout: Duration,
+    /// This instance's OWN in-flight delivery cap (`settings.max_inflight_deliveries`), for the same
+    /// reason the timeout is per instance (audit MED-5). Two named webhook sinks — the documented
+    /// "app logs + SIEM" shape — are two INDEPENDENT budgets: one shared gate meant a stalled SIEM
+    /// could hold every permit and starve the fast sink, and that a low cap an operator set on one
+    /// instance was never actually enforced (the shared gate was sized to the MAX across instances).
+    gate: AdmissionGate,
 }
 
 /// The configured webhook sinks (request-log-webhook + generic-webhook), sized ONCE at boot. An unset
@@ -40,16 +46,6 @@ struct Target {
 static TARGETS: OnceLock<Vec<Target>> = OnceLock::new();
 /// busbar's pooled reqwest client, reused for delivery (same client the old `configure_webhook` took).
 static CLIENT: OnceLock<Client> = OnceLock::new();
-/// The in-flight delivery limiter — relocated verbatim from `observability::webhook_inflight`. Sized
-/// from `crate::limits::max_inflight_webhook_deliveries()` (which 1.5.3 sources from the
-/// `export.request-log-webhook.settings.max_inflight_deliveries` config) on first delivery.
-static WEBHOOK_INFLIGHT: OnceLock<AdmissionGate> = OnceLock::new();
-
-fn webhook_inflight() -> &'static AdmissionGate {
-    WEBHOOK_INFLIGHT.get_or_init(|| {
-        AdmissionGate::new(crate::limits::max_inflight_webhook_deliveries(), "webhook")
-    })
-}
 
 /// Configure the webhook sinks once at startup from the resolved `export:` block — one [`Target`] per
 /// NAMED `module: request-log-webhook` instance, in config order. Each URL is validated HERE (SSRF
@@ -67,6 +63,7 @@ pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
             &w.url,
             auth,
             Duration::from_secs(w.delivery_timeout_secs),
+            w.max_inflight_deliveries,
         );
     }
     if !targets.is_empty() {
@@ -82,12 +79,20 @@ fn push_target(
     url: &str,
     auth: Option<(String, String)>,
     timeout: Duration,
+    max_inflight: usize,
 ) {
     match validate_webhook_url(Some(url.to_string())) {
         Ok(Some(u)) => targets.push(Target {
             url: Arc::new(u),
             auth,
             timeout,
+            // CLAMPED, not trusted: `config_validate` rejects a `max_inflight_deliveries` outside
+            // `1..=Semaphore::MAX_PERMITS`, but this constructor must not be the thing that panics
+            // (0 permits would also black-hole the sink silently) if it is ever reached unvalidated.
+            gate: AdmissionGate::new(
+                max_inflight.clamp(1, tokio::sync::Semaphore::MAX_PERMITS),
+                "webhook",
+            ),
         }),
         Ok(None) => {}
         Err(msg) => tracing::error!("{msg}; disabling this webhook exporter"),
@@ -102,9 +107,10 @@ pub(crate) fn request_log_configured() -> bool {
 }
 
 /// Fire-and-forget the built request-log line to every configured webhook sink. No-op when none are
-/// configured. Never blocks the request path and never surfaces errors. Bounded: at most
-/// `max_inflight_webhook_deliveries()` deliveries run concurrently (a slow sink drops logs rather than
-/// piling up unbounded tasks), each with its own short timeout.
+/// configured. Never blocks the request path and never surfaces errors. Bounded PER INSTANCE: at most
+/// that sink's own `settings.max_inflight_deliveries` deliveries run concurrently (a slow sink drops
+/// ITS logs rather than piling up unbounded tasks, and cannot consume a sibling sink's budget), each
+/// with its own short timeout.
 pub(crate) fn deliver_logs(payload: Value) {
     let Some(targets) = TARGETS.get() else {
         return;
@@ -117,7 +123,7 @@ pub(crate) fn deliver_logs(payload: Value) {
     for target in targets {
         // Acquire a delivery slot WITHOUT awaiting; drop this log (counted) rather than block or
         // accumulate an unbounded backlog when the sink is saturated.
-        let Some(permit) = webhook_inflight().try_enter() else {
+        let Some(permit) = target.gate.try_enter() else {
             metrics::counter!(crate::metrics::WEBHOOK_LOGS_DROPPED_TOTAL).increment(1);
             continue;
         };
