@@ -27,13 +27,24 @@ use crate::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
 
+/// The KEY NAMES of one opaque `settings:` bag, sorted — the REDACTED projection every named-map
+/// read serves instead of the bag itself (see [`NamedDefView::settings_keys`]: a settings value may
+/// be a credential and these reads are reachable at READ-ONLY admin scope). One function so the two
+/// section projections cannot drift apart on the one field that must not leak.
+fn settings_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut keys: Vec<String> = settings.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
-/// REFERENCE is collapsed to a boolean here — the one place it could leak, closed by construction.
+/// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two
+/// places a secret could leak, closed by construction.
 fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
         module: cfg.module.clone(),
-        settings: cfg.settings.clone(),
+        settings_keys: settings_keys(&cfg.settings),
         max_admin_scope: cfg.max_admin_scope.clone(),
         token_configured: Some(cfg.token.is_some()),
         browser_login_configured: Some(cfg.browser_login.is_some()),
@@ -41,12 +52,14 @@ fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) 
 }
 
 /// Project one `export:` DEFINITION onto the shared named-map view. An exporter carries neither a
-/// trust ceiling nor a credential, so those fields are omitted from the body entirely.
+/// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
+/// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
+/// projected as KEY NAMES exactly as the identity-provider view projects it.
 fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
         module: cfg.module.clone(),
-        settings: cfg.settings.clone(),
+        settings_keys: settings_keys(&cfg.settings),
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,

@@ -399,7 +399,8 @@ pub(crate) fn resolve_pool_gates(
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
-    cfg.gates
+    let mut ranked: Vec<(u16, ResolvedPolicy)> = cfg
+        .gates
         .iter()
         .filter_map(|name| {
             let hook = hooks.get(name)?;
@@ -417,7 +418,13 @@ pub(crate) fn resolve_pool_gates(
             resolve_gate_transport(name, hook, hooks, env, settings_version)
                 .map(|rp| (hook.priority, rp))
         })
-        .collect()
+        .collect();
+    // Sorted HERE, at config-resolve time, exactly as `resolve_gate_hooks` sorts the globals —
+    // STABLE, so config order still breaks priority ties. The phase-2 seam then merges two
+    // already-sorted runs per request instead of re-collecting and re-sorting the whole chain on
+    // every request that reaches it (audit MED-6). Same resulting order, no hot-path allocation.
+    ranked.sort_by_key(|(p, _)| *p);
+    ranked
 }
 
 /// Resolve a pool's REWRITE gates — the `prompt: rw` gates in its `hooks: [...]` list — into the

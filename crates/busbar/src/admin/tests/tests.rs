@@ -12470,6 +12470,96 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SECRET CONTAINMENT ON THE NAMED-MAP READS (audit HIGH-1). The `settings:` bag is where an
+/// operator legitimately puts a credential VALUE — an OIDC `client_secret`, a `generic-webhook`
+/// `auth_header.value` — and `GET <section>[/{name}]` is served at READ-ONLY admin scope. So the
+/// read projects the settings KEY NAMES (`settings_keys`) and NEVER the values: a read-only admin
+/// credential can see WHAT is configured without being handed the deployment's secrets. Driven on
+/// BOTH sections and on BOTH the list and the single read, since one generic handler serves all four.
+#[tokio::test]
+async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .identity_provider(
+            "corp-oidc",
+            serde_json::from_value(serde_json::json!({
+                "module": "oidc",
+                "settings": {
+                    "issuer": "https://idp.example.com",
+                    "client_secret": "hunter2-idp"
+                }
+            }))
+            .unwrap(),
+        )
+        .export_def(
+            "siem",
+            serde_json::from_value(serde_json::json!({
+                "module": "generic-webhook",
+                "settings": {
+                    "url": "https://siem.example.com/in",
+                    "auth_header": {"name": "authorization", "value": "Bearer hunter2-siem"}
+                }
+            }))
+            .unwrap(),
+        )
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    for (section, name, secret, keys) in [
+        (
+            "identity-providers",
+            "corp-oidc",
+            "hunter2-idp",
+            ["client_secret", "issuer"],
+        ),
+        ("export", "siem", "hunter2-siem", ["auth_header", "url"]),
+    ] {
+        for url in [
+            format!("http://{addr}/api/v1/admin/{section}"),
+            format!("http://{addr}/api/v1/admin/{section}/{name}"),
+        ] {
+            let body = client
+                .get(&url)
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(
+                !body.contains(secret),
+                "{url} projected a settings VALUE — this read is reachable at READ-ONLY admin \
+                 scope, so an operator credential just leaked: {body}"
+            );
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let def = json
+                .get("items")
+                .and_then(|i| i.get(0))
+                .cloned()
+                .unwrap_or(json);
+            assert_eq!(
+                def["settings_keys"],
+                serde_json::json!(keys),
+                "{url} must project the settings KEY NAMES (sorted), so `what is configured` \
+                 introspection survives the redaction"
+            );
+            assert!(
+                def.get("settings").is_none(),
+                "the raw settings bag must not be projected at all: {def}"
+            );
+        }
+    }
+    handle.abort();
+}
+
 /// OPTIMISTIC CONCURRENCY: a stale `If-Match` on a named-map write is a RETRYABLE
 /// `version_conflict` (409) and changes nothing — the same one mechanism every other config-plane
 /// mutation speaks. Driven on both sections, since they share one guard.

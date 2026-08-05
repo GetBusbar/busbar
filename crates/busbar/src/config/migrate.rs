@@ -374,6 +374,20 @@ fn as_map(v: Value) -> Mapping {
     }
 }
 
+/// Render one YAML value as a SHORT single line, for a ledger entry that has to name the malformed
+/// shape it found (`auth: null`, `auth: []`, `auth: yes`). Multi-line/long renderings are truncated —
+/// a ledger line is a human-readable pointer at the operator's own document, not a copy of it.
+fn one_line(v: &Value) -> String {
+    let s = serde_yaml::to_string(v).unwrap_or_else(|_| "?".into());
+    let s = s.replace('\n', " ");
+    let s = s.trim().to_string();
+    if s.chars().count() > 60 {
+        format!("{}…", s.chars().take(60).collect::<String>())
+    } else {
+        s
+    }
+}
+
 /// The module name an `auth.chain` / `auth.admin_auth` entry answers to: a bare string entry IS the
 /// module name; a `{ <module>: {…} }` map entry's single key is. Used to dedup + locate entries
 /// when folding the 1.4.x TOP-LEVEL `admin_auth:` list and `auth.modules` caps into the 1.5.0
@@ -588,41 +602,61 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         // N cents per 1k tokens = 10*N micro-units per token, on every tier of every model.
         let n = p1k.as_f64().unwrap_or(0.0);
         let per_tier = n * 10.0;
-        let mut card = as_map(root.remove(Value::from("rate_card")).unwrap_or_default());
-        let model_names: Vec<String> = root
-            .get(Value::from("models"))
-            .and_then(|v| v.as_mapping())
-            .map(|m| {
-                m.keys()
-                    .filter_map(|k| k.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for m in &model_names {
-            if !card.contains_key(Value::from(m.as_str())) {
-                let mut entry = Mapping::new();
-                for tier in [
-                    "input_utok",
-                    "output_utok",
-                    "cache_read_utok",
-                    "cache_write_utok",
-                ] {
-                    entry.insert(tier.into(), per_tier.into());
-                }
-                card.insert(m.as_str().into(), Value::Mapping(entry));
+        // NEVER SILENTLY DROP (audit HIGH-2's class): `root.remove` takes the key whatever its shape,
+        // so a `rate_card:` that is not a mapping is put BACK verbatim and the synthesis is SKIPPED —
+        // replacing an operator's malformed-but-present card with a generated one would destroy the
+        // prices they wrote. `None` (no card at all) is the normal path and synthesizes from scratch.
+        let existing_card = match root.remove(Value::from("rate_card")) {
+            None => Some(Mapping::new()),
+            Some(Value::Mapping(m)) => Some(m),
+            Some(other) => {
+                let shape = one_line(&other);
+                root.insert("rate_card".into(), other);
+                todos.push(format!(
+                    "rate_card: is not a mapping (`{shape}`) — it was left EXACTLY as written, so \
+                     `governance.price_per_1k_tokens_cents` was NOT folded into it. Fix the block \
+                     by hand (`rate_card: {{ <model>: {{ input_utok: … }} }}`) and price each \
+                     model, or delete it and re-run the migration."
+                ));
+                None
             }
-        }
-        root.insert("rate_card".into(), Value::Mapping(card));
-        changes.push(
+        };
+        if let Some(mut card) = existing_card {
+            let model_names: Vec<String> = root
+                .get(Value::from("models"))
+                .and_then(|v| v.as_mapping())
+                .map(|m| {
+                    m.keys()
+                        .filter_map(|k| k.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for m in &model_names {
+                if !card.contains_key(Value::from(m.as_str())) {
+                    let mut entry = Mapping::new();
+                    for tier in [
+                        "input_utok",
+                        "output_utok",
+                        "cache_read_utok",
+                        "cache_write_utok",
+                    ] {
+                        entry.insert(tier.into(), per_tier.into());
+                    }
+                    card.insert(m.as_str().into(), Value::Mapping(entry));
+                }
+            }
+            root.insert("rate_card".into(), Value::Mapping(card));
+            changes.push(
             "governance.price_per_1k_tokens_cents -> a rate_card entry per model (N cents/1k = \
              10N micro-units/token on every tier)"
                 .into(),
         );
-        todos.push(
-            "rate_card: entries were synthesized from the flat price_per_1k_tokens_cents; \
+            todos.push(
+                "rate_card: entries were synthesized from the flat price_per_1k_tokens_cents; \
              replace the uniform per-tier rates with each model's real prices"
-                .into(),
-        );
+                    .into(),
+            );
+        }
     }
     if let Some(groups) = take(&mut gov, "budget_groups") {
         let mut out = Mapping::new();
@@ -1508,7 +1542,8 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 
     // (b) the top-level `metrics:` block -> export.prometheus.settings.
-    if let Some(Value::Mapping(mut metrics)) = root.remove(Value::from("metrics")) {
+    let removed_metrics = root.remove(Value::from("metrics"));
+    if let Some(Value::Mapping(mut metrics)) = removed_metrics {
         let mut settings = Mapping::new();
         if let Some(v) = take(&mut metrics, "buffer_seconds") {
             settings.insert("buffer_seconds".into(), v);
@@ -1524,6 +1559,15 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         body.insert("settings".into(), Value::Mapping(settings));
         export_mut(root).insert("prometheus".into(), Value::Mapping(body));
         changes.push("metrics: block -> export.prometheus.settings (built-in exporter)".into());
+    } else if let Some(other) = removed_metrics {
+        // Same class as the `observability:` arm above (audit MED-1): the key IS retired, so a
+        // malformed block is still deleted — but `root.remove` already took it, so the deletion must
+        // be RECORDED or it happened invisibly.
+        changes.push(format!(
+            "metrics: block removed (RETIRED in 1.5.3; it was not a mapping — the value `{}` \
+             carried no settings foldable into export.prometheus)",
+            one_line(&other)
+        ));
     }
 }
 
@@ -1622,8 +1666,9 @@ fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     }
 }
 
-/// Pick an instance name not already taken in `export:` (`req-log`, `req-log-2`, …), so migrating a
-/// config that already carries a hand-written named instance never clobbers it.
+/// Pick an instance name not already taken in a NAMED-DEFINITION map (`req-log`, `req-log-2`, …), so
+/// migrating a config that already carries a hand-written named instance never clobbers it. Used for
+/// `export:` and, when a per-plane settings conflict forces a split, for `identity-providers:`.
 fn uniq_export_name(export: &Mapping, base: &str) -> String {
     if !export.contains_key(Value::from(base)) {
         return base.to_string();
@@ -1690,8 +1735,23 @@ fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
 /// 1.5.3 §3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
 /// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance with
 /// `module: otlp`. IDEMPOTENT: a config with no `observability:` block has nothing to fold.
+///
+/// A MALFORMED block (`observability: null`, a sequence, a scalar — real hand-edited shapes) is still
+/// DELETED: the section does not exist in 1.5.3, so there is nothing to carry it into and leaving it
+/// would fail the `deny_unknown_fields` parse. But the deletion is RECORDED in the ledger (audit
+/// MED-1) — `root.remove` always removes the key, so without this arm a malformed block vanished from
+/// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
+/// config" shape `migrate_auth` refuses.
 fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(mut obs)) = root.remove(Value::from("observability")) else {
+    let removed = root.remove(Value::from("observability"));
+    let Some(Value::Mapping(mut obs)) = removed else {
+        if let Some(other) = removed {
+            changes.push(format!(
+                "observability: block removed (DELETED in 1.5.3; it was not a mapping — the value \
+                 `{}` carried nothing foldable into an `export:` instance)",
+                one_line(&other)
+            ));
+        }
         return;
     };
     let url = take(&mut obs, "otlp_url").or_else(|| take(&mut obs, "otlp_endpoint"));
@@ -1773,6 +1833,16 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
     }
 }
 
+/// The name SUFFIX a split identity-provider definition gets, per the auth plane that forced the
+/// split: `admin_auth` -> `<module>-admin` (the shape the 1.5.3 docs use), any other site -> the site
+/// name itself. Deterministic, so re-running the migration on the same input yields the same names.
+fn split_suffix(site: &str) -> &str {
+    match site {
+        "admin_auth" => "admin",
+        other => other,
+    }
+}
+
 /// 1.5.3 §2 + freeze blocker A7: lift every INLINE `auth.chain:` / `auth.admin_auth:` entry and every
 /// `auth.methods:` entry into the top-level `identity-providers:` NAMED-DEFINITION map, replacing the
 /// chain entries with bare NAME references.
@@ -1784,19 +1854,52 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
 ///
 /// SHAPE-CONVERGENT and IDEMPOTENT: a bare-string chain entry is already a name reference and passes
 /// straight through, so a second run finds nothing to lift.
+///
+/// NEVER SILENTLY DROPS (audit HIGH-2 — the rule `migrate_auth` already states): `root.remove` takes
+/// the key unconditionally, so every early return below RESTORES the value it took, unchanged, and
+/// names it in the ledger. A malformed `auth: null` / `auth: []` / `auth: <scalar>` (real
+/// hand-edited shapes) therefore survives the migration verbatim for the operator to fix, instead of
+/// disappearing from the migrated document with no record.
 fn migrate_identity_providers(
     root: &mut Mapping,
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
-    let Some(Value::Mapping(mut auth)) = root.remove(Value::from("auth")) else {
+    let removed_auth = root.remove(Value::from("auth"));
+    let Some(Value::Mapping(mut auth)) = removed_auth else {
+        if let Some(other) = removed_auth {
+            let shape = one_line(&other);
+            root.insert("auth".into(), other);
+            todos.push(format!(
+                "auth: is not a mapping (`{shape}`) — it was left EXACTLY as written and NOTHING \
+                 was lifted out of it. 1.5.3 expects `auth: {{ chain: [...], admin_auth: [...] }}` \
+                 with the providers defined under the top-level `identity-providers:` map; fix the \
+                 block by hand, then re-run the migration."
+            ));
+        }
         return;
     };
     // Start from any EXISTING definitions so a partially-migrated config converges rather than
     // duplicating. Keyed by the definition NAME; `by_module` indexes them for the dedupe.
-    let mut defs = match root.remove(Value::from("identity-providers")) {
+    let removed_defs = root.remove(Value::from("identity-providers"));
+    let mut defs = match removed_defs {
+        None => Mapping::new(),
         Some(Value::Mapping(m)) => m,
-        _ => Mapping::new(),
+        // Same rule: a malformed `identity-providers:` is put BACK verbatim (together with the
+        // `auth:` block this function had already taken) and nothing is lifted — overwriting it with
+        // synthesized definitions would destroy whatever the operator meant to write there.
+        Some(other) => {
+            let shape = one_line(&other);
+            root.insert("auth".into(), Value::Mapping(auth));
+            root.insert("identity-providers".into(), other);
+            todos.push(format!(
+                "identity-providers: is not a mapping (`{shape}`) — it was left EXACTLY as written \
+                 and no `auth.chain:`/`auth.admin_auth:`/`auth.methods:` entry was lifted into it. \
+                 1.5.3 expects `identity-providers: {{ <name>: {{ module: … }} }}`; fix the block \
+                 by hand, then re-run the migration."
+            ));
+            return;
+        }
     };
     let mut by_module: Vec<(String, String)> = defs
         .iter()
@@ -1808,19 +1911,63 @@ fn migrate_identity_providers(
         .collect();
 
     // Lift one inline entry into a definition, REUSING the existing definition for that module when
-    // one is already present (the dedupe). Returns the NAME the chain should now reference.
+    // one is already present AND its settings AGREE (the dedupe). Returns the NAME the site should
+    // now reference. `site` names where the entry came from (`chain` / `admin_auth` / `methods`) and
+    // is used only to name a SPLIT definition deterministically.
+    //
+    // THE SETTINGS RULE (audit HIGH-3). The dedupe folds one module written on both planes into ONE
+    // definition — but only when there is nothing to lose by folding:
+    //   * this site carries NO `settings:` ⇒ reuse (nothing to lose);
+    //   * an existing definition for this module has the IDENTICAL `settings:` ⇒ reuse (the win);
+    //   * an existing definition for this module has NO `settings:` ⇒ reuse and ADOPT this site's;
+    //   * otherwise the two sites CONFLICT (e.g. `oidc` with `issuer: data.example.com` on `chain`
+    //     and `issuer: admin.example.com` on `admin_auth`) ⇒ emit a SECOND definition named
+    //     `<module>-<site>` and reference IT from this site. Merging them would silently drop one
+    //     plane's settings and authenticate that plane against the WRONG upstream; two definitions is
+    //     the honest outcome, and it is flagged as a todo.
     let lift = |module: &str,
                 body: &Mapping,
+                site: &str,
                 defs: &mut Mapping,
                 by_module: &mut Vec<(String, String)>,
-                changes: &mut Vec<String>|
+                changes: &mut Vec<String>,
+                todos: &mut Vec<String>|
      -> String {
-        if let Some((_, name)) = by_module.iter().find(|(m, _)| m == module) {
-            let name = name.clone();
+        let want = body.get(Value::from("settings"));
+        let settings_of = |defs: &Mapping, name: &str| -> Option<Value> {
+            defs.get(Value::from(name))
+                .and_then(|d| d.as_mapping())
+                .and_then(|d| d.get(Value::from("settings")))
+                .cloned()
+        };
+        // Every definition already standing for this module, in insertion order.
+        let candidates: Vec<String> = by_module
+            .iter()
+            .filter(|(m, _)| m == module)
+            .map(|(_, n)| n.clone())
+            .collect();
+        // `auth.methods:` is EXEMPT from the split (freeze blocker A7): a method entry's flattened
+        // settings are COMPLEMENTARY to the chain entry's for the same module (a `browser_login:`
+        // plus the method's own keys), and the caller UNIONS them into the one definition on purpose.
+        // Only the two CHAINS can state genuinely disagreeing settings for one module.
+        let may_split = site != "methods";
+        // The one to reuse, per the settings rule above: an exact settings match first, then (only
+        // when this site brings settings) one that carries none and can adopt them.
+        let reuse = if may_split {
+            candidates
+                .iter()
+                .find(|n| want.is_none() || settings_of(defs, n).as_ref() == want)
+                .or_else(|| candidates.iter().find(|n| settings_of(defs, n).is_none()))
+                .cloned()
+        } else {
+            candidates.first().cloned()
+        };
+        if let Some(name) = reuse {
             // MERGE the second plane's typed fields into the ONE definition. A `token:` (admin-tokens)
-            // or a `max_admin_scope:` written on only one of the two chains must survive the fold.
+            // or a `max_admin_scope:` written on only one of the two chains must survive the fold —
+            // and so must a `settings:` bag the reused definition does not carry yet.
             if let Some(Value::Mapping(existing)) = defs.get_mut(Value::from(name.as_str())) {
-                for key in ["max_admin_scope", "token"] {
+                for key in ["max_admin_scope", "token", "settings"] {
                     if !existing.contains_key(Value::from(key)) {
                         if let Some(v) = body.get(Value::from(key)) {
                             existing.insert(key.into(), v.clone());
@@ -1834,6 +1981,16 @@ fn migrate_identity_providers(
             ));
             return name;
         }
+        // A CONFLICTING second site (or the very first sighting of this module).
+        let split = !candidates.is_empty();
+        let base = if split {
+            format!("{module}-{}", split_suffix(site))
+        } else {
+            // The definition NAME defaults to the module name — the minimal, least-surprising rename,
+            // and exactly what the built-ins are referenced as.
+            module.to_string()
+        };
+        let name = uniq_export_name(defs, &base);
         let mut def = Mapping::new();
         def.insert("module".into(), Value::from(module));
         for key in ["max_admin_scope", "token", "settings"] {
@@ -1841,15 +1998,28 @@ fn migrate_identity_providers(
                 def.insert(key.into(), v.clone());
             }
         }
-        // The definition NAME defaults to the module name — the minimal, least-surprising rename,
-        // and exactly what the built-ins are referenced as.
-        let name = module.to_string();
         defs.insert(Value::from(name.as_str()), Value::Mapping(def));
         by_module.push((module.to_string(), name.clone()));
-        changes.push(format!(
-            "auth chain entry `{module}: {{ … }}` -> identity-providers.{name} + a bare-name \
-             reference (1.5.3: define once, reference by name)"
-        ));
+        if split {
+            changes.push(format!(
+                "auth.{site} entry `{module}: {{ … }}` -> a SECOND identity-providers.{name} \
+                 definition (its `settings:` differ from the existing `{module}` definition, so the \
+                 two were NOT deduped)"
+            ));
+            todos.push(format!(
+                "identity-providers.{name}: `{module}` was configured on more than one auth plane \
+                 with DIFFERENT `settings:`, so the migrator kept BOTH — `{name}` carries the \
+                 `auth.{site}` settings and is referenced from there; the other definition keeps \
+                 the settings of the site that declared it first. Nothing was lost; rename them to \
+                 whatever your `role_bindings:` should key off, or collapse them if the difference \
+                 was accidental."
+            ));
+        } else {
+            changes.push(format!(
+                "auth chain entry `{module}: {{ … }}` -> identity-providers.{name} + a bare-name \
+                 reference (1.5.3: define once, reference by name)"
+            ));
+        }
         name
     };
 
@@ -1870,7 +2040,15 @@ fn migrate_identity_providers(
                     else {
                         continue;
                     };
-                    let name = lift(&module, &body, &mut defs, &mut by_module, changes);
+                    let name = lift(
+                        &module,
+                        &body,
+                        plane,
+                        &mut defs,
+                        &mut by_module,
+                        changes,
+                        todos,
+                    );
                     names.push(Value::from(name.as_str()));
                 }
                 other => names.push(other),
@@ -1892,7 +2070,15 @@ fn migrate_identity_providers(
             // Everything else on a `methods:` entry was the module's flattened opaque settings.
             let mut settings = Mapping::new();
             settings.insert("settings".into(), Value::Mapping(body));
-            let name = lift(&module, &settings, &mut defs, &mut by_module, changes);
+            let name = lift(
+                &module,
+                &settings,
+                "methods",
+                &mut defs,
+                &mut by_module,
+                changes,
+                todos,
+            );
             if let Some(Value::Mapping(def)) = defs.get_mut(Value::from(name.as_str())) {
                 if let Some(bl) = browser_login {
                     def.insert("browser_login".into(), bl);

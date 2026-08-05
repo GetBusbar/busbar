@@ -1661,3 +1661,184 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
         "a gate carries no `at:` default, so migration must not invent a `phase:` for it"
     );
 }
+
+/// AUDIT HIGH-2 — A MIGRATION MUST NEVER SILENTLY DROP OPERATOR CONFIG. `root.remove()` takes the
+/// `auth:` key whatever its shape, so a MALFORMED block (`auth: null`, `auth: []`, a scalar — real
+/// hand-edited shapes) hit the `let … else` and returned, leaving the migrated document with NO
+/// `auth:` key and NO ledger entry at all. The block must survive VERBATIM and be named in the todos.
+///
+/// RED-BEFORE-GREEN: on the pre-fix tree the migrated document has no `auth:` key for any of these
+/// three shapes and `out.todos` never mentions `auth:`.
+#[test]
+fn migrate_never_drops_a_malformed_auth_block() {
+    for (shape, raw_auth) in [
+        ("null", "auth:\n"),
+        ("sequence", "auth: []\n"),
+        ("scalar", "auth: tokens\n"),
+    ] {
+        let raw = format!("{raw_auth}providers: {{}}\nmodels: {{}}\npools: {{}}\n");
+        let (out, doc) = migrate_to_value(&raw);
+        let kept = dig(&doc, &["auth"]).unwrap_or_else(|| {
+            panic!(
+                "a malformed `auth:` ({shape}) was DROPPED by the migration:\n{}",
+                out.yaml
+            )
+        });
+        let original: serde_yaml::Value = serde_yaml::from_str(raw_auth).unwrap();
+        assert_eq!(
+            Some(kept),
+            original
+                .as_mapping()
+                .and_then(|m| m.get(serde_yaml::Value::from("auth"))),
+            "a malformed `auth:` ({shape}) must be carried through EXACTLY as written"
+        );
+        assert!(
+            out.todos.iter().any(|t| t.starts_with("auth:")),
+            "a malformed `auth:` ({shape}) must be NAMED in the todos, never silently passed \
+             through; got {:?}",
+            out.todos
+        );
+    }
+}
+
+/// The same rule for the OTHER map this pass takes: a malformed `identity-providers:` is put back
+/// verbatim (together with the `auth:` block already removed by then) and flagged, rather than being
+/// replaced by synthesized definitions.
+///
+/// RED-BEFORE-GREEN: pre-fix, `identity-providers: 7` vanished from the output entirely (the `match`
+/// fell through to `Mapping::new()`), taking the operator's line with it.
+#[test]
+fn migrate_never_drops_a_malformed_identity_providers_block() {
+    let raw = "auth:\n  chain: [{ oidc: { settings: { issuer: https://a.example.com } } }]\n\
+               identity-providers: 7\nproviders: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert_eq!(
+        dig(&doc, &["identity-providers"]).and_then(|v| v.as_u64()),
+        Some(7),
+        "a malformed `identity-providers:` must be carried through EXACTLY as written:\n{}",
+        out.yaml
+    );
+    assert!(
+        dig(&doc, &["auth", "chain"]).is_some(),
+        "the `auth:` block this pass removed first must be restored on the early return:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.starts_with("identity-providers:")),
+        "the untouched malformed block must be named in the todos; got {:?}",
+        out.todos
+    );
+}
+
+/// AUDIT MED-1 — the `observability:`/`metrics:` blocks ARE deleted in 1.5.3 (retired sections), so a
+/// malformed one legitimately disappears; what must not happen is it disappearing with NO record. The
+/// deletion is recorded in `changes` so an operator diffing the ledger sees it.
+///
+/// RED-BEFORE-GREEN: pre-fix, `observability: null` / `metrics: null` were removed by `root.remove()`
+/// and the `let … else` returned — `out.changes` mentions neither.
+#[test]
+fn migrate_records_the_deletion_of_a_malformed_retired_block() {
+    let raw = "observability:\nmetrics: []\nproviders: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["observability"]).is_none() && dig(&doc, &["metrics"]).is_none(),
+        "both blocks are RETIRED in 1.5.3 and must still be deleted:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.starts_with("observability: block removed")),
+        "the observability deletion must be RECORDED in the ledger; got {:?}",
+        out.changes
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.starts_with("metrics: block removed")),
+        "the metrics deletion must be RECORDED in the ledger; got {:?}",
+        out.changes
+    );
+}
+
+/// AUDIT HIGH-3 — THE DEDUPE MUST NOT EAT A PLANE'S SETTINGS. One module configured on BOTH auth
+/// planes with DIFFERENT settings (the data chain against one OIDC issuer, the admin chain against
+/// another) was deduped into ONE definition carrying only the FIRST plane's settings — so the
+/// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
+/// outcome: `<module>-admin` carries the admin plane's settings and `auth.admin_auth` references it.
+///
+/// RED-BEFORE-GREEN: pre-fix the migrated doc has ONE `oidc` definition whose `settings.issuer` is
+/// `data.example.com`, `auth.admin_auth` is `[oidc]`, and `admin.example.com` appears nowhere.
+#[test]
+fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
+    let raw = "auth:\n  \
+                 chain: [{ oidc: { settings: { issuer: https://data.example.com } } }]\n  \
+                 admin_auth: [{ oidc: { max_admin_scope: full, settings: { issuer: https://admin.example.com } } }]\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "settings", "issuer"]).and_then(|v| v.as_str()),
+        Some("https://data.example.com"),
+        "the first plane keeps the module-named definition:\n{}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &["identity-providers", "oidc-admin", "settings", "issuer"]
+        )
+        .and_then(|v| v.as_str()),
+        Some("https://admin.example.com"),
+        "the CONFLICTING second plane must get its OWN definition — its settings must not be \
+         dropped:\n{}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc-admin", "module"]).and_then(|v| v.as_str()),
+        Some("oidc"),
+        "the split definition still names the same backing module"
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
+        Some(&vec![serde_yaml::Value::from("oidc-admin")]),
+        "the admin plane must REFERENCE the split definition:\n{}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "chain"]).and_then(|v| v.as_sequence()),
+        Some(&vec![serde_yaml::Value::from("oidc")]),
+        "the data plane keeps referencing the original definition"
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("oidc-admin")),
+        "a split must be explained in the todos; got {:?}",
+        out.todos
+    );
+
+    // AND THE DEDUPE STILL WINS when there is nothing to lose: identical settings on both planes
+    // (and a plane that states none) still fold into exactly ONE definition.
+    let same = "auth:\n  \
+                  chain: [{ oidc: { settings: { issuer: https://one.example.com } } }]\n  \
+                  admin_auth: [{ oidc: { settings: { issuer: https://one.example.com } } }, { tokens: {} }]\n\
+                providers: {}\nmodels: {}\npools: {}\n";
+    let (_, doc) = migrate_to_value(same);
+    let defs = dig(&doc, &["identity-providers"])
+        .and_then(|v| v.as_mapping())
+        .expect("definitions");
+    assert!(
+        defs.contains_key(serde_yaml::Value::from("oidc"))
+            && !defs.contains_key(serde_yaml::Value::from("oidc-admin")),
+        "identical per-plane settings must still DEDUPE to one definition: {defs:?}"
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
+        Some(&vec![
+            serde_yaml::Value::from("oidc"),
+            serde_yaml::Value::from("tokens")
+        ]),
+        "both planes reference the ONE deduped definition"
+    );
+}

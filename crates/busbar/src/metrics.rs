@@ -168,12 +168,21 @@ pub(crate) const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_reje
 // alerts on a non-zero rate to detect "the webhook is overwhelmed and logs are being shed silently."
 pub(crate) const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped_total"; // no labels
 
+// Request-log FILE appends DROPPED because that sink's in-flight append cap was saturated (the
+// filesystem is slow/stalled — a full disk, a hung NFS/EBS mount — and the bounded blocking-append
+// pool is full). Incremented once per dropped log, the exact counterpart of
+// `WEBHOOK_LOGS_DROPPED_TOTAL` for the other request-log sink. Unlabeled: like the webhook's, the
+// drop is a global backpressure condition, not per-request. Alert on a non-zero rate to detect
+// "the request-log file sink is shedding lines."
+pub(crate) const FILE_LOGS_DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total"; // no labels
+
 // A fire-and-forget TAP notification dropped because the in-flight cap was reached (slow/unreachable
 // tap endpoint). Unlabeled global backpressure. Alert on a non-zero rate.
 pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";
 
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
-// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"` today — one
+// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/
+// `"request-log-file"` today — one
 // per `AdmissionGate::new` call site in the binary, so the label space is bounded at compile time,
 // never client-influenced). This is the GATE-level mechanic counter shared by every admission site;
 // it does NOT replace a site's own policy-specific drop counter (e.g. `WEBHOOK_LOGS_DROPPED_TOTAL`,
