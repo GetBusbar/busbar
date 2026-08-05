@@ -436,3 +436,92 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
         "the admin listener serves the auth:admin plugin route"
     );
 }
+
+// ── HEAD on a declared GET route (the logged LOW) ────────────────────────────────────────────────
+
+/// A HEAD request to a route a plugin declared as GET must be treated as that GET route by BOTH
+/// halves of the seam — the auth middleware's [`PluginRouteTable::declared_auth`] lookup AND the
+/// dispatcher's method mapping. axum already routes HEAD to the GET handler (its `MethodRouter`
+/// falls back to the GET arm and strips the body), so a HEAD reaches `plugin_route_dispatch`; with
+/// no HEAD arm in `route_method_of` the two halves DISAGREE:
+///
+/// * `declared_auth(path, HEAD)` returns `None`, so the route's DECLARED bar is not applied — an
+///   `auth: none` route demands a token on HEAD, and an `auth: admin` route is not forced down the
+///   admin chain (it is only saved from being reachable by the SECOND half of the same bug);
+/// * the dispatcher then 405s a request axum had already routed to the plugin's GET handler.
+///
+/// Mapping `Method::HEAD` onto `RouteMethod::Get` fixes both halves together, which is the only safe
+/// way to fix either: closing just the dispatch half would leave the auth half open.
+#[test]
+fn head_is_looked_up_as_the_declared_get_route() {
+    let table = build_route_table(vec![decl(
+        "prometheus",
+        RouteKind::Export,
+        "/exports/prometheus/scrape",
+        RouteMethod::Get,
+        RouteAuth::None,
+        "prom",
+    )])
+    .unwrap();
+    assert_eq!(
+        table.declared_auth("/exports/prometheus/scrape", &axum::http::Method::HEAD),
+        Some(RouteAuth::None),
+        "a HEAD to a declared GET plugin route must resolve to that route's declared auth"
+    );
+    assert_eq!(
+        route_method_of(&axum::http::Method::HEAD),
+        Some(RouteMethod::Get),
+        "HEAD maps onto the declared GET route (axum already routes HEAD to the GET handler)"
+    );
+    // Methods no plugin route can declare stay unmapped (the 405 arm is still reachable).
+    assert_eq!(route_method_of(&axum::http::Method::OPTIONS), None);
+    assert_eq!(route_method_of(&axum::http::Method::TRACE), None);
+}
+
+/// END-TO-END: a HEAD to an `auth: none` plugin route declared as GET is SERVED (200, empty body —
+/// axum strips a HEAD response body), not rejected with 405. The GET arm of the same route is
+/// unchanged.
+#[tokio::test]
+async fn head_dispatches_to_the_declared_get_route() {
+    const P: &str = "/exports/prometheus/scrape";
+    let table = Arc::new(
+        build_route_table(vec![decl(
+            "prometheus",
+            RouteKind::Export,
+            P,
+            RouteMethod::Get,
+            RouteAuth::None,
+            "prom",
+        )])
+        .unwrap(),
+    );
+    let (data_router, _admin_router, _handle) = crate::build_split_routers_with_limits(
+        app_with_table(table),
+        crate::limits::translate_body_max_bytes(),
+        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, data_router).await.unwrap() });
+    let resp = reqwest::Client::new()
+        .head(format!("http://{addr}{P}"))
+        .send()
+        .await
+        .unwrap();
+    let code = resp.status().as_u16();
+    let served_by = resp
+        .headers()
+        .get("x-served-by")
+        .map(|v| v.to_str().unwrap().to_string());
+    server.abort();
+    assert_eq!(
+        code, 200,
+        "HEAD on a declared GET plugin route is served, not 405'd"
+    );
+    assert_eq!(
+        served_by.as_deref(),
+        Some("prom"),
+        "the owning plugin served the HEAD"
+    );
+}

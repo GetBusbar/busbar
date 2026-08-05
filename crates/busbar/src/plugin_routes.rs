@@ -300,10 +300,19 @@ pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTabl
 }
 
 /// Map an `http::Method` onto the declared [`RouteMethod`] set busbar supports. `None` for a method no
-/// plugin route can declare (CONNECT/TRACE/OPTIONS/HEAD/…).
+/// plugin route can declare (CONNECT/TRACE/OPTIONS/…).
+///
+/// HEAD maps onto `Get`, and it MUST: axum's [`MethodRouter`] already routes a HEAD to the GET arm
+/// (stripping the response body), so a HEAD on a declared GET route reaches both
+/// [`PluginRouteTable::declared_auth`] and [`plugin_route_dispatch`]. With no HEAD arm the two halves
+/// disagreed — `declared_auth` returned `None`, so the route's DECLARED bar was not applied (an
+/// `auth: none` route demanded a token; an `auth: admin` route was not forced down the admin chain,
+/// reachable-in-principle and saved only by the dispatcher's matching gap), while the dispatcher 405'd
+/// a request axum had already routed to the plugin. One arm closes both halves together, which is the
+/// only safe way to close either.
 fn route_method_of(method: &Method) -> Option<RouteMethod> {
     match *method {
-        Method::GET => Some(RouteMethod::Get),
+        Method::GET | Method::HEAD => Some(RouteMethod::Get),
         Method::POST => Some(RouteMethod::Post),
         Method::PUT => Some(RouteMethod::Put),
         Method::PATCH => Some(RouteMethod::Patch),
