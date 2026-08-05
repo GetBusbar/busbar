@@ -3431,6 +3431,29 @@ pub(crate) fn build_app_from_config(
         _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
     };
 
+    // Plugin HTTP routes (design §5): the BUILT-IN exporters (`crate::export`) declare their routes
+    // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
+    // configured. Rebuilt on every config apply. A collision (a future loaded export/hook plugin
+    // claiming a built-in's path) is a LOUD build failure naming the owner, never last-writer-wins.
+    //
+    // The rebuilt TABLE is not the same thing as what the ROUTER serves: each path is registered on
+    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING `export.prometheus`
+    // takes effect immediately (`plugin_route_dispatch` resolves the owner from the current snapshot
+    // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
+    // paths the router actually has, so a config mutation can SAY so (audit finding E1) instead of
+    // reporting success for a route that will keep 404ing.
+    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
+        crate::export::route_decls(&cfg_export),
+    )?);
+    // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
+    // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
+    // recomputed set would say every newly declared path is already mounted, which is the exact
+    // silent no-op this exists to report.
+    let boot_route_paths = prior.map_or_else(
+        || std::sync::Arc::new(plugin_routes.paths()),
+        |p| p.boot_route_paths.clone(),
+    );
+
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`, audit §4).
         upstream_credentials: cfg.upstream_credentials,
@@ -3534,15 +3557,8 @@ pub(crate) fn build_app_from_config(
             },
             |p| p.request_id_counter.clone(),
         ),
-        // Plugin HTTP routes (design §5): the BUILT-IN exporters (`crate::export`) declare their
-        // routes into the snapshot — today the `prometheus` exporter's `GET /metrics` when
-        // `export.prometheus` is configured. Rebuilt on every config apply, so adding/removing
-        // `export.prometheus` mounts/unmounts `/metrics` with no router rebuild (design §7.1). A
-        // collision (a future loaded export/hook plugin claiming a built-in's path) is a LOUD build
-        // failure naming the owner, never last-writer-wins.
-        plugin_routes: std::sync::Arc::new(crate::plugin_routes::build_route_table(
-            crate::export::route_decls(&cfg_export),
-        )?),
+        plugin_routes,
+        boot_route_paths,
     };
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
