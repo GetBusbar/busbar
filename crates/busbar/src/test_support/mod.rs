@@ -747,6 +747,8 @@ pub(crate) struct TestApp {
     base_hook_names: std::collections::HashSet<String>,
     groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     base_group_names: std::collections::HashSet<String>,
+    identity_providers: crate::config::IdentityProviders,
+    export_defs: crate::config::ExportDefs,
     overlay_path: Option<std::path::PathBuf>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
@@ -782,6 +784,8 @@ impl TestApp {
             base_hook_names: std::collections::HashSet::new(),
             groups_registry: std::collections::BTreeMap::new(),
             base_group_names: std::collections::HashSet::new(),
+            identity_providers: Default::default(),
+            export_defs: Default::default(),
             overlay_path: None,
             explicit_no_overlay: false,
             plugins_dir: None,
@@ -855,6 +859,22 @@ impl TestApp {
     pub(crate) fn group(mut self, name: &str, cfg: crate::config::GroupCfg) -> Self {
         self.groups_registry.insert(name.into(), cfg);
         self.base_group_names.insert(name.into());
+        self
+    }
+    /// Seed an `identity-providers:` DEFINITION into the App's effective named map (the read side of
+    /// the generic named-map admin CRUD). Mirror whatever the fixture's on-disk config.yaml declares.
+    pub(crate) fn identity_provider(
+        mut self,
+        name: &str,
+        cfg: crate::config::IdentityProviderCfg,
+    ) -> Self {
+        self.identity_providers.insert(name.into(), cfg);
+        self
+    }
+    /// Seed an `export:` DEFINITION into the App's effective named map — the exporter twin of
+    /// [`TestApp::identity_provider`].
+    pub(crate) fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
+        self.export_defs.insert(name.into(), cfg);
         self
     }
     /// Seed the WHOLE groups tree at once as RUNTIME (non-base) groups: populates the App's group
@@ -1083,6 +1103,8 @@ impl TestApp {
             global_hooks: self.global_hooks,
             groups_registry: self.groups_registry,
             base_group_names: self.base_group_names,
+            identity_providers: self.identity_providers,
+            export_defs: self.export_defs,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
             mutation_limiter: std::sync::Arc::new(crate::admin::rate::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(

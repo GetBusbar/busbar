@@ -2933,10 +2933,7 @@ pub(crate) async fn put_config_settings(
                 // the BASE floors and re-loads the newer artifact, silently reverting a live audited
                 // rollback until the next restart re-applies the persisted pin.
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
-                    crate::config::overlay::apply_plugin_versions_to_deploy(
-                        &mut loaded.deploy,
-                        doc,
-                    );
+                    crate::config::overlay::apply_pre_resolve_sections(&mut loaded.deploy, doc);
                 }
                 let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -3480,6 +3477,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             }),
         );
+    }
+    // The 1.5.3 named-DEFINITION maps: emitted from the SAME `NamedMapSection::ALL` loop the router
+    // mounts from, so the document cannot document a section the router does not serve (or miss one
+    // it does). A new section adds its five operations here with no edit to this function.
+    for (path, item) in super::named_map::openapi_paths() {
+        paths.insert(path, item);
     }
     // Runtime hook registration: POST on the /hooks collection (merged onto its GET entry above).
     if let Some(obj) = paths
@@ -4251,7 +4254,19 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ("/keys/{id}", "patch"),
         ("/keys/{id}", "delete"),
     ];
-    for (path, method) in IF_MATCH_GUARDED {
+    // Every generic named-map WRITE is version-guarded too; enumerated from the section table
+    // rather than hand-listed, so a new section's three verbs are guarded the moment it exists.
+    let mut if_match_guarded: Vec<(String, &'static str)> = IF_MATCH_GUARDED
+        .iter()
+        .map(|(p, m)| ((*p).to_string(), *m))
+        .collect();
+    for section in crate::config::named_map::NamedMapSection::ALL {
+        let root = section.path_root();
+        if_match_guarded.push((format!("{root}/{{name}}"), "put"));
+        if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
+        if_match_guarded.push((format!("{root}/{{name}}/settings"), "patch"));
+    }
+    for (path, method) in &if_match_guarded {
         if let Some(op) = paths
             .get_mut(&ap(path))
             .and_then(|p| p.get_mut(*method))
@@ -4389,8 +4404,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     use crate::admin::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, Page, PluginInstallView, PluginReloadView,
-        PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
+        PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
     };
 
     // Info & topology.
@@ -4671,6 +4686,29 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "additionalProperties": false
         })
     );
+    // The GENERIC named-DEFINITION maps: response views, request bodies and the `name` path
+    // parameter, all emitted from the SAME `NamedMapSection::ALL` loop the router and the path items
+    // come from. A new section is documented in full without touching this block.
+    for section in crate::config::named_map::NamedMapSection::ALL {
+        let root = section.path_root();
+        let item = format!("{root}/{{name}}");
+        let settings = format!("{root}/{{name}}/settings");
+        typed!(root, "get", "200", Page<NamedDefView>);
+        typed!(&item, "get", "200", NamedDefView);
+        typed!(&item, "put", "200", NamedDefView);
+        typed!(&settings, "patch", "200", NamedDefView);
+        body_raw!(
+            &item,
+            "put",
+            config_doc(&format!(
+                "One `{}:` DEFINITION, exactly as config.yaml spells it (`{{module, settings, \
+                 ...}}`). Parsed into the section's `deny_unknown_fields` config struct, so an \
+                 unknown key is the same loud reject the file would give.",
+                section.key()
+            ))
+        );
+        body!(&settings, "patch", super::named_map::NamedSettingsReq);
+    }
 
     // The generated component schemas (every `$ref`'d view type), merged with the hand-written
     // `Error` schema. The `Error` schema stays hand-written so its `code` enum is the frozen

@@ -19,12 +19,39 @@ use crate::state::App;
 use super::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
     GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
-    ModelView, Page, PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView,
-    ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
+    ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
+    PoolMemberView, PoolView, ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
 };
+use crate::config::named_map::NamedMapSection;
 use crate::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
+
+/// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
+/// REFERENCE is collapsed to a boolean here — the one place it could leak, closed by construction.
+fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) -> NamedDefView {
+    NamedDefView {
+        name: name.to_string(),
+        module: cfg.module.clone(),
+        settings: cfg.settings.clone(),
+        max_admin_scope: cfg.max_admin_scope.clone(),
+        token_configured: Some(cfg.token.is_some()),
+        browser_login_configured: Some(cfg.browser_login.is_some()),
+    }
+}
+
+/// Project one `export:` DEFINITION onto the shared named-map view. An exporter carries neither a
+/// trust ceiling nor a credential, so those fields are omitted from the body entirely.
+fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefView {
+    NamedDefView {
+        name: name.to_string(),
+        module: cfg.module.clone(),
+        settings: cfg.settings.clone(),
+        max_admin_scope: None,
+        token_configured: None,
+        browser_login_configured: None,
+    }
+}
 
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
 /// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
@@ -1091,6 +1118,55 @@ impl AdminService {
             .get(name)
             .map(|cfg| self.hook_view(name, cfg))
             .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))
+    }
+
+    /// `GET /api/v1/admin/<section>` — the GENERIC named-DEFINITION map read (`identity-providers`,
+    /// `export`; `tools`/`agents` later). ONE method for every section, parameterized by
+    /// [`NamedMapSection`] — the read half of the same "define once, reference by name" grammar the
+    /// config file speaks. Definitions only; never a secret (see [`NamedDefView`]). Sorted by name so
+    /// the read is stable regardless of the map's insertion order.
+    pub(crate) async fn list_named_defs(
+        &self,
+        section: NamedMapSection,
+    ) -> Result<Page<NamedDefView>, AdminError> {
+        let mut defs: Vec<NamedDefView> = match section {
+            NamedMapSection::IdentityProviders => self
+                .app
+                .identity_providers
+                .iter()
+                .map(|(name, cfg)| identity_provider_view(name, cfg))
+                .collect(),
+            NamedMapSection::Export => self
+                .app
+                .export_defs
+                .iter()
+                .map(|(name, cfg)| export_def_view(name, cfg))
+                .collect(),
+        };
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Page::single(defs))
+    }
+
+    /// `GET /api/v1/admin/<section>/{name}` — ONE named definition, or `not_found`. The single-entry
+    /// twin of [`AdminService::list_named_defs`].
+    pub(crate) async fn get_named_def(
+        &self,
+        section: NamedMapSection,
+        name: &str,
+    ) -> Result<NamedDefView, AdminError> {
+        let view = match section {
+            NamedMapSection::IdentityProviders => self
+                .app
+                .identity_providers
+                .get(name)
+                .map(|cfg| identity_provider_view(name, cfg)),
+            NamedMapSection::Export => self
+                .app
+                .export_defs
+                .get(name)
+                .map(|cfg| export_def_view(name, cfg)),
+        };
+        view.ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the

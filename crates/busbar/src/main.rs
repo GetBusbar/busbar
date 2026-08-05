@@ -3447,6 +3447,10 @@ pub(crate) fn build_app_from_config(
         global_hooks: cfg.global_hooks.clone(),
         groups_registry: cfg.groups.clone(),
         base_group_names,
+        // The two NAMED-DEFINITION maps the generic admin CRUD serves, carried verbatim off the
+        // resolved config (the EFFECTIVE base+overlay shape).
+        identity_providers: cfg.identity_providers.clone(),
+        export_defs: cfg.export_defs.clone(),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
