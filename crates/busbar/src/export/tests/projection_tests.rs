@@ -475,7 +475,6 @@ export:
     .unwrap();
     let defs = std::collections::HashMap::from([("anthropic".to_string(), def)]);
     let errors = crate::config::resolve(&deploy, &defs)
-        .err()
-        .expect("a producerless stream must make the whole config fail to resolve");
+        .expect_err("a producerless stream must make the whole config fail to resolve");
     assert_error_mentions(&errors, &["prompts", "NO PRODUCER", "later release"]);
 }
