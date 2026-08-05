@@ -50,7 +50,7 @@ That request left your app as OpenAI. It may have been served by Anthropic, and 
 - **Governance** when you want it: signed expiring keys, hierarchical groups with request / token / budget / concurrency limits, spend tracking → [Governance](https://getbusbar.com/docs/guides/governance/)
 - **A verified provider catalog**, plus any provider on the six protocols in a few lines of YAML → [Providers](https://getbusbar.com/docs/providers/)
 - **Hardening throughout**: SSRF guards, constant-time auth, SHA-256 key storage, secrets never logged → [SECURITY.md](SECURITY.md)
-- **Observability** over open standards: opt-in Prometheus `/metrics` (a `metrics:` block with a required retention window), OTLP traces, a per-request audit webhook → [Configuration](https://getbusbar.com/docs/configuration/)
+- **Observability** over open standards: opt-in Prometheus `/metrics` (an `export:` instance with `module: prometheus` and a required retention window), OTLP traces, a per-request audit webhook → [Configuration](https://getbusbar.com/docs/configuration/)
 
 Busbar shares an arena with LiteLLM and OpenRouter, but it was built reliability-first, and the differences are bigger than a feature list. The honest comparison lives at **[Why Busbar](https://getbusbar.com/docs/why-busbar/)**.
 

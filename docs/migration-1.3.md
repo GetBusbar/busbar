@@ -9,6 +9,14 @@ The mental model: **the engine runs hooks.** A pool names the hooks it wants (an
 and/or gates) in one `hooks: [...]` list. Hooks are defined once under a top-level `hooks:`
 registry and referenced by name, on a pool, or globally.
 
+> **Reading this in 1.5.3 or later?** This guide describes the 1.2.x → 1.3 hop, so **every YAML
+> block below is dated** — both the "1.2.x" and the "1.3" halves. The 1.3 hook REGISTRY it targets
+> (`socket:` / `webhook:` transports, `send_prompt`) was retired in 1.5.0, and 1.5.3 reshaped hooks
+> again into a top-level `hooks:` DEFINITION map of `kind: hook` plugins referenced by bare name.
+> `busbar --migrate-config <config.yaml>` takes a 1.2.x config all the way to the 1.5.3 shape in one
+> run. For the current grammar see [configuration.md](configuration.md) and
+> [migration-1.5.md](migration-1.5.md); read this page only for the history of a specific key.
+
 ---
 
 ## 1. Native routing strategy: `route:` → `hooks: [<strategy>]`
@@ -16,6 +24,7 @@ registry and referenced by name, on a pool, or globally.
 The pool's built-in ranking strategy moved from `route:` into the pool's `hooks:` list. The values
 are unchanged (`weighted`, the default, `cheapest`, `fastest`, `least_busy`, `usage`).
 
+<!-- config-check: historical -->
 ```yaml
 # 1.2.x
 pools:
@@ -43,6 +52,7 @@ A hook (webhook sidecar or Unix-socket binary) is now **defined once** in a top-
 registry and **referenced by name** from a pool's `hooks: [...]` list. The inline `policy:` block is
 gone.
 
+<!-- config-check: historical -->
 ```yaml
 # 1.2.x — transport named in route:, config inline
 pools:
@@ -94,14 +104,20 @@ Note `kind:`, a hook is a `gate` (fire-and-wait: it can rank, reject, restrict, 
 
 The two payload opt-ins became explicit, monotonic access grants on the hook definition:
 
-```yaml
-# 1.2.x
-    policy:
-      socket: /run/busbar/pii.sock
-      send_prompt: true
-      send_user: true
+Before (1.2.x), nested inside a pool's `policy:` block:
 
-# 1.3
+<!-- config-check: historical -->
+```yaml
+policy:
+  socket: /run/busbar/pii.sock
+  send_prompt: true
+  send_user: true
+```
+
+After (1.3):
+
+<!-- config-check: historical -->
+```yaml
 hooks:
   pii-guard:
     kind: gate
@@ -147,6 +163,7 @@ Authentication is now a **chain of modules** (a PAM-style list), not a single `m
 `mode:` conflated two separate things (*who authenticates the caller* and *whose key hits the
 provider*) which are now separate keys.
 
+<!-- config-check: historical -->
 ```yaml
 # 1.2.x
 auth:

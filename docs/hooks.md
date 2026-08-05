@@ -15,7 +15,7 @@ A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` 
 
 **In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside Busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-webrequest-hook` (see [Webrequest](#first-party-hook-plugins-150) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
 
-**Admin opt-in required.** A `kind: hook` plugin cannot self-wire into a security-critical path. Wiring a hook with `prompt` above `no` or `global: true` requires `full` admin scope.
+**Admin opt-in required.** A `kind: hook` plugin cannot self-wire into a security-critical path. Wiring a hook with `prompt` above `no`, or attaching one at the all-pools `pools.hooks:` key, requires `full` admin scope.
 
 **Grants are core-enforced, never plugin-driven.** A plugin cannot self-grant access. The signed manifest `needs` field (set at pack time with `plugin-pack --needs-prompt rw`) declares intent; the core enforces the actual projection. The plugin only sees what the operator AND the declared need allow.
 
@@ -30,28 +30,42 @@ Every hook is one of two kinds. That is the only structural distinction: the res
 
 A **tap** watches: logging, audit, metering, shipping records to a SIEM. It can never delay or change a request. A **gate** decides: it can reject the request, restrict which pool members may serve it, re-order the failover walk, or rewrite the request body. The PII guard, the smart router, and the Headroom compressor are all gates: same wire, same timing, same fail-safe, different reply arm.
 
-## Inline instances (no registry)
+## Named definitions, referenced by name (1.5.3)
 
-A hook instance is defined INLINE where it runs: in a pool's `hooks: [...]` list or in the
-top-level `global_hooks: [...]` list (there is no separate registry block; a hook is a plugin, and
-its instance is a module ref at its point of use):
+A hook is **DEFINED once** in the top-level `hooks:` map — `<instance-name>: { module, settings, … }`
+— and **REFERENCED by bare name** wherever it should fire. There are no inline hook instances
+anywhere in 1.5.3, and the old top-level `global_hooks:` list is gone: its job is now the reserved
+all-pools `pools.hooks:` attach key. The same `module:` may back **several named hooks** — a
+different scope or different settings is simply a new name, and *the name is the instance*.
 
 ```yaml
 plugins:
   enabled: true
   dir: /etc/busbar/plugins                 # the signed kind:hook tarballs live here
 
-global_hooks:                              # attach to EVERY request, ordered
-  - { module: busbar-audit-hook, kind: tap, prompt: ro }     # your signed audit tap
-  - { module: busbar-pii-hook,   kind: gate, prompt: ro, on_error: reject }
+hooks:                                     # THE definition map
+  audit:
+    module: busbar-audit-hook              # your signed audit tap
+    kind: tap
+    phase: [response]                      # a LIST of stages; omit = all four
+    prompt: ro
+  pii-eng:
+    module: busbar-pii-hook
+    groups: [engineering]                  # SCOPE: omit or [] = every caller
+    kind: gate
+    prompt: ro
+    on_error: reject
+  rtr:
+    module: busbar-webrequest-hook         # out-of-process forwarder to a sidecar
+    settings: { url: "https://hooks.internal/rtr" }
+  headroom:
+    module: busbar-headroom-hook           # first-party kind: hook plugin (in-process)
+    prompt: rw
 
 pools:
+  hooks: [audit]                           # RESERVED all-pools attach — fires for EVERY pool
   my-pool:
-    hooks:
-      - cheapest                           # this pool's base ordering strategy (a bare name)
-      - { module: busbar-webrequest-hook,  # out-of-process forwarder to a sidecar
-          settings: { url: "https://hooks.internal/rtr" } }
-      - { module: busbar-headroom-hook }   # first-party kind: hook plugin (in-process)
+    hooks: [cheapest, pii-eng, rtr, headroom]   # bare NAMES only
     members:
       - model: claude-opus
       - model: claude-opus-bedrock
@@ -62,36 +76,47 @@ The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alia
 first-party `busbar-headroom-hook` and `busbar-webrequest-hook`, or your own). `settings:` is the
 plugin's opaque config — for `busbar-webrequest-hook` that includes the SSRF-guarded sidecar
 `url`. Loading any of these requires `plugins.enabled: true` and the tarball installed in
-`plugins.dir`; an unresolved `module:` refuses to boot.
+`plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
+refuses to boot.
 
-**Attach a hook** two ways: an inline ref in a pool's `hooks:` list (fires for that pool) or in
-`global_hooks:` (fires on every request). A pool's `hooks:` list carries its ordering strategy
-(`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, a bare name, at most one) and any number of
-gates. In a pool list an unmarked ref defaults to `kind: gate`; in `global_hooks` it defaults to
-`kind: tap`.
+**Attach a hook** two ways, both bare-name lists: the reserved `pools.hooks:` key (fires for every
+pool) or a pool's own `hooks:` list (fires for that pool). The two **combine additively**, deduped by
+name — a hook named in both fires exactly ONCE, at its first position. A pool's `hooks:` list also
+carries its ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, a bare name, at
+most one) alongside any number of gates. A definition with no `kind:` defaults to `kind: gate`.
 
-**Gates fire concurrently.** All of a request's decision gates (the pool's own and every global) fire at once against the same candidate set, then reconcile deterministically: any **reject** wins (the lowest-`priority` gate's status/message surfaces), **restrict**s intersect, and with several **order**s the last in the priority chain wins, re-validated against the post-restrict set. Added latency is the slowest gate, not the sum.
+**Two scope dimensions on the definition.** `groups:` limits WHICH CALLERS a hook fires for (omit or
+`[]` = all; a user is a leaf group, e.g. `user:bob`, and membership walks the `groups:` tree through
+ancestors). `phase:` limits WHICH STAGES it fires at. Because both live on the definition, running
+one module with two different scopes means two named entries (`pii-eng`, `pii-all`), not one entry
+with a magic flag.
 
-**A tap picks its observation stage** with `at:` (default `request`):
+**Gates fire concurrently.** All of a request's decision gates (the pool's own and every all-pools attach) fire at once against the same candidate set, then reconcile deterministically: any **reject** wins (the lowest-`priority` gate's status/message surfaces), **restrict**s intersect, and with several **order**s the last in the priority chain wins, re-validated against the post-restrict set. Added latency is the slowest gate, not the sum.
 
-| `at:` | Observes | Extra payload |
+**A hook picks its observation stages** with `phase:` — a **LIST** (1.5.3 generalized the old
+single-valued tap `at:` into it). Omitting `phase:` means exactly these four core stages:
+
+| `phase:` member | Observes | Extra payload |
 |---|---|---|
 | `request` | the effective (post-rewrite) request | prompt text per the `prompt: ro` grant |
-| `route` | the routing decision | surviving candidate count |
-| `attempt` | every dispatch attempt | `attempt_number`, `model` (the dispatched member), `remaining_candidates`, `previous_failure` |
-| `completion` | the outcome | `outcome` + `status`, including the **synthetic rejected completion**, so an audit tap sees denials, not just served traffic |
+| `candidate` | the routing decision (was `route`) | surviving candidate count |
+| `routing` | every dispatch attempt (was `attempt`) | `attempt_number`, `model` (the dispatched member), `remaining_candidates`, `previous_failure` |
+| `response` | the outcome (was `completion`) | `outcome` + `status`, including the **synthetic rejected completion**, so an audit tap sees denials, not just served traffic |
+
+The three renamed stage words are a HARD rename: an old `route`/`attempt`/`completion` value is
+rejected at boot with the new spelling named in the error (`busbar --migrate-config` rewrites it).
 
 Stage payloads ride a top-level `stage` object on the (shape-only) per-request projection, with
 only the stage's own fields present:
 
 ```jsonc
 {"op": "notify", "request": {...}, "candidates": [], "context": {},
- "stage": {"at": "attempt",                 // "route" | "attempt" | "completion"
-           "model": "claude-opus",          // the dispatched member (attempt)
-           "attempt_number": 2,             // (attempt)
-           "remaining_candidates": 3,       // (route, attempt)
-           "previous_failure": "...",       // (attempt ≥ 2)
-           "outcome": "ok", "status": 200}} // (completion)
+ "stage": {"at": "routing",                 // "candidate" | "routing" | "response"
+           "model": "claude-opus",          // the dispatched member (routing)
+           "attempt_number": 2,             // (routing)
+           "remaining_candidates": 3,       // (candidate, routing)
+           "previous_failure": "...",       // (routing, attempt ≥ 2)
+           "outcome": "ok", "status": 200}} // (response)
 ```
 
 The completion `outcome` vocabulary is `ok | failed | rejected_by_gate | rejected_by_auth` and is
@@ -132,8 +157,8 @@ A gate answers with exactly one of:
 
 ## Ordering
 
-- **`priority: <n>`** is the one ordering knob: it orders the rewrite transform chain (each rewrite sees the prior's output) and tie-breaks the concurrent decision reconcile: which reject's message surfaces, and which `order` counts as "last". Ties keep globals first, then config order.
-- A pool that names no strategy gets the zero-cost inline `weighted` backstop. (The 1.4.x `default: true` registry flag is gone with the registry: name the base strategy per pool.)
+- **`priority: <n>`** is the one ordering knob: it orders the rewrite transform chain (each rewrite sees the prior's output) and tie-breaks the concurrent decision reconcile: which reject's message surfaces, and which `order` counts as "last". Ties keep the all-pools `pools.hooks:` attaches first, then config order.
+- A pool that names no strategy gets the zero-cost inline `weighted` backstop. (The 1.4.x `default: true` registry flag is gone: name the base strategy per pool.)
 
 ## What Busbar guarantees when a hook misbehaves
 

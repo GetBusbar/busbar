@@ -22,17 +22,26 @@ The static-token allowlist is **removed**. The `tokens` / `static-tokens` module
 module (Busbar-signed, expiring virtual keys minted over the Admin API) plus any `kind: auth` IdP
 plugins.
 
+**Before (1.4.x):**
+
+<!-- config-check: historical -->
 ```yaml
-# 1.4.x
 auth:
   chain: [tokens]
   client_tokens: [ "${BUSBAR_CLIENT_TOKEN}" ]
+```
 
-# 1.5.0
+**After (1.5.3):** the operator credential is a NAMED identity-provider definition, referenced by
+bare name. (1.5.0 wrote it inline in `admin_auth:`; 1.5.3 retired the inline form — see
+[the 1.5.3 config grammar lock](#the-153-config-grammar-lock) below.)
+
+```yaml
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   chain: [keys]                                    # the built-in signed-key verifier
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }   # operator credential for the Admin API
+  admin_auth: [admin-tokens]                       # a bare PROVIDER NAME
 ```
 
 Mint a key with `POST /api/v1/admin/keys` (the signed token is returned once) and roll the new
@@ -44,14 +53,14 @@ guards the Admin API is the built-in `admin-tokens` module, whose `token` is a s
 
 ## 2. Hooks: the top-level `hooks:` registry + built-in `socket`/`webhook` transports → `kind: hook` plugins
 
-The top-level `hooks:` registry block is **gone**, and the built-in `socket`/`webhook` hook
-transports are retired. A hook is now a signed `kind: hook` plugin, referenced **inline** where it
-runs — in a pool's `hooks:` list or in top-level `global_hooks` — and requires `plugins.enabled:
-true`. For the HTTP-sidecar case (out-of-process forwarding), use the first-party
-`busbar-webrequest-hook` plugin.
+The 1.4.x `hooks:` REGISTRY block is **gone**, and the built-in `socket`/`webhook` hook transports
+are retired. A hook is now a signed `kind: hook` plugin and requires `plugins.enabled: true`. For the
+HTTP-sidecar case (out-of-process forwarding), use the first-party `busbar-webrequest-hook` plugin.
 
+**Before (1.4.x):** a registry entry carrying a built-in transport.
+
+<!-- config-check: historical -->
 ```yaml
-# 1.4.x — registry entry + built-in transport
 hooks:
   pii-guard:
     kind: gate
@@ -60,18 +69,32 @@ hooks:
 pools:
   smart:
     hooks: [pii-guard]
-
-# 1.5.0 — inline plugin ref (no registry)
-plugins: { enabled: true, dir: /etc/busbar/plugins }
-pools:
-  smart:
-    hooks:
-      - { module: busbar-webrequest-hook, settings: { url: "https://sidecar.internal/pii" },
-          kind: gate, prompt: ro }
 ```
 
-The `global:` / `default:` flags on a hook are gone — the two lists (`pools.<p>.hooks` and
-`global_hooks`) subsume them. See [hooks.md](hooks.md) and [plugins.md](plugins.md).
+**After (1.5.3):** the top-level `hooks:` key is back, but as a **named-DEFINITION map** whose
+entries name a `module:` — never a `socket:`/`webhook:` transport — and are referenced by bare name.
+(1.5.0 briefly used an INLINE plugin ref in the pool list instead; 1.5.3 retired inline instances, so
+write the definition map. Busbar tells the two top-level `hooks:` shapes apart by shape, not by
+presence: a legacy registry entry still loud-fails at boot.)
+
+```yaml
+plugins: { enabled: true, dir: /etc/busbar/plugins }
+
+hooks:
+  pii-guard:
+    module: busbar-webrequest-hook
+    settings: { url: "https://sidecar.internal/pii" }
+    kind: gate
+    prompt: ro
+
+pools:
+  smart:
+    hooks: [pii-guard]                             # a bare NAME, exactly as in 1.4.x
+```
+
+The `global:` / `default:` flags on a hook are gone — the two bare-name lists (the reserved all-pools
+`pools.hooks:` and a pool's own `hooks:`) subsume them. See [hooks.md](hooks.md) and
+[plugins.md](plugins.md).
 
 ---
 
@@ -165,14 +188,18 @@ The plaintext path keys are gone. Each TLS field is now a **secret reference** �
 `client_ca` — taking `{ file: /path }`, `{ env: VAR }`, or `{ module: <secret-plugin>, settings:
 {...} }`. The same shape applies to `admin_tls`.
 
+**Before (1.4.x):**
+
 ```yaml
-# 1.4.x
 tls:
   cert_file: /etc/busbar/tls/fullchain.pem
   key_file:  /etc/busbar/tls/privkey.pem
   client_ca_file: /etc/busbar/tls/ca.pem
+```
 
-# 1.5.0
+**After (1.5.0, unchanged in 1.5.3):**
+
+```yaml
 tls:
   cert: { file: /etc/busbar/tls/fullchain.pem }
   key:  { file: /etc/busbar/tls/privkey.pem }
@@ -188,13 +215,18 @@ See [Configuration → `tls`](configuration.md#tls) and [operations.md](operatio
 Every secret in config is now a reference; there are no `*_env` suffix fields. A provider's
 credential moves from `api_key_env` to a secret reference under `api_key`.
 
+**Before (1.4.x):**
+
+<!-- config-check: historical -->
 ```yaml
-# 1.4.x
 providers:
   openai:
     api_key_env: OPENAI_KEY
+```
 
-# 1.5.0
+**After (1.5.0, unchanged in 1.5.3):**
+
+```yaml
 providers:
   openai:
     api_key: { env: OPENAI_KEY }                   # or { file: /path } / { module: <secret-plugin> }
@@ -225,7 +257,7 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 
 - [ ] `busbar --migrate-config old.yaml > config-1.5.yaml`; review every TODO/WARNING (esp. each `allowed_pools: []` — meaning flipped to *none*)
 - [ ] `auth.client_tokens` / `BUSBAR_CLIENT_TOKEN` → `auth.chain: [keys]` + `admin_auth: [admin-tokens]` (`BUSBAR_ADMIN_TOKEN`)
-- [ ] top-level `hooks:` registry + `socket`/`webhook` transports → inline `kind: hook` plugin refs (`busbar-webrequest-hook` for the HTTP sidecar)
+- [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-webrequest-hook` for the HTTP sidecar), referenced by bare name
 - [ ] `governance:` → `groups:` + `rate_card:` + `per_request_fee:` + `store:`
 - [ ] per-key `rpm_limit`/`tpm_limit`/`max_budget_cents`/`budget_period` → group `limits:`
 - [ ] durable store → `store: { module: sqlite|postgres|redis }` + `plugins.enabled: true` (default is ephemeral `memory`)
@@ -280,12 +312,16 @@ If `auth.chain` never names `keys` (no signed-token verification), nothing chang
 
 2. Point `auth.signing_key` at it:
 
+   Before — 1.5.0, implicit (no `auth.signing_key` set; busbar generated one on first boot):
+
    ```yaml
-   # 1.5.0 (implicit — no auth.signing_key set, busbar generated one on first boot)
    auth:
      chain: [keys]
+   ```
 
-   # 1.5.1
+   After — 1.5.1 and later, explicit:
+
+   ```yaml
    auth:
      chain: [keys]
      signing_key: { file: /run/secrets/busbar-signing.key }   # or { env: BUSBAR_SIGNING_KEY }
@@ -317,9 +353,131 @@ verify tokens signed with the old secret.
 
 ---
 
+# Migrating from 1.5.2 to 1.5.3
+
+1.5.3 is the **break-once config-stability release**. Two independent changes ship in it: a
+**grammar lock** (breaking, mechanical, migrated for you) and a **config consolidation** (soft,
+env-var deprecations). After 1.5.3 the config grammar is frozen and additive-only forever, enforced
+by a CI gate.
+
+## The 1.5.3 config grammar lock
+
+One pattern replaces several ad-hoc ones: **every plugin-instance kind is a top-level NAMED
+DEFINITION map (`name → {module, settings, …}`) and is REFERENCED BY BARE NAME everywhere else.**
+Define once, reference many; the name is the instance, `module:` is which plugin backs it. Built-ins
+(`keys`, `admin-tokens`, `cheapest`) are referenced bare and need a definition entry only when they
+carry config.
+
+Every change below is detected at boot: an un-migrated config **refuses to start**, naming the
+retired key AND its new home. `busbar --migrate-config <config.yaml>` rewrites all of them.
+
+| Retired in 1.5.2 and earlier | 1.5.3 |
+|---|---|
+| top-level `global_hooks:` (a list of inline hook instances) | the top-level `hooks:` DEFINITION map + the reserved all-pools `pools.hooks: [names]` attach list |
+| an inline hook instance in any `hooks:` list | a `hooks:` definition entry, referenced by bare name |
+| an inline identity provider under `auth.chain:` / `auth.admin_auth:` | an `identity-providers:` definition entry, referenced by bare name |
+| `auth.methods:` | the matching `identity-providers:` definition (`settings:` + `browser_login:` are per-provider) |
+| `auth.modules:` | the top-level `identity-providers:` map |
+| `auth.upstream_credentials:` | `pools.upstream_credentials:` (the all-pools default) + a per-pool override |
+| the whole `observability:` block, incl. `otlp_url` / `otlp_endpoint` | an `export:` instance with `module: otlp` and `settings.url` |
+| `observability.request_log_webhook_url` (and its `max_inflight_*` / `*_timeout_secs` siblings) | an `export:` instance with `module: request-log-webhook` and `settings.url` |
+| `observability.emit_server_timing` | `advanced.response_headers.server_timing` |
+| the top-level `metrics:` block | an `export:` instance with `module: prometheus` and `settings.buffer_seconds` |
+| `admin_insecure: true` | `admin_require_mtls: false` — **INVERTED**, so the safe posture is what an omitted key gives you |
+| a tap's single-valued `at: route` / `attempt` / `completion` | a hook's `phase:` **LIST**: `candidate` / `routing` / `response` (plus `request`) |
+
+**Before (1.5.2):**
+
+<!-- config-check: historical -->
+```yaml
+admin_insecure: true
+
+global_hooks:
+  - { module: busbar-audit-hook, kind: tap, at: completion }
+
+auth:
+  chain: [keys]
+  upstream_credentials: own
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  methods:
+    oidc: { issuer: "https://idp.example.com/", audience: "busbar" }
+
+observability:
+  otlp_url: "http://localhost:4318/v1/traces"
+  request_log_webhook_url: "https://logs.example.com/busbar"
+
+metrics:
+  buffer_seconds: 60
+
+pools:
+  smart:
+    hooks:
+      - { module: busbar-pii-hook, kind: gate, prompt: ro, on_error: reject }
+    members: [ { model: claude-sonnet-4-5 } ]
+```
+
+**After (1.5.3):**
+
+```yaml
+admin_require_mtls: false          # INVERTED; omit it entirely to keep the safe default
+
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  oidc:
+    module: oidc
+    settings: { issuer: "https://idp.example.com/", audience: "busbar" }
+    max_admin_scope: none          # per-provider admin ceiling, on the DEFINITION
+
+hooks:                             # define once…
+  audit: { module: busbar-audit-hook, kind: tap, phase: [response] }
+  pii:   { module: busbar-pii-hook,  kind: gate, prompt: ro, on_error: reject }
+
+export:                            # …a NAMED map: several instances of one module are fine
+  metrics: { module: prometheus,          settings: { buffer_seconds: 60 } }
+  traces:  { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
+  req-log: { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
+
+auth:
+  chain: [keys, oidc]              # bare provider NAMES
+  admin_auth: [admin-tokens]
+
+pools:
+  hooks: [audit]                   # reserved all-pools attach (LIST → additive)
+  upstream_credentials: own        # reserved all-pools default (SCALAR → override)
+  smart:
+    hooks: [pii]                   # …reference many, by bare name
+    members: [ { model: claude-sonnet-4-5 } ]
+```
+
+**The two combine rules**, which govern every inherited setting: **LISTS are ADDITIVE** — a pool
+fires `pools.hooks` ∪ its own `hooks:`, deduped by name, so a hook named in both fires exactly ONCE
+at its first position. **SCALARS OVERRIDE** — a pool's own `upstream_credentials:` replaces the
+all-pools default outright. `hooks` and `upstream_credentials` are therefore RESERVED names at the
+`pools:` level: a pool may not be called either.
+
+**One deliberate exemption:** `secrets:` stays keyed BY MODULE, not by instance name. It configures a
+secret plugin's `open()` — the delivery path (address, namespace, CA) that is a property of the
+module itself — not an instance of one. It is the one block that is not a named-definition map, on
+purpose.
+
+**Terminology:** "auth module" is now "identity provider" throughout config and docs.
+
+### Quick checklist
+
+- [ ] `busbar --migrate-config config.yaml > config-1.5.3.yaml`, then `busbar --validate`
+- [ ] `global_hooks:` + every inline hook instance → a top-level `hooks:` definition map + bare-name `pools.hooks:` / `pools.<p>.hooks:` lists
+- [ ] every inline `auth.chain` / `auth.admin_auth` entry and every `auth.methods:` / `auth.modules:` entry → an `identity-providers:` definition, referenced by bare name (put `max_admin_scope:` on the definition; prefer `none` for an external IdP)
+- [ ] `observability:` + top-level `metrics:` → `export:` instances (`prometheus` / `otlp` / `request-log-webhook` / `request-log-file`)
+- [ ] `observability.emit_server_timing` → `advanced.response_headers.server_timing`
+- [ ] `admin_insecure: true` → `admin_require_mtls: false` (or drop it and keep the safe default)
+- [ ] `auth.upstream_credentials:` → `pools.upstream_credentials:` (+ per-pool overrides)
+- [ ] tap `at: route|attempt|completion` → hook `phase: [candidate|routing|response]`
+- [ ] check no pool is named `hooks` or `upstream_credentials`
+
 ## 1.5.3 config consolidation
 
-1.5.3 moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
+1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
 config mutability explicit and **durable by default**. Every migrated env var still works for **one release**
 (each logs a deprecation warning) — this is a soft migration, not a clean cut. Move each into config.yaml at
 your convenience before the next release removes the env var.
