@@ -125,6 +125,17 @@ pub(crate) enum LimitWindow {
 }
 
 impl LimitWindow {
+    /// Every window, so a consumer that has to recognize a window WORD (e.g. `cost::
+    /// is_bucket_of_group`, parsing a bucket id back) enumerates the same five spellings the
+    /// projector writes rather than hard-coding its own list.
+    pub(crate) const ALL: [LimitWindow; 5] = [
+        LimitWindow::Minute,
+        LimitWindow::Hour,
+        LimitWindow::Day,
+        LimitWindow::Month,
+        LimitWindow::Total,
+    ];
+
     /// The config spelling - ALSO the runtime window-period sentinel (`governance::budget_window`
     /// matches these exact strings) and the metrics/error vocabulary. One vocabulary everywhere.
     pub(crate) fn as_str(&self) -> &'static str {

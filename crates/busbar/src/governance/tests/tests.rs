@@ -3924,3 +3924,128 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         "idempotent: a second reclamation of the same group drops nothing"
     );
 }
+
+/// HIGH-1 (round 4): the sweep's cap exemption must hold for a group whose NAME CONTAINS `@` — the
+/// ORDINARY SSO case, not a pathological one. `sanitize_self_sub` permits `@` explicitly, no
+/// charset check exists on a group name anywhere (`validate_groups` checks parent-existence /
+/// acyclicity / amount > 0; `build_with_group` checks empty + length), and an IdP subject is
+/// normally an email — so token exchange auto-provisions `user:alice@corp.com`, whose team's
+/// `child_default` stamps an all-time budget on it.
+///
+/// The round-3 exemption took "everything before the FIRST `@`" as the group name, resolved
+/// `user:alice`, found nothing, and declared the cell uncapped: it was swept, and because hydrate is
+/// boot-only its lifetime spend re-read as 0 — an EXHAUSTED all-time cap admitting again. A BUDGET
+/// BYPASS, strictly worse than the leak the check closed. `#` (the scope-suffix delimiter) is
+/// covered here too, for the same reason.
+#[test]
+fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let max_window = 31 * SECS_PER_DAY;
+    let survivor = sample_key("survivor-delim", "hs-delim");
+
+    // Two live, all-time-BUDGET-CAPPED groups whose names carry the two characters the bucket id
+    // uses as delimiters, plus the `user:alice` whose existence is what made the `@` split look
+    // plausible.
+    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
+        std::collections::BTreeMap::from([
+            (
+                "user:alice@corp.com".to_string(),
+                budget_group_cfg(50000, "total", None),
+            ),
+            (
+                "team#eng".to_string(),
+                budget_group_cfg(50000, "total", None),
+            ),
+            ("user:alice".to_string(), crate::config::GroupCfg::default()),
+        ]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+
+    let idle = || BudgetCell {
+        window_start: 0,
+        requests: 7,
+        billable_requests: 7,
+        flushed_requests: 7,
+        flushed_billable_requests: 7,
+        models: Vec::new(),
+        dirty: false,
+        last_touch: now - max_window - 1,
+    };
+    {
+        let mut map = gov.budget.write("survivor-delim");
+        map.insert("group:user:alice@corp.com@total".to_string(), idle());
+        map.insert("group:team#eng@total".to_string(), idle());
+    }
+
+    gov.budget.sweep_ticker_for("survivor-delim").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        Ordering::Relaxed,
+    );
+    assert!(
+        gov.try_admit(&cost, &survivor, "", now).is_ok(),
+        "key admits"
+    );
+
+    let map = gov.budget.read("survivor-delim");
+    assert!(
+        map.contains_key("group:user:alice@corp.com@total"),
+        "an EMAIL-named group's all-time budget cell still backs an enforced cap; sweeping it \
+         resets lifetime spend to 0 on the next read (hydrate is boot-only) and an EXHAUSTED cap \
+         starts admitting again"
+    );
+    assert!(
+        map.contains_key("group:team#eng@total"),
+        "a group name containing the SCOPE delimiter `#` is capped just the same"
+    );
+}
+
+/// LOW-1 (round 4): the same false premise, the other way round. `reclaim_group_cells` swept
+/// `starts_with("group:<name>@")`, which is only a boundary if no name contains `@`. Deleting
+/// `user:alice` therefore also dropped the cell of `user:alice@corp.com` — a DIFFERENT group that is
+/// still live and still capped — resetting its spend to 0.
+#[test]
+fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let cell = BudgetCell {
+        window_start: 0,
+        requests: 1,
+        billable_requests: 1,
+        flushed_requests: 1,
+        flushed_billable_requests: 1,
+        models: Vec::new(),
+        dirty: false,
+        last_touch: now,
+    };
+    for id in [
+        "group:user:alice@total",
+        "group:user:alice@day#pool:frontier",
+        "group:user:alice@corp.com@total",
+        "group:user:alice@corp.com@day#pool:frontier",
+    ] {
+        gov.budget.write(id).insert(id.to_string(), cell.clone());
+    }
+
+    assert_eq!(
+        gov.reclaim_group_cells("user:alice"),
+        2,
+        "ONLY the deleted group's own cells: `user:alice@corp.com` is a different group"
+    );
+    for id in [
+        "group:user:alice@corp.com@total",
+        "group:user:alice@corp.com@day#pool:frontier",
+    ] {
+        assert!(
+            gov.budget.read(id).contains_key(id),
+            "{id} belongs to a live, capped group and must survive the deletion of `user:alice`"
+        );
+    }
+    // ...and deleting the email-named group reclaims exactly its own cells, leaving nothing behind.
+    assert_eq!(
+        gov.reclaim_group_cells("user:alice@corp.com"),
+        2,
+        "the longer name reclaims its own two cells"
+    );
+}

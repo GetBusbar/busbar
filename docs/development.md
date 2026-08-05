@@ -51,6 +51,37 @@ cargo clippy --all-targets -- -D warnings     # lints must be clean (treat warni
 cargo fmt --all                               # format (rustfmt.toml in repo)
 ```
 
+### The settings-leak lint
+
+`scripts/settings-leak-lint.sh` enforces one rule: **an admin READ may serve an
+opaque `settings:` bag's KEY NAMES, never its values.** Those bags carry
+`SecretRef`s (an OIDC `client_secret`, a hook `licenseKey`, a store `url` with a
+password), and the same defect has now been found in four independently written
+projections, each with a doc comment asserting the bag was safe.
+
+Its **scan root is the whole `crates/busbar/src` tree** (minus test trees), not
+just `admin/**`. An admin handler serializes whatever type it is handed, and that
+type may be declared anywhere in the engine — `hooks/wire.rs`'s `StatusReply`,
+the hook's echo of the *resolved* bag, is exactly such a type and was the third
+of the four leaks. The **boundary is the engine crate**: an admin projection is
+built here. The sibling wire/ABI crates (`busbar-api`, `plugin-abi`,
+`secret-ref`) define the ABI-level bag types themselves, have no admin surface,
+and cannot serve an HTTP read, so they are out of scope by construction.
+
+If you are adding a `settings`-shaped field or JSON member, either project
+`admin::v1::service::settings_keys(&…)` / redact with
+`service::redact_settings_bags(&mut value)`, or — only for an inbound request
+body, a response envelope whose nested bags are already redacted, or a
+non-projection engine type (an operator config struct, an inbound wire reply) —
+mark the line:
+
+```rust
+// settings-leak-lint: allow — <reason>
+```
+
+Run `scripts/settings-leak-lint.sh --selftest` before trusting its verdict; CI
+runs both.
+
 The test suite is **in-crate**: a shared
 `#[cfg(test)] mod test_support` provides the `MockServer` harness, and each module
 carries its own `#[cfg(test)] mod tests`. There are no `tests/` integration

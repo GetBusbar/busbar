@@ -813,32 +813,46 @@ pub(crate) async fn fetch_status(
 ///    which is the hook's ECHO of the SECRET-RESOLVED bag: `configure_hook` pushes
 ///    `resolve_hook_settings(&hook.settings)`, so the plugin receives — and echoes back — the
 ///    PLAINTEXT of every `SecretRef`. That is resolved secret material, at READ-ONLY admin scope.
-///    So the comparison happens in here, where the resolved bag already lives, and the caller gets
+///    So the comparison happens in here rather than at the endpoint, and the caller gets
 ///    KEY NAMES (which it is already free to serve) and a boolean.
-/// 2. THE COMPARISON HAS TO BE AGAINST THE RESOLVED BAG. It used to compare the reported (resolved)
-///    values against `hook.settings` (UNRESOLVED), so any `SecretRef` field reported drift on every
-///    single poll, forever — a permanent false positive that trains an operator to ignore the one
-///    signal this endpoint exists to raise. Resolving the desired bag the same way the configure
-///    push does makes like compare with like.
+/// 2. A `SecretRef` FIELD MUST NOT REPORT DRIFT ON EVERY POLL. The comparison ran the reported
+///    (resolved) values against `hook.settings` (UNRESOLVED), so any `SecretRef` field drifted
+///    forever — a permanent false positive that trains an operator to ignore the one signal this
+///    endpoint exists to raise. Such a field is now simply NOT COMPARED: its desired value is a
+///    reference, its observed value is that reference's plaintext, and the two are not comparable
+///    without resolving. "Cannot compare" is reported as "not drifted", which is the same
+///    fail-open posture the rest of this function already takes.
 ///
-/// Semantics are otherwise unchanged: only DESIRED keys are compared (extra self-managed keys the
-/// hook reports are not drift), and a hook that reports no settings at all is not drift (fail-open —
-/// it may simply not implement the echo). If the desired bag cannot be resolved (an unresolvable
-/// secret), the UNRESOLVED bag is compared: a resolution failure must not be reported as no-drift.
+/// NO SECRET RESOLUTION HAPPENS HERE, DELIBERATELY. This runs on an async admin GET that a
+/// dashboard polls (5s is typical). Resolving the desired bag — the first shape of this fix — made
+/// that GET call `SecretResolver::resolve`, whose non-built-in arm is a SYNCHRONOUS FFI call into a
+/// `kind: secret` plugin, inline on a Tokio worker with no `spawn_blocking` and no cache: a Vault
+/// round-trip per poll, a worker parked for the plugin's full timeout whenever Vault is slow, and a
+/// `tracing::info!` naming the setting and its reference on every single call.
+/// `run_chain_on_request_path`'s own doc describes exactly this hazard and offloads for it. So the
+/// classification is done by SHAPE instead (`config::secret::classify_setting` — the same
+/// classifier `resolve_settings` uses, so the two cannot drift about what a reference is), which
+/// reads nothing and calls nothing.
+///
+/// Semantics are otherwise unchanged: ordinary fields (including a `{ literal: … }` escape hatch,
+/// unwrapped exactly as the configure push unwraps it) are compared value-for-value, only DESIRED
+/// keys are compared (extra self-managed keys the hook reports are not drift), and a hook that
+/// reports no settings at all is not drift (it may simply not implement the echo).
 pub(crate) fn settings_drift_keys(
     hook: &crate::config::HookCfg,
-    env: &HookEnv,
     reported: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Vec<String> {
     let Some(observed) = reported else {
         return Vec::new();
     };
-    let desired = env
-        .resolve_hook_settings(&hook.settings)
-        .unwrap_or_else(|_| hook.settings.clone());
-    let mut keys: Vec<String> = desired
+    let mut keys: Vec<String> = hook
+        .settings
         .iter()
-        .filter(|(k, v)| observed.get(*k) != Some(*v))
+        .filter(|(k, v)| match crate::config::secret::classify_setting(v) {
+            // A reference's desired value is unknowable without I/O, so it is never drift.
+            crate::config::secret::SettingShape::Reference(_) => false,
+            crate::config::secret::SettingShape::Verbatim(want) => observed.get(*k) != Some(want),
+        })
         .map(|(k, _)| k.clone())
         .collect();
     keys.sort();

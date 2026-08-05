@@ -3357,9 +3357,14 @@ pub(crate) async fn hook_schema(
 ///
 /// NEITHER bag's VALUES are served, at either end. `reported.settings` was the hook's echo of the
 /// SECRET-RESOLVED bag busbar pushes it, i.e. the plaintext of every `SecretRef` — at READ-ONLY
-/// admin scope. Drift is computed inside `hooks::settings_drift_keys` (against the resolved desired
-/// bag, so a `SecretRef` field no longer reports drift on every poll) and reported as a boolean plus
+/// admin scope. Drift is computed inside `hooks::settings_drift_keys` and reported as a boolean plus
 /// the drifting KEY NAMES.
+///
+/// THIS HANDLER RESOLVES NO SECRETS. It is a polled read (a dashboard hitting it every few seconds
+/// is the design case), and secret resolution is blocking FFI: `settings_drift_keys` therefore
+/// classifies a `SecretRef` field by SHAPE and skips it rather than resolving the desired bag to
+/// compare it. Nothing on this path may acquire a secret, and nothing on it may log a secret
+/// reference.
 pub(crate) async fn hook_status(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -3378,8 +3383,7 @@ pub(crate) async fn hook_status(
             // changed in its observed settings (extra self-managed keys are NOT drift). The
             // comparison happens inside `hooks::settings_drift_keys` and yields KEY NAMES ONLY —
             // see that function for why NEITHER bag's values may be served here.
-            let drift_keys =
-                crate::hooks::settings_drift_keys(hook, &current.hook_env, r.settings.as_ref());
+            let drift_keys = crate::hooks::settings_drift_keys(hook, r.settings.as_ref());
             let settings_drift = !drift_keys.is_empty();
             let version_drift = r.settings_version.is_some_and(|v| v != desired_version);
             let metrics = r
