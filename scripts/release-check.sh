@@ -99,12 +99,28 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 
 SKIP_DOCKER=0
-for arg in "$@"; do
-  case "$arg" in
+# SEGMENT (1.5.3, unit G qa-gate segmentation): names WHICH preserved qa-gate segment this invocation
+# stands in for. `core-data-plane` (routing/proxy/admission/failover + budgets/rps + auth/SSO) and
+# `plugins` (plugin ABI / loader / fleet) are the two live-mock segments qa/segments.toml maps onto
+# THIS script so NO current coverage is lost (design §6 invariant). Today a segment label runs the
+# FULL gate (coverage-preserving) and records which segment it is; per-segment PHASE PARTITIONING —
+# running only the core-data-plane phases vs only the plugin-fleet phases — is a documented additive
+# refinement (TODO), not a behavior change. An unknown segment is a loud error, never a silent full run.
+SEGMENT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --skip-docker) SKIP_DOCKER=1 ;;
-    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+    --segment) shift; SEGMENT="${1:-}" ;;
+    --segment=*) SEGMENT="${1#--segment=}" ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+case "$SEGMENT" in
+  "" | core-data-plane | plugins) : ;;
+  *) echo "unknown --segment '$SEGMENT' (expected: core-data-plane | plugins)" >&2; exit 2 ;;
+esac
+[ -z "$SEGMENT" ] || echo "=== release-check: qa-gate segment '${SEGMENT}' (full coverage-preserving gate; per-segment phase partitioning is a TODO) ==="
 
 # ── Fail-fast diagnostics ────────────────────────────────────────────────────────────────────────
 SECONDS=0
