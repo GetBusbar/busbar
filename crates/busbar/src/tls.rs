@@ -693,7 +693,10 @@ mod tests {
     /// `tokio::sync::Mutex`, not `std::sync::Mutex`: every holder awaits (socket I/O) while holding
     /// it, and holding a `std` mutex guard across an await point risks blocking the executor thread
     /// underneath a parked task (clippy's `await_holding_lock`, correctly `-D warnings` here).
-    static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// MOVED to `crate::limits` (same lock, same rules) so that the `InstallGuard` tests living
+    /// beside the static they mutate are serialized against these too — a lock only this file held
+    /// protected these tests from each other but not from those, or those from these.
+    use crate::limits::LIMITS_TEST_LOCK;
 
     /// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
     /// through `AcceptBackoff`, so this covers the class rather than one loop.
@@ -1084,6 +1087,84 @@ mod tests {
         let _ = tx.send(());
     }
 
+    /// TEST — AN UNCOMMITTED `InstallGuard`'s ROLLBACK GOVERNS A REAL INBOUND CONNECTION.
+    ///
+    /// The end-to-end half of the `InstallGuard` coverage in `limits/tests/limits_tests.rs`: those
+    /// tests assert the rolled-back value through the accessors (including from another thread),
+    /// this one asserts the SERVER BEHAVIOUR an actual client gets. It is the same slow-loris
+    /// scenario as `body_read_timeout_trips_on_stalled_body` with the sign flipped: a rejected
+    /// candidate config carrying a 1s body-read timeout is installed through a guard and then
+    /// dropped WITHOUT commit (the failed-apply path), and only AFTER that rollback is the
+    /// connection made. The stalled body must now survive well past 1s, because the bound in force
+    /// is the restored 30s default that `serve_one_plain` reads per connection.
+    ///
+    /// This is the test that cannot be satisfied by anything except a working rollback: delete the
+    /// `Drop` impl and the rejected 1s timeout stays installed process-wide, the server tears this
+    /// connection down at ~1s, and the assertion below fires. That is exactly the production symptom
+    /// the guard exists to prevent — a 400-ed `POST /config/apply` changing how the still-running
+    /// gateway treats live traffic.
+    #[tokio::test]
+    async fn a_rejected_configs_limits_do_not_govern_later_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let _guard = LIMITS_TEST_LOCK.lock().await;
+        // The "accepted config that is already serving": the historical defaults (30s inter-frame).
+        // Itself guarded so this test leaks nothing to the rest of the binary.
+        let _baseline =
+            crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
+        {
+            // A candidate config whose build then FAILS. Its limits are live while the build runs…
+            let _rejected = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+                request_body_read_timeout_secs: 1,
+                ..crate::config::LimitsResolved::default()
+            });
+            assert_eq!(
+                crate::limits::request_body_read_timeout_secs(),
+                1,
+                "sanity: the candidate's bound must really be installed, or the rollback below \
+                 proves nothing"
+            );
+        }
+        // …and here it is rejected. Everything after this line must behave as if it never existed.
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let shutdown = async {
+                let _ = rx.await;
+            };
+            let router = Router::new().route(
+                "/echo",
+                axum::routing::post(|body: String| async move { body }),
+            );
+            super::serve_plain(listener, router, shutdown)
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n")
+            .await
+            .unwrap();
+        sock.flush().await.unwrap();
+
+        // 3s: comfortably past the rejected 1s bound, comfortably inside the restored 30s one, and
+        // inside both hardcoded backstops (the throughput floor's 10s grace, and a total deadline of
+        // 32 MiB / 1 KiB/s). So a close here can ONLY be the rejected config's timeout still in
+        // force.
+        let mut buf = [0u8; 256];
+        let outcome = tokio::time::timeout(Duration::from_secs(3), sock.read(&mut buf)).await;
+        assert!(
+            outcome.is_err(),
+            "a REJECTED config's 1s body-read timeout governed a connection accepted after its \
+             guard was dropped: the rollback never reached the live limits ({outcome:?})"
+        );
+
+        let _ = tx.send(());
+    }
+
     /// TEST — the MINIMUM-THROUGHPUT floor cuts a body that dribbles fast enough that the
     /// inter-frame timer alone (which resets on ANY progress, `poll_frame`'s `this.sleep = None`)
     /// provably CANNOT be what tears the connection down. Copies the shape of
@@ -1264,7 +1345,14 @@ mod tests {
             request_body_max_bytes: 2048, // total_body_deadline() = 2048 / 1024 B/s = 2s
             ..crate::config::LimitsResolved::default()
         };
-        crate::limits::install(&limits);
+        // Through the RAII guard, not the bare setter: a bare `install` of this 2 KiB cap LEAKS it
+        // to every test in the binary that reads limits afterward (`install` replaces the whole
+        // struct with no restore), and `limits/tests/limits_tests.rs`'s
+        // `uninstalled_accessors_return_historical_defaults` asserts
+        // `translate_body_max_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
+        // passed depended on that test happening to run BEFORE this one. Never committed, so it
+        // always rolls back at the end of this test.
+        let _limits_guard = crate::limits::InstallGuard::install(&limits);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
