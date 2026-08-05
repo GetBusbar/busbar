@@ -33,7 +33,7 @@ cd "$(dirname "$0")/.."
 MODE="${1:-}"
 
 python3 - "$MODE" <<'PYEOF'
-import json, re, subprocess, sys
+import json, os, re, subprocess, sys
 
 mode = sys.argv[1]
 offline = mode == "--offline"
@@ -117,11 +117,21 @@ if list_mode:
         ]))
     sys.exit(0)
 
-# ── 2. qa-gate.yml derives its checkouts from the registry (no hand-written per-plugin steps).
-devgate = open(".github/workflows/qa-gate.yml", encoding="utf-8").read()
+# ── 2. the qa gate derives its checkouts from the registry (no hand-written per-plugin steps).
+#
+# The loop itself now lives in scripts/qa-gate-run.sh, not inline in the YAML: qa-gate.yml is a thin
+# dispatcher that checks out the triggering SHA and invokes that script from it, so gate logic is
+# versioned with the code it gates instead of frozen on the default branch (`workflow_run` always
+# loads the workflow file from the default branch). This check follows the code rather than the
+# filename: the loop must exist in one of the two files, and it must not be satisfied by a mere
+# comment mentioning the string, so the whole qa-gate surface is scanned as one unit.
+devgate = ""
+for _f in (".github/workflows/qa-gate.yml", "scripts/qa-gate-run.sh"):
+    if os.path.exists(_f):
+        devgate += open(_f, encoding="utf-8").read()
 if "plugin-registry-check.sh --list" not in devgate:
-    fail.append("qa-gate.yml does not clone siblings via the registry "
-                "(expected a step iterating `scripts/plugin-registry-check.sh --list`)")
+    fail.append("the qa gate does not clone siblings via the registry (expected qa-gate.yml or "
+                "scripts/qa-gate-run.sh to iterate `scripts/plugin-registry-check.sh --list`)")
 
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.
 relcheck = open("scripts/release-check.sh", encoding="utf-8").read()
