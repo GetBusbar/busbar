@@ -1744,6 +1744,7 @@ pub(crate) fn load_config_from_disk(
 pub(crate) fn plugins_preflight(
     store_cfg: Option<&config::StoreCfg>,
     auth_cfg: Option<&config::AuthCfg>,
+    identity_providers: &config::IdentityProviders,
     hooks_cfg: &std::collections::HashMap<String, config::HookCfg>,
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
@@ -1772,6 +1773,31 @@ pub(crate) fn plugins_preflight(
         })
         .unwrap_or_default();
     let has_auth_plugin = !auth_plugin_refs.is_empty();
+
+    // Every `identity-providers:` DEFINITION whose `module:` is not a built-in is likewise a
+    // `kind: auth` plugin reference — checked here over the DEFINITION map rather than over the
+    // resolved chain, because that is the only layer that sees an UNREFERENCED definition.
+    // `resolve_auth` is keyed off `auth.chain:`/`auth.admin_auth:`, and `AuthCfg.methods` only
+    // exists at all when an `auth:` block does, so a provider defined through
+    // `PUT /identity-providers/{name}` and not yet referenced was validated by NOTHING: the API
+    // answered 200 and stored a `module:` that can never authenticate anyone. `export:` has had the
+    // equivalent check since 1.5.3 (`resolve_export` refuses an unknown exporter and names the
+    // built-ins); it just needed no registry, because the export vocabulary is a const list.
+    // Carries (name, module) pairs so the diagnostics can name the offending DEFINITION, not only
+    // the module string — two providers can share one typo'd module.
+    let idp_plugin_refs: Vec<(&str, &str)> = identity_providers
+        .iter()
+        .map(|(name, def)| (name.as_str(), def.module.trim()))
+        // An EMPTY module is `resolve_auth`'s rule ("must be a non-empty module name"), reported
+        // there in its own words; do not shadow it with a less specific "no such plugin".
+        .filter(|(_, m)| !m.is_empty() && is_real_identity_provider_plugin_ref(m, cfg!(test)))
+        .collect();
+    let idp_refs_human = |refs: &[(&str, &str)]| {
+        refs.iter()
+            .map(|(n, m)| format!("identity-providers.{n} (module '{m}')"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     // Every hook references a `kind: hook` plugin — the same manifest-only pre-flight the store/auth
     // refs get. Deduped for the messages, but validated as the set of names each hook declares.
@@ -1813,6 +1839,24 @@ pub(crate) fn plugins_preflight(
              but plugins.enabled is false (the default). Set plugins.enabled: true and place the \
              signed `kind: hook` plugin tarball(s) in the plugins directory ('{}').",
             hook_plugin_refs.join(", "),
+            plugins_cfg.dir
+        ));
+    }
+
+    // Same consistency gate for an identity-provider DEFINITION: with the plugin subsystem off the
+    // registry is empty by construction, so the only modules that can ever back a provider are the
+    // built-ins — naming anything else is a config error today, not a latent one. Ordered AFTER the
+    // `auth.chain` gate on purpose: a provider that IS on a chain gets that gate's more specific
+    // "auth.chain names plugin module(s)" wording, and this one covers the definitions no chain
+    // reaches.
+    if !idp_plugin_refs.is_empty() && !plugins_cfg.enabled {
+        return Err(format!(
+            "{} require(s) the plugin subsystem, but plugins.enabled is false (the default). With \
+             plugins off, a provider's `module:` must be one of the built-ins: {}. Set \
+             plugins.enabled: true and place the signed `kind: auth` plugin tarball(s) in the \
+             plugins directory ('{}'), or name a built-in.",
+            idp_refs_human(&idp_plugin_refs),
+            config::BUILTIN_IDENTITY_PROVIDERS.join(" | "),
             plugins_cfg.dir
         ));
     }
@@ -1983,6 +2027,44 @@ pub(crate) fn plugins_preflight(
                             .map(|p| p.manifest.name.as_str())
                             .collect::<Vec<_>>()
                             .join(", ")
+                    ),
+                });
+            }
+        }
+    }
+
+    // 6b. Every `identity-providers:` DEFINITION's non-built-in `module:` must resolve to a loadable
+    // `kind: auth` plugin — the definition-side counterpart of the `auth.chain` resolution above,
+    // and the check that finally covers a provider NO chain references (the admin API's whole write
+    // surface). Manifest-only, like its siblings.
+    for (name, module) in &idp_plugin_refs {
+        match registry.resolve(module) {
+            Some(p) if p.manifest.kind == "auth" => {}
+            Some(p) => {
+                return Err(format!(
+                    "identity-providers.{name}.module: '{module}' resolves to plugin '{}' of kind \
+                     '{}', not an `auth` plugin. A provider's `module:` must be a built-in or a \
+                     `kind: auth` plugin; the modules available right now are: {}.",
+                    p.manifest.name,
+                    p.manifest.kind,
+                    valid_identity_provider_modules(&registry)
+                ));
+            }
+            None => {
+                return Err(match registry.unresolved_reason(module) {
+                    Some(s) => format!(
+                        "identity-providers.{name}.module: '{module}' matches plugin '{}' ({}) but \
+                         it was not loaded: {}",
+                        s.manifest.name, s.file, s.reason
+                    ),
+                    None => format!(
+                        "identity-providers.{name}.module: no `kind: auth` plugin named or aliased \
+                         '{module}' is installed in '{}' (plugins ARE enabled), and it is not a \
+                         built-in. The modules a provider may name right now are: {}. Check the \
+                         spelling against the plugin's manifest name/alias (see --list-plugins), \
+                         add the signed tarball to the plugins directory, or name a built-in.",
+                        plugins_cfg.dir,
+                        valid_identity_provider_modules(&registry)
                     ),
                 });
             }
@@ -2252,6 +2334,40 @@ fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
     m != config::KEYS_MODULE && !(is_test_build && m == "test-groups-module")
 }
 
+/// The DEFINITION-side twin of [`is_real_auth_plugin_ref`]: whether an
+/// `identity-providers.<name>.module:` is a REAL `kind: auth` plugin reference that must resolve
+/// against the registry, as opposed to a built-in the engine handles inline
+/// ([`config::BUILTIN_IDENTITY_PROVIDERS`] — `keys` and `admin-tokens`) or a compiled-in test
+/// stand-in. Separate from the chain predicate because the two answer different questions over
+/// different vocabularies: `auth.chain:` never carries `admin-tokens` (that plane is `admin_auth:`),
+/// so the chain predicate exempts only `keys`, while EVERY built-in is legal as a definition's
+/// module. Same `is_test_build` discipline for the same reason: `test-scope-module` /
+/// `test-groups-module` are only ever registered under `#[cfg(test)]` (`AuthPlugins::build`,
+/// `crates/busbar/src/auth/mod.rs`), so exempting them unconditionally would make `--validate`
+/// silently bless a RELEASE config that real boot still hard-fails.
+fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
+    !config::BUILTIN_IDENTITY_PROVIDERS.contains(&m)
+        && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
+}
+
+/// The human list of every module an `identity-providers.<name>.module:` may legally name RIGHT NOW:
+/// the built-ins, plus every loaded `kind: auth` plugin. Named as a SET, never counted — the same
+/// "name the whole valid vocabulary" discipline the `export.<n>.streams:` diagnostic follows.
+fn valid_identity_provider_modules(registry: &busbar_plugin_loader::PluginRegistry) -> String {
+    let mut names: Vec<String> = config::BUILTIN_IDENTITY_PROVIDERS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    names.extend(
+        registry
+            .loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == "auth")
+            .map(|p| p.manifest.name.clone()),
+    );
+    names.join(" | ")
+}
+
 /// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
 /// is safe on the admin read path.
 pub(crate) fn preflight_plugins_and_secrets(
@@ -2261,6 +2377,7 @@ pub(crate) fn preflight_plugins_and_secrets(
     let registry = plugins_preflight(
         deploy.store.as_ref(),
         cfg.auth.as_ref(),
+        &cfg.identity_providers,
         &cfg.hooks,
         &deploy.plugins,
         &cfg.export,
@@ -2592,6 +2709,7 @@ pub(crate) fn build_app_from_config(
     let plugin_registry = Arc::new(plugins_preflight(
         cfg.store.as_ref(),
         cfg.auth.as_ref(),
+        &cfg.identity_providers,
         &cfg.hooks,
         &plugins_cfg,
         &cfg.export,

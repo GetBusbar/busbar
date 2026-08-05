@@ -249,6 +249,7 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
         None,
         Some(&cfg),
         &Default::default(),
+        &Default::default(),
         &plugins,
         &Default::default(),
     )
@@ -328,6 +329,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         None,
         Some(&cfg),
         &Default::default(),
+        &Default::default(),
         &plugins,
         &Default::default(),
     )
@@ -390,6 +392,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     let registry = crate::plugins_preflight(
         None,
         Some(&cfg),
+        &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
@@ -468,6 +471,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     let registry = crate::plugins_preflight(
         None,
         Some(&cfg),
+        &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
@@ -587,6 +591,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         None,
         Some(&cfg),
         &Default::default(),
+        &Default::default(),
         &strict,
         &Default::default(),
     )
@@ -637,6 +642,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         None,
         Some(&cfg),
         &Default::default(),
+        &Default::default(),
         &plugins,
         &Default::default(),
     )
@@ -685,6 +691,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         None,
         Some(&cfg),
         &Default::default(),
+        &Default::default(),
         &plugins,
         &Default::default(),
     )
@@ -708,6 +715,7 @@ fn keys_module_is_not_a_plugin_ref() {
     let registry = crate::plugins_preflight(
         None,
         Some(&cfg),
+        &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
