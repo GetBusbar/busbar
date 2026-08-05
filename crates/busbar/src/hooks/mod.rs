@@ -914,19 +914,31 @@ pub(crate) fn resolve_rewrite_hooks(
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
 }
 
-/// Resolve the GLOBAL TAP hooks observing at ONE stage — the `global_hooks` names whose registry
-/// entry is a `kind: tap` with `at: <stage>` (an unset `at:` defaults to `request`) — into their
-/// transports. Returns `(per-hook deadline, prompt-grant, transport)` triples. Taps are
-/// fire-and-forget so order is irrelevant, but a stable priority sort keeps startup deterministic.
-/// Unresolvable transports are skipped (config_validate surfaces them at boot).
+/// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
+/// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
+/// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
+/// `proxy::engine` / `proxy::hooks`.
+pub(crate) type TapEntry = (
+    std::time::Duration,
+    bool,
+    Arc<dyn RoutingPolicy>,
+    Vec<String>,
+);
+
+/// Resolve the GLOBAL TAP hooks observing at ONE stage — the all-pools (`global_hooks`) names whose
+/// registry entry is a `kind: tap` firing at `stage` (per its `phase:` list / legacy `at:`) — into
+/// their transports. Returns [`TapEntry`] tuples carrying each tap's `groups:` scope for the
+/// request-time caller filter. Taps are fire-and-forget so order is irrelevant, but a stable priority
+/// sort keeps startup deterministic. Unresolvable transports are skipped (config_validate surfaces
+/// them at boot).
 pub(crate) fn resolve_tap_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
     env: &HookEnv,
     settings_version: u64,
     stage: crate::config::HookStage,
-) -> Vec<(std::time::Duration, bool, Arc<dyn RoutingPolicy>)> {
-    let mut ranked: Vec<(u16, std::time::Duration, bool, Arc<dyn RoutingPolicy>)> = Vec::new();
+) -> Vec<TapEntry> {
+    let mut ranked: Vec<(u16, TapEntry)> = Vec::new();
     for name in global_hooks {
         let Some(hook) = hooks.get(name) else {
             continue;
@@ -934,8 +946,9 @@ pub(crate) fn resolve_tap_hooks(
         if hook.kind != crate::config::HookKind::Tap {
             continue;
         }
-        // An unset `at:` defaults to the request stage.
-        if hook.at.unwrap_or(crate::config::HookStage::Request) != stage {
+        // 1.5.3: the `phase:` LIST is authoritative when set; otherwise the legacy single `at:`
+        // (defaulting to the request stage). A tap fires at this stage iff its phase set includes it.
+        if !hook.fires_at_stage(stage) {
             continue;
         }
         // `send_prompt` carries the tap's `prompt: ro` grant through to the firing site, so a granted
@@ -947,11 +960,14 @@ pub(crate) fn resolve_tap_hooks(
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
-            ranked.push((hook.priority, timeout, send_prompt, policy));
+            ranked.push((
+                hook.priority,
+                (timeout, send_prompt, policy, hook.groups.clone()),
+            ));
         }
     }
-    ranked.sort_by_key(|(p, _, _, _)| *p);
-    ranked.into_iter().map(|(_, t, sp, p)| (t, sp, p)).collect()
+    ranked.sort_by_key(|(p, _)| *p);
+    ranked.into_iter().map(|(_, entry)| entry).collect()
 }
 
 /// Resolve the GLOBAL DECISION gates — the `global_hooks` names whose registry entry is a `kind: gate`

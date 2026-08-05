@@ -223,8 +223,23 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["pools", "fast", "failover", "max_hops"]).as_u64(),
         Some(3)
     );
-    // hooks block dissolved: the pool ref inlined, the global tap moved to global_hooks.
-    assert!(root.get(serde_yaml::Value::from("hooks")).is_none());
+    // 1.5.3 named hooks: the 1.x registry became the top-level `hooks:` DEFINITION map (module:
+    // derived from the socket/webhook transport); the pool keeps its BARE reference; the
+    // `global: true` tap moved to the reserved `pools.hooks:` all-pools attach.
+    assert_eq!(
+        get(&["hooks", "pii-screen", "module"]).as_str(),
+        Some("socket"),
+        "the socket transport became module: socket"
+    );
+    assert_eq!(
+        get(&["hooks", "pii-screen", "settings", "path"]).as_str(),
+        Some("/run/pii.sock")
+    );
+    assert_eq!(
+        get(&["hooks", "audit-tap", "module"]).as_str(),
+        Some("webhook"),
+        "the webhook transport became module: webhook"
+    );
     let pool_hooks = get(&["pools", "fast", "hooks"]);
     let pool_hooks = pool_hooks.as_sequence().unwrap();
     assert_eq!(
@@ -232,27 +247,21 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some("cheapest"),
         "strategies stay bare"
     );
-    let inlined = pool_hooks[1].as_mapping().unwrap();
     assert_eq!(
-        inlined
-            .get(serde_yaml::Value::from("module"))
-            .and_then(|v| v.as_str()),
-        Some("socket")
+        pool_hooks[1].as_str(),
+        Some("pii-screen"),
+        "a registry reference is now a BARE hook name, not an inline instance"
     );
+    let all_pools = get(&["pools", "hooks"]);
     assert_eq!(
-        inlined
-            .get(serde_yaml::Value::from("settings"))
-            .and_then(|v| v.as_mapping())
-            .and_then(|m| m.get(serde_yaml::Value::from("path")))
-            .and_then(|v| v.as_str()),
-        Some("/run/pii.sock")
-    );
-    let ghooks = get(&["global_hooks"]);
-    let g0 = ghooks.as_sequence().unwrap()[0].as_mapping().unwrap();
-    assert_eq!(
-        g0.get(serde_yaml::Value::from("module"))
-            .and_then(|v| v.as_str()),
-        Some("webhook")
+        all_pools
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>(),
+        ["audit-tap"],
+        "the global: true tap became the reserved pools.hooks all-pools attach"
     );
     // otlp_endpoint -> otlp_url.
     assert_eq!(
@@ -472,10 +481,10 @@ pools: {}
     );
 }
 
-/// The 1.4.x TOP-LEVEL `global_hooks: [<name>]` was a list of REGISTRY names; 1.5.0 wants inline
-/// refs. A registry name must resolve to its inline ref, and a hook that is BOTH named in
-/// global_hooks AND flagged `global: true` must appear exactly ONCE (no duplicate, no leftover bare
-/// name that `--validate` would reject).
+/// The 1.4.x TOP-LEVEL `global_hooks: [<name>]` (a list of REGISTRY names) → the reserved
+/// `pools.hooks:` all-pools attach (1.5.3). A registry name becomes a NAMED DEFINITION under
+/// `hooks:` and a BARE reference in `pools.hooks:`; a hook that is BOTH named in global_hooks AND
+/// flagged `global: true` must appear exactly ONCE in the all-pools list (no duplicate).
 #[test]
 fn migrate_global_hooks_names_resolve_and_dedup() {
     let raw = r#"
@@ -490,21 +499,23 @@ hooks:
 global_hooks: [audit-tap]
 "#;
     let (out, doc) = migrate_to_value(raw);
-    let gh = dig(&doc, &["global_hooks"]).unwrap().as_sequence().unwrap();
-    assert_eq!(
-        gh.len(),
-        1,
-        "the doubly-named global hook must not duplicate: {gh:?}"
-    );
-    assert_eq!(
-        dig(&gh[0], &["module"]).and_then(|v| v.as_str()),
-        Some("webhook"),
-        "the registry name must resolve to its inline module ref"
-    );
-    // no leftover BARE string (a non-strategy bare name is not a valid 1.5.0 global-hook ref).
+    // No top-level global_hooks survives.
     assert!(
-        gh[0].as_str().is_none(),
-        "a bare registry name must not survive"
+        dig(&doc, &["global_hooks"]).is_none(),
+        "the removed top-level global_hooks: must not survive"
+    );
+    let all = dig(&doc, &["pools", "hooks"]).unwrap();
+    let all = all.as_sequence().unwrap();
+    assert_eq!(
+        all.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+        ["audit-tap"],
+        "the doubly-named global hook is a single BARE all-pools reference: {all:?}"
+    );
+    // The name resolves to a named DEFINITION whose module: came from the webhook transport.
+    assert_eq!(
+        dig(&doc, &["hooks", "audit-tap", "module"]).and_then(|v| v.as_str()),
+        Some("webhook"),
+        "the registry name became a named hook definition"
     );
     assert!(
         serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
@@ -947,10 +958,10 @@ observability:
     );
 }
 
-/// 1.5.3 HARD tap-stage rename: `--migrate-config` rewrites the old `at:` wire strings
-/// (`route`/`attempt`/`completion`) to the new phase vocabulary (`candidate`/`routing`/`response`)
-/// in place — in the top-level `global_hooks:` list AND in each `pools.<name>.hooks:` list — and the
-/// result must BOOT-PARSE (the old strings would otherwise fail as unknown `HookStage` variants).
+/// 1.5.3 HARD tap-stage rename: an old inline hook instance carrying `at:` (`route`/`attempt`/
+/// `completion`) lifts to a NAMED DEFINITION whose `phase:` list uses the new vocabulary
+/// (`candidate`/`routing`/`response`). The pool keeps BARE references; the result must BOOT-PARSE
+/// (the old `at:` strings would otherwise fail as unknown `HookStage` variants).
 #[test]
 fn migrate_hook_stage_at_values_are_renamed() {
     let raw = r#"
@@ -967,38 +978,58 @@ global_hooks:
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // Pool hook `at:` strings are rewritten to the new phase names, in order.
+    // Every hook is now a named DEFINITION; the `at:` renamed onto its `phase:` list. Locate each by
+    // its distinguishing settings.url (auto-generated names are not asserted directly).
+    let defs = dig(&doc, &["hooks"]).unwrap();
+    let defs = defs.as_mapping().unwrap();
+    let phase_for = |url_suffix: &str| -> Option<String> {
+        defs.iter().find_map(|(_, d)| {
+            let d = d.as_mapping()?;
+            let url = d
+                .get(serde_yaml::Value::from("settings"))?
+                .as_mapping()?
+                .get(serde_yaml::Value::from("url"))?
+                .as_str()?;
+            if !url.ends_with(url_suffix) {
+                return None;
+            }
+            let phase = d.get(serde_yaml::Value::from("phase"))?.as_sequence()?;
+            phase.first()?.as_str().map(str::to_string)
+        })
+    };
+    assert_eq!(
+        phase_for("/route").as_deref(),
+        Some("candidate"),
+        "`at: route` must migrate to `phase: [candidate]`"
+    );
+    assert_eq!(
+        phase_for("/attempt").as_deref(),
+        Some("routing"),
+        "`at: attempt` must migrate to `phase: [routing]`"
+    );
+    assert_eq!(
+        phase_for("/done").as_deref(),
+        Some("response"),
+        "`at: completion` must migrate to `phase: [response]`"
+    );
+
+    // The pool keeps BARE references, and the global instance became a reserved all-pools attach.
     let pool_hooks = dig(&doc, &["pools", "primary", "hooks"])
         .unwrap()
         .as_sequence()
         .unwrap();
-    assert_eq!(
-        dig(&pool_hooks[0], &["at"]).and_then(|v| v.as_str()),
-        Some("candidate"),
-        "`at: route` must migrate to `at: candidate`"
-    );
-    assert_eq!(
-        dig(&pool_hooks[1], &["at"]).and_then(|v| v.as_str()),
-        Some("routing"),
-        "`at: attempt` must migrate to `at: routing`"
-    );
-    // The global-hook `at:` string is rewritten too.
-    let gh = dig(&doc, &["global_hooks"]).unwrap().as_sequence().unwrap();
-    assert_eq!(
-        dig(&gh[0], &["at"]).and_then(|v| v.as_str()),
-        Some("response"),
-        "`at: completion` must migrate to `at: response`"
-    );
-    // Each rewrite is named in the change ledger.
     assert!(
-        out.changes
-            .iter()
-            .any(|c| c.contains("hook stage `at: completion` -> `at: response`")),
-        "a change entry must name the completion->response rewrite; got {:?}",
-        out.changes
+        pool_hooks.iter().all(|v| v.as_str().is_some()),
+        "pool hooks are bare names now: {pool_hooks:?}"
     );
-    // The migrated document must boot-parse: the old strings would fail as unknown HookStage
-    // variants, so a clean parse proves the rewrite closed the loud-fail.
+    assert!(
+        dig(&doc, &["pools", "hooks"])
+            .and_then(|v| v.as_sequence().cloned())
+            .is_some_and(|s| !s.is_empty()),
+        "the global instance became a reserved pools.hooks attach"
+    );
+
+    // Boot-parse proves the rename closed the loud-fail (old `at:` strings would 400 as variants).
     let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
     assert!(
         deploy.is_ok(),
@@ -1166,5 +1197,74 @@ pools: {}
             .any(|c| c.contains("request-log-webhook") || c.contains("export.prometheus")),
         "a second migrate is a no-op for the export rewrite; got {:?}",
         out2.changes
+    );
+}
+
+/// GOLDEN (a): a 1.5.0/1.5.2 config with an INLINE `global_hooks:` instance AND an inline pool-hook
+/// instance converges to the 1.5.3 shape — a top-level `hooks:` DEFINITION map, the reserved
+/// `pools.hooks:` all-pools attach, and BARE per-pool references — boot-parses, and re-running the
+/// migrator over the output is a NO-OP on the config tree (idempotent / golden-stable).
+#[test]
+fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
+    let raw = r#"
+providers: {}
+models: {}
+pools:
+  fast:
+    members: [ { model: a } ]
+    hooks:
+      - cheapest
+      - { module: busbar-phi, settings: { url: "https://s/pii" }, kind: gate, on_error: reject }
+global_hooks:
+  - { module: busbar-audit, settings: { url: "https://s/audit" }, kind: tap, at: completion }
+"#;
+    let out1 = migrate_config(raw).expect("migrates");
+    // Boot-parses into the 1.5.3 DeployCfg and trips no legacy marker.
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).expect("valid YAML");
+    assert!(
+        detect_legacy_markers(&doc).is_empty(),
+        "no residual 1.x marker"
+    );
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&out1.yaml).expect("migrated config boot-parses");
+
+    // The named-definition map holds both lifted hooks; the pool keeps its strategy + a BARE ref; the
+    // global instance became the reserved all-pools attach.
+    assert!(
+        !deploy.hooks.is_empty(),
+        "named hooks: definition map present"
+    );
+    let fast = &deploy.pools.pools["fast"];
+    assert_eq!(fast.policy, crate::config::PoolPolicy::Cheapest);
+    assert_eq!(
+        fast.gates.len(),
+        1,
+        "the inline pool hook became one bare reference"
+    );
+    assert!(
+        deploy.hooks.contains_key(&fast.gates[0]),
+        "the pool's bare reference resolves to a named definition"
+    );
+    assert_eq!(
+        deploy.pools.all_pool_hooks.len(),
+        1,
+        "the inline global instance became the reserved pools.hooks all-pools attach"
+    );
+    assert!(
+        deploy.hooks.contains_key(&deploy.pools.all_pool_hooks[0]),
+        "the all-pools reference resolves to a named definition"
+    );
+    // The lifted def's `at: completion` renamed onto `phase: [response]`.
+    let audit = &deploy.hooks[&deploy.pools.all_pool_hooks[0]];
+    assert_eq!(audit.phase, vec![crate::config::HookStage::Response]);
+
+    // IDEMPOTENT: re-migrating the output leaves the config tree byte-for-byte identical (the header
+    // comment block carries run-specific todos, so compare the parsed VALUE, not the raw text).
+    let out2 = migrate_config(&out1.yaml).expect("re-migrates");
+    let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
+    let v2: serde_yaml::Value = serde_yaml::from_str(&out2.yaml).unwrap();
+    assert_eq!(
+        v1, v2,
+        "the migration must be idempotent on the config tree"
     );
 }

@@ -1320,13 +1320,13 @@ pub(crate) fn capture_stage_shape<'a>(
 /// reorder, or fail the request; a serialization failure silently skips the fire (observation is
 /// best-effort). ZERO COST when the stage has no taps (first-line empty check).
 pub(crate) fn fire_stage_taps(
-    taps: &[(
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    )],
+    taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
     stage: crate::hooks::wire::HookStageProjection<'_>,
+    // The caller's `groups:` binding + the groups tree (1.5.3 SELECTION): a stage tap fires only for
+    // a caller in its `groups:` scope (empty = every caller). Walked self + ancestors.
+    caller_group: Option<&str>,
+    groups_tree: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
 ) {
     if taps.is_empty() {
         return;
@@ -1362,7 +1362,11 @@ pub(crate) fn fire_stage_taps(
         return;
     };
     let bytes = std::sync::Arc::new(bytes);
-    for (timeout, _send_prompt, hook) in taps {
+    for (timeout, _send_prompt, hook, groups) in taps {
+        // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller.
+        if !crate::config::caller_in_hook_groups(caller_group, groups, groups_tree) {
+            continue;
+        }
         let policy = hook.clone();
         let budget = *timeout;
         let proj = bytes.clone();

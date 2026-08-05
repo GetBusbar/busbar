@@ -398,9 +398,9 @@ pub(crate) struct RootCfg {
     pub(crate) providers: HashMap<String, ProviderCfg>,
     pub(crate) models: HashMap<String, ModelCfg>,
     pub(crate) pools: HashMap<String, PoolCfg>,
-    /// The RUNTIME hook registry, SYNTHESIZED by `resolve` from the inline hook refs in
-    /// `pools.<p>.hooks` and `global_hooks` (S9: there is no `hooks:` config block; instances are
-    /// named where they run). Admin-registered hooks land here too.
+    /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
+    /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
+    /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
     pub(crate) hooks: HashMap<String, HookCfg>,
     /// The ADMIN auth chain module names (from `auth.admin_auth:`, in order) gating
     /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
@@ -419,8 +419,9 @@ pub(crate) struct RootCfg {
     /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
     /// built-in `env` / `file` modules take no config and must not appear here.
     pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
-    /// Names of hooks that fire on EVERY request - the registry names synthesized from the
-    /// `global_hooks:` inline refs, in order.
+    /// Names of hooks that fire on EVERY request — the registry names lowered from the reserved
+    /// all-pools attach key `pools.hooks:` (1.5.3), in order. RUNTIME-only: there is no
+    /// config-facing `global_hooks:` key any more.
     pub(crate) global_hooks: Vec<String>,
     /// Operator-supplied additions to the hardcoded cloud-metadata denylist (see
     /// [`SecurityCfg::blocked_metadata_hosts`]). Resolved from `DeployCfg.security`; empty when no
@@ -987,53 +988,46 @@ fn neg1() -> i64 {
     -1
 }
 
-/// One inline HOOK reference (S9): where a hook RUNS is where it is named - in a pool's
-/// `hooks: [...]` (ordered) or the top-level `global_hooks: [...]` (ordered). Two spellings:
-///
-/// ```yaml
-/// hooks:
-/// - cheapest                                    # bare BUILT-IN (an ordering strategy)
-/// - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
-/// ```
-///
-/// A bare name is ONLY a built-in (weighted | cheapest | fastest | least_busy | usage); everything
-/// else is a module ref naming a `kind: hook` plugin (by signed-manifest name/alias).
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HookRefEntry {
-    /// A bare built-in name.
-    Builtin(String),
-    /// A `{ module: …, settings: …, …typed }` module instance.
-    Module(HookModuleRef),
-}
-
-/// The map form of an inline hook reference: the module name + its opaque `settings:` plus the
-/// busbar-TYPED per-instance fields (C2c: typed fields sit ALONGSIDE settings, never inside).
+/// One entry in the top-level `hooks:` NAMED-DEFINITION map (1.5.3). The map KEY is the hook
+/// INSTANCE id (the name a pool or the all-pools list references); this value says which plugin backs
+/// it and how it is scoped. The SAME `module` may back MULTIPLE named hooks (e.g. `pii-eng` and
+/// `pii-all`, same module, different `groups:`) — the name is the instance, the module is just the
+/// plugin. `groups:`/`phase:` are the SELECTION axes: a hook fires only for callers in its `groups:`
+/// scope, at the pipeline stages in its `phase:` list. The remaining fields are the existing hook
+/// role/projection vocabulary (`kind`, `prompt`, `on_error`, …). `deny_unknown_fields`: a typo'd key
+/// fails boot, never a silent no-op. Converted to a runtime [`HookCfg`] registry entry by
+/// [`hook_cfg_from_def`] (`module:` → `plugin:`); `groups:`/`phase:` carry onto the `HookCfg`.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct HookModuleRef {
-    /// The hook module: a `kind: hook` plugin's signed-manifest name/alias.
+pub(crate) struct HookDefCfg {
+    /// The `kind: hook` PLUGIN backing this named hook (by signed-manifest name/alias). REQUIRED,
+    /// non-empty; an unresolvable/wrong-kind reference is a fail-closed plugin-preflight error.
     pub(crate) module: String,
     /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
     /// `configure`).
     #[serde(default)]
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
-    /// The hook's MODE: `gate` (fire-and-wait; the default for an inline ref - it was named where
-    /// decisions happen) or `tap` (fire-and-forget).
+    /// SCOPE: the caller groups this hook fires for. Omit or `[]` = ALL callers. A USER is a leaf
+    /// group (e.g. `user:bob`); membership walks the `groups:` tree (self OR any ancestor).
+    #[serde(default)]
+    pub(crate) groups: Vec<String>,
+    /// PHASE: the pipeline stages this hook fires at (generalizes the single tap `at:` to a list).
+    /// Omit = all stages (falls back to the legacy single-stage default at resolution).
+    #[serde(default)]
+    pub(crate) phase: Vec<HookStage>,
+    /// The hook's MODE: `gate` (fire-and-wait) or `tap` (fire-and-forget). Default `gate` (a named
+    /// hook attached to a pool is a decision point by default).
     #[serde(default)]
     pub(crate) kind: Option<HookKind>,
     /// Gate decision deadline in ms (default 1).
     #[serde(default)]
     pub(crate) timeout_ms: Option<u64>,
-    /// Gate failure posture (C1: keyword bare, a reference is `{ hook: … }` - parsed by the
-    /// existing on_error chain machinery). Default `nothing`.
+    /// Gate failure posture (`reject` | `nothing` | named fallback chain). Default `nothing`.
     #[serde(default)]
     pub(crate) on_error: Option<OnErrorCfg>,
     /// Gate restrict empty-intersection behavior.
     #[serde(default)]
     pub(crate) on_empty: Option<PolicyOnError>,
-    /// TAP observation stage.
-    #[serde(default)]
-    pub(crate) at: Option<HookStage>,
     /// PROMPT access grant (`no` | `ro` | `rw`).
     #[serde(default)]
     pub(crate) prompt: Option<PromptAccess>,
@@ -1045,35 +1039,11 @@ pub(crate) struct HookModuleRef {
     pub(crate) priority: Option<u16>,
 }
 
-impl<'de> Deserialize<'de> for HookRefEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // A YAML scalar is a bare built-in name; a map is the module-ref form. serde_yaml's
-        // untagged support struggles with nested opaque maps, so branch on the raw value shape.
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-        match value {
-            serde_yaml::Value::String(name) => {
-                if name.trim().is_empty() {
-                    return Err(serde::de::Error::custom(
-                        "a bare hook reference must be a non-empty built-in name",
-                    ));
-                }
-                Ok(HookRefEntry::Builtin(name))
-            }
-            v @ serde_yaml::Value::Mapping(_) => {
-                let r: HookModuleRef =
-                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
-                Ok(HookRefEntry::Module(r))
-            }
-            _ => Err(serde::de::Error::custom(
-                "a hook reference is a bare built-in name (weighted | cheapest | fastest | \
-                 least_busy | usage) or a `{ module: …, settings: … }` map",
-            )),
-        }
-    }
-}
+/// The top-level `hooks:` NAMED-DEFINITION map (1.5.3): instance name → [`HookDefCfg`]. Insertion
+/// order is preserved so the resolved registry / firing order is deterministic. This REPLACES the
+/// removed `global_hooks:` list — a hook is DEFINED here once and REFERENCED by bare name (at the
+/// all-pools `pools.hooks:` list or a per-pool `hooks:` list).
+pub(crate) type HookDefs = indexmap::IndexMap<String, HookDefCfg>;
 
 /// A structured `on_error:` value (C1): a reserved keyword stays BARE
 /// (`nothing` | `weighted` | `reject` | `first`); a fallback-hook reference is `{ hook: <name> }`.
@@ -1145,10 +1115,6 @@ pub(crate) struct PoolCfg {
     pub(crate) failover: Option<FailoverCfg>,
     pub(crate) on_exhausted: Option<OnExhaustedCfg>,
     pub(crate) affinity: Option<AffinityCfg>,
-    /// The pool's inline MODULE hook refs (`hooks: [...]` map entries), in config order. Projected
-    /// into the internal hook registry by `resolve` (which fills `gates` with the synthesized
-    /// registry names).
-    pub(crate) module_hooks: Vec<HookModuleRef>,
     /// The pool's native ranking STRATEGY (a strategy name in `hooks: [...]`). `weighted`
     /// (default / absent) is today's SWRR
     /// with ZERO added cost — no `RoutingPolicy` object, byte-identical hot path. `cheapest`/`fastest`/
@@ -1168,10 +1134,36 @@ pub(crate) struct PoolCfg {
     pub(crate) base_named: bool,
 }
 
-/// Manual `Deserialize` for [`PoolCfg`]: the `hooks: [...]` list is THE pool form - one ORDERED
-/// list naming an optional built-in ordering strategy (bare name) and any module hook instances
-/// (inline `{ module: … }` refs, S9). Desugars into the internal (base policy, module refs)
-/// representation; `resolve` projects the module refs into the runtime hook registry.
+/// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
+/// The strategy set is fixed + known at parse time; any OTHER bare name is a hook-NAME reference
+/// (1.5.3: no inline instances — a hook is defined in the top-level `hooks:` map and referenced by
+/// bare name here).
+fn is_strategy_name(name: &str) -> bool {
+    matches!(
+        name,
+        ON_ERROR_WEIGHTED
+            | STRATEGY_CHEAPEST
+            | STRATEGY_FASTEST
+            | STRATEGY_LEAST_BUSY
+            | STRATEGY_USAGE
+    )
+}
+
+fn parse_strategy(name: &str) -> PoolPolicy {
+    match name {
+        STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
+        STRATEGY_FASTEST => PoolPolicy::Fastest,
+        STRATEGY_LEAST_BUSY => PoolPolicy::LeastBusy,
+        STRATEGY_USAGE => PoolPolicy::Usage,
+        _ => PoolPolicy::Weighted,
+    }
+}
+
+/// Manual `Deserialize` for [`PoolCfg`]: the `hooks: [...]` list is THE pool form — one ORDERED list
+/// mixing an optional built-in ordering strategy (bare `cheapest`/… ) and hook NAMES (bare names
+/// referencing the top-level `hooks:` DEFINITION map, 1.5.3 — no inline instances). The strategy sets
+/// the base ordering; every other bare name is a hook reference stored in `gates` (validated to exist
+/// and be a `kind: gate` at startup).
 impl<'de> Deserialize<'de> for PoolCfg {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1191,66 +1183,39 @@ impl<'de> Deserialize<'de> for PoolCfg {
             on_exhausted: Option<OnExhaustedCfg>,
             #[serde(default)]
             affinity: Option<AffinityCfg>,
-            /// The pool's hooks - an ordering strategy (bare built-in name) and/or inline module
-            /// hook instances - in ONE ordered list.
+            /// The pool's hooks - an ordering strategy (bare built-in name) and/or hook NAMES
+            /// (bare names referencing the top-level `hooks:` map) - in ONE ordered list.
             #[serde(default)]
-            hooks: Option<Vec<HookRefEntry>>,
-        }
-
-        // Is `name` one of the native ordering strategies? The strategy set is fixed + known at
-        // parse time: a strategy name sets the base ordering; any other bare name is an error
-        // (out-of-process hooks are inline `{ module: … }` refs, never bare names).
-        fn is_strategy_name(name: &str) -> bool {
-            matches!(
-                name,
-                ON_ERROR_WEIGHTED
-                    | STRATEGY_CHEAPEST
-                    | STRATEGY_FASTEST
-                    | STRATEGY_LEAST_BUSY
-                    | STRATEGY_USAGE
-            )
-        }
-
-        fn parse_strategy(name: &str) -> PoolPolicy {
-            match name {
-                STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
-                STRATEGY_FASTEST => PoolPolicy::Fastest,
-                STRATEGY_LEAST_BUSY => PoolPolicy::LeastBusy,
-                STRATEGY_USAGE => PoolPolicy::Usage,
-                _ => PoolPolicy::Weighted,
-            }
+            hooks: Option<Vec<String>>,
         }
 
         let raw = RawPoolCfg::deserialize(deserializer)?;
 
-        // Resolve the internal (base policy, module refs) representation from the `hooks:` list.
-        let (policy, module_hooks, base_named) = if let Some(entries) = raw.hooks {
+        // Split the `hooks:` list into (base policy, referenced hook names). A strategy name sets
+        // the base ordering (at most one); every other name is a hook reference.
+        let (policy, gates, base_named) = if let Some(entries) = raw.hooks {
             let mut policy: Option<PoolPolicy> = None;
-            let mut module_hooks: Vec<HookModuleRef> = Vec::new();
-            for entry in entries {
-                match entry {
-                    HookRefEntry::Builtin(name) if is_strategy_name(&name) => {
-                        if policy.is_some() {
-                            return Err(serde::de::Error::custom(
-                                "a pool `hooks:` list names more than one ordering strategy; a \
-                                 pool has one base ordering",
-                            ));
-                        }
-                        policy = Some(parse_strategy(&name));
+            let mut gates: Vec<String> = Vec::new();
+            for name in entries {
+                if name.trim().is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "a pool `hooks:` entry must be a non-empty strategy keyword or hook name",
+                    ));
+                }
+                if is_strategy_name(&name) {
+                    if policy.is_some() {
+                        return Err(serde::de::Error::custom(
+                            "a pool `hooks:` list names more than one ordering strategy; a pool \
+                             has one base ordering",
+                        ));
                     }
-                    HookRefEntry::Builtin(name) => {
-                        return Err(serde::de::Error::custom(format!(
-                            "unknown built-in hook '{name}' in a pool `hooks:` list; the bare \
-                             built-ins are weighted | cheapest | fastest | least_busy | usage - \
-                             a plugin hook is an inline module ref naming a `kind: hook` plugin, \
-                             e.g. `{{ module: my-hook-plugin, settings: {{ … }} }}`"
-                        )));
-                    }
-                    HookRefEntry::Module(r) => module_hooks.push(r),
+                    policy = Some(parse_strategy(&name));
+                } else {
+                    gates.push(name);
                 }
             }
             let base_named = policy.is_some();
-            (policy.unwrap_or_default(), module_hooks, base_named)
+            (policy.unwrap_or_default(), gates, base_named)
         } else {
             (PoolPolicy::default(), Vec::new(), false)
         };
@@ -1261,10 +1226,72 @@ impl<'de> Deserialize<'de> for PoolCfg {
             failover: raw.failover,
             on_exhausted: raw.on_exhausted,
             affinity: raw.affinity,
-            module_hooks,
             policy,
-            gates: Vec::new(),
+            gates,
             base_named,
+        })
+    }
+}
+
+/// The top-level `pools:` map (1.5.3), which carries ONE reserved key alongside the pools:
+///
+/// ```yaml
+/// pools:
+///   hooks: [pii]        # RESERVED: attach these hooks to ALL pools (the only global mechanism)
+///   fast:               # a real pool
+///     members: [ ... ]
+///     hooks: [cheapest, pii]
+/// ```
+///
+/// The reserved `hooks:` key is the ALL-POOLS attach list (bare hook names, referencing the top-level
+/// `hooks:` definition map). Every OTHER key is a pool. A pool may NOT be named `hooks` — that name is
+/// reserved for the all-pools list, and a pool spelled `hooks` is REJECTED at parse with a clear
+/// error. The custom `Deserialize` lifts the reserved key out first, then parses the remainder as the
+/// pool map.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PoolsCfg {
+    /// The ALL-POOLS attach list — hook names that fire for EVERY pool (the reserved `pools.hooks:`
+    /// key). Empty when absent. Firing order: these fire BEFORE a pool's own hooks.
+    pub(crate) all_pool_hooks: Vec<String>,
+    /// The real pools, keyed by name (every top-level key except the reserved `hooks`).
+    pub(crate) pools: HashMap<String, PoolCfg>,
+}
+
+impl<'de> Deserialize<'de> for PoolsCfg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Parse into a raw name→Value map so the reserved `hooks` key can be lifted out before the
+        // remaining entries are parsed as pools. A bare list under `hooks` is the all-pools attach.
+        let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
+            indexmap::IndexMap::deserialize(deserializer)?;
+        let all_pool_hooks: Vec<String> = match raw.shift_remove("hooks") {
+            None => Vec::new(),
+            Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "the reserved `pools.hooks:` all-pools attach must be a list of hook names: {e}"
+                ))
+            })?,
+        };
+        let mut pools = HashMap::new();
+        for (name, value) in raw {
+            // A pool named `hooks` is rejected: `hooks` is the reserved all-pools key, not a pool.
+            // (Lifting `hooks` out above already consumed a LIST-valued `hooks`; a map-valued
+            // `hooks` — i.e. an attempt to define a POOL named `hooks` — would deserialize as a list
+            // above and fail there, so this guard is belt-and-suspenders + a precise message.)
+            if name == "hooks" {
+                return Err(serde::de::Error::custom(
+                    "a pool may not be named `hooks`: that key is reserved for the all-pools attach \
+                     list (`pools.hooks: [ ... ]`). Rename the pool.",
+                ));
+            }
+            let pool: PoolCfg = PoolCfg::deserialize(value).map_err(serde::de::Error::custom)?;
+            pools.insert(name, pool);
+        }
+        Ok(PoolsCfg {
+            all_pool_hooks,
+            pools,
         })
     }
 }
@@ -1542,6 +1569,63 @@ pub(crate) struct HookCfg {
     /// `hooks::resolve_pool_ordering` gives this hook to every pool whose base is unnamed.
     #[serde(default)]
     pub(crate) default: bool,
+    /// 1.5.3 named-hook SCOPE: the caller groups this hook fires for. A hook fires only for a request
+    /// whose caller belongs to one of these groups (self OR any ancestor in the `groups:` tree — a
+    /// USER is a leaf group, e.g. `user:bob`). EMPTY (the default) = ALL callers (unscoped). Populated
+    /// from the top-level `hooks:` definition map's `groups:` key; consulted at firing time by
+    /// [`caller_in_hook_groups`]. Immutable after registration.
+    #[serde(default)]
+    pub(crate) groups: Vec<String>,
+    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. GENERALIZES the single
+    /// tap `at:` to a list. EMPTY (the default) falls back to `at` (or `request` when that is also
+    /// unset), so today's single-stage behavior is preserved byte-for-byte. Consulted by
+    /// [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
+    #[serde(default)]
+    pub(crate) phase: Vec<HookStage>,
+}
+
+impl HookCfg {
+    /// Whether this hook observes at `stage`. The 1.5.3 `phase:` LIST is authoritative when
+    /// non-empty; otherwise fall back to the legacy single `at:` (defaulting to `request`), so a hook
+    /// carrying neither behaves exactly as before.
+    pub(crate) fn fires_at_stage(&self, stage: HookStage) -> bool {
+        if self.phase.is_empty() {
+            self.at.unwrap_or(HookStage::Request) == stage
+        } else {
+            self.phase.contains(&stage)
+        }
+    }
+}
+
+/// Whether a caller bound to `caller_group` is "in" one of `hook_groups` (the named-hook scope
+/// check, 1.5.3). An EMPTY `hook_groups` means the hook is UNSCOPED and fires for every caller
+/// (returns `true` regardless of `caller_group`). Otherwise the caller matches iff its group — OR any
+/// ancestor of it, walked through the `groups:` tree's `parent` chain — appears in `hook_groups`; a
+/// caller with NO group binding never matches a scoped hook. This reuses the same acyclic `groups:`
+/// tree the governance limit chain walks, so a hook scoped to `engineering` fires for a caller in a
+/// `user:bob` leaf whose chain climbs through `engineering`. The walk is bounded by the tree size (a
+/// validated-acyclic tree cannot revisit a node without a cycle), so an untrusted/malformed tree can
+/// never spin here.
+pub(crate) fn caller_in_hook_groups(
+    caller_group: Option<&str>,
+    hook_groups: &[String],
+    groups_tree: &std::collections::BTreeMap<String, GroupCfg>,
+) -> bool {
+    if hook_groups.is_empty() {
+        return true;
+    }
+    let Some(start) = caller_group else {
+        return false;
+    };
+    let mut cursor = Some(start);
+    for _ in 0..=groups_tree.len() {
+        let Some(name) = cursor else { break };
+        if hook_groups.iter().any(|g| g == name) {
+            return true;
+        }
+        cursor = groups_tree.get(name).and_then(|g| g.parent.as_deref());
+    }
+    false
 }
 
 /// The default hard wall-clock deadline for a gate decision, in milliseconds. Used by serde's
@@ -2066,13 +2150,16 @@ pub(crate) struct DeployCfg {
     pub(crate) providers: HashMap<String, ProviderDeploy>,
     pub(crate) models: HashMap<String, ModelCfg>,
     /// Pools are optional: a deployment can route to models directly (`/<model>/v1/messages`)
-    /// without defining any pool.
+    /// without defining any pool. Carries the reserved `pools.hooks:` all-pools attach key (1.5.3);
+    /// see [`PoolsCfg`].
     #[serde(default)]
-    pub(crate) pools: HashMap<String, PoolCfg>,
-    /// Hook instances that fire on EVERY request (`global_hooks:`, ordered) - inline refs, same
-    /// shape as a pool's `hooks:` list (S9: there is NO top-level `hooks:` registry block).
+    pub(crate) pools: PoolsCfg,
+    /// The top-level `hooks:` NAMED-DEFINITION map (1.5.3): instance name → [`HookDefCfg`]. This
+    /// REPLACES the removed `global_hooks:` list — hooks are DEFINED here once (which plugin backs
+    /// each, its `groups:`/`phase:` scope, its role/projection) and REFERENCED by bare name from the
+    /// all-pools `pools.hooks:` list or a per-pool `hooks:` list. Absent ⇒ no hooks.
     #[serde(default)]
-    pub(crate) global_hooks: Vec<HookRefEntry>,
+    pub(crate) hooks: HookDefs,
     /// The top-level `groups:` block - THE one limit tree (S3). Optional; absent = no groups.
     #[serde(default)]
     pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
@@ -3278,38 +3365,42 @@ impl LimitsResolved {
 /// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
 /// For each deployed provider, look up its definition by name; produce a resolved ProviderCfg
 /// = def's protocol/base_url/error_map (with any config.yaml override applied) + the deployment's api_key_env.
-/// Build a runtime [`HookCfg`] registry entry from one inline module ref. `module:` now names the
-/// `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) — the retired socket/webhook
-/// built-in transports are gone. `settings:` stays fully opaque (pushed to the plugin via `configure`);
-/// nothing is consumed out of it. The plugin reference must be non-empty; an unresolvable/wrong-kind
-/// reference is caught fail-closed at the plugin pre-flight (like a store/auth ref).
-fn hook_cfg_from_ref(r: &HookModuleRef, default_kind: HookKind) -> Result<HookCfg, String> {
-    let settings = r.settings.clone();
-    let plugin = r.module.trim().to_string();
+/// Build a runtime [`HookCfg`] registry entry from one top-level `hooks:` NAMED DEFINITION (1.5.3).
+/// `module:` names the `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) and
+/// lowers to the runtime `plugin:` field; `settings:` stays fully opaque (pushed to the plugin via
+/// `configure`). The `groups:`/`phase:` SELECTION scope carries onto the `HookCfg` for the firing
+/// filter. The plugin reference must be non-empty; an unresolvable/wrong-kind reference is caught
+/// fail-closed at the plugin pre-flight (like a store/auth ref). A named hook attached to a pool is a
+/// decision point by default, so an unset `kind:` defaults to `gate`.
+fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
+    let plugin = def.module.trim().to_string();
     if plugin.is_empty() {
-        return Err("a hook module ref must name a non-empty `kind: hook` plugin".to_string());
+        return Err(
+            "a hook definition must name a non-empty `module:` (a `kind: hook` plugin)".to_string(),
+        );
     }
     Ok(HookCfg {
-        kind: r.kind.unwrap_or(default_kind),
+        kind: def.kind.unwrap_or(HookKind::Gate),
         plugin,
-        timeout_ms: r.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),
-        on_error: r
+        timeout_ms: def.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),
+        on_error: def
             .on_error
             .as_ref()
             .map(|o| o.as_name().to_string())
             .unwrap_or_else(default_on_error),
-        prompt: r.prompt.unwrap_or_default(),
-        user: r.user.unwrap_or_default(),
-        priority: r.priority.unwrap_or(0),
-        at: r.at,
-        on_empty: r.on_empty.clone(),
-        settings: settings.clone(),
-        // The inline `module:` shorthand ref has no `signals:` sub-key in this pass — a hook that
-        // needs to declare catalog signals uses the full `hooks:` registry entry instead, whose
-        // `HookCfg` deserializes `signals:` directly (see the field's own doc comment above).
+        prompt: def.prompt.unwrap_or_default(),
+        user: def.user.unwrap_or_default(),
+        priority: def.priority.unwrap_or(0),
+        // `phase:` is the 1.5.3 stage set; the legacy single `at:` is unused by a named definition.
+        at: None,
+        on_empty: def.on_empty.clone(),
+        settings: def.settings.clone(),
+        // A named-definition shorthand has no `signals:` sub-key in this pass.
         signals: Vec::new(),
         global: false,
         default: false,
+        groups: def.groups.clone(),
+        phase: def.phase.clone(),
     })
 }
 
@@ -3402,83 +3493,36 @@ pub(crate) fn resolve(
         );
     }
 
-    // S9: project the INLINE hook refs (pool `hooks:` module entries + `global_hooks:`) into the
-    // runtime hook registry. Each ref becomes a named registry entry (deterministic names: the
-    // module name, suffixed `#N` on collision, iterating pools in sorted order); the pool's
-    // `gates` list / the resolved `global_hooks` names carry the synthesized names in config
-    // order. A module ref names a `kind: hook` plugin; an unresolvable/wrong-kind reference is a
-    // FAIL-CLOSED plugin-preflight error (like a store/auth ref).
+    // 1.5.3 NAMED-HOOKS: build the runtime hook registry from the top-level `hooks:` DEFINITION map
+    // (define-once). Each definition becomes a `HookCfg` registry entry keyed by its own name (the
+    // instance id); the SAME `module` may back multiple names, each an independent hook with its own
+    // `groups:`/`phase:` scope. A definition name may not shadow a reserved terminal / built-in
+    // strategy (validated). References BY BARE NAME then resolve against this registry: the reserved
+    // all-pools list (`pools.hooks:`) lowers to the runtime `global_hooks` (fires on EVERY pool), and
+    // each pool's own bare names populate `pool.gates`. An unresolvable/wrong-kind plugin behind a
+    // `module:` is a FAIL-CLOSED plugin-preflight error (like a store/auth ref).
     let mut hooks_registry: HashMap<String, HookCfg> = HashMap::new();
-    let mut pools = deploy.pools.clone();
-    let register = |registry: &mut HashMap<String, HookCfg>,
-                    r: &HookModuleRef,
-                    where_: &str,
-                    default_kind: HookKind,
-                    errors: &mut Vec<String>|
-     -> Option<String> {
-        let cfg = match hook_cfg_from_ref(r, default_kind) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                errors.push(format!("{where_}: {e}"));
-                return None;
-            }
-        };
-        let mut name = r.module.clone();
-        let mut n = 1usize;
-        while registry.contains_key(&name) {
-            n += 1;
-            name = format!("{}#{n}", r.module);
+    let pools = deploy.pools.pools.clone();
+    for (name, def) in &deploy.hooks {
+        if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
+            errors.push(format!(
+                "hooks.{name}: '{name}' is a reserved name (an on_error terminal, built-in ranking \
+                 strategy, or built-in auth module) and cannot name a hook definition"
+            ));
+            continue;
         }
-        registry.insert(name.clone(), cfg);
-        Some(name)
-    };
-    let mut pool_names: Vec<&String> = pools.keys().collect();
-    pool_names.sort();
-    let mut pool_gates: HashMap<String, Vec<String>> = HashMap::new();
-    for pool_name in pool_names {
-        let pool = &deploy.pools[pool_name];
-        let mut gates = Vec::new();
-        for r in &pool.module_hooks {
-            if let Some(name) = register(
-                &mut hooks_registry,
-                r,
-                &format!("pools.{pool_name}.hooks"),
-                HookKind::Gate,
-                &mut errors,
-            ) {
-                gates.push(name);
+        match hook_cfg_from_def(def) {
+            Ok(cfg) => {
+                hooks_registry.insert(name.clone(), cfg);
             }
-        }
-        pool_gates.insert(pool_name.clone(), gates);
-    }
-    for (pool_name, gates) in pool_gates {
-        if let Some(p) = pools.get_mut(&pool_name) {
-            p.gates = gates;
+            Err(e) => errors.push(format!("hooks.{name}: {e}")),
         }
     }
-    let mut global_hook_names = Vec::new();
-    for entry in &deploy.global_hooks {
-        match entry {
-            HookRefEntry::Builtin(name) => {
-                errors.push(format!(
-                    "global_hooks entry '{name}': a global hook is an inline module ref naming a \
-                     `kind: hook` plugin (`{{ module: my-hook-plugin, settings: {{ … }} }}`); bare \
-                     built-in names are pool ordering strategies and have no global meaning"
-                ));
-            }
-            HookRefEntry::Module(r) => {
-                if let Some(name) = register(
-                    &mut hooks_registry,
-                    r,
-                    "global_hooks",
-                    HookKind::Tap,
-                    &mut errors,
-                ) {
-                    global_hook_names.push(name);
-                }
-            }
-        }
-    }
+    // The pool bare-name references are already parsed onto `pool.gates` (the non-strategy names in
+    // each pool's `hooks:` list); existence + kind are validated by `config_validate`. The reserved
+    // all-pools attach (`pools.hooks:`) becomes the runtime `global_hooks` list — the ONLY global
+    // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
+    let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind

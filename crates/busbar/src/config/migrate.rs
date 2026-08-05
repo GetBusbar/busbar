@@ -116,10 +116,30 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     if get(root, "admin_auth").is_some() {
         markers.push("top-level `admin_auth:` (moved under auth as auth.admin_auth)".into());
     }
-    if get(root, "hooks").is_some() {
+    // A top-level `hooks:` key is AMBIGUOUS and must be distinguished by SHAPE, not mere presence
+    // (1.5.3): the NEW named-definition map (every entry names a non-empty `module:` and carries no
+    // legacy `socket:`/`webhook:` transport) is VALID and passes straight through to the typed parse;
+    // a genuine 1.x REGISTRY (a `socket:`/`webhook:` entry, or any entry lacking `module:`) still
+    // LOUD-FAILS here, because booting it under 1.5.x rules would silently drop the retired transport.
+    // `is_new_hook_defs` is the SAME shape check the migrator uses to stay idempotent, so the two
+    // cannot drift.
+    if let Some(Value::Mapping(hooks)) = get(root, "hooks") {
+        if !is_new_hook_defs(&hooks) {
+            markers.push(
+                "top-level `hooks:` REGISTRY block with legacy socket:/webhook: entries (1.x \
+                 transports removed; a 1.5.3 `hooks:` DEFINITION entry names a `module:` — a \
+                 `kind: hook` plugin — and carries `groups:`/`phase:` scope)"
+                    .into(),
+            );
+        }
+    }
+    // The removed top-level `global_hooks:` list (1.5.0/1.5.2): a real config carrying it would
+    // otherwise trip `deny_unknown_fields` with no upgrade breadcrumb. It moved to the reserved
+    // `pools.hooks:` all-pools attach (1.5.3).
+    if get(root, "global_hooks").is_some() {
         markers.push(
-            "top-level `hooks:` registry block (hook instances are now inline refs in \
-             pools.<p>.hooks / global_hooks)"
+            "top-level `global_hooks:` (removed 1.5.3 → the reserved `pools.hooks:` all-pools \
+             attach list; run `busbar --migrate-config`)"
                 .into(),
         );
     }
@@ -946,144 +966,252 @@ fn migrate_providers(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// The top-level `hooks:` registry -> inline refs in pools.<p>.hooks / global_hooks.
-fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let Some(hooks) = take(root, "hooks") else {
-        return;
-    };
-    let Value::Mapping(hooks) = hooks else {
-        return;
-    };
-    changes.push("top-level hooks: registry dissolved into inline refs".into());
-    // Build an inline module ref from a registry entry.
-    let inline_ref = |name: &str, h: &Mapping, todos: &mut Vec<String>| -> Value {
-        let mut r = Mapping::new();
-        let mut settings = as_map(h.get(Value::from("settings")).cloned().unwrap_or_default());
-        if let Some(url) = h.get(Value::from("webhook")).and_then(|v| v.as_str()) {
-            r.insert("module".into(), "webhook".into());
-            settings.insert("url".into(), url.into());
-        } else if let Some(path) = h.get(Value::from("socket")).and_then(|v| v.as_str()) {
-            r.insert("module".into(), "socket".into());
-            settings.insert("path".into(), path.into());
-        } else {
-            todos.push(format!(
-                "hook '{name}': no socket/webhook transport found; pick module: webhook \
-                 (settings.url) or module: socket (settings.path)"
-            ));
-            r.insert("module".into(), "webhook".into());
-        }
-        if !settings.is_empty() {
-            r.insert("settings".into(), Value::Mapping(settings));
-        }
-        for typed in [
-            "kind",
-            "timeout_ms",
-            "on_error",
-            "on_empty",
-            "at",
-            "prompt",
-            "user",
-            "priority",
-        ] {
-            if let Some(v) = h.get(Value::from(typed)) {
-                r.insert(typed.into(), v.clone());
-            }
-        }
-        Value::Mapping(r)
-    };
-    let is_true =
-        |h: &Mapping, k: &str| h.get(Value::from(k)).and_then(|v| v.as_bool()) == Some(true);
+/// Convert an OLD hook `at:` scalar to the NEW `phase:` list, stage-renamed via the shared
+/// [`crate::config::RENAMED_HOOK_STAGES`] table (`route`→`candidate`, `attempt`→`routing`,
+/// `completion`→`response`). `None` when `at` is not a recognizable scalar.
+fn at_to_phase(at: &Value) -> Option<Value> {
+    let s = at.as_str()?;
+    let renamed = crate::config::RENAMED_HOOK_STAGES
+        .iter()
+        .find(|(o, _)| *o == s)
+        .map(|(_, n)| *n)
+        .unwrap_or(s);
+    Some(Value::Sequence(vec![Value::from(renamed)]))
+}
 
-    let mut placed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // 1a. The 1.4.x TOP-LEVEL `global_hooks:` was a `Vec<String>` of REGISTRY names; 1.5.0's is a
-    // list of inline refs (same shape as a pool's `hooks:`). Resolve each name to its inline ref so
-    // a bare registry name never survives to trip `--validate` (a bare non-strategy name is not a
-    // valid 1.5.0 global-hook ref). Entries already in inline-ref (map) form pass through.
-    let mut global_list: Vec<Value> = Vec::new();
+/// Build a 1.5.3 hook DEFINITION mapping (`{ module, settings, kind, phase, … }`) from an OLD hook
+/// entry — either a 1.x REGISTRY entry (a `socket:`/`webhook:` transport) or a 1.5.0/1.5.2 INLINE
+/// ref (`{ module: … }`). `module:` is derived (webhook→`webhook`+`settings.url`,
+/// socket→`socket`+`settings.path`, else the entry's own `module:`/`plugin:`); the tap `at:` becomes
+/// the renamed `phase:` list; the retired `global:`/`default:`/`signals:` flags are dropped with a
+/// todo. Total: an unrecognized shape still yields a best-effort def.
+fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Value {
+    let m = entry.as_mapping().cloned().unwrap_or_default();
+    let mut def = Mapping::new();
+    let mut settings = as_map(m.get(Value::from("settings")).cloned().unwrap_or_default());
+    if let Some(url) = m.get(Value::from("webhook")).and_then(|v| v.as_str()) {
+        def.insert("module".into(), "webhook".into());
+        settings.insert("url".into(), url.into());
+    } else if let Some(path) = m.get(Value::from("socket")).and_then(|v| v.as_str()) {
+        def.insert("module".into(), "socket".into());
+        settings.insert("path".into(), path.into());
+    } else if let Some(module) = m.get(Value::from("module")).and_then(|v| v.as_str()) {
+        def.insert("module".into(), module.into());
+    } else if let Some(plugin) = m.get(Value::from("plugin")).and_then(|v| v.as_str()) {
+        def.insert("module".into(), plugin.into());
+    } else {
+        todos.push(format!(
+            "hook '{name}': no module/socket/webhook/plugin transport found; set `module:` to a \
+             `kind: hook` plugin"
+        ));
+        def.insert("module".into(), "webhook".into());
+    }
+    if !settings.is_empty() {
+        def.insert("settings".into(), Value::Mapping(settings));
+    }
+    for k in [
+        "kind",
+        "timeout_ms",
+        "on_error",
+        "on_empty",
+        "prompt",
+        "user",
+        "priority",
+        "groups",
+    ] {
+        if let Some(v) = m.get(Value::from(k)) {
+            def.insert(k.into(), v.clone());
+        }
+    }
+    if let Some(phase) = m.get(Value::from("at")).and_then(at_to_phase) {
+        def.insert("phase".into(), phase);
+    } else if let Some(phase) = m.get(Value::from("phase")) {
+        def.insert("phase".into(), phase.clone());
+    }
+    if m.get(Value::from("default")).and_then(|v| v.as_bool()) == Some(true) {
+        todos.push(format!(
+            "hook '{name}': the retired `default: true` flag is gone; name the base ordering \
+             strategy in each pool's `hooks:` list explicitly"
+        ));
+    }
+    if m.contains_key(Value::from("signals")) {
+        todos.push(format!(
+            "hook '{name}': the `signals:` declaration did not carry over automatically; re-add it \
+             under the named `hooks:` entry if the hook still needs it"
+        ));
+    }
+    Value::Mapping(def)
+}
+
+/// Whether a `hooks:` map is ALREADY the 1.5.3 named-definition shape (every entry is a map naming a
+/// non-empty `module:` and carrying NO legacy `socket:`/`webhook:` transport). Used to make the
+/// migration IDEMPOTENT (a config already in the new shape passes through untouched) and to preserve
+/// the 1.x-vs-1.5.3 distinction the loud-fail detector also uses.
+fn is_new_hook_defs(hooks: &Mapping) -> bool {
+    !hooks.is_empty()
+        && hooks.iter().all(|(_, e)| {
+            e.as_mapping().is_some_and(|em| {
+                em.get(Value::from("module"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty())
+                    && !em.contains_key(Value::from("socket"))
+                    && !em.contains_key(Value::from("webhook"))
+            })
+        })
+}
+
+/// A deterministic unique name for an auto-lifted hook definition: `base`, then `base-2`, `base-3`, …
+fn uniq_def_name(defs: &Mapping, base: &str) -> String {
+    if !defs.contains_key(Value::from(base)) {
+        return base.to_string();
+    }
+    let mut n = 2usize;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !defs.contains_key(Value::from(candidate.as_str())) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// 1.5.3 NAMED-HOOKS migration: converge the OLD hook surfaces onto the new shape — the top-level
+/// `hooks:` NAMED-DEFINITION map plus the reserved `pools.hooks:` all-pools attach and per-pool
+/// bare-name references. Handles three legacy sources, idempotently:
+///   * a 1.x `hooks:` REGISTRY (socket:/webhook: entries) → named definitions (same names).
+///   * `global_hooks:` (bare registry names OR 1.5.0/1.5.2 inline instances) → the reserved
+///     `pools.hooks:` all-pools list (inline instances lifted to a named def first, with a todo).
+///   * inline pool-hook instances (`pools.X.hooks: [{ module: … }]`) → a named def + a bare-name
+///     reference in that pool (with a todo).
+///
+/// A config already in the new shape (a `hooks:` map of `module:` defs) passes through untouched.
+fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    let hooks_src = take(root, "hooks").and_then(|v| match v {
+        Value::Mapping(m) => Some(m),
+        _ => None,
+    });
+    let mut defs = Mapping::new();
+    let mut all_pools: Vec<Value> = Vec::new();
+
+    if let Some(src) = hooks_src {
+        if is_new_hook_defs(&src) {
+            // Already the 1.5.3 named-definition map: keep verbatim (idempotent).
+            defs = src;
+        } else {
+            // 1.x REGISTRY: convert every entry to a named def; a `global: true` entry also joins the
+            // all-pools attach.
+            for (k, entry) in &src {
+                let Some(name) = k.as_str() else { continue };
+                defs.insert(k.clone(), hook_entry_to_def(name, entry, todos));
+                if entry
+                    .as_mapping()
+                    .and_then(|m| m.get(Value::from("global")))
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                {
+                    all_pools.push(Value::from(name));
+                }
+            }
+            changes.push(
+                "top-level 1.x hooks: registry -> named hooks: definition map (1.5.3)".into(),
+            );
+        }
+    }
+
+    // `global_hooks:` -> the reserved `pools.hooks:` all-pools attach.
     for entry in take(root, "global_hooks")
         .and_then(|v| v.as_sequence().cloned())
         .unwrap_or_default()
     {
         match entry {
             Value::String(name) => {
-                if let Some(h) = hooks
-                    .get(Value::from(name.as_str()))
-                    .and_then(|v| v.as_mapping())
-                {
-                    global_list.push(inline_ref(&name, h, todos));
-                    placed.insert(name.clone());
-                    changes.push(format!("global_hooks: '{name}' -> inline module ref"));
-                } else {
-                    // Not a registry hook - leave it (a human decides), but do not lose it.
-                    global_list.push(Value::String(name));
+                if !all_pools.iter().any(|v| v.as_str() == Some(name.as_str())) {
+                    all_pools.push(Value::from(name.as_str()));
                 }
+                changes.push(format!(
+                    "global_hooks '{name}' -> pools.hooks all-pools attach (1.5.3)"
+                ));
             }
-            other => global_list.push(other),
+            Value::Mapping(m) => {
+                let base = m
+                    .get(Value::from("module"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("hook")
+                    .to_string();
+                let nm = uniq_def_name(&defs, &base);
+                let def = hook_entry_to_def(&nm, &Value::Mapping(m), todos);
+                defs.insert(Value::from(nm.as_str()), def);
+                all_pools.push(Value::from(nm.as_str()));
+                todos.push(format!(
+                    "global_hooks inline instance lifted to a named hook '{nm}' + a pools.hooks \
+                     all-pools reference; review the auto-generated name"
+                ));
+            }
+            other => all_pools.push(other),
         }
     }
-    // 1b. Registry entries flagged `global: true` -> global_hooks, unless already placed by 1a (so a
-    // hook that is BOTH named in global_hooks AND `global: true` appears exactly once, not twice).
-    for (name, h) in &hooks {
-        let (Some(name), Some(h)) = (name.as_str(), h.as_mapping()) else {
-            continue;
-        };
-        if is_true(h, "global") && !placed.contains(name) {
-            global_list.push(inline_ref(name, h, todos));
-            placed.insert(name.to_string());
-            changes.push(format!("hooks.{name} (global) -> global_hooks inline ref"));
-        }
-        if is_true(h, "default") {
-            todos.push(format!(
-                "hook '{name}' was `default: true` (the pool base ordering); the flag is gone - \
-                 add the hook (or a built-in strategy) to each pool's hooks: list explicitly"
-            ));
-        }
-    }
-    if !global_list.is_empty() {
-        root.insert("global_hooks".into(), Value::Sequence(global_list));
-    }
-    // 2. pool hook-name references -> inline refs in that pool's hooks list.
+
+    // Inline pool-hook instances -> named def + bare-name reference in that pool.
     if let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) {
-        for (pname, p) in pools.iter_mut() {
-            let Value::Mapping(p) = p else { continue };
-            let mut list: Vec<Value> = Vec::new();
-            let existing = take(p, "hooks")
-                .and_then(|v| v.as_sequence().cloned())
-                .unwrap_or_default();
+        let pool_names: Vec<Value> = pools.keys().cloned().collect();
+        for pk in pool_names {
+            if pk.as_str() == Some("hooks") {
+                continue; // the reserved all-pools key, not a pool
+            }
+            let Some(Value::Mapping(p)) = pools.get_mut(&pk) else {
+                continue;
+            };
+            let Some(existing) = take(p, "hooks").and_then(|v| v.as_sequence().cloned()) else {
+                continue;
+            };
+            let mut new_list: Vec<Value> = Vec::new();
             for entry in existing {
                 match entry {
-                    Value::String(name) => {
-                        if let Some(h) = hooks
-                            .get(Value::from(name.as_str()))
-                            .and_then(|v| v.as_mapping())
-                        {
-                            list.push(inline_ref(&name, h, todos));
-                            placed.insert(name.clone());
-                            changes.push(format!(
-                                "pools.{}.hooks: '{name}' -> inline module ref",
-                                pname.as_str().unwrap_or("?")
-                            ));
-                        } else {
-                            // A built-in strategy name (weighted/cheapest/...) stays bare.
-                            list.push(name.into());
-                        }
+                    Value::Mapping(m) => {
+                        let base = m
+                            .get(Value::from("module"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("hook")
+                            .to_string();
+                        let nm = uniq_def_name(&defs, &base);
+                        let def = hook_entry_to_def(&nm, &Value::Mapping(m), todos);
+                        defs.insert(Value::from(nm.as_str()), def);
+                        new_list.push(Value::from(nm.as_str()));
+                        todos.push(format!(
+                            "pools.{}.hooks inline instance lifted to a named hook '{nm}' + a \
+                             bare-name reference",
+                            pk.as_str().unwrap_or("?")
+                        ));
                     }
-                    other => list.push(other),
+                    // A strategy keyword or an already-bare hook name passes through.
+                    other => new_list.push(other),
                 }
             }
-            if !list.is_empty() {
-                p.insert("hooks".into(), Value::Sequence(list));
+            if !new_list.is_empty() {
+                p.insert("hooks".into(), Value::Sequence(new_list));
             }
         }
     }
-    // 3. Anything registered but never placed needs a human decision.
-    for (name, _) in &hooks {
-        let Some(name) = name.as_str() else { continue };
-        if !placed.contains(name) {
-            todos.push(format!(
-                "hook '{name}' was registered but referenced by no pool and not global; add it \
-                 as an inline ref under the pool(s) it should gate, or drop it"
-            ));
+
+    if !defs.is_empty() {
+        root.insert("hooks".into(), Value::Mapping(defs));
+    }
+    if !all_pools.is_empty() {
+        let pools = root
+            .entry("pools".into())
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if let Value::Mapping(pm) = pools {
+            // Merge with any existing reserved all-pools list (idempotent dedup).
+            let mut merged = take(pm, "hooks")
+                .and_then(|v| v.as_sequence().cloned())
+                .unwrap_or_default();
+            for n in all_pools {
+                let dup = n.as_str().is_some() && merged.iter().any(|v| v.as_str() == n.as_str());
+                if !dup {
+                    merged.push(n);
+                }
+            }
+            pm.insert("hooks".into(), Value::Sequence(merged));
         }
     }
 }

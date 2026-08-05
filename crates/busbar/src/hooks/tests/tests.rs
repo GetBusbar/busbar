@@ -201,7 +201,6 @@ fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
         failover: None,
         on_exhausted: None,
         affinity: None,
-        module_hooks: Vec::new(),
         policy,
         gates: Vec::new(),
         base_named: true,
@@ -216,7 +215,6 @@ fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
         failover: None,
         on_exhausted: None,
         affinity: None,
-        module_hooks: Vec::new(),
         policy: PoolPolicy::Weighted,
         gates: vec![name.to_string()],
         base_named: false,
@@ -239,6 +237,8 @@ fn base_gate() -> HookCfg {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     }
 }
 
@@ -1063,9 +1063,50 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     );
     // Every resolved tap here is `prompt: no`, so `send_prompt` (the middle tuple element) is false.
     assert!(
-        resolved.iter().all(|(_, send_prompt, _)| !*send_prompt),
+        resolved.iter().all(|(_, send_prompt, _, _)| !*send_prompt),
         "a prompt:no tap must not carry the prompt-content grant"
     );
+}
+
+/// 1.5.3 PHASE LIST: a tap with `phase: [response]` resolves ONLY into the response stage bucket —
+/// not request/candidate/routing — generalizing the single `at:`. A tap with a MULTI-stage phase
+/// (`[request, response]`) resolves into BOTH named buckets.
+#[test]
+fn resolve_tap_hooks_honors_phase_list() {
+    use crate::config::HookStage;
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let mk = |phase: Vec<HookStage>| HookCfg {
+        kind: HookKind::Tap,
+        global: true,
+        phase,
+        ..base_gate()
+    };
+    let mut hooks = HashMap::new();
+    hooks.insert("resp-only".to_string(), mk(vec![HookStage::Response]));
+    hooks.insert(
+        "req-and-resp".to_string(),
+        mk(vec![HookStage::Request, HookStage::Response]),
+    );
+    let global = vec!["resp-only".to_string(), "req-and-resp".to_string()];
+
+    // Response stage: both fire.
+    assert_eq!(
+        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Response).len(),
+        2,
+        "both taps declare the response phase"
+    );
+    // Request stage: only the multi-stage tap fires; `phase: [response]` is excluded here.
+    assert_eq!(
+        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Request).len(),
+        1,
+        "phase: [response] does not fire at the request stage"
+    );
+    // Candidate/routing: neither declares them.
+    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Candidate).is_empty());
+    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Routing).is_empty());
 }
 
 /// A tap's `prompt: ro` grant flows through `resolve_tap_hooks` as `send_prompt = true` (the plugin

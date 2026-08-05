@@ -96,7 +96,6 @@ fn make_pool(members: Vec<config::PoolMember>) -> config::PoolCfg {
         failover: None,
         on_exhausted: None,
         affinity: None,
-        module_hooks: Vec::new(),
         policy: config::PoolPolicy::default(),
         gates: Vec::new(),
         base_named: false,
@@ -3132,6 +3131,8 @@ fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     }
 }
 
@@ -3150,6 +3151,32 @@ fn hooks_test_cfg() -> RootCfg {
         p
     };
     make_root_cfg(providers, models, pools)
+}
+
+/// 1.5.3: a pool referencing an UNDEFINED hook name (`pool.gates`) AND an undefined all-pools
+/// reference (`pools.hooks:` → runtime `global_hooks`) are both boot/validate errors that name the
+/// missing hook. A hook is DEFINED once under the top-level `hooks:` map and referenced by bare name.
+#[test]
+fn test_pool_and_all_pools_undefined_hook_ref_rejected() {
+    let mut cfg = hooks_test_cfg();
+    // A per-pool bare-name reference to a hook that is not defined.
+    cfg.pools
+        .get_mut("p1")
+        .unwrap()
+        .gates
+        .push("no-such-hook".to_string());
+    // An all-pools attach reference (runtime global_hooks) to another undefined hook.
+    cfg.global_hooks.push("also-missing".to_string());
+    let errs = validate(&cfg).expect_err("undefined hook references must fail validate");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("no-such-hook") && joined.contains("unknown hook"),
+        "the pool reference to an undefined hook must be named: {joined}"
+    );
+    assert!(
+        joined.contains("also-missing"),
+        "the all-pools reference to an undefined hook must be named: {joined}"
+    );
 }
 
 /// `on_error` naming an unknown fallback is a boot error (chains resolve against the registry).

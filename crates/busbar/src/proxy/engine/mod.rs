@@ -215,6 +215,8 @@ pub(crate) async fn forward_with_pool_parsed(
                 outcome: Some(outcome),
                 status: Some(resp.status().as_u16()),
             },
+            resolved_gov_key.and_then(|k| k.group.as_deref()),
+            &completion_app.groups_registry,
         );
     }
     resp
@@ -820,6 +822,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 ingress_protocol,
                 wants_stream,
                 request_id,
+                resolved_gov_key.and_then(|k| k.group.as_deref()),
             );
         }
     }
@@ -1348,6 +1351,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 outcome: None,
                 status: None,
             },
+            resolved_gov_key.and_then(|k| k.group.as_deref()),
+            &app.groups_registry,
         );
     }
     // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
@@ -1447,6 +1452,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     outcome: None,
                     status: None,
                 },
+                resolved_gov_key.and_then(|k| k.group.as_deref()),
+                &app.groups_registry,
             );
         }
 
@@ -2468,10 +2475,18 @@ fn fire_global_taps(
     ingress_protocol: &str,
     wants_stream: bool,
     request_id: u64,
+    // The caller's `groups:` binding — the SELECTION axis (1.5.3). A tap fires only for a caller in
+    // its `groups:` scope (empty scope = every caller). `None` (a groupless caller) matches only
+    // unscoped taps. Walked against `app.groups_registry` (self + ancestors).
+    caller_group: Option<&str>,
 ) {
     if app.tap_hooks.is_empty() {
         return;
     }
+    // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
+    let fires = |groups: &[String]| {
+        crate::config::caller_in_hook_groups(caller_group, groups, &app.groups_registry)
+    };
     let ctx = crate::hooks::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
@@ -2497,16 +2512,24 @@ fn fire_global_taps(
         .ok()
         .map(std::sync::Arc::new)
     };
-    // Shape-only is needed whenever any tap lacks the prompt grant; the prompt projection only when at
-    // least one tap holds `prompt: ro`. Build each at most once.
-    let any_prompt = app.tap_hooks.iter().any(|(_, send_prompt, _)| *send_prompt);
+    // Shape-only is needed whenever any FIRING tap lacks the prompt grant; the prompt projection only
+    // when at least one FIRING tap holds `prompt: ro`. Build each at most once. A tap filtered out by
+    // its caller-group scope is not counted (it will not fire, so its projection need not be built).
+    let any_prompt = app
+        .tap_hooks
+        .iter()
+        .any(|(_, send_prompt, _, groups)| *send_prompt && fires(groups));
     let any_shape = app
         .tap_hooks
         .iter()
-        .any(|(_, send_prompt, _)| !*send_prompt);
+        .any(|(_, send_prompt, _, groups)| !*send_prompt && fires(groups));
     let shape_proj = if any_shape { build_proj(false) } else { None };
     let prompt_proj = if any_prompt { build_proj(true) } else { None };
-    for (timeout, send_prompt, hook) in &app.tap_hooks {
+    for (timeout, send_prompt, hook, groups) in &app.tap_hooks {
+        // SELECTION: skip a tap whose `groups:` scope does not admit this caller.
+        if !fires(groups) {
+            continue;
+        }
         // A granted tap prefers the prompt projection; fall back to shape-only if it failed to
         // serialize (never over-share, always safe).
         let proj = if *send_prompt {

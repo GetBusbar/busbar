@@ -193,7 +193,6 @@ fn pool(members: Vec<PoolMember>) -> PoolCfg {
         failover: None,
         on_exhausted: None,
         affinity: None,
-        module_hooks: Vec::new(),
         policy: crate::config::PoolPolicy::default(),
         gates: Vec::new(),
         base_named: false,
