@@ -29,12 +29,37 @@ name: Verify deploy
 #       (again, read from the published chart index, not the publishing workflow's own claim).
 #   (g) getbusbar.com is actually serving the new version (the live site, not the build log).
 #
+# Checks (a)-(g) all verify that ARTIFACTS EXIST. None of them verified that A USER CAN INSTALL,
+# and that gap let `curl -fsSL https://getbusbar.com/install.sh | sh` rot in production, unnoticed,
+# with a 403 from api.github.com. Checks (h)-(l) close it by exercising the INSTALL PATHS a real
+# user follows:
+#   (h) install.sh end-to-end: download the LIVE script from getbusbar.com (not the repo working
+#       copy — a fix that never deployed must still fail here), run it under `sh` with the
+#       environment SCRUBBED of GitHub credentials, and assert the binary lands, is executable,
+#       fetched providers.yaml, and reports the version under test.
+#   (i) install.sh must NOT depend on api.github.com. THE TRAP: a GitHub Actions runner talks to
+#       api.github.com from a different rate-limit pool than a user's laptop and often has
+#       GITHUB_TOKEN in scope, so a green "it ran in CI" proves nothing. So this check asserts the
+#       ABSENCE of the fragile dependency in the served script, not merely a successful run.
+#   (j) Homebrew: the tap formula's version == the version under test, every platform download URL
+#       is live, the published sha256 matches the real asset, and `brew install
+#       getbusbar/busbar/busbar` (the documented command) resolves and installs that version.
+#   (k) the site's own API endpoints (/api/stars, /api/pulls) answer 200 with numeric counts —
+#       these back the live numbers on getbusbar.com and are currently unmonitored.
+#   (l) the DOCUMENTED quickstart actually runs: both the binary quickstart and the docker
+#       one-liner from docs/getting-started.md boot and answer on /healthz.
+#
 # Triggers:
 #   - workflow_run: fires when release.yml ("Release") or docker.yml ("Docker") completes on a tag
 #     push. The two run in parallel off the same tag push (tag-on-main.yml), so there is no fixed
 #     ordering — each check below retries with backoff for a few minutes to ride out the race
 #     instead of false-failing because the OTHER workflow hasn't finished publishing yet.
 #   - workflow_dispatch: manual re-check of an already-shipped version.
+#   - schedule (daily): install.sh worked on release day and broke LATER — GitHub's unauthenticated
+#     rate limiting is environmental, not a property of our artifacts, so nothing about the release
+#     changed when it broke. A post-release-only trigger structurally CANNOT catch that class of
+#     rot. The daily run re-verifies the CURRENT latest release, so the longest a broken install
+#     path can hide is ~24h instead of "until the next release, or a user complains".
 on:
   workflow_run:
     workflows: ["Release", "Docker"]
@@ -44,6 +69,11 @@ on:
       version:
         description: "Version to verify (e.g. 1.5.2, no leading v)"
         required: true
+  schedule:
+    # 13:17 UTC daily. Off the top of the hour on purpose: :00 cron slots are the most contended on
+    # GitHub's shared scheduler and get delayed the most, and mid-day UTC lands in working hours for
+    # both EU and US-East so a red rot alert is seen the day it fires, not the next morning.
+    - cron: "17 13 * * *"
 
 permissions:
   contents: read
@@ -53,6 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       (github.event.workflow_run.conclusion == 'success' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     env:
@@ -66,6 +97,22 @@ jobs:
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             V="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            # ROT CHECK: no tag in hand, so resolve "the current latest release" the way an
+            # unauthenticated user's shell would — the plain HTTP 302 on github.com's
+            # /releases/latest, which needs no token and is not rate-limited the way the API is.
+            # Deliberately NOT api.github.com: that is the exact dependency check (i) forbids in
+            # install.sh, and using it here would make this workflow's own version resolution the
+            # first thing to 403 and silently mis-verify.
+            loc="$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+              "https://github.com/GetBusbar/busbar/releases/latest" || true)"
+            case "$loc" in
+              */releases/tag/v*) V="${loc##*/releases/tag/v}" ;;
+              *)
+                echo "::error::could not resolve the latest release from github.com/GetBusbar/busbar/releases/latest (redirect was '${loc:-<none>}'). Fix: confirm a non-draft, non-prerelease Release exists and that the /releases/latest 302 still points at /releases/tag/vX.Y.Z."
+                exit 1
+                ;;
+            esac
           else
             V="${{ github.event.workflow_run.head_branch }}"
             V="${V#v}"
@@ -290,4 +337,331 @@ jobs:
             echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
             fail=1
           fi
+          [ "$fail" = 0 ]
+
+      # ---------------------------------------------------------------------------------------
+      # (h)-(l): THE INSTALL PATHS. Everything above proves artifacts EXIST. Nothing above proves
+      # a user can INSTALL. That is how `curl -fsSL https://getbusbar.com/install.sh | sh` shipped
+      # broken (403 from api.github.com) with a fully green verifier.
+      # ---------------------------------------------------------------------------------------
+
+      - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+
+          # THE LIVE SCRIPT, not the repo working copy. A fix that is merged but never deployed to
+          # getbusbar.com is still broken for every user, and reading ./install.sh from the checkout
+          # would hide exactly that. (This job does not even check the repo out — on purpose.)
+          rm -rf /tmp/busbar-e2e
+          mkdir -p /tmp/busbar-e2e/bin
+          if ! curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
+               "https://getbusbar.com/install.sh" -o /tmp/busbar-e2e/install.sh; then
+            echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
+            exit 1
+          fi
+          [ -s /tmp/busbar-e2e/install.sh ] || {
+            echo "::error::(h) https://getbusbar.com/install.sh served an EMPTY body. Fix: redeploy the marketing site."
+            exit 1
+          }
+          echo "PASS: https://getbusbar.com/install.sh is served ($(wc -l < /tmp/busbar-e2e/install.sh) lines)"
+
+          # THE TRAP THIS AVOIDS: an Actions runner reaches api.github.com from a different
+          # rate-limit pool than a user's laptop, and GH_TOKEN is in this job's env (check (c) needs
+          # it). Running the installer with that inherited would let a token-authenticated,
+          # generously-rate-limited runner sail through the precise call that 403s for real users.
+          # `env -i` starts from a COMPLETELY empty environment — stronger than
+          # `env -u GITHUB_TOKEN -u GH_TOKEN` because it also strips ACTIONS_*, GITHUB_*, and any
+          # future credential var nobody remembers to add to the -u list. Nothing is passed that a
+          # user's shell would not have, and no auth header is supplied anywhere.
+          rc=0
+          for i in $(seq 1 10); do
+            rm -rf /tmp/busbar-e2e/bin && mkdir -p /tmp/busbar-e2e/bin
+            set +e
+            env -i \
+              PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+              HOME="/tmp/busbar-e2e" \
+              LANG="C.UTF-8" \
+              BUSBAR_INSTALL_DIR="/tmp/busbar-e2e/bin" \
+              sh /tmp/busbar-e2e/install.sh > /tmp/busbar-e2e/install.log 2>&1
+            rc=$?
+            set -e
+            got=""
+            if [ "$rc" = 0 ] && [ -x /tmp/busbar-e2e/bin/busbar ]; then
+              got="$(/tmp/busbar-e2e/bin/busbar --version 2>/dev/null || true)"
+              [ "$got" = "busbar ${V}" ] && break
+            fi
+            echo "  ...install.sh has not yet produced busbar ${V} (rc=$rc, --version='${got:-<none>}', attempt $i/10), retrying in 15s"
+            sleep 15
+          done
+
+          echo "--- install.sh output (credential-scrubbed run) ---"
+          cat /tmp/busbar-e2e/install.log || true
+          echo "--------------------------------------------------"
+
+          if [ "$rc" != 0 ]; then
+            echo "FAIL: install.sh exited $rc when run WITHOUT GitHub credentials"
+            echo "::error::(h) https://getbusbar.com/install.sh FAILS for an unauthenticated user (exit $rc). This is what a real user sees from \`curl -fsSL https://getbusbar.com/install.sh | sh\`. The known failure mode is a 403 from api.github.com (unauthenticated GitHub API rate limiting, which bites hardest on shared/NAT'd/CI IPs) leaving 'could not determine the latest release tag'. Fix: resolve the tag WITHOUT the GitHub API — follow the https://github.com/GetBusbar/busbar/releases/latest 302 (see check (i))."
+            exit 1
+          fi
+          echo "PASS: install.sh exits 0 with a credential-free environment"
+
+          if [ -f /tmp/busbar-e2e/bin/busbar ]; then
+            echo "PASS: installed binary exists at \$BUSBAR_INSTALL_DIR/busbar"
+          else
+            echo "FAIL: install.sh exited 0 but installed NO binary at \$BUSBAR_INSTALL_DIR/busbar"
+            echo "::error::(h) install.sh reported success but wrote no binary — it is failing silently. Fix: make every download/extract step in install.sh fail loudly."
+            fail=1
+          fi
+          if [ -x /tmp/busbar-e2e/bin/busbar ]; then
+            echo "PASS: installed binary is executable"
+          else
+            echo "FAIL: installed binary is NOT executable (mode $(stat -c '%a' /tmp/busbar-e2e/bin/busbar 2>/dev/null || echo '<missing>'))"
+            echo "::error::(h) the installed busbar is not executable — the user's very next command fails with 'permission denied'. Fix: install.sh must chmod 0755 the binary."
+            fail=1
+          fi
+
+          got="$(/tmp/busbar-e2e/bin/busbar --version 2>/dev/null || true)"
+          if [ "$got" = "busbar ${V}" ]; then
+            echo "PASS: installed \`busbar --version\` == 'busbar ${V}'"
+          else
+            echo "FAIL: installed \`busbar --version\` == '${got:-<none>}', expected 'busbar ${V}'"
+            echo "::error::(h) the one-liner installs the WRONG version: got '${got:-<none>}', expected 'busbar ${V}'. Either the GitHub Release for v${V} is not marked 'latest' (so install.sh resolves an older tag), or the v${V} platform tarball contains a stale binary. Fix: check the Release's 'latest' flag and release.yml's artifact build."
+            fail=1
+          fi
+
+          # The docs promise the installer drops providers.yaml too, and busbar will not boot
+          # without it — but install.sh only WARNS if that download fails, so a user can get a
+          # "success" that cannot run. Assert it.
+          if [ -s /tmp/busbar-e2e/bin/providers.yaml ]; then
+            echo "PASS: install.sh also fetched providers.yaml (required at runtime)"
+          else
+            echo "FAIL: install.sh did not fetch providers.yaml"
+            echo "::error::(h) install.sh exited 0 without providers.yaml, which busbar REQUIRES at boot — the user gets a 'successful' install that cannot start. Fix: serve https://getbusbar.com/providers.yaml, and make install.sh treat that download as fatal rather than a warning."
+            fail=1
+          fi
+          [ "$fail" = 0 ]
+
+      - name: "(i) install.sh must NOT depend on api.github.com (the 403 that broke it)"
+        run: |
+          set -euo pipefail
+          # WHY THIS EXISTS SEPARATELY FROM (h): (h) can pass on a runner while failing on every
+          # user's laptop, because api.github.com's unauthenticated rate limit is PER SOURCE IP and
+          # GitHub's own egress is not treated like a stranger's. A green run is therefore NOT
+          # evidence. The only durable assertion is the ABSENCE of the fragile dependency in the
+          # script we actually serve, which is IP-independent and cannot pass for the wrong reason.
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
+            "https://getbusbar.com/install.sh" -o /tmp/busbar-installsh-live || {
+              echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it. Fix: redeploy the marketing site."
+              exit 1
+            }
+          [ -s /tmp/busbar-installsh-live ] || {
+            echo "::error::(i) https://getbusbar.com/install.sh served an EMPTY body — nothing to inspect. Fix: redeploy the marketing site."
+            exit 1
+          }
+          if grep -nE 'api\.github\.com' /tmp/busbar-installsh-live; then
+            echo "FAIL: the LIVE install.sh calls api.github.com (lines above)"
+            echo "::error::(i) https://getbusbar.com/install.sh resolves the release tag via api.github.com. THE FAILURE MODE: unauthenticated GitHub API calls are rate-limited PER SOURCE IP, so users behind shared/corporate/NAT/cloud IPs get 'curl: (56) The requested URL returned error: 403' and the installer dies with 'busbar: could not determine the latest release tag'. This DOES NOT reproduce on a GitHub Actions runner (different rate-limit pool, credentials often in scope), which is why it went unnoticed in production. FIX: resolve the tag with no API and no auth — e.g. tag=\$(curl -fsS -o /dev/null -w '%{redirect_url}' https://github.com/GetBusbar/busbar/releases/latest); tag=\${tag##*/tag/}  — or serve a pinned version from getbusbar.com. Then redeploy the site."
+            exit 1
+          fi
+          echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
+
+      - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          fail=0
+          formula=""
+          # Read the formula the tap actually serves (raw.githubusercontent, unauthenticated — the
+          # same bytes `brew` fetches), not a copy in this repo.
+          for i in $(seq 1 20); do
+            formula="$(curl -fsSL "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null || true)"
+            [ -n "$formula" ] && echo "$formula" | grep -qE "^ *version \"${V}\"" && break
+            echo "  ...tap formula not yet at version ${V} (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$formula" ]; then
+            echo "FAIL: could not fetch Formula/busbar.rb from GetBusbar/homebrew-busbar"
+            echo "::error::(j) the Homebrew tap formula is unreachable — \`brew install getbusbar/busbar/busbar\` is dead for every user. Fix: confirm GetBusbar/homebrew-busbar is public and Formula/busbar.rb exists on main."
+            exit 1
+          fi
+          fver="$(printf '%s' "$formula" | grep -m1 -E '^ *version "' | sed -E 's/.*version "([^"]+)".*/\1/')"
+          if [ "$fver" = "$V" ]; then
+            echo "PASS: tap formula version == ${V}"
+          else
+            echo "FAIL: tap formula version == '${fver:-<none>}', expected '${V}'"
+            echo "::error::(j) the Homebrew tap is STALE: Formula/busbar.rb pins '${fver:-<none>}' but the release under test is ${V}, so \`brew install getbusbar/busbar/busbar\` gives users an old binary. Fix: run/repair the tap's bump.yml workflow (it should bump version + all four sha256s on each release)."
+            fail=1
+          fi
+
+          # Every platform's download URL must actually be live at this version — a formula that
+          # points at a missing asset installs for nobody.
+          assets="$(printf '%s' "$formula" | grep -oE 'busbar-[A-Za-z0-9_]+-[A-Za-z0-9.-]+\.(tar\.gz|zip)' | sort -u)"
+          [ -n "$assets" ] || { echo "::error::(j) could not parse any asset filenames out of the tap formula. Fix: check Formula/busbar.rb's url lines."; exit 1; }
+          while IFS= read -r a; do
+            [ -n "$a" ] || continue
+            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
+            code="$(curl -sSL --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            case "$code" in
+              200|206) echo "PASS: tap download URL is live (${code}): ${a}" ;;
+              *)
+                echo "FAIL: tap download URL returned ${code}: ${u}"
+                echo "::error::(j) the Homebrew formula points at ${u} which returns ${code}. \`brew install\` fails on that platform. Fix: publish the missing asset on Release ${TAG}, or correct the formula's url."
+                fail=1
+                ;;
+            esac
+          done <<< "$assets"
+
+          # The published checksum must match the real bytes, or brew aborts with a checksum
+          # mismatch even though the URL is fine.
+          want_sha="$(printf '%s' "$formula" | awk '/on_linux do/{l=1} l&&/on_intel do/{i=1} l&&i&&/sha256/{gsub(/[",]/,"");print $2;exit}')"
+          if [ -n "$want_sha" ]; then
+            curl -fsSL "https://github.com/GetBusbar/busbar/releases/download/${TAG}/busbar-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/brew-asset.tar.gz
+            got_sha="$(sha256sum /tmp/brew-asset.tar.gz | awk '{print $1}')"
+            if [ "$got_sha" = "$want_sha" ]; then
+              echo "PASS: tap sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz matches the published asset"
+            else
+              echo "FAIL: tap sha256 mismatch (formula ${want_sha}, actual ${got_sha})"
+              echo "::error::(j) the Homebrew formula's sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz does not match the asset on Release ${TAG}. \`brew install getbusbar/busbar/busbar\` aborts with a checksum mismatch. Fix: re-run the tap's bump workflow to recompute the checksums."
+              fail=1
+            fi
+          else
+            echo "FAIL: could not parse the linux/intel sha256 out of the tap formula"
+            echo "::error::(j) Formula/busbar.rb has no parseable on_linux/on_intel sha256 — brew cannot verify the download. Fix: restore the sha256 lines in the formula."
+            fail=1
+          fi
+
+          # And finally the documented command itself. Scrubbed of GitHub credentials: users do not
+          # have HOMEBREW_GITHUB_API_TOKEN/GH_TOKEN set, and brew's tap+API calls are rate-limited
+          # the same way install.sh's were.
+          if command -v brew >/dev/null 2>&1; then
+            if env -u GITHUB_TOKEN -u GH_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+                 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 \
+                 brew install getbusbar/busbar/busbar; then
+              bver="$("$(brew --prefix busbar)/bin/busbar" --version 2>/dev/null || true)"
+              if [ "$bver" = "busbar ${V}" ]; then
+                echo "PASS: \`brew install getbusbar/busbar/busbar\` installs busbar ${V}"
+              else
+                echo "FAIL: brew-installed \`busbar --version\` == '${bver:-<none>}', expected 'busbar ${V}'"
+                echo "::error::(j) \`brew install getbusbar/busbar/busbar\` resolved and installed, but the resulting binary reports '${bver:-<none>}' instead of 'busbar ${V}'. Fix: the tap formula's url/version pair does not match the binary inside the tarball — re-run the tap bump workflow."
+                fail=1
+              fi
+            else
+              echo "FAIL: \`brew install getbusbar/busbar/busbar\` did not succeed"
+              echo "::error::(j) the DOCUMENTED Homebrew command \`brew install getbusbar/busbar/busbar\` fails without GitHub credentials — exactly what a user runs. Fix: see the brew output above; usually a bad tap ref, a private tap repo, or a formula syntax error."
+              fail=1
+            fi
+          else
+            # VISIBLE fail-open, never a silent no-op: the load-bearing assertions above (version,
+            # live URLs, checksum) are hard failures and already ran. Only the convenience "does the
+            # documented brew command run end-to-end" half is skipped, and it is announced twice.
+            echo "VISIBLE SKIP: Homebrew is not installed on this runner image, so the end-to-end \`brew install\` half of (j) did not run. The formula version / URL / checksum assertions above DID run and are authoritative."
+            echo "::warning::(j) PARTIAL: no \`brew\` on the runner, so the end-to-end \`brew install getbusbar/busbar/busbar\` was not exercised (formula version, download URLs and sha256 WERE verified). Fix: pin a runner image that ships Homebrew, or move this half to a macos-latest job."
+            { echo "### (j) Homebrew: PARTIAL — no \`brew\` on the runner, end-to-end install not exercised"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          [ "$fail" = 0 ]
+
+      - name: "(k) getbusbar.com's own API endpoints answer with real numbers"
+        run: |
+          set -euo pipefail
+          fail=0
+          # These back the live counters on getbusbar.com. Unauthenticated, from outside — the same
+          # request a visitor's browser makes. No token is sent, so a runner gets no special
+          # treatment here either.
+          check_api() {
+            ep="$1"; keys="$2"; hint="$3"
+            body="$(curl -sS -m 30 -o /tmp/api-body.json -w '%{http_code}' "https://getbusbar.com${ep}" || echo 000)"
+            payload="$(cat /tmp/api-body.json 2>/dev/null || true)"
+            if [ "$body" != "200" ]; then
+              echo "FAIL: https://getbusbar.com${ep} returned HTTP ${body} (body: ${payload:-<empty>})"
+              echo "::error::(k) https://getbusbar.com${ep} returns HTTP ${body}, body ${payload:-<empty>} — expected 200 with a numeric count. ${hint}"
+              return 1
+            fi
+            n="$(printf '%s' "$payload" | jq -r "${keys} // empty" 2>/dev/null || true)"
+            if [ -n "$n" ] && printf '%s' "$n" | grep -qE '^[0-9]+$'; then
+              echo "PASS: ${ep} -> 200, count = ${n}"
+              return 0
+            fi
+            echo "FAIL: ${ep} returned 200 but no numeric count (body: ${payload:-<empty>})"
+            echo "::error::(k) https://getbusbar.com${ep} returned 200 but its payload has no numeric count (got '${payload:-<empty>}'). Expected one of ${keys}. ${hint}"
+            return 1
+          }
+          check_api "/api/stars" '.stargazers_count' \
+            "Fix: the marketing Worker's /api/stars route must proxy GetBusbar/busbar's star count and return {\"stargazers_count\":N}." || fail=1
+          # KNOWN RED, ON PURPOSE. As of writing, /api/pulls answers 400 {"error":"unknown repo"}
+          # with no query string; it only works as /api/pulls?repo=getbusbar/busbar. The site's own
+          # counter therefore cannot be trusted, and this check is here to hold that visible until
+          # the Worker is fixed. Do NOT "fix" it by adding ?repo= — the endpoint the site calls is
+          # the one that must work.
+          check_api "/api/pulls" '.pull_count // .count // .pulls' \
+            "KNOWN ISSUE: /api/pulls currently 400s with {\"error\":\"unknown repo\"} unless given ?repo=getbusbar/busbar — verified: /api/pulls?repo=getbusbar/busbar returns 200 {\"pull_count\":N}. Fix is MARKETING-SIDE, in the Cloudflare Worker: default the repo to getbusbar/busbar when no ?repo= is supplied, exactly as /api/stars already does. This check is EXPECTED TO FAIL until that ships." || fail=1
+          [ "$fail" = 0 ]
+
+      - name: "(l) the documented quickstart actually runs (binary + docker one-liner)"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          work=/tmp/busbar-quickstart
+          rm -rf "$work"; mkdir -p "$work"
+          # The exact minimal config from docs/getting-started.md Step 2. `listen` is omitted so it
+          # takes the documented default (0.0.0.0:8080) — that default is part of what we verify.
+          cat > "$work/config.yaml" <<'YAML'
+          providers:
+            anthropic:
+              api_key: { env: ANTHROPIC_KEY }
+          models:
+            claude-sonnet:
+              provider: anthropic
+          YAML
+          # Step 3's env var. A syntactically-valid dummy: the quickstart asserts BOOT + /healthz,
+          # which are provider-independent; it deliberately does NOT spend a real provider call.
+          export ANTHROPIC_KEY=sk-ant-verify-deploy-dummy
+
+          probe() {  # probe <url> <label> -> 0 if it answers "ok"
+            for i in $(seq 1 30); do
+              b="$(curl -fsS -m 5 "$1" 2>/dev/null || true)"
+              [ "$b" = "ok" ] && { echo "PASS: $2 answers 200 'ok' on /healthz"; return 0; }
+              sleep 2
+            done
+            echo "FAIL: $2 never answered 'ok' on /healthz (last body: '${b:-<none>}')"
+            return 1
+          }
+
+          # --- l.1: the binary quickstart from the README / getting-started, using the binary the
+          # --- live install.sh produced in (h). Docs promise: `curl -s localhost:8080/healthz` -> ok
+          cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
+          cp /tmp/busbar-e2e/bin/providers.yaml "$work/providers.yaml"
+          pushd "$work" >/dev/null
+          BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar > "$work/busbar.log" 2>&1 &
+          bpid=$!
+          popd >/dev/null
+          if probe "http://127.0.0.1:8080/healthz" "the documented binary quickstart"; then
+            :
+          else
+            echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
+            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work: the installed busbar ${V} did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes fail. Fix: see the busbar log above — either the minimal config in the docs is no longer valid for this release, or the release binary fails to boot."
+            fail=1
+          fi
+          kill "$bpid" 2>/dev/null || true
+          for i in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+
+          # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
+          # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
+          # --- tests the same bytes while making a failure unambiguous about WHICH release broke).
+          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          docker run -d --name busbar-quickstart -p 8080:8080 \
+            -e ANTHROPIC_KEY \
+            -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
+            "${DOCKERHUB_IMAGE}:${V}" >/dev/null
+          if probe "http://127.0.0.1:8080/healthz" "the documented docker one-liner"; then
+            :
+          else
+            echo "--- docker logs ---"; docker logs busbar-quickstart 2>&1 || true; echo "-------------------"
+            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${DOCKERHUB_IMAGE}:${V}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above — usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
+            fail=1
+          fi
+          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
           [ "$fail" = 0 ]
