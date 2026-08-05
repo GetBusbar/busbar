@@ -614,6 +614,22 @@ pub(crate) struct OverlayDoc {
     /// base floors stand unchanged. No tombstones: a pin is present-or-absent.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) plugin_versions: BTreeMap<String, String>,
+    /// The `named_maps` section (1.5.3 universal named-DEFINITION pattern): API-applied entries of
+    /// EVERY named map the generic admin CRUD serves, keyed `section key → entry name → the raw
+    /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.5.4/1.5.6).
+    ///
+    /// The definition is stored RAW (`serde_json::Value`) ON PURPOSE. It is re-parsed into its typed,
+    /// `deny_unknown_fields` config struct on every apply
+    /// ([`crate::config::named_map::NamedMapSection::insert`]), which means (a) a new section needs no
+    /// new overlay field and no `Serialize` derive on a config struct that is otherwise
+    /// deserialize-only, and (b) the bytes a restart replays are byte-identical to the definition the
+    /// operator PUT — the overlay cannot silently normalize a definition into a different one.
+    ///
+    /// NO TOMBSTONES, deliberately: the API refuses to write over a BASE-config-defined entry at all
+    /// (409 `conflict`, edit config.yaml), so overlay names and base names are disjoint and a
+    /// deletion is expressible as a plain removal from this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) named_maps: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 
 impl OverlayDoc {
@@ -782,7 +798,7 @@ pub(crate) fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     if let Some(root) = &doc.root {
         root.apply_to_deploy(deploy);
     }
-    apply_plugin_versions_to_deploy(deploy, doc);
+    apply_pre_resolve_sections(deploy, doc);
 }
 
 /// Apply the overlay's `plugin_versions` pins onto `deploy.plugins.min_versions` (1.5.0
@@ -815,6 +831,85 @@ pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &Over
             .first_party_floors
             .insert(name.clone(), pinned.clone());
     }
+}
+
+/// Apply the overlay's `named_maps` sections onto a base `DeployCfg`, PRE-resolve — the durable half
+/// of the generic named-map admin CRUD. Runs at the same seam as the `root` / `plugin_versions`
+/// overrides (and for the same reason): `resolve` LOWERS these definition maps into the auth chains
+/// and the typed export projection, so an overlay entry that arrived after resolve would never reach
+/// the runtime at all.
+///
+/// A definition that no longer parses (a downgrade whose typed struct lost a field, a hand-edited
+/// overlay) is dropped with a LOUD error rather than aborting the whole boot: an unparseable exporter
+/// must not brick startup, and an unparseable identity provider that something still references fails
+/// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
+pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+    use crate::config::named_map::NamedMapSection;
+    for section in NamedMapSection::ALL {
+        let Some(entries) = doc.named_maps.get(section.key()) else {
+            continue;
+        };
+        for (name, def) in entries {
+            if let Err(e) = section.insert(deploy, name, def) {
+                tracing::error!(
+                    section = section.key(), entry = %name, error = %e,
+                    "config overlay holds a `{}` definition this binary cannot parse; it is NOT \
+                     applied (edit or remove it, then reload)",
+                    section.key()
+                );
+            }
+        }
+    }
+}
+
+/// Apply EVERY pre-resolve overlay section that is not the `root` block — the `plugin_versions` pins
+/// and the `named_maps` definitions. One function so a caller that must NOT take the overlay's `root`
+/// (because it is applying a caller-supplied root, e.g. `PUT /config/settings`) still cannot forget a
+/// sibling pre-resolve section; adding the next one is an edit HERE, not at six rebuild sites.
+pub(crate) fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+    apply_plugin_versions_to_deploy(deploy, doc);
+    apply_named_maps_to_deploy(deploy, doc);
+}
+
+/// Persist ONE named-map entry to the overlay: `Some(def)` upserts it, `None` removes it. Same
+/// read-modify-WRITE durability contract as `persist`/`persist_groups`/`persist_root` — every sibling
+/// section (and its tombstones) is carried forward verbatim, an unreadable overlay is REFUSED rather
+/// than clobbered, and a `None` path is the LOCKED config (refuse, never a silent `Ok`).
+pub(crate) fn persist_named_map(
+    path: Option<&Path>,
+    section: crate::config::named_map::NamedMapSection,
+    name: &str,
+    def: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist the `{}` section (refusing to overwrite \
+             a corrupt overlay)",
+            p.display(),
+            section.key()
+        ));
+    };
+    match def {
+        Some(v) => {
+            doc.named_maps
+                .entry(section.key().to_string())
+                .or_default()
+                .insert(name.to_string(), v.clone());
+        }
+        None => {
+            if let Some(entries) = doc.named_maps.get_mut(section.key()) {
+                entries.remove(name);
+                if entries.is_empty() {
+                    doc.named_maps.remove(section.key());
+                }
+            }
+        }
+    }
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the

@@ -11800,6 +11800,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_reload_errors().await;
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
+    drive_named_map_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
@@ -12207,4 +12208,936 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     assert_not_self_referential("list_keys", &keys_body);
 
     handle.abort();
+}
+
+// ── THE GENERIC NAMED-DEFINITION MAP CRUD (1.5.3 unit D) ─────────────────────────────────────────
+//
+// `/identity-providers` and `/export` are served by ONE parameterized handler set
+// (`admin::v1::json::named_map`), so these tests deliberately drive BOTH sections through the same
+// tables: a behavior that held for one section and not the other would mean the generic path had
+// quietly forked.
+
+/// Write the on-disk base config the named-map tests rebuild against: one model/pool plus a BASE
+/// entry in each named map (the base-protection target).
+///
+/// `reference_corp_ad` additionally makes `auth.admin_auth:` name `corp-ad` — a REFERENCE SITE whose
+/// definition lives only in the overlay. That is the shape the dangling-reference test needs: create
+/// `corp-ad` through the API (the rebuild resolves, because the overlay supplies the definition),
+/// then watch the DELETE get refused because the reference would be left dangling. Every other
+/// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
+fn write_named_map_fixture(
+    tag: &str,
+    reference_corp_ad: bool,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-namedmap-{}-{}-{}",
+        tag,
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let providers_path = dir.join("providers.yaml");
+    let config_path = dir.join("config.yaml");
+    std::fs::write(
+        &providers_path,
+        "test-provider:
+  protocol: anthropic
+  base_url: http://127.0.0.1:1/
+  api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
+",
+    )
+    .unwrap();
+    std::fs::write(
+        &config_path,
+        "listen: 127.0.0.1:0
+providers:
+  test-provider:
+    api_key: { env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY }
+models:
+  m0:
+    provider: test-provider
+    max_concurrent: 4
+pools:
+  p:
+    members:
+      - model: m0
+identity-providers:
+  base-idp:
+    module: keys
+  admin-tokens:
+    module: admin-tokens
+    token: { file: ADMIN_TOKEN_FILE }
+export:
+  base-metrics:
+    module: prometheus
+    settings: { buffer_seconds: 60 }
+"
+        .to_string()
+        .replace(
+            "ADMIN_TOKEN_FILE",
+            &dir.join("admin.token").to_string_lossy(),
+        ) + if reference_corp_ad {
+            "auth:\n  admin_auth: [admin-tokens, corp-ad]\n"
+        } else {
+            ""
+        },
+    )
+    .unwrap();
+    // The operator credential lives in the FILE the base config points at, so it survives every
+    // rebuild-and-swap these tests trigger — a fixture whose admin token only existed on the
+    // pre-mutation `App` would start 401-ing the moment a mutation succeeded.
+    std::fs::write(dir.join("admin.token"), "admintok").unwrap();
+    if reference_corp_ad {
+        // The overlay-defined `corp-ad` is a SECOND `admin-tokens` provider on the admin chain, with
+        // its own credential file — so the rebuilt chain still admits the fixture's own `admintok`
+        // through the first entry, and the test is measuring the dangling guard rather than an
+        // accidentally-broken admin credential.
+        std::fs::write(dir.join("corp.token"), "corp-secret").unwrap();
+    }
+    (dir, config_path, providers_path)
+}
+
+/// A running admin server over the named-map disk fixture. The live `App` is seeded with the SAME
+/// base entries the file declares (a `TestApp` does not parse config.yaml), so the read surface and
+/// disk truth agree exactly as they do after a real boot.
+async fn named_map_app(
+    tag: &str,
+    reference_corp_ad: bool,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
+    crate::metrics::init();
+    let (dir, config_path, providers_path) = write_named_map_fixture(tag, reference_corp_ad);
+    // The DEFAULT overlay filename next to config.yaml — the same path `load_config_from_disk`
+    // resolves for a config with no explicit `config.overlay` block. A named-map mutation rebuilds
+    // from disk truth PLUS the on-disk overlay, so a fixture whose live overlay path differed from
+    // the resolved one would silently lose every prior API-applied definition on the next mutation.
+    let overlay = dir.join(crate::config::overlay::DEFAULT_OVERLAY_FILENAME);
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .disk_paths(config_path, providers_path)
+        .identity_provider(
+            "base-idp",
+            serde_json::from_value(serde_json::json!({"module": "keys"})).unwrap(),
+        )
+        .identity_provider(
+            "admin-tokens",
+            serde_json::from_value(serde_json::json!({
+                "module": "admin-tokens",
+                "token": {"file": dir.join("admin.token").to_string_lossy()}
+            }))
+            .unwrap(),
+        )
+        .export_def(
+            "base-metrics",
+            serde_json::from_value(serde_json::json!({
+                "module": "prometheus", "settings": {"buffer_seconds": 60}
+            }))
+            .unwrap(),
+        )
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (dir, overlay, addr, handle)
+}
+
+/// LIST / GET / PUT for EVERY named-map section through the one generic handler: the base entry is
+/// listed and readable, a PUT creates a new definition that is immediately readable, the config
+/// version bumps, and the definition lands in the `named_maps` overlay section (so it survives a
+/// restart). `identity-providers` additionally projects its ceiling/credential fields while
+/// `/export` omits them entirely — the one-view-per-pattern contract.
+#[tokio::test]
+async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
+    let (dir, overlay, addr, handle) = named_map_app("roundtrip", false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    // (section, base entry, the definition a PUT stores under `new-<section>`)
+    let cases: [(&str, &str, serde_json::Value); 2] = [
+        (
+            "identity-providers",
+            "base-idp",
+            serde_json::json!({"module": "keys", "max_admin_scope": "none"}),
+        ),
+        (
+            "export",
+            "base-metrics",
+            serde_json::json!({
+                "module": "request-log-file",
+                "settings": {"path": dir.join("req.jsonl").to_string_lossy()}
+            }),
+        ),
+    ];
+    for (section, base, def) in &cases {
+        // LIST — the base entry is there, and the list carries the config-plane ETag.
+        let r = admin(client.get(format!("http://{addr}/api/v1/admin/{section}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "GET /{section}");
+        let etag = r
+            .headers()
+            .get("etag")
+            .expect("the list read emits the config-plane ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body: serde_json::Value = r.json().await.unwrap();
+        let names: Vec<&str> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(base), "GET /{section} lists {base}: {body}");
+
+        // GET one.
+        let one: serde_json::Value =
+            admin(client.get(format!("http://{addr}/api/v1/admin/{section}/{base}")))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        assert_eq!(one["name"], *base);
+        assert!(one["module"].is_string(), "the definition names its module");
+        if *section == "identity-providers" {
+            assert_eq!(
+                one["token_configured"], false,
+                "an identity provider projects WHETHER a credential is configured, never the \
+                 reference itself"
+            );
+        } else {
+            assert!(
+                one.get("max_admin_scope").is_none() && one.get("token_configured").is_none(),
+                "an exporter carries no ceiling and no credential, so those fields are omitted \
+                 entirely: {one}"
+            );
+        }
+
+        // PUT a NEW definition, chaining the ETag we just read into the guard.
+        let name = format!("new-{section}");
+        let put = admin(client.put(format!("http://{addr}/api/v1/admin/{section}/{name}")))
+            .header("if-match", etag)
+            .body(def.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            put.status().as_u16(),
+            200,
+            "PUT /{section}/{name}: {:?}",
+            put.text().await
+        );
+
+        // Readable immediately (the swap already happened) …
+        let after: serde_json::Value =
+            admin(client.get(format!("http://{addr}/api/v1/admin/{section}/{name}")))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        assert_eq!(
+            after["name"], name,
+            "the PUT definition reads back: {after}"
+        );
+        assert_eq!(after["module"], def["module"]);
+
+        // … and DURABLE: the raw definition is in the overlay's `named_maps` section, so a restart
+        // replays exactly the document that was PUT.
+        let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+        assert_eq!(
+            doc.named_maps[*section][&name], *def,
+            "the overlay stores the definition VERBATIM"
+        );
+    }
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// OPTIMISTIC CONCURRENCY: a stale `If-Match` on a named-map write is a RETRYABLE
+/// `version_conflict` (409) and changes nothing — the same one mechanism every other config-plane
+/// mutation speaks. Driven on both sections, since they share one guard.
+#[tokio::test]
+async fn test_admin_v1_named_map_put_honors_expected_version() {
+    let (dir, _overlay, addr, handle) = named_map_app("ifmatch", false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    for (section, def) in [
+        ("identity-providers", serde_json::json!({"module": "keys"})),
+        (
+            "export",
+            serde_json::json!({"module": "prometheus", "settings": {"buffer_seconds": 30}}),
+        ),
+    ] {
+        let r = admin(client.put(format!("http://{addr}/api/v1/admin/{section}/stale")))
+            .header("if-match", "\"9999\"")
+            .body(def.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 409, "a stale guard rejects");
+        let body: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            body["error"]["code"], "version_conflict",
+            "RETRYABLE, distinct from a terminal conflict: {body}"
+        );
+        // Nothing was created.
+        let after = admin(client.get(format!("http://{addr}/api/v1/admin/{section}/stale")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            after.status().as_u16(),
+            404,
+            "the rejected PUT stored nothing"
+        );
+    }
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SCOPE: every named-map WRITE requires `full` (the route matrix), while the reads are
+/// `read-only`. An under-scoped principal reads the definitions and is refused every mutation with
+/// the frozen `forbidden` envelope — the authorization decision is made from METHOD+PATH alone,
+/// never from the body, so no definition a caller sends can talk its way past it.
+#[tokio::test]
+async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .export_def(
+            "base-metrics",
+            serde_json::from_value(serde_json::json!({
+                "module": "prometheus", "settings": {"buffer_seconds": 60}
+            }))
+            .unwrap(),
+        )
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert(
+            "viewers".to_string(),
+            crate::config::RoleBindingCfg {
+                admin_scope: Some("read-only".to_string()),
+                ..Default::default()
+            },
+        );
+        inner
+            .role_bindings
+            .insert("test-scope-module".to_string(), table);
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let viewer = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "grp:viewers")
+            .header("content-type", "application/json")
+    };
+
+    for section in ["identity-providers", "export"] {
+        let r = viewer(client.get(format!("http://{addr}/api/v1/admin/{section}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "read-only CAN read /{section}");
+
+        for (label, req) in [
+            (
+                "put",
+                viewer(client.put(format!("http://{addr}/api/v1/admin/{section}/x")))
+                    .body(r#"{"module":"keys"}"#),
+            ),
+            (
+                "patch-settings",
+                viewer(client.patch(format!(
+                    "http://{addr}/api/v1/admin/{section}/base-metrics/settings"
+                )))
+                .body(r#"{"settings":{}}"#),
+            ),
+            (
+                "delete",
+                viewer(client.delete(format!("http://{addr}/api/v1/admin/{section}/base-metrics"))),
+            ),
+        ] {
+            let r = req.send().await.unwrap();
+            assert_eq!(
+                r.status().as_u16(),
+                403,
+                "read-only cannot {label} /{section}"
+            );
+            let body: serde_json::Value = r.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "forbidden", "{label} /{section}");
+        }
+    }
+    handle.abort();
+}
+
+/// THE TRUST-CEILING RULE: `identity-providers.<name>.max_admin_scope` may be LOWERED or left
+/// alone through the admin API, and RAISING it is refused outright (409 `conflict`) — including on
+/// a brand-new provider, whose baseline is the most restrictive default, so an escalating ceiling
+/// cannot ride in on a create either. Every attempt is audited.
+#[tokio::test]
+async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
+    let (dir, addr, handle) = {
+        let (dir, _overlay, addr, handle) = named_map_app("ceiling", false).await;
+        (dir, addr, handle)
+    };
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // (a) A NEW provider asking for `full` is a RAISE over the default baseline — refused.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"full"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 409, "raising the ceiling is refused");
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_admin_scope"),
+        "the refusal names the ceiling: {body}"
+    );
+    // Nothing was stored.
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "the refused PUT stored nothing"
+    );
+
+    // (b) The most restrictive ceilings are accepted (this is the documented external-IdP shape).
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"none"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "`none` can never be a raise: {:?}",
+        r.text().await
+    );
+
+    // (c) …and a subsequent RAISE on the now-existing provider is still refused.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys","max_admin_scope":"full"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 409, "a raise in place is refused too");
+    let still: serde_json::Value = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        still["max_admin_scope"], "none",
+        "the live ceiling is untouched by the refused raise: {still}"
+    );
+
+    // AUDITED — both the applied change and the refusals.
+    let audit: serde_json::Value = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/audit?resource=identity-provider:corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let items = audit["items"].as_array().unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|i| i["outcome"] == "rejected" && i["action"] == "identity-provider.replace"),
+        "a refused ceiling raise is audited: {audit}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i["outcome"] == "applied" && i["action"] == "identity-provider.replace"),
+        "the accepted change is audited: {audit}"
+    );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DANGLING-REFERENCE GUARD: a DELETE that would leave another config section naming a definition
+/// that no longer exists is refused as a TERMINAL `conflict` naming the referent — never applied
+/// and then discovered at the next resolve. The fixture's base `auth.role_bindings` names
+/// `corp-ad`, so creating that provider through the API and then deleting it is exactly the
+/// dangling case.
+#[tokio::test]
+async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
+    let (dir, _overlay, addr, handle) = named_map_app("dangling", true).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    // Create the referenced provider (the fixture's `auth.admin_auth:` already names it, with no
+    // definition anywhere but the overlay this PUT writes).
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(
+        serde_json::json!({
+            "module": "admin-tokens",
+            "token": {"file": dir.join("corp.token").to_string_lossy()}
+        })
+        .to_string(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+
+    // … then try to delete it while `auth.role_bindings.corp-ad` still names it.
+    let r = admin(client.delete(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 409, "a dangling delete is refused");
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("auth.admin_auth"),
+        "the refusal NAMES the referent so an operator knows what to fix: {body}"
+    );
+    // Still live.
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        200,
+        "the refused delete changed nothing"
+    );
+
+    // An UNREFERENCED definition deletes cleanly — the guard is about references, not about
+    // refusing deletes.
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/spare")))
+        .body(
+            serde_json::json!({
+                "module": "request-log-file",
+                "settings": {"path": dir.join("spare.jsonl").to_string_lossy()}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/spare")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        204,
+        "an unreferenced definition deletes"
+    );
+    let after = admin(client.get(format!("http://{addr}/api/v1/admin/export/spare")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status().as_u16(), 404, "and is gone");
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// WITNESS DRIVER for the generic named-map surface: produces EVERY `(operation, ErrKind, Cond)`
+/// triple `contract::taxonomy::declared_errors` claims for `/identity-providers` and `/export`, so
+/// `declared_error_set_is_exactly_what_the_handlers_emit` can prove none of them is an over-claim.
+/// Every emission on this surface names its condition (`err_json_cond`), so nothing here needs a
+/// `COND_WITNESS_DEBT` row.
+///
+/// Batched: these are CONFIG-class mutations (10/min per principal — each rebuilds and swaps the
+/// whole App), and a driver that walked the whole table on one fixture would measure the rate
+/// limiter instead of the handlers. A fresh fixture carries a fresh limiter.
+async fn drive_named_map_errors() {
+    let big_settings = {
+        let mut m = serde_json::Map::new();
+        m.insert("blob".into(), serde_json::json!("x".repeat(70_000)));
+        serde_json::json!({ "settings": m }).to_string()
+    };
+    let ok_def = |section: &str| match section {
+        "identity-providers" => r#"{"module":"keys"}"#.to_string(),
+        _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
+    };
+    // (label, method, relative path, If-Match, body, want status, want code)
+    type Case = (
+        String,
+        &'static str,
+        String,
+        Option<&'static str>,
+        Option<String>,
+        u16,
+        &'static str,
+    );
+    let mut cases: Vec<Case> = Vec::new();
+    for (section, base) in [
+        ("identity-providers", "base-idp"),
+        ("export", "base-metrics"),
+    ] {
+        let c = |label: &str,
+                 method: &'static str,
+                 rel: String,
+                 im: Option<&'static str>,
+                 body: Option<String>,
+                 status: u16,
+                 code: &'static str|
+         -> Case {
+            (
+                format!("{section}_{label}"),
+                method,
+                rel,
+                im,
+                body,
+                status,
+                code,
+            )
+        };
+        cases.extend([
+            // PUT — the upsert. Every declared Validation condition, plus the base-config guard.
+            c(
+                "put_malformed_body",
+                "PUT",
+                format!("/{section}/x"),
+                None,
+                Some("{".into()),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "put_bad_ifmatch",
+                "PUT",
+                format!("/{section}/x"),
+                Some("not-a-version"),
+                Some(ok_def(section)),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "put_empty_module",
+                "PUT",
+                format!("/{section}/x"),
+                None,
+                Some(r#"{"module":""}"#.into()),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "put_base_defined",
+                "PUT",
+                format!("/{section}/{base}"),
+                None,
+                Some(ok_def(section)),
+                409,
+                "conflict",
+            ),
+            c(
+                "put_stale_ifmatch",
+                "PUT",
+                format!("/{section}/x"),
+                Some("\"9999\""),
+                Some(ok_def(section)),
+                409,
+                "version_conflict",
+            ),
+            // PATCH …/settings.
+            c(
+                "patch_malformed_body",
+                "PATCH",
+                format!("/{section}/{base}/settings"),
+                None,
+                Some("{".into()),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "patch_bad_ifmatch",
+                "PATCH",
+                format!("/{section}/{base}/settings"),
+                Some("not-a-version"),
+                Some(r#"{"settings":{}}"#.into()),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "patch_oversized_settings",
+                "PATCH",
+                format!("/{section}/{base}/settings"),
+                None,
+                Some(big_settings.clone()),
+                400,
+                "invalid_request",
+            ),
+            c(
+                "patch_unknown",
+                "PATCH",
+                format!("/{section}/ghost/settings"),
+                None,
+                Some(r#"{"settings":{}}"#.into()),
+                404,
+                "not_found",
+            ),
+            c(
+                "patch_base_defined",
+                "PATCH",
+                format!("/{section}/{base}/settings"),
+                None,
+                Some(r#"{"settings":{}}"#.into()),
+                409,
+                "conflict",
+            ),
+            c(
+                "patch_stale_ifmatch",
+                "PATCH",
+                format!("/{section}/{base}/settings"),
+                Some("\"9999\""),
+                Some(r#"{"settings":{}}"#.into()),
+                409,
+                "version_conflict",
+            ),
+            // DELETE.
+            c(
+                "delete_bad_ifmatch",
+                "DELETE",
+                format!("/{section}/{base}"),
+                Some("not-a-version"),
+                None,
+                400,
+                "invalid_request",
+            ),
+            c(
+                "delete_unknown",
+                "DELETE",
+                format!("/{section}/ghost"),
+                None,
+                None,
+                404,
+                "not_found",
+            ),
+            c(
+                "delete_base_defined",
+                "DELETE",
+                format!("/{section}/{base}"),
+                None,
+                None,
+                409,
+                "conflict",
+            ),
+            c(
+                "delete_stale_ifmatch",
+                "DELETE",
+                format!("/{section}/{base}"),
+                Some("\"9999\""),
+                None,
+                409,
+                "version_conflict",
+            ),
+            // The single-definition READ.
+            c(
+                "get_unknown",
+                "GET",
+                format!("/{section}/ghost"),
+                None,
+                None,
+                404,
+                "not_found",
+            ),
+        ]);
+        if section == "identity-providers" {
+            cases.push(c(
+                "put_raises_trust_ceiling",
+                "PUT",
+                format!("/{section}/ceil"),
+                None,
+                Some(r#"{"module":"keys","max_admin_scope":"full"}"#.into()),
+                409,
+                "conflict",
+            ));
+        }
+    }
+
+    let client = reqwest::Client::new();
+    for (batch_i, batch) in cases.chunks(8).enumerate() {
+        let (dir, _overlay, addr, handle) =
+            named_map_app(&format!("witness-{batch_i}"), false).await;
+        for (label, method, rel, if_match, body, want_status, want_code) in batch {
+            let mut req = client
+                .request(
+                    reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("http://{addr}/api/v1/admin{rel}"),
+                )
+                .header("x-admin-token", "admintok");
+            if let Some(tag) = if_match {
+                req = req.header("if-match", *tag);
+            }
+            if let Some(b) = body {
+                req = req
+                    .header("content-type", "application/json")
+                    .body(b.clone());
+            }
+            let resp = req.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let parsed: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(
+                status, *want_status,
+                "{label}: expected {want_status}, got {status} ({parsed})"
+            );
+            assert_eq!(parsed["error"]["code"], *want_code, "{label}: {parsed}");
+        }
+        handle.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // NO DISK BASE: an EPHEMERAL busbar (started without config files) has no base truth to merge a
+    // named-map change onto, so every write verb refuses up front — the condition the disk fixtures
+    // above can never reach.
+    {
+        crate::metrics::init();
+        let store = Arc::new(MemoryStore::new());
+        let gov = gov_with_signer(store, Some("admintok".to_string()));
+        let app = TestApp::new().governance(gov).build();
+        let router = crate::build_router(app);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        for section in ["identity-providers", "export"] {
+            for (label, method, rel, body) in [
+                (
+                    "put",
+                    "PUT",
+                    format!("/{section}/x"),
+                    Some(r#"{"module":"keys"}"#),
+                ),
+                (
+                    "patch",
+                    "PATCH",
+                    format!("/{section}/x/settings"),
+                    Some(r#"{"settings":{}}"#),
+                ),
+                ("delete", "DELETE", format!("/{section}/x"), None),
+            ] {
+                let mut req = client
+                    .request(
+                        reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                        format!("http://{addr}/api/v1/admin{rel}"),
+                    )
+                    .header("x-admin-token", "admintok");
+                if let Some(b) = body {
+                    req = req.header("content-type", "application/json").body(b);
+                }
+                let resp = req.send().await.unwrap();
+                let status = resp.status().as_u16();
+                let parsed: serde_json::Value = resp.json().await.unwrap();
+                assert_eq!(status, 400, "{section} {label} (ephemeral): {parsed}");
+                assert_eq!(parsed["error"]["code"], "invalid_request");
+            }
+        }
+        handle.abort();
+    }
+
+    // STILL REFERENCED: the dangling-delete conflict needs a config that already NAMES a provider
+    // the overlay defines, so it gets its own fixture (see `write_named_map_fixture`).
+    {
+        let (dir, _overlay, addr, handle) = named_map_app("witness-dangling", true).await;
+        let admin = |r: reqwest::RequestBuilder| {
+            r.header("x-admin-token", "admintok")
+                .header("content-type", "application/json")
+        };
+        let r = admin(client.put(format!(
+            "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        )))
+        .body(
+            serde_json::json!({
+                "module": "admin-tokens",
+                "token": {"file": dir.join("corp.token").to_string_lossy()}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+        let r = admin(client.delete(format!(
+            "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        )))
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        let parsed: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            status, 409,
+            "a dangling delete is a terminal conflict: {parsed}"
+        );
+        assert_eq!(parsed["error"]["code"], "conflict");
+        handle.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The driver above, as a test in its own right — so the named-map error surface is exercised even
+/// when the class-level audit is filtered out of a run.
+#[tokio::test]
+async fn named_map_error_surface_answers_its_declared_taxonomy() {
+    drive_named_map_errors().await;
 }

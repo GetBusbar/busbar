@@ -31,6 +31,8 @@ fn make_root_cfg(
         allow_all_metadata: false,
         limits: config::LimitsResolved::default(),
         export: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
     }
 }
 

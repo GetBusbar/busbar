@@ -3491,6 +3491,8 @@ mod disposition_matrix_tests {
                 allow_all_metadata: false,
                 limits: crate::config::LimitsResolved::default(),
                 export: Default::default(),
+                identity_providers: Default::default(),
+                export_defs: Default::default(),
             }
         };
 

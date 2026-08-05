@@ -113,6 +113,18 @@ pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
     if rel == crate::admin::v1::contract::PATH_PLUGINS_INSPECT {
         return MutationClass::PluginInspect;
     }
+    // The GENERIC named-DEFINITION map writes (`/identity-providers`, `/export`; `tools`/`agents`
+    // later) each re-run the boot pipeline and swap a whole new `App` — the SAME blast radius as
+    // `/config/reload` and `/plugins/reload`, so they take the CONFIG budget, not the 6x-looser CRUD
+    // one. Derived from the section table rather than listed as literals, so a new section is
+    // classified correctly the moment its variant exists (the `docs/admin-api.md` config row and
+    // `rate_limit_doc_table_matches_classifier` are the paired ledger).
+    if crate::config::named_map::NamedMapSection::ALL
+        .iter()
+        .any(|s| rel.starts_with(s.path_root()))
+    {
+        return MutationClass::Config;
+    }
     let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {
         PathRule::Exact(p) => rel == *p,
         PathRule::Prefix(p) => rel.starts_with(p),
