@@ -75,6 +75,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/plugin-registry-check.sh
+      # QA-GATE SEGMENTATION self-test (1.5.3 unit G). qa/segments.toml is the umbrella's single
+      # source of truth (registry-driven fan-out, mirroring plugins.yaml). This self-test proves the
+      # manifest's SHAPE before any segment is trusted to run: it lists both active and reserved
+      # entries, the preserved core-data-plane/plugins coverage is present (union ⊇ today's gate),
+      # every reserved slot is defined-but-inert (PASS/SKIP), and every segment names a run command.
+      # Same "prove the gate before you trust its verdict" discipline as the lints above.
+      - name: qa-gate segmentation self-test
+        run: scripts/qa-segments.sh --selftest
 
   check:
     name: fmt · clippy · build · test
@@ -162,6 +170,35 @@ jobs:
         run: cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture
+
+  # CONFIG-STABILITY gate (1.5.3 unit F, design §5). 1.5.3 is the LAST config-breaking release; after
+  # it the config grammar is FROZEN and every future feature may add only NEW OPTIONAL keys/sections/
+  # enum-variants. This job ENFORCES that per-PR, exactly like the openapi drift guard above but with
+  # the mechanic that guard lacks: an ADDITIVE-ONLY classifier. The self-test runs FIRST (never trust
+  # the gate's verdict before proving its RED/GREEN discipline still holds — like every sibling lint),
+  # then the gate: (1) DRIFT — the committed config-schema.snapshot.json must byte-match a fresh render
+  # of the config surface (a config-type change that forgot to regen fails loud with UPDATE_CONFIG_SCHEMA=1);
+  # (2) ADDITIVE-ONLY — the committed baseline (read from a git ref, NEVER the working tree, so a
+  # snapshot refresh cannot launder a break) vs the fresh render, classified: new optional field / new
+  # section / enum-append = OK; field removed/retyped, newly-required, enum-drop = FAIL naming the field.
+  config-stability:
+    name: config-stability gate (frozen grammar · additive-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Need history so the additive check can diff against the PR base (not just the tip).
+          fetch-depth: 0
+      # On a PR, the anti-launder baseline is the BASE branch's snapshot (a break committed alongside
+      # a refreshed snapshot on the PR tip is still caught against the base). On a push, HEAD is the
+      # baseline (no-op delta). schemars is NOT needed — the gate is a stdlib-python fingerprint, so
+      # this job needs no Rust toolchain and stays cheap.
+      - name: Config-stability gate self-test (prove RED/GREEN before trusting the verdict)
+        run: scripts/config-stability-gate.sh --selftest
+      - name: Config-stability gate (drift + additive-only)
+        env:
+          CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
+        run: scripts/config-stability-gate.sh --check
 
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in `tokens` auth
   # plugin COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that

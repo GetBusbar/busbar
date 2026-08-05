@@ -1,0 +1,1393 @@
+{
+  "_meta": {
+    "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (config-stability gate, design §5).",
+    "frozen_at": "1.5.3",
+    "generator": "scripts/config-schema.py gen",
+    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd) + the named-definition-map type aliases under crates/busbar/src/config"
+  },
+  "types": {
+    "AdvancedCfg": {
+      "fields": {
+        "rate_sweep_interval": {
+          "optional": true,
+          "type": "u32"
+        },
+        "response_headers": {
+          "optional": true,
+          "type": "ResponseHeadersCfg"
+        },
+        "upstream_h2_prior_knowledge": {
+          "optional": true,
+          "type": "bool"
+        },
+        "upstream_http1_only": {
+          "optional": true,
+          "type": "bool"
+        },
+        "usage_flush_interval_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "worker_threads": {
+          "optional": true,
+          "type": "usize"
+        }
+      },
+      "kind": "struct"
+    },
+    "AffinityCfg": {
+      "fields": {
+        "header_name": {
+          "optional": true,
+          "type": "String"
+        },
+        "mode": {
+          "optional": true,
+          "type": "AffinityMode"
+        }
+      },
+      "kind": "struct"
+    },
+    "AffinityMode": {
+      "kind": "enum",
+      "variants": [
+        "session"
+      ]
+    },
+    "AuthDeployCfg": {
+      "fields": {
+        "admin_auth": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "chain": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "key_ttl": {
+          "optional": true,
+          "type": "String"
+        },
+        "role_bindings": {
+          "optional": true,
+          "type": "RoleBindings"
+        },
+        "signing_key": {
+          "optional": true,
+          "type": "SecretRef"
+        }
+      },
+      "kind": "struct"
+    },
+    "BreakerCfg": {
+      "fields": {
+        "base_cooldown_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "max_cooldown_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "trip": {
+          "optional": true,
+          "type": "BreakerTripConfig"
+        }
+      },
+      "kind": "struct"
+    },
+    "BreakerTripConfig": {
+      "fields": {
+        "consecutive_n": {
+          "optional": true,
+          "type": "u32"
+        },
+        "min_requests": {
+          "optional": true,
+          "type": "usize"
+        },
+        "mode": {
+          "optional": true,
+          "type": "BreakerTripMode"
+        },
+        "threshold": {
+          "optional": true,
+          "type": "f64"
+        },
+        "window_secs": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "BreakerTripMode": {
+      "kind": "enum",
+      "variants": [
+        "consecutive",
+        "error_rate"
+      ]
+    },
+    "BrowserLoginCfg": {
+      "fields": {
+        "client_id": {
+          "optional": true,
+          "type": "String"
+        },
+        "client_secret": {
+          "optional": true,
+          "type": "SecretRef"
+        }
+      },
+      "kind": "struct"
+    },
+    "ChildDefault": {
+      "fields": {
+        "limits": {
+          "optional": true,
+          "type": "Vec<LimitCfg>"
+        }
+      },
+      "kind": "struct"
+    },
+    "ConfigMgmtCfg": {
+      "fields": {
+        "locked": {
+          "optional": true,
+          "type": "bool"
+        },
+        "overlay": {
+          "optional": true,
+          "type": "OverlayCfg"
+        }
+      },
+      "kind": "struct"
+    },
+    "DeployCfg": {
+      "fields": {
+        "admin_listen": {
+          "optional": true,
+          "type": "String"
+        },
+        "admin_require_mtls": {
+          "optional": true,
+          "type": "bool"
+        },
+        "admin_tls": {
+          "optional": true,
+          "type": "TlsCfg"
+        },
+        "advanced": {
+          "optional": true,
+          "type": "AdvancedCfg"
+        },
+        "auth": {
+          "optional": true,
+          "type": "AuthDeployCfg"
+        },
+        "config": {
+          "optional": true,
+          "type": "ConfigMgmtCfg"
+        },
+        "export": {
+          "optional": true,
+          "type": "ExportDefs"
+        },
+        "groups": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, GroupCfg>"
+        },
+        "health": {
+          "optional": true,
+          "type": "HealthDefaultsCfg"
+        },
+        "hooks": {
+          "optional": true,
+          "type": "HookDefs"
+        },
+        "identity-providers": {
+          "optional": true,
+          "type": "IdentityProviders"
+        },
+        "limits": {
+          "optional": true,
+          "type": "LimitsCfg"
+        },
+        "listen": {
+          "optional": true,
+          "type": "String"
+        },
+        "models": {
+          "optional": false,
+          "type": "HashMap<String, ModelCfg>"
+        },
+        "per_request_fee": {
+          "optional": true,
+          "type": "i64"
+        },
+        "plugins": {
+          "optional": true,
+          "type": "PluginsCfg"
+        },
+        "pools": {
+          "optional": true,
+          "type": "PoolsCfg"
+        },
+        "providers": {
+          "optional": false,
+          "type": "HashMap<String, ProviderDeploy>"
+        },
+        "providers_file": {
+          "optional": true,
+          "type": "String"
+        },
+        "public_url": {
+          "optional": true,
+          "type": "String"
+        },
+        "rate_card": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, RateEntryCfg>"
+        },
+        "routing": {
+          "optional": true,
+          "type": "RoutingCfg"
+        },
+        "secrets": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, SecretModuleCfg>"
+        },
+        "security": {
+          "optional": true,
+          "type": "SecurityCfg"
+        },
+        "store": {
+          "optional": true,
+          "type": "StoreCfg"
+        },
+        "tls": {
+          "optional": true,
+          "type": "TlsCfg"
+        }
+      },
+      "kind": "struct"
+    },
+    "EnvFetch": {
+      "fields": {
+        "env": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "ExportAuthHeader": {
+      "fields": {
+        "name": {
+          "optional": false,
+          "type": "String"
+        },
+        "value": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "ExportDefCfg": {
+      "fields": {
+        "module": {
+          "optional": false,
+          "type": "String"
+        },
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        }
+      },
+      "kind": "struct"
+    },
+    "FailoverCfg": {
+      "fields": {
+        "exclusions": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "max_hops": {
+          "optional": true,
+          "type": "usize"
+        },
+        "timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "FallbackBody": {
+      "fields": {
+        "fallback_pool": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "FileSettings": {
+      "fields": {
+        "path": {
+          "optional": false,
+          "type": "String"
+        },
+        "rotate_mb": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "GithubFetch": {
+      "fields": {
+        "github": {
+          "optional": false,
+          "type": "String"
+        },
+        "sha256": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "GroupCfg": {
+      "fields": {
+        "child_default": {
+          "optional": true,
+          "type": "ChildDefault"
+        },
+        "enabled": {
+          "optional": true,
+          "type": "bool"
+        },
+        "limits": {
+          "optional": true,
+          "type": "Vec<LimitCfg>"
+        },
+        "parent": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "HealthCfg": {
+      "fields": {
+        "interval_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "mode": {
+          "optional": true,
+          "type": "HealthMode"
+        },
+        "timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "HealthDefaultsCfg": {
+      "fields": {
+        "default_probe_interval_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "default_probe_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "HealthMode": {
+      "kind": "enum",
+      "variants": [
+        "active",
+        "dead",
+        "none"
+      ]
+    },
+    "HookCfg": {
+      "fields": {
+        "at": {
+          "optional": true,
+          "type": "HookStage"
+        },
+        "default": {
+          "optional": true,
+          "type": "bool"
+        },
+        "global": {
+          "optional": true,
+          "type": "bool"
+        },
+        "groups": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "kind": {
+          "optional": false,
+          "type": "HookKind"
+        },
+        "module": {
+          "optional": false,
+          "type": "String"
+        },
+        "on_empty": {
+          "optional": true,
+          "type": "PolicyOnError"
+        },
+        "on_error": {
+          "optional": true,
+          "type": "String"
+        },
+        "phase": {
+          "optional": true,
+          "type": "Vec<HookStage>"
+        },
+        "priority": {
+          "optional": true,
+          "type": "u16"
+        },
+        "prompt": {
+          "optional": true,
+          "type": "PromptAccess"
+        },
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        },
+        "signals": {
+          "optional": true,
+          "type": "Vec<busbar_api::Signal>"
+        },
+        "timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "user": {
+          "optional": true,
+          "type": "UserAccess"
+        }
+      },
+      "kind": "struct"
+    },
+    "HookDefCfg": {
+      "fields": {
+        "groups": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "kind": {
+          "optional": true,
+          "type": "HookKind"
+        },
+        "module": {
+          "optional": false,
+          "type": "String"
+        },
+        "on_empty": {
+          "optional": true,
+          "type": "PolicyOnError"
+        },
+        "on_error": {
+          "optional": true,
+          "type": "OnErrorCfg"
+        },
+        "phase": {
+          "optional": true,
+          "type": "Vec<HookStage>"
+        },
+        "priority": {
+          "optional": true,
+          "type": "u16"
+        },
+        "prompt": {
+          "optional": true,
+          "type": "PromptAccess"
+        },
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        },
+        "timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "user": {
+          "optional": true,
+          "type": "UserAccess"
+        }
+      },
+      "kind": "struct"
+    },
+    "HookKind": {
+      "kind": "enum",
+      "variants": [
+        "gate",
+        "tap"
+      ]
+    },
+    "HookRefBody": {
+      "fields": {
+        "hook": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "HookStage": {
+      "kind": "enum",
+      "variants": [
+        "candidate",
+        "request",
+        "response",
+        "routing"
+      ]
+    },
+    "IdentityProviderCfg": {
+      "fields": {
+        "browser_login": {
+          "optional": true,
+          "type": "BrowserLoginCfg"
+        },
+        "max_admin_scope": {
+          "optional": true,
+          "type": "String"
+        },
+        "module": {
+          "optional": false,
+          "type": "String"
+        },
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        },
+        "token": {
+          "optional": true,
+          "type": "SecretRef"
+        }
+      },
+      "kind": "struct"
+    },
+    "LimitCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "LimitWindow": {
+      "kind": "enum",
+      "variants": [
+        "day",
+        "hour",
+        "minute",
+        "month",
+        "total"
+      ]
+    },
+    "LimitsCfg": {
+      "fields": {
+        "default_max_tokens": {
+          "optional": true,
+          "type": "u32"
+        },
+        "hard_down_cooldown_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "max_auto_provisioned_groups": {
+          "optional": true,
+          "type": "usize"
+        },
+        "max_honored_retry_after_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "max_inbound_concurrent": {
+          "optional": true,
+          "type": "usize"
+        },
+        "max_keys_per_principal": {
+          "optional": true,
+          "type": "usize"
+        },
+        "pool_idle_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "pool_max_idle_per_host": {
+          "optional": true,
+          "type": "usize"
+        },
+        "reasoning_effort_budgets": {
+          "optional": true,
+          "type": "ReasoningEffortBudgets"
+        },
+        "request_body_max_bytes": {
+          "optional": true,
+          "type": "usize"
+        },
+        "request_body_read_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "tls_handshake_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "upstream_error_body_max_bytes": {
+          "optional": true,
+          "type": "usize"
+        },
+        "upstream_request_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "ModelCfg": {
+      "fields": {
+        "attempt_timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "default_max_tokens": {
+          "optional": true,
+          "type": "u32"
+        },
+        "max_concurrent": {
+          "optional": true,
+          "type": "usize"
+        },
+        "max_requests": {
+          "optional": true,
+          "type": "i64"
+        },
+        "prompt_caching": {
+          "optional": true,
+          "type": "bool"
+        },
+        "provider": {
+          "optional": false,
+          "type": "String"
+        },
+        "reasoning": {
+          "optional": true,
+          "type": "bool"
+        },
+        "upstream_model": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "OnErrorCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "OnExhaust": {
+      "kind": "enum",
+      "variants": [
+        "block",
+        "downgrade"
+      ]
+    },
+    "OnExhaustedCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "OtlpSettings": {
+      "fields": {
+        "url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "OverlayBackend": {
+      "fields": {
+        "file": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "OverlayCfg": {
+      "kind": "enum",
+      "variants": [
+        "Backend",
+        "Disabled"
+      ]
+    },
+    "OverlayDoc": {
+      "fields": {
+        "deleted": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "deleted_groups": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "global_hooks": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "groups": {
+          "optional": true,
+          "type": "BTreeMap<String, GroupCfg>"
+        },
+        "hooks": {
+          "optional": true,
+          "type": "HashMap<String, HookCfg>"
+        },
+        "plugin_versions": {
+          "optional": true,
+          "type": "BTreeMap<String, String>"
+        },
+        "root": {
+          "optional": true,
+          "type": "RootSettings"
+        },
+        "version": {
+          "optional": true,
+          "type": "u32"
+        }
+      },
+      "kind": "struct"
+    },
+    "PluginFetch": {
+      "kind": "enum",
+      "variants": [
+        "Env",
+        "Github",
+        "Url"
+      ]
+    },
+    "PluginPublisher": {
+      "fields": {
+        "name": {
+          "optional": false,
+          "type": "String"
+        },
+        "public_key": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "PluginsCfg": {
+      "fields": {
+        "dir": {
+          "optional": true,
+          "type": "String"
+        },
+        "enabled": {
+          "optional": true,
+          "type": "bool"
+        },
+        "fetch": {
+          "optional": true,
+          "type": "Vec<PluginFetch>"
+        },
+        "min_versions": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, String>"
+        },
+        "trust": {
+          "optional": true,
+          "type": "PluginsTrustCfg"
+        }
+      },
+      "kind": "struct"
+    },
+    "PluginsTrustCfg": {
+      "fields": {
+        "allow_third_party": {
+          "optional": true,
+          "type": "bool"
+        },
+        "allow_unsigned": {
+          "optional": true,
+          "type": "bool"
+        },
+        "publishers": {
+          "optional": true,
+          "type": "Vec<PluginPublisher>"
+        }
+      },
+      "kind": "struct"
+    },
+    "PolicyOnError": {
+      "kind": "enum",
+      "variants": [
+        "first",
+        "reject",
+        "weighted"
+      ]
+    },
+    "PoolCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "PoolMember": {
+      "fields": {
+        "attempt_timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "context_max": {
+          "optional": true,
+          "type": "usize"
+        },
+        "model": {
+          "optional": false,
+          "type": "String"
+        },
+        "reasoning": {
+          "optional": true,
+          "type": "bool"
+        },
+        "tags": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "tier": {
+          "optional": true,
+          "type": "String"
+        },
+        "weight": {
+          "optional": true,
+          "type": "u32"
+        }
+      },
+      "kind": "struct"
+    },
+    "PoolPolicy": {
+      "kind": "enum",
+      "variants": [
+        "cheapest",
+        "fastest",
+        "least_busy",
+        "usage",
+        "weighted"
+      ]
+    },
+    "PoolsCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "PrometheusSettings": {
+      "fields": {
+        "buffer_seconds": {
+          "optional": false,
+          "type": "u64"
+        },
+        "key_gauge_limit": {
+          "optional": true,
+          "type": "usize"
+        }
+      },
+      "kind": "struct"
+    },
+    "PromptAccess": {
+      "kind": "enum",
+      "variants": [
+        "no",
+        "ro",
+        "rw"
+      ]
+    },
+    "ProviderAuth": {
+      "kind": "enum",
+      "variants": [
+        "api-key",
+        "bearer",
+        "jwt-bearer",
+        "oauth-client-credentials"
+      ]
+    },
+    "ProviderCfg": {
+      "fields": {
+        "allow_metadata_hosts": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "api_key": {
+          "optional": false,
+          "type": "SecretRef"
+        },
+        "auth": {
+          "optional": true,
+          "type": "ProviderAuth"
+        },
+        "base_url": {
+          "optional": false,
+          "type": "String"
+        },
+        "error_map": {
+          "optional": false,
+          "type": "HashMap<String, String>"
+        },
+        "health": {
+          "optional": true,
+          "type": "HealthCfg"
+        },
+        "path": {
+          "optional": true,
+          "type": "String"
+        },
+        "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "protocol": {
+          "optional": true,
+          "type": "String"
+        },
+        "scope": {
+          "optional": true,
+          "type": "String"
+        },
+        "subject": {
+          "optional": true,
+          "type": "String"
+        },
+        "token_url": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "ProviderDef": {
+      "fields": {
+        "allow_metadata_hosts": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "auth": {
+          "optional": true,
+          "type": "ProviderAuth"
+        },
+        "base_url": {
+          "optional": false,
+          "type": "String"
+        },
+        "error_map": {
+          "optional": true,
+          "type": "HashMap<String, String>"
+        },
+        "health": {
+          "optional": true,
+          "type": "HealthCfg"
+        },
+        "path": {
+          "optional": true,
+          "type": "String"
+        },
+        "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "protocol": {
+          "optional": false,
+          "type": "String"
+        },
+        "scope": {
+          "optional": true,
+          "type": "String"
+        },
+        "subject": {
+          "optional": true,
+          "type": "String"
+        },
+        "token_url": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "ProviderDeploy": {
+      "fields": {
+        "allow_metadata_hosts": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "api_key": {
+          "optional": false,
+          "type": "SecretRef"
+        },
+        "auth": {
+          "optional": true,
+          "type": "ProviderAuth"
+        },
+        "base_url": {
+          "optional": true,
+          "type": "String"
+        },
+        "error_map": {
+          "optional": true,
+          "type": "HashMap<String, String>"
+        },
+        "health": {
+          "optional": true,
+          "type": "HealthCfg"
+        },
+        "path": {
+          "optional": true,
+          "type": "String"
+        },
+        "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "protocol": {
+          "optional": true,
+          "type": "String"
+        },
+        "scope": {
+          "optional": true,
+          "type": "String"
+        },
+        "subject": {
+          "optional": true,
+          "type": "String"
+        },
+        "token_url": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "QueueBody": {
+      "fields": {
+        "queue": {
+          "optional": false,
+          "type": "QueueInner"
+        }
+      },
+      "kind": "struct"
+    },
+    "QueueInner": {
+      "fields": {
+        "max_ms": {
+          "optional": false,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "RateEntryCfg": {
+      "fields": {
+        "cache_read_utok": {
+          "optional": true,
+          "type": "f64"
+        },
+        "cache_write_utok": {
+          "optional": true,
+          "type": "f64"
+        },
+        "input_utok": {
+          "optional": true,
+          "type": "f64"
+        },
+        "output_utok": {
+          "optional": true,
+          "type": "f64"
+        }
+      },
+      "kind": "struct"
+    },
+    "RawPoolCfg": {
+      "fields": {
+        "affinity": {
+          "optional": true,
+          "type": "AffinityCfg"
+        },
+        "breaker": {
+          "optional": true,
+          "type": "BreakerCfg"
+        },
+        "failover": {
+          "optional": true,
+          "type": "FailoverCfg"
+        },
+        "hooks": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "members": {
+          "optional": true,
+          "type": "Vec<PoolMember>"
+        },
+        "on_exhausted": {
+          "optional": true,
+          "type": "OnExhaustedCfg"
+        },
+        "upstream_credentials": {
+          "optional": true,
+          "type": "crate::auth::UpstreamCreds"
+        }
+      },
+      "kind": "struct"
+    },
+    "ReasoningEffortBudgets": {
+      "fields": {
+        "high": {
+          "optional": true,
+          "type": "u32"
+        },
+        "low": {
+          "optional": true,
+          "type": "u32"
+        },
+        "medium": {
+          "optional": true,
+          "type": "u32"
+        },
+        "minimal": {
+          "optional": true,
+          "type": "u32"
+        }
+      },
+      "kind": "struct"
+    },
+    "ResponseHeadersCfg": {
+      "fields": {
+        "route_policy": {
+          "optional": true,
+          "type": "bool"
+        },
+        "server_timing": {
+          "optional": true,
+          "type": "bool"
+        }
+      },
+      "kind": "struct"
+    },
+    "RoleBindingCfg": {
+      "fields": {
+        "admin_scope": {
+          "optional": true,
+          "type": "String"
+        },
+        "allowed_pools": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "group": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "RootSettings": {
+      "fields": {
+        "admin_listen": {
+          "optional": true,
+          "type": "String"
+        },
+        "admin_require_mtls": {
+          "optional": true,
+          "type": "bool"
+        },
+        "admin_tls": {
+          "optional": true,
+          "type": "TlsCfg"
+        },
+        "advanced": {
+          "optional": true,
+          "type": "crate::config::patch::AdvancedPatch"
+        },
+        "health": {
+          "optional": true,
+          "type": "crate::config::patch::HealthPatch"
+        },
+        "limits": {
+          "optional": true,
+          "type": "crate::config::patch::LimitsPatch"
+        },
+        "listen": {
+          "optional": true,
+          "type": "String"
+        },
+        "per_request_fee": {
+          "optional": true,
+          "type": "i64"
+        },
+        "rate_card": {
+          "optional": true,
+          "type": "BTreeMap<String, RateEntryCfg>"
+        },
+        "routing": {
+          "optional": true,
+          "type": "crate::config::patch::RoutingPatch"
+        },
+        "security": {
+          "optional": true,
+          "type": "crate::config::patch::SecurityPatch"
+        },
+        "store": {
+          "optional": true,
+          "type": "StoreCfg"
+        },
+        "tls": {
+          "optional": true,
+          "type": "TlsCfg"
+        }
+      },
+      "kind": "struct"
+    },
+    "RoutingCfg": {
+      "fields": {
+        "default_policy_timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct"
+    },
+    "SecretModuleCfg": {
+      "fields": {
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        }
+      },
+      "kind": "struct"
+    },
+    "SecurityCfg": {
+      "fields": {
+        "allow_all_metadata": {
+          "optional": true,
+          "type": "bool"
+        },
+        "allow_metadata_hosts": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "blocked_metadata_hosts": {
+          "optional": true,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct"
+    },
+    "StoreCfg": {
+      "fields": {
+        "module": {
+          "optional": true,
+          "type": "String"
+        },
+        "settings": {
+          "optional": true,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        }
+      },
+      "kind": "struct"
+    },
+    "TlsCfg": {
+      "fields": {
+        "cert": {
+          "optional": false,
+          "type": "SecretRef"
+        },
+        "client_ca": {
+          "optional": true,
+          "type": "SecretRef"
+        },
+        "key": {
+          "optional": false,
+          "type": "SecretRef"
+        }
+      },
+      "kind": "struct"
+    },
+    "UrlFetch": {
+      "fields": {
+        "sha256": {
+          "optional": true,
+          "type": "String"
+        },
+        "url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "UserAccess": {
+      "kind": "enum",
+      "variants": [
+        "no",
+        "ro"
+      ]
+    },
+    "WebhookSettings": {
+      "fields": {
+        "auth_header": {
+          "optional": true,
+          "type": "ExportAuthHeader"
+        },
+        "delivery_timeout_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "max_inflight_deliveries": {
+          "optional": true,
+          "type": "usize"
+        },
+        "url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct"
+    },
+    "type AuthMethods": {
+      "kind": "alias",
+      "target": "indexmap::IndexMap<String, AuthMethodCfg>"
+    },
+    "type ExportDefs": {
+      "kind": "alias",
+      "target": "indexmap::IndexMap<String, ExportDefCfg>"
+    },
+    "type HookDefs": {
+      "kind": "alias",
+      "target": "indexmap::IndexMap<String, HookDefCfg>"
+    },
+    "type IdentityProviders": {
+      "kind": "alias",
+      "target": "indexmap::IndexMap<String, IdentityProviderCfg>"
+    },
+    "type RoleBindings": {
+      "kind": "alias",
+      "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>"
+    }
+  }
+}
