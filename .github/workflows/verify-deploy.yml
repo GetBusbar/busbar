@@ -16,7 +16,9 @@ name: Verify deploy
 #   (b) ghcr.io/getbusbar/busbar:vX.Y.Z resolves to the SAME digest as the Docker Hub version tag
 #       (docker.yml copies the manifest cross-registry; they must be byte-for-byte the same image).
 #   (c) the GitHub Release vX.Y.Z exists and carries every expected asset (5 platform tarballs/zip,
-#       the CycloneDX SBOM, the OpenAPI document).
+#       the CycloneDX SBOM, the OpenAPI document) — and each one is a plausible SIZE and actually
+#       DOWNLOADABLE, not merely a name in the asset list (an empty/truncated upload lists the same
+#       as a good one, and only 2 of the 7 assets are exercised by (h)/(j)).
 #   (d) the actually-running image's `org.opencontainers.image.version` OCI label equals the
 #       version (pull the real image and inspect it — not just trust the tag name).
 #   (e) terraform-provider-busbar is published + independently versioned on registry.terraform.io.
@@ -27,7 +29,10 @@ name: Verify deploy
 #       public API, not from that workflow's own success report.
 #   (f) GetBusbar/helm-charts has published the busbar chart with `appVersion` == the release version
 #       (again, read from the published chart index, not the publishing workflow's own claim).
-#   (g) getbusbar.com is actually serving the new version (the live site, not the build log).
+#   (g) getbusbar.com is actually serving the new version (the live site, not the build log), the
+#       version match is ANCHORED (the old unanchored substring grep passed v1.5.2 against a page
+#       advertising v1.5.20), and the page's download buttons — which are version-agnostic
+#       /releases/latest/download/ links — actually resolve to the release under test.
 #
 # Checks (a)-(g) all verify that ARTIFACTS EXIST. None of them verified that A USER CAN INSTALL,
 # and that gap let `curl -fsSL https://getbusbar.com/install.sh | sh` rot in production, unnoticed,
@@ -60,6 +65,14 @@ name: Verify deploy
 #     changed when it broke. A post-release-only trigger structurally CANNOT catch that class of
 #     rot. The daily run re-verifies the CURRENT latest release, so the longest a broken install
 #     path can hide is ~24h instead of "until the next release, or a user complains".
+#
+# Timeouts: every check here talks to a THIRD-PARTY host, and a connection that is accepted but
+# never answered HANGS rather than fails. Nothing used to bound that — no job timeout (so GitHub's
+# 360-minute default applied) and almost no `--max-time` on curl. Now EVERY curl carries
+# --max-time, the long steps carry step-level `timeout-minutes` so a hang names the check that hung
+# instead of just killing the job, and the job carries an overall `timeout-minutes: 60`. This
+# matters more on the daily schedule than on release: a 6-hour hung run would still be "in
+# progress" when the next day's run fires.
 on:
   workflow_run:
     workflows: ["Release", "Docker"]
@@ -81,6 +94,15 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # Every check below talks to a THIRD-PARTY host (registry-1.docker.io, ghcr.io,
+    # registry.terraform.io, getbusbar.github.io, getbusbar.com, raw.githubusercontent.com). A TCP
+    # connect that is accepted and then never answered does not fail — it hangs, and with no job
+    # timeout GitHub's 360-minute default applies: a stalled registry would burn six hours of runner
+    # time and, on the daily schedule, still be "in progress" when the NEXT day's run starts.
+    # Budget: the retry loops are the floor — (a) runs two 20x15s loops (~10m) and (b)(c)(e)(f)(g)(j)
+    # one each (~5m), plus image pulls, the brew install and the two quickstart boots. ~45m worst
+    # case when things are merely slow, so 60 leaves headroom without hiding a true hang.
+    timeout-minutes: 60
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
@@ -104,7 +126,7 @@ jobs:
             # Deliberately NOT api.github.com: that is the exact dependency check (i) forbids in
             # install.sh, and using it here would make this workflow's own version resolution the
             # first thing to 403 and silently mis-verify.
-            loc="$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
               "https://github.com/GetBusbar/busbar/releases/latest" || true)"
             case "$loc" in
               */releases/tag/v*) V="${loc##*/releases/tag/v}" ;;
@@ -137,10 +159,13 @@ jobs:
           else
             token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
           fi
-          token="$(curl -fsS "$token_url" | jq -r '.token // .access_token')"
+          # --max-time on BOTH calls: this helper runs inside 20-iteration retry loops, so a hang
+          # here is a hang of the whole job. Bounded failure is what makes the retry loop work at
+          # all — an unbounded curl never returns to be retried.
+          token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token')"
           [ -n "$token" ] && [ "$token" != "null" ] || { echo "no token from $token_url" >&2; exit 1; }
           accept='application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'
-          curl -fsS -I \
+          curl -fsS --max-time 30 -I \
             -H "Authorization: Bearer $token" \
             -H "Accept: $accept" \
             "https://${reg_host}/v2/${repo}/manifests/${tag}" \
@@ -227,17 +252,51 @@ jobs:
             "busbar-${TAG}.cdx.json"
             "busbar-openapi-${TAG}.json"
           )
+          # A NAME IN THE ASSET LIST IS NOT A USABLE ARTIFACT. GitHub lists an asset as soon as the
+          # upload row is created, so a 0-byte or truncated upload appears here exactly like a good
+          # one. install.sh (check (h)) only ever exercises the ONE tarball matching the runner's
+          # platform, and Homebrew (check (j)) only the linux/x86_64 one — so the macOS, Windows and
+          # metadata assets were asserted to "exist" and never once proven downloadable. Assert both
+          # a plausible size and that the bytes are actually served.
+          sizes="$(gh release view "$TAG" --repo GetBusbar/busbar --json assets \
+            --jq '.assets[] | "\(.name)\t\(.size)"' 2>/dev/null || true)"
           for a in "${expected[@]}"; do
-            if echo "$got" | grep -qxF "$a"; then
-              echo "PASS: Release asset present: $a"
-            else
+            if ! echo "$got" | grep -qxF "$a"; then
               echo "FAIL: Release asset MISSING: $a"
+              echo "::error::(c) Release ${TAG} is missing asset ${a}. Fix: re-run release.yml — that platform's build or upload did not complete."
               fail=1
+              continue
             fi
+            sz="$(printf '%s\n' "$sizes" | awk -F'\t' -v n="$a" '$1==n{print $2; exit}')"
+            # Binaries are multi-MB; the SBOM/OpenAPI JSON are far smaller but never near-empty.
+            case "$a" in
+              *.tar.gz|*.zip) min=1000000 ;;
+              *)              min=1000 ;;
+            esac
+            if [ -z "${sz:-}" ] || [ "$sz" -lt "$min" ]; then
+              echo "FAIL: Release asset ${a} is implausibly small (${sz:-<unknown>} bytes, expected >= ${min})"
+              echo "::error::(c) Release ${TAG} asset ${a} is ${sz:-<unknown>} bytes — a truncated or empty upload that is listed as present but is useless to anyone who downloads it. Fix: re-run release.yml to re-upload that asset."
+              fail=1
+              continue
+            fi
+            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
+            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            case "$code" in
+              200|206) echo "PASS: Release asset present, ${sz} bytes, downloadable: $a" ;;
+              *)
+                echo "FAIL: Release asset ${a} is listed but NOT downloadable (HTTP ${code})"
+                echo "::error::(c) Release ${TAG} lists ${a} but downloading it returns HTTP ${code}. Fix: re-upload the asset on the Release."
+                fail=1
+                ;;
+            esac
           done
           [ "$fail" = 0 ]
 
       - name: "(d) running image's org.opencontainers.image.version label == version"
+        # `docker pull` has no built-in timeout and will sit on a stalled registry indefinitely.
+        # A step-level bound fails THIS step with an unambiguous message instead of letting the
+        # job-level timeout kill the run with no indication of which check hung.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -275,7 +334,7 @@ jobs:
           for i in $(seq 1 20); do
             # Public Terraform Registry API, no auth required. Namespace/provider match
             # GetBusbar/terraform-provider-busbar's published listing (registry.terraform.io/providers/getbusbar/busbar).
-            versions_json="$(curl -fsS "https://registry.terraform.io/v1/providers/getbusbar/busbar/versions" 2>/dev/null || true)"
+            versions_json="$(curl -fsS --max-time 30 "https://registry.terraform.io/v1/providers/getbusbar/busbar/versions" 2>/dev/null || true)"
             latest="$(printf '%s' "$versions_json" | jq -r '.versions[]?.version' 2>/dev/null | sort -V | tail -1 || true)"
             [ -n "$latest" ] && { fail=0; break; }
             echo "  ...registry.terraform.io getbusbar/busbar has no published versions yet (attempt $i/20), retrying in 15s"
@@ -303,7 +362,7 @@ jobs:
             # published index, not from helm-charts' own workflow output. Plain grep/awk (no extra
             # YAML tooling dependency): entries are newest-first under `entries.busbar`, so the
             # FIRST `appVersion:` line after the `name: busbar` block is the current release's.
-            appver="$(curl -fsS "https://getbusbar.github.io/helm-charts/index.yaml" 2>/dev/null \
+            appver="$(curl -fsS --max-time 60 "https://getbusbar.github.io/helm-charts/index.yaml" 2>/dev/null \
               | awk '/^  busbar:/{f=1} f && /appVersion:/{print $2; exit}' | tr -d '"' || true)"
             [ "$appver" = "$V" ] && break
             echo "  ...helm-charts busbar appVersion not yet == ${V} (got '${appver:-<none>}', attempt $i/20), retrying in 15s"
@@ -317,14 +376,21 @@ jobs:
           fi
           [ "$fail" = 0 ]
 
-      - name: "(g) getbusbar.com is serving vX.Y.Z"
+      - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
           fail=0
           found=0
+          # WHY THE MATCH IS ANCHORED: this used to be `grep -qF "v${V}"`, an unanchored SUBSTRING
+          # search. Verifying 1.5.2 against a page still advertising v1.5.20/v1.5.25 matched and
+          # PASSED — the check reported "the site is serving v1.5.2" while the site showed a
+          # different version entirely. Requiring a non-digit (or end of line) after the version
+          # makes the assertion mean what its name says.
           for i in $(seq 1 20); do
-            if curl -fsS "https://getbusbar.com/download/" 2>/dev/null | grep -qF "v${V}"; then
+            if curl -fsS --max-time 30 "https://getbusbar.com/download/" 2>/dev/null \
+                 | grep -qE "v${V}([^0-9]|\$)"; then
               found=1
               break
             fi
@@ -335,8 +401,48 @@ jobs:
             echo "PASS: getbusbar.com/download/ shows v${V}"
           else
             echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
+            echo "::error::(g) getbusbar.com/download/ does not advertise v${V}. Fix: redeploy the marketing site so the download page picks up the new release."
             fail=1
           fi
+
+          # A VERSION STRING IN THE HTML IS NOT A WORKING DOWNLOAD. The page's buttons point at
+          # /releases/latest/download/<asset>, which are version-AGNOSTIC: they keep returning 200
+          # for the PREVIOUS release even when the new one never published, so the text check above
+          # can be green while every button hands users a stale binary — and they 404 outright if
+          # the Release exists but is not flagged 'latest'. Both are user-visible breakage that
+          # nothing else in this workflow covers, so resolve what the buttons actually point at.
+          curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
+            echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links. Fix: redeploy the marketing site."
+            exit 1
+          }
+          # Where does /releases/latest actually land? That is what every button on the page follows.
+          loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
+            "https://github.com/GetBusbar/busbar/releases/latest" || true)"
+          if [ "${loc##*/releases/tag/}" = "$TAG" ]; then
+            echo "PASS: github.com/GetBusbar/busbar/releases/latest resolves to ${TAG}"
+          else
+            echo "FAIL: /releases/latest resolves to '${loc:-<none>}', expected .../releases/tag/${TAG}"
+            echo "::error::(g) the download page's buttons all use /releases/latest/download/, but /releases/latest resolves to '${loc:-<none>}' rather than ${TAG}. Every download button on getbusbar.com therefore serves the WRONG version. Fix: mark Release ${TAG} as 'latest' (it is probably still a draft/prerelease)."
+            fail=1
+          fi
+          links="$(grep -oE 'https://github\.com/GetBusbar/busbar/releases/latest/download/[A-Za-z0-9._-]+' /tmp/dl-page.html | sort -u || true)"
+          if [ -z "$links" ]; then
+            echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
+            echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
+            fail=1
+          fi
+          while IFS= read -r u; do
+            [ -n "$u" ] || continue
+            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            case "$code" in
+              200|206) echo "PASS: download button resolves (${code}): ${u##*/}" ;;
+              *)
+                echo "FAIL: download button returned ${code}: ${u}"
+                echo "::error::(g) the download button for ${u##*/} on getbusbar.com/download/ returns ${code}. Users clicking it get nothing. Fix: publish that asset on Release ${TAG}."
+                fail=1
+                ;;
+            esac
+          done <<< "$links"
           [ "$fail" = 0 ]
 
       # ---------------------------------------------------------------------------------------
@@ -346,6 +452,8 @@ jobs:
       # ---------------------------------------------------------------------------------------
 
       - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
+        # Bounds the 10-attempt install loop plus the tarball download it performs.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -356,7 +464,10 @@ jobs:
           # would hide exactly that. (This job does not even check the repo out — on purpose.)
           rm -rf /tmp/busbar-e2e
           mkdir -p /tmp/busbar-e2e/bin
-          if ! curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
+          # --max-time bounds EACH of the 5 attempts, so the worst case is bounded at ~5*30s plus
+          # the 4 inter-attempt delays rather than "one attempt hangs forever and --retry never
+          # gets a turn". --retry alone does not imply any per-attempt timeout.
+          if ! curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
                "https://getbusbar.com/install.sh" -o /tmp/busbar-e2e/install.sh; then
             echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
             exit 1
@@ -451,7 +562,7 @@ jobs:
           # GitHub's own egress is not treated like a stranger's. A green run is therefore NOT
           # evidence. The only durable assertion is the ABSENCE of the fragile dependency in the
           # script we actually serve, which is IP-independent and cannot pass for the wrong reason.
-          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
+          curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
             "https://getbusbar.com/install.sh" -o /tmp/busbar-installsh-live || {
               echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it. Fix: redeploy the marketing site."
               exit 1
@@ -468,6 +579,8 @@ jobs:
           echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
 
       - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        # `brew install` builds/downloads and has no timeout of its own.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -477,7 +590,7 @@ jobs:
           # Read the formula the tap actually serves (raw.githubusercontent, unauthenticated — the
           # same bytes `brew` fetches), not a copy in this repo.
           for i in $(seq 1 20); do
-            formula="$(curl -fsSL "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null || true)"
+            formula="$(curl -fsSL --max-time 30 "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null || true)"
             [ -n "$formula" ] && echo "$formula" | grep -qE "^ *version \"${V}\"" && break
             echo "  ...tap formula not yet at version ${V} (attempt $i/20), retrying in 15s"
             sleep 15
@@ -503,7 +616,7 @@ jobs:
           while IFS= read -r a; do
             [ -n "$a" ] || continue
             u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
-            code="$(curl -sSL --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
             case "$code" in
               200|206) echo "PASS: tap download URL is live (${code}): ${a}" ;;
               *)
@@ -518,7 +631,8 @@ jobs:
           # mismatch even though the URL is fine.
           want_sha="$(printf '%s' "$formula" | awk '/on_linux do/{l=1} l&&/on_intel do/{i=1} l&&i&&/sha256/{gsub(/[",]/,"");print $2;exit}')"
           if [ -n "$want_sha" ]; then
-            curl -fsSL "https://github.com/GetBusbar/busbar/releases/download/${TAG}/busbar-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/brew-asset.tar.gz
+            # Longer bound than the metadata calls: this is a real multi-MB binary download.
+            curl -fsSL --max-time 300 "https://github.com/GetBusbar/busbar/releases/download/${TAG}/busbar-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/brew-asset.tar.gz
             got_sha="$(sha256sum /tmp/brew-asset.tar.gz | awk '{print $1}')"
             if [ "$got_sha" = "$want_sha" ]; then
               echo "PASS: tap sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz matches the published asset"
@@ -590,16 +704,22 @@ jobs:
           }
           check_api "/api/stars" '.stargazers_count' \
             "Fix: the marketing Worker's /api/stars route must proxy GetBusbar/busbar's star count and return {\"stargazers_count\":N}." || fail=1
-          # KNOWN RED, ON PURPOSE. As of writing, /api/pulls answers 400 {"error":"unknown repo"}
-          # with no query string; it only works as /api/pulls?repo=getbusbar/busbar. The site's own
-          # counter therefore cannot be trusted, and this check is here to hold that visible until
-          # the Worker is fixed. Do NOT "fix" it by adding ?repo= — the endpoint the site calls is
-          # the one that must work.
+          # WAS known-red: /api/pulls used to 400 with {"error":"unknown repo"} unless given
+          # ?repo=getbusbar/busbar. The Worker has since been fixed to default the repo, and the
+          # bare endpoint now returns 200 {"pull_count":N} (re-verified against production). The
+          # check is therefore a NORMAL assertion again — no expected-failure carve-out.
+          #
+          # The stale "EXPECTED TO FAIL" note is deliberately removed rather than left as history:
+          # this workflow now runs on a DAILY schedule, and a check documented as permanently red
+          # trains everyone to ignore a red run, which is precisely how the install.sh breakage
+          # survived. Do NOT re-introduce an expected-red check here; fix the endpoint instead.
           check_api "/api/pulls" '.pull_count // .count // .pulls' \
-            "KNOWN ISSUE: /api/pulls currently 400s with {\"error\":\"unknown repo\"} unless given ?repo=getbusbar/busbar — verified: /api/pulls?repo=getbusbar/busbar returns 200 {\"pull_count\":N}. Fix is MARKETING-SIDE, in the Cloudflare Worker: default the repo to getbusbar/busbar when no ?repo= is supplied, exactly as /api/stars already does. This check is EXPECTED TO FAIL until that ships." || fail=1
+            "Fix is MARKETING-SIDE, in the Cloudflare Worker: /api/pulls must default the repo to getbusbar/busbar when no ?repo= is supplied, exactly as /api/stars does." || fail=1
           [ "$fail" = 0 ]
 
       - name: "(l) the documented quickstart actually runs (binary + docker one-liner)"
+        # Boots two servers; a busbar that starts but never binds would otherwise hang the job.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -621,7 +741,7 @@ jobs:
           export ANTHROPIC_KEY=sk-ant-verify-deploy-dummy
 
           probe() {  # probe <url> <label> -> 0 if it answers "ok"
-            for i in $(seq 1 30); do
+            for _ in $(seq 1 30); do
               b="$(curl -fsS -m 5 "$1" 2>/dev/null || true)"
               [ "$b" = "ok" ] && { echo "PASS: $2 answers 200 'ok' on /healthz"; return 0; }
               sleep 2
@@ -646,7 +766,7 @@ jobs:
             fail=1
           fi
           kill "$bpid" 2>/dev/null || true
-          for i in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
 
           # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
           # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
