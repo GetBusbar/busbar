@@ -764,10 +764,6 @@ EOF
 \t  admin-tokens:
 \t    module: admin-tokens
 \t    token: { env: T }
-\t  oidc:
-\t    module: oidc
-\t    settings:
-\t      issuer: "https://issuer.example"
 \tauth:
 \t  chain: [keys]
 \t  signing_key: { env: BUSBAR_LINT_SIGNING_KEY }
