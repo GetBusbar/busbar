@@ -33,6 +33,23 @@ use crate::config::{
 /// per-byte hot (per-request/per-connection reads at most).
 static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
 
+/// TEST-ONLY. Serializes every test in this binary that MUTATES the process-global `INSTALLED`
+/// slot above (this module's `InstallGuard` tests, and `tls`'s body-bound tests, which install a
+/// non-default `LimitsResolved` to make themselves fast). Cargo runs those tests concurrently in
+/// ONE process, and an install is a whole-struct swap behind a shared lock, so without this a
+/// sibling test's install lands mid-assertion in another and both are flaky in a way that depends
+/// on machine core count. Lives HERE rather than in `tls`'s test module (where it started) because
+/// the hazard is the static, not the file: a lock that only the `tls` tests hold does not protect
+/// this module's tests from them, or theirs from these.
+///
+/// A `tokio::sync::Mutex`, not a `std` one, for two reasons: the `tls` holders await socket I/O for
+/// their entire critical section (holding a `std` guard across an await is clippy's
+/// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
+/// cascade into every other test that wants the lock. Synchronous tests take it with
+/// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
+#[cfg(test)]
+pub(crate) static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Install (or RE-install) the resolved limits process-wide: at boot from `main`'s construction
 /// path, and again on every config apply/reload — the newest install wins, so operator limit
 /// changes are live without restart.
