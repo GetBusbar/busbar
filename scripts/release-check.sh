@@ -14,7 +14,7 @@
 #   registry-driven suite loop, Phase 2 — a required sibling checkout). It builds real artifacts,
 #   mints a real virtual key over the real admin API, drives a real chat-completion request
 #   through a real (if minimal) mock upstream, and asserts real response bodies and real usage
-#   counters — not just exit codes. (SQLite's, Redis's, and OIDC's own real-ABI +
+#   counters — not just exit codes. (SQLite's, Valkey's, and OIDC's own real-ABI +
 #   real-persistence proofs now live in their own repos too — see Phase 1 and the registry-driven
 #   suite loop in Phase 2 below.)
 #
@@ -41,18 +41,18 @@
 #     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). The Phase 2 suite
 #     loop below runs THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
 #     rather than duplicating the proof in-tree.
-#   - Redis's real-ABI + real-persistence proof — store-redis now lives entirely in its own repo
-#     (GetBusbar/store-redis, a same-repo 2-crate workspace bringing 100% of its own logic +
+#   - Valkey's real-ABI + real-persistence proof — store-valkey now lives entirely in its own repo
+#     (GetBusbar/store-valkey, a same-repo 2-crate workspace bringing 100% of its own logic +
 #     adapter). That repo's own tests/e2e.rs already dlopens the real cdylib against a real
-#     redis:7, writes through it, closes + reopens the plugin, and independently verifies via the
-#     plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. This script
+#     valkey/valkey:8, writes through it, closes + reopens the plugin, and independently verifies via the
+#     plain busbar-store-valkey lib crate — genuine, hermetic, real-Valkey coverage. This script
 #     sibling-checks-out that repo and runs its suite as a gate (the Phase 2 suite loop below) rather than
 #     reinventing a second, lower-quality proof in-tree.
 #   - Postgres's full-busbar-binary + real-HTTP-traffic + process-restart-durability proof —
 #     store-postgres was likewise extracted to its own repo (GetBusbar/store-postgres); Phase 2
 #     below runs THAT repo's own real-dlopen-ABI + real-Postgres test suite (against the same real
 #     postgres:16 container this script always spun up) as the gate instead, the same trade-off
-#     already made for OIDC and Redis above.
+#     already made for OIDC and Valkey above.
 #
 # WHEN TO RUN
 #   Pre-release, NOT on every commit. This is release infrastructure, not part of the normal
@@ -70,14 +70,14 @@
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).
 #   - Docker running locally (`docker ps` must succeed) — needed for every `service`-backed suite
-#     phase (postgres/mysql/redis/vault per plugins.yaml). If Docker is unavailable the gate fails
+#     phase (postgres/mysql/valkey/vault per plugins.yaml). If Docker is unavailable the gate fails
 #     loudly up front, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
 #   - A sibling checkout `../store-postgres` (GetBusbar/store-postgres) next to this repo — REQUIRED
 #     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
 #   - Optionally, sibling checkouts for every other plugins.yaml entry (`../store-sqlite`,
-#     `../store-mysql`, `../store-redis`, `../hashicorp-vault`, `../auth-oidc`, `../headroom-hook`,
+#     `../store-mysql`, `../store-valkey`, `../hashicorp-vault`, `../auth-oidc`, `../headroom-hook`,
 #     `../webrequest-hook`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
@@ -274,7 +274,7 @@ ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
-#    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-redis,
+#    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-valkey,
 #    GetBusbar/auth-oidc, GetBusbar/hashicorp-vault; each a same-repo 2-crate workspace, the pattern
 #    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
@@ -734,7 +734,7 @@ fi
 # ── Phase 2: the registry-driven sibling-suite loop ───────────────────────────────────────────────
 #
 # Every fully-extracted plugin whose release-gate proof is its own repo's test suite (`gate: suite`
-# in plugins.yaml — postgres, mysql, redis, vault, oidc today) follows ONE uniform pattern:
+# in plugins.yaml — postgres, mysql, valkey, vault, oidc today) follows ONE uniform pattern:
 #   1. if the entry's `service` is not "none", boot that service's real backend container and
 #      poll its real readiness probe (no fixed sleeps),
 #   2. export that service's BUSBAR_TEST_* connection env,
@@ -851,23 +851,23 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       ok "mysql ready after ${waited}s"
       SUITE_ENV=(BUSBAR_TEST_MYSQL_URL="mysql://busbar:busbar@127.0.0.1:13306/busbar_release_check")
       ;;
-    redis)
-      SUITE_CONTAINER="busbar-release-check-redis-$$"
+    valkey)
+      SUITE_CONTAINER="busbar-release-check-valkey-$$"
       DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
-      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 redis:7 >/dev/null
-      echo "  waiting for redis to accept connections (redis-cli ping inside the container)..."
+      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 valkey/valkey:8 >/dev/null
+      echo "  waiting for valkey to accept connections (valkey-cli ping inside the container)..."
       waited=0
-      until [ "$(docker exec "$SUITE_CONTAINER" redis-cli ping 2>/dev/null)" = "PONG" ]; do
+      until [ "$(docker exec "$SUITE_CONTAINER" valkey-cli ping 2>/dev/null)" = "PONG" ]; do
         waited=$((waited + 1))
         if [ "$waited" -ge 60 ]; then
-          echo "redis did not become ready within 60s" >&2
+          echo "valkey did not become ready within 60s" >&2
           docker logs "$SUITE_CONTAINER" || true
           exit 1
         fi
         sleep 1
       done
-      ok "redis ready after ${waited}s"
-      SUITE_ENV=(REDIS_URL="redis://127.0.0.1:16379")
+      ok "valkey ready after ${waited}s"
+      SUITE_ENV=(VALKEY_URL="redis://127.0.0.1:16379")
       ;;
     vault)
       SUITE_CONTAINER="busbar-release-check-vault-$$"

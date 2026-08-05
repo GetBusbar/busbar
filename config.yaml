@@ -329,7 +329,7 @@ pools:
 #   module: postgres                        # cluster-shared keys/usage/audit
 #   settings: { url: "postgres://user:pass@host/db" }
 # store:
-#   module: redis
+#   module: valkey                          # cluster-shared; `redis://` is the driver's URL scheme
 #   settings: { url: "redis://host:6379/0" }
 
 # ── Advanced (optional) ──────────────────────────────────────────────────────────────────────────

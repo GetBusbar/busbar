@@ -231,7 +231,7 @@ Three things are worth understanding before you scale out:
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state defaults to per-instance memory; enforcement is per-node either
   way.** The default `store: memory` is ephemeral RAM per instance. A cluster-shared
-  store (postgres/redis) genuinely shares keys and the token ledger across N nodes (but
+  store (postgres/valkey) genuinely shares keys and the token ledger across N nodes (but
   NOT the durable audit log - see below), and each node's write-behind flush ships
   ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
   totals - but the budget hard
@@ -462,7 +462,7 @@ durable revocation denylist immediately.
   stream end. Spend = requests x fee + tokens x `rate_card` rates, recomputed on every check;
   with no rate card, tokens price at 0 and only the flat fee counts.
 - **Ledgers default to in-memory** (ephemeral); configure a durable store plugin
-  (`store: { module: sqlite|postgres|redis, settings: {...} }`) to persist keys, usage, and
+  (`store: { module: sqlite|postgres|valkey, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.
 
 > Limit windows are per-process, and the caps are enforced per node even over a shared store

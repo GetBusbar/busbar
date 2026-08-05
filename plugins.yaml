@@ -17,7 +17,7 @@
 #   crate:         the plugin cdylib's Cargo package name
 #   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
 #                  1.4.2-era and must never be retagged)
-#   service:       real backend container its tests need (mysql|postgres|redis|vault|none)
+#   service:       real backend container its tests need (mysql|postgres|valkey|vault|none)
 #   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
 #                  optional — release-check.sh loud-skips (still red in the registry gate's
 #                  release check; "optional" only softens a LOCAL run without the checkout)
@@ -37,7 +37,7 @@
 #
 # Optional fields:
 #   checkout_dir:  local sibling/checkout directory name when it differs from `repo`
-#                  (legacy rename; see store-valkey below)
+#                  (no entry needs it today; kept for the next repo rename)
 #   checkout_ref:  git ref dev-gate.yml's registry-driven clone loop checks the repo out at
 #                  (default: the repo's default branch)
 
@@ -74,15 +74,12 @@ plugins:
     gate: binary
   - repo: store-valkey
     kind: store
-    alias: redis
-    crate: busbar-store-redis-plugin
+    alias: valkey
+    crate: busbar-store-valkey-plugin
     version_line: "1.0"
-    service: redis
+    service: valkey
     release_gate: optional
     gate: suite
-    # Renamed from store-redis; artifact/crate names deliberately keep the redis identity.
-    # Local checkouts and sibling paths still use the directory name store-redis.
-    checkout_dir: store-redis
   - repo: hashicorp-vault
     kind: secret
     alias: vault

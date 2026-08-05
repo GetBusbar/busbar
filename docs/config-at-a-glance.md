@@ -119,7 +119,7 @@ per_request_fee: 0              # flat abstract charge added per request at admi
 
 ```yaml
 store:
-  module: memory                # default: compiled-in, EPHEMERAL. sqlite|postgres|redis = signed
+  module: memory                # default: compiled-in, EPHEMERAL. sqlite|postgres|valkey = signed
   # module: postgres            #   plugin tarballs (need plugins.enabled + the tarball in plugins.dir)
   # settings: { url: "postgres://user:pass@host/busbar" }
 ```

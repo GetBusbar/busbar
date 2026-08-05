@@ -33,6 +33,20 @@ item under **Changed**.
 
 ### Changed
 
+- **BREAKING (config + artifact): the first-party Redis-protocol store plugin is now Valkey.** The
+  repo, the crate, the release artifact, the manifest `name` and the config `alias` were all renamed
+  together: `store.module: redis` → `valkey`, `busbar-store-redis-*.tar.gz` →
+  `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` →
+  `busbar-store-valkey-plugin`. **Migration:** run `busbar --migrate-config <config.yaml>` (it
+  rewrites the module and names the new artifact) and install the renamed tarball; boot and
+  `--validate` loud-fail on every old spelling rather than dying on a generic unresolved-plugin
+  error. Your `settings.url` is unchanged — `redis://` / `rediss://` is the upstream driver's own URL
+  scheme, not a Busbar name. Two consequences worth stating plainly: the renamed artifact is a FRESH
+  plugin IDENTITY, so any `plugins.min_versions` entry or persisted version pin keyed by the old name
+  no longer applies to it (re-pin under `busbar-store-valkey-plugin` if you rely on an anti-downgrade
+  floor), and an old `busbar-store-redis` tarball left in `plugins.dir` alongside the new one does
+  not conflict with it (different name, different alias) — it simply sits there inert unless a config
+  still names it. Delete it.
 - **BREAKING (config): `identity-providers:` — define an identity provider once, reference it by bare
   name.** A new top-level named-definition map (`name -> {module, settings, max_admin_scope, token,
   browser_login}`); `auth.chain:` and `auth.admin_auth:` are now lists of bare NAMES referencing it.
@@ -379,12 +393,12 @@ working on its own.
   busbar 1.x config; run `busbar --migrate-config` and review the flagged items." Nothing from
   1.x can boot-and-silently-flip semantics.
 - **Store plugins: durable backends load from a dynamic library, and the default binary is
-  lean.** SQLite, Postgres, and Redis stores ship as signed plugin tarballs loaded in-process at
+  lean.** SQLite, Postgres, and Valkey stores ship as signed plugin tarballs loaded in-process at
   boot over a versioned store C ABI when `store.module` names them (`memory`, the compiled-in RAM
   store, is the zero-setup default). New workspace crates: `busbar-plugin-abi`,
   `busbar-plugin-sdk` (`export_store_plugin!`), `busbar-plugin-loader` (all FFI `unsafe`
   isolated; the engine keeps `forbid(unsafe_code)`). Store calls are write-behind, off the
-  request hot path. Postgres/Redis are the shared multi-node stores (keys, usage, audit,
+  request hot path. Postgres/Valkey are the shared multi-node stores (keys, usage, audit,
   denylist cluster-shared); the budget hard cap remains per-node between additive flushes
   (documented fleet honesty).
 - **The dynamic plugin system: one signed tarball per plugin, a top-level `plugins.*` block, and
@@ -531,7 +545,7 @@ working on its own.
   `key_id` to `bucket_id`, with additive fleet flushes. v3 (this release): `VirtualKey` is pure
   auth - inline limits dropped, `budget_group` renamed `group`, `allowed_pools` re-encoded as
   nullable (C6), and the denylist surface added. sqlite (`PRAGMA user_version`), postgres
-  (`busbar_schema`), and redis (`busbar:schema`) stamp schema v3 and drop a pre-v3 dev schema on
+  (`busbar_schema`), and valkey (`busbar:schema`) stamp schema v3 and drop a pre-v3 dev schema on
   open (1.5.0 unreleased: no stable schema existed to migrate).
 - **Governance is always available; enforcement is in-memory on the request path.** No on/off
   switch: governance is inert until keys exist. The per-request admission is an atomic in-memory
@@ -617,7 +631,7 @@ working on its own.
   shutdown waits for the in-flight flush).
 - **Durable-audit gaps + unbounded restore.** Transient durable-write failures self-heal, and
   the boot restore reads only the bounded tail it keeps.
-- **Store correctness batch.** Redis: `append_audit` upserted on the wrong key (duplicate audit
+- **Store correctness batch.** Valkey: `append_audit` upserted on the wrong key (duplicate audit
   entries), non-idempotent writes are no longer retried, the schema-wipe guard cannot fire on an
   evicted marker, atomic multi-key writes + reconnect + TLS support. Postgres: a transient
   version-read error is never conflated with a fresh database; `GREATEST` parameters carry
@@ -790,10 +804,10 @@ working on its own.
 
 ### Fixed
 
-- **Redis store atomicity.** `delete_key`'s cascade (key row, index, usage windows, SigV4
+- **Valkey store atomicity.** `delete_key`'s cascade (key row, index, usage windows, SigV4
   credentials and their indexes) and `put_key_with_aws_credential` now run as single atomic
   `MULTI`/`EXEC` transactions — a mid-cascade failure can no longer orphan a SigV4 credential
-  behind a deleted key. The Redis store also gains transparent one-shot reconnect after a dropped
+  behind a deleted key. The Valkey store also gains transparent one-shot reconnect after a dropped
   connection, `rediss://` TLS support (rustls), and password scrubbing in error strings; its
   unbounded no-TTL growth posture is documented (retention is the operator's schedule).
 - **Fleet-budget flushes are additive.** The write-behind usage flush now writes the **delta** since

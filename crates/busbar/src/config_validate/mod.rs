@@ -1653,7 +1653,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         if store.module.trim().is_empty() {
             errors.push(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
-                 store plugin name/alias (sqlite | postgres | redis | <third-party>)"
+                 store plugin name/alias (sqlite | postgres | valkey | <third-party>)"
                     .to_string(),
             );
         }

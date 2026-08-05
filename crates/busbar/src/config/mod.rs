@@ -1004,6 +1004,33 @@ pub(crate) const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The 1.5.3 store-plugin RENAME: every retired spelling of the first-party Valkey store
+/// plugin, as a `store.module:` VALUE. The plugin was renamed wholesale — repo, crate, artifact,
+/// manifest `name` (now [`STORE_MODULE_VALKEY_NAME`]) and config `alias` (now
+/// [`STORE_MODULE_VALKEY`]) — so NONE of these resolve against the renamed artifact's manifest.
+///
+/// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
+/// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
+/// to come from `config::migrate::detect_legacy_markers` (which this table drives, together with
+/// `migrate_config`'s mechanical rewrite, so the two cannot drift) — without it the operator gets
+/// the loader's generic "does not match any plugin", which names neither the rename nor the fix.
+pub(crate) const RETIRED_STORE_MODULES_1_5_3: &[&str] =
+    &["redis", "busbar-store-redis", "busbar-store-redis-plugin"];
+
+/// The config ALIAS the renamed first-party Valkey store plugin answers to (`store.module: valkey`).
+pub(crate) const STORE_MODULE_VALKEY: &str = "valkey";
+
+/// The renamed plugin's canonical MANIFEST NAME — what `busbar-plugin-pack --name` stamps and what a
+/// `plugins.min_versions` / `plugin_versions` anti-downgrade floor must be keyed by. It is the plugin
+/// CRATE name (`…-plugin`), which is how that repo's release workflow packs it.
+pub(crate) const STORE_MODULE_VALKEY_NAME: &str = "busbar-store-valkey-plugin";
+
+/// The renamed plugin's release-ASSET stem: the published tarball is
+/// `busbar-store-valkey-<ver>-<target>.tar.gz` (the WORKSPACE name, without the `-plugin` suffix the
+/// cdylib crate and the manifest carry). Two different strings on purpose — see that repo's
+/// `release.yml`, which passes `--name busbar-store-valkey-plugin --out busbar-store-valkey-…`.
+pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)] // M8: a typo'd provider key must fail boot, not be silently ignored.
 pub(crate) struct ProviderCfg {
@@ -2961,15 +2988,15 @@ pub(crate) const GOVERNANCE_STORE_MEMORY: &str = "memory";
 /// The top-level `store:` block (S6): the durable store as `{ module, settings }` - the same
 /// module/settings shape as every other plugin instance (C5). `settings` is the store module's OWN
 /// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
-/// `busy_timeout_ms`; postgres/redis read `url`). Absent block = the compiled-in ephemeral RAM
+/// `busy_timeout_ms`; postgres/valkey read `url`). Absent block = the compiled-in ephemeral RAM
 /// store (keys/usage reset on restart).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoreCfg {
     /// The store module, by plugin ALIAS or CANONICAL NAME. `memory` (default) is the compiled-in
     /// ephemeral RAM store. Anything else names a STORE PLUGIN resolved from the `plugins.*`
-    /// registry - the shipped first-party stores (`sqlite` / `postgres` / `redis`, canonically
-    /// `busbar-store-<x>`) or a third-party store by its manifest name. A non-`memory` store
+    /// registry - the shipped first-party stores (`sqlite` / `postgres` / `valkey`, canonically
+    /// `busbar-store-<x>-plugin`) or a third-party store by its manifest name. A non-`memory` store
     /// REQUIRES `plugins.enabled: true`; anything else is a boot error naming the flag.
     #[serde(default = "default_governance_store")]
     pub(crate) module: String,

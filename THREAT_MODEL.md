@@ -14,7 +14,7 @@ speaks six wire protocols on both sides (OpenAI, Anthropic, Gemini, Bedrock, Coh
 holds the provider credentials, and enforces routing, failover, rate/budget governance, and TLS. It
 has **no hosted tier** and makes **no outbound calls except to the providers you configure** (and any
 hook endpoints you point it at). Governance state is **in-memory by default**; the durable store is a
-choice, and selecting `postgres` or `redis` means virtual keys, usage, and the audit log live off-box
+choice, and selecting `postgres` or `valkey` means virtual keys, usage, and the audit log live off-box
 in a backend you run (a local SQLite file keeps state on the same host).
 
 ## Trust boundaries

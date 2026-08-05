@@ -17,7 +17,7 @@
 //!    `dlopen`ed). Anti-downgrade floors are hard rejects inside this phase.
 //! 3. **CONFLICT** (over the loadable set): no two plugins share a `name`, no two share an `alias`,
 //!    and no alias collides with another plugin's `name`. Any collision is a HARD error naming
-//!    both plugins - "you can't use redis and a third-party redis".
+//!    both plugins - "you can't use valkey and a third-party valkey".
 //!
 //! Only after all three phases does a plugin enter the [`PluginRegistry`], addressable by BOTH its
 //! canonical name and its alias. Identity comes exclusively from the signed manifest - the tarball
@@ -526,7 +526,7 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<String> {
         if let Some(prev) = name_owner.get(p.manifest.name.as_str()) {
             errors.push(format!(
                 "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
-                 (\"you can't use redis and a third-party redis\")",
+                 (\"you can't use valkey and a third-party valkey\")",
                 p.manifest.name, prev.file, p.file
             ));
         } else {
@@ -781,10 +781,10 @@ mod tests {
     fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
         let release = key(1);
         let dir = tmpdir("happy");
-        let redis = sign(
+        let valkey = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
-            b"redis lib",
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+            b"valkey lib",
         );
         let pg = sign(
             &release,
@@ -792,17 +792,20 @@ mod tests {
             b"pg lib",
         );
         // Filenames lie on purpose - identity must come from the signed manifest.
-        write_tarball(&dir, "totally-not-redis.tar.gz", &redis, b"redis lib");
+        write_tarball(&dir, "totally-not-valkey.tar.gz", &valkey, b"valkey lib");
         write_tarball(&dir, "misc.tgz", &pg, b"pg lib");
 
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
         assert_eq!(reg.loadable().len(), 2);
-        assert!(reg.resolve("redis").is_some(), "alias resolves");
-        assert!(reg.resolve("busbar-store-redis").is_some(), "name resolves");
+        assert!(reg.resolve("valkey").is_some(), "alias resolves");
+        assert!(
+            reg.resolve("busbar-store-valkey-plugin").is_some(),
+            "name resolves"
+        );
         assert!(reg.resolve("postgres").is_some());
         assert_eq!(
-            reg.resolve("redis").unwrap().manifest.name,
-            "busbar-store-redis"
+            reg.resolve("valkey").unwrap().manifest.name,
+            "busbar-store-valkey-plugin"
         );
         assert!(reg.resolve("no-such").is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -816,7 +819,7 @@ mod tests {
         let dir = tmpdir("invalid");
         let good = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"lib",
         );
         write_tarball(&dir, "good.tar.gz", &good, b"lib");
@@ -905,7 +908,7 @@ mod tests {
     }
 
     /// Phase 3: two loadable plugins claiming the same ALIAS is a hard error naming both - the
-    /// "can't use redis and a third-party redis" case (third-party allowed via opt-in).
+    /// "can't use valkey and a third-party valkey" case (third-party allowed via opt-in).
     #[test]
     fn alias_conflict_is_a_hard_error_naming_both() {
         let release = key(1);
@@ -913,12 +916,12 @@ mod tests {
         let dir = tmpdir("conflict");
         let first = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"lib1",
         );
         let third = sign(
             &acme,
-            manifest("acme-store-redis", "redis", "acme"),
+            manifest("acme-store-valkey", "valkey", "acme"),
             b"lib2",
         );
         write_tarball(&dir, "first.tar.gz", &first, b"lib1");
@@ -930,12 +933,12 @@ mod tests {
         assert_eq!(errs.len(), 1, "got {errs:?}");
         assert!(errs[0].contains("alias conflict"), "got {}", errs[0]);
         assert!(
-            errs[0].contains("busbar-store-redis"),
+            errs[0].contains("busbar-store-valkey-plugin"),
             "names first: {}",
             errs[0]
         );
         assert!(
-            errs[0].contains("acme-store-redis"),
+            errs[0].contains("acme-store-valkey"),
             "names second: {}",
             errs[0]
         );
@@ -949,12 +952,12 @@ mod tests {
         let dir = tmpdir("nameconflict");
         let a = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"a",
         );
         let b = sign(
             &release,
-            manifest("busbar-store-redis", "redis2", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey2", "busbar"),
             b"b",
         );
         write_tarball(&dir, "a.tar.gz", &a, b"a");
@@ -970,12 +973,12 @@ mod tests {
         let dir = tmpdir("aliasvsname");
         let a = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"a",
         );
         let b = sign(
             &release,
-            manifest("acme-store-x", "busbar-store-redis", "busbar"),
+            manifest("acme-store-x", "busbar-store-valkey-plugin", "busbar"),
             b"b",
         );
         write_tarball(&dir, "a.tar.gz", &a, b"a");
@@ -1031,14 +1034,14 @@ mod tests {
         // And a trusted store plugin beside it.
         let st = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"store lib",
         );
-        write_tarball(&dir, "redis.tar.gz", &st, b"store lib");
+        write_tarball(&dir, "valkey.tar.gz", &st, b"store lib");
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
         assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
         // The kind gates: a store referenced as a secret module fails naming the kind...
-        let err = reg.open_secret("redis", "{}").map(|_| ()).unwrap_err();
+        let err = reg.open_secret("valkey", "{}").map(|_| ()).unwrap_err();
         assert!(err.contains("kind 'store'"), "got {err}");
         // ...and a secret plugin cannot back the store.
         let err = reg.open_store("vault", "{}").map(|_| ()).unwrap_err();
@@ -1059,12 +1062,12 @@ mod tests {
         let dir = tmpdir("authkind");
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"store lib",
         );
-        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        write_tarball(&dir, "valkey.tar.gz", &m, b"store lib");
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-        let err = reg.open_auth("redis", "{}").map(|_| ()).unwrap_err();
+        let err = reg.open_auth("valkey", "{}").map(|_| ()).unwrap_err();
         assert!(err.contains("kind 'store'"), "got {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1079,10 +1082,10 @@ mod tests {
         let dir = tmpdir("hookkind");
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"store lib",
         );
-        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        write_tarball(&dir, "valkey.tar.gz", &m, b"store lib");
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
         let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
             decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
@@ -1093,7 +1096,7 @@ mod tests {
             describe_schema: Box::new(|_v| None),
         });
         let err = reg
-            .open_hook("redis", "{}", "redis", projectors)
+            .open_hook("valkey", "{}", "valkey", projectors)
             .map(|_| ())
             .unwrap_err();
         assert!(err.contains("kind 'store'"), "got {err}");
@@ -1109,7 +1112,7 @@ mod tests {
         let dir = tmpdir("inventory");
         let good = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"g",
         );
         let third = sign(&acme, manifest("acme-store-dynamo", "dynamo", "acme"), b"t");
@@ -1215,7 +1218,7 @@ mod tests {
     fn first_party_downgrade_is_rejected_in_pipeline() {
         let release = key(1);
         let dir = tmpdir("downgrade");
-        let mut m = manifest("busbar-store-redis", "redis", "busbar");
+        let mut m = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
         m.version = "1.0.0".into();
         let m = sign(&release, m, b"old lib");
         write_tarball(&dir, "old.tar.gz", &m, b"old lib");
@@ -1223,17 +1226,18 @@ mod tests {
         // Unpinned: its 1.0.0 line is its own business — it loads.
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
         assert!(
-            reg.resolve("redis").is_some(),
+            reg.resolve("valkey").is_some(),
             "an unpinned first-party plugin loads regardless of the binary version"
         );
 
         // Pinned above its version: rejected with the anti-downgrade reason, end to end.
         let mut pinned = policy(&release);
-        pinned
-            .first_party_floors
-            .insert("busbar-store-redis".to_string(), "1.0.1".to_string());
+        pinned.first_party_floors.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "1.0.1".to_string(),
+        );
         let reg = scan_and_validate(&dir, &pinned).expect("scan");
-        assert!(reg.resolve("redis").is_none());
+        assert!(reg.resolve("valkey").is_none());
         assert!(reg.skipped()[0].reason.contains("anti-downgrade"));
         let rows = inventory(&dir, &pinned);
         assert!(
@@ -1256,19 +1260,21 @@ mod tests {
         let dir = tmpdir("malformed-floor");
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"lib",
         );
-        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+        write_tarball(&dir, "valkey.tar.gz", &m, b"lib");
 
         let mut pol = policy(&release);
-        pol.min_versions
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+        pol.min_versions.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "v9.9.9".to_string(),
+        );
 
         let reg =
             scan_and_validate(&dir, &pol).expect("scan must succeed — the boot is not killed");
         assert!(
-            reg.resolve("redis").is_none(),
+            reg.resolve("valkey").is_none(),
             "the malformed-floor plugin must not be loadable"
         );
         assert!(
@@ -1296,18 +1302,20 @@ mod tests {
         let dir = tmpdir("malformed-floor-referenced");
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
+            manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
             b"lib",
         );
-        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+        write_tarball(&dir, "valkey.tar.gz", &m, b"lib");
 
         let mut pol = policy(&release);
-        pol.min_versions
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+        pol.min_versions.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "v9.9.9".to_string(),
+        );
 
         let reg = scan_and_validate(&dir, &pol).expect("scan");
         let reason = reg
-            .unresolved_reason("redis")
+            .unresolved_reason("valkey")
             .expect("a malformed-floor plugin must be reportable as unresolved")
             .reason
             .clone();

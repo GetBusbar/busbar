@@ -251,6 +251,29 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             );
         }
     }
+    // §C: the first-party Valkey store plugin was RENAMED to Valkey — repo, crate, artifact,
+    // manifest `name` AND config `alias`. A retired spelling in `store.module:` is not a "wrong
+    // backend": nothing in the renamed artifact's manifest matches it, so the store the operator
+    // asked for simply does not exist and boot dies on the loader's generic "does not match any
+    // plugin", which names neither the rename nor the fix. Caught HERE instead, with the named
+    // marker + the migrate breadcrumb. Driven by the SHARED
+    // `crate::config::RETIRED_STORE_MODULES_1_5_3` table so this marker and `migrate_store_module`'s
+    // rewrite cannot drift over WHICH spellings are retired.
+    if let Some(store) = get(root, "store").and_then(|v| v.as_mapping().cloned()) {
+        if let Some(module) = get(&store, "module").and_then(|v| v.as_str().map(str::to_string)) {
+            if crate::config::RETIRED_STORE_MODULES_1_5_3.contains(&module.as_str()) {
+                markers.push(format!(
+                    "`store.module: {module}` (RENAMED 1.5.3 → `{}`; the first-party store plugin \
+                     is Valkey — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
+                     name/alias resolve against NOTHING, so this would fail at boot with a generic \
+                     unresolved-plugin error; run `busbar --migrate-config`)",
+                    crate::config::STORE_MODULE_VALKEY,
+                    crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
+                    crate::config::STORE_MODULE_VALKEY_NAME,
+                ));
+            }
+        }
+    }
     if let Some(providers) = get(root, "providers").and_then(|v| v.as_mapping().cloned()) {
         for (name, p) in &providers {
             if p.as_mapping()
@@ -352,6 +375,11 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_admin_require_mtls(&mut root, &mut changes);
     migrate_pools_upstream_credentials(&mut root, &mut changes);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
+    // 1.5.3 §C: the first-party Valkey store plugin's rename to Valkey. Independent of every
+    // migration above (it touches only `store.module`), so its position in this list is free; it runs
+    // last so `migrate_governance`'s `governance.store:` -> `store:` lift has already produced the
+    // 1.5.x `store:` block a 1.4.x config's Valkey backend would land in.
+    migrate_store_module(&mut root, &mut changes, &mut todos);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -2120,6 +2148,58 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
             );
         }
     }
+}
+
+/// 1.5.3 §C: rewrite a retired `store.module:` spelling of the first-party Valkey store plugin to
+/// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
+/// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
+/// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
+/// Driven by the SHARED [`crate::config::RETIRED_STORE_MODULES_1_5_3`] table, so this rewrite and
+/// [`detect_legacy_markers`]'s loud-fail cannot disagree about which spellings are retired.
+///
+/// The `settings:` bag rides through VERBATIM. The connection URL's `redis://` / `rediss://` scheme
+/// is the upstream driver's own registered scheme — an unrenamable upstream identifier, not a
+/// busbar-owned name — so touching it would break every working deployment.
+///
+/// IDEMPOTENT: a `store.module:` already on the new alias (or naming any other backend) is not in the
+/// retired table, so a second run finds nothing to rewrite and records no change.
+///
+/// TAKE-ON-MATCH (see [`Taken`]), at BOTH levels. A `store:` that is not a mapping is left EXACTLY as
+/// written, in place, with its own TODO — `take_mapping` never removes a `Malformed` value, so there
+/// is nothing to restore. Inside the block the `module:` value is only removed once it has been
+/// CONFIRMED to be a retired spelling; a `module:` this migrator does not understand is never lifted
+/// out, so there is no window in which it could be dropped. That matters more here than almost
+/// anywhere else in this module: an ABSENT `store:` is the legal `memory` default, so silently
+/// losing the block would turn a durable deployment ephemeral AND still pass `busbar --validate`.
+fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    let mut store = match take_mapping(root, "store", "", todos) {
+        Taken::Got(m) => m,
+        Taken::Absent | Taken::Malformed => return,
+    };
+    let retired = store
+        .get(Value::from("module"))
+        .and_then(|v| v.as_str())
+        .filter(|m| crate::config::RETIRED_STORE_MODULES_1_5_3.contains(m))
+        .map(str::to_string);
+    if let Some(old) = retired {
+        store.insert(
+            "module".into(),
+            Value::from(crate::config::STORE_MODULE_VALKEY),
+        );
+        changes.push(format!(
+            "store.module: {old} -> {} (the first-party store plugin for this backend was RENAMED \
+             in 1.5.3: artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. Install the \
+             renamed tarball — the old one no longer answers to any name in this config. Your \
+             `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar \
+             name.)",
+            crate::config::STORE_MODULE_VALKEY,
+            crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
+            crate::config::STORE_MODULE_VALKEY_NAME,
+        ));
+    }
+    // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this
+    // function must put the operator's `store:` back — changed or not.
+    root.insert("store".into(), Value::Mapping(store));
 }
 
 /// The name SUFFIX a split identity-provider definition gets, per the auth plane that forced the

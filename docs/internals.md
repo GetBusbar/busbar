@@ -249,13 +249,13 @@ approximate, but eligibility filtering and long-run proportionality hold. See
 - **Store backends.** The default `store.module: memory` is the compiled-in ephemeral RAM
   store (keys, the token ledger, and audit reset on restart); it needs no plugin and
   is the admission-path source of truth. Durability is opt-in: `sqlite`, `postgres`,
-  and `redis` each ship as a signed store plugin behind the same `Store` trait.
+  and `valkey` each ship as a signed store plugin behind the same `Store` trait.
   Every backend persists the token ledger only, never a derived dollar: `virtual_keys`
   plus the ledger pair `usage_windows` (per-bucket request counts) and `usage_ledger`
   (per-bucket, per-model tier tokens), with additive upserts (`INSERT … ON CONFLICT
-  … DO UPDATE` on sqlite/postgres, `MULTI/EXEC` cascades on redis) for key CRUD and
+  … DO UPDATE` on sqlite/postgres, `MULTI/EXEC` cascades on valkey) for key CRUD and
   ledger accumulation (schema v3). SQLite is embedded and statically linked, so the
-  single-binary story survives even the durable case; postgres and redis are the
+  single-binary story survives even the durable case; postgres and valkey are the
   cluster-shared options (keys/ledger/audit shared, hard cap still enforced per node
   and reconciled through additive flushes).
 - **Enforcement order** (in `crates/busbar/src/ingress/mod.rs`, before forwarding): allowed-pools

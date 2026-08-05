@@ -179,19 +179,19 @@ fn validate_fails_on_unknown_config_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FAIL-CLOSED (hard requirement 1+2): `store.module: redis` with plugins disabled exits 1
+/// FAIL-CLOSED (hard requirement 1+2): `store.module: valkey` with plugins disabled exits 1
 /// naming `plugins.enabled` — the exact same refusal boot performs.
 #[test]
 fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
     let dir = fixture_dir("disabled");
-    write_configs(&dir, "store:\n  module: redis\n");
+    write_configs(&dir, "store:\n  module: valkey\n");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
         stderr.contains("plugins.enabled"),
         "names the flag: {stderr}"
     );
-    assert!(stderr.contains("redis"), "names the store: {stderr}");
+    assert!(stderr.contains("valkey"), "names the store: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -327,13 +327,19 @@ fn validate_trust_gate_matches_boot() {
 #[test]
 fn validate_fails_on_alias_conflict_naming_both() {
     let dir = fixture_dir("conflict");
-    write_tarball(&dir, "a.tar.gz", "busbar-store-redis", "redis", b"a");
-    write_tarball(&dir, "b.tar.gz", "acme-store-redis", "redis", b"b");
+    write_tarball(
+        &dir,
+        "a.tar.gz",
+        "busbar-store-valkey-plugin",
+        "valkey",
+        b"a",
+    );
+    write_tarball(&dir, "b.tar.gz", "acme-store-valkey", "valkey", b"b");
     write_configs(&dir, &plugins_block(&dir, true, true));
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
-        stderr.contains("busbar-store-redis") && stderr.contains("acme-store-redis"),
+        stderr.contains("busbar-store-valkey-plugin") && stderr.contains("acme-store-valkey"),
         "names both: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);

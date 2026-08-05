@@ -345,7 +345,7 @@ curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
   -d "{\"file\": \"busbar-store-valkey-1.5.0.tar.gz\",
        \"tarball_b64\": \"$(base64 < busbar-store-valkey-1.5.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
   http://localhost:8081/api/v1/admin/plugins
-# -> 201 {"file":"busbar-store-valkey-1.5.0.tar.gz","name":"busbar-store-valkey",
+# -> 201 {"file":"busbar-store-valkey-1.5.0.tar.gz","name":"busbar-store-valkey-plugin",
 #         "interface_version":1,"trust":"trusted","version":"1.5.0","publisher":"busbar",
 #         "note":"installed durably in the plugins directory; ..."}
 

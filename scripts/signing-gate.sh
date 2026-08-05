@@ -13,7 +13,7 @@
 # Usage:
 #   signing-gate.sh <busbar_checkout_dir> <plugin_crate> <plugin_kind> <plugin_alias> <cdylib_path>
 # e.g.
-#   signing-gate.sh busbarAI busbar-store-redis-plugin store redis plugin/target/debug/libbusbar_store_redis_plugin.so
+#   signing-gate.sh busbarAI busbar-store-valkey-plugin store valkey plugin/target/debug/libbusbar_store_valkey_plugin.so
 #
 # Requirements: the busbar checkout must be buildable (cargo). python3 + tar for the tamper cases.
 # The busbar binary and busbar-plugin-pack are built here WITH the ephemeral key embedded — the
