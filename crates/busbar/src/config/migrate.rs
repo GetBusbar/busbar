@@ -31,6 +31,14 @@ const DEFAULT_GOVERNANCE_DB_1_4: &str = "busbar-governance.db";
 
 /// The named boot error for a detected 1.x config (P9.3). Every marker is listed so the operator
 /// sees the full scope before running the migrator.
+///
+/// IT MUST ALSO SPEAK TO THE ALREADY-MIGRATED OPERATOR. `take_shaped` deliberately PRESERVES a
+/// MALFORMED block rather than deleting it (deleting the operator's data and announcing a migration
+/// of it was the worse bug), so a `governance:` written in the wrong shape survives into the
+/// migrator's OUTPUT — and that output then trips this very detector. Telling that operator to "run
+/// `--migrate-config`" is advice that cannot help: they just did, and running it again reproduces
+/// the same file. So the message names that case explicitly and gives the action that actually
+/// resolves it (the migrator already emitted a `TODO` naming the exact path).
 pub(crate) fn legacy_config_error(markers: &[String]) -> String {
     format!(
         "this looks like a busbar 1.x config; run `busbar --migrate-config <config.yaml>` and \
@@ -39,7 +47,12 @@ pub(crate) fn legacy_config_error(markers: &[String]) -> String {
          store/rate_card/groups/advanced; group_map became auth.role_bindings; hooks became \
          inline refs; *_env fields became secret references; pool member target became model). \
          Booting a 1.x config under 1.5.0 rules would silently flip semantics (most critically \
-         `allowed_pools: []`, which now means NO pools), so busbar refuses to start instead.",
+         `allowed_pools: []`, which now means NO pools), so busbar refuses to start instead.\n\
+         ALREADY RAN THE MIGRATOR AND STILL SEEING THIS? Then the flagged block was written in a \
+         shape the migrator could not read, so it was LEFT EXACTLY AS YOU WROTE IT rather than \
+         being silently dropped, and it is still a 1.x marker. Running `--migrate-config` again \
+         will produce the same file. Look for the `# TODO` the migrator emitted for that exact \
+         path, then either fix the block into the shape the TODO names or delete it by hand.",
         markers.join("\n  - ")
     )
 }
@@ -637,7 +650,7 @@ const APPROX_WINDOW: &str = "month";
 /// THE ONE RULE: a migration must never silently change what the operator wrote. So the mapping is
 /// split three ways instead of a catch-all:
 ///
-/// * EXACT — the 1.4.x word has a 1.5.3 window with the same meaning. Silent.
+/// * EXACT — the 1.4.x word has a 1.5.3 window with the same meaning. Silent, amount untouched.
 /// * APPROXIMATED — the word names a real recurring period 1.5.3 has NO window for (`weekly`,
 ///   `yearly`). It lands on [`APPROX_WINDOW`] and pushes a TODO naming both, because the AMOUNT the
 ///   operator wrote no longer means what it meant.
@@ -647,36 +660,83 @@ const APPROX_WINDOW: &str = "month";
 /// tests name as 1.4.x) and `hourly` both collapsed to the ALL-TIME window with no ledger entry at
 /// all, turning a recurring cap into a lifetime one. `ctx` names the limit being migrated so the
 /// TODO points at a specific group.
-fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> &'static str {
+///
+/// AN APPROXIMATION MAY NEVER LOOSEN THE CAP. Landing a SHORTER period on `month` (`weekly`) errs
+/// TIGHTER — a week's allowance now has to last a month — which is fail-closed and safe to leave to
+/// the operator's TODO. Landing a LONGER one on `month` (`yearly`) errs LOOSER: carrying the amount
+/// over unchanged turned `max_budget_cents: 1200000, budget_period: yearly` into 1,200,000 cents
+/// PER MONTH, i.e. TWELVE TIMES the annual cap the operator wrote, silently in force from first
+/// boot for anyone who does not act on the TODO. So the returned DIVISOR rescales a longer period's
+/// amount proportionally (a year is 12 months): the migrated limit preserves SPEND PER UNIT TIME,
+/// which is the only reading of "the same cap, expressed in a window we have" that does not hand
+/// out budget the operator never authorised. The TODO says so explicitly, with both numbers.
+///
+/// Returns `(window, divisor)`; `divisor` is always >= 1 and is 1 for every non-rescaled case.
+fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static str, u64) {
     match period {
         // EXACT — every spelling that has a 1.5.3 window meaning exactly the same thing.
-        "minute" | "minutely" | "per_minute" => "minute",
-        "hour" | "hourly" | "per_hour" => "hour",
-        "day" | "daily" | "per_day" => "day",
-        "month" | "monthly" | "per_month" => "month",
+        "minute" | "minutely" | "per_minute" => ("minute", 1),
+        "hour" | "hourly" | "per_hour" => ("hour", 1),
+        "day" | "daily" | "per_day" => ("day", 1),
+        "month" | "monthly" | "per_month" => ("month", 1),
         // The 1.4.x default when `budget_period:` is absent, and an explicit all-time cap. This is
         // the ONLY path that may legitimately produce the never-rolling window.
-        "total" | "lifetime" | "all_time" | "alltime" | "never" => "total",
+        "total" | "lifetime" | "all_time" | "alltime" | "never" => ("total", 1),
         // APPROXIMATED / UNRECOGNIZED — LOUD, always.
         other => {
-            let known = matches!(other, "week" | "weekly" | "per_week")
-                || matches!(
-                    other,
-                    "year" | "yearly" | "annual" | "annually" | "per_year"
-                );
-            let why = if known {
+            let shorter = matches!(other, "week" | "weekly" | "per_week");
+            let longer = matches!(
+                other,
+                "year" | "yearly" | "annual" | "annually" | "per_year"
+            );
+            // How many APPROX_WINDOWs the operator's period spans. Only a LONGER period rescales:
+            // a shorter one already errs tighter, and an unrecognized one has no known length, so
+            // neither is touched (and both keep their loud TODO).
+            let divisor: u64 = if longer { 12 } else { 1 };
+            let why = if shorter || longer {
                 format!("1.5.3 has no `{other}` window")
             } else {
                 format!("`{other}` is not a period this migrator recognizes")
             };
+            let effect = if divisor > 1 {
+                format!(
+                    "The AMOUNT was DIVIDED BY {divisor} (rounded DOWN, floor 1) so the cap still \
+                     spends at the same rate per unit time: a `{other}` amount left unchanged on a \
+                     {APPROX_WINDOW} window would be {divisor}x the budget you wrote, in force from \
+                     the first boot. Check the rescaled number"
+            )
+            } else {
+                format!(
+                    "The AMOUNT was carried over UNCHANGED, so the cap now spends over a \
+                     {APPROX_WINDOW} instead of a `{other}` (tighter, never looser). Re-scale it \
+                     by hand"
+                )
+            };
             todos.push(format!(
-                "{ctx}: budget_period `{other}` -> per: {APPROX_WINDOW} ({why}). The AMOUNT was \
-                 carried over UNCHANGED, so the cap now spends over a {APPROX_WINDOW} instead of a \
-                 `{other}` — re-scale it by hand, or split the group's limits across the windows \
-                 1.5.3 does have (minute | hour | day | month | total)."
+                "{ctx}: budget_period `{other}` -> per: {APPROX_WINDOW} ({why}). {effect}, or \
+                 split the group's limits across the windows 1.5.3 does have (minute | hour | day \
+                 | month | total)."
             ));
-            APPROX_WINDOW
+            (APPROX_WINDOW, divisor)
         }
+    }
+}
+
+/// Divide a migrated cap AMOUNT by `divisor` (see [`window_noun`]): the rescale that keeps an
+/// approximated window from LOOSENING the operator's cap.
+///
+/// Rounds DOWN, never up — rounding up is the loosening direction this whole path exists to
+/// forbid — with a FLOOR OF 1, because `budget: 0` is rejected by `validate_groups` and a migration
+/// must not emit a config that refuses to boot. A non-integer / unreadable amount (nothing 1.4.x
+/// could write, but the migrator never panics on a hand-edited document) passes through untouched
+/// rather than being guessed at.
+fn rescale_amount(amount: Value, divisor: u64) -> Value {
+    if divisor <= 1 {
+        return amount;
+    }
+    match amount.as_u64() {
+        Some(n) => Value::from((n / divisor).max(1)),
+        None => amount,
     }
 }
 
@@ -816,9 +876,10 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_else(|| "total".into());
                 let mut limit = Mapping::new();
-                limit.insert("budget".into(), amount);
                 let ctx = format!("groups.{}", name.as_str().unwrap_or("?"));
-                limit.insert("per".into(), window_noun(&period, &ctx, todos).into());
+                let (window, divisor) = window_noun(&period, &ctx, todos);
+                limit.insert("budget".into(), rescale_amount(amount, divisor));
+                limit.insert("per".into(), window.into());
                 entry.insert(
                     "limits".into(),
                     Value::Sequence(vec![Value::Mapping(limit)]),
@@ -1170,11 +1231,9 @@ fn migrate_auth(
                 }
                 if let Some(bu) = budget {
                     let mut l = Mapping::new();
-                    l.insert("budget".into(), bu);
-                    l.insert(
-                        "per".into(),
-                        window_noun(&period, &format!("groups.{gname}"), todos).into(),
-                    );
+                    let (window, divisor) = window_noun(&period, &format!("groups.{gname}"), todos);
+                    l.insert("budget".into(), rescale_amount(bu, divisor));
+                    l.insert("per".into(), window.into());
                     limits.push(Value::Mapping(l));
                 }
                 let mut entry = Mapping::new();

@@ -1922,6 +1922,95 @@ pools: {}
     );
 }
 
+/// LOW-2 (round 4): an APPROXIMATED window may never loosen the operator's cap.
+///
+/// `weekly -> month` errs TIGHTER (a week's allowance has to last a month) — fail-closed, fine.
+/// `yearly -> month` errs LOOSER, and the migrator carried the AMOUNT over unchanged: the operator's
+/// `max_budget_cents: 1200000, budget_period: yearly` came out as `{ budget: 1200000, per: month }`
+/// — TWELVE TIMES the annual cap they wrote, in force from the first boot for anyone who does not
+/// act on the TODO. A migration is allowed to approximate; it is not allowed to hand out budget
+/// nobody authorised.
+///
+/// The choice made: RESCALE proportionally (a year is 12 months), preserving spend per unit time,
+/// rounding DOWN with a floor of 1 so the error can only ever go the fail-closed way and the output
+/// still satisfies `validate_groups`' `amount > 0`. The TODO says both numbers out loud.
+#[test]
+fn a_yearly_budget_period_is_rescaled_never_loosened_onto_the_month_window() {
+    let raw = "\
+governance:
+  enabled: true
+  budget_groups:
+    annual-team: { max_budget_cents: 1200000, budget_period: yearly }
+    annual-alias: { max_budget_cents: 1200000, budget_period: annually }
+    tiny-annual: { max_budget_cents: 6, budget_period: year }
+    weekly-team: { max_budget_cents: 700000, budget_period: weekly }
+providers: {}
+models: {}
+pools: {}
+";
+    let (out, doc) = migrate_to_value(raw);
+    let limit = |group: &str| -> serde_yaml::Mapping {
+        dig(&doc, &["groups", group, "limits"])
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s.first())
+            .and_then(|l| l.as_mapping())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let field = |group: &str, key: &str| -> serde_yaml::Value {
+        limit(group)
+            .get(serde_yaml::Value::from(key))
+            .cloned()
+            .unwrap_or(serde_yaml::Value::Null)
+    };
+
+    // GOLDEN: the whole migrated limit, both members, for every yearly spelling.
+    for group in ["annual-team", "annual-alias"] {
+        assert_eq!(
+            field(group, "per"),
+            serde_yaml::Value::from("month"),
+            "{group}: yearly lands on the longest rolling window"
+        );
+        assert_eq!(
+            field(group, "budget"),
+            serde_yaml::Value::from(100000u64),
+            "{group}: 1_200_000/year must become 100_000/month, NOT 1_200_000/month — carrying \
+             the amount over unchanged is a 12x cap increase the operator never wrote"
+        );
+    }
+
+    // Rounding is DOWN (never up: up is the loosening direction) with a floor of 1, so the emitted
+    // config still satisfies `validate_groups`' `amount > 0`.
+    assert_eq!(
+        field("tiny-annual", "budget"),
+        serde_yaml::Value::from(1u64),
+        "6/year floors to 1/month — tighter than exact, and never the `budget: 0` that would make \
+         the migrated config refuse to boot"
+    );
+
+    // A SHORTER period already errs tighter, so its amount is untouched.
+    assert_eq!(
+        field("weekly-team", "per"),
+        serde_yaml::Value::from("month")
+    );
+    assert_eq!(
+        field("weekly-team", "budget"),
+        serde_yaml::Value::from(700000u64),
+        "weekly -> month is already fail-CLOSED; rescaling it would loosen the cap"
+    );
+
+    // LOUD: the todo names the period, the window, and the rescale.
+    let todo = out
+        .todos
+        .iter()
+        .find(|t| t.contains("groups.annual-team"))
+        .unwrap_or_else(|| panic!("no todo for the approximated annual cap: {:?}", out.todos));
+    assert!(
+        todo.contains("yearly") && todo.contains("month") && todo.contains("DIVIDED BY 12"),
+        "the todo must name the period, the window AND the rescale it applied; got {todo:?}"
+    );
+}
+
 /// B1: the migrator NEVER takes a key off the document and then discards the value because it was
 /// not the shape the migration expected.
 ///

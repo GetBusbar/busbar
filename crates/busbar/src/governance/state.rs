@@ -1120,21 +1120,27 @@ impl GovState {
     /// through the outgoing cost model re-create them in the gap.
     ///
     /// Returns the number of cells dropped. A group's cells are `group:<name>@<window>[#<scope>]`,
-    /// one per (window, pool scope), so this is a prefix sweep across every shard rather than a
-    /// single-key remove. It is only reachable for a group that is GONE, so there is no cap left for
-    /// the drop to reset; the write-behind flush is additive and already committed whatever spend was
+    /// one per (window, pool scope), so this is a sweep across every shard rather than a single-key
+    /// remove. It is only reachable for a group that is GONE, so there is no cap left for the drop
+    /// to reset; the write-behind flush is additive and already committed whatever spend was
     /// ledgered, so no durable data is lost either.
+    ///
+    /// The match is [`crate::cost::is_bucket_of_group`] — anchored at BOTH ends — not
+    /// `starts_with("group:<name>@")`. A group name MAY contain `@` (nothing charset-checks it, and
+    /// SSO auto-provisioning mints `user:<email>` leaves), so the prefix test was not a boundary:
+    /// deleting `user:alice` also dropped `group:user:alice@corp.com@total`, resetting the spend of
+    /// a DIFFERENT group that is still live and still capped. Requiring a real window word after
+    /// the `@` makes the two unambiguous in both directions.
     ///
     /// Without this, a deleted group's all-time cell stayed resident for the life of the process:
     /// the amortized sweep exempts a cell that still backs an enforced cap, and nothing ever removed
     /// the ones that stopped backing one. With SSO auto-provisioning creating a group per subject,
     /// that is a monotonic leak that no admin read (`groups_registry.len()` included) can see.
     pub(crate) fn reclaim_group_cells(&self, group: &str) -> usize {
-        let prefix = format!("{}{group}@", crate::cost::GROUP_BUCKET_PREFIX);
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
-            shard.retain(|id, _| !id.starts_with(&prefix));
+            shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
             dropped += before - shard.len();
         }
         dropped
@@ -2020,28 +2026,25 @@ impl GovState {
 /// Whether an ALL-TIME (`window_start == 0`) budget cell still backs an ENFORCED cap — the exact
 /// (and only) reason the amortized shard sweep exempts a cell from age-based eviction.
 ///
-/// A cell qualifies only when its id names a group that STILL EXISTS in the live cost model AND that
-/// group still carries a bucket with this very `bucket_id` AND that bucket still has at least one
+/// A cell qualifies only when its id IS the id of a live bucket that still carries at least one
 /// windowed cap. Anything else — a group deleted through `DELETE /groups/{name}` or dropped from
 /// config, an auto-provisioned `user:<sub>` leaf that never carried a cap at all, a bucket whose
 /// limit the operator removed — enforces nothing, so pinning its cell in memory forever buys nothing
 /// and leaks. Those age out by last touch (and only while clean) exactly like a key's own uncapped
 /// attribution cell.
 ///
-/// Non-`group:` ids are never exempt here (a key bucket is uncapped by construction).
+/// PURE IDENTITY, NEVER A PARSE. This used to strip `group:` and take everything before the FIRST
+/// `@` as the group name, on the stated premise that a group name cannot contain one. THAT PREMISE
+/// IS FALSE — nothing charset-checks a group name, and the SSO auto-provisioning path mints
+/// `user:<idp-subject>` leaves whose subject is normally an EMAIL. So `group:user:alice@corp.com@
+/// total` resolved to the group `user:alice`, which does not exist, and the cell of a live,
+/// all-time, BUDGET-CAPPED group was reported as enforcing nothing: once clean and idle past the
+/// window it was DROPPED, and since hydrate is boot-only its lifetime spend re-read as 0 — an
+/// EXHAUSTED all-time cap silently started admitting again. That is a BUDGET BYPASS, strictly worse
+/// than the leak the check was added to close. Asking the cost model whether it owns this exact id
+/// removes the delimiter assumption entirely, for `@` and `#` alike.
+///
+/// Non-`group:` ids are never in the set (a key bucket is uncapped by construction).
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
-    let Some(rest) = bucket_id.strip_prefix(crate::cost::GROUP_BUCKET_PREFIX) else {
-        return false;
-    };
-    // `group:<name>@<window>[#<scope>]` — the name is everything before the FIRST `@` (a group name
-    // cannot contain one; `config_validate` charset-checks it).
-    let Some(name) = rest.split('@').next() else {
-        return false;
-    };
-    cost.group_named(name).is_some_and(|g| {
-        g.buckets.iter().any(|b| {
-            b.bucket_id == bucket_id
-                && (b.requests_cap.is_some() || b.tokens_cap.is_some() || b.budget_cap.is_some())
-        })
-    })
+    cost.bucket_enforces_a_cap(bucket_id)
 }

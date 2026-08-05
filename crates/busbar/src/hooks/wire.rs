@@ -282,6 +282,10 @@ pub(crate) struct StatusReply {
     #[serde(default)]
     pub(crate) settings_version: Option<u64>,
     #[serde(default)]
+    // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
+    // the RESOLVED bag. It is never serialized to a reader (`hook_status` projects `settings_keys`
+    // from it; `settings_drift_keys` compares key names), and this is the exact type whose leak
+    // — historical #3 — the widened scan root exists to keep caught.
     pub(crate) settings: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
     pub(crate) metrics: Option<Vec<serde_json::Value>>,

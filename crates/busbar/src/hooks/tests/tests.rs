@@ -2072,24 +2072,22 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
     );
 }
 
-/// A1 — the settings-drift signal is computed against the RESOLVED desired bag, and yields KEY NAMES
-/// ONLY.
+/// A1 — the settings-drift signal yields KEY NAMES ONLY, and is computed WITHOUT resolving a single
+/// secret.
 ///
-/// Two defects in one line of `GET /api/v1/admin/hooks/{name}/status`. It serialized
+/// Three defects in one line of `GET /api/v1/admin/hooks/{name}/status`. It serialized
 /// `reported.settings` verbatim — the hook's ECHO of the bag busbar pushed it, which
 /// `configure_hook` resolves first, so that field carried the PLAINTEXT of every `SecretRef` at
-/// READ-ONLY admin scope. And it compared that resolved echo against the UNRESOLVED `hook.settings`,
-/// so a `SecretRef` field could NEVER match and reported drift on every single poll, forever — a
-/// permanent false positive on the one signal the endpoint exists to raise.
+/// READ-ONLY admin scope. It compared that resolved echo against the UNRESOLVED `hook.settings`, so
+/// a `SecretRef` field could NEVER match and reported drift on every single poll, forever — a
+/// permanent false positive on the one signal the endpoint exists to raise. And the fix for THAT
+/// (resolving the desired bag per request) put blocking secret FFI on a polled async GET; a
+/// `SecretRef` field is now skipped by SHAPE instead, with no resolution anywhere on the path.
 #[test]
-fn settings_drift_compares_resolved_values_and_reports_only_key_names() {
+fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     let var = "BUSBAR_TEST_HOOK_DRIFT_SECRET";
     // The var name is unique to this test, so no sibling reads or clobbers it.
     std::env::set_var(var, "hunter2-resolved");
-    let env = crate::hooks::HookEnv::new(
-        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    );
     let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
         "plugin": "test-hook",
@@ -2099,36 +2097,44 @@ fn settings_drift_compares_resolved_values_and_reports_only_key_names() {
     .unwrap();
     hook.settings = serde_json::json!({
         "api_token": { "env": var },
-        "ratio": 0.4
+        "ratio": 0.4,
+        // The `{ literal: … }` escape hatch is NOT a reference: the plugin receives the inner value,
+        // so the read path must compare against the inner value too.
+        "db": { "literal": { "file": "/var/lib/db" } }
     })
     .as_object()
     .unwrap()
     .clone();
 
     // The hook echoes back exactly what it was configured with — i.e. the RESOLVED secret.
-    let in_sync = serde_json::json!({ "api_token": "hunter2-resolved", "ratio": 0.4 })
-        .as_object()
-        .unwrap()
-        .clone();
+    let in_sync = serde_json::json!({
+        "api_token": "hunter2-resolved",
+        "ratio": 0.4,
+        "db": { "file": "/var/lib/db" }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
     assert!(
-        crate::hooks::settings_drift_keys(&hook, &env, Some(&in_sync)).is_empty(),
+        crate::hooks::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
         "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
 
-    // A hook running a stale value drifts — and the signal is the KEY NAME, never either value.
+    // A hook running a stale ORDINARY value drifts — and the signal is the KEY NAME, never a value.
     let drifted = serde_json::json!({
-        "api_token": "hunter1-stale",
-        "ratio": 0.4,
+        "api_token": "hunter2-resolved",
+        "ratio": 0.9,
+        "db": { "file": "/var/lib/db" },
         "self_managed": "not drift"
     })
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::hooks::settings_drift_keys(&hook, &env, Some(&drifted));
+    let keys = crate::hooks::settings_drift_keys(&hook, Some(&drifted));
     assert_eq!(
         keys,
-        vec!["api_token".to_string()],
+        vec!["ratio".to_string()],
         "drift is reported as DESIRED key names only (an extra self-managed key is not drift)"
     );
     assert!(
@@ -2136,6 +2142,85 @@ fn settings_drift_compares_resolved_values_and_reports_only_key_names() {
         "no value from either bag may ride out on the drift signal: {keys:?}"
     );
 
+    // A stale LITERAL-wrapped value drifts too: unwrapping is shape-only, no resolution involved.
+    let literal_drift = serde_json::json!({
+        "api_token": "hunter2-resolved",
+        "ratio": 0.4,
+        "db": { "file": "/somewhere/else" }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    assert_eq!(
+        crate::hooks::settings_drift_keys(&hook, Some(&literal_drift)),
+        vec!["db".to_string()],
+        "`{{ literal: … }}` is ordinary data, compared against its INNER value"
+    );
+
     // A hook that reports no settings at all is fail-open, not drift.
-    assert!(crate::hooks::settings_drift_keys(&hook, &env, None).is_empty());
+    assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
+}
+
+/// MED-1 (round 4): `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
+/// The round-3 drift fix compared against the RESOLVED desired bag, which reaches
+/// `SecretResolver::resolve` — a SYNCHRONOUS FFI call into a `kind: secret` plugin for any
+/// non-built-in module — inline on a Tokio worker with no `spawn_blocking` and no cache, plus a
+/// `tracing::info!` naming the setting and its reference on EVERY call. A dashboard polling every 5s
+/// became a Vault round-trip every 5s, parking a worker for the plugin's full timeout when Vault is
+/// slow.
+///
+/// The observable consequence of removing the resolution: a `SecretRef` field's desired value is no
+/// longer knowable on the read path, so it is NOT COMPARED and never reports drift — whatever the
+/// hook echoes back for it. Ordinary fields keep drifting normally (asserted above and here).
+#[test]
+fn settings_drift_never_compares_a_secret_ref_field() {
+    let var = "BUSBAR_TEST_HOOK_DRIFT_NO_RESOLVE";
+    std::env::set_var(var, "the-real-secret");
+    let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "plugin": "test-hook",
+        "timeout_ms": 5,
+        "on_error": "weighted"
+    }))
+    .unwrap();
+    hook.settings = serde_json::json!({
+        // A built-in `env` reference (resolvable), and a `kind: secret` PLUGIN reference — the arm
+        // that is a blocking FFI call, and the one no read path may ever touch.
+        "api_token": { "env": var },
+        "licenseKey": { "module": "vault", "settings": { "path": "secret/busbar" } },
+        "ratio": 0.4
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    // Whatever the hook echoes for the two reference fields — the resolved plaintext, a STALE
+    // plaintext, or nothing comparable at all — none of it is drift, because deciding would require
+    // the resolution this path refuses to perform.
+    for echoed in [
+        serde_json::json!({ "api_token": "the-real-secret", "licenseKey": "lic-1", "ratio": 0.4 }),
+        serde_json::json!({ "api_token": "a-stale-secret", "licenseKey": "lic-2", "ratio": 0.4 }),
+    ] {
+        let observed = echoed.as_object().unwrap().clone();
+        assert!(
+            crate::hooks::settings_drift_keys(&hook, Some(&observed)).is_empty(),
+            "a SecretRef-valued field is never compared on the read path (and resolving it to \
+             compare would be blocking FFI on a polled async GET): {observed:?}"
+        );
+    }
+
+    // Drift detection still works for ordinary fields alongside them.
+    let observed = serde_json::json!({
+        "api_token": "the-real-secret",
+        "licenseKey": "lic-1",
+        "ratio": 0.9
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    assert_eq!(
+        crate::hooks::settings_drift_keys(&hook, Some(&observed)),
+        vec!["ratio".to_string()],
+        "an ordinary field still drifts — the fix must not blind the endpoint"
+    );
 }

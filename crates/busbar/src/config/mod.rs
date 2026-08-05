@@ -539,6 +539,10 @@ pub(crate) struct IdentityProviderCfg {
     pub(crate) browser_login: Option<BrowserLoginCfg>,
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -562,6 +566,10 @@ pub(crate) struct AuthChainEntry {
     /// The `admin-tokens` operator credential, from its definition.
     pub(crate) token: Option<SecretRef>,
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -637,6 +645,10 @@ pub(crate) struct AuthMethodCfg {
     /// Browser-login parameters; `Some` ⇒ this provider renders a button on the hosted login page.
     pub(crate) browser_login: Option<BrowserLoginCfg>,
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1180,6 +1192,10 @@ pub(crate) struct HookDefCfg {
     /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
     /// `configure`).
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
     /// SCOPE: the caller groups this hook fires for. Omit or `[]` = ALL callers. A USER is a leaf
     /// group (e.g. `user:bob`); membership walks the `groups:` tree (self OR any ancestor).
@@ -1900,6 +1916,10 @@ pub(crate) struct HookCfg {
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
     /// The Feature-2 "decision observability" DECLARED-SIGNAL surface (task #141): the typed
     /// [`busbar_api::Signal`] catalog entries this hook wants computed + projected onto its own
@@ -2955,6 +2975,10 @@ pub(crate) struct StoreCfg {
     pub(crate) module: String,
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -3006,6 +3030,10 @@ pub(crate) struct SecretModuleCfg {
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -3208,6 +3236,10 @@ pub(crate) struct ExportDefCfg {
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by [`resolve_export`], so a typo inside it still fails boot loudly.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
+    // `settings:` the operator WROTE. Every admin read of it serves
+    // `service::settings_keys(&…settings)`, or passes the tree through
+    // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 

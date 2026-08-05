@@ -137,6 +137,45 @@ impl SecretResolver {
 /// crosses the ABI, so a license key never has to sit in plaintext config.
 pub(crate) const PLUGIN_LICENSE_KEYS: &[&str] = &["license", "licenseKey"];
 
+/// What ONE unresolved plugin-settings value is, decided WITHOUT any I/O. The single classifier
+/// both [`resolve_settings`] (which then resolves the reference) and the drift READ path (which
+/// must not) share, so the two can never disagree about which fields are references.
+pub(crate) enum SettingShape<'a> {
+    /// Delivered to the plugin exactly as this value — an ordinary setting, or the inner value of
+    /// a `{ literal: … }` escape hatch already unwrapped.
+    Verbatim(&'a serde_json::Value),
+    /// A secret reference: what the plugin receives is the RESOLVED string, which is not knowable
+    /// without performing the resolution.
+    Reference(SecretRef),
+}
+
+/// Classify one settings value by SHAPE alone — no environment read, no file read, no plugin call.
+///
+/// Mirrors, and is the sole definition of, the interpretation [`resolve_settings`] applies: a
+/// single-key `{ literal: … }` wrapper unwraps verbatim; anything else that parses as a whole
+/// [`SecretRef`] is a reference; everything else passes through.
+pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
+    // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
+    if let serde_json::Value::Object(obj) = value {
+        // THE LITERAL ESCAPE HATCH. Ref-shape is a HEURISTIC: a plugin whose own settings
+        // legitimately contain `{ file: /var/lib/db }` or `{ env: HOME }` — a path or a variable
+        // NAME the plugin means to read itself — was silently swapped for the CONTENTS of that
+        // file / the value of that variable, with no diagnostic anywhere. The shapes are genuinely
+        // ambiguous and always will be, so give the operator a way to say "this object is data, not
+        // a reference": `{ literal: <anything> }` passes the inner value through verbatim,
+        // untouched and un-resolved.
+        if obj.len() == 1 {
+            if let Some(inner) = obj.get(SETTING_LITERAL_KEY) {
+                return SettingShape::Verbatim(inner);
+            }
+        }
+        if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
+            return SettingShape::Reference(secret);
+        }
+    }
+    SettingShape::Verbatim(value)
+}
+
 /// Walk a plugin's opaque `settings:` map and RESOLVE any [`SecretRef`]-shaped value in place,
 /// substituting the resolved UTF-8 secret string, so the plugin receives the real value (e.g. its
 /// `licenseKey`) and never a reference it cannot dereference. Non-ref values (strings, numbers,
@@ -159,25 +198,21 @@ pub(crate) fn resolve_settings(
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut out = serde_json::Map::with_capacity(settings.len());
     for (field, value) in settings {
-        // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
-        if let serde_json::Value::Object(obj) = value {
-            // THE LITERAL ESCAPE HATCH. Ref-shape is a HEURISTIC: a plugin whose
-            // own settings legitimately contain `{ file: /var/lib/db }` or `{ env: HOME }` — a path
-            // or a variable NAME the plugin means to read itself — was silently swapped for the
-            // CONTENTS of that file / the value of that variable, with no diagnostic anywhere. The
-            // shapes are genuinely ambiguous and always will be, so give the operator a way to say
-            // "this object is data, not a reference": `{ literal: <anything> }` passes the inner
-            // value through verbatim, untouched and un-resolved.
-            if obj.len() == 1 {
-                if let Some(inner) = obj.get(SETTING_LITERAL_KEY) {
-                    out.insert(field.clone(), inner.clone());
-                    continue;
-                }
+        match classify_setting(value) {
+            SettingShape::Verbatim(v) => {
+                out.insert(field.clone(), v.clone());
             }
-            if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
+            SettingShape::Reference(secret) => {
                 // NEVER silent: say which setting was interpreted as a reference and where it
                 // points (never its value), so a coercion the operator did not intend is visible in
                 // the boot log instead of surfacing as a corrupt setting inside the plugin.
+                //
+                // This log — and this whole function — belongs to the CONFIGURE PUSH (boot / apply /
+                // hot reload), NOT to any read path: it does blocking I/O (a `kind: secret` plugin
+                // is a synchronous FFI call) and names a secret reference on every invocation. A
+                // per-request caller would turn both into a per-request cost; see
+                // `hooks::settings_drift_keys`, which classifies WITHOUT resolving for exactly that
+                // reason.
                 tracing::info!(
                     setting = field.as_str(),
                     reference = %secret.describe(),
@@ -190,10 +225,8 @@ pub(crate) fn resolve_settings(
                     )
                 })?;
                 out.insert(field.clone(), serde_json::Value::String(resolved));
-                continue;
             }
         }
-        out.insert(field.clone(), value.clone());
     }
     // License-agnostic ergonomic breadcrumb: if the settings carry a well-known license key, note at
     // INFO that a license credential is being DELIVERED to the plugin (which validates it itself; the
@@ -583,6 +616,7 @@ mod settings_resolution_tests {
         let resolver = SecretResolver::builtins_only();
         let settings = obj(&[(
             "licenseKey",
+            // settings-leak-lint: allow — test fixture: a `kind: secret` module reference, not a response body.
             serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
         )]);
         let err = resolve_settings(&settings, &resolver).unwrap_err();

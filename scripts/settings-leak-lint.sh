@@ -21,9 +21,19 @@
 # Every one of them was a NEW projection added later, by someone who had not read the previous
 # retraction. A fifth projection will be written the same way; this makes it fail the build instead.
 #
-# WHAT IT SCANS: `crates/busbar/src/admin/**/*.rs` (the admin projection surface), minus test trees —
-# named-navigated and exempt exactly the way structure-lint.sh / response-header-lint.sh / .
-# tracing-lint.sh treat them.
+# WHAT IT SCANS: `crates/busbar/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
+# navigated and exempt exactly the way structure-lint.sh / response-header-lint.sh /
+# tracing-lint.sh treat them).
+#
+# THE SCAN ROOT USED TO BE `crates/busbar/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
+# could not back: an admin handler serializes whatever type it is handed, and nothing requires that
+# type to be DECLARED under `admin/`. A view struct born in `hooks/`, `governance/` or `config/` and
+# returned by an admin handler was invisible to this lint while being exactly the defect it exists
+# to catch — and `hooks/wire.rs`'s `StatusReply` (the hook's echo of the RESOLVED bag, the third
+# historical leak in the list above) is precisely such a type. The engine crate is the boundary that
+# actually holds: an admin projection is BUILT here. The sibling wire/ABI crates (`busbar-api`,
+# `plugin-abi`, `secret-ref`) define the ABI-level bag types themselves and are out of scope by
+# construction — they have no admin surface and cannot serve an HTTP read.
 #
 # WHAT IT FLAGS, two mechanical shapes:
 #   R1  a STRUCT FIELD named `settings` (or `*_settings`) declared as a raw bag type
@@ -33,9 +43,13 @@
 # THE ALLOWLIST is explicit, per-line and self-documenting: put
 #     // settings-leak-lint: allow — <reason>
 # on the line itself or the line immediately above. Use it ONLY for (a) an INBOUND request-body
-# struct (a bag the operator is WRITING, never serialized back), or (b) a response ENVELOPE member
-# whose nested bags are already redacted by `service::redact_settings_bags`. Adding a marker with any
-# other reason is the bug this lint exists to catch, in a costume.
+# struct (a bag the operator is WRITING, never serialized back), (b) a response ENVELOPE member
+# whose nested bags are already redacted by `service::redact_settings_bags`, or (c) a NON-PROJECTION
+# engine type — an operator CONFIG struct (`HookCfg`, `StoreCfg`, … : the parsed `settings:` the
+# operator wrote) or an INBOUND wire reply the engine consumes internally. Category (c) is what the
+# widened scan root buys: such a type is only safe while nothing serializes it to a reader, so the
+# marker is the place that claim is written down and reviewed. Adding a marker with any other reason
+# is the bug this lint exists to catch, in a costume.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job) alongside its sibling lints: no
 # external deps, bash 3.2 + POSIX awk (macOS/Linux), and `--selftest` proves the scanner still catches
@@ -185,9 +199,11 @@ SCOPE
 
 if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 
-hdr "admin projections never carry a raw operator settings bag"
+hdr "no engine type reaching an admin read carries a raw operator settings bag"
+# The WHOLE engine crate, not just `admin/**`: an admin handler serializes whatever type it is
+# handed, and that type may be declared anywhere in the crate (see the scan-root note in the header).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src/admin -name '*.rs' -not -path '*/tests/*' | sort)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src -name '*.rs' -not -path '*/tests/*' | sort)
 
 hits=""
 for f in "${CANDIDATES[@]}"; do
@@ -210,8 +226,9 @@ if [ "$fail" -ne 0 ]; then
   note "an admin projection must serve a settings bag's KEY NAMES, never its values:"
   note "  * a view field: \`settings_keys: Vec<String>\` filled by \`service::settings_keys(&cfg.settings)\`;"
   note "  * a serialized config tree: \`service::redact_settings_bags(&mut value)\` before it goes out."
-  note "If (and ONLY if) the line is an INBOUND request body or a response ENVELOPE whose nested bags"
-  note "are already redacted, mark it: \`// settings-leak-lint: allow — <reason>\`."
+  note "If (and ONLY if) the line is an INBOUND request body, a response ENVELOPE whose nested bags"
+  note "are already redacted, or a NON-PROJECTION engine type (an operator config struct / an inbound"
+  note "wire reply the engine only consumes), mark it: \`// settings-leak-lint: allow — <reason>\`."
   exit 1
 fi
 note "settings-leak-lint passed"

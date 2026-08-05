@@ -50,6 +50,36 @@ const NANOS_PER_MICRO: u128 = 1_000;
 /// since no store persists this literal string durably yet — see the spec's gap #3.)
 pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
 
+/// Whether `bucket_id` is a bucket of the group named `group` — an EXACT structural match against
+/// the construction `project_groups` uses, NOT a prefix test.
+///
+/// A GROUP NAME MAY CONTAIN `@` (and `#`). Nothing rejects it: `validate_groups` checks
+/// parent-existence / acyclicity / amount > 0, `build_with_group` checks empty + length, and
+/// `sanitize_self_sub` (the SSO auto-provisioning path that mints `user:<sub>` leaves) rejects only
+/// empty / `/` / control characters / the reserved prefixes — an IdP subject is normally an EMAIL,
+/// so `user:alice@corp.com` is the ORDINARY case, not a pathological one. Any code that splits a
+/// bucket id on `@` therefore gets the wrong answer for the most common deployment there is.
+///
+/// So the test here is anchored at BOTH ends instead: the id must be `group:` + the name VERBATIM +
+/// `@` + one of the five [`crate::config::groups::LimitWindow`] spellings + an optional `#<scope>`.
+/// `group:user:alice@corp.com@total` therefore does NOT belong to `user:alice` (the window token
+/// would have to be `corp.com`), and DOES belong to `user:alice@corp.com`.
+pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
+    let Some(tail) = bucket_id
+        .strip_prefix(GROUP_BUCKET_PREFIX)
+        .and_then(|rest| rest.strip_prefix(group))
+        .and_then(|t| t.strip_prefix('@'))
+    else {
+        return false;
+    };
+    // The scope suffix (`#<kind>:<value>`) is everything from the FIRST `#` after the window word;
+    // the window word itself can never contain one (it is one of five fixed literals).
+    let window = tail.split('#').next().unwrap_or(tail);
+    crate::config::groups::LimitWindow::ALL
+        .iter()
+        .any(|w| w.as_str() == window)
+}
+
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
 /// once at resolve). All hot-path math is integer over these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -209,6 +239,11 @@ pub(crate) struct CostModel {
     rates: Option<HashMap<String, RateNanos>>,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
+    /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
+    /// `project_groups` just emitted, indexed for O(1) membership. This is what makes
+    /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
+    /// the ids the model produces?) instead of a parse of the id's internal structure.
+    capped_bucket_ids: std::collections::HashSet<String>,
     price_per_request_cents: i64,
 }
 
@@ -230,6 +265,7 @@ impl CostModel {
         });
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
+            capped_bucket_ids: Self::capped_bucket_ids(&groups),
             rates,
             groups,
             group_idx,
@@ -247,11 +283,33 @@ impl CostModel {
     ) -> Self {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
+            capped_bucket_ids: Self::capped_bucket_ids(&groups),
             rates: self.rates.clone(),
             groups,
             group_idx,
             price_per_request_cents: self.price_per_request_cents,
         }
+    }
+
+    /// Index the ids of every projected bucket that carries at least one windowed cap. Built from
+    /// the SAME `GroupBucket`s the engine enforces against, so the set can never disagree with the
+    /// model about which cells are load-bearing.
+    fn capped_bucket_ids(groups: &[GroupRuntime]) -> std::collections::HashSet<String> {
+        groups
+            .iter()
+            .flat_map(|g| g.buckets.iter())
+            .filter(|b| {
+                b.requests_cap.is_some() || b.tokens_cap.is_some() || b.budget_cap.is_some()
+            })
+            .map(|b| b.bucket_id.clone())
+            .collect()
+    }
+
+    /// Whether `bucket_id` is, RIGHT NOW, the id of a live bucket that still enforces at least one
+    /// windowed cap. Pure identity: the id either is one the live model produces or it is not, so
+    /// no assumption about `@`/`#` being delimiters (or a group name avoiding them) exists here.
+    pub(crate) fn bucket_enforces_a_cap(&self, bucket_id: &str) -> bool {
+        self.capped_bucket_ids.contains(bucket_id)
     }
 
     /// Project a `GroupCfg` map into the runtime enforcement form: sorted `GroupRuntime` vec + a
@@ -363,6 +421,7 @@ impl CostModel {
             rates: None,
             groups: Vec::new(),
             group_idx: HashMap::new(),
+            capped_bucket_ids: std::collections::HashSet::new(),
             price_per_request_cents: price_per_request_cents.max(0),
         }
     }
