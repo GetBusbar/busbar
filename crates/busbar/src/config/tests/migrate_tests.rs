@@ -1933,7 +1933,8 @@ pools: {}
 ///
 /// The choice made: RESCALE proportionally (a year is 12 months), preserving spend per unit time,
 /// rounding DOWN with a floor of 1 so the error can only ever go the fail-closed way and the output
-/// still satisfies `validate_groups`' `amount > 0`. The TODO says both numbers out loud.
+/// still satisfies the `amount > 0` rule in `config_validate::validate` (NOT `validate_groups`,
+/// which checks pool refs, parent existence and acyclicity only). The TODO says both numbers out loud.
 #[test]
 fn a_yearly_budget_period_is_rescaled_never_loosened_onto_the_month_window() {
     let raw = "\
@@ -1980,7 +1981,7 @@ pools: {}
     }
 
     // Rounding is DOWN (never up: up is the loosening direction) with a floor of 1, so the emitted
-    // config still satisfies `validate_groups`' `amount > 0`.
+    // config still satisfies the `amount > 0` rule in `config_validate::validate` (not `validate_groups`).
     assert_eq!(
         field("tiny-annual", "budget"),
         serde_yaml::Value::from(1u64),
