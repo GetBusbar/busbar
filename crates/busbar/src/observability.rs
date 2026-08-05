@@ -6,62 +6,23 @@
 //! config they are no-ops. State lives in process-wide `OnceLock`s (set once at startup) so the
 //! request path can reach it without threading new fields through `App` and its many constructors.
 
-use reqwest::Client;
-use serde_json::Value;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::OnceLock;
 
 // SSRF obfuscation-defense primitives shared with the provider-base-URL guard in `config_validate`.
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
 // `reqwest::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
-use crate::limits::admission::AdmissionGate;
 use crate::net_guard::{
     is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6, is_unique_local_v6,
 };
 
-/// The configured webhook URL, stored as an `Arc<String>` so the per-request fast path in
-/// `fire_request_log` clones a reference-count bump (8 bytes) rather than heap-copying the whole URL
-/// on every served request. The outer `Option` is gone: an UNSET `OnceLock` (webhook disabled, or a
-/// URL that failed validation) is the "not configured" signal, so there is no per-request
-/// `Option<String>::clone` allocation on the hot path.
-static WEBHOOK_URL: OnceLock<Arc<String>> = OnceLock::new();
-static CLIENT: OnceLock<Client> = OnceLock::new();
-
-// Cap on in-flight request-log deliveries. The webhook is an explicitly best-effort telemetry sink:
-// a slow or unreachable endpoint must NOT let delivery tasks (each holding a connection attempt + the
-// serialized payload) accumulate up to `RPS * timeout` and compete with serving for memory, file
-// descriptors, and connection-pool slots. When the cap is reached we drop the log. Operator-tunable
-// via `observability.max_inflight_webhook_deliveries` (default 64).
-
-/// The in-flight delivery limiter, sized ONCE from config when the webhook is configured. A
-/// `OnceLock<AdmissionGate>` (not a compile-time constant) so its permit count can be the operator's
-/// `observability.max_inflight_webhook_deliveries`. `webhook_inflight()` initializes it to the
-/// installed limit on first touch and falls back to the historical default (64) otherwise.
-///
-/// KNOWN GAP, tracked for post-1.5.0 (not fixed here — see the `reload_to_apply` gap-sweep for
-/// `limits.max_inbound_concurrent` / `advanced.response_headers.server_timing` /
-/// `observability.request_log_webhook_url`, all of which ARE flagged): unlike those three, this
-/// field is frozen on FIRST WEBHOOK DELIVERY, not necessarily at boot — so whether a live `PUT` to
-/// `max_inflight_webhook_deliveries` takes effect depends on process history (has a delivery fired
-/// yet?) that `reload_to_apply`'s stateless, request-only classifier cannot observe. Flagging it
-/// unconditionally restart-scoped would be a lie in the cases it is still live, so it is
-/// intentionally left UNFLAGGED and documented only (`docs/configuration.md`), same triage class as
-/// `limits.request_body_max_bytes`'s half-live inbound/egress split.
-static WEBHOOK_INFLIGHT: OnceLock<AdmissionGate> = OnceLock::new();
-
-fn webhook_inflight() -> &'static AdmissionGate {
-    WEBHOOK_INFLIGHT.get_or_init(|| {
-        AdmissionGate::new(crate::limits::max_inflight_webhook_deliveries(), "webhook")
-    })
-}
-
-/// Per-delivery timeout for the webhook POST, independent of the (much larger) upstream request
-/// timeout the shared client is built with — telemetry must give up quickly. Operator-tunable via
-/// `observability.webhook_delivery_timeout_secs` (default 2).
-fn webhook_delivery_timeout() -> Duration {
-    Duration::from_secs(crate::limits::webhook_delivery_timeout_secs())
-}
+// 1.5.3 LIFT-OUT (design §7.2): the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
+// `AdmissionGate` machinery, `configure_webhook`, `fire_request_log`, `build_request_log`) moved OUT
+// of this module into the built-in `request-log-webhook` EXPORTER (`crate::export::webhook`). The
+// SSRF VALIDATOR ([`validate_webhook_url`] / [`host_is_internal`]) + the userinfo masker
+// ([`mask_userinfo`]) STAY here (they are shared, validated primitives — `mask_userinfo` also guards
+// the OTLP endpoint log below) and are called BY the exporter. Only distribution moved; validation
+// did not.
 
 /// Return `url` with any URL userinfo (`scheme://user:pass@host/...`) masked, SAFE to put in a log
 /// line. An operator can embed credentials in a webhook / OTLP endpoint URL (RFC 3986 §3.2.1 allows
@@ -73,7 +34,7 @@ fn webhook_delivery_timeout() -> Duration {
 /// have one uniform type) — masking must never alter or drop a URL that carried no secret. Pure, so
 /// it is unit-testable. Applied at EVERY URL-logging site in this module (the `endpoint` info log and
 /// the validation-error messages, which interpolate the raw URL).
-fn mask_userinfo(url: &str) -> String {
+pub(crate) fn mask_userinfo(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
         // Not a parseable URL (e.g. the empty string or `not-a-url`): no userinfo to leak, and we
         // must not mangle the operator's original spelling in the diagnostic. Return as-is.
@@ -248,8 +209,9 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 ///     guards do NOT block the same set on the localhost family — they intentionally differ.
 ///
 /// `None` (webhook disabled) is always valid. Pure, so it is unit-testable without touching the
-/// process-wide `OnceLock`s.
-fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
+/// process-wide `OnceLock`s. `pub(crate)` since 1.5.3: called by the built-in `request-log-webhook` /
+/// `generic-webhook` exporters ([`crate::export::webhook`]) that now own the delivery.
+pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
     let Some(u) = url else {
         return Ok(None);
     };
@@ -402,136 +364,6 @@ fn host_is_internal(url: &reqwest::Url) -> bool {
                 }
             }
         }
-    }
-}
-
-/// Configure the request-log webhook once at startup. `url == None` disables it. The shared
-/// reqwest `Client` (busbar's pooled client) is reused for delivery. The URL is validated here
-/// (startup) so an invalid target is rejected loudly and the webhook left disabled, rather than
-/// firing per-request POSTs at an unintended host at runtime (see `validate_webhook_url`).
-pub(crate) fn configure_webhook(url: Option<String>, client: Client) {
-    let validated = match validate_webhook_url(url) {
-        Ok(v) => v,
-        Err(msg) => {
-            tracing::error!("{msg}; disabling the request-log webhook");
-            None
-        }
-    };
-    // Only seed the OnceLock when a URL survived validation. An unset lock IS the "disabled"
-    // signal, so `fire_request_log` can `.get().cloned()` (a refcount bump) with no per-request
-    // `Option` allocation.
-    if let Some(u) = validated {
-        let _ = WEBHOOK_URL.set(Arc::new(u));
-    }
-    let _ = CLIENT.set(client);
-}
-
-/// True when a request-log webhook is configured. Lets the per-request finish path skip BUILDING the
-/// JSON payload entirely (a `serde_json::Value` map + several small heap allocations per request)
-/// when no webhook is set — `fire_request_log` would only discard it. Purely an allocation guard:
-/// when configured, the built payload and delivery are byte-identical to before.
-#[inline]
-pub(crate) fn request_log_configured() -> bool {
-    WEBHOOK_URL.get().is_some()
-}
-
-/// Build the request-log JSON payload. Pure (no I/O) so it is unit-testable.
-pub(crate) fn build_request_log(
-    ts: u64,
-    ingress_protocol: &str,
-    pool: &str,
-    outcome: &str,
-    latency_ms: u64,
-) -> Value {
-    serde_json::json!({
-        "ts": ts,
-        "ingress_protocol": ingress_protocol,
-        "pool": pool,
-        "outcome": outcome,
-        "latency_ms": latency_ms,
-    })
-}
-
-/// Fire-and-forget a request-log POST. No-op when no webhook is configured. Never blocks the
-/// request path and never surfaces errors — telemetry must not affect serving.
-///
-/// Bounded: at most `max_inflight_webhook_deliveries()` deliveries run concurrently (a slow webhook
-/// drops logs rather than piling up unbounded tasks), and each POST has its own short timeout
-/// independent of the shared client's upstream timeout.
-pub(crate) fn fire_request_log(payload: Value) {
-    // Refcount bump, NOT a heap copy of the URL: `WEBHOOK_URL` holds an `Arc<String>` and an unset
-    // lock means "not configured". `.cloned()` on `Option<&Arc<String>>` is 8 bytes, so the
-    // per-request webhook fast-path allocates nothing.
-    let Some(url) = WEBHOOK_URL.get().cloned() else {
-        return;
-    };
-    let Some(client) = CLIENT.get().cloned() else {
-        return;
-    };
-    // Acquire a delivery slot WITHOUT awaiting. If the cap is reached the webhook is backed up;
-    // drop this log rather than blocking the caller or accumulating an unbounded task backlog. Count
-    // the drop on a metric (not a per-drop warn, which would itself flood the log under sustained
-    // saturation) so an operator can alert on "the webhook is overwhelmed; request logs are being
-    // shed" instead of mistaking the silence for a healthy/disabled webhook.
-    let Some(permit) = webhook_inflight().try_enter() else {
-        metrics::counter!(crate::metrics::WEBHOOK_LOGS_DROPPED_TOTAL).increment(1);
-        return;
-    };
-    // Move the OWNED permit straight into the spawned task: the slot releases via the permit's own
-    // `Drop` the instant the task ends, panic or not — no separate guard type needed.
-    tokio::spawn(async move {
-        let _permit = permit;
-        // Serialize the payload INSIDE the spawned task, not on the request-serving thread. The
-        // full-Value `to_string()` is a heap allocation plus a complete JSON walk; doing it before
-        // `tokio::spawn` charged it to the async executor thread on the hot path of every served
-        // request — undermining the "allocates nothing" fast-path above and the best-effort,
-        // non-blocking contract. `payload` is moved into the closure, so relocating the line costs
-        // no lifetime change.
-        let body = payload.to_string();
-        // Best-effort, but NOT silent: a transport error or a non-2xx response means logs are being
-        // dropped, which an operator needs to see. Warn with the URL + status/error-kind ONLY — no
-        // response body, no secrets, no payload — so the diagnostic can't leak request contents.
-        match client
-            .post(url.as_str())
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                crate::proxy::APPLICATION_JSON,
-            )
-            .body(body)
-            .timeout(webhook_delivery_timeout())
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {}
-            Ok(resp) => warn_webhook_delivery_failed(url.as_str(), Ok(resp.status())),
-            Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e)),
-        }
-    });
-}
-
-/// The webhook delivery-failure warn, factored into ONE place so the userinfo masking cannot be
-/// reintroduced as a leak on only one of the two failure arms (non-2xx vs. transport error). Kept
-/// separate from `fire_request_log` so a test can drive the exact statement production emits
-/// without needing the process-wide `WEBHOOK_URL`/`CLIENT` `OnceLock`s to be set.
-fn warn_webhook_delivery_failed(url: &str, outcome: Result<reqwest::StatusCode, reqwest::Error>) {
-    match outcome {
-        // Mask any embedded userinfo in the logged URL - parity with the OTLP path. An operator
-        // may embed `user:pass@` in the webhook URL (RFC 3986 §3.2.1); logging it raw on every
-        // delivery failure would leak the credential into the log.
-        Ok(status) => tracing::warn!(
-            webhook_url = mask_userinfo(url),
-            status = status.as_u16(),
-            "request-log webhook delivery returned a non-2xx status; this log was dropped"
-        ),
-        // A reqwest error carries the request URL (WITH any userinfo) in its own `Display`, so `%e`
-        // is a second leak vector alongside the explicit field. `without_url()` strips the URL from
-        // the error so its Display can never carry the credential; the URL is logged once,
-        // userinfo-masked, in the dedicated field.
-        Err(e) => tracing::warn!(
-            webhook_url = mask_userinfo(url),
-            error_kind = %e.without_url(),
-            "request-log webhook delivery failed (transport error); this log was dropped"
-        ),
     }
 }
 
@@ -994,81 +826,6 @@ mod tests {
         );
     }
 
-    /// A `tracing::Layer` that records EVERY field of every event (name -> Debug value) so a test can
-    /// assert what a specific `tracing::warn!` actually put on the wire, including structured fields
-    /// like `webhook_url` / `error_kind` (not just the message).
-    #[derive(Clone, Default)]
-    struct FieldCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FieldCapture {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            struct Vis(Vec<String>);
-            impl tracing::field::Visit for Vis {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    self.0.push(format!("{}={value:?}", field.name()));
-                }
-            }
-            let mut vis = Vis(Vec::new());
-            event.record(&mut vis);
-            if let Ok(mut ev) = self.0.lock() {
-                ev.push(vis.0.join(" "));
-            }
-        }
-    }
-
-    /// The request-log webhook DELIVERY-FAILURE warn must mask any
-    /// embedded userinfo in BOTH the `webhook_url` field AND the reqwest error's Display (`error_kind`).
-    /// The OTLP path was hardened; this one was not - a webhook URL with `user:pass@` was logged
-    /// verbatim on every delivery failure. This drives `warn_webhook_delivery_failed` — the SAME
-    /// function `fire_request_log` calls in production, not a hand-copy of its body — for BOTH
-    /// failure arms, and asserts the credential never appears in either.
-    #[tokio::test]
-    async fn test_request_log_delivery_failure_masks_userinfo() {
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        let cap = FieldCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let url = "https://user:hunter2@192.0.2.1/log";
-
-        // Transport-error arm: a real POST against a host guaranteed unroutable (RFC 5737
-        // TEST-NET-1) so it fails fast with a genuine reqwest::Error.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(200))
-            .build()
-            .unwrap();
-        let err = client
-            .post(url)
-            .body("{}")
-            .send()
-            .await
-            .expect_err("post to an unroutable host must fail");
-        warn_webhook_delivery_failed(url, Err(err));
-
-        // Non-2xx arm: no network needed — this branch had NO coverage at all before this fix, not
-        // even the fake-in-test-body kind.
-        warn_webhook_delivery_failed(url, Ok(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
-
-        let events = cap.0.lock().unwrap().join("\n");
-        assert!(
-            !events.contains("hunter2") && !events.contains("user:hunter2"),
-            "delivery-failure warn leaked webhook userinfo: {events}"
-        );
-        assert!(
-            events.contains("***"),
-            "the masked webhook_url field must show the redaction marker: {events}"
-        );
-    }
-
     #[test]
     fn test_validate_otlp_endpoint_error_masks_userinfo() {
         // Regression: the OTLP validation error is printed to stderr (`init_logging`), so a
@@ -1187,42 +944,6 @@ mod tests {
         assert_eq!(
             auth.to_str().unwrap(),
             format!("Basic {}", base64_encode(b"u:p@ss:word")) // golden wire-contract literal (kept bare on purpose)
-        );
-    }
-
-    #[test]
-    fn test_build_request_log_shape() {
-        let p = build_request_log(1_700_000_000, "anthropic", "prod", "ok", 42);
-        assert_eq!(p["ts"], 1_700_000_000_u64);
-        assert_eq!(p["ingress_protocol"], "anthropic");
-        assert_eq!(p["pool"], "prod");
-        assert_eq!(p["outcome"], "ok");
-        assert_eq!(p["latency_ms"], 42_u64);
-    }
-
-    #[tokio::test]
-    async fn test_fire_is_noop_when_unconfigured() {
-        // With no webhook URL configured, firing must be a harmless no-op (no panic, no spawn leak).
-        fire_request_log(build_request_log(0, "openai", "p", "ok", 1));
-    }
-
-    #[test]
-    fn test_webhook_url_clone_is_arc_refcount_bump_not_heap_copy() {
-        // Regression for the per-request heap allocation: `WEBHOOK_URL` must store an `Arc<String>`
-        // so the hot-path clone in `fire_request_log` is a refcount bump that shares the SAME heap
-        // buffer, not a fresh `String` allocation. Assert the two clones alias the same allocation
-        // (identical data pointer) and that the refcount tracks clones. Uses a local `OnceLock` to
-        // avoid mutating the process-wide static (which other tests rely on staying unset).
-        let lock: OnceLock<Arc<String>> = OnceLock::new();
-        let _ = lock.set(Arc::new("https://hook.example.com/log".to_string()));
-        let first = lock.get().cloned().expect("configured");
-        assert_eq!(Arc::strong_count(&first), 2, "lock holds one + our clone");
-        let second = lock.get().cloned().expect("configured");
-        assert_eq!(Arc::strong_count(&first), 3, "second clone bumps the count");
-        // Both clones must point at the SAME heap buffer (a refcount bump), not independent copies.
-        assert!(
-            std::ptr::eq(first.as_str().as_ptr(), second.as_str().as_ptr()),
-            "Arc clones must share the underlying String allocation (no per-request heap copy)"
         );
     }
 
@@ -1587,28 +1308,6 @@ mod tests {
         // OTLP never configured (TRACER_PROVIDER unset): shutdown must be a harmless, panic-free
         // no-op. Also exercises the function so it is not dead code outside `cfg(test)`.
         shutdown_tracing();
-    }
-
-    #[tokio::test]
-    async fn test_inflight_guard_releases_slot_on_drop() {
-        // The owned permit returns its `AdmissionGate` slot on Drop.
-        //
-        // Asserted as a round-trip DELTA bracketing the whole acquire/drop block, not as a
-        // `before - 1` snapshot mid-flight: `webhook_inflight()` is a process-global gate, and any
-        // concurrent test that fires a webhook delivery (or drops its own permit) between two reads
-        // shifts the absolute count out from under a mid-flight assertion. The delta is the actual
-        // contract this test is named for and is concurrency-safe by construction.
-        let before = webhook_inflight().available_permits();
-        {
-            let _permit = webhook_inflight()
-                .try_enter()
-                .expect("a slot should be free");
-        } // permit drops at end of scope -> slot returned
-        assert_eq!(
-            webhook_inflight().available_permits(),
-            before,
-            "dropping the owned permit must return the slot"
-        );
     }
 
     #[test]

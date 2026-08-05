@@ -242,8 +242,14 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
         "lic-auth",
         alice_settings_with_license_ref(serde_json::json!({ "env": ok_var })),
     );
-    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
-        .expect("preflight resolves the kind:auth plugin");
+    let registry = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("preflight resolves the kind:auth plugin");
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -315,11 +321,17 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     settings.insert("token".to_string(), serde_json::json!({ "env": var }));
     let cfg = chain_with("sec-auth", settings);
 
-    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
-        .expect(
-            "preflight resolves the kind:auth plugin, whose manifest declares `token` as a \
+    let registry = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect(
+        "preflight resolves the kind:auth plugin, whose manifest declares `token` as a \
                  root-level x-busbar-secret field",
-        );
+    );
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -372,8 +384,14 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     let cfg = chain_with("my-auth", alice_settings());
 
     // Manifest-only preflight resolves the auth plugin (the `--validate`/boot gate).
-    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
-        .expect("preflight resolves the kind:auth plugin");
+    let registry = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("preflight resolves the kind:auth plugin");
 
     // The real load through the middleware — resolve → open_auth → box → chain.
     let mw = AuthMiddleware::new(
@@ -440,8 +458,14 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     );
     cfg.role_bindings.insert("static-auth".into(), roles);
 
-    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
-        .expect("preflight");
+    let registry = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("preflight");
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -552,7 +576,14 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
     };
     let cfg = chain_with("oidc", alice_settings());
     // Preflight refuses (names the module + carries the trust opt-in to set).
-    let err = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &strict).unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &strict,
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("oidc"), "names the auth module: {err}");
     assert!(
         err.contains("allow_unsigned"),
@@ -595,8 +626,14 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let cfg = chain_with("oidc", alice_settings());
 
-    let err =
-        crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins).unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("oidc"), "names the missing module: {err}");
     assert!(
         err.contains("no plugin matching") && err.contains("is installed in"),
@@ -637,8 +674,14 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         ..Default::default()
     };
     let cfg = chain_with("oidc", alice_settings());
-    let err =
-        crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins).unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
     assert!(err.contains("oidc"), "names the auth module: {err}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -655,8 +698,14 @@ fn keys_module_is_not_a_plugin_ref() {
     };
     // No plugins dir, plugins disabled: keys must not be treated as a plugin ref.
     let plugins = PluginsCfg::default();
-    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
-        .expect("keys needs no plugin");
+    let registry = crate::plugins_preflight(
+        None,
+        Some(&cfg),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("keys needs no plugin");
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,

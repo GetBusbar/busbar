@@ -9305,7 +9305,6 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .body(
             serde_json::json!({
                 "observability": {
-                    "request_log_webhook_url": "https://example.com/hook",
                     "otlp_url": "https://otel.example.com:4317"
                 },
                 "advanced": {
@@ -9330,10 +9329,9 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         "router-baked middleware state / OnceLock-seeded response-header toggles must be flagged \
          reload-to-apply: {flagged:?}"
     );
-    assert!(
-        flagged.contains(&"observability.request_log_webhook_url"),
-        "the OnceLock-seeded webhook target must be flagged reload-to-apply: {flagged:?}"
-    );
+    // 1.5.3: `observability.request_log_webhook_url` retired out of this section into the
+    // `export.request-log-webhook` exporter (edited in config.yaml + plugin-reloaded), so it is no
+    // longer part of the single-value settings surface. `otlp_url` remains and stays boot-frozen.
     assert!(
         flagged.contains(&"observability.otlp_url"),
         "the one-shot tracing-subscriber init must be flagged reload-to-apply: {flagged:?}"

@@ -360,8 +360,6 @@ pub(crate) struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) advanced: Option<crate::config::patch::AdvancedPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) metrics: Option<crate::config::patch::MetricsPatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) health: Option<crate::config::patch::HealthPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) routing: Option<crate::config::patch::RoutingPatch>,
@@ -384,7 +382,6 @@ impl RootSettings {
             && self.limits.is_none()
             && self.observability.is_none()
             && self.advanced.is_none()
-            && self.metrics.is_none()
             && self.health.is_none()
             && self.routing.is_none()
     }
@@ -434,25 +431,9 @@ impl RootSettings {
         if let Some(v) = &self.advanced {
             v.apply(&mut deploy.advanced);
         }
-        if let Some(v) = &self.metrics {
-            // `metrics:` is the opt-in switch as well as its own settings, so an overlay naming the
-            // block turns metrics ON. `buffer_seconds` is REQUIRED and has no default, so a patch
-            // that omits it can only refine an existing block, never create one — turning metrics on
-            // with an unspecified retention window is exactly the inert-collector state the config
-            // layer refuses at boot.
-            match (&mut deploy.metrics, v.buffer_seconds) {
-                (Some(base), _) => v.apply(base),
-                (slot @ None, Some(buffer_seconds)) => {
-                    let mut base = crate::config::MetricsCfg {
-                        buffer_seconds,
-                        key_gauge_limit: crate::config::default_key_gauge_limit(),
-                    };
-                    v.apply(&mut base);
-                    *slot = Some(base);
-                }
-                (None, None) => {}
-            }
-        }
+        // 1.5.3: the retired `metrics:` overlay section is gone — Prometheus metrics are now the
+        // `export.prometheus` built-in exporter, edited in config.yaml + applied via plugin reload
+        // (consistent with the other exporters), never through the single-value settings overlay.
         if let Some(v) = &self.health {
             v.apply(&mut deploy.health);
         }

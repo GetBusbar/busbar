@@ -252,12 +252,18 @@ pools:
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
 
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
-# Prometheus `/metrics` is always on and needs no config. These sinks are opt-in:
-#   otlp_url                 - export OpenTelemetry traces (OTLP/HTTP) to a collector.
-#   request_log_webhook_url  — fire-and-forget a JSON request-log POST per request.
+# Tracing (OTLP/HTTP) stays in `observability:`; everything else moved into the built-in `export:`
+# EXPORTERS in 1.5.3 (presence = the switch). Zero-config default: collection is inert.
+#   observability.otlp_url   - export OpenTelemetry traces (OTLP/HTTP) to a collector.
+#   export.prometheus        — PULL: install the recorder + serve `/metrics` (buffer_seconds REQUIRED).
+#   export.request-log-webhook — PUSH: fire-and-forget a JSON request-log POST per request (https-only).
+#   export.request-log-file  — PUSH: append each request-log line as JSONL.
+#   export.generic-webhook   — PUSH (logs + audit): same SSRF/backpressure machinery + an auth header.
 # observability:
 #   otlp_url: "http://localhost:4318/v1/traces"
-#   request_log_webhook_url: "https://logs.example.com/busbar"
+# export:
+#   prometheus:          { settings: { buffer_seconds: 60, key_gauge_limit: 2000 } }
+#   request-log-webhook: { settings: { url: "https://logs.example.com/busbar" } }
 
 # ── Response headers (optional; see docs/observability.md#response-headers) ────────────────────────
 # Every busbar-INJECTED response header is an opt-in toggle under `advanced.response_headers`, default

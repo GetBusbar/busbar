@@ -29,6 +29,7 @@ fn make_root_cfg(
         allow_metadata_hosts: Vec::new(),
         allow_all_metadata: false,
         limits: config::LimitsResolved::default(),
+        export: Default::default(),
     }
 }
 
@@ -828,9 +829,8 @@ fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
         "expected an oversized max_inbound_concurrent error; got: {errs:?}"
     );
     assert!(
-        errs.iter()
-            .any(|e| e.contains("max_inflight_webhook_deliveries")),
-        "expected an oversized max_inflight_webhook_deliveries error; got: {errs:?}"
+        errs.iter().any(|e| e.contains("max_inflight_deliveries")),
+        "expected an oversized max_inflight_deliveries error; got: {errs:?}"
     );
 
     // The boundary value, and 0 (max_inbound_concurrent's explicit "disable the layer" posture),
@@ -4563,13 +4563,10 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
         request_body_read_timeout_secs,
         "request_body_read_timeout_secs"
     );
-    check_floor_one!(
-        webhook_delivery_timeout_secs,
-        "webhook_delivery_timeout_secs"
-    );
+    check_floor_one!(webhook_delivery_timeout_secs, "delivery_timeout_secs");
     check_floor_one!(
         max_inflight_webhook_deliveries,
-        "max_inflight_webhook_deliveries must be >= 1"
+        "max_inflight_deliveries must be >= 1"
     );
     check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
     check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
@@ -4607,7 +4604,7 @@ fn test_validate_limits_max_inflight_webhook_deliveries_ceiling_is_exact() {
     assert!(
         !errs
             .iter()
-            .any(|e| e.contains("max_inflight_webhook_deliveries must be <=")),
+            .any(|e| e.contains("max_inflight_deliveries must be <=")),
         "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
     );
 
@@ -4619,7 +4616,7 @@ fn test_validate_limits_max_inflight_webhook_deliveries_ceiling_is_exact() {
     validate_limits(&over_cap, &mut errs);
     assert!(
         errs.iter()
-            .any(|e| e.contains("max_inflight_webhook_deliveries must be <=")),
+            .any(|e| e.contains("max_inflight_deliveries must be <=")),
         "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
     );
 }

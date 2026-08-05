@@ -444,6 +444,10 @@ pub(crate) struct RootCfg {
     /// by `config_validate::validate`, threaded into the store/client/TLS/App at startup, and
     /// installed into the process-wide `crate::limits` statics for the deep call-stack use sites.
     pub(crate) limits: LimitsResolved,
+    /// The resolved `export:` block — the built-in observability exporters (design §2/§7). Default
+    /// (all-`None`) ⇒ collection inert. Read at App construction to install the recorder + build the
+    /// `/metrics` plugin route (prometheus) and to configure the request-log sinks.
+    pub(crate) export: ExportCfg,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -764,6 +768,19 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
         )
+    } else if let Some((old, new)) = RETIRED_OBSERVABILITY_KEYS
+        .iter()
+        .copied()
+        .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
+    {
+        // 1.5.3 observability→export lift-out (§2.1, §7). Serde rejects the retired key as an unknown
+        // field; name the old key AND its new home under the built-in exporters + point at the
+        // migrator, exactly like the HookStage rename above.
+        format!(
+            "{msg}\n  hint: `{old}` was retired in 1.5.3 — the observability sink moved to the \
+             built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
+             field yourself"
+        )
     } else {
         msg
     }
@@ -775,6 +792,29 @@ pub(crate) const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
     ("route", "candidate"),
     ("attempt", "routing"),
     ("completion", "response"),
+];
+
+/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the built-in
+/// exporters), shared by `augment_config_error`'s loud-fail hint, `config::migrate::detect_legacy_markers`
+/// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
+/// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
+pub(crate) const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
+    (
+        "request_log_webhook_url",
+        "export.request-log-webhook.settings.url",
+    ),
+    (
+        "max_inflight_webhook_deliveries",
+        "export.request-log-webhook.settings.max_inflight_deliveries",
+    ),
+    (
+        "webhook_delivery_timeout_secs",
+        "export.request-log-webhook.settings.delivery_timeout_secs",
+    ),
+    (
+        "metrics",
+        "export.prometheus.settings (buffer_seconds / key_gauge_limit)",
+    ),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -2056,10 +2096,15 @@ pub(crate) struct DeployCfg {
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub(crate) advanced: AdvancedCfg,
-    /// Optional observability sinks (OTLP traces + request-log webhook). Metrics
-    /// (`/metrics`) are always on and need no config.
+    /// Optional observability sinks. 1.5.3: only `otlp_url` (tracing) remains here — the request-log
+    /// webhook + Prometheus metrics moved into the built-in EXPORTERS (`export:`, [`ExportCfg`]).
     #[serde(default)]
     pub(crate) observability: Option<ObservabilityCfg>,
+    /// The `export:` block — built-in observability exporters (design §2/§7). Absent ⇒ collection
+    /// inert (no recorder, no request-log sink). Replaces `observability.metrics` /
+    /// `observability.request_log_webhook_url` (retired 1.5.3).
+    #[serde(default)]
+    pub(crate) export: Option<ExportCfg>,
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -2073,11 +2118,6 @@ pub(crate) struct DeployCfg {
     /// field defaults to its historical hardcoded value (absent = today's behavior).
     #[serde(default)]
     pub(crate) limits: LimitsCfg,
-    /// Prometheus metrics — 100% OPT-IN. ABSENT = metrics are OFF: no recorder is installed, the
-    /// hot path records nothing, `/metrics` is not mounted, and nothing is retained. Present = the
-    /// operator opted in and MUST name `buffer_seconds` (see [`MetricsCfg`]).
-    #[serde(default)]
-    pub(crate) metrics: Option<MetricsCfg>,
     /// Process-wide active-probe fallbacks (per-lane overrides still win).
     #[serde(default)]
     pub(crate) health: HealthDefaultsCfg,
@@ -2655,7 +2695,15 @@ pub(crate) struct RateEntryCfg {
 }
 
 /// Observability sinks. All fields optional; absent = that sink is disabled.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+///
+/// 1.5.3 RETIREMENT (design §2.1, §7): the request-log webhook moved OUT of this block into the
+/// `request-log-webhook` built-in EXPORTER (`export.request-log-webhook`, [`ExportCfg`]). The three
+/// retired keys (`request_log_webhook_url`, `max_inflight_webhook_deliveries`,
+/// `webhook_delivery_timeout_secs`) are gone from this struct, so a config that still carries any of
+/// them LOUD-FAILS at boot/`--validate` (`deny_unknown_fields` + the retired-key markers in
+/// `config::migrate::detect_legacy_markers`); `busbar --migrate-config` rewrites them in place.
+/// Only `otlp_url` (still core, tracing stays built-in per design §2.4) remains here.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)] // M8: a typo'd observability key must fail boot, not be silently ignored.
 pub(crate) struct ObservabilityCfg {
     /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`). When set, busbar
@@ -2663,29 +2711,126 @@ pub(crate) struct ObservabilityCfg {
     /// the 1.4.x `otlp_endpoint`).
     #[serde(default)]
     pub(crate) otlp_url: Option<String>,
-    /// When set, busbar fires a best-effort (fire-and-forget) JSON request-log POST per request
-    /// to this URL.
-    #[serde(default)]
-    pub(crate) request_log_webhook_url: Option<String>,
-    /// Max concurrent webhook deliveries (default 64). Bounds the fan-out of a slow webhook sink.
-    #[serde(default = "default_max_inflight_webhook_deliveries")]
-    pub(crate) max_inflight_webhook_deliveries: usize,
-    /// Per-delivery webhook timeout (seconds, default 2).
-    #[serde(default = "default_webhook_delivery_timeout_secs")]
-    pub(crate) webhook_delivery_timeout_secs: u64,
 }
 
-impl Default for ObservabilityCfg {
-    fn default() -> Self {
-        // Route the limit fields through the serde-default fns so the omitted-block path and the
-        // omitted-field path share one source of truth (the URL sinks stay disabled by default).
-        Self {
-            otlp_url: None,
-            request_log_webhook_url: None,
-            max_inflight_webhook_deliveries: default_max_inflight_webhook_deliveries(),
-            webhook_delivery_timeout_secs: default_webhook_delivery_timeout_secs(),
-        }
-    }
+/// The `export:` block (1.5.3) — the built-in observability EXPORTERS. PRESENCE + settings is the
+/// on/off switch (design §2 "plugin presence is the switch", §7 the lift-out). Each exporter is a
+/// compiled-in built-in module (like the built-in `env`/`file` secret modules) that CONSUMES the
+/// export kind + the plugin HTTP endpoint registration; an absent block = NO exporter = collection
+/// inert (zero-config default byte-identical to before). Replaces the retired
+/// `observability.metrics.*` (→ `prometheus`) and `observability.request_log_webhook_url` + webhook
+/// limits (→ `request-log-webhook`).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)] // a typo'd exporter name must fail boot, not silently disable telemetry.
+pub(crate) struct ExportCfg {
+    /// The PULL Prometheus exporter: installs the recorder (collection stays core) and serves
+    /// `/metrics` via the plugin endpoint registration (`handle_http`, design §7.1). Absent ⇒ no
+    /// recorder installed, `/metrics` not mounted, every emit site a true no-op.
+    #[serde(default)]
+    pub(crate) prometheus: Option<PrometheusExportCfg>,
+    /// The PUSH request-log webhook exporter (design §7.2): a per-request POST behind the relocated
+    /// SSRF guard + bounded AdmissionGate. Absent ⇒ no request-log webhook.
+    #[serde(default, rename = "request-log-webhook")]
+    pub(crate) request_log_webhook: Option<WebhookExportCfg>,
+    /// The PUSH request-log FILE exporter: a per-request JSONL append.
+    #[serde(default, rename = "request-log-file")]
+    pub(crate) request_log_file: Option<FileExportCfg>,
+    /// The generic webhook exporter (logs + audit) — the same SSRF guard + AdmissionGate machinery as
+    /// `request-log-webhook`, plus a configurable auth header.
+    #[serde(default, rename = "generic-webhook")]
+    pub(crate) generic_webhook: Option<GenericWebhookExportCfg>,
+}
+
+/// `export.prometheus` — the PULL metrics exporter.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PrometheusExportCfg {
+    pub(crate) settings: PrometheusSettings,
+}
+
+/// `export.prometheus.settings` — relocated from the retired `observability.metrics` block.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PrometheusSettings {
+    /// Retention window (SECONDS) for the rolling quantile summary — REQUIRED, exactly as the retired
+    /// `observability.metrics.buffer_seconds` was (turning metrics on is a deliberate choice + a
+    /// memory cost the operator names).
+    pub(crate) buffer_seconds: u64,
+    #[serde(default = "default_key_gauge_limit")]
+    pub(crate) key_gauge_limit: usize,
+}
+
+/// `export.request-log-webhook` — the PUSH request-log webhook exporter.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebhookExportCfg {
+    pub(crate) settings: WebhookSettings,
+}
+
+/// `export.request-log-webhook.settings` — relocated from the retired `observability` webhook keys.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebhookSettings {
+    /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded (relocated from the retired
+    /// `observability.request_log_webhook_url`).
+    pub(crate) url: String,
+    /// Max concurrent deliveries (default 64) — relocated from `max_inflight_webhook_deliveries`.
+    #[serde(default = "default_max_inflight_webhook_deliveries")]
+    pub(crate) max_inflight_deliveries: usize,
+    /// Per-delivery timeout (seconds, default 2) — relocated from `webhook_delivery_timeout_secs`.
+    #[serde(default = "default_webhook_delivery_timeout_secs")]
+    pub(crate) delivery_timeout_secs: u64,
+}
+
+/// `export.request-log-file` — the PUSH request-log file exporter.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileExportCfg {
+    pub(crate) settings: FileSettings,
+}
+
+/// `export.request-log-file.settings`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileSettings {
+    /// The JSONL file path each request-log line is appended to — REQUIRED.
+    pub(crate) path: String,
+    /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
+    #[serde(default)]
+    pub(crate) rotate_mb: Option<u64>,
+}
+
+/// `export.generic-webhook` — the generic (logs + audit) webhook exporter.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GenericWebhookExportCfg {
+    pub(crate) settings: GenericWebhookSettings,
+}
+
+/// `export.generic-webhook.settings` — the same SSRF/AdmissionGate machinery as the request-log
+/// webhook plus a configurable auth header.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GenericWebhookSettings {
+    /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded.
+    pub(crate) url: String,
+    /// An optional auth header applied to every delivery (e.g. `{ name: Authorization, value:
+    /// "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's `${VAR}` env interpolation, so a
+    /// secret is never stored literally.
+    #[serde(default)]
+    pub(crate) auth_header: Option<GenericAuthHeader>,
+    #[serde(default = "default_max_inflight_webhook_deliveries")]
+    pub(crate) max_inflight_deliveries: usize,
+    #[serde(default = "default_webhook_delivery_timeout_secs")]
+    pub(crate) delivery_timeout_secs: u64,
+}
+
+/// One `{ name, value }` auth header for the generic webhook exporter.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GenericAuthHeader {
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -2833,7 +2978,7 @@ fn default_max_inflight_webhook_deliveries() -> usize {
 fn default_webhook_delivery_timeout_secs() -> u64 {
     DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS
 }
-fn default_key_gauge_limit() -> usize {
+pub(crate) fn default_key_gauge_limit() -> usize {
     DEFAULT_KEY_GAUGE_LIMIT
 }
 fn default_plugins_dir() -> String {
@@ -2974,32 +3119,10 @@ impl Default for LimitsCfg {
     }
 }
 
-/// The `metrics:` block — PRESENT means the operator opted in to Prometheus metrics. Omit the whole
-/// block and busbar collects nothing (no recorder, no `/metrics`, no retention).
-///
-/// WHY OPT-IN. Recording an observation is not free: each sample is held as a raw
-/// `(value, timestamp)` pair until something folds it into its aggregate form. A gateway collecting
-/// metrics nobody reads pays that cost for data no one will look at. With the block absent the cost
-/// is structurally zero rather than merely small.
-///
-/// WHY `buffer_seconds` HAS NO DEFAULT. It is the retention window the operator asks busbar to hold
-/// in memory on their behalf — busbar folds parked samples into the rolling summary on a timer and
-/// drops what is older. That is a memory-for-fidelity trade with no universally right answer (at
-/// 100k rps each second of buffer is a few MB of raw samples), so it is NAMED by whoever opts in
-/// rather than defaulted to a number they never chose. Turning metrics on is a decision; how much
-/// memory that decision costs is part of the same decision.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)] // M8: a typo'd metrics key must fail boot, not be silently ignored.
-pub(crate) struct MetricsCfg {
-    /// How many SECONDS of observations to retain. REQUIRED — omitting it fails config load, the
-    /// same posture as any other field whose value must be a deliberate choice. Quantile lines on
-    /// `/metrics` cover the last `buffer_seconds`; `_sum`/`_count` stay cumulative and are unaffected
-    /// by the window. Also bounds memory: raw samples are folded on a timer derived from this value,
-    /// so retention is one window's traffic instead of the whole process lifetime.
-    pub(crate) buffer_seconds: u64,
-    #[serde(default = "default_key_gauge_limit")]
-    pub(crate) key_gauge_limit: usize,
-}
+// 1.5.3: the `metrics:` block (`MetricsCfg`) was RETIRED into the `export.prometheus` built-in
+// exporter — `buffer_seconds`/`key_gauge_limit` now live under `export.prometheus.settings`
+// ([`PrometheusSettings`]). An un-migrated config carrying `metrics:` LOUD-FAILS at boot via the
+// retired-key markers in `config::migrate::detect_legacy_markers`; `--migrate-config` rewrites it.
 
 /// The `health:` block — process-wide active-probe fallbacks (per-lane `health.interval_secs` /
 /// `timeout_secs` still override these).
@@ -3084,7 +3207,7 @@ impl Default for LimitsResolved {
             &LimitsCfg::default(),
             &ObservabilityCfg::default(),
             &AdvancedCfg::default(),
-            None,
+            &ExportCfg::default(),
             &HealthDefaultsCfg::default(),
             &RoutingCfg::default(),
         )
@@ -3094,12 +3217,35 @@ impl Default for LimitsResolved {
 impl LimitsResolved {
     fn from_sections(
         limits: &LimitsCfg,
-        obs: &ObservabilityCfg,
+        _obs: &ObservabilityCfg,
         advanced: &AdvancedCfg,
-        metrics: Option<&MetricsCfg>,
+        export: &ExportCfg,
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
     ) -> Self {
+        // 1.5.3: the webhook + gauge limits moved from the retired `observability.*`/`metrics.*` keys
+        // onto the built-in EXPORTER settings. Source them from `export.*` (historical defaults when
+        // the exporter is absent) so the deep `crate::limits` readers (metrics gauge cap, webhook
+        // timeout) are unchanged while the CONFIG SURFACE they read from is the new one.
+        let (max_inflight_webhook_deliveries, webhook_delivery_timeout_secs) = export
+            .request_log_webhook
+            .as_ref()
+            .map(|w| {
+                (
+                    w.settings.max_inflight_deliveries,
+                    w.settings.delivery_timeout_secs,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    default_max_inflight_webhook_deliveries(),
+                    default_webhook_delivery_timeout_secs(),
+                )
+            });
+        let key_gauge_limit = export
+            .prometheus
+            .as_ref()
+            .map_or_else(default_key_gauge_limit, |p| p.settings.key_gauge_limit);
         Self {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
@@ -3115,11 +3261,9 @@ impl LimitsResolved {
             max_honored_retry_after_secs: limits.max_honored_retry_after_secs,
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
-            max_inflight_webhook_deliveries: obs.max_inflight_webhook_deliveries,
-            webhook_delivery_timeout_secs: obs.webhook_delivery_timeout_secs,
-            // Metrics off (block absent) ⇒ the gauge cap is inert; carry the historical value so
-            // nothing downstream has to special-case a disabled collector.
-            key_gauge_limit: metrics.map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
+            max_inflight_webhook_deliveries,
+            webhook_delivery_timeout_secs,
+            key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
             upstream_http1_only: advanced.upstream_http1_only,
@@ -3175,20 +3319,21 @@ pub(crate) fn resolve(
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
 
-    // `metrics.buffer_seconds: 0` would ask busbar to retain observations for no time at all: the
-    // rolling window is empty at every scrape, so `/metrics` renders quantiles over nothing while
-    // the hot path still pays the full recording cost — opted-in metrics that report nothing.
-    // Omitting the whole `metrics:` block is how collection is turned OFF; `0` is not that, so it
-    // fails boot loudly rather than silently producing an inert collector.
+    // `export.prometheus.settings.buffer_seconds: 0` would ask busbar to retain observations for no
+    // time at all: the rolling window is empty at every scrape, so `/metrics` renders quantiles over
+    // nothing while the hot path still pays the full recording cost — opted-in metrics that report
+    // nothing. Omitting the `export.prometheus` block is how collection is turned OFF; `0` is not
+    // that, so it fails boot loudly rather than silently producing an inert collector.
     if deploy
-        .metrics
+        .export
         .as_ref()
-        .is_some_and(|m| m.buffer_seconds == 0)
+        .and_then(|e| e.prometheus.as_ref())
+        .is_some_and(|p| p.settings.buffer_seconds == 0)
     {
         errors.push(
-            "metrics.buffer_seconds: 0 retains no observations, so every scrape would report empty \
-             quantiles while still paying the recording cost — name a positive retention window in \
-             seconds, or omit the whole `metrics:` block to turn metrics off"
+            "export.prometheus.settings.buffer_seconds: 0 retains no observations, so every scrape \
+             would report empty quantiles while still paying the recording cost — name a positive \
+             retention window in seconds, or omit the `export.prometheus` block to turn metrics off"
                 .to_string(),
         );
     }
@@ -3409,10 +3554,11 @@ pub(crate) fn resolve(
                 &deploy.limits,
                 &deploy.observability.clone().unwrap_or_default(),
                 &deploy.advanced,
-                deploy.metrics.as_ref(),
+                &deploy.export.clone().unwrap_or_default(),
                 &deploy.health,
                 &deploy.routing,
             ),
+            export: deploy.export.clone().unwrap_or_default(),
         })
     } else {
         Err(errors)

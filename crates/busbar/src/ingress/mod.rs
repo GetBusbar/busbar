@@ -544,11 +544,11 @@ fn finish_inner(
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(app, ingress_protocol, pool, outcome, elapsed.as_secs_f64());
 
-    // best-effort request-log webhook (no-op unless configured). Gated on the configured check so an
-    // unconfigured webhook (the default) skips even BUILDING the JSON payload — `fire_request_log`
-    // would only drop it; when configured, the payload/delivery are unchanged.
-    if crate::observability::request_log_configured() {
-        crate::observability::fire_request_log(crate::observability::build_request_log(
+    // best-effort request log (no-op unless an `export:` sink is configured). Gated on the configured
+    // check so the default (no sink) skips even BUILDING the JSON payload; when configured, the
+    // payload + delivery are unchanged — the built-in exporters (`crate::export`) own the fan-out.
+    if crate::export::request_log_configured() {
+        crate::export::deliver_request_log(crate::export::build_request_log(
             crate::store::now(),
             ingress_protocol,
             pool,
