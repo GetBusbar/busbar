@@ -2,27 +2,64 @@
 #
 # qa-gate is a REGISTRY-DRIVEN umbrella: it fans out one independent, independently-reported job per
 # `active` segment (green-on-completion — no segment's failure is masked by another), and holds every
-# not-yet-shipped capability as a `reserved` manifest slot that reports PASS/SKIP (empty set) so the
-# umbrella is green TODAY while the roadmap's future segments already own their slot.
+# not-yet-shipped capability as a `reserved` manifest slot that is INERT and EXCLUDED FROM THE GREEN
+# CLAIM (the umbrella's final line NAMES every reserved segment it did not cover, so a partial gate
+# can never read as a full one).
 #
 # "Add more whenever" is a ONE-LINE change: a new segment is a new [[segment]] block; arming a
 # reserved segment is `status = "reserved"` -> `"active"`. NO YAML plumbing changes — exactly the
 # posture the real qa-gate.yml already uses looping the plugins.yaml registry feed.
 #
-# FIELDS
-#   id      segment name (also the CI job/leg name).
-#   status  active   -> runs its `run` command; the umbrella is red if it fails.
-#           reserved -> defined-but-INERT; the runner reports PASS/SKIP (empty set). Flips to active
-#                       when its feature ships — additive, no restructure.
-#   tier    fast      -> pure in-process / fixture / script; cheap, runs on the per-push ci.yml cadence.
-#           live-mock -> stands up REAL upstreams/receivers (the ~2h release-check soak); runs on the
-#                        `qa`-branch promotion, NOT every dev push.
-#   run     the command the segment runs (cwd = repo root). Reserved segments still name their FUTURE
-#           run command so arming them is purely a status flip.
+# ── THE HONESTY RULE (1.5.3 audit; this is why PASS(pending) is gone) ────────────────────────────
+# An `active` segment whose `run` names a `cargo test --test <target>` that DOES NOT EXIST is a HARD
+# FAIL naming the segment and the missing target. It used to report `PASS(pending)` — "scaffolded
+# green" — which made a segment that executed NOTHING indistinguishable from one that passed. That is
+# precisely the reports-success-while-doing-nothing defect class this gate exists to catch, and it
+# was living inside the gate. There is no longer any way for an active segment to be green without
+# having run something. A capability that is not ready is `reserved`, never `active`-but-hollow.
+#
+# FIELDS ([[segment]])
+#   id            segment name (also the CI job/leg name).
+#   status        active   -> runs its `run` command; the umbrella is red if it fails.
+#                 reserved -> defined-but-INERT. NOT part of the green claim; named in the scope line.
+#   tier          fast      -> pure in-process / fixture / script; cheap, per-push ci.yml cadence.
+#                 live-mock -> stands up REAL upstreams/receivers (the release-check soak); runs on
+#                              the `qa`-branch promotion, NOT every dev push.
+#   run           the command the segment runs (cwd = repo root). Reserved segments still name their
+#                 FUTURE run command so arming them is purely a status flip.
+#   fallback_for  OPTIONAL. Marks this segment as the aggregate STAND-IN for a segment template's
+#                 fan-out (see below). It is emitted ONLY while that template cannot expand, and is
+#                 suppressed the moment the fan-out is live. Exactly one of {this aggregate, the
+#                 expanded per-item segments} is ever present — never neither, never both.
+#
+# FIELDS ([[segment_template]])
+#   id_prefix     expanded ids are `<id_prefix>-<repo>`.
+#   source        the registry the set is drawn from. `plugins.yaml` is read through
+#                 scripts/plugin-registry-check.sh --list (the same feed qa-gate.yml's sibling
+#                 checkout loop and release-check.sh's suite loop already iterate).
+#   status/tier   applied to every expanded segment.
+#   run           `{repo} {dir} {alias} {kind} {service} {release_gate} {gate}` are substituted per
+#                 registry entry.
+#
+# ── WHY A TEMPLATE AND NOT TEN HAND-WRITTEN ENTRIES ──────────────────────────────────────────────
+# The wall-clock win is one segment per plugin, run in parallel. The obvious way to get that is to
+# type out one [[segment]] per plugin repo. This repo has ALREADY PAID for that mistake: the 1.5.0
+# ship found the hand-written plugin list had drifted and the "full plugin gate" silently covered 6
+# of 8 plugins, which is why plugins.yaml exists and why every consumer now derives its list from
+# plugin-registry-check.sh --list instead of carrying a copy.
+#
+# A hand-written per-plugin block here would be a NEW copy of that list, and it would drift the same
+# way — and when it did, the gate would test fewer plugins while still reporting green: the exact
+# failure the honesty rule above exists to prevent, reintroduced one section lower.
+#
+# So this manifest carries NO plugin names at all. It carries the SHAPE (status, tier, run) and names
+# the registry to expand it against; the SET comes from plugins.yaml at run time, every time. Drift is
+# not "checked for", it is UNREPRESENTABLE — there is no second list to disagree with the first. The
+# self-test additionally asserts the expanded id set equals the registry's repo set exactly, so a
+# broken expansion fails loudly instead of quietly yielding a shorter list.
 #
 # INVARIANT (design §6): PRESERVE all current qa-gate coverage — every test that runs today runs
-# inside exactly one segment; the umbrella's union is a SUPERSET of today's gate. `core-data-plane` +
-# `plugins` are that preserved coverage, re-homed onto release-check.sh, not rewritten.
+# inside exactly one segment; the umbrella's union is a SUPERSET of today's gate.
 #
 # Reserved -> release map (honesty markers, catalog qa-gate-test-catalog-1.5.3.md §4):
 #   mcp-integrity -> 1.5.4    a2a -> 1.5.6    smart-router -> 1.5.5
@@ -33,40 +70,68 @@
 id     = "export"
 status = "active"
 tier   = "fast"
-# LIVE 1.5.3. Fast cases (EXP-01/02/03/09/11) are in-process; the webhook/scrape live-mock rows
-# (EXP-04..08/10) belong to a live-mock companion the umbrella schedules on the qa cadence.
-# TODO(unit D): the `qa_export` integration test target lands with the admin/export test surface;
-# until then the runner reports this active segment PASS(pending) with a loud marker.
-run    = "cargo test -p busbar --test qa_export"
+# LIVE 1.5.3 and GREEN NOW, against coverage that GENUINELY EXISTS on this branch.
+#
+# WAS: `cargo test -p busbar --test qa_export`, an integration target that has never existed in this
+# tree (crates/busbar/tests/ holds cli_validate.rs, docs_examples.rs, no_state_persist.rs and nothing
+# else). The runner sent it down PASS(pending) and printed "scaffolded green", so this segment
+# reported GREEN having executed nothing. Deleted.
+#
+# NOW: the real export coverage, which lives as in-crate unit tests rather than an integration
+# target — crates/busbar/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
+# export surfaces outside that module (the admin export API, the config-migrate export rewrites, the
+# plugin-route export/metrics confinement). `busbar` is a BINARY-ONLY package (no [lib]), so its unit
+# tests run under `--bin busbar`.
+#
+# The filter is the module-and-name substring `export`, not an enumerated case list, deliberately:
+# a substring filter picks up newly added export tests automatically, whereas a written-out list is
+# one more thing that drifts quietly. The streams the projection tests exercise are named in
+# crates/busbar/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
+# the unknown-stream vocabulary error, the producerless-stream boot error).
+#
+# The webhook/scrape rows that need a REAL receiver are not in this fast segment; they belong to the
+# live-mock cadence and are covered by core-data-plane's release-check soak.
+run    = "cargo test -p busbar --bin busbar -- export"
 
 [[segment]]
 id     = "hook-bindings"
 status = "active"
 tier   = "fast"
-# LIVE 1.5.3. Drives the NAMED-HOOKS grammar (catalog §2.2 HB-01..HB-12, audit-decisions §1): a hook
-# is DEFINED once in the top-level `hooks:` map and REFERENCED BY BARE NAME from `pools.hooks`
-# (all-pools) / `pools.<p>.hooks` (per-pool), the two lists combining ADDITIVELY. Scope is the hook's
-# `groups:` (a user is a leaf group, `user:bob`); `phase:` is a LIST of stages.
-# There is NO `plane:`/`target:`/`principal:`/`bind:` dimension and no `bindings:` grammar — those
-# invented dimensions were DELETED in the 1.5.3 audit, so no case here references them. Future planes
-# attach via their own `tools.hooks` / `agents.hooks` key against the SAME `hooks:` definitions — an
-# additive attach point, not a reserved selector value, so nothing is reserved-but-rejected here.
-# The two fail-closed cases are HB-11 (a bare name with no `hooks:` definition is a BOOT error) and
-# HB-12 (a pool literally NAMED `hooks` is rejected — `hooks` and `upstream_credentials` are reserved
-# keys at the `pools:` section level, audit §4).
-# TODO(unit D): the `qa_hook_bindings` integration test target lands with unit D's admin surface;
-# until then the runner reports this active segment PASS(pending).
-run    = "cargo test -p busbar --test qa_hook_bindings"
+# LIVE 1.5.3 and GREEN NOW, against coverage that GENUINELY EXISTS on this branch.
+#
+# WAS: `cargo test -p busbar --test qa_hook_bindings` — another target that has never existed here.
+# Same PASS(pending) lie as `export`. Deleted.
+#
+# NOW: the real NAMED-HOOKS GRAMMAR coverage. A hook is DEFINED once in the top-level `hooks:` map
+# and REFERENCED BY BARE NAME from `pools.hooks` (all-pools) / `pools.<p>.hooks` (per-pool), the two
+# lists combining ADDITIVELY. Scope is the hook's `groups:` (a user is a leaf group, `user:bob`);
+# `phase:` is a LIST of stages. There is NO `plane:`/`target:`/`principal:`/`bind:` dimension and no
+# `bindings:` grammar — those invented dimensions were DELETED in the 1.5.3 audit.
+#
+# The cases this actually runs (all present in the tree today, verified by `--bin busbar -- --list`):
+#   config::tests::test_pool_hooks_bare_name_is_a_reference      the bare-name reference itself
+#   config::tests::test_pool_hooks_list_desugars                 the list form
+#   config::tests::additive_hook_lists_dedupe_at_first_position  the ADDITIVE combining rule
+#   config::tests::test_hook_definition_unknown_key_rejected     the closed definition grammar
+#   config::tests::test_caller_in_hook_groups_scope              `groups:` scoping
+#   config::named_map::named_map_tests::referents_finds_every_bare_name_reference_site
+#   admin::v1::service::tests::build_with_registry_rejects_a_dangling_global_hook_reference
+#                                                                fail-closed: bare name, no definition
+#   config::tests::test_pools_reserved_hooks_key                 fail-closed: a pool NAMED `hooks`
+#   config::tests::pools_reserved_section_keys_are_frozen        the reserved `pools:` section keys
+#   config_validate::tests::test_hook_reserved_name_rejected / _nonreserved_name_ok
+#   hooks::* (the wire/plugin/scrape hook seam)
+#
+# Same reasoning as `export` for the substring filter over an enumerated list.
+run    = "cargo test -p busbar --bin busbar -- hook"
 
 [[segment]]
 id     = "config-stability"
 status = "active"
 tier   = "fast"
-# LIVE 1.5.3 and GREEN NOW: this segment runs the real config-stability gate (unit F) — the drift
-# guard + additive-only classifier + its self-test (catalog CFG-05..CFG-13). Points at the script
-# gate (which exists and passes on this branch) rather than a not-yet-present cargo test target, so
-# the segment is genuinely green today. The future `qa_config_stability` Rust test is an ADDITIVE
-# companion, not a prerequisite.
+# LIVE 1.5.3 and GREEN NOW: the real config-stability gate (unit F) — the drift guard + additive-only
+# classifier + its self-test (catalog CFG-05..CFG-13). This segment was already honest: it points at
+# a script gate that exists and passes on this branch. Unchanged.
 run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
 
 [[segment]]
@@ -74,20 +139,51 @@ id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
 # LIVE 1.5.3, PRESERVED. The existing routing/proxy/admission/failover + budgets/rps + auth/SSO
-# coverage, re-homed onto release-check.sh (no coverage lost). `--segment` names the slice; today
-# release-check.sh runs its full gate (coverage-preserving) and records the segment label, with a
-# documented TODO to partition phases per-segment (an additive refinement).
+# coverage, re-homed onto release-check.sh (no coverage lost). Today release-check.sh runs its full
+# gate for any segment label; RECOMMENDED to release-check.sh (not edited here — a sibling owns that
+# file): make `--segment core-data-plane` run only the core-data-plane phases.
 run    = "./scripts/release-check.sh --segment core-data-plane"
 
 [[segment]]
-id     = "plugins"
-status = "active"
-tier   = "live-mock"
-# LIVE 1.5.3, PRESERVED. The existing plugin ABI / loader / fleet coverage, re-homed onto
-# release-check.sh (see core-data-plane note on the `--segment` partitioning TODO).
-run    = "./scripts/release-check.sh --segment plugins"
+id           = "plugins"
+status       = "active"
+tier         = "live-mock"
+fallback_for = "plugin"
+# LIVE 1.5.3, PRESERVED — and the AGGREGATE STAND-IN for the per-plugin fan-out below.
+#
+# This is the whole-fleet plugin gate as it runs today: one segment, every plugin, serially, inside
+# release-check.sh. It is emitted ONLY while the per-plugin fan-out cannot run, and is SUPPRESSED
+# automatically the moment it can. That keeps plugin coverage unconditional: the runner emits either
+# this aggregate or the expanded per-plugin set, never neither.
+#
+# Why it is still here at all: the fan-out below needs release-check.sh to accept a per-plugin
+# segment, and release-check.sh is owned by a sibling change that has not landed. Rather than depend
+# on that landing (which would make this manifest red until it does) or quietly drop plugin coverage
+# (which would be the same silent-undercoverage bug in a new place), the runner PROBES for the
+# capability and falls back to this aggregate, saying so out loud in the scope line.
+run          = "./scripts/release-check.sh --segment plugins"
 
-# ── RESERVED (defined-but-INERT manifest slots — PASS/SKIP until their release arms them) ──────────
+# ── PER-PLUGIN FAN-OUT (the wall-clock win: one segment per plugin, expanded from plugins.yaml) ────
+#
+# Expands to one `plugin-<repo>` segment per entry in plugins.yaml, at run time, every time. No
+# plugin name appears in this file — see "WHY A TEMPLATE AND NOT TEN HAND-WRITTEN ENTRIES" above.
+#
+# These are live-mock: each leg boots that plugin's own `service` container (mysql|postgres|valkey|
+# vault|none) and runs that plugin's gate. Run in parallel by the CI matrix (which builds itself from
+# `qa-segments.sh --list`), the fleet's wall clock collapses from the serial sum to the slowest single
+# plugin — that is where the 2h -> 15min comes from.
+#
+# GATED ON A CAPABILITY PROBE: expands only when `release-check.sh --list-segments` advertises the
+# token `plugin-*`. Until then the aggregate `plugins` segment above carries the coverage. See the
+# RECOMMENDED-TO-RELEASE-CHECK note in scripts/qa-segments.sh's header for the exact contract.
+[[segment_template]]
+id_prefix = "plugin"
+source    = "plugins.yaml"
+status    = "active"
+tier      = "live-mock"
+run       = "./scripts/release-check.sh --segment plugin-{repo}"
+
+# ── RESERVED (defined-but-INERT slots — EXCLUDED from the green claim, NAMED in the scope line) ────
 
 [[segment]]
 id     = "mcp-integrity"
