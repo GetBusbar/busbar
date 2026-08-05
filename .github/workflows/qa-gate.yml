@@ -127,9 +127,16 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: ubuntu-latest
-    # Deliberately tight. `slow` needs this job, so it is free ONLY while it stays shorter than
-    # `build`. If it grows into the long pole, this timeout makes that a failure, not a silent
-    # regression against the wall-clock budget.
+    # CORRECTED after the first real run. This job was originally a SIBLING of `build`, on the
+    # reasoning that a 5s fast tier alongside a 157s build costs nothing. Both halves of that were
+    # wrong in CI: the 5s was measured locally against a WARM target, and with no artifact this job
+    # rebuilt the workspace from scratch (`export` alone took 153s). It also could not have passed,
+    # because `hook-bindings` needs a cdylib only `build` produces.
+    # It now hydrates from `build` like every other consumer, which removes a duplicate full build
+    # rather than adding a wait.
+    needs: [build]
+    # Deliberately tight. This job sits on the critical path ahead of `slow`, so if it ever grows
+    # into a long pole that must be a loud failure, not a silent regression against the budget.
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -151,6 +158,24 @@ jobs:
         name: Build the fan-out matrix from qa/segments.toml
         working-directory: busbarAI
         run: ./scripts/qa-gate-run.sh matrix
+
+      # HYDRATE, same as `slow`. The fast tier is NOT build-free: `hook-bindings` needs the
+      # hook-test plugin cdylib, and `test_support` PANICS under CI when it is missing rather than
+      # silently skipping the hook-plugin coverage (test_support/mod.rs, "refusing to silently
+      # skip"). The first real run proved both halves of why this step has to be here:
+      #   * 39 hook tests failed on the missing cdylib, and
+      #   * `export` took 153s because with no artifact the fast job REBUILT the workspace from
+      #     scratch -- the exact duplicate build that build-once exists to remove.
+      # So this is not a wall-clock cost: it REMOVES a redundant full build from the critical path
+      # and is what makes this job genuinely fast.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: /tmp
+      - name: Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)
+        working-directory: busbarAI
+        run: ./scripts/qa-gate-run.sh hydrate "$TARBALL"
 
       - name: Fast-tier segments + reserved-slot report
         working-directory: busbarAI
