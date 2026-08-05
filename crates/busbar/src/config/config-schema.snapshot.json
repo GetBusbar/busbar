@@ -296,6 +296,14 @@
     },
     "ExportDefCfg": {
       "fields": {
+        "durable": {
+          "optional": true,
+          "type": "bool"
+        },
+        "fields": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
         "module": {
           "optional": false,
           "type": "String"
@@ -303,6 +311,10 @@
         "settings": {
           "optional": true,
           "type": "serde_json::Map<String, serde_json::Value>"
+        },
+        "streams": {
+          "optional": true,
+          "type": "Vec<String>"
         }
       },
       "kind": "struct"

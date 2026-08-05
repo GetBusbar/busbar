@@ -2177,3 +2177,151 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
         out.todos
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// 1.5.3 — the EXPORT PROJECTION GRAMMAR migration (`streams:` made explicit).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Today's `export:` shape carries no `streams:`, so the projection it grants is IMPLIED by the
+/// module. The migrator makes it EXPLICIT, in the order the operator wrote the instances, and says
+/// so in the ledger — the grammar is taught by the migrated document rather than by a doc page.
+///
+/// GOLDEN, not a sed: the migrated document must boot-parse and resolve to the SAME projection the
+/// pre-migration document meant.
+#[test]
+fn migrate_export_adds_the_explicit_streams_projection() {
+    let raw = "\
+export:
+  metrics:
+    module: prometheus
+    settings:
+      buffer_seconds: 60
+  req-log:
+    module: request-log-webhook
+    settings:
+      url: https://sink.example.com/l
+  tail:
+    module: request-log-file
+    settings:
+      path: /var/log/busbar.jsonl
+  traces:
+    module: otlp
+    settings:
+      url: http://localhost:4318/v1/traces
+";
+    let (out, doc) = migrate_to_value(raw);
+    for (name, stream) in [
+        ("metrics", "metrics"),
+        ("req-log", "logs"),
+        ("tail", "logs"),
+        ("traces", "traces"),
+    ] {
+        let got = dig(&doc, &["export", name, "streams"])
+            .unwrap_or_else(|| panic!("export.{name}.streams was not written"));
+        assert_eq!(
+            got,
+            &serde_yaml::from_str::<serde_yaml::Value>(&format!("[{stream}]")).unwrap(),
+            "export.{name}.streams"
+        );
+        assert!(
+            out.changes
+                .iter()
+                .any(|c| c.contains(&format!("export.{name}")) && c.contains("streams")),
+            "the ledger must name export.{name}'s new projection; got {:?}",
+            out.changes
+        );
+    }
+    // Instance ORDER is preserved (delivery order is deterministic and operator-visible).
+    let names: Vec<String> = dig(&doc, &["export"])
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["metrics", "req-log", "tail", "traces"]);
+
+    // GOLDEN: the migrated `export:` block PARSES under the 1.5.3 grammar and resolves — with NO
+    // validation errors — to the projection the pre-migration document already meant. A rewrite that
+    // wrote a projection the validator rejects would fail right here.
+    let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
+    let defs: crate::config::ExportDefs =
+        serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
+            .expect("the migrated export block must parse");
+    let mut errs = Vec::new();
+    let export = crate::config::resolve_export(&defs, &mut errs);
+    assert!(errs.is_empty(), "{errs:?}");
+    assert!(export.request_log_webhooks[0]
+        .projection
+        .wants_stream(busbar_plugin_loader::ExportStream::Logs));
+
+    // IDEMPOTENT: a second run writes nothing more.
+    let (out2, doc2) = migrate_to_value(&migrated_yaml);
+    assert!(
+        !out2.changes.iter().any(|c| c.contains("streams")),
+        "re-migrating must be a no-op; got {:?}",
+        out2.changes
+    );
+    assert_eq!(
+        doc2, doc,
+        "the migrated tree must be stable under re-migration"
+    );
+}
+
+/// A MALFORMED instance is LEFT EXACTLY AS WRITTEN with a TODO naming it — the `Taken<T>` discipline
+/// (`take_mapping` is take-on-match). Silently dropping or "fixing" an operator's export instance is
+/// the bug class that machinery exists to kill.
+#[test]
+fn migrate_export_leaves_a_malformed_instance_alone_with_a_todo() {
+    let raw = "export:\n  broken: null\n  ok:\n    module: request-log-file\n    settings:\n      path: /tmp/x.jsonl\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["export", "broken"]).is_some_and(|v| v.is_null()),
+        "the malformed instance must survive EXACTLY as written"
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("export.broken")),
+        "a malformed instance must be flagged; got {:?}",
+        out.todos
+    );
+    // Its healthy sibling is still migrated.
+    assert!(dig(&doc, &["export", "ok", "streams"]).is_some());
+}
+
+/// An instance whose `module:` this build does not know cannot have its projection inferred. The
+/// migrator must NOT guess — it flags it and leaves the instance alone.
+#[test]
+fn migrate_export_flags_an_unknown_module_rather_than_guessing() {
+    let raw = "export:\n  siem:\n    module: some-third-party-sink\n    settings: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(dig(&doc, &["export", "siem", "streams"]).is_none());
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("export.siem") && t.contains("streams")),
+        "an unknown module must be flagged, not guessed; got {:?}",
+        out.todos
+    );
+}
+
+/// `audit` was REMOVED as a stream. A hand-written `streams: [audit]` is NOT silently rewritten (a
+/// projection is a security-relevant declaration — the operator decides what replaces it); it is
+/// left as written with a TODO that names the replacement shape.
+#[test]
+fn migrate_export_flags_the_retired_audit_stream() {
+    let raw = "export:\n  soc2:\n    module: request-log-webhook\n    streams: [logs, audit]\n    settings:\n      url: https://siem.example.com/l\n";
+    let (out, doc) = migrate_to_value(raw);
+    let streams = dig(&doc, &["export", "soc2", "streams"]).unwrap();
+    assert_eq!(
+        streams,
+        &serde_yaml::from_str::<serde_yaml::Value>("[logs, audit]").unwrap(),
+        "the operator's declaration must be left EXACTLY as written"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("export.soc2") && t.contains("audit")),
+        "the retired `audit` stream must be flagged; got {:?}",
+        out.todos
+    );
+}

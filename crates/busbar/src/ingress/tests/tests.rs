@@ -48,6 +48,7 @@ fn minimal_app() -> Arc<App> {
         ),
         hook_registry: std::collections::HashMap::new(),
         requested_signals: Default::default(),
+        export_projections: Default::default(),
         global_hooks: Vec::new(),
         groups_registry: std::collections::BTreeMap::new(),
         base_group_names: std::collections::HashSet::new(),

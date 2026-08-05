@@ -8,8 +8,9 @@
 //! `export.request-log-file`; absent ⇒ no file sink.
 
 use crate::config::ExportCfg;
+use crate::export::projection::Projection;
+use crate::export::PayloadCache;
 use crate::limits::admission::AdmissionGate;
-use serde_json::Value;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 
@@ -33,6 +34,9 @@ struct FileSink {
     /// webhook instance owns its own (a stalled audit-mount sink must not shed the local tail file's
     /// lines, or vice versa).
     gate: AdmissionGate,
+    /// This instance's PROJECTION — see the sibling webhook sink: the line this sink is handed is
+    /// built to exactly this, so an ungranted field is never written to disk.
+    projection: Projection,
 }
 
 /// Every configured `module: request-log-file` instance, in config order, set once at boot. Unset ⇒
@@ -54,15 +58,10 @@ pub(crate) fn configure(cfg: &ExportCfg) {
                 rotate_bytes: f.rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
                 lock: Mutex::new(()),
                 gate: AdmissionGate::new(MAX_INFLIGHT_FILE_APPENDS, "request-log-file"),
+                projection: f.projection,
             })
             .collect(),
     );
-}
-
-/// True when at least one file sink is configured.
-#[inline]
-pub(crate) fn configured() -> bool {
-    SINKS.get().is_some()
 }
 
 /// Append one request-log line to the JSONL file. No-op when unconfigured. Fire-and-forget: the blocking
@@ -71,13 +70,13 @@ pub(crate) fn configured() -> bool {
 /// BOUNDED per sink by [`MAX_INFLIGHT_FILE_APPENDS`]: a stalled filesystem sheds logs (counted on
 /// `busbar_file_logs_dropped_total` + `busbar_admission_denied_total{gate="request-log-file"}`)
 /// rather than accumulating tasks and owned lines without limit.
-pub(crate) fn deliver(payload: &Value) {
+pub(crate) fn deliver(cache: &mut PayloadCache<'_>) {
     let Some(sinks) = SINKS.get() else {
         return;
     };
-    let line = payload.to_string();
     for sink in sinks {
-        append_one(sink, line.clone());
+        // Built to THIS sink's projection (shared with any sibling holding the identical one).
+        append_one(sink, cache.get(sink.projection).to_string());
     }
 }
 

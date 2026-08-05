@@ -372,6 +372,9 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
     migrate_export_named_map(&mut root, &mut changes);
     migrate_observability_block(&mut root, &mut changes);
+    // AFTER both of the above: every export instance is in its named form by now, so the projection
+    // pass sees the final `module:` of each one.
+    migrate_export_projection(&mut root, &mut changes, &mut todos);
     migrate_admin_require_mtls(&mut root, &mut changes);
     migrate_pools_upstream_credentials(&mut root, &mut changes);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
@@ -2047,6 +2050,103 @@ fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
         ));
     }
     root.insert("export".into(), Value::Mapping(kept));
+}
+
+/// 1.5.3 — the EXPORT PROJECTION GRAMMAR: make each `export:` instance's PROJECTION EXPLICIT by
+/// writing the `streams:` its `module:` already implies.
+///
+/// Nothing about the deployment changes: an instance with no `streams:` still means "the streams
+/// this module carries" (see `crate::export::projection::resolve_projection`), so this is a
+/// TEACHING rewrite, not a semantic one — the migrated document shows the operator the key they will
+/// narrow with `fields:`, and the ledger says so. The streams are read from
+/// `crate::export::projection::module_streams`, the SAME table the validator uses, so the migrator
+/// cannot write a projection the validator would then reject.
+///
+/// IDEMPOTENT (an instance that already declares `streams:` is left alone) and NON-DESTRUCTIVE:
+///
+/// - a MALFORMED instance (`broken: null`, a scalar, a list) is left EXACTLY as written with a TODO,
+///   via [`take_mapping`]'s take-on-match discipline — the migrator never drops what it cannot read;
+/// - an instance whose `module:` this build does not know gets a TODO rather than a GUESS: writing
+///   an inferred projection for a sink we know nothing about is exactly the "reports success while
+///   quietly not taking effect" shape;
+/// - a hand-written `streams: [audit]` is NOT rewritten. `audit` was REMOVED (an auditor is a
+///   projection made of other streams), and WHICH streams replace it is a disclosure decision that
+///   belongs to the operator, not to a mechanical rewrite. It gets a TODO naming the shape.
+fn migrate_export_projection(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    let Some(Value::Mapping(mut export)) = root.get(Value::from("export")).cloned() else {
+        return;
+    };
+    let mut out = Mapping::new();
+    for key in export.keys().cloned().collect::<Vec<_>>() {
+        let name = key.as_str().unwrap_or_default().to_string();
+        match take_mapping(&mut export, &name, "export", todos) {
+            // Left EXACTLY as written, in place, with the TODO already pushed by `take_mapping`.
+            Taken::Malformed => {
+                if let Some(v) = export.get(&key) {
+                    out.insert(key.clone(), v.clone());
+                }
+            }
+            Taken::Absent => {}
+            Taken::Got(mut inst) => {
+                migrate_one_export_projection(&name, &mut inst, changes, todos);
+                out.insert(key.clone(), Value::Mapping(inst));
+            }
+        }
+    }
+    // `insert` on an existing key keeps its position, so `export:` does not move within the document.
+    root.insert("export".into(), Value::Mapping(out));
+}
+
+/// The per-instance half of [`migrate_export_projection`].
+fn migrate_one_export_projection(
+    name: &str,
+    inst: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    let ctx = format!("export.{name}");
+    // ALREADY DECLARED: leave it. The only thing to say is whether it names the retired `audit`.
+    if let Some(existing) = inst.get(Value::from("streams")) {
+        let names_audit = existing
+            .as_sequence()
+            .is_some_and(|s| s.iter().any(|v| v.as_str() == Some("audit")));
+        if names_audit {
+            todos.push(format!(
+                "{ctx}.streams: names `audit`, which is NOT a stream in 1.5.3 — it was a use case,                  not a data type, and an auditor is a SINK whose projection includes the right                  streams (e.g. `streams: [logs, identity, decisions, events, costs]`). WHICH                  streams replace it is a disclosure decision, so it was left EXACTLY as written                  rather than rewritten for you. Edit it by hand; the config will not boot until you                  do."
+            ));
+        }
+        return;
+    }
+    let Some(module) = inst
+        .get(Value::from("module"))
+        .and_then(|v| v.as_str())
+        .map(|m| m.trim().to_string())
+    else {
+        todos.push(format!(
+            "{ctx}: has no `module:`, so its `streams:` projection could not be inferred. Add              `module:` and re-run `--migrate-config`."
+        ));
+        return;
+    };
+    let Some(streams) = crate::export::projection::module_streams(&module) else {
+        todos.push(format!(
+            "{ctx}: `module: {module}` is not a built-in export module in this build, so its              `streams:` projection could not be inferred and was NOT guessed. Add `streams:` by              hand naming what this sink subscribes to."
+        ));
+        return;
+    };
+    let list: Vec<Value> = streams.iter().map(|s| Value::from(s.as_token())).collect();
+    let tokens = streams
+        .iter()
+        .map(|s| s.as_token())
+        .collect::<Vec<_>>()
+        .join(", ");
+    inst.insert("streams".into(), Value::Sequence(list));
+    changes.push(format!(
+        "{ctx}: added `streams: [{tokens}]` (1.5.3 projection grammar — each export instance is a          PROJECTION of the engine's data, and the streams a sink subscribes to are now declared          rather than implied by `module:`. This is what the deployment already meant; narrow it          further with `fields:`)."
+    ));
 }
 
 /// 1.5.3 §3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x

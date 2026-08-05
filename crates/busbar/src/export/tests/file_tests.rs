@@ -4,6 +4,7 @@
 //! Tests for the built-in `request-log-file` exporter — the bounded JSONL append fan-out.
 
 use super::*;
+use crate::export::test_logs_projection;
 
 /// AUDIT MED-4 — THE FILE SINK IS ADMISSION-BOUNDED. `deliver()` spawns one `spawn_blocking` append
 /// per request per sink, each holding an owned `String`; on a slow or stalled filesystem those
@@ -42,6 +43,7 @@ async fn file_sink_sheds_appends_beyond_its_inflight_cap() {
         rotate_bytes: None,
         lock: Mutex::new(()),
         gate: AdmissionGate::new(MAX_INFLIGHT_FILE_APPENDS, "request-log-file-test"),
+        projection: test_logs_projection(),
     }));
 
     // Offered load: comfortably more than the cap, so an UNBOUNDED fan-out is visibly different.
