@@ -74,6 +74,13 @@ item under **Changed**.
   are REMOVED. A hook definition also gains `groups:` (narrow it to callers in those groups and their
   descendants; omitted or `[]` = all callers) and a LIST-valued `phase:` that generalizes the tap's
   old single-valued `at:`. Only which hooks are SELECTED changed; the firing mechanics are untouched.
+  **Watch the `phase:` default if you HAND-WRITE a hook:** an omitted `phase:` means all four core
+  stages, so a tap written without one is notified FOUR times per request (request, candidate,
+  routing, response), not once. That is the intended default — a tap usually wants the whole
+  lifecycle — but it is a 4x change in delivery volume for a webhook sink, so set
+  `phase: [request]` if you want the old single firing. **Upgrading configs are unaffected:**
+  `--migrate-config` writes `phase: [request]` onto every legacy bare tap explicitly, because a
+  migration must never change behaviour.
   A pool may not be named `hooks`. **Migration:** `busbar --migrate-config` lifts the 1.x `hooks:`
   registry into named definitions, turns `global_hooks:` into the reserved `pools.hooks:` list, and
   rewrites every inline pool instance into a definition plus a bare-name reference; it is idempotent,
