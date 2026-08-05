@@ -93,6 +93,98 @@ pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
 }
 
+// ── the login-plugin OFFLOAD (the blocking-FFI class) ───────────────────────────────────────────
+
+/// The bound on CONCURRENT offloaded login-plugin calls, and a SEPARATE budget from the data-plane
+/// auth chain's [`super::AUTH_OFFLOAD_MAX_INFLIGHT`] and the admin chain's
+/// `ADMIN_OFFLOAD_MAX_INFLIGHT`: `/auth/token` is reachable ANONYMOUSLY (it is mounted on the data
+/// router and the auth middleware bypasses that exact path — `auth/mod.rs`'s bypass list), so its
+/// concurrency is attacker-chosen. Sharing a budget with the credential-verifying chain would let an
+/// unauthenticated flood of logins deny auth to authenticated traffic. Smaller than the auth chain's
+/// 64 for the same reason: a human login round-trip is not customer request volume.
+const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
+
+/// How long a login request waits for an offload permit before giving up. A login that cannot even be
+/// STARTED in this window is not going to complete, so it is answered rather than left hanging.
+const LOGIN_OFFLOAD_WAIT: Duration = Duration::from_secs(5);
+
+/// The permit pool for [`LOGIN_OFFLOAD_MAX_INFLIGHT`]. Process-wide (not per-`LoginMethods`) on
+/// purpose — the resource being bounded is the process's ONE shared blocking pool, and a config
+/// reload swaps `App::login_methods` while in-flight offloads from the previous one still hold
+/// threads. Same construction, and the same reason, as `auth::AUTH_OFFLOAD_PERMITS`.
+static LOGIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(LOGIN_OFFLOAD_MAX_INFLIGHT));
+
+/// THE ONE PLACE a login plugin's synchronous FFI is called from the request path.
+///
+/// `LoginModule::begin_login` / `complete_login` are SYNCHRONOUS `transport_call`s into a dlopened
+/// plugin, and behind that call is real network I/O: an LDAP/AD bind for a credential method, an
+/// authorize-URL mint or a userinfo/token round-trip for a redirect one. Called inline from the
+/// `async fn` handlers, each in-flight login parks a Tokio worker for the plugin's full timeout;
+/// since `/auth/token` is ANONYMOUSLY reachable, an attacker picks how many. Once every worker is
+/// parked NOTHING in the process is polled — not other requests, not the admin plane, not `/healthz`
+/// (exempt from auth, but still needing a worker to run at all) — and the node fails its liveness
+/// probe. This is the hazard `AuthMiddleware::run_chain_on_request_path` documents and offloads for;
+/// the login path needs the same treatment, with its own budget (see [`LOGIN_OFFLOAD_MAX_INFLIGHT`]).
+///
+/// So the call runs on the blocking pool, BOUNDED by [`LOGIN_OFFLOAD_PERMITS`], and FAIL-CLOSED at
+/// every failure: a permit that cannot be acquired in time, a method that vanished under a concurrent
+/// reload, and a panicking plugin (join error) are all [`LoginOutcome::Reject`] — the same posture
+/// `map_begin_login`/`map_complete_login` already take on a transport error, so a caller that cannot
+/// distinguish them does not have to.
+///
+/// The method is re-looked-up by NAME on the blocking thread rather than borrowed across the offload:
+/// the closure must be `'static`, and cloning the `Arc<LoginMethods>` snapshot is what makes the
+/// module handle outlive a concurrent config swap.
+async fn offload_login_call<F>(
+    methods: &Arc<LoginMethods>,
+    method: &str,
+    op: &'static str,
+    call: F,
+) -> LoginOutcome
+where
+    F: FnOnce(&LoginMethod) -> LoginOutcome + Send + 'static,
+{
+    let permit = match tokio::time::timeout(LOGIN_OFFLOAD_WAIT, LOGIN_OFFLOAD_PERMITS.acquire())
+        .await
+    {
+        Ok(Ok(p)) => p,
+        // Timed out waiting, or the semaphore was closed. Either way the plugin never ran, so no
+        // identity was established — reject.
+        _ => {
+            tracing::warn!(
+                method = %method, op,
+                "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
+                 ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
+                 returning. Rejecting (fail-closed) rather than completing a login it never ran."
+            );
+            return LoginOutcome::Reject;
+        }
+    };
+    let (methods, method_name) = (methods.clone(), method.to_string());
+    let joined = tokio::task::spawn_blocking(move || {
+        let outcome = match methods.methods.get(&method_name) {
+            Some(m) => call(m),
+            // The method disappeared between the handler's lookup and this thread (a config reload
+            // swapped `login_methods`). Nothing verified anyone — reject.
+            None => LoginOutcome::Reject,
+        };
+        // Released when the blocking work is DONE, not when the awaiting future is dropped: a
+        // cancelled request must not hand its slot to another while the plugin thread it started is
+        // still wedged.
+        drop(permit);
+        outcome
+    })
+    .await;
+    match joined {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(method = %method, op, error = %e, "login plugin call panicked; rejecting (fail-closed)");
+            LoginOutcome::Reject
+        }
+    }
+}
+
 impl std::fmt::Debug for LoginMethods {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoginMethods")
@@ -255,19 +347,23 @@ fn chooser(app: &App) -> Response {
 /// begin: mint PKCE/state/nonce, call the module's `begin_login`, and either 302 to the IdP authorize
 /// URL (REDIRECT flow) or render the credential FORM (CREDENTIAL flow). `refresh` marks a rotate.
 async fn begin(app: &App, method: &str, refresh: bool) -> Response {
-    let Some(m) = app
+    // Existence + button check ONLY: the `LoginMethod` is deliberately NOT bound here. The one call
+    // this function makes into it is the offloaded `begin_login` below, which re-looks-up the method
+    // by name on the blocking thread — so there is no handle in scope an inline FFI call could be
+    // written against.
+    if !app
         .login_methods
         .methods
         .get(method)
-        .filter(|m| m.has_button)
-    else {
+        .is_some_and(|m| m.has_button)
+    {
         // Unknown / headless-only method — nothing to begin in the browser.
         return error_page(
             StatusCode::NOT_FOUND,
             "Sign-in method not found",
             "That sign-in method isn't available here. Head back and choose one of the listed options.",
         );
-    };
+    }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
     let code_verifier = random_b64url(32);
     let code_challenge = code_challenge_s256(&code_verifier);
@@ -281,7 +377,14 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
         nonce: Some(nonce.clone()),
         scopes: Vec::new(),
     };
-    match m.module.begin_login(&begin) {
+    // OFFLOADED + BOUNDED: `begin_login` is synchronous plugin FFI on an ANONYMOUSLY-reachable data-
+    // plane path (see `offload_login_call`). `m` is not used past this point, so nothing borrows the
+    // App across the offload.
+    match offload_login_call(&app.login_methods, method, "begin_login", move |m| {
+        m.module.begin_login(&begin)
+    })
+    .await
+    {
         // REDIRECT (OAuth) flow: 302 to the IdP; the callback (a GET) completes it.
         LoginOutcome::Authorize(url) => {
             let cookie = LoginCookie {
@@ -387,7 +490,19 @@ async fn callback(
     let http = hop_client();
     let mut principal: Option<Principal> = None;
     for _ in 0..MAX_HOPS {
-        match m.module.complete_login(&cl) {
+        // OFFLOADED + BOUNDED per hop: `complete_login` is synchronous plugin FFI (the token
+        // exchange / userinfo decode) and this loop runs up to `MAX_HOPS` of them on an anonymously-
+        // reachable callback. The hop request itself (`execute_hop`) is already async and stays on
+        // the reactor; only the plugin call crosses to the blocking pool.
+        let turn = cl.clone();
+        match offload_login_call(
+            &app.login_methods,
+            &cookie.method,
+            "complete_login",
+            move |m| m.module.complete_login(&turn),
+        )
+        .await
+        {
             LoginOutcome::Identify(p) => {
                 principal = Some(p);
                 break;
@@ -573,7 +688,17 @@ pub(crate) async fn credential_submit(
         ..Default::default()
     };
     // A credential module verifies the credential itself (e.g. an LDAP bind) and returns `Identify`.
-    let principal = match m.module.complete_login(&cl) {
+    // OFFLOADED + BOUNDED: that bind is the longest synchronous FFI call in the engine and this POST
+    // is anonymously reachable (the `__state` check is satisfied by a cookie the caller minted for
+    // themselves via `begin`), so it must never run on a reactor worker.
+    let principal = match offload_login_call(
+        &app.login_methods,
+        &cookie.method,
+        "complete_login",
+        move |m| m.module.complete_login(&cl),
+    )
+    .await
+    {
         LoginOutcome::Identify(p) => p,
         LoginOutcome::Reject => {
             return clear_and(error_page(

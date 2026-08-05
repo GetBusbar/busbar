@@ -889,6 +889,11 @@ async fn run() {
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
     // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
+    //
+    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
+    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
+    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
+    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
     let (boot_app, _boot_gov_rotate) = build_app_from_config(
         cfg,
         plugins_cfg,
@@ -1087,6 +1092,11 @@ async fn serve_listener(
         }
         Some(tls) => {
             tls::install_crypto_provider();
+            // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
+            // `serve_listener` is not spawned: both calls are arms of the `tokio::join!` in `run()`
+            // (this file), and `run()` is polled by `.block_on(run())` on the MAIN thread, so this
+            // resolve parks the boot thread rather than a Tokio worker. It also completes before
+            // `tls::serve` below is reached, so no connection on this listener can be waiting on it.
             let server_config = tls::build_server_config(&tls, &secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();

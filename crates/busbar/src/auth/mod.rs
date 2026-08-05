@@ -512,6 +512,14 @@ impl AuthMiddleware {
         if !auth.has_plugin_module {
             // All-in-process (boxed test module and/or the keys arm): no plugin can block, so run
             // inline. The keys arm needs the governance handle to verify a busbar-signed key.
+            //
+            // blocking-ffi-lint: allow — NO PLUGIN IS IN THE CHAIN on this arm, so `run_chain_cached`
+            // has nothing to make an FFI call into. `has_plugin_module` is set `true` at exactly one
+            // place — `AuthMiddleware::new`'s `other =>` arm (this file, the `has_plugin_module =
+            // true;` immediately after `registry.open_auth`) — and every other arm either sets
+            // `keys_in_chain` (the engine-side signed-key verifier, a constant-time compare) or
+            // pushes the `#[cfg(test)]` in-process stand-in. So `!has_plugin_module` means the chain
+            // holds no dlopened module at all.
             return auth.run_chain_cached(candidate.as_deref(), Some(cache), gov.as_deref());
         }
         let permit =
