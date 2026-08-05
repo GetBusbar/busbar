@@ -487,8 +487,10 @@ pub(crate) struct ProviderView {
 
 /// A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the
 /// plugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a
-/// secret. `global` reports whether the hook fires on every request (named in `global_hooks:` or
-/// declared `global: true`). Live connection status (`health`) is a separate endpoint. Additive-only.
+/// secret — INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see
+/// [`HookView::settings_keys`]). `global` reports whether the hook fires on every request (named in
+/// `global_hooks:` or declared `global: true`). Live connection status (`health`) is a separate
+/// endpoint. Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookView {
@@ -512,9 +514,17 @@ pub(crate) struct HookView {
     pub(crate) on_error: String,
     /// Gate decision deadline in milliseconds.
     pub(crate) timeout_ms: u64,
-    /// The hook's opaque settings map (operator/API-owned; pushed via the configure wire). Never
-    /// interpreted by busbar; never a secret by contract (hook settings are operator config).
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values — the same
+    /// redacted projection [`NamedDefView::settings_keys`] carries, produced by the same helper.
+    ///
+    /// This used to be the bag itself, under a doc comment claiming hook settings are "never a
+    /// secret by contract". That claim was retracted for `NamedDefView` and it is no more true here:
+    /// a hook's settings bag is a `SecretRef` carrier by design (`hooks::HookEnv::resolve_hook_settings`
+    /// resolves it before every configure push), and `config::secret::resolve_settings` forwards a
+    /// non-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and
+    /// `GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where
+    /// they are writable — the config file and the config overlay.
+    pub(crate) settings_keys: Vec<String>,
     /// Whether this hook fires on every request (globally wired).
     pub(crate) global: bool,
 }

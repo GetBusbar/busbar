@@ -803,6 +803,48 @@ pub(crate) async fn fetch_status(
         .await
 }
 
+/// The DESIRED settings KEY NAMES whose value the hook is not actually running — the whole of what
+/// `GET /api/v1/admin/hooks/{name}/status` reports about settings drift, and the only thing about it
+/// that may leave this function.
+///
+/// TWO PROBLEMS ARE CLOSED HERE, and they are the same problem seen from two sides.
+///
+/// 1. NEITHER BAG MAY GO ON THE WIRE. The endpoint used to serialize `reported.settings` verbatim,
+///    which is the hook's ECHO of the SECRET-RESOLVED bag: `configure_hook` pushes
+///    `resolve_hook_settings(&hook.settings)`, so the plugin receives — and echoes back — the
+///    PLAINTEXT of every `SecretRef`. That is resolved secret material, at READ-ONLY admin scope.
+///    So the comparison happens in here, where the resolved bag already lives, and the caller gets
+///    KEY NAMES (which it is already free to serve) and a boolean.
+/// 2. THE COMPARISON HAS TO BE AGAINST THE RESOLVED BAG. It used to compare the reported (resolved)
+///    values against `hook.settings` (UNRESOLVED), so any `SecretRef` field reported drift on every
+///    single poll, forever — a permanent false positive that trains an operator to ignore the one
+///    signal this endpoint exists to raise. Resolving the desired bag the same way the configure
+///    push does makes like compare with like.
+///
+/// Semantics are otherwise unchanged: only DESIRED keys are compared (extra self-managed keys the
+/// hook reports are not drift), and a hook that reports no settings at all is not drift (fail-open —
+/// it may simply not implement the echo). If the desired bag cannot be resolved (an unresolvable
+/// secret), the UNRESOLVED bag is compared: a resolution failure must not be reported as no-drift.
+pub(crate) fn settings_drift_keys(
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+    reported: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<String> {
+    let Some(observed) = reported else {
+        return Vec::new();
+    };
+    let desired = env
+        .resolve_hook_settings(&hook.settings)
+        .unwrap_or_else(|_| hook.settings.clone());
+    let mut keys: Vec<String> = desired
+        .iter()
+        .filter(|(k, v)| observed.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    keys.sort();
+    keys
+}
+
 /// Fetch a hook's self-described settings schema over its transport (D2,
 /// `GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
 pub(crate) async fn fetch_schema(

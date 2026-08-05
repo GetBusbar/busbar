@@ -979,6 +979,7 @@ fn pass_churn_cannot_evict_an_identity() {
             ttl_secs: Some(3600),
         }),
         now,
+        cache.generation(),
     );
 
     for i in 0..4096u64 {

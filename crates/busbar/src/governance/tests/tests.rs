@@ -2928,7 +2928,11 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
             "user:alice@example.com".to_string(),
             all_time(3, false, now - idle_for),
         );
-        // An equally idle GROUP cell holding enforced spend — must survive.
+        // An equally idle GROUP cell holding enforced spend — must survive. `acme` is CONFIGURED in
+        // `cost` below with an all-time budget cap: the exemption is "this cell still backs an
+        // enforced cap", so the fixture has to actually declare the cap it claims to be protecting
+        // (see `test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap` for the
+        // deleted/uncapped groups the exemption deliberately no longer covers).
         map.insert(
             "group:acme@total".to_string(),
             all_time(4999, false, now - idle_for),
@@ -2945,7 +2949,15 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
         Ordering::Relaxed,
     );
-    assert!(gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok());
+    let cost = crate::cost::CostModel::resolve_parts(
+        None,
+        1,
+        &std::collections::BTreeMap::from([(
+            "acme".to_string(),
+            budget_group_cfg(5000, "total", None),
+        )]),
+    );
+    assert!(gov.try_admit(&cost, &survivor, "", now).is_ok());
 
     let map = gov.budget.read("survivor");
     assert!(
@@ -3770,5 +3782,145 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
     assert!(
         msg.contains("transient store blip"),
         "and must still name the underlying cause: {msg}"
+    );
+}
+
+/// C1a: the amortized sweep's `group:` exemption is only as wide as its own stated rationale — "the
+/// cell holds an ENFORCED cap whose spend must not reset".
+///
+/// It used to be the blanket `id.starts_with("group:")`, with no age check and no existence check.
+/// That pinned, for the life of the process, the all-time cells of groups that had been DELETED and
+/// of auto-provisioned groups that never carried a cap at all — neither of which enforces anything.
+/// With SSO auto-provisioning (`max_auto_provisioned_groups` defaults to 0 = UNLIMITED) every
+/// subject ever seen leaves one behind at offboarding, and `groups_registry.len()` stays flat so no
+/// admin read reveals the growth: a monotonic leak on a ~5 MB-RSS product.
+#[test]
+fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let max_window = 31 * SECS_PER_DAY;
+    let survivor = sample_key("survivor3", "hs3");
+
+    // A live cost model: `capped` carries an all-time budget cap; `uncapped` is the shape SSO
+    // auto-provisioning leaves behind (a real group, no limits of its own).
+    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
+        std::collections::BTreeMap::from([
+            ("capped".to_string(), budget_group_cfg(5000, "total", None)),
+            ("uncapped".to_string(), crate::config::GroupCfg::default()),
+        ]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+
+    // Every seeded cell is an all-time (`window_start == 0`) cell, long idle and CLEAN — so the only
+    // thing that can keep it alive is the `group:` exemption.
+    let idle = || BudgetCell {
+        window_start: 0,
+        requests: 7,
+        billable_requests: 7,
+        flushed_requests: 7,
+        flushed_billable_requests: 7,
+        models: Vec::new(),
+        dirty: false,
+        last_touch: now - max_window - 1,
+    };
+    {
+        let mut map = gov.budget.write("survivor3");
+        map.insert("group:capped@total".to_string(), idle());
+        map.insert("group:gone@total".to_string(), idle());
+        map.insert("group:uncapped@total".to_string(), idle());
+        // Same deleted group, but with an unflushed delta: `dirty` still protects it (the write-behind
+        // flush has not carried its spend yet).
+        map.insert("group:gone@month".to_string(), {
+            let mut c = idle();
+            c.window_start = 0;
+            c.dirty = true;
+            c
+        });
+    }
+
+    gov.budget.sweep_ticker_for("survivor3").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        Ordering::Relaxed,
+    );
+    assert!(
+        gov.try_admit(&cost, &survivor, "", now).is_ok(),
+        "key admits"
+    );
+
+    let map = gov.budget.read("survivor3");
+    assert!(
+        map.contains_key("group:capped@total"),
+        "a cell that STILL backs an enforced cap must never be aged out — its spend must not reset"
+    );
+    assert!(
+        !map.contains_key("group:gone@total"),
+        "a DELETED group's cell enforces nothing; pinning it forever is a pure leak"
+    );
+    assert!(
+        !map.contains_key("group:uncapped@total"),
+        "an auto-provisioned group with NO cap enforces nothing either — same leak, one per subject"
+    );
+    assert!(
+        map.contains_key("group:gone@month"),
+        "a still-DIRTY cell is protected by the dirty check regardless of its group"
+    );
+}
+
+/// C1b: deleting a group RECLAIMS its in-memory budget cells — the group-shaped twin of the
+/// reclamation `delete_key` has always done for a key's cell. Without it, nothing ever dropped them:
+/// the sweep exempts cells that back an enforced cap, and a deleted group's cells simply stopped
+/// being anything's business.
+#[test]
+fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let cell = BudgetCell {
+        window_start: 0,
+        requests: 1,
+        billable_requests: 1,
+        flushed_requests: 1,
+        flushed_billable_requests: 1,
+        models: Vec::new(),
+        dirty: false,
+        last_touch: now,
+    };
+    // A group's cells are `group:<name>@<window>[#<scope>]` — one per (window, pool scope), spread
+    // across shards by id, so reclamation is a prefix sweep over ALL shards, not one remove.
+    for id in [
+        "group:doomed@total",
+        "group:doomed@month",
+        "group:doomed@day#pool:frontier",
+    ] {
+        gov.budget.write(id).insert(id.to_string(), cell.clone());
+    }
+    // Neighbours that must NOT be collateral: a different group, and one whose name merely PREFIXES
+    // the deleted one (the `@` in the prefix is what keeps `doomed-2` safe).
+    for id in ["group:keeper@total", "group:doomed-2@total"] {
+        gov.budget.write(id).insert(id.to_string(), cell.clone());
+    }
+
+    assert_eq!(
+        gov.reclaim_group_cells("doomed"),
+        3,
+        "every window/scope cell of the deleted group is reclaimed"
+    );
+    for id in [
+        "group:doomed@total",
+        "group:doomed@month",
+        "group:doomed@day#pool:frontier",
+    ] {
+        assert!(!gov.budget.read(id).contains_key(id), "{id} must be gone");
+    }
+    for id in ["group:keeper@total", "group:doomed-2@total"] {
+        assert!(
+            gov.budget.read(id).contains_key(id),
+            "{id} must be untouched — a name-prefix neighbour is not the same group"
+        );
+    }
+    assert_eq!(
+        gov.reclaim_group_cells("doomed"),
+        0,
+        "idempotent: a second reclamation of the same group drops nothing"
     );
 }

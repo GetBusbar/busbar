@@ -64,6 +64,16 @@ jobs:
         run: scripts/tracing-lint.sh --selftest
       - name: Tracing lint
         run: scripts/tracing-lint.sh
+      # SETTINGS-LEAK lint: an admin-facing projection may serve an opaque `settings:` bag's KEY
+      # NAMES (`settings_keys` / `service::redact_settings_bags`) but NEVER its values — that bag is
+      # where an operator's credentials legitimately live and the reads are READ-ONLY scope. Added
+      # after the SAME defect was found in FOUR independent projections (see the script header).
+      # Self-test runs FIRST (never trust the lint's verdict before proving the scanner still catches
+      # a real leak), then it scans crates/busbar/src/admin.
+      - name: Settings-leak lint self-test
+        run: scripts/settings-leak-lint.sh --selftest
+      - name: Settings-leak lint
+        run: scripts/settings-leak-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or

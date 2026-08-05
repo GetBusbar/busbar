@@ -410,6 +410,13 @@ impl AuthMiddleware {
         // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
         // so would refresh its TTL and quietly extend the revocation window.
         let mut pending_pass: Vec<&str> = Vec::new();
+        // The FLUSH GENERATION as of BEFORE the first module is consulted. Every `put` below carries
+        // it, so an admin cache flush that lands anywhere inside this chain run drops every verdict
+        // the run computed — the run's verdicts all predate the flush. Without this, an
+        // authentication in flight across `POST /admin/auth/cache/flush` re-inserted its PRE-flush
+        // allow verdict after the flush returned `200 {"flushed": N}`, and the "instant revocation"
+        // the endpoint documents revoked nothing for up to an hour. See `auth_cache::CacheGeneration`.
+        let cache_gen = cache.map(crate::auth_cache::CredentialCache::generation);
         for (provider, module) in &self.chain {
             let cache_here = match (cache, candidate) {
                 (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
@@ -431,9 +438,9 @@ impl AuthMiddleware {
             };
             match outcome {
                 AuthOutcome::Identify(principal) => {
-                    if let (Some(c), Some(cred)) = (cache, candidate) {
+                    if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
                         for name in &pending_pass {
-                            c.put(name, cred, &AuthOutcome::Pass, now);
+                            c.put(name, cred, &AuthOutcome::Pass, now, g);
                         }
                         if cache_here.is_some() {
                             c.put(
@@ -441,6 +448,7 @@ impl AuthMiddleware {
                                 cred,
                                 &AuthOutcome::Identify(principal.clone()),
                                 now,
+                                g,
                             );
                         }
                     }
@@ -838,6 +846,12 @@ fn run_admin_chain(
         (b, h) => Some(format!("b:{}\nh:{}", b.unwrap_or(""), h.unwrap_or(""))),
     };
     let now = crate::store::now();
+    // Captured BEFORE the first module runs — see the identical capture in `run_chain_cached` and
+    // `auth_cache::CacheGeneration`. This is the plane the hazard actually bites on: an external
+    // `kind: auth` admin module runs on the blocking pool with a multi-second budget (the shipped
+    // OIDC module does a JWKS HTTPS round-trip with a 10s timeout), so the flush-then-reinsert
+    // window here is seconds wide.
+    let cache_gen = app.credential_cache.generation();
     for name in &app.admin_chain {
         // The built-in admin-tokens module is in-process and NEVER cached (caching a microsecond
         // compare only widens the rotation window); external admin modules are the cache's case.
@@ -902,7 +916,8 @@ fn run_admin_chain(
             },
         };
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
-            app.credential_cache.put(name, cred, &outcome, now);
+            app.credential_cache
+                .put(name, cred, &outcome, now, cache_gen);
         }
         match outcome {
             AuthOutcome::Identify(principal) => {

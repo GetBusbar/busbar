@@ -370,7 +370,7 @@
             "type": "array"
           },
           "settings": {
-            "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection)."
+            "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),\nREDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today\n`store.settings`, whose `url` is a credential in busbar's own docs) appears as\n`settings_keys` — sorted key names, no values. Same on the GET and on the PUT echo.\n\nThis field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings\nbag; the redaction applies to the bags nested INSIDE it."
           }
         },
         "required": [
@@ -903,11 +903,14 @@
         "type": "object"
       },
       "HookDesiredStatus": {
-        "description": "The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings\nand their version.",
+        "description": "The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings\n(KEY NAMES only — see [`super::HookView::settings_keys`]) and their version.",
         "properties": {
-          "settings": {
-            "additionalProperties": true,
-            "type": "object"
+          "settings_keys": {
+            "description": "Sorted KEY NAMES of the desired settings bag, never its values.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "settings_version": {
             "format": "uint64",
@@ -916,7 +919,7 @@
           }
         },
         "required": [
-          "settings",
+          "settings_keys",
           "settings_version"
         ],
         "type": "object"
@@ -954,12 +957,15 @@
         "type": "object"
       },
       "HookReportedStatus": {
-        "description": "The REPORTED settings side of `hooks/{name}/status`: what the hook says it is actually running\n(present only when the hook answered `status`).",
+        "description": "The REPORTED settings side of `hooks/{name}/status`: what the hook says it is actually running\n(present only when the hook answered `status`).\n\nKEY NAMES only, and for a sharper reason than the desired side: the reported bag is the hook's\nECHO of the SECRET-RESOLVED settings busbar pushed it, i.e. the PLAINTEXT of every `SecretRef` —\nand this read is reachable at READ-ONLY admin scope. `null` when the hook answered `status` but\nreported no settings.",
         "properties": {
-          "settings": {
-            "additionalProperties": true,
+          "settings_keys": {
+            "description": "Sorted KEY NAMES of the observed settings bag, never its values.",
+            "items": {
+              "type": "string"
+            },
             "type": [
-              "object",
+              "array",
               "null"
             ]
           },
@@ -973,7 +979,7 @@
           }
         },
         "required": [
-          "settings",
+          "settings_keys",
           "settings_version"
         ],
         "type": "object"
@@ -1011,6 +1017,13 @@
               "null"
             ]
           },
+          "drift_keys": {
+            "description": "The DESIRED settings KEY NAMES the hook is not actually running — the actionable half of\n`drift`, carrying names this body already serves and no value from either bag. Invariantly an\narray (empty on the no-answer branch, where no drift is known).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "metrics": {
             "description": "Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when\nthe hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/\n`label`/`unit`/`viz`/`max` members.\n\nE-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for\n`serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s\n`json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's\n`items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which\nevery published SDK generates through) cannot represent one at all: the parse aborts, taking\nout Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just\nthis field's schema to `{\"type\": \"array\", \"items\": {}}` — `{}` is the equivalent \"accepts\nanything\" schema every generator DOES understand, and is what busbar-ui's own\n`openapi-prep.py` already rewrites `items: true` into client-side. This is the only\n`items: true` in the document; every other `additionalProperties: true` schemars emits\nelsewhere is a boolean in a position `kin-openapi` handles fine and is deliberately untouched.",
             "items": {},
@@ -1046,6 +1059,7 @@
           "desired",
           "reported",
           "drift",
+          "drift_keys",
           "metrics",
           "as_of",
           "source"
@@ -1074,7 +1088,7 @@
         "type": "object"
       },
       "HookView": {
-        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret. `global` reports whether the hook fires on every request (named in `global_hooks:` or\ndeclared `global: true`). Live connection status (`health`) is a separate endpoint. Additive-only.",
+        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret — INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on every request (named in\n`global_hooks:` or declared `global: true`). Live connection status (`health`) is a separate\nendpoint. Additive-only.",
         "properties": {
           "at": {
             "description": "TAP observation stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or `None` for a gate.",
@@ -1109,10 +1123,12 @@
             "description": "Prompt access grant: `\"no\"` | `\"ro\"` | `\"rw\"`.",
             "type": "string"
           },
-          "settings": {
-            "additionalProperties": true,
-            "description": "The hook's opaque settings map (operator/API-owned; pushed via the configure wire). Never\ninterpreted by busbar; never a secret by contract (hook settings are operator config).",
-            "type": "object"
+          "settings_keys": {
+            "description": "The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values — the same\nredacted projection [`NamedDefView::settings_keys`] carries, produced by the same helper.\n\nThis used to be the bag itself, under a doc comment claiming hook settings are \"never a\nsecret by contract\". That claim was retracted for `NamedDefView` and it is no more true here:\na hook's settings bag is a `SecretRef` carrier by design (`hooks::HookEnv::resolve_hook_settings`\nresolves it before every configure push), and `config::secret::resolve_settings` forwards a\nnon-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and\n`GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where\nthey are writable — the config file and the config overlay.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "timeout_ms": {
             "description": "Gate decision deadline in milliseconds.",
@@ -1138,7 +1154,7 @@
           "at",
           "on_error",
           "timeout_ms",
-          "settings",
+          "settings_keys",
           "global"
         ],
         "type": "object"
