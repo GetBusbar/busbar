@@ -312,6 +312,16 @@ pub(crate) struct App {
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
     /// check downstream short-circuits on.
     pub(crate) requested_signals: crate::hooks::RequestedSignals,
+    /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
+    /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
+    /// from the resolved `export:` block, never per request.
+    ///
+    /// THE COMPUTE GATE, and deliberately the SAME mechanism as `requested_signals` directly above:
+    /// the read runs ONLY when something declared it, never call-then-discard. Nothing subscribed ⇒
+    /// core never assembles that stream's records at all. It supersedes the one-off
+    /// `export::request_log_configured()` boolean this replaced — one mechanism for "did anybody ask
+    /// for this", not two.
+    pub(crate) export_projections: crate::export::projection::ProjectionUnion,
     /// The `global_hooks:` list — names fired on every request (plus any hook with inline `global:
     /// true`). Carried for the hooks read surface so a definition can report whether it is globally
     /// wired. Read-only after construction.

@@ -6,8 +6,8 @@
 //! ## One transport, every export op
 //!
 //! A `kind: export` plugin is a telemetry SINK behind the frozen six-symbol C ABI — the seam that
-//! carries the engine's observability streams (metrics, logs, audit, traces) OUT to an external
-//! backend. Like every other kind it exports the SAME six neutral symbols ([`crate::symbol`]) at
+//! carries the engine's observability streams OUT to an external backend (the frozen vocabulary is
+//! [`ExportStream`]). Like every other kind it exports the SAME six neutral symbols ([`crate::symbol`]) at
 //! `busbar_abi() == TRANSPORT_VERSION`; only its manifest `kind` and its own tiny request enum
 //! ([`ExportRequest`]) distinguish it. Every op rides the ONE `busbar_call` as an op-discriminated
 //! JSON envelope — the variant IS the op-code, so the C symbol set never grows.
@@ -24,27 +24,430 @@ use crate::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).
-/// v1: the initial `streams`/`deliver` wire. This is the per-kind PAYLOAD axis, NOT the transport axis
+/// v1: the initial `streams`/`deliver` wire. v2 (1.5.3): the PROJECTION GRAMMAR — the [`ExportStream`]
+/// vocabulary was expanded and the `audit` stream REMOVED (an auditor is a projection made of other
+/// streams, not a data type), so a v1 sink that declared `audit` no longer has a stream to declare.
+/// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
+/// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
 /// — an export plugin exports the SAME six neutral symbols ([`crate::symbol`]) as every other kind, at
 /// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::SECRET_ABI_VERSION`] and
 /// [`crate::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
-pub const EXPORT_ABI_VERSION: u32 = 1;
+pub const EXPORT_ABI_VERSION: u32 = 2;
 
-/// One observability stream an export sink can carry OUT of the engine. `#[serde(rename_all =
-/// "snake_case")]` pins the wire spelling (`"metrics"`/`"logs"`/`"audit"`/`"traces"`) so a plugin
-/// author in any language matches on a stable token, never the Rust variant name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
+/// the export projection grammar, the same discipline as the hook phase names.
+///
+/// `#[serde(rename_all = "snake_case")]` pins the wire spelling so a plugin author in any language
+/// matches on a stable token, never the Rust variant name. [`ExportStream::as_token`] is the SAME
+/// spelling rendered without serde, so config parsing and the wire cannot drift apart.
+///
+/// FREEZE RULES (design `export-projection-grammar.md`):
+/// - ADDING a stream is ADDITIVE and allowed — an existing config keeps its meaning and an existing
+///   sink receives nothing new (it did not subscribe, and `fields:` is an exhaustive override).
+/// - RENAMING or SPLITTING a stream is a BREAK for every export plugin and every operator config.
+/// - The DEFAULT FIELD SET of a stream ([`ExportStream::default_fields`]) is part of the documented
+///   contract: adding a field to it widens what a `fields:`-less sink receives, so it is a
+///   DISCLOSURE change and belongs in release notes as one.
+///
+/// `audit` is deliberately NOT here. It was a USE CASE masquerading as a data type: an auditor is a
+/// SINK whose projection includes the right streams (`logs` + `identity` + `decisions` + `events` +
+/// `costs`), which is strictly more expressive than one opaque `audit` firehose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportStream {
-    /// The metrics stream (counters/gauges/histograms).
+    /// Aggregate counters/gauges/histograms; no individual attribution. Lowest sensitivity.
     Metrics,
-    /// The structured-logs stream.
+    /// The per-request operational record.
     Logs,
-    /// The admin audit-record stream.
-    Audit,
-    /// The distributed-traces stream.
+    /// The per-request span tree.
     Traces,
+    /// Per-request tokens + spend.
+    Costs,
+    /// Per-request ROUTING PROVENANCE — candidates, exclusions and their reasons, the selection,
+    /// failovers, hook verdicts. The stream that answers "why did this go THERE".
+    Decisions,
+    /// Engine lifecycle, hash-chained: admin mutations, config applies, plugin loads AND refusals,
+    /// boot, shutdown. The only non-aggregate stream that is not per-request.
+    Events,
+    /// Per-request WHO — the pseudonymization switch: a sink without it gets the same records with
+    /// nobody's name attached.
+    Identity,
+    /// Request content. Highest sensitivity.
+    Prompts,
+    /// Response content. Highest sensitivity.
+    Completions,
+}
+
+impl ExportStream {
+    /// Every stream in the frozen vocabulary, in ascending sensitivity order — the ONE list every
+    /// catalog walk, diagnostic and validator iterates.
+    pub const ALL: &'static [ExportStream] = &[
+        ExportStream::Metrics,
+        ExportStream::Logs,
+        ExportStream::Traces,
+        ExportStream::Costs,
+        ExportStream::Decisions,
+        ExportStream::Events,
+        ExportStream::Identity,
+        ExportStream::Prompts,
+        ExportStream::Completions,
+    ];
+
+    /// The stable snake_case wire/config token for this stream — the SAME spelling serde emits.
+    /// Rendered without serde so a config diagnostic can name the token without a JSON round-trip.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            ExportStream::Metrics => "metrics",
+            ExportStream::Logs => "logs",
+            ExportStream::Traces => "traces",
+            ExportStream::Costs => "costs",
+            ExportStream::Decisions => "decisions",
+            ExportStream::Events => "events",
+            ExportStream::Identity => "identity",
+            ExportStream::Prompts => "prompts",
+            ExportStream::Completions => "completions",
+        }
+    }
+
+    /// Parse a config/wire token into a stream. `None` for anything not in the frozen vocabulary —
+    /// INCLUDING the retired `audit`, so the caller can emit its own named diagnostic rather than a
+    /// generic "unknown variant".
+    pub fn from_token(tok: &str) -> Option<ExportStream> {
+        ExportStream::ALL
+            .iter()
+            .copied()
+            .find(|s| s.as_token() == tok)
+    }
+
+    /// Every stream in the vocabulary as its token, joined for a diagnostic ("the streams are …").
+    pub fn vocabulary() -> String {
+        ExportStream::ALL
+            .iter()
+            .map(|s| s.as_token())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    /// The DOCUMENTED DEFAULT FIELD SET a sink receives when it subscribes to this stream and writes
+    /// no `fields:` override. Part of the contract — see the FREEZE RULES on [`ExportStream`].
+    ///
+    /// `metrics` is deliberately EMPTY: its unit is the documented metric CATALOG (families), not
+    /// record fields, so `fields:` does not apply to it and a `fields:` list aimed at it is a config
+    /// error rather than a filter that silently matches nothing.
+    pub const fn default_fields(self) -> &'static [ExportField] {
+        use ExportField as F;
+        match self {
+            ExportStream::Metrics => &[],
+            ExportStream::Logs => &[
+                F::CorrelationId,
+                F::Ts,
+                F::IngressProtocol,
+                F::Pool,
+                F::ModelRequested,
+                F::ModelServed,
+                F::Provider,
+                F::Outcome,
+                F::Status,
+                F::LatencyMs,
+            ],
+            ExportStream::Traces => &[
+                F::TraceId,
+                F::SpanId,
+                F::ParentSpanId,
+                F::Name,
+                F::Start,
+                F::DurationUs,
+                F::Pool,
+                F::Ingress,
+                F::Op,
+                F::Lane,
+                F::Provider,
+                F::Model,
+            ],
+            ExportStream::Costs => &[
+                F::CorrelationId,
+                F::Ts,
+                F::TokensIn,
+                F::TokensOut,
+                F::CostCents,
+                F::Pool,
+                F::Model,
+            ],
+            ExportStream::Decisions => &[
+                F::CorrelationId,
+                F::Ts,
+                F::Candidates,
+                F::Excluded,
+                F::Selected,
+                F::Failovers,
+                F::Hooks,
+            ],
+            ExportStream::Events => &[
+                F::Seq,
+                F::Ts,
+                F::PrevHash,
+                F::Kind,
+                F::Actor,
+                F::Resource,
+                F::Outcome,
+            ],
+            ExportStream::Identity => &[
+                F::CorrelationId,
+                F::Ts,
+                F::Subject,
+                F::IdentityProvider,
+                F::KeyId,
+                F::Groups,
+            ],
+            ExportStream::Prompts => &[F::CorrelationId, F::Ts, F::Model, F::Messages],
+            ExportStream::Completions => &[
+                F::CorrelationId,
+                F::Ts,
+                F::Model,
+                F::Content,
+                F::FinishReason,
+            ],
+        }
+    }
+
+    /// The STRUCTURAL fields of this stream — the ones a `fields:` override may NOT remove.
+    ///
+    /// THE PINNED-FIELD RULE. Splitting one request across several streams means a sink receives
+    /// several record sets that must REASSEMBLE into one request, so `correlation_id` (the join key)
+    /// is pinned on EVERY per-request stream, and `seq`/`ts`/`prev_hash` are pinned on `events`
+    /// (drop `prev_hash` and the hash chain is gone). **`fields:` bounds DISCLOSURE; it must not be
+    /// able to break STRUCTURE.** Omitting one is a LOUD config error, never a silent no-op —
+    /// otherwise an operator can configure records that look complete and cannot be joined.
+    ///
+    /// Every pinned field is also a default field (asserted in this module's tests), so the pinned
+    /// set can only ever narrow a `fields:` list, never widen the stream's contract.
+    pub const fn pinned_fields(self) -> &'static [ExportField] {
+        use ExportField as F;
+        match self {
+            // Aggregate: no records, so nothing structural to pin.
+            ExportStream::Metrics => &[],
+            // Per-request streams: the join key.
+            ExportStream::Logs
+            | ExportStream::Costs
+            | ExportStream::Decisions
+            | ExportStream::Identity
+            | ExportStream::Prompts
+            | ExportStream::Completions => &[F::CorrelationId],
+            // A span tree is joined by its own ids, not by the request correlation id.
+            ExportStream::Traces => &[F::TraceId, F::SpanId],
+            // The chain: position, time, and the link to the previous record.
+            ExportStream::Events => &[F::Seq, F::Ts, F::PrevHash],
+        }
+    }
+}
+
+/// One FIELD of one export record — the frozen field vocabulary the `fields:` projection key selects
+/// from. Snake_case on the wire and in config (see [`ExportField::as_token`]).
+///
+/// A field name is shared across streams where it means the same thing (`correlation_id`, `ts`,
+/// `pool`, `model`), which is what makes a single `fields:` list projectable across a sink's whole
+/// subscription. Two spellings are deliberately NOT collapsed: `model_requested` and `model_served`
+/// are separate fields because a failover or a router override means the caller did not get what
+/// they asked for, and an auditor reconstructing an incident needs both — collapsing them destroys
+/// that distinction permanently and silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportField {
+    /// The join key across every per-request stream.
+    CorrelationId,
+    /// Record timestamp (epoch seconds).
+    Ts,
+    /// The ingress protocol the request arrived on.
+    IngressProtocol,
+    /// The pool that served the request.
+    Pool,
+    /// The model the CALLER asked for.
+    ModelRequested,
+    /// The model that actually SERVED the request (may differ after a failover/override).
+    ModelServed,
+    /// The upstream provider.
+    Provider,
+    /// The router's outcome classification.
+    Outcome,
+    /// The HTTP status returned to the caller.
+    Status,
+    /// End-to-end latency in milliseconds.
+    LatencyMs,
+    /// Trace id (span tree root identity).
+    TraceId,
+    /// Span id.
+    SpanId,
+    /// Parent span id (absent on a root span).
+    ParentSpanId,
+    /// Span name.
+    Name,
+    /// Span start.
+    Start,
+    /// Span duration in microseconds.
+    DurationUs,
+    /// Ingress, as a span attribute.
+    Ingress,
+    /// Operation, as a span attribute.
+    Op,
+    /// Lane, as a span attribute.
+    Lane,
+    /// The model, where a stream carries only one (costs/prompts/completions/traces).
+    Model,
+    /// Prompt tokens.
+    TokensIn,
+    /// Completion tokens.
+    TokensOut,
+    /// Spend, in cents.
+    CostCents,
+    /// The authenticated subject.
+    Subject,
+    /// The identity provider that authenticated the subject.
+    IdentityProvider,
+    /// The key id the request authenticated with.
+    KeyId,
+    /// The subject's groups.
+    Groups,
+    /// The routing candidates considered.
+    Candidates,
+    /// The excluded candidates AND the reason each was excluded.
+    Excluded,
+    /// The selected candidate.
+    Selected,
+    /// The failovers performed.
+    Failovers,
+    /// The hook verdicts (name, phase, verdict).
+    Hooks,
+    /// The event's position in the hash chain.
+    Seq,
+    /// The previous event's hash — the chain link.
+    PrevHash,
+    /// The event kind.
+    Kind,
+    /// The actor that caused the event.
+    Actor,
+    /// The resource the event acted on.
+    Resource,
+    /// The prompt messages (role + content).
+    Messages,
+    /// The completion content.
+    Content,
+    /// The completion finish reason.
+    FinishReason,
+}
+
+impl ExportField {
+    /// Every field in the frozen vocabulary — the ONE list every catalog walk iterates. Ordered to
+    /// match the enum declaration so a field's index is stable (an index is used as a bit position
+    /// by the engine's projection masks).
+    pub const ALL: &'static [ExportField] = &[
+        ExportField::CorrelationId,
+        ExportField::Ts,
+        ExportField::IngressProtocol,
+        ExportField::Pool,
+        ExportField::ModelRequested,
+        ExportField::ModelServed,
+        ExportField::Provider,
+        ExportField::Outcome,
+        ExportField::Status,
+        ExportField::LatencyMs,
+        ExportField::TraceId,
+        ExportField::SpanId,
+        ExportField::ParentSpanId,
+        ExportField::Name,
+        ExportField::Start,
+        ExportField::DurationUs,
+        ExportField::Ingress,
+        ExportField::Op,
+        ExportField::Lane,
+        ExportField::Model,
+        ExportField::TokensIn,
+        ExportField::TokensOut,
+        ExportField::CostCents,
+        ExportField::Subject,
+        ExportField::IdentityProvider,
+        ExportField::KeyId,
+        ExportField::Groups,
+        ExportField::Candidates,
+        ExportField::Excluded,
+        ExportField::Selected,
+        ExportField::Failovers,
+        ExportField::Hooks,
+        ExportField::Seq,
+        ExportField::PrevHash,
+        ExportField::Kind,
+        ExportField::Actor,
+        ExportField::Resource,
+        ExportField::Messages,
+        ExportField::Content,
+        ExportField::FinishReason,
+    ];
+
+    /// The stable snake_case wire/config token for this field — the SAME spelling serde emits, and
+    /// the SAME key the engine writes into a projected record.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            ExportField::CorrelationId => "correlation_id",
+            ExportField::Ts => "ts",
+            ExportField::IngressProtocol => "ingress_protocol",
+            ExportField::Pool => "pool",
+            ExportField::ModelRequested => "model_requested",
+            ExportField::ModelServed => "model_served",
+            ExportField::Provider => "provider",
+            ExportField::Outcome => "outcome",
+            ExportField::Status => "status",
+            ExportField::LatencyMs => "latency_ms",
+            ExportField::TraceId => "trace_id",
+            ExportField::SpanId => "span_id",
+            ExportField::ParentSpanId => "parent_span_id",
+            ExportField::Name => "name",
+            ExportField::Start => "start",
+            ExportField::DurationUs => "duration_us",
+            ExportField::Ingress => "ingress",
+            ExportField::Op => "op",
+            ExportField::Lane => "lane",
+            ExportField::Model => "model",
+            ExportField::TokensIn => "tokens_in",
+            ExportField::TokensOut => "tokens_out",
+            ExportField::CostCents => "cost_cents",
+            ExportField::Subject => "subject",
+            ExportField::IdentityProvider => "identity_provider",
+            ExportField::KeyId => "key_id",
+            ExportField::Groups => "groups",
+            ExportField::Candidates => "candidates",
+            ExportField::Excluded => "excluded",
+            ExportField::Selected => "selected",
+            ExportField::Failovers => "failovers",
+            ExportField::Hooks => "hooks",
+            ExportField::Seq => "seq",
+            ExportField::PrevHash => "prev_hash",
+            ExportField::Kind => "kind",
+            ExportField::Actor => "actor",
+            ExportField::Resource => "resource",
+            ExportField::Messages => "messages",
+            ExportField::Content => "content",
+            ExportField::FinishReason => "finish_reason",
+        }
+    }
+
+    /// Parse a config/wire token into a field. `None` for anything not in the frozen vocabulary, so
+    /// the caller emits its own named diagnostic.
+    pub fn from_token(tok: &str) -> Option<ExportField> {
+        ExportField::ALL
+            .iter()
+            .copied()
+            .find(|f| f.as_token() == tok)
+    }
+
+    /// This field's stable BIT POSITION — its index in [`ExportField::ALL`]. The engine's projection
+    /// mask is a bitset over these positions, the same shape `RequestedSignals` uses for hook
+    /// signals; the position is derived from the frozen list, never hand-assigned.
+    pub fn bit(self) -> u32 {
+        ExportField::ALL
+            .iter()
+            .position(|f| *f == self)
+            .expect("every field is in ExportField::ALL") as u32
+    }
 }
 
 /// An export operation, serialized as the `call` request payload. One self-describing enum keeps the
@@ -111,7 +514,7 @@ mod tests {
                 payload: serde_json::json!({"samples": [{"name": "reqs", "value": 1}]}),
             },
             ExportRequest::Deliver {
-                stream: ExportStream::Audit,
+                stream: ExportStream::Events,
                 payload: serde_json::json!([]),
             },
         ];
@@ -136,19 +539,112 @@ mod tests {
         assert_eq!(v["stream"], "logs");
     }
 
-    /// The stream tokens are the stable snake_case wire spellings a non-Rust author must match.
+    /// The stream tokens are the stable snake_case wire spellings a non-Rust author must match, and
+    /// `as_token` renders the SAME spelling serde does (config diagnostics name tokens without a
+    /// JSON round-trip, so the two spellings must not be able to drift).
     #[test]
     fn stream_wire_spellings_are_pinned() {
         for (stream, tok) in [
             (ExportStream::Metrics, "metrics"),
             (ExportStream::Logs, "logs"),
-            (ExportStream::Audit, "audit"),
             (ExportStream::Traces, "traces"),
+            (ExportStream::Costs, "costs"),
+            (ExportStream::Decisions, "decisions"),
+            (ExportStream::Events, "events"),
+            (ExportStream::Identity, "identity"),
+            (ExportStream::Prompts, "prompts"),
+            (ExportStream::Completions, "completions"),
         ] {
             assert_eq!(
                 serde_json::to_value(stream).unwrap(),
                 serde_json::json!(tok)
             );
+            assert_eq!(stream.as_token(), tok);
+            assert_eq!(ExportStream::from_token(tok), Some(stream));
+        }
+        // Every stream in the frozen vocabulary is covered by the table above.
+        for s in ExportStream::ALL {
+            assert!(
+                ExportStream::from_token(s.as_token()) == Some(*s),
+                "{} does not round-trip through its token",
+                s.as_token()
+            );
+        }
+    }
+
+    /// `audit` is REMOVED from the vocabulary: an auditor is a PROJECTION (a sink subscribing to
+    /// `logs`/`identity`/`decisions`/`events`/`costs`), not a data type. The token must not resolve —
+    /// including through serde, so a v1 plugin or an old config cannot smuggle it back in.
+    #[test]
+    fn audit_is_not_a_stream() {
+        assert_eq!(ExportStream::from_token("audit"), None);
+        assert!(serde_json::from_value::<ExportStream>(serde_json::json!("audit")).is_err());
+        assert!(ExportStream::ALL.iter().all(|s| s.as_token() != "audit"));
+    }
+
+    /// The field vocabulary round-trips token ⇄ variant, and `bit()` is a stable, unique position
+    /// that fits the engine's 64-bit projection mask (the mask is the enforcement mechanism, so a
+    /// field whose bit collided or overflowed would silently mis-grant).
+    #[test]
+    fn field_tokens_and_bits_are_stable() {
+        let mut seen = std::collections::BTreeSet::new();
+        for f in ExportField::ALL {
+            assert_eq!(ExportField::from_token(f.as_token()), Some(*f));
+            assert_eq!(
+                serde_json::to_value(f).unwrap(),
+                serde_json::json!(f.as_token())
+            );
+            assert!(seen.insert(f.bit()), "duplicate bit for {}", f.as_token());
+            assert!(
+                f.bit() < 64,
+                "{} exceeds the 64-bit projection mask width",
+                f.as_token()
+            );
+        }
+        assert_eq!(seen.len(), ExportField::ALL.len());
+        assert_eq!(ExportField::from_token("not_a_field"), None);
+    }
+
+    /// EVERY pinned field is also a default field of its stream. If it were not, the pinned-field
+    /// rule ("`fields:` may not omit it") would demand a field the stream's own contract does not
+    /// carry — an unsatisfiable config. This is what keeps pinning a NARROWING rule on the operator's
+    /// list rather than a widening of the stream's contract.
+    #[test]
+    fn pinned_fields_are_a_subset_of_default_fields() {
+        for s in ExportStream::ALL {
+            for p in s.pinned_fields() {
+                assert!(
+                    s.default_fields().contains(p),
+                    "{} is pinned on stream {} but is not one of its default fields",
+                    p.as_token(),
+                    s.as_token()
+                );
+            }
+        }
+    }
+
+    /// `correlation_id` is the JOIN KEY: it is pinned on every PER-REQUEST stream, because splitting
+    /// one request across streams means the sink must reassemble the pieces. `metrics` (aggregate),
+    /// `traces` (joined by its own span ids) and `events` (not per-request, joined by its chain) are
+    /// the documented exceptions.
+    #[test]
+    fn correlation_id_is_pinned_on_every_per_request_stream() {
+        for s in ExportStream::ALL {
+            let per_request = !matches!(
+                s,
+                ExportStream::Metrics | ExportStream::Traces | ExportStream::Events
+            );
+            assert_eq!(
+                s.pinned_fields().contains(&ExportField::CorrelationId),
+                per_request,
+                "correlation_id pinning is wrong for stream {}",
+                s.as_token()
+            );
+        }
+        // The chain fields are what makes `events` verifiable; dropping `prev_hash` would leave
+        // records that look complete and cannot be chain-checked.
+        for f in [ExportField::Seq, ExportField::Ts, ExportField::PrevHash] {
+            assert!(ExportStream::Events.pinned_fields().contains(&f));
         }
     }
 
@@ -156,7 +652,7 @@ mod tests {
     #[test]
     fn response_json_roundtrip() {
         for r in [
-            ExportResponse::Streams(vec![ExportStream::Metrics, ExportStream::Audit]),
+            ExportResponse::Streams(vec![ExportStream::Metrics, ExportStream::Events]),
             ExportResponse::Delivered,
         ] {
             let j = serde_json::to_vec(&r).unwrap();
@@ -165,10 +661,11 @@ mod tests {
         }
     }
 
-    /// The export payload schema is at v1 — pinned so the SDK/loader floor and the wire cannot drift.
+    /// The export payload schema is at v2 (1.5.3, the projection grammar: expanded vocabulary,
+    /// `audit` removed) — pinned so the SDK/loader floor and the wire cannot drift.
     #[test]
-    fn export_abi_version_is_one() {
-        assert_eq!(EXPORT_ABI_VERSION, 1);
+    fn export_abi_version_is_two() {
+        assert_eq!(EXPORT_ABI_VERSION, 2);
     }
 
     /// The HTTP-endpoint ops (`routes`/`http_endpoint`) round-trip and carry the stable op tags — the

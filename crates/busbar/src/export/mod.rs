@@ -20,13 +20,17 @@
 //! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
 
 pub(crate) mod file;
+pub(crate) mod projection;
 pub(crate) mod prometheus;
 pub(crate) mod webhook;
 
 use crate::config::ExportCfg;
+use crate::export::projection::ProjectedRecord;
 use crate::plugin_routes::{RouteDecl, RouteKind};
 use busbar_plugin_loader::Route;
+use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// The live plugin-route declarations the built-in exporters contribute (design §5) — today just the
 /// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
@@ -52,37 +56,93 @@ pub(crate) fn configure(cfg: &ExportCfg, client: reqwest::Client) {
     file::configure(cfg);
 }
 
-/// True when ANY request-log PUSH sink (webhook / file / generic) is configured. Lets the
-/// request-finish path skip BUILDING the JSON payload entirely when no sink is present — purely an
-/// allocation guard (when configured the built payload + delivery are byte-identical to before).
-#[inline]
-pub(crate) fn request_log_configured() -> bool {
-    webhook::request_log_configured() || file::configured()
+/// The raw per-request facts the `logs` stream is built FROM — everything core knows at
+/// request-finish, before any projection is applied. Deliberately NOT a payload: it is the producer's
+/// output, and [`build_request_log`] is the only thing that turns it into one, per sink, bounded by
+/// that sink's projection.
+pub(crate) struct RequestLogFacts<'a> {
+    pub(crate) ts: u64,
+    pub(crate) ingress_protocol: &'a str,
+    pub(crate) pool: &'a str,
+    pub(crate) outcome: &'a str,
+    pub(crate) latency_ms: u64,
 }
 
-/// Build the request-log JSON payload (relocated from `observability::build_request_log`). Pure (no
-/// I/O) so it is unit-testable; the byte-identical 5-field shape today's request log produces.
+/// Build ONE sink's request-log payload, TO ITS PROJECTION. Pure (no I/O) so it is unit-testable.
+///
+/// Every field goes through [`ProjectedRecord::set`], which writes it only if the projection grants
+/// it — so an ungranted field is never serialized and never crosses the ABI. There is no
+/// `json!` literal here on purpose: a literal plus a filter is a step someone can forget, and its
+/// failure mode is silent over-disclosure.
 pub(crate) fn build_request_log(
+    projection: projection::Projection,
     ts: u64,
     ingress_protocol: &str,
     pool: &str,
     outcome: &str,
     latency_ms: u64,
 ) -> Value {
-    serde_json::json!({
-        "ts": ts,
-        "ingress_protocol": ingress_protocol,
-        "pool": pool,
-        "outcome": outcome,
-        "latency_ms": latency_ms,
-    })
+    let mut rec = ProjectedRecord::new(projection, ExportStream::Logs);
+    rec.set(ExportField::Ts, ts)
+        .set(ExportField::IngressProtocol, ingress_protocol)
+        .set(ExportField::Pool, pool)
+        .set(ExportField::Outcome, outcome)
+        .set(ExportField::LatencyMs, latency_ms);
+    rec.finish()
 }
 
-/// Fan one built request-log line out to every configured PUSH sink. Fire-and-forget; never blocks
-/// the request path and never surfaces errors — telemetry must not affect serving. The file sink
-/// borrows the payload (a synchronous append); the webhook sinks consume it last (each spawns its own
-/// bounded delivery task).
-pub(crate) fn deliver_request_log(payload: Value) {
-    file::deliver(&payload);
-    webhook::deliver_logs(payload);
+/// A per-delivery cache of already-built payloads, keyed by PROJECTION. Instances with IDENTICAL
+/// projections share one payload, so the build cost is per DISTINCT PROJECTION, not per sink (design
+/// `export-projection-grammar.md`, "Implementation note"). A `Vec` because the number of distinct
+/// projections in a deployment is tiny and a linear scan beats hashing at that size.
+pub(crate) struct PayloadCache<'a> {
+    facts: &'a RequestLogFacts<'a>,
+    built: Vec<(projection::Projection, Arc<Value>)>,
+}
+
+impl<'a> PayloadCache<'a> {
+    pub(crate) fn new(facts: &'a RequestLogFacts<'a>) -> PayloadCache<'a> {
+        PayloadCache {
+            facts,
+            built: Vec::new(),
+        }
+    }
+
+    /// This sink's payload, built to `projection` (and reused for any sibling with the same one).
+    pub(crate) fn get(&mut self, projection: projection::Projection) -> Arc<Value> {
+        if let Some((_, v)) = self.built.iter().find(|(p, _)| *p == projection) {
+            return v.clone();
+        }
+        let f = self.facts;
+        let v = Arc::new(build_request_log(
+            projection,
+            f.ts,
+            f.ingress_protocol,
+            f.pool,
+            f.outcome,
+            f.latency_ms,
+        ));
+        self.built.push((projection, v.clone()));
+        v
+    }
+}
+
+/// The projection a test sink is given: the whole `logs` stream, so a test that is not ABOUT the
+/// projection sees the same payload the pre-projection code produced.
+#[cfg(test)]
+pub(crate) fn test_logs_projection() -> projection::Projection {
+    projection::Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields())
+}
+
+/// Fan the request-log facts out to every configured PUSH sink, each receiving a payload built TO
+/// ITS OWN PROJECTION. Fire-and-forget; never blocks the request path and never surfaces errors —
+/// telemetry must not affect serving.
+///
+/// The PAYLOAD IS BUILT PER SINK, not built once and broadcast: that is what makes a narrower sink's
+/// exclusion real rather than advisory. Sinks sharing a projection share one build (see
+/// [`PayloadCache`]).
+pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
+    let mut cache = PayloadCache::new(facts);
+    file::deliver(&mut cache);
+    webhook::deliver_logs(&mut cache);
 }

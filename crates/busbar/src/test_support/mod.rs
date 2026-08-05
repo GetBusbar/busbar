@@ -704,6 +704,7 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::metrics::recorder_installed() {
         let cfg = crate::config::ExportCfg {
             prometheus: Some(crate::config::PrometheusSettings {
+                projection: Default::default(),
                 buffer_seconds: 60,
                 key_gauge_limit: crate::config::default_key_gauge_limit(),
             }),
@@ -1100,6 +1101,7 @@ impl TestApp {
             }),
             hook_registry: self.hook_registry,
             requested_signals,
+            export_projections: Default::default(),
             global_hooks: self.global_hooks,
             groups_registry: self.groups_registry,
             base_group_names: self.base_group_names,

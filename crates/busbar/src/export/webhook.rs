@@ -15,11 +15,12 @@
 //! configured.
 
 use crate::config::ExportCfg;
+use crate::export::projection::Projection;
+use crate::export::PayloadCache;
 use crate::limits::admission::AdmissionGate;
 use crate::observability::{mask_userinfo, validate_webhook_url};
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
-use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -38,11 +39,16 @@ struct Target {
     /// could hold every permit and starve the fast sink, and that a low cap an operator set on one
     /// instance was never actually enforced (the shared gate was sized to the MAX across instances).
     gate: AdmissionGate,
+    /// This instance's PROJECTION — the streams + fields THIS sink was granted in config. The
+    /// payload it receives is built to exactly this, so a field it was not granted is never
+    /// serialized and never leaves the process.
+    projection: Projection,
 }
 
 /// The configured webhook sinks (request-log-webhook + generic-webhook), sized ONCE at boot. An unset
-/// lock IS the "no webhook configured" signal, so [`request_log_configured`] and [`deliver_logs`] skip
-/// with a single pointer read.
+/// lock IS the "no webhook configured" signal, so [`deliver_logs`] skips with a single pointer read.
+/// (Whether the request-log payload is BUILT at all is decided earlier, by the union-of-projections
+/// compute gate on the `App` — see `crate::export::projection::ProjectionUnion`.)
 static TARGETS: OnceLock<Vec<Target>> = OnceLock::new();
 /// busbar's pooled reqwest client, reused for delivery (same client the old `configure_webhook` took).
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -64,6 +70,7 @@ pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
             auth,
             Duration::from_secs(w.delivery_timeout_secs),
             w.max_inflight_deliveries,
+            w.projection,
         );
     }
     if !targets.is_empty() {
@@ -80,6 +87,7 @@ fn push_target(
     auth: Option<(String, String)>,
     timeout: Duration,
     max_inflight: usize,
+    projection: Projection,
 ) {
     match validate_webhook_url(Some(url.to_string())) {
         Ok(Some(u)) => targets.push(Target {
@@ -93,17 +101,11 @@ fn push_target(
                 max_inflight.clamp(1, tokio::sync::Semaphore::MAX_PERMITS),
                 "webhook",
             ),
+            projection,
         }),
         Ok(None) => {}
         Err(msg) => tracing::error!("{msg}; disabling this webhook exporter"),
     }
-}
-
-/// True when at least one webhook sink is configured. Lets the request-finish path skip building the
-/// payload when no webhook (or file) sink is present — purely an allocation guard.
-#[inline]
-pub(crate) fn request_log_configured() -> bool {
-    TARGETS.get().is_some()
 }
 
 /// Fire-and-forget the built request-log line to every configured webhook sink. No-op when none are
@@ -111,15 +113,13 @@ pub(crate) fn request_log_configured() -> bool {
 /// that sink's own `settings.max_inflight_deliveries` deliveries run concurrently (a slow sink drops
 /// ITS logs rather than piling up unbounded tasks, and cannot consume a sibling sink's budget), each
 /// with its own short timeout.
-pub(crate) fn deliver_logs(payload: Value) {
+pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
     let Some(targets) = TARGETS.get() else {
         return;
     };
     let Some(client) = CLIENT.get().cloned() else {
         return;
     };
-    // Serialize once; each delivery task owns a cheap `Arc` clone rather than re-walking the tree.
-    let payload = Arc::new(payload);
     for target in targets {
         // Acquire a delivery slot WITHOUT awaiting; drop this log (counted) rather than block or
         // accumulate an unbounded backlog when the sink is saturated.
@@ -131,7 +131,9 @@ pub(crate) fn deliver_logs(payload: Value) {
         let auth = target.auth.clone();
         let timeout = target.timeout;
         let client = client.clone();
-        let payload = payload.clone();
+        // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the
+        // identical projection). The build happens here, per sink — never once and broadcast.
+        let payload = cache.get(target.projection);
         tokio::spawn(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
             let body = payload.to_string();

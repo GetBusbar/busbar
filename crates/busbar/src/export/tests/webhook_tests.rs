@@ -7,6 +7,7 @@
 //! here, and its other reason to exist — a SECOND target — is what the NAMED `export:` map provides).
 
 use super::*;
+use crate::export::test_logs_projection;
 
 /// A stand-in per-instance delivery deadline. 1.5.3: the timeout is carried on each named instance's
 /// [`Target`] rather than read from a process-global, so it is an argument here.
@@ -34,6 +35,7 @@ fn push_target_validates_and_carries_auth_header() {
         None,
         TEST_TIMEOUT,
         TEST_MAX_INFLIGHT,
+        test_logs_projection(),
     );
     assert_eq!(
         targets.len(),
@@ -50,6 +52,7 @@ fn push_target_validates_and_carries_auth_header() {
         None,
         TEST_TIMEOUT,
         TEST_MAX_INFLIGHT,
+        test_logs_projection(),
     );
     assert_eq!(
         targets.len(),
@@ -64,6 +67,7 @@ fn push_target_validates_and_carries_auth_header() {
         None,
         TEST_TIMEOUT,
         TEST_MAX_INFLIGHT,
+        test_logs_projection(),
     );
     assert_eq!(targets.len(), 1, "the https-only guard rejects plaintext");
 
@@ -74,6 +78,7 @@ fn push_target_validates_and_carries_auth_header() {
         Some(("Authorization".to_string(), "Bearer sekret".to_string())),
         TEST_TIMEOUT,
         TEST_MAX_INFLIGHT,
+        test_logs_projection(),
     );
     assert_eq!(targets.len(), 2);
     let (name, value) = targets[1].auth.as_ref().expect("auth header carried");
@@ -148,10 +153,18 @@ async fn delivery_failure_masks_userinfo() {
     );
 }
 
-/// The built request-log payload is the byte-identical 5-field shape (relocated to `crate::export`).
+/// The built request-log payload is the byte-identical 5-field shape (relocated to `crate::export`),
+/// for a sink whose projection grants the whole `logs` stream.
 #[test]
 fn build_request_log_shape() {
-    let p = crate::export::build_request_log(1_700_000_000, "anthropic", "prod", "ok", 42);
+    let p = crate::export::build_request_log(
+        test_logs_projection(),
+        1_700_000_000,
+        "anthropic",
+        "prod",
+        "ok",
+        42,
+    );
     assert_eq!(p["ts"], 1_700_000_000_u64);
     assert_eq!(p["ingress_protocol"], "anthropic");
     assert_eq!(p["pool"], "prod");
@@ -172,13 +185,20 @@ async fn deliver_logs_is_noop_when_unconfigured() {
     // The precondition this test measures against: TARGETS is an unset process-global (no
     // `configure` with a valid URL runs anywhere in this binary).
     assert!(
-        !request_log_configured(),
+        TARGETS.get().is_none(),
         "this test measures the UNCONFIGURED path; something configured a webhook sink"
     );
     let rt = tokio::runtime::Handle::current();
     let tasks_before = rt.metrics().num_alive_tasks();
 
-    deliver_logs(crate::export::build_request_log(0, "openai", "p", "ok", 1));
+    let facts = crate::export::RequestLogFacts {
+        ts: 0,
+        ingress_protocol: "openai",
+        pool: "p",
+        outcome: "ok",
+        latency_ms: 1,
+    };
+    deliver_logs(&mut crate::export::PayloadCache::new(&facts));
 
     // Yield once so a spawned task would have been polled (and, if it completed, still counted at
     // spawn time — `num_alive_tasks` rises the moment `tokio::spawn` runs).
@@ -207,6 +227,7 @@ async fn each_webhook_instance_gets_its_own_admission_gate() {
         None,
         TEST_TIMEOUT,
         1,
+        test_logs_projection(),
     );
     push_target(
         &mut targets,
@@ -214,6 +235,7 @@ async fn each_webhook_instance_gets_its_own_admission_gate() {
         None,
         TEST_TIMEOUT,
         3,
+        test_logs_projection(),
     );
     assert_eq!(targets.len(), 2);
 

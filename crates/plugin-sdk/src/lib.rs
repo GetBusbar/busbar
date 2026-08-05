@@ -539,7 +539,7 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin-abi` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin_abi::export::{ExportRequest, ExportResponse, ExportStream};
+pub use busbar_plugin_abi::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
 
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
@@ -1213,14 +1213,15 @@ mod tests {
     }
 
     /// EXPORT: the SDK's declared payload version reads the shared const (compile-time link, not a
-    /// coincidental literal) and is pinned at v1.
+    /// coincidental literal) and is pinned at v2 (1.5.3 — the projection grammar: expanded stream
+    /// vocabulary, `audit` removed).
     #[test]
-    fn export_abi_version_reads_the_shared_const_and_is_one() {
+    fn export_abi_version_reads_the_shared_const_and_is_two() {
         assert_eq!(
             export_abi_version(),
             busbar_plugin_abi::export::EXPORT_ABI_VERSION
         );
-        assert_eq!(export_abi_version(), 1);
+        assert_eq!(export_abi_version(), 2);
     }
 
     fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {

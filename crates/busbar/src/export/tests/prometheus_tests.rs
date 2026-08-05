@@ -10,6 +10,7 @@ use crate::config::{ExportCfg, PrometheusSettings};
 fn cfg_with_prometheus() -> ExportCfg {
     ExportCfg {
         prometheus: Some(PrometheusSettings {
+            projection: Default::default(),
             buffer_seconds: 60,
             key_gauge_limit: 2000,
         }),

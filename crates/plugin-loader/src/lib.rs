@@ -47,6 +47,10 @@ pub use busbar_plugin_abi::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 pub use export::{load_export_from_bytes, DynExport};
+// The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
+// the same reason the http_endpoint types above are: the engine names these through the loader
+// rather than taking a second, direct dependency on the ABI crate.
+pub use busbar_plugin_abi::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use hook::DlopenPolicy;
 pub use registry::{

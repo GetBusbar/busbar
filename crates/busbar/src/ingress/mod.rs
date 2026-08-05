@@ -544,17 +544,23 @@ fn finish_inner(
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(app, ingress_protocol, pool, outcome, elapsed.as_secs_f64());
 
-    // best-effort request log (no-op unless an `export:` sink is configured). Gated on the configured
-    // check so the default (no sink) skips even BUILDING the JSON payload; when configured, the
-    // payload + delivery are unchanged — the built-in exporters (`crate::export`) own the fan-out.
-    if crate::export::request_log_configured() {
-        crate::export::deliver_request_log(crate::export::build_request_log(
-            crate::store::now(),
+    // Best-effort request log. THE COMPUTE GATE: the `logs` records are produced only if some
+    // configured `export:` instance's projection subscribes to that stream — the union is resolved
+    // once per config apply (`ExportCfg::projection_union`) and read here as a single mask test, the
+    // same "the read runs ONLY when declared, never call-then-discard" discipline
+    // `requested_signals` applies to hook signals. Nobody subscribed ⇒ nothing is generated. Each
+    // sink then receives a payload built to ITS OWN projection (`crate::export::deliver_request_log`).
+    if app
+        .export_projections
+        .wants_stream(busbar_plugin_loader::ExportStream::Logs)
+    {
+        crate::export::deliver_request_log(&crate::export::RequestLogFacts {
+            ts: crate::store::now(),
             ingress_protocol,
             pool,
             outcome,
-            elapsed.as_millis() as u64,
-        ));
+            latency_ms: elapsed.as_millis() as u64,
+        });
     }
 
     // The flat per-request fee was charged ATOMICALLY at admission (fix 2a). REFUND it for a request

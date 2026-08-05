@@ -3260,6 +3260,38 @@ pub(crate) struct ExportDefCfg {
     /// The built-in exporter module backing this instance: `prometheus` | `request-log-webhook` |
     /// `request-log-file` | `otlp` (see [`EXPORT_MODULES`]). An unknown module is a boot error.
     pub(crate) module: String,
+    /// `streams:` — WHAT this sink subscribes to, as tokens of the frozen
+    /// [`busbar_plugin_loader::ExportStream`] vocabulary. Each stream carries DOCUMENTED
+    /// DEFAULT FIELDS. Absent ⇒ the streams the instance's `module:` itself carries (which is what
+    /// every pre-projection config means), never "nothing".
+    ///
+    /// Deserialized as RAW STRINGS, not as the typed enum, so every diagnostic is ours: serde's
+    /// "unknown variant" could not say that `audit` was REMOVED and why, nor that a stream exists in
+    /// the vocabulary but has no producer in this release. Parsed + validated by
+    /// [`crate::export::projection::resolve_projection`].
+    #[serde(default)]
+    pub(crate) streams: Option<Vec<String>>,
+    /// `fields:` — an optional EXHAUSTIVE OVERRIDE of what this sink receives. If present it fully
+    /// REPLACES the subscribed streams' default field sets; it is never additive.
+    ///
+    /// THE ASYMMETRY WITH `hooks:` IS DELIBERATE AND IS A SECURITY PROPERTY. `hooks:` lists COMBINE
+    /// ADDITIVELY (see `config::overlay`) because hooks compose BEHAVIOUR. Projections bound
+    /// DISCLOSURE, and if `fields:` were additive then a future release that adds a field to a
+    /// stream's defaults would SILENTLY WIDEN what every already-configured sink receives. Override
+    /// means the operator's list is exhaustive, so a field added next year can never leak into a
+    /// sink someone configured today. (Recorded next to the combine rule in
+    /// `design/audit-decisions-1.5.3.md`.)
+    ///
+    /// It bounds DISCLOSURE but must not break STRUCTURE: omitting a PINNED field (the join key, the
+    /// chain link) is a LOUD config error, never a silent no-op.
+    #[serde(default)]
+    pub(crate) fields: Option<Vec<String>>,
+    /// `durable:` — should core SPOOL this sink's records before the request completes (core owns
+    /// the completeness guarantee; the exporter drains, delayed and retried, and never blocks a
+    /// request)? The key is part of the frozen surface; the spool that backs it is a later unit, so
+    /// `true` is a LOUD "not yet implemented" error rather than a promise nothing keeps.
+    #[serde(default)]
+    pub(crate) durable: bool,
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by [`resolve_export`], so a typo inside it still fails boot loudly.
     #[serde(default)]
@@ -3301,6 +3333,10 @@ pub(crate) const EXPORT_MODULES: &[&str] = &[
 /// ONE each — `prometheus` owns the single well-known `/metrics` route and `otlp` installs the one
 /// process-global tracer subscriber, so a second instance could not do anything except silently lose.
 /// A second instance of either is therefore a loud boot error, never a silent no-op.
+///
+/// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
+/// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
+/// ungranted field is never serialized and never crosses the ABI.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExportCfg {
     /// The `prometheus` instance's settings, if one is configured. `None` ⇒ no recorder installed,
@@ -3314,6 +3350,24 @@ pub(crate) struct ExportCfg {
     pub(crate) otlp: Option<OtlpSettings>,
 }
 
+impl ExportCfg {
+    /// The generation's UNION OF PROJECTIONS — "what does ANYTHING configured here want". Computed
+    /// ONCE per config apply and carried on the `App` (next to `requested_signals`, which is the
+    /// same mechanism for hook signals), then read per request as the COMPUTE GATE: core generates a
+    /// stream's records ONLY when some sink declared it. Supersedes the one-off
+    /// `export::request_log_configured()` boolean — one mechanism, not two.
+    pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
+        crate::export::projection::ProjectionUnion::of(
+            self.prometheus
+                .iter()
+                .map(|s| &s.projection)
+                .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
+                .chain(self.request_log_files.iter().map(|s| &s.projection))
+                .chain(self.otlp.iter().map(|s| &s.projection)),
+        )
+    }
+}
+
 /// `settings:` of an `export.<name>.module: prometheus` instance — relocated from the retired
 /// `observability.metrics` block.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -3325,6 +3379,13 @@ pub(crate) struct PrometheusSettings {
     pub(crate) buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
+    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
+    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
+    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
+    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
+    #[serde(skip)]
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
@@ -3350,6 +3411,13 @@ pub(crate) struct WebhookSettings {
     /// instances is for.
     #[serde(default = "default_webhook_delivery_timeout_secs")]
     pub(crate) delivery_timeout_secs: u64,
+    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
+    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
+    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
+    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
+    #[serde(skip)]
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-file` instance.
@@ -3361,6 +3429,13 @@ pub(crate) struct FileSettings {
     /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
     #[serde(default)]
     pub(crate) rotate_mb: Option<u64>,
+    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
+    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
+    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
+    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
+    #[serde(skip)]
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -3372,6 +3447,13 @@ pub(crate) struct OtlpSettings {
     /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`) — REQUIRED. When an
     /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
     pub(crate) url: String,
+    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
+    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
+    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
+    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
+    #[serde(skip)]
+    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// One `{ name, value }` auth header for a webhook export instance.
@@ -3391,7 +3473,12 @@ pub(crate) struct ExportAuthHeader {
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
 /// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
-///   process-singleton by construction and a second one could only lose silently).
+///   process-singleton by construction and a second one could only lose silently);
+/// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
+///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
+///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
+///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
+///   and delivers nothing.
 pub(crate) fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
     // The instance name that already claimed each singleton module, for the "named twice" diagnostic.
@@ -3399,13 +3486,27 @@ pub(crate) fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> Exp
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
+        let projection = crate::export::projection::resolve_projection(
+            name,
+            def.module.trim(),
+            def.streams.as_deref(),
+            def.fields.as_deref(),
+            def.durable,
+            errors,
+        );
         let settings = serde_json::Value::Object(def.settings.clone());
         // Parse the opaque bag into this module's typed settings struct. One helper so every module
         // produces the identical `export.<name>.settings: …` error prefix.
         macro_rules! typed {
             ($t:ty) => {
                 match serde_json::from_value::<$t>(settings) {
-                    Ok(v) => Some(v),
+                    // The resolved projection rides onto the typed settings here, so every sink the
+                    // delivery path sees already carries the bound on what it may be handed. There
+                    // is no path that produces settings WITHOUT a projection.
+                    Ok(mut v) => {
+                        v.projection = projection;
+                        Some(v)
+                    }
                     Err(e) => {
                         errors.push(format!("export.{name}.settings: {e}"));
                         None
