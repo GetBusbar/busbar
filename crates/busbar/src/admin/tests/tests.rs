@@ -13231,3 +13231,175 @@ async fn drive_named_map_errors() {
 async fn named_map_error_surface_answers_its_declared_taxonomy() {
     drive_named_map_errors().await;
 }
+
+/// HIGH-1 (CONFIG-STABILITY): THE ADMIN API AND THE FILE PARSER MUST SHARE ONE GRAMMAR. A PUT body
+/// carrying a field the section's `deny_unknown_fields` config struct rejects is exactly what
+/// `config.yaml` would refuse at boot — so the API must refuse it too, loudly and BEFORE persisting.
+///
+/// It did not. The handler only did a generic `serde_json::Value` parse plus "is it an object with a
+/// non-empty `module`", answered 200, wrote the document verbatim into the overlay, and then DROPPED
+/// it at the rebuild (`apply_named_maps_to_deploy` swallowed the typed parse error into a
+/// `tracing::error!`). The operator got a success for config that never took effect and vanished on
+/// every subsequent read — two paths disagreeing about the one frozen 1.5.3 grammar.
+#[tokio::test]
+async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
+    let (dir, overlay, addr, handle) = named_map_app("typedparse", false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // `buffer` is not a field of `ExportDefCfg` (the operator meant `settings.buffer_seconds`).
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/spare")))
+        .body(r#"{"module":"prometheus","buffer":30}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "an unknown field is the same loud reject config.yaml gives"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("buffer"),
+        "the refusal carries serde's own message naming the offending field: {body}"
+    );
+
+    // NOTHING was persisted and nothing is readable — the reject happens before the overlay write.
+    let after = admin(client.get(format!("http://{addr}/api/v1/admin/export/spare")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "the rejected definition was never stored"
+    );
+    if let Ok(bytes) = std::fs::read(&overlay) {
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            doc["named_maps"]["export"]["spare"].is_null(),
+            "the rejected definition is absent from the overlay: {doc}"
+        );
+    }
+
+    // The SAME shape with the fields spelled correctly is accepted — this is a grammar check, not
+    // a blanket refusal.
+    let good = serde_json::json!({
+        "module": "request-log-file",
+        "settings": {"path": dir.join("spare.jsonl").to_string_lossy()}
+    });
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/spare")))
+        .body(good.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+
+    // The identity-providers section speaks the same rule through the same generic path.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/typo-idp"
+    )))
+    .body(r#"{"module":"keys","max_admin_scopes":"none"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "the typed parse is per-section and driven by the section's own struct: {:?}",
+        r.text().await
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MED-2/LOW-1 (DISCOVERABILITY): an overlay-stored definition this binary cannot parse is DROPPED
+/// at every rebuild. It used to be announced exactly once, at boot, in a log line — and the API read
+/// surface answered 404 for the name, which is indistinguishable from "you never wrote it". An
+/// operator who does not tail boot logs could not discover their own stored-but-inert config.
+///
+/// It is now surfaced through the READ, explicitly flagged (`unparseable` carries the parse error),
+/// on both the collection and the single-entry read. The operator's data is only ever REPORTED —
+/// never auto-deleted, never rewritten.
+#[tokio::test]
+async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
+    let (dir, overlay, addr, handle) = named_map_app("unparseable", false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    // An overlay holding a definition whose typed struct rejects it (a downgrade whose struct lost
+    // the field, or a hand-edited overlay) — never applied, so absent from the live `export:` map.
+    std::fs::write(
+        &overlay,
+        serde_json::json!({
+            "version": 1,
+            "named_maps": {
+                "export": {
+                    "ghost": {"module": "prometheus", "from_the_future": true,
+                              "settings": {"buffer_seconds": 60}}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let body: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/export")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ghost = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "ghost")
+        .unwrap_or_else(|| {
+            panic!("the stored-but-inert entry is discoverable in the list: {body}")
+        });
+    assert!(
+        ghost["unparseable"]
+            .as_str()
+            .is_some_and(|e| e.contains("from_the_future")),
+        "and is EXPLICITLY flagged with the parse error rather than looking live: {ghost}"
+    );
+    assert_eq!(
+        ghost["module"], "prometheus",
+        "the operator's own raw document is projected back so they can see what they wrote"
+    );
+
+    // The single-entry read answers the flagged view rather than a 404 for a name that is sitting in
+    // the operator's own overlay.
+    let one = admin(client.get(format!("http://{addr}/api/v1/admin/export/ghost")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(one.status().as_u16(), 200);
+    let one: serde_json::Value = one.json().await.unwrap();
+    assert!(one["unparseable"].is_string(), "{one}");
+
+    // A LIVE definition is never flagged.
+    let base: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/export/base-metrics")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert!(
+        base["unparseable"].is_null(),
+        "a parseable, live definition carries no flag: {base}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

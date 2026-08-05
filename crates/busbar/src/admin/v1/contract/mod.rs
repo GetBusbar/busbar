@@ -563,6 +563,14 @@ pub(crate) struct NamedDefView {
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) browser_login_configured: Option<bool>,
+    /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
+    /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
+    /// overlay) — the value is the parse error. Such an entry is dropped at every rebuild, so it is
+    /// NOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not
+    /// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
+    /// log line. Absent (and omitted from the body) for every live definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unparseable: Option<String>,
 }
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,

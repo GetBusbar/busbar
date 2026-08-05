@@ -1580,6 +1580,13 @@
               "boolean",
               "null"
             ]
+          },
+          "unparseable": {
+            "description": "Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this\nsection's typed config by this binary (a downgrade whose struct lost a field, a hand-edited\noverlay) — the value is the parse error. Such an entry is dropped at every rebuild, so it is\nNOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not\na resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot\nlog line. Absent (and omitted from the body) for every live definition.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
