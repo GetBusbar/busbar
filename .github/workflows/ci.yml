@@ -255,12 +255,18 @@ jobs:
       - name: Executable-config gate
         run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root .
 
-  # Compliance-by-compilation gate: busbar must build + lint clean with the built-in `tokens` auth
-  # plugin COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that
-  # provably contains no client-token auth code. Build, clippy, AND the test suite all stay green on
-  # the featureless binary — the feature-dependent behavior tests (token auth, native ranking policies)
-  # are `#[cfg(feature = ...)]`-gated, so what remains proves the featureless binary works. This is the
-  # compliance-by-compilation guarantee: `auth.chain: [tokens]` is a boot error in this binary.
+  # Compliance-by-compilation gate: busbar must build + lint clean with the built-in auth plugin
+  # COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that provably
+  # contains no such auth code. Build, clippy, AND the test suite all stay green on the featureless
+  # binary — the feature-dependent behavior tests (admin-token auth, native ranking policies) are
+  # `#[cfg(feature = ...)]`-gated, so what remains still passes.
+  #
+  # SCOPE, STATED HONESTLY: this job proves the featureless binary COMPILES, LINTS, and passes the
+  # unit tests that remain compiled into it. It does NOT boot the binary and does NOT serve a request,
+  # so it cannot see a core path that compiles fine and then fails at runtime because the module it
+  # reaches for is absent. (This comment used to claim "what remains proves the featureless binary
+  # works" — it does not; that is a strictly larger claim than what runs here.) Proving the featureless
+  # binary WORKS is the `no-plugins-gate` job below, which boots it and drives real HTTP through it.
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: ubuntu-latest
@@ -276,6 +282,37 @@ jobs:
         run: cargo build --no-default-features --locked --verbose
       - name: Test (no-default-features)
         run: cargo test --no-default-features --locked --verbose
+
+  # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
+  # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops
+  # working, core assumed it always had that module — and that module is not a plugin, it is part of
+  # the engine wearing a plugin's name.
+  #
+  # This job RUNS the binary; `no-default-features` above only compiles it. Two axes, because a plugin
+  # can be wrongly assumed two independent ways and neither axis can see the other's failures:
+  # COMPILED OUT (`--no-default-features` — the built-in plugin features are not in the binary) and
+  # NOT INSTALLED (default features, but `plugins.dir` holds zero artifacts — catches core assuming a
+  # `dlopen`ed store/auth/hook/secret plugin is on disk). Against a config that references ZERO
+  # plugins, each axis must boot, serve `/healthz`, ANSWER ITS ADMIN PLANE (real reads and a real
+  # write — not just the unauthenticated liveness route), and proxy a real request end-to-end to a
+  # real mock upstream, asserted on the upstream's unique marker.
+  #
+  # It has its own job for the reason txn-guards states: a gate nothing runs is not a gate. The
+  # self-test runs FIRST and is a hard prerequisite — it drives the featureless binary against
+  # fixtures that genuinely depend on a compiled-out plugin, plus stub servers that pass every earlier
+  # assertion and break exactly one later one, so a gate that had rotted into passing vacuously fails
+  # here instead of manufacturing false confidence.
+  no-plugins-gate:
+    name: no-plugins gate (compiled out · not installed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
+        run: scripts/no-plugins-gate.sh --selftest
+      - name: No-plugins gate (axis 1 compiled out · axis 2 not installed)
+        run: scripts/no-plugins-gate.sh --check
 
   # CONCURRENCY GATES for the config-mutation transaction (choke point C). Neither of these can run
   # inside `cargo test --workspace`: the compile fence must FAIL to build (it is a negative test
