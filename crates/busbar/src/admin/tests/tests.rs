@@ -12233,9 +12233,12 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 /// `corp-ad` through the API (the rebuild resolves, because the overlay supplies the definition),
 /// then watch the DELETE get refused because the reference would be left dangling. Every other
 /// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
+/// `base_export == false` writes a config that declares NO exporter at all — the deployment that
+/// booted without `export.prometheus`, so `/metrics` was never registered on the router.
 fn write_named_map_fixture(
     tag: &str,
     reference_corp_ad: bool,
+    base_export: bool,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -12259,7 +12262,7 @@ fn write_named_map_fixture(
     .unwrap();
     std::fs::write(
         &config_path,
-        "listen: 127.0.0.1:0
+        ("listen: 127.0.0.1:0
 providers:
   test-provider:
     api_key: { env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY }
@@ -12277,12 +12280,13 @@ identity-providers:
   admin-tokens:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
-export:
-  base-metrics:
-    module: prometheus
-    settings: { buffer_seconds: 60 }
 "
         .to_string()
+            + if base_export {
+                "export:\n  base-metrics:\n    module: prometheus\n    settings: { buffer_seconds: 60 }\n"
+            } else {
+                ""
+            })
         .replace(
             "ADMIN_TOKEN_FILE",
             &dir.join("admin.token").to_string_lossy(),
@@ -12319,8 +12323,26 @@ async fn named_map_app(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
+    named_map_app_opts(tag, reference_corp_ad, true).await
+}
+
+/// [`named_map_app`] with the base `export:` entry made OPTIONAL. `base_export == false` is the
+/// deployment that BOOTED WITH NO EXPORTER: no `export:` in the base config, no export definition on
+/// the live snapshot, and — the part that matters — an empty `boot_route_paths`, i.e. `/metrics` was
+/// never registered on this process's router.
+async fn named_map_app_opts(
+    tag: &str,
+    reference_corp_ad: bool,
+    base_export: bool,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
     crate::metrics::init();
-    let (dir, config_path, providers_path) = write_named_map_fixture(tag, reference_corp_ad);
+    let (dir, config_path, providers_path) =
+        write_named_map_fixture(tag, reference_corp_ad, base_export);
     // The DEFAULT overlay filename next to config.yaml — the same path `load_config_from_disk`
     // resolves for a config with no explicit `config.overlay` block. A named-map mutation rebuilds
     // from disk truth PLUS the on-disk overlay, so a fixture whose live overlay path differed from
@@ -12328,7 +12350,7 @@ async fn named_map_app(
     let overlay = dir.join(crate::config::overlay::DEFAULT_OVERLAY_FILENAME);
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
+    let mut builder = TestApp::new()
         .governance(gov)
         .overlay_path(overlay.clone())
         .disk_paths(config_path, providers_path)
@@ -12343,15 +12365,22 @@ async fn named_map_app(
                 "token": {"file": dir.join("admin.token").to_string_lossy()}
             }))
             .unwrap(),
-        )
-        .export_def(
+        );
+    builder = if base_export {
+        builder.export_def(
             "base-metrics",
             serde_json::from_value(serde_json::json!({
                 "module": "prometheus", "settings": {"buffer_seconds": 60}
             }))
             .unwrap(),
         )
-        .build();
+    } else {
+        // No exporter at boot ⇒ no plugin route was ever mounted on this process's router. The
+        // explicit form matters: the harness's default table keys on the PROCESS-GLOBAL recorder
+        // (`metrics::init()` above), so merely omitting the definition would still yield `/metrics`.
+        builder.no_plugin_routes()
+    };
+    let app = builder.build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -12851,6 +12880,132 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
             .any(|i| i["outcome"] == "applied" && i["action"] == "identity-provider.replace"),
         "the accepted change is audited: {audit}"
     );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AUDIT FINDING E1 — A MUTATION THAT ADDS A ROUTE SAYS "RESTART REQUIRED", instead of reporting
+/// plain success for a route this process will never serve.
+///
+/// Each declared plugin-route PATH is registered on the axum router ONCE, at boot; a config apply
+/// swaps only `Arc<App>` and never rebuilds the router. So a `PUT /export/{name}` that introduces a
+/// `prometheus` instance where none existed at boot is durably stored, live on the snapshot, and
+/// `/metrics` keeps 404ing until the process restarts. The `export:` named map had no restart-required
+/// signal (unlike `PUT /config/settings`'s `reload_to_apply`), so the operator was told nothing.
+///
+/// The signal must be exact in BOTH directions, which is why this walks all four cases: an exporter
+/// that declares no route is silent, the route-adding PUT flags exactly `/metrics`, a LATER unrelated
+/// mutation does not re-flag it (the signal is keyed on the mutation's own delta), and a REMOVAL is
+/// silent because removing genuinely does take effect live.
+#[tokio::test]
+async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
+    // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
+    let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // (1) An exporter that declares NO plugin route (a PUSH sink) is fully live on the swap — silent.
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/reqlog")))
+        .body(
+            serde_json::json!({
+                "module": "request-log-file",
+                "settings": {"path": dir.join("req.jsonl").to_string_lossy()}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    let body: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/export/reqlog")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert!(
+        body.get("reload_to_apply").is_none(),
+        "a sink that declares no route needs no restart: {body}"
+    );
+
+    // (2) THE FINDING: adding a `prometheus` instance introduces `GET /metrics`, which this process's
+    // router does not have. Accepted (it is stored, and correct after a restart) but NOT reported as
+    // simply applied.
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/prom")))
+        .body(
+            serde_json::json!({
+                "module": "prometheus", "settings": {"buffer_seconds": 30}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "the definition is still stored");
+    let body: serde_json::Value = r.json().await.unwrap();
+    let empty = Vec::new();
+    let flagged: Vec<&str> = body["reload_to_apply"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        flagged,
+        vec!["/metrics"],
+        "the ADDED route the router cannot serve is named: {body}"
+    );
+    assert!(
+        body["note"].as_str().unwrap_or("").contains("RESTART"),
+        "the note tells the operator what to do about it: {body}"
+    );
+    // The response is still the stored definition — the signal is ADDITIVE, not a replacement body.
+    assert_eq!(body["name"], "prom");
+    assert_eq!(body["module"], "prometheus");
+    // And the route really is unserved on this process, which is what the signal is about.
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        404,
+        "`/metrics` is not mounted, exactly as the response just said"
+    );
+
+    // (3) NO SPURIOUS RE-FLAG: a later mutation that introduces no new path is silent, even though
+    // `/metrics` is still pending a restart (the same "keyed on what this request changed" rule
+    // `reload_to_apply_fields` follows).
+    let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
+        .body(
+            serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert!(
+        body.get("reload_to_apply").is_none(),
+        "an edit that adds no path must not re-flag an already-pending route: {body}"
+    );
+
+    // (4) REMOVAL is live (the dispatcher resolves the owner from the current snapshot and 404s), so
+    // it carries no notice at all.
+    let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/prom")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 204, "a removal applies live");
+
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

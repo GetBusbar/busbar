@@ -49,9 +49,12 @@ use std::sync::Arc;
 ///   PUTs the config. The metrics recorder is additionally `OnceLock`-guarded and installed once.
 ///
 /// This is the SAME boot-frozen mechanism already documented for `max_inbound_concurrent` in
-/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields` — but unlike that field, the
-/// `export:` named map has no restart-required signal, so the operator is told nothing. Closing that
-/// gap (or genuinely hot-mounting the route) is tracked as audit finding E1.
+/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields` — and, since audit finding E1, the
+/// `export:` named map REPORTS it the same way: a mutation that introduces a route path the router
+/// never registered at boot answers with `reload_to_apply` naming that path plus a `note` saying a
+/// restart is required ([`crate::plugin_routes::paths_awaiting_restart`]). The apply is still a no-op
+/// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
+/// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     prometheus::route_decl(cfg).into_iter().collect()
 }

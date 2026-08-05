@@ -501,6 +501,18 @@ pub(crate) struct App {
     /// leaves a stale route (§7.1). Empty until an export/hook plugin declares a route; an empty table
     /// is inert (no mounts, `declared_auth` returns `None`, so the auth middleware is unaffected).
     pub(crate) plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
+    /// The plugin-route PATHS this PROCESS can actually serve: the [`plugin_routes`] table's path set
+    /// as it stood at BOOT, carried forward byte-identical through every rebuild
+    /// (`build_app_from_config` inherits it from `prior`; only a fresh boot, `prior == None`, seeds it).
+    ///
+    /// It is deliberately NOT `plugin_routes.paths()` of the current snapshot: each declared path is
+    /// registered on the axum router once, at boot, and a config apply swaps only `Arc<App>` — the
+    /// router is never rebuilt. So a config that ADDS a path (an `export:` prometheus instance where
+    /// none existed at boot) is durably stored and live on the snapshot, yet the path keeps 404ing
+    /// until a restart. This is the only thing that knows the difference, and it is what lets a config
+    /// mutation tell the operator "restart required" instead of silently no-opping (audit finding E1,
+    /// [`crate::plugin_routes::paths_awaiting_restart`]).
+    pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
 impl App {

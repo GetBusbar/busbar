@@ -171,6 +171,17 @@ impl PluginRouteTable {
             .collect()
     }
 
+    /// Every PATH this table owns (method-collapsed, deduplicated). The unit the axum router is keyed
+    /// on: [`mount_plugin_routes`] registers one `.route(path, …)` per path (both planes mount from
+    /// the same table), so this set — captured from the BOOT table onto [`crate::state::App`] as
+    /// `boot_route_paths` — is exactly the set of plugin paths the running router can serve.
+    pub(crate) fn paths(&self) -> std::collections::HashSet<String> {
+        self.by_path_method
+            .keys()
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// The declared auth level for `(path, method)`, or `None` if not a registered plugin route. Read
     /// by the auth middleware to enforce the route's bar through the existing chain.
     pub(crate) fn declared_auth(&self, path: &str, method: &Method) -> Option<RouteAuth> {
@@ -297,6 +308,35 @@ pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTabl
         );
     }
     Ok(PluginRouteTable { by_path_method })
+}
+
+/// THE RESTART-TO-APPLY SIGNAL for plugin routes (audit finding E1): the paths a just-applied config
+/// declares that this process CANNOT serve, because they were never registered on the axum router.
+///
+/// Each declared path is registered ONCE, at boot ([`mount_plugin_routes`], `on(filter,
+/// plugin_route_dispatch)`); a config apply swaps only `Arc<App>` and never rebuilds the router. So the
+/// two directions are not symmetric — a REMOVED path keeps 404ing correctly (the dispatcher resolves
+/// the owner from the current snapshot and finds nothing), while an ADDED path that was not mounted at
+/// boot keeps 404ing however many times the operator applies it. `boot_mounted` is the boot table's
+/// [`PluginRouteTable::paths`], carried forward unchanged on every rebuild (`App::boot_route_paths`).
+///
+/// Keyed on the DELTA (`installed` minus `previous`), the same discipline
+/// `handlers::reload_to_apply_fields` uses in keying on the REQUEST: only a mutation that ITSELF
+/// introduces an unmountable path is flagged, so a later unrelated edit does not re-flag an
+/// already-restart-pending route. Sorted, so the reported list is stable.
+pub(crate) fn paths_awaiting_restart(
+    installed: &PluginRouteTable,
+    previous: &PluginRouteTable,
+    boot_mounted: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let previous = previous.paths();
+    let mut out: Vec<String> = installed
+        .paths()
+        .into_iter()
+        .filter(|p| !boot_mounted.contains(p) && !previous.contains(p))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Map an `http::Method` onto the declared [`RouteMethod`] set busbar supports. `None` for a method no
