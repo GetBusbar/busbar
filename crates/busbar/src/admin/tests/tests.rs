@@ -2035,8 +2035,45 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let first = post(&short_timeout_client).await;
     assert!(first.is_err(), "the short client timeout must fire first");
 
-    // Give the (uncancellable) blocking mint time to actually land.
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    // Wait for the (uncancellable) blocking mint to actually land. POLL, do not sleep a fixed
+    // amount: a flat 800ms against a 500ms store write leaves only 300ms of slack, and a contended
+    // Windows runner eats that (observed: this test failed on `qa` with `got: []` while the SAME
+    // commit passed on `dev`). Polling keeps the assertion exact while making the WAIT adaptive, so
+    // a slow runner costs time instead of a false red.
+    {
+        let probe = reqwest::Client::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let landed = probe
+                .get(format!("http://{addr}/api/v1/admin/keys"))
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .ok();
+            if let Some(resp) = landed {
+                if let Ok(v) = resp.json::<serde_json::Value>().await {
+                    let n = v["items"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter(|k| k["name"].as_str() == Some("disconnector"))
+                                .count()
+                        })
+                        .unwrap_or(0);
+                    // Stop as soon as the mint is observable. If a SECOND key ever appears the
+                    // assertions below still catch it, so this loop cannot mask the real defect.
+                    if n >= 1 {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the mid-mint blocking write never landed within 20s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 
     // Retry with the SAME Idempotency-Key, no timeout this time.
     let normal_client = reqwest::Client::new();
