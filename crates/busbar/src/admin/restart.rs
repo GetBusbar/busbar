@@ -4,12 +4,13 @@
 //! Operator-triggered restart: the seam that applies every restart-scoped setting without an SSH
 //! session.
 //!
-//! `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_insecure` and `store` are bound or derived
-//! once at process start. They are not hot-appliable, and the reasons are load-bearing rather than
-//! incidental: rebinding a socket can fail and leave a plane with no listener; rotating `client_ca`
-//! live would not revoke, because TLS session resumption restores a client's identity without
-//! re-consulting the verifier; and moving the store would leave every in-memory derivation of the
-//! old one — flush baselines, key caches, the audit watermark — silently describing the new one.
+//! `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_require_mtls` and `store` are bound or
+//! derived once at process start. They are not hot-appliable, and the reasons are load-bearing
+//! rather than incidental: rebinding a socket can fail and leave a plane with no listener; rotating
+//! `client_ca` live would not revoke, because TLS session resumption restores a client's identity
+//! without re-consulting the verifier; and moving the store would leave every in-memory derivation
+//! of the old one — flush baselines, key caches, the audit watermark — silently describing the new
+//! one.
 //!
 //! A restart resolves all of that by construction, so busbar performs it rather than asking the
 //! operator to. This is deliberately NOT an in-process rebuild: the durable audit's sequence
