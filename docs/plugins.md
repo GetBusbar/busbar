@@ -16,6 +16,7 @@ crate boundaries enforce it: all plugin discovery, unpacking, verification, and 
 the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with every FFI
 `unsafe` isolated in `busbar-plugin-loader`.
 
+- [What makes it a plugin](#what-makes-it-a-plugin)
 - [The artifact](#the-artifact)
 - [Enabling plugins](#enabling-plugins)
 - [Building a store plugin](#building-a-store-plugin)
@@ -26,6 +27,37 @@ the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with
 - [Fail-closed loading](#fail-closed-loading)
 - [How plugins are secured](#how-plugins-are-secured)
 - [Inspecting and validating](#inspecting-and-validating)
+
+## What makes it a plugin
+
+"A plugin is a plugin" above is a claim, and it is enforced mechanically rather than reviewed by
+hand. The rule: **anything busbar calls a plugin must survive being made downloadable-only.** If it
+shipped uninstalled tomorrow, core would still have to work — boot, serve, and answer. If core stops
+working, then core assumed it always had that module, and that module is not a plugin; it is part of
+the engine wearing a plugin's name.
+
+`scripts/no-plugins-gate.sh` (CI job `no-plugins-gate`) is that rule, executable. Against a config
+that references zero plugins — only `keys` (the inline signed-key verifier), `weighted` (the inline
+SWRR floor), and `store.module: memory` (the one store that is not a plugin) — it runs busbar two
+ways:
+
+- **compiled out** — built `--no-default-features`, so the built-in plugin features
+  (`auth-admin-tokens`, `hooks-ranking`) are not in the binary at all;
+- **not installed** — built with default features, but `plugins.dir` holds zero artifacts, which
+  catches core assuming some `dlopen`ed plugin is present on disk. The first axis cannot see this:
+  a compiled-in feature is not a dlopened artifact.
+
+Both axes must boot, serve `/healthz`, answer the admin plane (real reads *and* a real write), and
+proxy a real request end-to-end to a real upstream — every one an assertion on an actual response,
+never an inference from a successful compile. The gate additionally asserts that the two axes'
+response codes are identical across the whole probed surface: removing the built-in plugins must
+change nothing core serves.
+
+What is *not* a violation: a config that names a plugin the binary does not have. That is a loud,
+fail-closed boot error, and it is the compliance-by-compilation guarantee working as designed —
+`auth.admin_auth: [admin-tokens]` on a `--no-default-features` binary refuses to boot rather than
+silently disabling the admin API. The gate uses exactly that case as a self-test fixture it must
+catch.
 
 ## The artifact
 

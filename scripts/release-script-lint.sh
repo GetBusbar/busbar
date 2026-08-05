@@ -17,7 +17,8 @@
 #   `python3 "$script" >/dev/null 2>&1 &`. The helper's own `echo "$pid"` still reaches `$(...)`.
 #
 # WHAT THIS GUARD ENFORCES (so the antipattern cannot come back):
-#   1. GATE-HANG rule: in any release-check*.sh, a line that BACKGROUNDS a server process
+#   1. GATE-HANG rule: in any server-launching gate script (release-check*.sh and
+#      no-plugins-gate.sh — see the scan set below), a line that BACKGROUNDS a server process
 #      (python / serve_forever / http.server, ending in a lone `&`) MUST redirect stdout on that
 #      same line (`>`, `1>`, or `&>` — a bare `2>…` that only covers stderr does NOT count, because
 #      the stdout pipe is exactly what wedges `$(...)`). This is deliberately STRICTER than
@@ -131,9 +132,13 @@ fail=0
 # ── Rule 1: GATE-HANG — no backgrounded server may leak stdout into a would-be $(...) capture ─────
 hdr "GATE-HANG (backgrounded server must redirect stdout — the \$(...) 2h31m-hang antipattern)"
 scripts_to_scan=()
-for f in scripts/release-check*.sh; do [ -f "$f" ] && scripts_to_scan+=("$f"); done
+# The GATE-HANG rule is about the ANTIPATTERN, not about one filename: any harness that backgrounds a
+# server is one `$(...)` refactor away from the same multi-hour wedge. So the scan set is every gate
+# script that launches one — scripts/no-plugins-gate.sh starts a mock upstream and self-test stubs
+# exactly the way release-check.sh does, and is covered here rather than being a second blind spot.
+for f in scripts/release-check*.sh scripts/no-plugins-gate.sh; do [ -f "$f" ] && scripts_to_scan+=("$f"); done
 if [ ${#scripts_to_scan[@]} -eq 0 ]; then
-  note "no scripts/release-check*.sh found — nothing to scan"
+  note "no server-launching gate scripts found — nothing to scan"
 else
   hits="$(scan_backgrounded_servers "${scripts_to_scan[@]}" || true)"
   if [ -n "$hits" ]; then
