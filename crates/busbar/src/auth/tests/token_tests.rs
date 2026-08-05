@@ -1254,3 +1254,179 @@ async fn mock_echo_endpoint() -> (String, tokio::task::JoinHandle<()>) {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (format!("http://{addr}/token"), handle)
 }
+
+// ── the BLOCKING-FFI class: a login plugin's sync FFI must not park Tokio workers ────────────────
+
+/// A login module whose `begin_login` / `complete_login` BLOCK the calling thread for `park`, the way
+/// a real credential plugin does: an LDAP/AD bind or an OIDC token exchange is a synchronous network
+/// round-trip behind a `transport_call`. Nothing here is async — that is the point: the ENGINE, not
+/// the plugin, is responsible for keeping this off the reactor.
+struct ParkingLogin {
+    park: std::time::Duration,
+    kind: LoginKind,
+}
+impl AuthModule for ParkingLogin {
+    fn name(&self) -> &'static str {
+        "parking-login"
+    }
+    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
+        AuthOutcome::Pass
+    }
+}
+impl LoginModule for ParkingLogin {
+    fn login_kind(&self) -> LoginKind {
+        self.kind
+    }
+    fn begin_login(&self, _r: &BeginLogin) -> LoginOutcome {
+        std::thread::sleep(self.park);
+        LoginOutcome::Authorize("https://idp.example.com/authorize".into())
+    }
+    fn complete_login(&self, _r: &CompleteLogin) -> LoginOutcome {
+        std::thread::sleep(self.park);
+        LoginOutcome::Reject
+    }
+}
+
+/// The runtime this class is about: a SMALL, fixed worker pool, exactly like a busy node whose
+/// workers are all already serving. Two workers makes "every worker is parked" reachable with a
+/// handful of requests instead of a hundred; the defect is identical at 8 workers and 9 requests.
+fn two_worker_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+/// Assert the runtime is STILL POLLING: spawn a trivial task (it needs a worker and nothing else —
+/// this is `/healthz`, the admin plane, and every other in-flight request, in miniature) and wait for
+/// it from OUTSIDE the runtime on wall-clock time.
+///
+/// The wait deliberately uses `std::thread::sleep` and `Instant`, never a Tokio timer: when every
+/// worker is parked inside plugin FFI the TIME DRIVER is parked with them, so a `tokio::time::timeout`
+/// does not fire either — it simply returns late, and the assertion it guards passes against a runtime
+/// that was dead for the whole window. (Observed: a `sleep(300ms).await` inside `block_on` on such a
+/// runtime returned at 12s, after the blocking tasks had drained.) Wall clock is the only honest
+/// instrument here.
+fn assert_runtime_still_polls(
+    rt: &tokio::runtime::Runtime,
+    budget: std::time::Duration,
+    msg: &str,
+) {
+    let canary = rt.spawn(async {});
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if canary.is_finished() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("{msg}");
+}
+
+/// UNAUTHENTICATED DATA PLANE. `GET /auth/token?method=…` is mounted on the DATA router
+/// (`main.rs`'s data-router mount) and the auth middleware bypasses that exact path, so ANONYMOUS
+/// callers reach `begin` — and `begin` calls the plugin's synchronous `begin_login`. Four concurrent
+/// anonymous requests on a two-worker runtime must not stop the runtime from polling anything else.
+#[test]
+fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
+    let rt = two_worker_runtime();
+    let app = rt.block_on(async {
+        crate::test_support::TestApp::new()
+            .public_url("https://busbar.example.com")
+            .login_method(
+                "ldap",
+                Box::new(ParkingLogin {
+                    park: std::time::Duration::from_secs(3),
+                    kind: LoginKind::Redirect,
+                }),
+                Some("REAL-CLIENT-SECRET".into()),
+                None,
+                true,
+            )
+            .build()
+    });
+    // Four anonymous begins — two more than the runtime has workers.
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let a = app.clone();
+            rt.spawn(async move { begin(&a, "ldap", false).await.status() })
+        })
+        .collect();
+    // Wall-clock (not a Tokio timer): let the begins actually reach the plugin.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_runtime_still_polls(
+        &rt,
+        std::time::Duration::from_millis(750),
+        "the runtime stopped polling while four ANONYMOUS /auth/token begins sat inside the login \
+         plugin's synchronous begin_login: every Tokio worker is parked in FFI, so nothing else in \
+         the process — other requests, the admin plane, /healthz — can run",
+    );
+    for t in tasks {
+        rt.block_on(async { t.await.ok() });
+    }
+}
+
+/// The credential POST (`POST /auth/token` carrying a login cookie) runs the plugin's
+/// `complete_login` — the LDAP/AD bind itself. The `__state` CSRF check does not gate an attacker:
+/// they call `begin` themselves and echo back the state from the cookie they were handed, which is
+/// exactly what this test does. Same anonymous reachability, same runtime-starvation shape.
+#[test]
+fn concurrent_credential_submit_does_not_starve_the_runtime() {
+    let rt = two_worker_runtime();
+    let (app, handle) = rt.block_on(async {
+        let app = crate::test_support::TestApp::new()
+            .public_url("https://busbar.example.com")
+            .login_method(
+                "ldap",
+                Box::new(ParkingLogin {
+                    park: std::time::Duration::from_secs(3),
+                    kind: LoginKind::Credential,
+                }),
+                None,
+                None,
+                true,
+            )
+            .build();
+        let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
+        (app, handle)
+    });
+    // The cookie an attacker mints for themselves by calling `begin` first — its `state` is theirs to
+    // echo in `__state`, so CSRF is satisfied without any prior authentication.
+    let cookie = LoginCookie {
+        method: "ldap".to_string(),
+        code_verifier: String::new(),
+        state: "S".to_string(),
+        nonce: String::new(),
+        refresh: false,
+    }
+    .encode();
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let (a, h, c) = (app.clone(), handle.clone(), cookie.clone());
+            rt.spawn(async move {
+                credential_submit(
+                    &a,
+                    &h,
+                    c,
+                    vec![
+                        (FORM_STATE_FIELD.to_string(), "S".to_string()),
+                        ("password".to_string(), "hunter2".to_string()),
+                    ],
+                )
+                .await
+                .status()
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_runtime_still_polls(
+        &rt,
+        std::time::Duration::from_millis(750),
+        "the runtime stopped polling while four ANONYMOUS credential POSTs sat inside the login \
+         plugin's synchronous complete_login",
+    );
+    for t in tasks {
+        rt.block_on(async { t.await.ok() });
+    }
+}

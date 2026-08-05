@@ -82,6 +82,37 @@ mark the line:
 Run `scripts/settings-leak-lint.sh --selftest` before trusting its verdict; CI
 runs both.
 
+### The blocking-FFI lint
+
+`scripts/blocking-ffi-lint.sh` enforces one rule: **a synchronous call into a
+dlopened plugin never runs on a Tokio worker.** Every plugin call is a C-ABI hop
+into out-of-tree code with real network I/O behind it — an LDAP/AD bind, a Vault
+fetch, a JWKS round trip — so one inline call in an `async fn` parks a worker for
+the plugin's full timeout, and N concurrent callers stop the runtime polling
+anything at all, `/healthz` included. The same defect has now been found in five
+independently written places, the last of them on `/auth/token`, which is mounted
+on the data router and bypassed by the auth middleware — so an *unauthenticated*
+caller chose the concurrency.
+
+The scanner tracks brace depth (to know when it is inside an `async fn`) and
+paren depth (so an offload opener — `spawn_blocking`, `Txn::read_store` /
+`store_write`, `hooks::offload_bounded`, `auth::token::offload_login_call` —
+covers its whole argument list, braced block or not). In-file `#[cfg(test)]`
+modules are exempt: test code serves no traffic.
+
+If you are adding a plugin call, route it through the offload seam that already
+exists for its kind, and **bound it** — `spawn_blocking` alone just moves the
+exhaustion to the shared 512-thread blocking pool, so take a semaphore permit and
+**fail closed** when you cannot get one. Only a boot-time call, or one in an
+`async fn` that is provably driven off the worker pool, may be marked:
+
+```rust
+// blocking-ffi-lint: allow — <reason, naming which and where>
+```
+
+Run `scripts/blocking-ffi-lint.sh --selftest` before trusting its verdict; CI
+runs both.
+
 The test suite is **in-crate**: a shared
 `#[cfg(test)] mod test_support` provides the `MockServer` harness, and each module
 carries its own `#[cfg(test)] mod tests`. There are no `tests/` integration
