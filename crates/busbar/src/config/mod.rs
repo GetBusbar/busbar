@@ -817,6 +817,30 @@ pub(crate) const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 /// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
 /// the built-in `admin-tokens` operator credential, which stays `None` (exempt, full by definition) —
 /// byte-identical to the pre-1.5.3 semantics.
+/// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the built-in
+/// `admin-tokens` operator credential; on any other module it is inert, so it is almost certainly a
+/// MISPLACED SECRET and must fail loud rather than sit in config doing nothing.
+///
+/// Shared by [`resolve_auth`] (which sees only providers REFERENCED from a chain) and by
+/// `NamedMapSection::parse_def` (which sees every DEFINITION the admin API writes, referenced or
+/// not). The definition-side call is the one that matters: `resolve_auth`'s check is keyed off the
+/// resolved chain, so a provider defined through the admin API and not yet referenced escaped it
+/// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
+/// once something named the provider.
+pub(crate) fn validate_token_placement(
+    name: &str,
+    module: &str,
+    has_token: bool,
+) -> Result<(), String> {
+    if has_token && module != ADMIN_TOKENS_MODULE {
+        return Err(format!(
+            "identity-providers.{name}: `token:` is the built-in `admin-tokens` operator \
+             credential and is meaningless on `module: {module}`"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_auth(
     auth: &AuthDeployCfg,
     providers: &IdentityProviders,
@@ -831,11 +855,8 @@ pub(crate) fn resolve_auth(
                         "identity-providers.{name}.module must be a non-empty module name"
                     ));
                 }
-                if def.token.is_some() && module != ADMIN_TOKENS_MODULE {
-                    errors.push(format!(
-                        "identity-providers.{name}: `token:` is the built-in `admin-tokens` \
-                         operator credential and is meaningless on `module: {module}`"
-                    ));
+                if let Err(e) = validate_token_placement(name, &module, def.token.is_some()) {
+                    errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
                     (module != ADMIN_TOKENS_MODULE).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())

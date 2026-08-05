@@ -641,9 +641,14 @@ fn validate_definition(
 ///
 /// Comparison is by the scope LATTICE (`Scope::allows`), never by string equality, so it stays
 /// correct if the scope model ever grows a rung. A ceiling token is reduced to a `Scope` by the SAME
-/// rule the auth middleware applies (`module_admin_scope_cap`): absent or unrecognized — including
-/// the documented `none` — is the most restrictive rung, so `none` is always accepted and can never
-/// read as a raise.
+/// rule the auth middleware applies (`module_admin_scope_cap`): absent is the most restrictive rung.
+///
+/// An UNRECOGNIZED token never reaches here: `NamedMapSection::parse_def` (run by the `validate_def`
+/// call above, before this guard) rejects it with the boot validator's own check, so a ceiling the
+/// engine would refuse to boot answers 400 rather than being read as "most restrictive, therefore
+/// never a raise" and applied. `none` was exactly that case — it is not a value; the most
+/// restrictive ceiling is `read-only` (or the key omitted), and granting NO admin authority is done
+/// by granting no `admin_scope` under the provider's `role_bindings:`.
 fn check_trust_ceiling(
     section: NamedMapSection,
     current: &App,
