@@ -208,9 +208,10 @@ pub(crate) struct SigningKeyRotateView {
 /// invariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses
 /// the PUT (`400`) instead of applying it in memory only — the silent-loss outcome is gone.
 /// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
-/// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
-/// read once at process start, and the durable `store` backend is reused across a hot reload — none
-/// can hot-swap, so they take effect on the next RESTART (or a supervisor restart), NEVER on a
+/// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the
+/// `admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend
+/// is reused across a hot reload — none can hot-swap, so they take effect on the next RESTART (or a
+/// supervisor restart), NEVER on a
 /// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
 /// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
 /// (no overlay); `note` names the affected fields instead. Everything else
