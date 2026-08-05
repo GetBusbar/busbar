@@ -588,7 +588,7 @@ def catalog_for(config_text, siblings):
 
 
 def validate(doc, busbar, scratch, siblings=()):
-    """-> (verdict, detail) where verdict is "ok" | "legacy" | "invalid" | "env"."""
+    """-> (verdict, detail): "ok" | "legacy" | "env" | "artifact" | "invalid" (see VERDICTS above)."""
     d = tempfile.mkdtemp(dir=scratch)
     cfg, prov = os.path.join(d, "config.yaml"), os.path.join(d, "providers.yaml")
     if doc.kind == "providers":
@@ -608,7 +608,12 @@ def validate(doc, busbar, scratch, siblings=()):
         return "ok", ""
     blob = r.stdout + r.stderr
     errs = [l for l in blob.splitlines() if l.startswith("[error]") or l.startswith("  - ")]
-    detail = "\n      ".join(errs) or blob.strip().splitlines()[-1:][0] if errs or blob.strip() else "exit %d" % r.returncode
+    if errs:
+        detail = "\n      ".join(errs)
+    elif blob.strip():
+        detail = blob.strip().splitlines()[-1]
+    else:
+        detail = "exit %d" % r.returncode
     if LEGACY_BANNER in blob:
         return "legacy", detail
     if any(p in blob for p in ENV_ERROR_PATTERNS):
