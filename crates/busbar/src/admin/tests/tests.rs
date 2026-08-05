@@ -12377,7 +12377,7 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         (
             "identity-providers",
             "base-idp",
-            serde_json::json!({"module": "keys", "max_admin_scope": "none"}),
+            serde_json::json!({"module": "keys", "max_admin_scope": "read-only"}),
         ),
         (
             "export",

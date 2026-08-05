@@ -12,6 +12,7 @@ pub(crate) mod overlay;
 pub(crate) mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
 pub(crate) mod migrate;
+pub(crate) mod migrate_export;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub(crate) mod named_map;
@@ -496,7 +497,7 @@ pub(crate) struct TlsCfg {
 /// ```yaml
 /// identity-providers:
 ///   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
-///   corp-ad:      { module: ad, settings: { server: "ldaps://corp" }, max_admin_scope: none }
+///   corp-ad:      { module: ad, settings: { server: "ldaps://corp" }, max_admin_scope: read-only }
 /// auth:
 ///   chain:      [keys, corp-ad]     # ← bare NAMES
 ///   admin_auth: [admin-tokens, corp-ad]
@@ -517,7 +518,18 @@ pub(crate) struct IdentityProviderCfg {
     /// plugin name/alias resolved through the validated plugin registry. REQUIRED, non-empty.
     pub(crate) module: String,
     /// Ceiling on the ADMIN scope obtainable through THIS PROVIDER, regardless of what
-    /// `role_bindings:` grants: `none` | `read-only` | `full`.
+    /// `role_bindings:` grants. The accepted values are exactly `read-only` and `full` — the two
+    /// `crate::admin::v1::contract::Scope::parse` knows. Anything else is a HARD BOOT ERROR
+    /// ("unknown max_admin_scope '…': expected read-only or full"): [`resolve_auth`] copies this
+    /// value onto the RESOLVED `AuthChainEntry` for every provider named in `auth.chain:` /
+    /// `auth.admin_auth:`, and `config_validate`'s chain-entry rule parses every one of those. It is
+    /// never a silently-ignored key.
+    ///
+    /// THERE IS NO `none`. To grant NO admin authority through a provider, grant no `admin_scope`
+    /// under that provider's `role_bindings:` — the ceiling caps what a grant can reach, it cannot
+    /// express the absence of one. (An earlier version of this comment listed `none`, and every doc
+    /// page and example config copied it from here; they told operators to write a config the binary
+    /// refuses. The value list and the "absent = most restrictive" prose below now agree.)
     ///
     /// 1.5.3 moved this ONTO the definition (audit §2): it used to sit on a data-plane CHAIN entry,
     /// which was incoherent — an admin ceiling is a property of the identity source, not of one

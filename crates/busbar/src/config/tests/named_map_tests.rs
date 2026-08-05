@@ -52,7 +52,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
         .insert(
             &mut deploy,
             "corp-ad",
-            &serde_json::json!({"module": "ad", "max_admin_scope": "none"}),
+            &serde_json::json!({"module": "ad", "max_admin_scope": "read-only"}),
         )
         .expect("a well-formed identity-provider definition is accepted");
     assert_eq!(deploy.identity_providers["corp-ad"].module, "ad");
@@ -60,7 +60,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
         deploy.identity_providers["corp-ad"]
             .max_admin_scope
             .as_deref(),
-        Some("none")
+        Some("read-only")
     );
 
     let err = NamedMapSection::Export
