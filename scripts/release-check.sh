@@ -88,39 +88,357 @@
 #   scripts/release-check.sh                # run every phase
 #   scripts/release-check.sh --skip-docker   # skip service-backed suite phases (fast local
 #                                             # iteration only; NEVER a green release gate)
+#   scripts/release-check.sh --list-phases   # machine-readable phase ids (one per line), exit 0
+#   scripts/release-check.sh --list-segments # machine-readable "<partition> <segment>" pairs
+#   scripts/release-check.sh --check-coverage # assert every partition's segments EXACTLY tile the
+#                                             # phase set (no hole, no overlap); exit 1 on either
+#   scripts/release-check.sh --segment <id>  # run ONLY that segment's phases (see SEGMENTATION)
+#
+# SEGMENTATION (1.5.3 unit G, made real)
+#   The gate is a set of independently-runnable PHASES. `--list-phases` emits their ids; the ids
+#   mirror the script's own numbering (phase-0a2-…, phase-0c-…, phase-1-…, phase-2-suite-<repo>,
+#   phase-5-smoke-<name>, …). The `phase-2-suite-*` ids are DERIVED FROM plugins.yaml, so adding a
+#   `gate: suite` plugin adds its phase id with zero edits here.
+#
+#   A SEGMENT is a named set of phases; a PARTITION is a named set of segments that must tile the
+#   phase set EXACTLY. Two partitions are defined below:
+#     live    core-data-plane + plugins — the aggregate form, where one `plugins` leg carries every
+#             plugin phase.
+#     fanout  core-data-plane + plugin-<repo> for EVERY plugins.yaml entry — the per-plugin fan-out.
+#             This is exactly what scripts/qa-segments.sh emits once its capability probe sees the
+#             `plugin-*` token from --list-segments: it suppresses the aggregate `plugins` stand-in
+#             and expands one leg per registry entry. Every entry gets a leg regardless of its
+#             `gate` (suite/binary/smoke), so no registry entry can produce a matrix leg whose run
+#             command exits 2.
+#   `--check-coverage` validates BOTH. A phase in zero segments of a partition is a silent coverage
+#   hole (segmentation quietly testing less); a phase in two is wasted wall clock. Both are hard
+#   errors that name the phase and the partition.
+#
+#   Phase 0 (build busbar + busbar-plugin-pack) is deliberately NOT a partitionable phase: it is
+#   FIXED SETUP that any segment containing a binary-driving phase must pay. It is therefore excluded
+#   from the phase set, and SKIPPED ENTIRELY when the selected segment needs no busbar binary (every
+#   `phase-2-suite-*` phase only runs `cargo test` in a sibling checkout). That skip is the whole
+#   reason a per-plugin fan-out can be faster rather than N-times slower.
 #
 # FAILURE POLICY
 #   Fail-fast: `set -euo pipefail` plus an ERR trap that names the failing command. Every
 #   docker container and every temp file/dir this script creates is torn down on exit — success,
 #   failure, or signal — via a single EXIT trap. Safe to re-run; never leaves stray containers.
 
-set -euo pipefail
+# -E so the ERR trap below is INHERITED by shell functions. Without it the trap only fires at top
+# level, and every failure inside run_saturation_soak / run_store_backend_e2e / run_validate_smoke
+# (i.e. most of the gate) exits silently with no "RELEASE GATE FAILED during phase: X" banner and no
+# timing summary — observed on a real failing run. The FAILURE POLICY note above already promises
+# "an ERR trap that names the failing command"; -E is what makes that true.
+set -eEuo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 
 SKIP_DOCKER=0
-# SEGMENT (1.5.3, unit G qa-gate segmentation): names WHICH preserved qa-gate segment this invocation
-# stands in for. `core-data-plane` (routing/proxy/admission/failover + budgets/rps + auth/SSO) and
-# `plugins` (plugin ABI / loader / fleet) are the two live-mock segments qa/segments.toml maps onto
-# THIS script so NO current coverage is lost (design §6 invariant). Today a segment label runs the
-# FULL gate (coverage-preserving) and records which segment it is; per-segment PHASE PARTITIONING —
-# running only the core-data-plane phases vs only the plugin-fleet phases — is a documented additive
-# refinement (TODO), not a behavior change. An unknown segment is a loud error, never a silent full run.
+# SEGMENT (1.5.3, unit G qa-gate segmentation): names WHICH qa-gate segment this invocation runs.
+# It now GENUINELY PARTITIONS THE PHASES — `--segment core-data-plane` runs only the core-data-plane
+# phases, `--segment plugin-store-postgres` runs only that plugin's suite phase. An unknown segment
+# is a loud error, never a silent full run.
 SEGMENT=""
+LIST_PHASES=0
+LIST_SEGMENTS=0
+CHECK_COVERAGE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --skip-docker) SKIP_DOCKER=1 ;;
+    --list-phases) LIST_PHASES=1 ;;
+    --list-segments) LIST_SEGMENTS=1 ;;
+    --check-coverage) CHECK_COVERAGE=1 ;;
     --segment) shift; SEGMENT="${1:-}" ;;
     --segment=*) SEGMENT="${1#--segment=}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
-case "$SEGMENT" in
-  "" | core-data-plane | plugins) : ;;
-  *) echo "unknown --segment '$SEGMENT' (expected: core-data-plane | plugins)" >&2; exit 2 ;;
-esac
-[ -z "$SEGMENT" ] || echo "=== release-check: qa-gate segment '${SEGMENT}' (full coverage-preserving gate; per-segment phase partitioning is a TODO) ==="
+
+# ══ PHASE REGISTRY ════════════════════════════════════════════════════════════════════════════════
+# The single in-script source of truth for "what phases exist". Parallel arrays, not associative
+# ones: this script targets bash 3.2 (the macOS system bash), same constraint as the BG_PIDS indexing
+# below. Each phase carries whether it NEEDS the Phase 0 busbar/pack binaries — that flag is what
+# lets a suite-only segment skip the single most expensive fixed cost in the whole gate.
+PHASE_IDS=()
+PHASE_NEEDS_BIN=()
+PHASE_DESC=()
+add_phase() { PHASE_IDS+=("$1"); PHASE_NEEDS_BIN+=("$2"); PHASE_DESC+=("$3"); }
+
+# The `gate: suite` phases are derived from plugins.yaml (the registry is the single source of truth
+# for "what plugins exist"), so a new suite plugin gets a phase id here with zero edits to this file.
+# Read up front, not lazily: a parse/shape failure must fail loudly rather than yield an empty gate.
+REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
+[ -n "$REGISTRY_LIST" ] || { echo "plugin-registry-check.sh --list returned an empty registry" >&2; exit 1; }
+
+# EVERY registry entry maps to exactly one phase id, keyed off its `gate` column. This is what lets
+# `--segment plugin-<repo>` work for ALL TEN registry plugins rather than only the seven `gate: suite`
+# ones: scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
+# registry entry with no accepted segment here would emit a matrix leg whose run command exits 2.
+#   suite  -> phase-2-suite-<repo>    (sibling repo's own cargo test; needs no busbar binary)
+#   binary -> phase-1-<alias>-binary  (store-sqlite's full-binary/HTTP/restart-durability phase)
+#   smoke  -> phase-5-smoke-<alias>   (the hook plugins' --validate dlopen smokes)
+plugin_phase_id() {
+  local want="$1" r a g
+  while IFS=$'\t' read -r r _ a _ _ _ g _; do
+    if [ "$r" = "$want" ]; then
+      case "$g" in
+        suite)  echo "phase-2-suite-${r}" ;;
+        binary) echo "phase-1-${a}-binary" ;;
+        smoke)  echo "phase-5-smoke-${a}" ;;
+        *) echo "plugins.yaml entry '${r}' has unknown gate '${g}'" >&2; return 1 ;;
+      esac
+      return 0
+    fi
+  done <<<"$REGISTRY_LIST"
+  return 1
+}
+all_plugin_repos() {
+  local r
+  while IFS=$'\t' read -r r _ _ _ _ _ _ _; do
+    if [ -n "$r" ]; then echo "$r"; fi
+  done <<<"$REGISTRY_LIST"
+  return 0
+}
+list_plugin_phase_ids() {
+  local r
+  while read -r r; do
+    if [ -n "$r" ]; then plugin_phase_id "$r"; fi
+  done <<<"$(all_plugin_repos)"
+  return 0
+}
+# phase-2-suite-<repo> -> the registry service that phase needs a container for ("none" if any).
+suite_phase_service() {
+  local want="${1#phase-2-suite-}" r s g
+  while IFS=$'\t' read -r r _ _ _ s _ g _; do
+    if [ "$g" = "suite" ] && [ "$r" = "$want" ]; then echo "$s"; return 0; fi
+  done <<<"$REGISTRY_LIST"
+  echo "none"
+  return 0
+}
+
+add_phase phase-0a2-signing-key  yes "Phase 0a2: signing-key requirement (fail-closed then green)"
+add_phase phase-0c-soak-reject   yes "Phase 0c: saturation soak — on_exhausted: reject"
+add_phase phase-0c-soak-queue    yes "Phase 0c: saturation soak — on_exhausted: queue{max_ms}"
+# One phase per registry entry, in registry order. `gate: suite` phases need no busbar binary (they
+# only run cargo test in a sibling checkout); binary/smoke phases drive the real binary and do.
+while read -r _pr; do
+  [ -n "$_pr" ] || continue
+  _pid="$(plugin_phase_id "$_pr")"
+  case "$_pid" in
+    phase-2-suite-*) add_phase "$_pid" no  "Phase 2: sibling-suite gate for ${_pr}" ;;
+    *)               add_phase "$_pid" yes "plugin phase for ${_pr}" ;;
+  esac
+done <<<"$(all_plugin_repos)"
+add_phase phase-admin-cli          yes "Phase: busbar-admin CLI driven against the fresh busbar"
+add_phase phase-152-feature-gate   yes "Phase: 1.5.2 feature gate (plugins.fetch + token-exchange + admin authz)"
+
+all_phase_ids() { printf '%s\n' ${PHASE_IDS[@]+"${PHASE_IDS[@]}"}; }
+
+phase_needs_binary() {
+  local i=0
+  while [ "$i" -lt "${#PHASE_IDS[@]}" ]; do
+    if [ "${PHASE_IDS[$i]}" = "$1" ]; then
+      if [ "${PHASE_NEEDS_BIN[$i]}" = "yes" ]; then return 0; else return 1; fi
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# ══ SEGMENT / PARTITION TABLE ═════════════════════════════════════════════════════════════════════
+# EXPLICIT assignment on purpose: a derived complement ("everything the other segment does not take")
+# can never have a hole, which would make --check-coverage unfalsifiable theatre. These lists are
+# hand-maintained, so forgetting to place a newly-added phase IS possible — and is exactly what
+# --check-coverage catches.
+PARTITIONS="live fanout"
+
+partition_segments() {
+  case "$1" in
+    live) echo "core-data-plane"; echo "plugins" ;;
+    fanout)
+      # EXACTLY what scripts/qa-segments.sh emits when its per-plugin fan-out goes live: the
+      # aggregate `plugins` stand-in is suppressed and replaced by one plugin-<repo> leg per
+      # plugins.yaml entry, alongside the unchanged core-data-plane leg.
+      echo "core-data-plane"
+      local pr
+      while read -r pr; do
+        if [ -n "$pr" ]; then echo "plugin-${pr}"; fi
+      done <<<"$(all_plugin_repos)"
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# Prints the phase ids belonging to a segment, one per line. Empty output = unknown segment.
+segment_phases() {
+  local seg="$1" want
+  case "$seg" in
+    # ── partition: live (mirrors qa/segments.toml's two active live-mock segments) ──
+    core-data-plane)
+      echo phase-0a2-signing-key
+      echo phase-0c-soak-reject
+      echo phase-0c-soak-queue
+      echo phase-admin-cli
+      echo phase-152-feature-gate
+      ;;
+    # The aggregate plugin stand-in: every plugin phase in one leg. qa-segments.sh SUPPRESSES this
+    # segment once the per-plugin fan-out is live, so exactly one of {plugins, plugin-*} ever runs.
+    plugins)
+      list_plugin_phase_ids
+      ;;
+    # ── partition: fanout (core-data-plane + one segment per plugins.yaml entry) ──
+    # Not a hand-written list: whatever plugin_phase_id() maps the entry to, that one phase is the
+    # leg. So a registry entry can never lack a runnable segment, whatever its `gate`.
+    plugin-*)
+      want="${seg#plugin-}"
+      plugin_phase_id "$want" 2>/dev/null || true
+      ;;
+  esac
+  return 0
+}
+
+# ── --list-phases ─────────────────────────────────────────────────────────────────────────────────
+if [ "$LIST_PHASES" = "1" ]; then
+  all_phase_ids
+  exit 0
+fi
+
+# ── --list-segments ───────────────────────────────────────────────────────────────────────────────
+# CONTRACT (consumed by scripts/qa-segments.sh's capability probe): print, one per line, the segment
+# tokens this script accepts, and exit 0. The literal token `plugin-*` is emitted to ADVERTISE that
+# per-plugin segments are supported — qa-segments.sh probes for exactly that line
+# (`--list-segments | grep -qx 'plugin-\*'`) and, until it appears, falls back to the aggregate
+# `plugins` segment. It is a capability marker, NOT a runnable segment id; the concrete
+# `plugin-<repo>` ids printed alongside it are the runnable ones.
+# Bare tokens only (no partition prefix): the probe is an exact whole-line match.
+if [ "$LIST_SEGMENTS" = "1" ]; then
+  # Deduped: core-data-plane belongs to BOTH partitions, but this is a set of accepted tokens.
+  {
+    for _part in $PARTITIONS; do
+      while read -r _seg; do
+        if [ -n "$_seg" ]; then echo "$_seg"; fi
+      done <<<"$(partition_segments "$_part")"
+    done
+    echo 'plugin-*'
+  } | awk '!seen[$0]++'
+  exit 0
+fi
+
+# ── --check-coverage ──────────────────────────────────────────────────────────────────────────────
+# For EVERY partition: the union of its segments' phase sets must equal the full phase set exactly.
+#   phase in ZERO segments -> COVERAGE HOLE. This is the failure that matters: segmentation quietly
+#                             testing less than the unsegmented gate, while still reporting green.
+#   phase in TWO segments   -> DUPLICATE. Not a correctness hole, but wasted wall clock, which is the
+#                             entire point of segmenting, so it is also a hard error.
+# Also fails if a segment claims a phase id that does not exist (a typo'd/renamed assignment).
+if [ "$CHECK_COVERAGE" = "1" ]; then
+  cov_rc=0
+  for _part in $PARTITIONS; do
+    echo "=== coverage check: partition '${_part}' ==="
+    _assigned=""
+    while read -r _seg; do
+      [ -n "$_seg" ] || continue
+      _sp="$(segment_phases "$_seg")"
+      if [ -z "$_sp" ]; then
+        echo "  ERROR [${_part}]: segment '${_seg}' resolves to NO phases (unknown or empty segment)" >&2
+        cov_rc=1
+        continue
+      fi
+      echo "  segment '${_seg}': $(echo "$_sp" | grep -c . || true) phase(s)"
+      while read -r _p; do
+        [ -n "$_p" ] || continue
+        if ! all_phase_ids | grep -qx -- "$_p"; then
+          echo "  ERROR [${_part}]: segment '${_seg}' claims UNKNOWN phase '${_p}'" >&2
+          cov_rc=1
+        fi
+        _assigned="${_assigned}${_p}"$'\n'
+      done <<<"$_sp"
+    done <<<"$(partition_segments "$_part")"
+
+    while read -r _p; do
+      [ -n "$_p" ] || continue
+      _n="$(printf '%s' "$_assigned" | grep -cx -- "$_p" || true)"
+      if [ "$_n" -eq 0 ]; then
+        echo "  ERROR [${_part}]: COVERAGE HOLE — phase '${_p}' is in ZERO segments." >&2
+        echo "         Segmenting on this partition would SILENTLY TEST LESS than the full gate." >&2
+        cov_rc=1
+      elif [ "$_n" -gt 1 ]; then
+        echo "  ERROR [${_part}]: DUPLICATE — phase '${_p}' is in ${_n} segments." >&2
+        echo "         It would run ${_n} times, wasting the wall clock segmenting is meant to save." >&2
+        cov_rc=1
+      fi
+    done <<<"$(all_phase_ids)"
+
+    if [ "$cov_rc" = "0" ]; then
+      echo "  [ok] partition '${_part}' tiles all $(all_phase_ids | grep -c . || true) phases exactly once"
+    fi
+  done
+  if [ "$cov_rc" != "0" ]; then
+    echo >&2
+    echo "!!! SEGMENT COVERAGE CHECK FAILED — do not segment the gate on this assignment !!!" >&2
+    exit 1
+  fi
+  echo "[ok] every partition tiles the full phase set exactly once"
+  exit 0
+fi
+
+# ── --segment: resolve the selected phase set ─────────────────────────────────────────────────────
+# SELECTED_PHASES empty means "every phase" (an unsegmented full-gate run).
+SELECTED_PHASES=""
+if [ -n "$SEGMENT" ]; then
+  SELECTED_PHASES="$(segment_phases "$SEGMENT")"
+  if [ -z "$SELECTED_PHASES" ]; then
+    echo "unknown --segment '$SEGMENT'. Known segments (partition segment):" >&2
+    for _part in $PARTITIONS; do
+      while read -r _seg; do
+        if [ -n "$_seg" ]; then echo "  ${_part} ${_seg}" >&2; fi
+      done <<<"$(partition_segments "$_part")"
+    done
+    exit 2
+  fi
+  echo "════════════════════════════════════════════════════════════════════════════"
+  echo "=== release-check: qa-gate segment '${SEGMENT}' — running ONLY its phases ==="
+  echo "════════════════════════════════════════════════════════════════════════════"
+  while read -r _p; do
+    if [ -n "$_p" ]; then echo "  ${_p}"; fi
+  done <<<"$SELECTED_PHASES"
+fi
+
+phase_selected() {
+  # Explicit if/return rather than `[ ... ] && return 0`: that idiom yields a nonzero status for the
+  # whole function when the test fails, which trips `set -e` at any call site not in a condition.
+  if [ -z "$SELECTED_PHASES" ]; then return 0; fi
+  if printf '%s\n' "$SELECTED_PHASES" | grep -qx -- "$1"; then return 0; fi
+  return 1
+}
+
+# Does ANY selected phase need the Phase 0 busbar/pack build? If not, Phase 0 is skipped outright —
+# the fixed-cost saving that makes a per-plugin fan-out worth doing.
+any_selected_needs_binary() {
+  local p
+  while read -r p; do
+    [ -n "$p" ] || continue
+    if phase_needs_binary "$p"; then return 0; fi
+  done <<<"$(if [ -z "$SELECTED_PHASES" ]; then all_phase_ids; else printf '%s\n' "$SELECTED_PHASES"; fi)"
+  return 1
+}
+
+# Does ANY selected phase need a Docker service container? Drives the Docker preflight, so a
+# service-less segment (e.g. plugin-auth-oidc) no longer hard-fails on a machine without Docker.
+any_selected_needs_service() {
+  local p
+  while read -r p; do
+    case "$p" in
+      phase-2-suite-*)
+        if [ "$(suite_phase_service "$p")" != "none" ]; then return 0; fi
+        ;;
+    esac
+  done <<<"$(if [ -z "$SELECTED_PHASES" ]; then all_phase_ids; else printf '%s\n' "$SELECTED_PHASES"; fi)"
+  return 1
+}
 
 # ── Fail-fast diagnostics ────────────────────────────────────────────────────────────────────────
 SECONDS=0
@@ -130,6 +448,9 @@ on_err() {
   echo
   echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${ec}) !!!"
   echo "    Elapsed: ${SECONDS}s. This means: DO NOT TAG THIS RELEASE."
+  # Timings so far are still the most useful thing a failed run can hand back.
+  end_phase "FAILED" 2>/dev/null || true
+  print_timing_summary 2>/dev/null || true
   exit "$ec"
 }
 trap on_err ERR
@@ -144,6 +465,67 @@ phase() {
 
 ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
+
+# ── Per-phase wall-clock accounting ───────────────────────────────────────────────────────────────
+# The point of segmenting is to shrink max(segment_duration), and you cannot minimise what you do not
+# measure. Every phase records its own wall clock; the run ends with a summary sorted longest-first,
+# and the FIXED SETUP cost (Phase 0's cargo build — paid once per INVOCATION, so N times under a
+# per-plugin fan-out) is reported SEPARATELY from per-phase test time, because those two numbers
+# answer different questions: fixed setup decides whether fanning out helps at all, per-phase test
+# time decides where the critical path is once you have fanned out.
+PHASE_RUN_IDS=()
+PHASE_RUN_SECS=()
+PHASE_RUN_STATUS=()
+CURRENT_PHASE_ID=""
+CURRENT_PHASE_T0=0
+SETUP_SECS=0
+
+begin_phase() { CURRENT_PHASE_ID="$1"; CURRENT_PHASE_T0=$SECONDS; phase "$2"; }
+
+end_phase() {
+  [ -n "$CURRENT_PHASE_ID" ] || return 0
+  local d=$((SECONDS - CURRENT_PHASE_T0))
+  PHASE_RUN_IDS+=("$CURRENT_PHASE_ID")
+  PHASE_RUN_SECS+=("$d")
+  PHASE_RUN_STATUS+=("${1:-ran}")
+  echo "  [time] ${CURRENT_PHASE_ID}: ${d}s (${1:-ran})"
+  CURRENT_PHASE_ID=""
+}
+
+record_phase_skip() {
+  PHASE_RUN_IDS+=("$1")
+  PHASE_RUN_SECS+=(0)
+  PHASE_RUN_STATUS+=("${2:-skipped}")
+}
+
+print_timing_summary() {
+  local i=0 total=0
+  echo
+  echo "════════════════════════════════════════════════════════════════════════════"
+  echo "=== TIMING SUMMARY${SEGMENT:+ (segment: ${SEGMENT})} ==="
+  echo "════════════════════════════════════════════════════════════════════════════"
+  echo "FIXED SETUP (per invocation, paid once per parallel job):"
+  echo "  phase-0-build (cargo build --release -p busbar -p busbar-plugin-pack): ${SETUP_SECS}s"
+  echo
+  # Total is summed in THIS shell first: the print loop below feeds a pipeline (subshell), so any
+  # accumulation done inside it would be discarded.
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    total=$((total + PHASE_RUN_SECS[i]))
+    i=$((i + 1))
+  done
+  echo "PER-PHASE TEST TIME (longest first):"
+  i=0
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    printf '%08d\t%s\t%s\n' "${PHASE_RUN_SECS[$i]}" "${PHASE_RUN_IDS[$i]}" "${PHASE_RUN_STATUS[$i]}"
+    i=$((i + 1))
+  done | sort -rn | while IFS=$'\t' read -r s p st; do
+    printf '  %6ss  %-34s %s\n' "$((10#$s))" "$p" "$st"
+  done
+  echo
+  echo "  phase test time total : ${total}s"
+  echo "  fixed setup           : ${SETUP_SECS}s"
+  echo "  wall clock (this job) : ${SECONDS}s"
+}
 
 # ── Cleanup registry: docker containers, background PIDs, temp dirs. Torn down on ANY exit. ───────
 DOCKER_CONTAINERS=()
@@ -263,15 +645,28 @@ PYEOF
   echo "$pid"
 }
 
-# ── Build the busbar binary + the packer (shared by every phase) ───────────────────────────────────
-phase "Phase 0: build busbar binary + busbar-plugin-pack"
-cargo build --release -p busbar -p busbar-plugin-pack
+# ── Build the busbar binary + the packer (FIXED SETUP, shared by every binary-driving phase) ───────
+# NOT a partitionable phase: it is the cost of standing the gate up, and every parallel job that runs
+# any binary-driving phase pays it in full. Under a per-plugin fan-out that means N x this number, so
+# it is measured and reported separately. A segment made only of `phase-2-suite-*` phases (which just
+# run `cargo test` inside a sibling checkout) needs neither binary, so it skips this outright.
 BUSBAR_BIN="${REPO_ROOT}/target/release/busbar"
 PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
-[ -x "$BUSBAR_BIN" ] || { echo "busbar binary not found at $BUSBAR_BIN" >&2; exit 1; }
-[ -x "$PACK_BIN" ] || { echo "busbar-plugin-pack not found at $PACK_BIN" >&2; exit 1; }
-ok "busbar binary: $BUSBAR_BIN"
-ok "busbar-plugin-pack: $PACK_BIN"
+if any_selected_needs_binary; then
+  phase "Phase 0: build busbar binary + busbar-plugin-pack (FIXED SETUP)"
+  _setup_t0=$SECONDS
+  cargo build --release -p busbar -p busbar-plugin-pack
+  [ -x "$BUSBAR_BIN" ] || { echo "busbar binary not found at $BUSBAR_BIN" >&2; exit 1; }
+  [ -x "$PACK_BIN" ] || { echo "busbar-plugin-pack not found at $PACK_BIN" >&2; exit 1; }
+  SETUP_SECS=$((SECONDS - _setup_t0))
+  ok "busbar binary: $BUSBAR_BIN"
+  ok "busbar-plugin-pack: $PACK_BIN"
+  echo "  [time] FIXED SETUP (phase-0 build): ${SETUP_SECS}s"
+else
+  phase "Phase 0: SKIPPED — no selected phase needs the busbar binary (suite-only segment)"
+  note "segment '${SEGMENT}' runs only sibling-suite phases; the busbar/pack release build is not"
+  note "built at all. This is the fixed-cost saving that makes a per-plugin fan-out worthwhile."
+fi
 
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
 #    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-valkey,
@@ -286,6 +681,7 @@ ok "no in-tree plugin tarballs to pack"
 
 ls -l "$PLUGIN_DIST"
 
+
 # ── Phase 0a2: signing-key requirement — the exact end-user flow, fail-closed then green ────────────
 #
 # 1.5.1+: busbar NO LONGER auto-generates a signing key. A config naming the built-in `keys` verifier
@@ -295,7 +691,10 @@ ls -l "$PLUGIN_DIST"
 #   (1) keys verifier + a usable admin mint path but NO signing_key  → --validate FAILS with that error
 #   (2) `busbar --generate-signing-key` + auth.signing_key set        → --validate SUCCEEDS
 # This is the regression twin of the core config-validate test (test_keys_chain_without_signing_key_is_boot_error).
-phase "Phase 0a2: signing-key requirement — keys verifier without signing_key fail-closes, with it validates"
+if ! phase_selected phase-0a2-signing-key; then
+  record_phase_skip phase-0a2-signing-key "not-in-segment"
+else
+begin_phase phase-0a2-signing-key "Phase 0a2: signing-key requirement — keys verifier without signing_key fail-closes, with it validates"
 sk_work="$(new_tmpdir)"
 cat >"${sk_work}/providers.yaml" <<EOF
 mock:
@@ -365,6 +764,8 @@ BUSBAR_CONFIG="${sk_work}/config-key.yaml" BUSBAR_PROVIDERS="${sk_work}/provider
   MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
   "$BUSBAR_BIN" --validate
 ok "keys verifier WITH a generated signing_key validates clean"
+end_phase ran
+fi
 
 # ── Phase 0c: lane-saturation soak — the Bug-1 SLO, proven end-to-end against the real binary ──────
 #
@@ -420,8 +821,13 @@ EOF
 listen: "127.0.0.1:${SOAK_LISTEN_PORT}"
 auth:
   chain: []
-metrics:
-  buffer_seconds: 60
+# 1.5.3 retired the top-level \`metrics:\` block; it is now an \`export:\` instance backed by the
+# \`prometheus\` module. The old shape is a detect_legacy_markers hit, so busbar REFUSES TO BOOT on it
+# ("this looks like a busbar 1.x config"), which made both soak scenarios fail with nothing but a
+# /healthz timeout. The soak needs /metrics for its busbar_pool_queued assertion, so this instance is
+# load-bearing, not decoration.
+export:
+  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
 providers:
   slow:
     api_key: { env: MOCK_KEY }
@@ -461,9 +867,15 @@ run_saturation_soak() {
   local budget_ms=5000
   SOAK_WORK="$(new_tmpdir)"
   local marker="soak-$$-${RANDOM}"
+  # Declared up front (not inside scenario A) so scenario B is genuinely independent of it: either
+  # scenario can be selected on its own by --segment.
+  local mock_pid pid lane i r code ra ms holder qholder q1 q2 qseen qval q f ho
 
   # ---- Scenario A: on_exhausted: reject ----
-  phase "Phase 0c: saturation soak — on_exhausted: reject (real binary, real HTTP, max_concurrent=1)"
+  if ! phase_selected phase-0c-soak-reject; then
+    record_phase_skip phase-0c-soak-reject "not-in-segment"
+  else
+  begin_phase phase-0c-soak-reject "Phase 0c: saturation soak — on_exhausted: reject (real binary, real HTTP, max_concurrent=1)"
   echo "  starting latency-injecting mock upstream on 127.0.0.1:${SOAK_MOCK_PORT} (delay=2.0s)"
   # NB: call as a statement with stdout to /dev/null (never `$(...)`) — the mock's serve_forever holds
   # its inherited stdout open, so a command substitution would block forever. It records its own pid
@@ -507,9 +919,15 @@ run_saturation_soak() {
   ok "holder dispatched 200 within budget (${ms}ms) — the ELIGIBLE request was served, not starved"
   kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
   kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
+  end_phase ran
+  fi
 
   # ---- Scenario B: on_exhausted: queue{max_ms} ----
-  phase "Phase 0c: saturation soak — on_exhausted: queue{max_ms:2000} (bounded wait, no unbounded park)"
+  if ! phase_selected phase-0c-soak-queue; then
+    record_phase_skip phase-0c-soak-queue "not-in-segment"
+    return 0
+  fi
+  begin_phase phase-0c-soak-queue "Phase 0c: saturation soak — on_exhausted: queue{max_ms:2000} (bounded wait, no unbounded park)"
   echo "  starting latency-injecting mock upstream on 127.0.0.1:${SOAK_MOCK_PORT} (delay=3.0s > max_ms)"
   start_mock_upstream "$SOAK_MOCK_PORT" "$marker" 3.0 >/dev/null
   mock_pid="${BG_PIDS[$((${#BG_PIDS[@]} - 1))]}"
@@ -553,9 +971,16 @@ run_saturation_soak() {
   kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
   kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
   ok "saturation soak complete: elapsed=${SECONDS}s"
+  end_phase ran
 }
 
-run_saturation_soak
+# Only stand the soak up at all if at least one of its two scenarios is in the segment.
+if phase_selected phase-0c-soak-reject || phase_selected phase-0c-soak-queue; then
+  run_saturation_soak
+else
+  record_phase_skip phase-0c-soak-reject "not-in-segment"
+  record_phase_skip phase-0c-soak-queue "not-in-segment"
+fi
 
 # ── Shared traffic-and-restart-survival driver, parameterized by store module/settings ─────────────
 # 1. writes config.yaml + providers.yaml exactly matching docs/getting-started.md +
@@ -718,8 +1143,10 @@ EOF
 #    prove busbar's real HTTP + restart-durability story against it when the sibling is available
 #    locally (dockerless, fastest feedback loop of the three backends). ────────────────────────────
 STORE_SQLITE_SRC="${REPO_ROOT}/../store-sqlite"
-if [ -d "$STORE_SQLITE_SRC" ]; then
-  phase "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
+if ! phase_selected phase-1-sqlite-binary; then
+  record_phase_skip phase-1-sqlite-binary "not-in-segment"
+elif [ -d "$STORE_SQLITE_SRC" ]; then
+  begin_phase phase-1-sqlite-binary "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
   note "store-sqlite no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
   note "same-repo 2-crate workspace (busbar-store-sqlite + busbar-store-sqlite-plugin). Its own"
   note "store-sqlite-plugin/tests/e2e.rs already covers the hermetic in-process dlopen ABI path."
@@ -740,11 +1167,13 @@ if [ -d "$STORE_SQLITE_SRC" ]; then
   SQLITE_DB="$(new_tmpdir)/governance.db"
   run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
   ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
+  end_phase ran
 else
   echo "SKIP: ../store-sqlite not present as a sibling checkout on this machine." >&2
   echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2
   echo "coverage before tagging, or confirm that repo's own CI is green." >&2
   SQLITE_SKIPPED=1
+  record_phase_skip phase-1-sqlite-binary "sibling-missing"
 fi
 
 # ── Phase 2: the registry-driven sibling-suite loop ───────────────────────────────────────────────
@@ -771,7 +1200,13 @@ fi
 # cover every non-suite registry entry.
 phase "Phase 2: registry-driven sibling-suite gates (gate: suite in plugins.yaml)"
 
-if [ "$SKIP_DOCKER" = "1" ]; then
+# Docker preflight is now scoped to the SELECTED phases: a segment whose suite phases all declare
+# `service: none` (e.g. plugin-auth-oidc) genuinely does not need Docker, and must not hard-fail on a
+# machine without it. A segment that DOES need a container still fails loudly up front, because
+# "gate incomplete" must never look like "gate green".
+if ! any_selected_needs_service; then
+  note "no selected phase needs a service container — skipping the Docker preflight."
+elif [ "$SKIP_DOCKER" = "1" ]; then
   note "SKIP_DOCKER set — suites needing a service container will be skipped. This is NOT a valid release gate run."
 else
   if ! docker ps >/dev/null 2>&1; then
@@ -785,15 +1220,17 @@ fi
 SUITE_PASSED=()
 SUITE_SKIPPED=()
 
-# Capture the registry feed up front (NOT via process substitution into the loop): a parse/shape
-# failure must fail THIS gate loudly under set -e, never degrade to an empty loop that looks green.
-REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
-[ -n "$REGISTRY_LIST" ] || { echo "plugin-registry-check.sh --list returned an empty registry" >&2; exit 1; }
-
+# REGISTRY_LIST was captured up front (near the phase registry): a parse/shape failure must fail THIS
+# gate loudly under set -e, never degrade to an empty loop that looks green.
+#
 # feed fields: repo dir alias kind service release_gate gate checkout_ref — the suite loop only
 # needs repo, dir, service, release_gate, and gate.
 while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
   [ "$P_GATE" = "suite" ] || continue
+  if ! phase_selected "phase-2-suite-${P_REPO}"; then
+    record_phase_skip "phase-2-suite-${P_REPO}" "not-in-segment"
+    continue
+  fi
   SUITE_SRC="${REPO_ROOT}/../${P_DIR}"
 
   if [ ! -d "$SUITE_SRC" ]; then
@@ -808,16 +1245,18 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
     echo "Gate incomplete — ${P_REPO} coverage could not run. Check out ../${P_DIR} for full" >&2
     echo "coverage before tagging, or confirm that repo's own CI is green." >&2
     SUITE_SKIPPED+=("${P_REPO}")
+    record_phase_skip "phase-2-suite-${P_REPO}" "sibling-missing"
     continue
   fi
 
   if [ "$P_SERVICE" != "none" ] && [ "$SKIP_DOCKER" = "1" ]; then
     note "SKIP (--skip-docker): ${P_REPO} needs a real ${P_SERVICE} container. NOT a valid gate run."
     SUITE_SKIPPED+=("${P_REPO}")
+    record_phase_skip "phase-2-suite-${P_REPO}" "skip-docker"
     continue
   fi
 
-  phase "suite gate: ${P_REPO} — sibling repo's own test suite (service: ${P_SERVICE})"
+  begin_phase "phase-2-suite-${P_REPO}" "suite gate: ${P_REPO} — sibling repo's own test suite (service: ${P_SERVICE})"
   SUITE_CONTAINER=""
   SUITE_ENV=()
   case "$P_SERVICE" in
@@ -916,19 +1355,28 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
   # cdylib artifact, so a plugin's own e2e suite that dlopens `target/release/<plugin>.{so,dylib}`
   # (discovered relative to the test binary) hard-fails its "cdylib not built under CI" guard.
   # `--all-targets` forces the cdylib crate-type output into target/release/ where the suite looks.
+  # Build vs test time are reported separately: the sibling's `cargo build --release` is FIXED SETUP
+  # for that plugin's leg (paid again on every cold CI runner), while `cargo test` is the actual
+  # coverage. Only the second number shrinks by fanning out further.
   echo "  building GetBusbar/${P_REPO}'s workspace (cdylib artifacts) before its suite in ../${P_DIR}..."
+  _b0=$SECONDS
   (
     cd "$SUITE_SRC"
     cargo build --release --workspace --all-targets
   )
+  _build_s=$((SECONDS - _b0))
   echo "  running GetBusbar/${P_REPO}'s own cargo test --workspace --release in ../${P_DIR}..."
+  _t0=$SECONDS
   (
     cd "$SUITE_SRC"
     env ${SUITE_ENV[@]+"${SUITE_ENV[@]}"} cargo test --workspace --release
   )
+  _test_s=$((SECONDS - _t0))
   ok "${P_REPO}: sibling repo's own suite passed (real ABI, service: ${P_SERVICE})"
+  echo "  [time] ${P_REPO}: sibling build ${_build_s}s + suite ${_test_s}s (service: ${P_SERVICE})"
   ok "suite gate complete for ${P_REPO}: elapsed=${SECONDS}s"
   SUITE_PASSED+=("${P_REPO}")
+  end_phase ran
   if [ -n "$SUITE_CONTAINER" ]; then
     docker rm -f "$SUITE_CONTAINER" >/dev/null 2>&1 || true
   fi
@@ -985,16 +1433,26 @@ EOF
   ok "${name}: busbar --validate confirms the real dlopen'd plugin loads (${out##*$'\n'})"
 }
 
-if [ -d "$HEADROOM_SRC" ]; then
+if ! phase_selected phase-5-smoke-headroom; then
+  record_phase_skip phase-5-smoke-headroom "not-in-segment"
+elif [ -d "$HEADROOM_SRC" ]; then
+  begin_phase phase-5-smoke-headroom "Phase 5: headroom-hook — busbar --validate dlopen smoke"
   run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "headroom_hook" hook needs
+  end_phase ran
 else
   note "SKIP: ../headroom-hook not present as a sibling checkout on this machine."
+  record_phase_skip phase-5-smoke-headroom "sibling-missing"
 fi
 
-if [ -d "$WEBREQUEST_SRC" ]; then
+if ! phase_selected phase-5-smoke-webrequest; then
+  record_phase_skip phase-5-smoke-webrequest "not-in-segment"
+elif [ -d "$WEBREQUEST_SRC" ]; then
+  begin_phase phase-5-smoke-webrequest "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
   run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_webrequest_hook_plugin" hook
+  end_phase ran
 else
   note "SKIP: ../webrequest-hook not present as a sibling checkout on this machine."
+  record_phase_skip phase-5-smoke-webrequest "sibling-missing"
 fi
 
 # ── busbar-admin (busbarctl) — the REVERSE of the plugin phases ────────────────────────────────
@@ -1004,15 +1462,19 @@ fi
 # against the freshly-built engine binary. Catches an admin-API change that would break busbarctl
 # BEFORE it ships — bidirectional testing, the same discipline the plugins get.
 BUSBAR_ADMIN_SRC="${REPO_ROOT}/../busbar-admin"
-if [ -d "$BUSBAR_ADMIN_SRC" ]; then
-  phase "Phase: busbar-admin CLI — every command driven against the freshly-built busbar"
+if ! phase_selected phase-admin-cli; then
+  record_phase_skip phase-admin-cli "not-in-segment"
+elif [ -d "$BUSBAR_ADMIN_SRC" ]; then
+  begin_phase phase-admin-cli "Phase: busbar-admin CLI — every command driven against the freshly-built busbar"
   cargo build --release --manifest-path "${BUSBAR_ADMIN_SRC}/Cargo.toml"
   ADMIN_BIN="${BUSBAR_ADMIN_SRC}/target/release/busbar-admin"
   [ -x "$ADMIN_BIN" ] || { echo "busbar-admin did not build at $ADMIN_BIN" >&2; exit 1; }
   bash "${BUSBAR_ADMIN_SRC}/scripts/integration.sh" "$BUSBAR_BIN" "$ADMIN_BIN"
   ok "busbar-admin: every command drove the freshly-built busbar end to end"
+  end_phase ran
 else
   note "SKIP: ../busbar-admin not present as a sibling checkout — busbarctl reverse-direction coverage skipped."
+  record_phase_skip phase-admin-cli "sibling-missing"
 fi
 
 # ── 1.5.2 feature gate: plugins.fetch (hermetic) + token-exchange cross-repo matrix + admin authz ──
@@ -1021,12 +1483,21 @@ fi
 # it does NOT rebuild). Its token-exchange phase is registry-driven over every kind:auth plugin
 # (plugins.yaml), the same single-source-of-truth this script's suite loop uses. Any failure there
 # fails the whole gate (its own set -euo pipefail + ERR trap propagate through this invocation).
-phase "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
-BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
-ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
+if ! phase_selected phase-152-feature-gate; then
+  record_phase_skip phase-152-feature-gate "not-in-segment"
+else
+  begin_phase phase-152-feature-gate "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
+  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
+  end_phase ran
+fi
 
-phase "RELEASE GATE PASSED"
+phase "RELEASE GATE PASSED${SEGMENT:+ (segment: ${SEGMENT})}"
 echo "Total elapsed: ${SECONDS}s"
+if [ -n "$SEGMENT" ]; then
+  echo "This run covered ONLY segment '${SEGMENT}'. It is NOT the full gate on its own —"
+  echo "the union of every segment in the partition is. Run --check-coverage to prove that union."
+fi
 for p in ${SUITE_PASSED[@]+"${SUITE_PASSED[@]}"}; do
   echo "${p} suite phase passed with real assertions (sibling checkout, registry-driven)."
 done
@@ -1035,15 +1506,21 @@ for p in ${SUITE_SKIPPED[@]+"${SUITE_SKIPPED[@]}"}; do
   echo "its coverage was SKIPPED, not passed. Run on a machine with the sibling checked out (and"
   echo "Docker up) for full coverage before tagging, or confirm that repo's own CI is green."
 done
-if [ -n "${SQLITE_SKIPPED:-}" ]; then
-  echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
-  echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
-  echo "that repo's own CI is green."
-else
-  echo "SQLite phase passed with real assertions (sibling checkout)."
+if phase_selected phase-1-sqlite-binary; then
+  if [ -n "${SQLITE_SKIPPED:-}" ]; then
+    echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
+    echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
+    echo "that repo's own CI is green."
+  else
+    echo "SQLite phase passed with real assertions (sibling checkout)."
+  fi
 fi
-if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
-  echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
-  echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
-  echo "checked out for full coverage before tagging, or confirm docker.yml's own smoke test is green."
+if phase_selected phase-5-smoke-headroom || phase_selected phase-5-smoke-webrequest; then
+  if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
+    echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
+    echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
+    echo "checked out for full coverage before tagging, or confirm docker.yml's own smoke test is green."
+  fi
 fi
+
+print_timing_summary
