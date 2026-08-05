@@ -266,6 +266,26 @@ jobs:
           touch crates/plugin-sign/src/lib.rs
           BUSBAR_RELEASE_PUBKEY="$CI_EPHEMERAL_PUBKEY" cargo build --release --bin busbar
 
+      - name: EXECUTABLE-CONFIG GATE — every busbar config THIS repo runs, through the real --validate
+        # INHERITED BY EVERY PLUGIN REPO, deliberately, and this is the whole point of putting it
+        # here: the retired-grammar defect it guards against was found across a long list of plugin
+        # repos at once, and per-repo adoption of a new lint does not happen. Living in the reusable
+        # workflow, every caller gets it with zero per-repo work and no way to drift.
+        #
+        # It scans the PLUGIN checkout only (`--root plugin`) — busbarAI/ has its own run of the same
+        # script in core's ci.yml. It finds busbar configs wherever they are EXECUTED rather than
+        # documented: `cat > config.yaml <<EOF` heredocs in .github/workflows and scripts, config
+        # strings inside Rust integration tests, and yaml under examples/ / docker/. Judgement is the
+        # REAL binary built above, so it cannot drift from the engine's own `detect_legacy_markers`.
+        # Self-test first: a scanner that quietly stopped finding anything must fail, not pass.
+        # Cheap — no build of its own, just the binary that already exists.
+        run: |
+          set -euo pipefail
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          B="$PWD/busbarAI/target/release/busbar"
+          python3 busbarAI/scripts/executable-config-lint.py --busbar "$B" --selftest
+          python3 busbarAI/scripts/executable-config-lint.py --busbar "$B" --root plugin
+
       - name: SIGNING GATE — signed loads; unsigned / wrong-key / tampered are refused
         # End-to-end proof against the real binary + real `busbar --validate` trust pipeline:
         #   positive (correctly signed passes) and four negatives (unsigned, wrong key, tampered

@@ -210,6 +210,40 @@ jobs:
           CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: scripts/config-stability-gate.sh --check
 
+  # EXECUTABLE-CONFIG gate. Every config-grammar guard that existed before this one was scoped to
+  # DOCS — `crates/busbar/tests/docs_examples.rs` reads `docs/**`, marketing's check-config-blocks.mjs
+  # reads what it PUBLISHES. Nothing ever looked at the configs a MACHINE runs: the `cat > config.yaml
+  # <<EOF` heredocs in CI workflows and shell scripts, the config strings inside Rust integration
+  # tests, the yaml under examples/ and docker/. Those are exactly the ones that rot, because a docs
+  # example gets read by a human every release and an e2e heredoc gets read by nobody until an engine
+  # upgrade refuses to boot it — which is how the 1.5.3 retired-auth-grammar defect reached a long
+  # list of plugin repos, core's own plugin-ci.yml, signing-gate.sh, release-check.sh, the shipped
+  # docker/config.yaml and a shipped example, all at once and all invisible.
+  #
+  # It judges with the REAL binary (`busbar --validate`, the same mechanism docs_examples.rs uses), so
+  # it can never drift from `detect_legacy_markers`. Its own job because it needs a compiled busbar;
+  # only the one binary is built, not the workspace. Self-test FIRST — a scanner that has quietly
+  # stopped extracting anything would otherwise pass vacuously, which is worse than no gate at all.
+  # The same script runs over every PLUGIN repo via the plugin-ci reusable workflow, so the fleet
+  # inherits it with no per-repo work.
+  executable-config-lint:
+    name: executable-config gate (heredocs · test literals · shipped yaml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build busbar (the validator this gate judges with)
+        run: cargo build --locked --bin busbar
+      - name: Executable-config gate self-test (RED/GREEN before the verdict is trusted)
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 scripts/executable-config-lint.py --busbar target/debug/busbar --selftest
+      - name: Executable-config gate
+        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root .
+
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in `tokens` auth
   # plugin COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that
   # provably contains no client-token auth code. Build, clippy, AND the test suite all stay green on

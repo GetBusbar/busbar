@@ -17,10 +17,13 @@
 
 listen: "0.0.0.0:8080"
 
+# 1.5.3: an identity provider is DEFINED once here and REFERENCED by bare name from the chains.
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   chain: []                                            # open data-plane relay — see the note above
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]                           # bare NAME into identity-providers: above
 
 providers:
   anthropic:

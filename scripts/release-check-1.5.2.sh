@@ -776,20 +776,23 @@ run_tokenx_oidc_post() {
 listen: "127.0.0.1:${B_LISTEN}"
 admin_listen: "127.0.0.1:${B_ADMIN}"
 public_url: "https://gate.busbar.local"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+  oidc:
+    module: oidc
+    settings:
+      issuer: "${ISS}"
+      audience: "${AUD}"
+      jwks_url: "${JWKS_URL}"
+      ca_cert_pem: |
+${CA_PEM}
 auth:
   key_ttl: "7d"
   signing_key: { file: "${work}/signing.key" }
-  chain:
-    - keys
-    - oidc:
-        settings:
-          issuer: "${ISS}"
-          audience: "${AUD}"
-          jwks_url: "${JWKS_URL}"
-          ca_cert_pem: |
-${CA_PEM}
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  chain: [keys, oidc]
+  admin_auth: [admin-tokens]
   role_bindings:
     oidc:
       eng:
@@ -968,21 +971,24 @@ run_tokenx_github_get() {
   cat >"${work}/config.yaml" <<EOF
 listen: "127.0.0.1:${LISTEN}"
 public_url: "https://gate.busbar.local"
-auth:
-  key_ttl: "7d"
-  signing_key: { file: "${work}/signing.key" }
-  chain:
-    - keys
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
-  methods:
-    github:
-      browser_login:
-        client_id: "Iv1.gatetestclient"
-        client_secret: { env: BUSBAR_GH_CLIENT_SECRET }
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+  github:
+    module: github
+    browser_login:
+      client_id: "Iv1.gatetestclient"
+      client_secret: { env: BUSBAR_GH_CLIENT_SECRET }
+    settings:
       token_base: "http://127.0.0.1:${WM_PORT}"
       api_base: "http://127.0.0.1:${WM_PORT}"
       authorize_base: "http://127.0.0.1:${WM_PORT}"
+auth:
+  key_ttl: "7d"
+  signing_key: { file: "${work}/signing.key" }
+  chain: [keys]
+  admin_auth: [admin-tokens]
   role_bindings:
     github:
       "github:org/testorg":
@@ -1128,21 +1134,24 @@ run_tokenx_ldap_form() {
   cat >"${work}/config.yaml" <<EOF
 listen: "127.0.0.1:${LISTEN}"
 public_url: "https://gate.busbar.local"
-auth:
-  key_ttl: "7d"
-  signing_key: { file: "${work}/signing.key" }
-  chain:
-    - keys
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
-  methods:
-    ldap:
-      browser_login: {}
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+  ldap:
+    module: ldap
+    browser_login: {}
+    settings:
       url: "ldap://127.0.0.1:${LDAP_PORT}"
       bind_dn_template: "uid={username},ou=people,dc=example,dc=org"
       base_dn: "dc=example,dc=org"
       group_attr: "seeAlso"
       role_from: cn
+auth:
+  key_ttl: "7d"
+  signing_key: { file: "${work}/signing.key" }
+  chain: [keys]
+  admin_auth: [admin-tokens]
   role_bindings:
     ldap:
       admins:
@@ -1330,20 +1339,23 @@ EOF
     cat >"${out}/config.yaml" <<EOF
 listen: "127.0.0.1:${C2_LISTEN}"
 admin_listen: "127.0.0.1:${C2_ADMIN}"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+  oidc:
+    module: oidc
+    max_admin_scope: full
+    settings:
+      issuer: "${ISS}"
+      audience: "${AUD}"
+      jwks_url: "${JWKS_URL}"
+      ca_cert_pem: |
+${CA_PEM}
 auth:
   signing_key: { file: "${out}/signing.key" }
-  chain:
-    - keys
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
-    - oidc:
-        max_admin_scope: full
-        settings:
-          issuer: "${ISS}"
-          audience: "${AUD}"
-          jwks_url: "${JWKS_URL}"
-          ca_cert_pem: |
-${CA_PEM}
+  chain: [keys]
+  admin_auth: [admin-tokens, oidc]
   role_bindings:
     oidc:
       admins:
