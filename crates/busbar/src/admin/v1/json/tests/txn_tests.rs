@@ -644,3 +644,105 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
         "cancellation abandons the RESULT, never the critical section"
     );
 }
+
+// ── no blocking under the async lock, SECRET-PLUGIN edition ──────────────────────────────────────
+
+/// A `HookEnv` whose secret resolver's PLUGIN arm blocks for `delay`. In production that arm is
+/// `DynSecret::resolve` — a synchronous `transport_call` into a dlopened `kind: secret` plugin, and
+/// behind it a Vault / AWS-SM round trip. The registry is empty, so every hook still resolves to
+/// "gate absent"; the SECRET resolution happens first and is what this measures.
+fn parking_secret_hook_env(delay: Duration) -> crate::hooks::HookEnv {
+    crate::hooks::HookEnv::new(
+        Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        Arc::new(crate::config::secret::SecretResolver::with_plugin(
+            Box::new(move |_module: &str, _settings: &str| {
+                std::thread::sleep(delay);
+                Ok(b"resolved".to_vec())
+            }),
+        )),
+    )
+}
+
+/// Register one GLOBAL gate hook whose `licenseKey` is a `kind: secret` PLUGIN reference, through the
+/// REAL `POST /api/v1/admin/hooks` handler. Building the next snapshot re-resolves the global gate
+/// chain, and that resolution resolves the reference — the blocking FFI this test measures.
+async fn register_secret_hook(handle: Arc<AppHandle>) -> StatusCode {
+    let body = json!({
+        "name": "compliance-gate",
+        "config": {
+            "module": "some-hook-plugin",
+            "kind": "gate",
+            "global": true,
+            "settings": { "licenseKey": { "module": "vault", "settings": { "path": "kv/busbar" } } }
+        }
+    });
+    crate::admin::v1::json::register_hook(
+        State(handle),
+        anon(),
+        HeaderMap::new(),
+        axum::body::Bytes::from(body.to_string()),
+    )
+    .await
+    .status()
+}
+
+/// THE SAME ASSERTION AS `slow_store_read_does_not_stall_the_executor`, for the OTHER blocking seam a
+/// transaction body can reach: a `kind: secret` PLUGIN.
+///
+/// `config_transaction`'s body runs SYNCHRONOUSLY ON THE ASYNC SIDE (`txn.rs`: `let outcome =
+/// body(&Txn { .. })?` — only `Txn::read_store`/`store_write` defer). `build_with_hook` was called
+/// straight from that body, and it re-resolves the hook chain, which resolves every hook's
+/// `SecretRef` settings over synchronous plugin FFI — so a slow secret store wedged the reactor
+/// while ALSO holding the process-wide config-mutation lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn slow_secret_plugin_does_not_stall_the_executor() {
+    crate::metrics::init();
+    let delay = Duration::from_millis(400);
+    let app = TestApp::new()
+        .hook_env(parking_secret_hook_env(delay))
+        .build();
+    let handle = handle_for(app);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let worst = Arc::new(AtomicU64::new(0));
+    let probe = {
+        let (stop, worst) = (stop.clone(), worst.clone());
+        tokio::spawn(async move {
+            let mut last = Instant::now();
+            let mut ticks = 0u64;
+            while !stop.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+                let now = Instant::now();
+                worst.fetch_max(
+                    now.duration_since(last).as_millis() as u64,
+                    Ordering::SeqCst,
+                );
+                last = now;
+                ticks += 1;
+            }
+            ticks
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    worst.store(0, Ordering::SeqCst);
+
+    // SPAWNED for the same reason the store test spawns: the handler and the probe must share the
+    // ONE worker, which is what makes a synchronous call on the async side observable.
+    let status = tokio::spawn(register_secret_hook(handle.clone()))
+        .await
+        .expect("register joins");
+    stop.store(true, Ordering::SeqCst);
+    let ticks = probe.await.expect("probe joins");
+
+    assert_eq!(status, StatusCode::CREATED, "the hook registers: {status}");
+    assert!(ticks > 0, "the probe must have run");
+    let worst_gap = worst.load(Ordering::SeqCst);
+    assert!(
+        worst_gap < delay.as_millis() as u64 / 2,
+        "EXECUTOR STALLED: the liveness probe's worst tick gap was {worst_gap}ms while a {}ms \
+         `kind: secret` PLUGIN resolve ran under the config-mutation lock. Blocking plugin FFI \
+         reached the async thread — the snapshot build must be deferred through `Txn::read_store` \
+         onto spawn_blocking.",
+        delay.as_millis()
+    );
+}

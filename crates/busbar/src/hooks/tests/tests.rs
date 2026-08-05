@@ -2224,3 +2224,88 @@ fn settings_drift_never_compares_a_secret_ref_field() {
         "an ordinary field still drifts — the fix must not blind the endpoint"
     );
 }
+
+// ── the BLOCKING-FFI class: a hook's SECRET resolution must not run on a reactor worker ──────────
+
+/// A `HookEnv` whose secret resolver's PLUGIN arm blocks the calling thread for `park`. That arm is a
+/// synchronous `transport_call` into a `kind: secret` plugin in production (`DynSecret::resolve` →
+/// `RawPlugin::transport_call`), and behind it a Vault/AWS-SM round trip. Nothing here is async —
+/// the ENGINE is responsible for keeping it off the reactor.
+fn parking_secret_env(park: std::time::Duration) -> HookEnv {
+    HookEnv::new(
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
+            Box::new(move |_module: &str, _settings: &str| {
+                std::thread::sleep(park);
+                Ok(b"resolved".to_vec())
+            }),
+        )),
+    )
+}
+
+/// A hook whose `settings:` carry a SecretRef pointing at a NON-built-in module, i.e. one that must
+/// be resolved by a `kind: secret` PLUGIN — the shape `classify_setting` reports as
+/// `SettingShape::Reference` and `resolve_settings` therefore resolves over FFI.
+fn hook_with_plugin_secret() -> HookCfg {
+    let mut hook = base_gate();
+    hook.settings.insert(
+        "licenseKey".to_string(),
+        serde_json::json!({ "module": "vault", "settings": { "path": "kv/busbar" } }),
+    );
+    hook
+}
+
+/// See `auth::token::token_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
+/// never on a Tokio timer: when every worker is parked in FFI the time driver is parked too, so a
+/// `tokio::time::timeout` does not fire — it returns late and its assertion passes against a runtime
+/// that was dead for the whole window.
+fn assert_runtime_still_polls(
+    rt: &tokio::runtime::Runtime,
+    budget: std::time::Duration,
+    msg: &str,
+) {
+    let canary = rt.spawn(async {});
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if canary.is_finished() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("{msg}");
+}
+
+/// `PATCH /api/v1/admin/hooks/{name}/settings` → `push_configure`, an `async fn`. It resolved the
+/// hook's SecretRef settings INLINE — one line above the `gate_transport_offloaded` call that exists
+/// to keep exactly this work off the reactor — and did so UNTIMED: `CONFIGURE_TIMEOUT_MS` bounds only
+/// the `configure` call that follows. Concurrent admin pushes must not stop the runtime polling.
+#[test]
+fn concurrent_push_configure_does_not_starve_the_runtime() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let env = parking_secret_env(std::time::Duration::from_secs(3));
+    let hook = hook_with_plugin_secret();
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let (h, e) = (hook.clone(), env.clone());
+            rt.spawn(
+                async move { crate::hooks::push_configure(&h, "compliance-gate", 1, &e).await },
+            )
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_runtime_still_polls(
+        &rt,
+        std::time::Duration::from_millis(750),
+        "the runtime stopped polling while four hook settings pushes sat inside the `kind: secret` \
+         plugin's synchronous resolve: every Tokio worker is parked in FFI",
+    );
+    for t in tasks {
+        // Every push still FAILS (the registry is empty, so there is no transport) — the point is
+        // that the failure arrives without the reactor having stopped.
+        assert!(rt.block_on(async { t.await.expect("task") }).is_err());
+    }
+}

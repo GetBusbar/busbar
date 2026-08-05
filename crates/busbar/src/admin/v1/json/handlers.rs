@@ -715,33 +715,44 @@ pub(crate) async fn register_hook(
         // idempotent refresh) is a 200 replace — standard upsert semantics, so POST/PUT overlap is
         // explicit.
         let existed = current.hook_registry.contains_key(&txn_name);
-        let installed = Arc::new(build_with_hook(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed: `commit` records the new hook state to the overlay FIRST;
-        // only if disk takes it does the engine swap. A persist failure aborts the transaction and
-        // swaps nothing (the running engine is untouched). Clear any tombstone for this name — a
-        // re-register un-deletes it. Persist args are sourced from the CANDIDATE (`installed`),
-        // which IS the state we are about to make live.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
+        // DEFERRED, not inline: `build_with_hook` re-resolves the hook chain, and that resolution
+        // resolves every hook's `SecretRef` settings (`HookEnv::resolve_hook_settings`) and OPENS the
+        // referenced plugins (`preopen_gate_hooks` → `dlopen` + the plugin constructor). Both are
+        // SYNCHRONOUS FFI, and a `kind: secret` module is a Vault/AWS-SM round trip. The transaction
+        // BODY runs on the async side (`txn.rs`: only `read_store`/`store_write` defer), so calling
+        // the builder here parked a Tokio worker for the plugin's full latency — while holding the
+        // process-wide config-mutation lock. `read_store` puts it on `spawn_blocking`, which is where
+        // every other blocking step in this file already runs.
+        let snapshot = current.clone();
+        Ok(txn.read_store(move || {
+            let installed = Arc::new(build_with_hook(&snapshot, &txn_name, cfg)?);
+            // PERSIST-then-SWAP, fail-closed: `commit` records the new hook state to the overlay
+            // FIRST; only if disk takes it does the engine swap. A persist failure aborts the
+            // transaction and swaps nothing (the running engine is untouched). Clear any tombstone
+            // for this name — a re-register un-deletes it. Persist args are sourced from the
+            // CANDIDATE (`installed`), which IS the state we are about to make live.
+            let p = installed.clone();
+            Ok(Outcome::commit(
+                installed.clone(),
+                move || {
+                    crate::config::overlay::persist(
+                        p.overlay_path.as_deref(),
+                        &p.hook_registry,
+                        &p.global_hooks,
+                        None,
+                        Some(&txn_name),
+                        &p.base_hook_names,
                     )
-                })
-            },
-            (installed, existed),
-        ))
+                    .map_err(|e| {
+                        format!(
+                            "hook could not be persisted to the overlay: {e}; nothing was changed \
+                             (the running engine is unaffected)"
+                        )
+                    })
+                },
+                (installed, existed),
+            ))
+        }))
     })
     .await;
     match out {
@@ -816,29 +827,34 @@ pub(crate) async fn put_hook(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        let installed = Arc::new(build_with_hook(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed (see hook.register / AppHandle::commit_and_swap).
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
+        // DEFERRED: the builder does blocking plugin FFI (secret resolve + dlopen). See
+        // `register_hook` for the full rationale — this is the same seam on the same lock.
+        let snapshot = current.clone();
+        Ok(txn.read_store(move || {
+            let installed = Arc::new(build_with_hook(&snapshot, &txn_name, cfg)?);
+            // PERSIST-then-SWAP, fail-closed (see hook.register / AppHandle::commit_and_swap).
+            let p = installed.clone();
+            Ok(Outcome::commit(
+                installed.clone(),
+                move || {
+                    crate::config::overlay::persist(
+                        p.overlay_path.as_deref(),
+                        &p.hook_registry,
+                        &p.global_hooks,
+                        None,
+                        Some(&txn_name),
+                        &p.base_hook_names,
                     )
-                })
-            },
-            installed,
-        ))
+                    .map_err(|e| {
+                        format!(
+                            "hook could not be persisted to the overlay: {e}; nothing was changed \
+                             (the running engine is unaffected)"
+                        )
+                    })
+                },
+                installed,
+            ))
+        }))
     })
     .await;
     match out {
@@ -904,30 +920,35 @@ pub(crate) async fn delete_hook(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        let installed = Arc::new(build_without_hook(current, &txn_name)?);
-        // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the deletion
-        // survives a restart even if the hook was base-defined.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    Some(&txn_name),
-                    None,
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook deletion could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
+        // DEFERRED: deleting a hook RE-RESOLVES the remaining chain, so the surviving hooks' secrets
+        // are resolved and their plugins re-opened — blocking FFI. See `register_hook`.
+        let snapshot = current.clone();
+        Ok(txn.read_store(move || {
+            let installed = Arc::new(build_without_hook(&snapshot, &txn_name)?);
+            // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the
+            // deletion survives a restart even if the hook was base-defined.
+            let p = installed.clone();
+            Ok(Outcome::commit(
+                installed.clone(),
+                move || {
+                    crate::config::overlay::persist(
+                        p.overlay_path.as_deref(),
+                        &p.hook_registry,
+                        &p.global_hooks,
+                        Some(&txn_name),
+                        None,
+                        &p.base_hook_names,
                     )
-                })
-            },
-            installed,
-        ))
+                    .map_err(|e| {
+                        format!(
+                            "hook deletion could not be persisted to the overlay: {e}; nothing was \
+                             changed (the running engine is unaffected)"
+                        )
+                    })
+                },
+                installed,
+            ))
+        }))
     })
     .await;
     match out {
@@ -1957,36 +1978,42 @@ pub(crate) async fn rollback_config(
                 "config version {want} (pruned or never recorded)"
             )));
         };
-        let installed = Arc::new(build_with_registry(
-            current,
-            target.hook_registry,
-            target.global_hooks,
-        )?);
-        // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args `None`);
-        // the reconciliation inside `persist` drops any tombstone for a restored name so the
-        // rollback survives a restart. Routed through the txn's commit so config.rollback shares the
-        // same durability discipline as plugin.rollback (C4 ≡ C5).
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    None,
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "config rollback could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
+        // DEFERRED: a rollback re-resolves the WHOLE restored registry — every hook's secrets
+        // resolved and every referenced plugin re-opened, the largest blocking-FFI burst of any
+        // mutation on this lock. See `register_hook`.
+        let snapshot = current.clone();
+        Ok(txn.read_store(move || {
+            let installed = Arc::new(build_with_registry(
+                &snapshot,
+                target.hook_registry,
+                target.global_hooks,
+            )?);
+            // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args
+            // `None`); the reconciliation inside `persist` drops any tombstone for a restored name
+            // so the rollback survives a restart. Routed through the txn's commit so config.rollback
+            // shares the same durability discipline as plugin.rollback (C4 ≡ C5).
+            let p = installed.clone();
+            Ok(Outcome::commit(
+                installed.clone(),
+                move || {
+                    crate::config::overlay::persist(
+                        p.overlay_path.as_deref(),
+                        &p.hook_registry,
+                        &p.global_hooks,
+                        None,
+                        None,
+                        &p.base_hook_names,
                     )
-                })
-            },
-            installed,
-        ))
+                    .map_err(|e| {
+                        format!(
+                            "config rollback could not be persisted to the overlay: {e}; nothing \
+                             was changed (the running engine is unaffected)"
+                        )
+                    })
+                },
+                installed,
+            ))
+        }))
     })
     .await;
     match out {
@@ -3168,29 +3195,33 @@ pub(crate) async fn patch_hook_settings(
                 "config changed during the settings push; retry".to_string(),
             ));
         }
-        let installed = Arc::new(build_with_hook(current, &txn_name, updated)?);
-        // PERSIST-then-SWAP, fail-closed.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook settings could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
+        // DEFERRED: blocking plugin FFI (secret resolve + dlopen). See `register_hook`.
+        let snapshot = current.clone();
+        Ok(txn.read_store(move || {
+            let installed = Arc::new(build_with_hook(&snapshot, &txn_name, updated)?);
+            // PERSIST-then-SWAP, fail-closed.
+            let p = installed.clone();
+            Ok(Outcome::commit(
+                installed.clone(),
+                move || {
+                    crate::config::overlay::persist(
+                        p.overlay_path.as_deref(),
+                        &p.hook_registry,
+                        &p.global_hooks,
+                        None,
+                        Some(&txn_name),
+                        &p.base_hook_names,
                     )
-                })
-            },
-            installed,
-        ))
+                    .map_err(|e| {
+                        format!(
+                            "hook settings could not be persisted to the overlay: {e}; nothing was \
+                             changed (the running engine is unaffected)"
+                        )
+                    })
+                },
+                installed,
+            ))
+        }))
     })
     .await;
     match out {

@@ -473,7 +473,7 @@ fn resolve_gate_transport(
     env: &HookEnv,
     settings_version: u64,
 ) -> Option<ResolvedPolicy> {
-    let policy = gate_transport_named(name, hook, env, settings_version)?;
+    let (policy, _resolved) = gate_transport_named(name, hook, env, settings_version)?;
     let (on_error_chain, on_error) = resolve_on_error_chain(hook, hooks, env, settings_version);
     let (send_prompt, send_user) = projection_grants(name, hook, env);
     Some(ResolvedPolicy::Policy {
@@ -633,12 +633,20 @@ fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> b
 /// degrades to "gate absent", never a stranded request). A SecretRef in `settings` that fails to
 /// resolve is a DIFFERENT case: it is caught up front by `HookEnv::preresolve_hook_secrets` (which
 /// aborts boot/reload CLOSED), so it never reaches this `None`-on-error path in practice.
+///
+/// Returns the transport TOGETHER WITH the resolved settings map it was opened against. The pairing
+/// is the point: `push_configure` needs that same resolved bag to send in its `configure` call, and
+/// when it resolved its own copy it did so INLINE on an `async fn`, one line above this function's
+/// offloaded call — blocking FFI into a `kind: secret` plugin on a Tokio worker, and untimed
+/// (`CONFIGURE_TIMEOUT_MS` bounds only the `configure` that follows). Handing the bag back from the
+/// one place that already computes it means there is no second resolution for a caller to place on
+/// the reactor.
 fn gate_transport_named(
     name: &str,
     hook: &crate::config::HookCfg,
     env: &HookEnv,
     _settings_version: u64,
-) -> Option<Arc<dyn RoutingPolicy>> {
+) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE the
     // settings cross the ABI (ADR-0010). The FAIL-CLOSED guarantee lives in
     // `HookEnv::preresolve_hook_secrets`, called once from `build_app_from_config` BEFORE any gate is
@@ -658,12 +666,12 @@ fn gate_transport_named(
             return None;
         }
     };
-    let cfg_json = serde_json::Value::Object(resolved).to_string();
+    let cfg_json = serde_json::Value::Object(resolved.clone()).to_string();
     match env
         .registry
         .open_hook(&hook.plugin, &cfg_json, name, env.projectors.clone())
     {
-        Ok(policy) => Some(policy),
+        Ok(policy) => Some((policy, resolved)),
         Err(e) => {
             tracing::warn!(
                 hook = %name, plugin = %hook.plugin, error = %e,
@@ -673,6 +681,11 @@ fn gate_transport_named(
         }
     }
 }
+
+/// A hook's `settings:` map with every `SecretRef` already substituted for its resolved value —
+/// i.e. the bag that crosses the ABI. Produced ONLY by [`gate_transport_named`] (and its offloaded
+/// wrapper), so a caller cannot obtain one without having gone through the offload.
+type ResolvedSettings = serde_json::Map<String, serde_json::Value>;
 
 /// The configure-push deadline (spec `configure_timeout_ms` default): distinct from the
 /// per-request gate deadline — configure may do real work (reload a model, open files).
@@ -686,13 +699,19 @@ pub(crate) async fn push_configure(
     settings_version: u64,
     env: &HookEnv,
 ) -> Result<(), String> {
-    // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) before the settings cross the ABI
-    // (ADR-0010). FAIL-CLOSED: an unresolvable ref is NOT committed — the plugin never receives a
-    // dangling reference on a settings push.
-    let resolved = env
-        .resolve_hook_settings(&hook.settings)
-        .map_err(|e| format!("hook '{name}' settings: {e}"))?;
-    let Some(transport) = gate_transport_offloaded(name, hook, env, settings_version).await else {
+    // ONE offloaded step resolves the SecretRefs AND opens the transport (ADR-0010: an unresolvable
+    // ref is FAIL-CLOSED, so the plugin never receives a dangling reference on a settings push).
+    //
+    // The resolution used to happen HERE, inline, one line above this call — a synchronous FFI call
+    // into a `kind: secret` plugin (a Vault/AWS-SM round trip) on a Tokio worker inside an `async
+    // fn`, with no `spawn_blocking`, no in-flight bound, and NO DEADLINE (`CONFIGURE_TIMEOUT_MS`
+    // applies only to the `configure` below). Concurrent admin pushes against a slow secret store
+    // parked one worker each until the runtime polled nothing. `gate_transport_named` already
+    // resolves the bag to build its `cfg_json`, so taking it from there removes the second
+    // resolution rather than offloading it twice.
+    let Some((transport, resolved)) =
+        gate_transport_offloaded(name, hook, env, settings_version).await
+    else {
         return Err("hook plugin unresolvable".to_string());
     };
     transport
@@ -780,7 +799,7 @@ async fn gate_transport_offloaded(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
     settings_version: u64,
-) -> Option<Arc<dyn RoutingPolicy>> {
+) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     let (name_owned, hook, env) = (name.to_string(), hook.clone(), env.clone());
     offload_bounded(name, move || {
         gate_transport_named(&name_owned, &hook, &env, settings_version)
@@ -797,7 +816,8 @@ pub(crate) async fn fetch_status(
     settings_version: u64,
     env: &HookEnv,
 ) -> Option<busbar_api::HookStatus> {
-    let transport = gate_transport_offloaded(name, hook, env, settings_version).await?;
+    let (transport, _resolved) =
+        gate_transport_offloaded(name, hook, env, settings_version).await?;
     transport
         .status(std::time::Duration::from_millis(CONFIGURE_TIMEOUT_MS))
         .await
@@ -867,7 +887,8 @@ pub(crate) async fn fetch_schema(
     settings_version: u64,
     env: &HookEnv,
 ) -> Option<serde_json::Value> {
-    let transport = gate_transport_offloaded(name, hook, env, settings_version).await?;
+    let (transport, _resolved) =
+        gate_transport_offloaded(name, hook, env, settings_version).await?;
     // `DlopenPolicy::describe` returns the schema member ALREADY EXTRACTED from the plugin's
     // self-description envelope (via the `describe_schema` projector), so the /schema read serves a
     // SINGLE nest (the endpoint adds its own {name, schema} wrapper). No schema member (incl. the
@@ -918,7 +939,7 @@ fn resolve_on_error_chain<'a>(
         if h.kind != crate::config::HookKind::Gate {
             return (chain, crate::config::PolicyOnError::default());
         }
-        if let Some(policy) = gate_transport_named(current, h, env, settings_version) {
+        if let Some((policy, _resolved)) = gate_transport_named(current, h, env, settings_version) {
             let (send_prompt, send_user) = projection_grants(current, h, env);
             chain.push(FallbackHook {
                 policy,
