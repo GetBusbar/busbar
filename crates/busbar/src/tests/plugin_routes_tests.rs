@@ -436,3 +436,54 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
         "the admin listener serves the auth:admin plugin route"
     );
 }
+
+// ── The RESTART-TO-APPLY signal (audit finding E1) ──────────────────────────────────────────────────
+
+/// [`paths_awaiting_restart`] names exactly the paths a config apply cannot make servable, in every
+/// direction the `export:` admin surface can move.
+///
+/// The asymmetry it encodes: the axum router registers each declared path ONCE, at boot, and an apply
+/// swaps only `Arc<App>`. So an ADDED path that was not mounted at boot is unservable until a restart,
+/// while a REMOVED one is genuinely live (the dispatcher resolves the owner per request and 404s), and
+/// re-adding a path that WAS mounted at boot needs nothing — the mount never went away.
+#[test]
+fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
+    fn table(paths: &[&str]) -> PluginRouteTable {
+        build_route_table(
+            paths
+                .iter()
+                .map(|p| {
+                    decl(
+                        "prometheus",
+                        RouteKind::Export,
+                        p,
+                        RouteMethod::Get,
+                        RouteAuth::Key,
+                        "x",
+                    )
+                })
+                .collect(),
+        )
+        .expect("the fixture declares no colliding route")
+    }
+    fn boot(paths: &[&str]) -> std::collections::HashSet<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+    let empty = table(&[]);
+    let metrics = table(&["/metrics"]);
+
+    // ADDED, never mounted at boot ⇒ flagged. THE FINDING.
+    assert_eq!(
+        paths_awaiting_restart(&metrics, &empty, &boot(&[])),
+        vec!["/metrics".to_string()],
+    );
+    // ADDED, but the boot router already has the mount (configured at boot, removed live, re-added)
+    // ⇒ nothing to say.
+    assert!(paths_awaiting_restart(&metrics, &empty, &boot(&["/metrics"])).is_empty());
+    // REMOVED ⇒ live, nothing to say.
+    assert!(paths_awaiting_restart(&empty, &metrics, &boot(&["/metrics"])).is_empty());
+    // UNCHANGED (an edit touching no route) ⇒ nothing to say, even while `/metrics` is itself still
+    // pending a restart from an EARLIER mutation: the signal is keyed on THIS delta, so an unrelated
+    // later edit does not re-flag it.
+    assert!(paths_awaiting_restart(&metrics, &metrics, &boot(&[])).is_empty());
+}

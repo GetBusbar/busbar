@@ -88,6 +88,7 @@ fn minimal_app() -> Arc<App> {
             crate::state::seed_request_id_counter(),
         )),
         plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
+        boot_route_paths: Default::default(),
     })
 }
 

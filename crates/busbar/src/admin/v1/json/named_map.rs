@@ -30,6 +30,21 @@
 //! `PUT /config/settings` does. Same durability contract as every other config mutation:
 //! PERSIST-then-SWAP, fail-closed, inside the one `config_transaction`.
 //!
+//! ## What a successful mutation CANNOT make live: a new plugin ROUTE
+//!
+//! Every plugin-route PATH is registered on the axum router ONCE, at process start, and a config
+//! apply swaps only the `Arc<App>` snapshot — the router is never rebuilt. The two directions are
+//! therefore not symmetric: REMOVING an `export:` instance takes effect immediately (the mounted
+//! dispatcher resolves the owner from the CURRENT snapshot and 404s when it finds none), while ADDING
+//! one that declares a path this process never mounted (a `prometheus` instance, hence `GET /metrics`,
+//! where none existed at boot) is stored and live on the snapshot yet keeps 404ing until a RESTART.
+//!
+//! That used to be a silent 200 (audit finding E1). The mutation response now carries
+//! `reload_to_apply` + `note` ([`MutatedDefView`]) naming exactly the paths this mutation declared and
+//! the process cannot serve — the same restart-required contract `PUT /config/settings` has for its
+//! boot-frozen fields. Both fields are omitted when nothing is pending, so a mutation that changes no
+//! route (including every removal) is byte-identical to what it always answered.
+//!
 //! ## The `max_admin_scope` TRUST CEILING (identity-providers)
 //!
 //! `max_admin_scope:` is the ceiling on the admin authority obtainable THROUGH a provider — the
@@ -512,6 +527,15 @@ async fn apply(
                 }
             };
             let installed = Arc::new(built);
+            // RESTART-TO-APPLY (audit finding E1), decided on the REBUILT snapshot while the
+            // pre-mutation one is still in hand: a mutation that introduces a plugin-route PATH the
+            // router never mounted at boot is stored and live on the snapshot, but the path itself
+            // keeps 404ing until a restart. Carried out of the transaction so the response can SAY so.
+            let awaiting_restart = crate::plugin_routes::paths_awaiting_restart(
+                &installed.plugin_routes,
+                &snapshot.plugin_routes,
+                &installed.boot_route_paths,
+            );
             // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if disk
             // accepts it does the engine swap. `commit_then` (not `commit`) so a governance
             // credential rotation fires only once persist AND swap have both returned `Ok`.
@@ -539,15 +563,15 @@ async fn apply(
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
-                    Ok(Outcome::Value(Ok(installed)))
+                    Ok(Outcome::Value(Ok((installed, awaiting_restart))))
                 },
             ))
         }))
     })
     .await;
 
-    let installed = match out {
-        Ok(Ok(installed)) => installed,
+    let (installed, awaiting_restart) = match out {
+        Ok(Ok(v)) => v,
         Ok(Err((e, cond))) => return reject(&e, cond, &actor),
         // The transaction's own error channel: the `If-Match` staleness guard (whose condition is
         // fixed, so it is named) and persist/infrastructure failures (which are not per-condition
@@ -570,16 +594,66 @@ async fn apply(
     );
     let version = installed.config_version;
     if removes {
-        // 204 still carries the NEW config-plane ETag, so a scripted chain needs no re-read.
+        // 204 still carries the NEW config-plane ETag, so a scripted chain needs no re-read. A
+        // removal never needs a restart notice: the path stays registered on the router and the
+        // dispatcher, resolving the owner from the current snapshot, now finds nothing and 404s.
         return with_config_etag(StatusCode::NO_CONTENT.into_response(), version);
     }
     with_config_etag(
         respond(
             StatusCode::OK,
-            super::service(&handle).get_named_def(section, &name).await,
+            super::service(&handle)
+                .get_named_def(section, &name)
+                .await
+                .map(|def| MutatedDefView::new(def, awaiting_restart)),
         ),
         version,
     )
+}
+
+/// THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the
+/// restart-required signal when this mutation introduced a plugin route the running process cannot
+/// serve (audit finding E1).
+///
+/// `#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the
+/// signal is purely ADDITIVE — and both signal fields are omitted entirely when nothing is pending,
+/// so the ordinary body is byte-identical to what it was. This is the `export:` named map's sibling of
+/// `PUT /config/settings`'s `reload_to_apply`/`note` pair (`handlers::reload_to_apply_fields`), which
+/// reports the same class of boot-frozen change for the single-value settings surface.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct MutatedDefView {
+    #[serde(flatten)]
+    def: crate::admin::v1::contract::NamedDefView,
+    /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
+    /// because the axum router registers each path once, at boot, and a config apply swaps only
+    /// `Arc<App>`. Empty (and omitted) for every mutation that adds no such path — including every
+    /// REMOVAL, which genuinely does apply live.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reload_to_apply: Vec<String>,
+    /// The operator-facing sentence for [`Self::reload_to_apply`]; omitted with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+impl MutatedDefView {
+    /// Wrap one stored definition with the restart signal, if any.
+    fn new(def: crate::admin::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
+        let note = (!awaiting_restart.is_empty()).then(|| {
+            format!(
+                "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \
+                 is registered on the HTTP router once, at process start, and a config apply swaps \
+                 only the config snapshot, so a route that did not exist at boot keeps answering 404 \
+                 until the next RESTART (removing one, by contrast, takes effect immediately)",
+                awaiting_restart.join(", ")
+            )
+        });
+        Self {
+            def,
+            reload_to_apply: awaiting_restart,
+            note,
+        }
+    }
 }
 
 /// Is `name` present in this section of the LIVE (effective) snapshot? The read-side twin of
@@ -736,7 +810,14 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                         }
                     ),
                     "parameters": [name_param],
-                    "responses": {"200": {"description": format!("The stored {singular} definition")}}
+                    "responses": {"200": {"description": format!(
+                        "The stored {singular} definition. Additionally carries `reload_to_apply` \
+                         (+ a `note`) when the mutation declared a plugin ROUTE this process cannot \
+                         serve: each route path is registered on the HTTP router once, at process \
+                         start, and an apply swaps only the config snapshot, so a path that did not \
+                         exist at boot (e.g. `/metrics` for a first `prometheus` exporter) answers \
+                         404 until the next RESTART. Both fields are omitted when nothing is pending"
+                    )}}
                 },
                 "delete": {
                     "summary": format!(
@@ -757,7 +838,10 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                          other field is left byte-identical"
                     ),
                     "parameters": [name_param],
-                    "responses": {"200": {"description": format!("The updated {singular} definition")}}
+                    "responses": {"200": {"description": format!(
+                        "The updated {singular} definition (same `reload_to_apply` restart signal as \
+                         the PUT, when the mutation declares a route the router lacks)"
+                    )}}
                 }
             }),
         ));

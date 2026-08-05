@@ -759,6 +759,12 @@ pub(crate) struct TestApp {
     plugins_cfg: Option<crate::config::PluginsCfg>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
+    /// empty `boot_route_paths`. The explicit form of "this process never mounted `/metrics`", which
+    /// the default cannot express: [`test_plugin_route_table`] keys on the PROCESS-GLOBAL recorder, so
+    /// a test that merely omits `export:` still gets `/metrics` once any earlier test in the binary
+    /// called `metrics::init()`.
+    no_plugin_routes: bool,
 }
 
 #[allow(dead_code)]
@@ -793,7 +799,16 @@ impl TestApp {
             plugins_cfg: None,
             hook_env: None,
             disk_paths: None,
+            no_plugin_routes: false,
         }
+    }
+
+    /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.
+    /// The fixture for the restart-to-apply signal (audit finding E1) — a config apply that ADDS a
+    /// path the router never registered at boot.
+    pub(crate) fn no_plugin_routes(mut self) -> Self {
+        self.no_plugin_routes = true;
+        self
     }
 
     /// Install a hook plugin-resolution env (for hook-transport resolution tests). Defaults to an
@@ -1075,6 +1090,14 @@ impl TestApp {
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
+        let plugin_routes = std::sync::Arc::new(if self.no_plugin_routes {
+            crate::plugin_routes::PluginRouteTable::empty()
+        } else {
+            test_plugin_route_table()
+        });
+        // A test App is a BOOT App (production seeds this only when `prior` is `None`), so the rule is
+        // production's verbatim: whatever this table declares is what the router mounted.
+        let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
@@ -1178,7 +1201,8 @@ impl TestApp {
             // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
             // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
-            plugin_routes: std::sync::Arc::new(test_plugin_route_table()),
+            plugin_routes,
+            boot_route_paths,
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
