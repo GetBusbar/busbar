@@ -513,9 +513,14 @@ pub(crate) struct ProviderView {
 /// A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the
 /// plugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a
 /// secret — INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see
-/// [`HookView::settings_keys`]). `global` reports whether the hook fires on every request (named in
-/// `global_hooks:` or declared `global: true`). Live connection status (`health`) is a separate
-/// endpoint. Additive-only.
+/// [`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is
+/// no `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the
+/// top-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and
+/// ATTACHED by bare name — at the reserved all-pools key `pools.hooks:`, which is what makes it
+/// global, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection
+/// axes (which callers, which pipeline stages). On THIS API the same hook is written with
+/// `global: true`; the wire and the config file are deliberately different surfaces. Live connection
+/// status (`health`) is a separate endpoint. Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookView {
@@ -1054,7 +1059,10 @@ pub(crate) struct EffectiveConfigView {
     pub(crate) models: Vec<ModelView>,
     pub(crate) providers: Vec<ProviderView>,
     pub(crate) hooks: Vec<HookView>,
-    /// Names fired on every request (`global_hooks:` + any inline `global: true`).
+    /// Names fired on EVERY request: the hooks attached at the reserved all-pools key `pools.hooks:`
+    /// in `config.yaml` (the 1.5.3 replacement for the DELETED `global_hooks:` key — that key no
+    /// longer parses), plus any hook this API declares with `global: true`. The response FIELD name
+    /// stays `global_hooks`; only the config-file spelling changed.
     pub(crate) global_hooks: Vec<String>,
 }
 
