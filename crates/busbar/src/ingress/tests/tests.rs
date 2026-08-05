@@ -51,6 +51,8 @@ fn minimal_app() -> Arc<App> {
         global_hooks: Vec::new(),
         groups_registry: std::collections::BTreeMap::new(),
         base_group_names: std::collections::HashSet::new(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
         versions: Arc::new(crate::admin::versions::VersionLog::new()),
         mutation_limiter: Arc::new(crate::admin::rate::MutationLimiter::new()),
         idempotency_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),

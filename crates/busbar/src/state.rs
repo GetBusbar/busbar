@@ -334,6 +334,16 @@ pub(crate) struct App {
     // Read by the Phase 1 groups-CRUD PUT/DELETE base-shadow guard (task #100); carried here first.
     #[allow(dead_code)]
     pub(crate) base_group_names: std::collections::HashSet<String>,
+    /// The EFFECTIVE `identity-providers:` NAMED-DEFINITION map (base `config.yaml` + the overlay's
+    /// API-applied entries). The READ side of the generic named-map admin CRUD
+    /// (`GET /api/v1/admin/identity-providers[/{name}]`); the WRITE side never mutates this in place
+    /// — it rewrites the overlay section and rebuilds a whole `App` from disk, exactly as
+    /// `PUT /config/settings` does, because an IdP change re-resolves the auth + admin chains.
+    pub(crate) identity_providers: crate::config::IdentityProviders,
+    /// The EFFECTIVE `export:` NAMED-DEFINITION map — the exporter twin of `identity_providers`,
+    /// serving `GET /api/v1/admin/export[/{name}]`. The lowered runtime projection lives in the
+    /// recorder / plugin-route table, never here.
+    pub(crate) export_defs: crate::config::ExportDefs,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,

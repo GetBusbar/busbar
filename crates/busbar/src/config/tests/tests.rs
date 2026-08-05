@@ -39,7 +39,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 
 /// An all-default DeployCfg for struct-literal resolve() tests (DeployCfg has no Default because
 /// providers/models are required in YAML).
-fn base_deploy() -> DeployCfg {
+pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         listen: DEFAULT_LISTEN_ADDR.into(),
         public_url: None,

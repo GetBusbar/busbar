@@ -194,7 +194,7 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 56, "expected exactly 56 admin operations");
+    assert_eq!(checked, 66, "expected exactly 66 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -574,6 +574,10 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         ("delete", "/api/v1/admin/keys/{id}"),
         ("delete", "/api/v1/admin/overlay/{section}"),
         ("delete", "/api/v1/admin/plugins/{file}"),
+        // The generic named-DEFINITION map deletes: the target rides the path, the guard rides
+        // `If-Match`. Enumerated per section so a new section shows up here as a deliberate edit.
+        ("delete", "/api/v1/admin/identity-providers/{name}"),
+        ("delete", "/api/v1/admin/export/{name}"),
     ];
 
     let doc = openapi_doc();
@@ -632,8 +636,8 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 18,
-        "18 mutating operations take a body; a change here is a deliberate API change"
+        declared, 22,
+        "22 mutating operations take a body; a change here is a deliberate API change"
     );
 }
 

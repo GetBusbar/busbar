@@ -27,6 +27,8 @@
 
 #[cfg(any(test, feature = "openapi-schema"))]
 use super::{AdminError, Scope};
+#[cfg(any(test, feature = "openapi-schema"))]
+use crate::config::named_map::{NamedMapSection, NamedMapShape};
 
 // ── ERROR TAXONOMY → OpenAPI PROJECTION (design D) ───────────────────────────────────────────────
 //
@@ -171,6 +173,12 @@ pub(crate) enum Cond {
     UnknownSection,
     NameCollision,
     InvalidLabels,
+    /// A named-map mutation tried to RAISE an `identity-providers.<name>.max_admin_scope` trust
+    /// ceiling. Refused outright over the API (1.5.3 unit D) — the ceiling is operator FILE policy.
+    TrustCeilingRaise,
+    /// A named-map DELETE would leave a DANGLING REFERENCE: another config site still names the
+    /// definition by bare name (e.g. `auth.chain`).
+    StillReferenced,
 }
 
 impl Cond {
@@ -228,6 +236,14 @@ impl Cond {
             Cond::InvalidLabels => {
                 "invalid mint-time `labels` — a reserved or non-Prometheus label name, or too \
                  many/too long"
+            }
+            Cond::TrustCeilingRaise => {
+                "raising `max_admin_scope` is refused over the admin API — the trust ceiling is \
+                 operator file policy; lower it here, raise it in config.yaml"
+            }
+            Cond::StillReferenced => {
+                "another config section still references this definition by bare name (remove the \
+                 reference first)"
             }
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
@@ -537,6 +553,17 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / NoSupervisor,
             Conflict / NotRestartable,
         ],
+        // ── The GENERIC named-DEFINITION maps (`/identity-providers`, `/export`; `tools`/`agents`
+        //    later) ────────────────────────────────────────────────────────────────────────────
+        // Declared per route SHAPE, not per section, and reached through the SAME
+        // `NamedMapSection::parse_rel` seam the router mounts from. That is what makes a new
+        // section additive here: adding the variant adds its five operations' declarations with
+        // no arm of their own. The one asymmetry is the identity-providers TRUST CEILING, which is
+        // keyed off `has_trust_ceiling()` rather than off the section's name.
+        (m, r) if NamedMapSection::parse_rel(r).is_some() => {
+            let (section, shape) = NamedMapSection::parse_rel(r).expect("just matched");
+            named_map_declared_errors(m, section, shape)
+        }
         // A templated READ with no arm of its own answers 404 for an unknown resource and nothing
         // else; every other operation carries only the algorithmic responses.
         _ => {
@@ -546,6 +573,76 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
                 &[]
             }
         }
+    }
+}
+
+/// The declared 4xx set for ONE generic named-map operation, keyed on the route SHAPE (+ the trust
+/// ceiling predicate) rather than on the section — see the arm in [`declared_errors`].
+///
+/// Every listed condition is emitted with its `Cond` NAMED (`err_json_cond`) by
+/// `admin::v1::json::named_map`, so each declaration is witness-backed at condition granularity and
+/// none of them needs a `COND_WITNESS_DEBT` row.
+#[cfg(any(test, feature = "openapi-schema"))]
+fn named_map_declared_errors(
+    method: MethodTag,
+    section: NamedMapSection,
+    shape: NamedMapShape,
+) -> &'static [DocErr] {
+    use Cond::*;
+    use ErrKind::*;
+    use MethodTag::*;
+    macro_rules! de {
+        ($($k:ident / $c:ident),* $(,)?) => {
+            &[$(DocErr { kind: $k, cond: $c }),*]
+        };
+    }
+    match (method, shape) {
+        // PUT is an UPSERT (create-or-replace), so it has no `not_found`.
+        (Put, NamedMapShape::Item) if section.has_trust_ceiling() => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            Validation / InvalidConfig,
+            Validation / NoDiskBase,
+            Conflict / BaseDefined,
+            Conflict / TrustCeilingRaise,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Put, NamedMapShape::Item) => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            Validation / InvalidConfig,
+            Validation / NoDiskBase,
+            Conflict / BaseDefined,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Delete, NamedMapShape::Item) if section.has_trust_ceiling() => de![
+            Validation / MalformedIfMatch,
+            Validation / NoDiskBase,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            Conflict / StillReferenced,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Delete, NamedMapShape::Item) => de![
+            Validation / MalformedIfMatch,
+            Validation / NoDiskBase,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            VersionConflict / StaleIfMatch,
+        ],
+        (Patch, NamedMapShape::Settings) => de![
+            Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            Validation / InvalidConfig,
+            Validation / NoDiskBase,
+            NotFound / UnknownResource,
+            Conflict / BaseDefined,
+            VersionConflict / StaleIfMatch,
+        ],
+        // The single-definition READ 404s on an unknown name; the collection READ takes no input
+        // it could reject.
+        (Get, NamedMapShape::Item) => de![NotFound / UnknownResource],
+        _ => &[],
     }
 }
 

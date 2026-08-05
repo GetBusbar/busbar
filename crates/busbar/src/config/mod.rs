@@ -12,6 +12,9 @@ pub(crate) mod overlay;
 pub(crate) mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
 pub(crate) mod migrate;
+/// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
+/// data so every surface that serves the universal pattern is parameterized instead of copied.
+pub(crate) mod named_map;
 /// The secret-reference type (C2): `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub(crate) mod patch;
 pub(crate) mod secret;
@@ -452,6 +455,15 @@ pub(crate) struct RootCfg {
     /// (all-`None`) ⇒ collection inert. Read at App construction to install the recorder + build the
     /// `/metrics` plugin route (prometheus) and to configure the request-log sinks.
     pub(crate) export: ExportCfg,
+    /// The `identity-providers:` NAMED-DEFINITION map, carried through resolve VERBATIM (the
+    /// EFFECTIVE map: base `config.yaml` + the overlay's API-applied entries, merged pre-resolve).
+    /// `auth`/`admin_auth` above are the RESOLVED projection of it; this is the definition surface
+    /// the admin API reads and rewrites (`GET/PUT/PATCH/DELETE /identity-providers/{name}`).
+    pub(crate) identity_providers: IdentityProviders,
+    /// The `export:` NAMED-DEFINITION map, carried through resolve VERBATIM — the definition twin of
+    /// the typed `export` projection above, for the same reason `identity_providers` is carried:
+    /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
+    pub(crate) export_defs: ExportDefs,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -4089,6 +4101,8 @@ pub(crate) fn resolve(
                 &deploy.routing,
             ),
             export,
+            identity_providers: deploy.identity_providers.clone(),
+            export_defs: deploy.export.clone(),
         })
     } else {
         Err(errors)

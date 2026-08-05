@@ -519,6 +519,43 @@ pub(crate) struct HookView {
     pub(crate) global: bool,
 }
 
+/// ONE definition of ONE 1.5.3 named-DEFINITION map — the read shape of the GENERIC named-map CRUD
+/// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
+/// `tools:`/`agents:` when they land).
+///
+/// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
+/// `{module, settings}` spine and differ only by optional kind-specific fields, which are
+/// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
+/// `{name, module, settings}` while `/identity-providers` additionally carries its ceiling — and a
+/// new section adds fields here (additive) instead of a parallel view + a parallel handler.
+///
+/// SECRETS ARE NEVER PROJECTED, by construction: an `identity-providers.<name>.token:` is a SECRET
+/// REFERENCE, and this view reports only WHETHER one is configured — there is no field the reference
+/// (let alone a resolved value) could ride out on.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct NamedDefView {
+    /// The instance NAME — the map key, and the token every reference site uses.
+    pub(crate) name: String,
+    /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
+    pub(crate) module: String,
+    /// The module's opaque settings bag, verbatim. Operator/API-owned; never interpreted here.
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
+    /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
+    /// for a section that carries no ceiling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_admin_scope: Option<String>,
+    /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
+    /// `admin-tokens` operator credential). The reference itself is never projected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) token_configured: Option<bool>,
+    /// `identity-providers` ONLY: whether a `browser_login:` block is configured — the presence that
+    /// puts a button on the hosted login page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) browser_login_configured: Option<bool>,
+}
+
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
 /// `GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config
 /// entry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`

@@ -73,6 +73,9 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
+            // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
+            // the admin surface mirrors the config grammar and a future section is additive.
+            .merge(named_map::routes())
             // Groups — the `groups:` limit-tree CRUD (Phase 1, task #100): runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))
@@ -245,6 +248,11 @@ fn ap(rel: &str) -> String {
 /// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
 mod txn;
 pub(crate) use txn::{config_transaction, Outcome};
+
+/// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; `tools`/`agents` land
+/// additively in 1.5.4/1.5.6). One handler set for every section of the 1.5.3 universal config
+/// pattern — see the module header.
+pub(crate) mod named_map;
 
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 

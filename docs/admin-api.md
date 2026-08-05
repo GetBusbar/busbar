@@ -30,7 +30,7 @@ The operator admin token holds `full`. Role-carrying principals (external module
 
 | Class | Budget | Covers |
 |---|---|---|
-| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, and `POST /restart` (the blast-radius set) |
+| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}` (the blast-radius set: each rebuilds and swaps the whole App) |
 | CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY — its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
