@@ -11,7 +11,7 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-plugin-abi = { path = "../plugin-abi" }
 busbar-plugin-sign = { path = "../plugin-sign" }
-libloading = "0.8"
+libloading = "0.9"
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
 # the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
