@@ -4,7 +4,7 @@
 //! `GET /auth/token` — the HOSTED BROWSER LOGIN page (1.5.2, Step 6).
 //!
 //! One param-less path, three sub-states read off the query string:
-//! * **chooser** (no params): one button per `auth.methods` entry that has a `browser_login` block,
+//! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login` block,
 //!   in config order. `base_url` (= `public_url`, verbatim, no `/v1`) is shown for BYOK.
 //! * **begin** (`?method=<name>`): the CORE mints PKCE (`code_verifier`/`code_challenge` S256),
 //!   `state`, and `nonce`, stores them in a hand-rolled HttpOnly+Secure+SameSite=Lax cookie, and
@@ -60,7 +60,7 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 
 // ── login-method registry (App.login_methods) ───────────────────────────────────────────────────
 
-/// One resolved hosted-login method (`auth.methods.<name>`). Holds the login-capable plugin handle,
+/// One resolved hosted-login method (`identity-providers.<name>`). Holds the login-capable plugin handle,
 /// the OAuth `client_id`, and — for a `browser_login` method — the resolved confidential-client
 /// secret VALUE, which is CORE-ONLY: never serialized to the plugin, never in the cookie, never
 /// logged, never rendered; injected ONLY into a token-exchange hop's `secret_form_field`.
@@ -87,7 +87,7 @@ pub(crate) struct LoginMethod {
     pub(crate) allowed_hosts: std::collections::HashSet<String>,
 }
 
-/// The resolved `auth.methods:` map — insertion-ordered (config order = button order), keyed by the
+/// The resolved hosted-login map — insertion-ordered (config order = button order), keyed by the
 /// method/module name. Built on boot AND reload in `build_app_from_config`.
 pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
@@ -102,7 +102,7 @@ impl std::fmt::Debug for LoginMethods {
 }
 
 impl LoginMethods {
-    /// The empty map (no hosted login) — the default for tests and configs with no `auth.methods`.
+    /// The empty map (no hosted login) — the default for tests and configs with no `identity-providers:`.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self {
@@ -110,7 +110,7 @@ impl LoginMethods {
         }
     }
 
-    /// Resolve every `auth.methods:` entry as a login-capable `kind: auth` plugin (ABI v2) via the
+    /// Resolve every `identity-providers:` entry as a login-capable `kind: auth` plugin (ABI v2) via the
     /// validated `registry` — the same trust/load pipeline as the data-plane chain. SecretRef-typed
     /// module settings resolve before the config crosses the ABI; the `browser_login.client_secret`
     /// resolves to a plaintext held CORE-ONLY. CAPABILITY GATE: a `browser_login` method whose plugin
@@ -125,7 +125,7 @@ impl LoginMethods {
         for (name, mc) in &cfg.methods {
             let mut resolved =
                 crate::config::secret::resolve_settings(&mc.settings, secret_resolver)
-                    .map_err(|e| format!("auth.methods.{name} settings: {e}"))?;
+                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
             // The OAuth `client_id` (the PUBLIC half) rides the module's settings so the module can
             // build the authorize URL + token-exchange with it. It is NOT a secret and is passed
             // through; the confidential-client secret is held CORE-only below and never crosses here.
@@ -137,11 +137,18 @@ impl LoginMethods {
                 }
             }
             let cfg_json = serde_json::Value::Object(resolved).to_string();
-            let (module, abi_version) = registry.open_login(name, &cfg_json).map_err(|e| {
-                format!(
-                    "auth.methods.{name} could not be loaded as a `kind: auth` login plugin: {e}"
-                )
-            })?;
+            // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
+            // provider NAME (the instance). 1.5.3/A7: `auth.methods:` folded into
+            // `identity-providers:`, so the two are no longer the same string — two named providers
+            // may legitimately share one login plugin with different issuers/clients.
+            let (module, abi_version) =
+                registry.open_login(&mc.module, &cfg_json).map_err(|e| {
+                    format!(
+                        "identity-providers.{name} (module '{}') could not be loaded as a \
+                         `kind: auth` login plugin: {e}",
+                        mc.module
+                    )
+                })?;
             let issuer = mc
                 .settings
                 .get("issuer")
@@ -155,7 +162,7 @@ impl LoginMethods {
                 Some(bl) => {
                     if abi_version < 2 {
                         return Err(format!(
-                            "auth.methods.{name} sets browser_login but its plugin advertises \
+                            "identity-providers.{name} sets browser_login but its plugin advertises \
                              abi_version {abi_version}; a hosted login button requires an ABI v2 \
                              login-capable auth plugin (rebuild the plugin against auth ABI v2)"
                         ));
@@ -163,11 +170,13 @@ impl LoginMethods {
                     // Per-kind rule: a Redirect (OAuth) method REQUIRES the confidential-client secret;
                     // a Credential (LDAP/AD-bind) method must NOT carry one (it has nothing to hold).
                     validate_browser_login_secret(login_kind, bl.client_secret.is_some())
-                        .map_err(|e| format!("auth.methods.{name} browser_login: {e}"))?;
+                        .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
                     let client_secret = match &bl.client_secret {
                         Some(sref) => {
                             let secret = secret_resolver.resolve_string(sref).map_err(|e| {
-                                format!("auth.methods.{name} browser_login.client_secret: {e}")
+                                format!(
+                                    "identity-providers.{name} browser_login.client_secret: {e}"
+                                )
                             })?;
                             Some(busbar_api::Redacted::new(secret))
                         }

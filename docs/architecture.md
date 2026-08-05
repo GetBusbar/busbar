@@ -153,11 +153,12 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   arrives as `Authorization: Bearer` or `X-Admin-Token`; no valid admin credential means
   a 401. Because the socket is separate, a caller on the data port can never reach the
   control plane. Exposing `admin_listen` off loopback is a boot error unless you set
-  `admin_tls.client_ca` (mTLS on the admin listener) or the explicit `admin_insecure`
+  `admin_tls.client_ca` (mTLS on the admin listener) or the explicit `admin_require_mtls`
   waiver (for operators fronting admin with their own mesh).
 - On the data plane, the caller's bearer token is threaded through the request. Whether
   Busbar signs the upstream call with its own lane key or forwards the caller's credential
-  is a separate config knob, `upstream_credentials:` (`Own`, the default, vs `Passthrough`),
+  is a separate config knob, `pools.upstream_credentials:` (`own`, the default, vs `passthrough`) —
+  the all-pools default, overridable per pool —
   independent of which auth module ran at the front door. Under governance the resolved
   virtual key is attached for downstream ACL and budget checks.
 - **Bedrock ingress** takes one of two paths. When the data-plane chain does not verify a

@@ -440,7 +440,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     // the registry below (register/PUT) and at the plugin pre-flight.
     if cfg.plugin.trim().is_empty() {
         return Err(AdminError::Validation(
-            "a hook must name a `kind: hook` plugin via `plugin:`".into(),
+            "a hook must name a `kind: hook` plugin via `module:`".into(),
         ));
     }
     // `prompt: rw` is a rewrite grant, meaningless (and unsafe) on a fire-and-forget tap.
@@ -732,7 +732,7 @@ pub(crate) fn build_with_registry(
     for (name, cfg) in &registry {
         if cfg.plugin.trim().is_empty() {
             return Err(AdminError::Validation(format!(
-                "hook `{name}` must name a `kind: hook` plugin via `plugin:`"
+                "hook `{name}` must name a `kind: hook` plugin via `module:`"
             )));
         }
         if cfg.kind == HookKind::Tap && cfg.prompt == PromptAccess::Rw {

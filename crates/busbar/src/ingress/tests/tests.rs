@@ -21,6 +21,7 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(
             &[],
@@ -132,6 +133,7 @@ fn test_affinity_header_honors_configured_name() {
     pr.insert(
         "tenant-pool".to_string(),
         crate::state::PoolRuntime {
+            upstream_credentials: None,
             members: Default::default(),
             failover: None,
             affinity: Some(crate::config::AffinityCfg {
@@ -159,6 +161,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
     pr.insert(
         "p".to_string(),
         crate::state::PoolRuntime {
+            upstream_credentials: None,
             members: Default::default(),
             failover: None,
             affinity: Some(crate::config::AffinityCfg {

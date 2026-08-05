@@ -15,7 +15,7 @@
 # ── transport ──
 listen: "0.0.0.0:8080"
 admin_listen: "127.0.0.1:8081"
-admin_insecure: false                         # waive exposed-admin mTLS guard (scary on purpose)
+admin_require_mtls: true                      # false waives the exposed-admin mTLS guard (scary on purpose)
 # tls:
 #   cert: { file: /run/secrets/tls-cert.pem }
 #   key:  { file: /run/secrets/tls-key.pem }
@@ -24,20 +24,26 @@ admin_insecure: false                         # waive exposed-admin mTLS guard (
 #   key:       { file: /run/secrets/admin-key.pem }
 #   client_ca: { file: /run/secrets/admin-ca.pem }
 
+# ── IDENTITY PROVIDERS: define once, reference by bare name ──
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  # corp-ad:
+  #   module: ad                                             # a `kind: auth` plugin
+  #   settings: { server: "ldaps://corp", base_dn: "dc=corp" }
+  #   max_admin_scope: none                                  # omitted = read-only (most restrictive)
+  #   browser_login: { client_id: busbar-web }               # presence ⇒ a hosted-login button
+
 # ── AUTH: identity (roles) + signed keys ──
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }    # REQUIRED with `keys` below; rotate =
   #                                                          # revoke-all; fleet-shared. Generate one
   #                                                          # with `busbar --generate-signing-key`.
-  upstream_credentials: own
-  chain:
-    - keys                                                   # built-in signed-key verifier (no config)
-    # - ad: { max_admin_scope: full, settings: { server: "ldaps://corp", base_dn: "dc=corp" } }
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
-  role_bindings: {}                                          # NESTED BY MODULE; pure auth, e.g.:
+  chain: [keys]                                              # built-in signed-key verifier (bare, no definition)
+  # chain: [keys, corp-ad]
+  admin_auth: [admin-tokens]
+  role_bindings: {}                                          # NESTED BY PROVIDER NAME; pure auth, e.g.:
   # role_bindings:
-  #   ad:
+  #   corp-ad:
   #     growth-eng: { allowed_pools: [fast], group: growth }
   #     platform:   { group: acme, admin_scope: full }       # allowed_pools omitted = ALL pools
 
@@ -88,8 +94,14 @@ models:
   sonnet-bedrock:   { provider: bedrock,   upstream_model: anthropic.claude-3-5-sonnet-v1 }
 
 # ── POOLS: pure routing/topology ──
+# The `pools:` section carries exactly TWO reserved keys, and that set is CLOSED (1.5.3): `hooks:`
+# (a LIST ⇒ ADDITIVE with a pool's own, deduped by name) and `upstream_credentials:` (a SCALAR ⇒ a
+# pool's own value REPLACES it). A pool may not be named either of them.
 pools:
+  upstream_credentials: own                                  # all-pools default
+  # hooks: [audit]                                           # all-pools attach (requires a hooks: def)
   fast:
+    upstream_credentials: passthrough                        # per-pool override (scalar: REPLACES)
     members:
       - { model: sonnet-anthropic, weight: 1, tier: null, tags: [] }   # `target` -> `model`
       - { model: sonnet-bedrock,   weight: 1 }
@@ -100,10 +112,17 @@ pools:
     on_exhausted: reject                                     # | { fallback_pool: cold } | least_bad | { queue: { max_ms } }
     affinity: { mode: session }
 
-# ── HOOKS: inline refs, no registry block ──
-# global_hooks:                                 # requires plugins.enabled: true + the signed tarball
-#   - { module: busbar-webrequest-hook, settings: { url: "https://sidecar.internal/pii" },
-#       kind: gate, timeout_ms: 5, on_error: reject, prompt: no, user: no }
+# ── HOOKS: the top-level NAMED-DEFINITION map; pools reference by bare name ──
+# hooks:                                        # requires plugins.enabled: true + the signed tarball
+#   pii:
+#     module: busbar-webrequest-hook
+#     settings: { url: "https://sidecar.internal/pii" }
+#     groups: [engineering]                     # SCOPE: omit = all callers
+#     phase: [request, response]                # omit = the four core stages (request/candidate/routing/response)
+#     kind: gate
+#     prompt: no
+#     user: no
+#     on_error: reject                          # a bare reserved terminal; a fallback HOOK is `{ hook: <name> }`
 
 # ── PLUGINS (loader) ──
 plugins:
@@ -112,13 +131,15 @@ plugins:
   trust: { publishers: [], allow_unsigned: false, allow_third_party: false }
   min_versions: {}
 
-# ── SECURITY / OBSERVABILITY / LIMITS ──
+# ── SECURITY / EXPORT / LIMITS ──
 security:      { blocked_metadata_hosts: [], allow_metadata_hosts: [], allow_all_metadata: false }
-# 1.5.3: the request-log webhook + Prometheus metrics moved into the built-in `export:` exporters.
-observability: { otlp_url: null }
-# export:  # opt-in observability exporters (presence = the switch)
-#   prometheus:          { settings: { buffer_seconds: 60 } }                 # PULL: serves /metrics
-#   request-log-webhook: { settings: { url: "https://logs.example.com/busbar" } }  # PUSH per-request
+# 1.5.3: the `observability:` block is DELETED. ALL telemetry egress is the `export:` NAMED map —
+# `<name>: { module, settings }` — and the SAME module may back SEVERAL named instances:
+# export:
+#   metrics:  { module: prometheus,          settings: { buffer_seconds: 60 } }   # PULL: serves /metrics
+#   req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
+#   req-siem: { module: request-log-webhook, settings: { url: "https://siem.internal/ingest" } }
+#   traces:   { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
 limits:        { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432,
                  max_inbound_concurrent: 8192, hard_down_cooldown_secs: 1800,
                  reasoning_effort_budgets: { minimal: 1024, low: 4096, medium: 8192, high: 16384 } }

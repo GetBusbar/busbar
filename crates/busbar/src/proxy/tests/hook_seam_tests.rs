@@ -320,6 +320,7 @@ fn pool_runtime_with(
         );
     }
     crate::state::PoolRuntime {
+        upstream_credentials: None,
         members,
         failover: None,
         affinity: None,
@@ -623,8 +624,10 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         ))
         .pool("p", &[(0, 1)])
         .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
-                .unwrap(),
+            &crate::config::AuthCfg {
+                chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
+                ..crate::config::AuthCfg::default_none()
+            },
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -659,8 +662,10 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
-                .unwrap(),
+            &crate::config::AuthCfg {
+                chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
+                ..crate::config::AuthCfg::default_none()
+            },
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -1842,6 +1847,7 @@ async fn reject_rides_the_full_forward_path() {
         .pool_runtime(
             "pa",
             crate::state::PoolRuntime {
+                upstream_credentials: None,
                 members: Default::default(),
                 failover: None,
                 affinity: None,

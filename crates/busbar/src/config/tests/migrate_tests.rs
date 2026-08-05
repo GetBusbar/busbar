@@ -165,17 +165,16 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     assert_eq!(get(&["groups", "growth", "parent"]).as_str(), Some("acme"));
     // admin_token ${VAR} -> admin-tokens secret ref.
     let admin_auth = get(&["auth", "admin_auth"]);
-    let entry = &admin_auth.as_sequence().unwrap()[0];
-    let token_env = entry
-        .as_mapping()
-        .unwrap()
-        .get(serde_yaml::Value::from("admin-tokens"))
-        .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("token")))
-        .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("env")))
-        .and_then(|v| v.as_str());
-    assert_eq!(token_env, Some("BUSBAR_ADMIN_TOKEN"));
+    assert_eq!(
+        admin_auth.as_sequence().unwrap()[0].as_str(),
+        Some("admin-tokens"),
+        "a 1.5.3 admin chain is a list of bare PROVIDER NAMES"
+    );
+    // The operator credential rode along onto the `identity-providers:` DEFINITION (audit §2).
+    let token_env = get(&["identity-providers", "admin-tokens", "token", "env"])
+        .as_str()
+        .map(str::to_string);
+    assert_eq!(token_env.as_deref(), Some("BUSBAR_ADMIN_TOKEN"));
     // group_map -> role_bindings nested under the ONE external chain module.
     assert_eq!(
         get(&["auth", "role_bindings", "oidc", "growth-eng", "group"]).as_str(),
@@ -263,9 +262,11 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         ["audit-tap"],
         "the global: true tap became the reserved pools.hooks all-pools attach"
     );
-    // otlp_endpoint -> otlp_url.
+    // otlp_endpoint -> otlp_url -> the `module: otlp` export instance (1.5.3 deletes the
+    // `observability:` block; `export:` is the single telemetry-egress surface).
+    assert_eq!(get(&["export", "traces", "module"]).as_str(), Some("otlp"));
     assert_eq!(
-        get(&["observability", "otlp_url"]).as_str(),
+        get(&["export", "traces", "settings", "url"]).as_str(),
         Some("http://otel:4318/v1/traces")
     );
 
@@ -429,9 +430,14 @@ pools: {}
         .unwrap();
     assert_eq!(chain[0].as_str(), Some("keys"), "tokens -> keys");
     assert_eq!(
-        dig(&chain[1], &["oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        chain[1].as_str(),
+        Some("oidc"),
+        "a 1.5.3 chain is a list of bare PROVIDER NAMES"
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
         Some("full"),
-        "auth.modules.oidc.max_admin_scope must fold onto the chain entry"
+        "auth.modules.oidc.max_admin_scope must fold onto the identity-providers DEFINITION"
     );
     // top-level group_map -> auth.role_bindings nested under the ONE external module (oidc).
     assert_eq!(
@@ -870,21 +876,23 @@ pools:
         "the retired `mint` admin_scope must be rewritten to `full`; got {bound_scope:?}"
     );
 
-    // (b) the oidc chain entry's max_admin_scope: hooks-register -> full.
-    let chain = auth
-        .get(serde_yaml::Value::from("chain"))
-        .and_then(|v| v.as_sequence())
-        .expect("chain sequence");
-    let oidc_cap = chain.iter().find_map(|e| {
-        let m = e.as_mapping()?;
-        let body = m.get(serde_yaml::Value::from("oidc"))?.as_mapping()?;
-        body.get(serde_yaml::Value::from("max_admin_scope"))?
-            .as_str()
-    });
+    // (b) the oidc provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
+    // `identity-providers:` DEFINITION (audit §2), which the chain now references by bare name — so
+    // the scope rewrite and the definition lift compose in ONE migrator run.
+    let oidc_cap =
+        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str());
     assert_eq!(
         oidc_cap,
         Some("full"),
         "the retired `hooks-register` max_admin_scope must be rewritten to `full`; got {oidc_cap:?}"
+    );
+    let chain = auth
+        .get(serde_yaml::Value::from("chain"))
+        .and_then(|v| v.as_sequence())
+        .expect("chain sequence");
+    assert!(
+        chain.iter().any(|e| e.as_str() == Some("oidc")),
+        "the chain references the provider by BARE NAME: {chain:?}"
     );
 
     // Loud, per-site warnings naming both rewrites.
@@ -919,11 +927,11 @@ observability:
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // The old key is GONE from `observability` (a raw pass-through would `deny_unknown_fields`-reject
-    // at boot instead of silently keeping stale semantics).
+    // The old key is GONE (a raw pass-through would `deny_unknown_fields`-reject at boot instead of
+    // silently keeping stale semantics). 1.5.3 deletes the whole enclosing block, so assert that.
     assert!(
-        dig(&doc, &["observability", "emit_server_timing"]).is_none(),
-        "the old key must not survive migration: {doc:?}"
+        dig(&doc, &["observability"]).is_none(),
+        "the whole observability block must not survive migration: {doc:?}"
     );
     // The new key carries the SAME value, in its new home.
     assert_eq!(
@@ -936,9 +944,10 @@ observability:
         dig(&doc, &["advanced", "rate_sweep_interval"]).and_then(|v| v.as_u64()),
         Some(64)
     );
-    // The sibling otlp_endpoint rename still fires in the same run (the two migrations don't collide).
+    // The sibling otlp_endpoint rename still fires in the same run and then FOLDS into the `otlp`
+    // export instance (the migrations chain rather than colliding).
     assert_eq!(
-        dig(&doc, &["observability", "otlp_url"]).and_then(|v| v.as_str()),
+        dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
         Some("http://otel:4318/v1/traces")
     );
     assert!(
@@ -1117,20 +1126,20 @@ pools: {}
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // request-log-webhook exporter.
+    // request-log-webhook exporter — 1.5.3: a NAMED instance (`req-log`) whose `module:` says which
+    // built-in backs it, not a type key.
     assert_eq!(
-        dig(&doc, &["export", "request-log-webhook", "settings", "url"]).and_then(|v| v.as_str()),
+        dig(&doc, &["export", "req-log", "module"]).and_then(|v| v.as_str()),
+        Some("request-log-webhook"),
+    );
+    assert_eq!(
+        dig(&doc, &["export", "req-log", "settings", "url"]).and_then(|v| v.as_str()),
         Some("https://logs.example.com/busbar"),
     );
     assert_eq!(
         dig(
             &doc,
-            &[
-                "export",
-                "request-log-webhook",
-                "settings",
-                "max_inflight_deliveries"
-            ]
+            &["export", "req-log", "settings", "max_inflight_deliveries"]
         )
         .and_then(|v| v.as_u64()),
         Some(32),
@@ -1138,41 +1147,37 @@ pools: {}
     assert_eq!(
         dig(
             &doc,
-            &[
-                "export",
-                "request-log-webhook",
-                "settings",
-                "delivery_timeout_secs"
-            ]
+            &["export", "req-log", "settings", "delivery_timeout_secs"]
         )
         .and_then(|v| v.as_u64()),
         Some(5),
     );
-    // prometheus exporter.
+    // prometheus exporter — likewise a NAMED instance (`metrics`).
     assert_eq!(
-        dig(
-            &doc,
-            &["export", "prometheus", "settings", "buffer_seconds"]
-        )
-        .and_then(|v| v.as_u64()),
+        dig(&doc, &["export", "metrics", "module"]).and_then(|v| v.as_str()),
+        Some("prometheus"),
+    );
+    assert_eq!(
+        dig(&doc, &["export", "metrics", "settings", "buffer_seconds"]).and_then(|v| v.as_u64()),
         Some(90),
     );
     assert_eq!(
-        dig(
-            &doc,
-            &["export", "prometheus", "settings", "key_gauge_limit"]
-        )
-        .and_then(|v| v.as_u64()),
+        dig(&doc, &["export", "metrics", "settings", "key_gauge_limit"]).and_then(|v| v.as_u64()),
         Some(1500),
     );
-    // otlp_url stays on observability (tracing is still core); the retired keys are gone.
+    // 1.5.3 §3: `otlp_url` folds into an `otlp` export instance and the `observability:` BLOCK IS
+    // DELETED outright — `export:` is the single telemetry-egress surface.
     assert_eq!(
-        dig(&doc, &["observability", "otlp_url"]).and_then(|v| v.as_str()),
+        dig(&doc, &["export", "traces", "module"]).and_then(|v| v.as_str()),
+        Some("otlp"),
+    );
+    assert_eq!(
+        dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
         Some("https://otel.example.com/v1/traces"),
     );
     assert!(
-        dig(&doc, &["observability", "request_log_webhook_url"]).is_none(),
-        "the retired webhook key must be removed from observability"
+        dig(&doc, &["observability"]).is_none(),
+        "the whole observability block must be gone after migration"
     );
     assert!(
         dig(&doc, &["metrics"]).is_none(),
@@ -1182,22 +1187,36 @@ pools: {}
         out.changes
             .iter()
             .any(|c| c.contains("request-log-webhook"))
-            && out.changes.iter().any(|c| c.contains("export.prometheus")),
-        "the change ledger names both rewrites; got {:?}",
+            && out.changes.iter().any(|c| c.contains("prometheus"))
+            && out.changes.iter().any(|c| c.contains("otlp")),
+        "the change ledger names all three rewrites; got {:?}",
         out.changes
     );
 
-    // Idempotent: re-migrating the already-new document moves nothing more.
+    // The migrated document BOOT-PARSES as a 1.5.3 config, and resolves to the typed export block —
+    // a golden that would catch a rewrite that produces a shape the parser rejects.
     let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
-    let (out2, _doc2) = migrate_to_value(&migrated_yaml);
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&migrated_yaml).expect("the migrated config must boot-parse");
+    let mut errs = Vec::new();
+    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(export.request_log_webhooks.len(), 1);
+    assert!(export.prometheus.is_some() && export.otlp.is_some());
+
+    // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
+    let (out2, doc2) = migrate_to_value(&migrated_yaml);
     assert!(
         !out2
             .changes
             .iter()
-            .any(|c| c.contains("request-log-webhook") || c.contains("export.prometheus")),
+            .any(|c| c.contains("request-log-webhook")
+                || c.contains("prometheus")
+                || c.contains("otlp")),
         "a second migrate is a no-op for the export rewrite; got {:?}",
         out2.changes
     );
+    assert_eq!(doc, doc2, "the migration is a fixed point after one run");
 }
 
 /// GOLDEN (a): a 1.5.0/1.5.2 config with an INLINE `global_hooks:` instance AND an inline pool-hook
@@ -1266,5 +1285,379 @@ global_hooks:
     assert_eq!(
         v1, v2,
         "the migration must be idempotent on the config tree"
+    );
+}
+
+// ── 1.5.3 GRAMMAR-LOCK migration GOLDENS (audit §2/§3/§4/§5) ─────────────────────────────────────
+//
+// One golden per retired key. Each asserts the same four things, because those four together are
+// what "a migration path" means for a break-once release:
+//   1. the retired key LOUD-FAILS the boot detector with the `--migrate-config` breadcrumb (an
+//      operator can never silently boot a config whose semantics moved);
+//   2. `--migrate-config` mechanically rewrites it into the 1.5.3 home (nothing is merely a TODO —
+//      every one of these is deterministic, so leaving it to a human would be a lost setting);
+//   3. the migrated document BOOT-PARSES and resolves (a rewrite that produces an unparseable shape
+//      is worse than no rewrite);
+//   4. re-running the migrator is a FIXED POINT — the tree is byte-identical (shape-convergent).
+
+/// Assert the boot detector names `needle` and points at the migrator, for a config the operator
+/// might really still have. Shared by the goldens below so each one states only what is specific.
+fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw).expect("valid YAML");
+    let markers = detect_legacy_markers(&doc);
+    assert!(
+        markers.iter().any(|m| m.contains(needle)),
+        "the retired key '{needle}' must trip the boot detector; got {markers:?}"
+    );
+    let err = crate::config::migrate::legacy_config_error(&markers);
+    assert!(
+        err.contains("busbar --migrate-config"),
+        "the refusal must point at the migrator: {err}"
+    );
+}
+
+/// Migrate `raw`, assert the result BOOT-PARSES, and assert a second run is a fixed point.
+/// Returns the migrated document for the golden's own shape assertions.
+fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_yaml::Value) {
+    let (out, doc) = migrate_to_value(raw);
+    let yaml = serde_yaml::to_string(&doc).expect("serializable");
+    let _: crate::config::DeployCfg =
+        serde_yaml::from_str(&yaml).expect("the migrated config must boot-parse as 1.5.3");
+    let (_out2, doc2) = migrate_to_value(&yaml);
+    assert_eq!(
+        doc, doc2,
+        "the migration must be a FIXED POINT: re-running it changes nothing"
+    );
+    (out, doc)
+}
+
+/// GOLDEN §5 — `admin_insecure: true` -> `admin_require_mtls: false` (the flag INVERTED so the safe
+/// posture is the default).
+///
+/// RED-BEFORE-GREEN: `admin_require_mtls` did not exist before this unit, and `admin_insecure` was a
+/// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
+#[test]
+fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
+    let raw = "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n";
+    assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
+
+    let (out, doc) = migrate_golden(raw);
+    assert!(
+        dig(&doc, &["admin_insecure"]).is_none(),
+        "the retired key must not survive migration"
+    );
+    assert_eq!(
+        dig(&doc, &["admin_require_mtls"]).and_then(|v| v.as_bool()),
+        Some(false),
+        "an explicit 1.5.2 waiver must survive as the 1.5.3 waiver, INVERTED"
+    );
+    assert!(
+        out.changes.iter().any(|c| c.contains("admin_require_mtls")),
+        "the change ledger names the inversion; got {:?}",
+        out.changes
+    );
+
+    // The other polarity: an explicit `false` (guard ON) becomes `true` (guard ON) — the BEHAVIOR is
+    // preserved across the inversion, which is the only thing an operator cares about.
+    let (_, doc) = migrate_golden("admin_insecure: false\nproviders: {}\nmodels: {}\npools: {}\n");
+    assert_eq!(
+        dig(&doc, &["admin_require_mtls"]).and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+/// GOLDEN §4 — `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
+/// default (whose credential reaches the upstream is a ROUTING property, not an inbound-auth one).
+///
+/// RED-BEFORE-GREEN: `pools.upstream_credentials` did not exist before this unit and
+/// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
+#[test]
+fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
+    let raw = "auth:\n  chain: [keys]\n  upstream_credentials: passthrough\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    assert_loud_fail_with_breadcrumb(raw, "auth.upstream_credentials");
+
+    let (out, doc) = migrate_golden(raw);
+    assert!(
+        dig(&doc, &["auth", "upstream_credentials"]).is_none(),
+        "the retired key must not survive under auth:"
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "upstream_credentials"]).and_then(|v| v.as_str()),
+        Some("passthrough"),
+        "the mode lands on the reserved `pools:` section key, VALUE PRESERVED"
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("pools.upstream_credentials")),
+        "the change ledger names the move; got {:?}",
+        out.changes
+    );
+}
+
+/// GOLDEN §3 — the `observability:` BLOCK is DELETED and its last field folds into a `module: otlp`
+/// `export:` instance, so `export:` is the single telemetry-egress surface.
+///
+/// RED-BEFORE-GREEN: there was no `otlp` export module before this unit, so `otlp_url` had nowhere
+/// to go and the block could not be deleted without losing the trace sink.
+#[test]
+fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
+    let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    assert_loud_fail_with_breadcrumb(raw, "observability");
+
+    let (out, doc) = migrate_golden(raw);
+    assert!(
+        dig(&doc, &["observability"]).is_none(),
+        "the whole block is DELETED in 1.5.3"
+    );
+    assert_eq!(
+        dig(&doc, &["export", "traces", "module"]).and_then(|v| v.as_str()),
+        Some("otlp")
+    );
+    assert_eq!(
+        dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
+        Some("http://otel:4318/v1/traces"),
+        "the trace sink is PRESERVED, not lost with the block"
+    );
+    assert!(
+        out.changes.iter().any(|c| c.contains("otlp")),
+        "the change ledger names the fold; got {:?}",
+        out.changes
+    );
+
+    // The 1.4.x spelling chains through the `otlp_endpoint -> otlp_url` rename in the SAME run.
+    let (_, doc) = migrate_golden(
+        "observability:\n  otlp_endpoint: \"http://otel:4318/v1/traces\"\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    );
+    assert_eq!(
+        dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
+        Some("http://otel:4318/v1/traces")
+    );
+}
+
+/// GOLDEN §3 — the TYPE-KEYED `export:` block becomes the NAMED map (`<name>: { module, settings }`),
+/// which is what makes two instances of one module expressible at all.
+///
+/// RED-BEFORE-GREEN: the type-keyed shape was the live grammar before this unit, so there was
+/// nothing to detect and no named map to converge on.
+#[test]
+fn golden_migrate_type_keyed_export_becomes_a_named_map() {
+    let raw = "export:\n\
+               \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
+               \x20 request-log-webhook: { settings: { url: \"https://logs.example.com/a\" } }\n\
+               \x20 generic-webhook: { settings: { url: \"https://siem.internal/b\", auth_header: { name: Authorization, value: \"Bearer x\" } } }\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    assert_loud_fail_with_breadcrumb(raw, "TYPE-KEYED");
+
+    let (_out, doc) = migrate_golden(raw);
+    assert_eq!(
+        dig(&doc, &["export", "metrics", "module"]).and_then(|v| v.as_str()),
+        Some("prometheus")
+    );
+    assert_eq!(
+        dig(&doc, &["export", "req-log", "module"]).and_then(|v| v.as_str()),
+        Some("request-log-webhook")
+    );
+    // The retired `generic-webhook` exporter FOLDS into `request-log-webhook`: its only extra was
+    // `auth_header:` (now a setting there) and its other reason to exist — a SECOND target — is
+    // exactly what the named map provides. So the migrated config has TWO webhook instances.
+    assert_eq!(
+        dig(&doc, &["export", "req-log-audit", "module"]).and_then(|v| v.as_str()),
+        Some("request-log-webhook")
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &["export", "req-log-audit", "settings", "auth_header", "name"]
+        )
+        .and_then(|v| v.as_str()),
+        Some("Authorization")
+    );
+
+    // And the migrated document really resolves to two independent webhook sinks.
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&serde_yaml::to_string(&doc).unwrap()).expect("boot-parses");
+    let mut errs = Vec::new();
+    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(export.request_log_webhooks.len(), 2);
+    assert!(export.prometheus.is_some());
+}
+
+/// GOLDEN §2 + A7 — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
+/// lift into ONE `identity-providers:` definition per module, referenced by bare name.
+///
+/// This is THE point of audit §2, and the assertion that proves it is the DEDUPE: `oidc` appears in
+/// BOTH chains and in `methods:` in the source, and there is exactly ONE definition afterwards,
+/// carrying the union of what the three sites contributed. Under the retired grammar the operator
+/// wrote those settings three times and nothing stopped the copies from drifting.
+///
+/// RED-BEFORE-GREEN: `identity-providers:` did not exist before this unit, so there was no map to
+/// converge onto and the inline form was the live grammar.
+#[test]
+fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
+    let raw = "auth:\n\
+               \x20 chain:\n\
+               \x20   - keys\n\
+               \x20   - oidc: { settings: { issuer: \"https://idp.example/\" } }\n\
+               \x20 admin_auth:\n\
+               \x20   - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n\
+               \x20   - oidc: { max_admin_scope: full }\n\
+               \x20 methods:\n\
+               \x20   oidc:\n\
+               \x20     audience: busbar\n\
+               \x20     browser_login: { client_id: busbar-web }\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    assert_loud_fail_with_breadcrumb(raw, "INLINE module entries");
+    assert_loud_fail_with_breadcrumb(raw, "auth.methods");
+
+    let (out, doc) = migrate_golden(raw);
+
+    // Both chains are now lists of BARE NAMES.
+    assert_eq!(
+        dig(&doc, &["auth", "chain"])
+            .and_then(|v| v.as_sequence().cloned())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        ["keys", "oidc"]
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"])
+            .and_then(|v| v.as_sequence().cloned())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        ["admin-tokens", "oidc"]
+    );
+    assert!(
+        dig(&doc, &["auth", "methods"]).is_none(),
+        "the parallel methods map is gone (A7)"
+    );
+
+    // THE DEDUPE: exactly ONE `oidc` definition, carrying the union of all three source sites.
+    let defs = dig(&doc, &["identity-providers"])
+        .and_then(|v| v.as_mapping().cloned())
+        .expect("identity-providers map");
+    assert_eq!(
+        defs.len(),
+        2,
+        "one definition per MODULE (oidc + admin-tokens), not one per REFERENCE: {defs:?}"
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "module"]).and_then(|v| v.as_str()),
+        Some("oidc")
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        Some("full"),
+        "the ceiling written on the ADMIN chain entry lands on the one definition"
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "oidc", "settings", "issuer"]).and_then(|v| v.as_str()),
+        Some("https://idp.example/"),
+        "the settings written on the DATA chain entry land on the same definition"
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &["identity-providers", "oidc", "settings", "audience"]
+        )
+        .and_then(|v| v.as_str()),
+        Some("busbar"),
+        "the settings written on the METHODS entry merge in too (A7)"
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &["identity-providers", "oidc", "browser_login", "client_id"]
+        )
+        .and_then(|v| v.as_str()),
+        Some("busbar-web"),
+        "browser_login is PER-PROVIDER in 1.5.3 (A7)"
+    );
+    // The operator credential rides onto the admin-tokens definition, not the chain entry.
+    assert_eq!(
+        dig(
+            &doc,
+            &["identity-providers", "admin-tokens", "token", "env"]
+        )
+        .and_then(|v| v.as_str()),
+        Some("BUSBAR_ADMIN_TOKEN")
+    );
+    assert!(
+        out.changes.iter().any(|c| c.contains("identity-providers")),
+        "the change ledger names the lift; got {:?}",
+        out.changes
+    );
+
+    // And the migrated config RESOLVES: both chains point at the SAME definition, so their entries
+    // are identical by construction — the drift the retired grammar allowed is now impossible.
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(&serde_yaml::to_string(&doc).unwrap()).expect("boot-parses");
+    let mut errs = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth"),
+        &deploy.identity_providers,
+        &mut errs,
+    );
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(auth.chain[1], auth.admin_auth[1]);
+}
+
+/// GOLDEN — a legacy TAP with no `at:` must migrate to an EXPLICIT `phase: [request]`.
+///
+/// Under the frozen 1.5.3 rule an omitted `phase:` means ALL FOUR core stages, but a 1.5.0/1.5.2 tap
+/// with no `at:` fired at the REQUEST stage ONLY (`resolve_tap_hooks_admits_only_request_stage_taps`).
+/// Migrating it without pinning the stage would silently take that tap from one firing per request to
+/// four — a behavior change smuggled in by a config migration. A migration must be
+/// semantics-preserving, so the old default is written out explicitly.
+///
+/// RED-BEFORE-GREEN: `hook_entry_to_def` only emitted `phase:` when `at:` was PRESENT, so a bare tap
+/// migrated with no `phase:` at all and silently widened to four stages.
+#[test]
+fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
+    let raw = "global_hooks:\n  - { module: busbar-audit-hook, kind: tap }\n\
+               providers: {}\nmodels: {}\npools: {}\n";
+    let (_, doc) = migrate_golden(raw);
+
+    let hooks = dig(&doc, &["hooks"])
+        .and_then(|v| v.as_mapping().cloned())
+        .expect("the migrated doc carries a named `hooks:` definition map");
+    let (_, def) = hooks
+        .iter()
+        .next()
+        .expect("the inline global tap became exactly one named definition");
+
+    let phase = def
+        .as_mapping()
+        .and_then(|m| m.get(serde_yaml::Value::from("phase")).cloned())
+        .and_then(|v| v.as_sequence().cloned())
+        .expect("a migrated bare TAP must carry an EXPLICIT `phase:` (not the widened default)");
+    assert_eq!(
+        phase,
+        vec![serde_yaml::Value::from("request")],
+        "a legacy tap with no `at:` fired at REQUEST only; migration must preserve exactly that, \
+         not silently widen it to the four core stages"
+    );
+
+    // A GATE has no stage default to preserve, so it is left alone (omitted `phase:` is correct).
+    let raw_gate = "global_hooks:\n  - { module: busbar-phi, kind: gate }\n\
+                    providers: {}\nmodels: {}\npools: {}\n";
+    let (_, doc_gate) = migrate_golden(raw_gate);
+    let gates = dig(&doc_gate, &["hooks"])
+        .and_then(|v| v.as_mapping().cloned())
+        .expect("named hooks map");
+    let (_, gdef) = gates.iter().next().expect("one definition");
+    assert!(
+        gdef.as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::from("phase")))
+            .is_none(),
+        "a gate carries no `at:` default, so migration must not invent a `phase:` for it"
     );
 }

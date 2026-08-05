@@ -28,32 +28,38 @@ listen: "0.0.0.0:8080"
 # SECURITY: a network-exposed admin_listen (any non-loopback bind) REFUSES TO BOOT unless it requires
 # client-certificate mTLS via admin_tls.client_ca. A loopback bind (127.0.0.1 / ::1 / localhost)
 # is exempt. To run a token-only admin plane on an exposed address on purpose — e.g. behind a mesh
-# that terminates mTLS — set `admin_insecure: true` to waive the guard deliberately.
+# that terminates mTLS — set `admin_require_mtls: false` to waive the guard deliberately.
 #
 # admin_listen: "127.0.0.1:8081"    # default; set an exposed address (+ admin_tls) to manage off-host
 # admin_tls:
 #   cert:      { file: /etc/busbar/admin-cert.pem }
 #   key:       { file: /etc/busbar/admin-key.pem }
 #   client_ca: { file: /etc/busbar/admin-client-ca.pem }   # present ⇒ mTLS required on the admin plane
-# admin_insecure: false                                  # true ⇒ waive the exposed-admin mTLS guard
+# admin_require_mtls: true                               # false ⇒ waive the exposed-admin mTLS guard
 
 # ── Client authentication ────────────────────────────────────────────────────────────────────────
-# auth.chain - an ORDERED list of auth module entries identifying the caller. `keys` is the
+# identity-providers - DEFINE each identity provider ONCE (name -> {module, settings,
+# max_admin_scope, token}); auth.chain / auth.admin_auth / role_bindings then REFERENCE it BY BARE
+# NAME. The built-ins `keys` (signed-key verifier) and `admin-tokens` (operator credential) are
+# referenced bare and need a definition only when they carry config.
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  # corp-ad:
+  #   module: ad
+  #   settings: { server: "ldaps://corp", base_dn: "dc=corp" }
+  #   max_admin_scope: none      # per-provider ADMIN ceiling; omitted = read-only (most restrictive)
+
+# auth.chain - an ORDERED list of identity-provider NAMES identifying the caller. `keys` is the
 # built-in signed-key verifier: clients present busbar-minted keys (POST /api/v1/admin/keys).
-# An IdP module (a `kind: auth` plugin) is a map entry carrying its typed fields + settings, e.g.
-#   - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
-# An EMPTY chain is an open relay (no client auth; dev only). upstream_credentials controls whose
-# key hits the provider: `own` (default - busbar's configured key) or `passthrough` (forward the
-# caller's key). admin_auth gates /api/v1/admin/* (default [admin-tokens]); role_bindings map an
-# IdP module's asserted ROLES to policy (allowed_pools / group / admin_scope), NESTED BY MODULE.
+# An EMPTY chain is an open relay (no client auth; dev only). admin_auth gates /api/v1/admin/*
+# (default [admin-tokens]); role_bindings map a provider's asserted ROLES to policy (allowed_pools /
+# group / admin_scope), NESTED BY PROVIDER NAME. Whose key hits the provider is
+# `pools.upstream_credentials` (see the pools section), not an auth concern.
 auth:
-  chain:
-    - keys
-  upstream_credentials: own
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }   # guards the admin API (mint keys etc.)
+  chain: [keys]
+  admin_auth: [admin-tokens]                                 # guards the admin API (mint keys etc.)
   # role_bindings:
-  #   ad:
+  #   corp-ad:
   #     growth-eng: { allowed_pools: [fast], group: growth }
   #     platform:   { group: acme, admin_scope: full }       # allowed_pools omitted = ALL pools
   signing_key: { file: /var/lib/busbar/signing.key }        # REQUIRED with `keys` above; fleet-shared
@@ -135,6 +141,14 @@ models:
 # aggregate, and the breaker fails a request over to a healthy member when one is tripped. Target a
 # pool with `POST /<pool>/v1/messages` (or the `model` field for `/v1/chat/completions`).
 pools:
+
+  # RESERVED section keys (1.5.3, and this set is CLOSED — a pool may not be named either of them):
+  #   hooks:                — attach these hooks to ALL pools (a LIST, so it is ADDITIVE with a
+  #                            pool's own `hooks:`; a name in both fires ONCE, at its first position)
+  #   upstream_credentials: — the ALL-POOLS default for whose key hits the provider: `own` (busbar's
+  #                            configured key) or `passthrough` (forward the caller's). A SCALAR, so
+  #                            a pool's own value REPLACES it.
+  upstream_credentials: own
 
   # 1) Simplest pool: a single model. Useful to give a model a stable public name / alias.
   haiku:
@@ -252,18 +266,19 @@ pools:
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
 
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
-# Tracing (OTLP/HTTP) stays in `observability:`; everything else moved into the built-in `export:`
-# EXPORTERS in 1.5.3 (presence = the switch). Zero-config default: collection is inert.
-#   observability.otlp_url   - export OpenTelemetry traces (OTLP/HTTP) to a collector.
-#   export.prometheus        — PULL: install the recorder + serve `/metrics` (buffer_seconds REQUIRED).
-#   export.request-log-webhook — PUSH: fire-and-forget a JSON request-log POST per request (https-only).
-#   export.request-log-file  — PUSH: append each request-log line as JSONL.
-#   export.generic-webhook   — PUSH (logs + audit): same SSRF/backpressure machinery + an auth header.
-# observability:
-#   otlp_url: "http://localhost:4318/v1/traces"
+# ALL telemetry egress is the single `export:` NAMED map (1.5.3): `<name>: { module, settings }`,
+# presence = the switch. Zero-config default: collection is inert. The four built-in modules:
+#   prometheus          — PULL: install the recorder + serve `/metrics` (buffer_seconds REQUIRED).
+#   request-log-webhook — PUSH: fire-and-forget a JSON request-log POST per request (https-only);
+#                          optional `auth_header: { name, value }`.
+#   request-log-file    — PUSH: append each request-log line as JSONL.
+#   otlp                — export OpenTelemetry traces (OTLP/HTTP) to a collector.
+# The SAME module may back SEVERAL named instances — e.g. two webhooks to two URLs:
 # export:
-#   prometheus:          { settings: { buffer_seconds: 60, key_gauge_limit: 2000 } }
-#   request-log-webhook: { settings: { url: "https://logs.example.com/busbar" } }
+#   metrics:  { module: prometheus,          settings: { buffer_seconds: 60, key_gauge_limit: 2000 } }
+#   req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
+#   req-siem: { module: request-log-webhook, settings: { url: "https://siem.internal/ingest" } }
+#   traces:   { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
 
 # ── Response headers (optional; see docs/observability.md#response-headers) ────────────────────────
 # Every busbar-INJECTED response header is an opt-in toggle under `advanced.response_headers`, default

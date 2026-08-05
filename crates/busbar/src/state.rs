@@ -109,6 +109,10 @@ pub(crate) struct PoolRuntime {
     pub(crate) members: std::collections::HashMap<usize, MemberMeta>,
     /// Per-pool failover settings (deadline, cap, and member exclusions).
     pub(crate) failover: Option<crate::config::FailoverCfg>,
+    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3, audit §4).
+    /// `None` = inherit `App::upstream_credentials`. Read per request by
+    /// [`App::pool_upstream_creds`].
+    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// Per-pool session-affinity settings (which request header pins a session to a lane).
     pub(crate) affinity: Option<crate::config::AffinityCfg>,
     /// Per-pool breaker settings (trip mode/thresholds + cooldown backoff), resolved into the
@@ -254,6 +258,8 @@ pub(crate) struct App {
     pub(crate) by_model: HashMap<String, usize>,
     /// Pool members, each carrying a lane index and its configured weight.
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
+    /// The ALL-POOLS `upstream_credentials:` default — see [`App::upstream_creds`].
+    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
     pub(crate) client: UpstreamClients,
     pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
@@ -478,11 +484,27 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// The UPSTREAM-credential mode — whether the egress path signs with busbar's configured lane key
-    /// (`Own`) or forwards the caller's credential (`Passthrough`). Read off the `AuthMiddleware`
-    /// (set once at construction from `upstream_credentials:`, never mutated). Cheap: `Copy`.
+    /// The ALL-POOLS UPSTREAM-credential DEFAULT — whether the egress path signs with busbar's
+    /// configured lane key (`Own`) or forwards the caller's credential (`Passthrough`). Resolved once
+    /// at construction from the reserved `pools.upstream_credentials:` key (1.5.3 — it used to be
+    /// `auth.upstream_credentials`), never mutated. Cheap: `Copy`.
+    ///
+    /// Prefer [`App::pool_upstream_creds`] on any path that knows its pool: a pool's own
+    /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule, audit §4). This accessor is
+    /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
-        self.auth.upstream_creds
+        self.upstream_credentials
+    }
+
+    /// The UPSTREAM-credential mode in force for `pool`: the pool's own `upstream_credentials:` when
+    /// it sets one, else the all-pools default ([`App::upstream_creds`]). SCALAR override, never a
+    /// union — the pool's value REPLACES the inherited one (audit §4). An empty/unknown pool name
+    /// (the direct-model and degraded ad-hoc routes) falls back to the default.
+    pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        self.pool_runtime
+            .get(pool)
+            .and_then(|rt| rt.upstream_credentials)
+            .unwrap_or(self.upstream_credentials)
     }
 
     /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no

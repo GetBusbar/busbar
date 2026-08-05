@@ -325,8 +325,8 @@ pub(crate) fn persist_groups(
 /// sections that are NOT name-keyed maps (so they carry no tombstones — a field is either PRESENT in
 /// the overlay, and WINS over base `config.yaml`, or ABSENT, and base stands). It mirrors the
 /// uncovered `DeployCfg` surface: the process-level binds (`listen`/`tls`/`admin_listen`/`admin_tls`/
-/// `admin_insecure`), the cost inputs (`rate_card`/`per_request_fee`), the durable `store`, the
-/// `security` SSRF controls, and the operational-limit blocks (`limits`/`observability`/`advanced`/
+/// `admin_require_mtls`), the cost inputs (`rate_card`/`per_request_fee`), the durable `store`, the
+/// `security` SSRF controls, and the operational-limit blocks (`limits`/`advanced`/
 /// `metrics`/`health`/`routing`). Every field is `Option`: a `PUT /config/settings` overwrites only
 /// the fields it names (a partial edit), and the merge (`apply_to_deploy`) splices exactly those onto
 /// the resolved base `DeployCfg` BEFORE `resolve` — so the limits projection + admin-mTLS boot-guard
@@ -344,7 +344,7 @@ pub(crate) struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) admin_tls: Option<TlsCfg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) admin_insecure: Option<bool>,
+    pub(crate) admin_require_mtls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) rate_card: Option<BTreeMap<String, RateEntryCfg>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -355,8 +355,6 @@ pub(crate) struct RootSettings {
     pub(crate) security: Option<crate::config::patch::SecurityPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) limits: Option<crate::config::patch::LimitsPatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observability: Option<crate::config::patch::ObservabilityPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) advanced: Option<crate::config::patch::AdvancedPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -374,13 +372,12 @@ impl RootSettings {
             && self.tls.is_none()
             && self.admin_listen.is_none()
             && self.admin_tls.is_none()
-            && self.admin_insecure.is_none()
+            && self.admin_require_mtls.is_none()
             && self.rate_card.is_none()
             && self.per_request_fee.is_none()
             && self.store.is_none()
             && self.security.is_none()
             && self.limits.is_none()
-            && self.observability.is_none()
             && self.advanced.is_none()
             && self.health.is_none()
             && self.routing.is_none()
@@ -389,7 +386,7 @@ impl RootSettings {
     /// Splice the present overrides onto a base `DeployCfg`, IN PLACE. Applied BEFORE `resolve` so the
     /// limits projection + the exposed-admin-mTLS boot-guard re-derive over the merged shape exactly
     /// as for a hand-written config. Only `Some` fields overwrite; a `None` field leaves base config
-    /// untouched. `admin_insecure`/`per_request_fee` are non-optional on `DeployCfg`, so an unset
+    /// untouched. `admin_require_mtls`/`per_request_fee` are non-optional on `DeployCfg`, so an unset
     /// overlay override simply preserves the base value.
     pub(crate) fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
         if let Some(v) = &self.listen {
@@ -404,8 +401,8 @@ impl RootSettings {
         if self.admin_tls.is_some() {
             deploy.admin_tls = self.admin_tls.clone();
         }
-        if let Some(v) = self.admin_insecure {
-            deploy.admin_insecure = v;
+        if let Some(v) = self.admin_require_mtls {
+            deploy.admin_require_mtls = v;
         }
         if self.rate_card.is_some() {
             deploy.rate_card = self.rate_card.clone();
@@ -425,15 +422,13 @@ impl RootSettings {
         if let Some(v) = &self.limits {
             v.apply(&mut deploy.limits);
         }
-        if let Some(v) = &self.observability {
-            v.apply(deploy.observability.get_or_insert_with(Default::default));
-        }
         if let Some(v) = &self.advanced {
             v.apply(&mut deploy.advanced);
         }
-        // 1.5.3: the retired `metrics:` overlay section is gone — Prometheus metrics are now the
-        // `export.prometheus` built-in exporter, edited in config.yaml + applied via plugin reload
-        // (consistent with the other exporters), never through the single-value settings overlay.
+        // 1.5.3: the retired `metrics:` AND `observability:` overlay sections are gone — Prometheus
+        // metrics and OTLP traces are now named `export:` instances (`module: prometheus` /
+        // `module: otlp`), edited in config.yaml + applied via plugin reload (consistent with every
+        // other exporter), never through the single-value settings overlay.
         if let Some(v) = &self.health {
             v.apply(&mut deploy.health);
         }

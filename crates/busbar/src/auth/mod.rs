@@ -91,8 +91,13 @@ pub(crate) use busbar_api::{AuthModule, AuthOutcome, Principal};
 /// hand-written, credential-redacting impl in `busbar-api`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ChainVerdict {
-    /// Admitted with identity: the MODULE that identified (role_bindings are NESTED BY MODULE, so
-    /// policy resolution needs both halves) + the principal.
+    /// Admitted with identity: the IDENTITY PROVIDER that identified + the principal.
+    ///
+    /// 1.5.3: `module` carries the PROVIDER NAME (the `identity-providers:` key), not the backing
+    /// plugin's own reported name. That is the identity `role_bindings.<name>` binds and
+    /// `auth_scope_caps` keys off — so two NAMED providers sharing one plugin module (the whole point
+    /// of the named-definition pattern, audit §0) get INDEPENDENT bindings and ceilings instead of
+    /// silently collapsing onto the plugin's single self-reported name.
     Identified {
         module: String,
         principal: Principal,
@@ -114,9 +119,11 @@ pub(crate) enum ChainVerdict {
 
 /// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
 pub(crate) struct AuthMiddleware {
-    /// The upstream-credential mode (`upstream_credentials:`) — whether the egress path signs with
-    /// busbar's key (`Own`) or forwards the caller's (`Passthrough`). Read by the egress signing path.
-    pub(crate) upstream_creds: UpstreamCreds,
+    // 1.5.3: `upstream_creds` is NO LONGER a field here. The mode moved off `auth:` onto the `pools:`
+    // section (audit §4: an all-pools default plus a per-pool override), because whose credential
+    // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on
+    // `App::upstream_credentials` (the all-pools default) and `PoolRuntime::upstream_credentials` (the
+    // per-pool override), resolved per request by `App::pool_upstream_creds`.
     /// Whether the config chain names the built-in `keys` signed-key verifier. In P1 the actual
     /// verification rides the governance virtual-key path (the signed-token verifier lands with
     /// P3); this flag records the operator's intent for validation and reporting.
@@ -126,7 +133,10 @@ pub(crate) struct AuthMiddleware {
     /// matched) a NON-EMPTY chain denies (fail-closed). An EMPTY chain admits unconditionally — the
     /// open front door (`chain: []`, the old none/passthrough). No `AuthMode` — the front-door policy
     /// is the chain shape, the egress policy is `upstream_creds`.
-    chain: Vec<Box<dyn AuthModule>>,
+    /// Each entry is `(provider NAME, module)` — the name is the `identity-providers:` key this
+    /// chain position referenced, and is what a successful `Identify` reports as
+    /// [`ChainVerdict::Identified::module`].
+    chain: Vec<(String, Box<dyn AuthModule>)>,
     /// Whether ANY chain module is a loaded PLUGIN — i.e. whether running this chain can perform
     /// blocking work (an FFI/IPC `transport_call`, and behind it whatever the module does: an HTTPS
     /// JWKS fetch, a token-introspection round-trip, a directory lookup). Decided once at build
@@ -229,19 +239,21 @@ impl AdminAuthChain {
                 #[cfg(test)]
                 "test-scope-module" | "test-groups-module" => {}
                 other => {
-                    let resolved = crate::config::secret::resolve_settings(
-                        &entry.settings,
-                        secret_resolver,
-                    )
-                    .map_err(|e| format!("auth.admin_auth module '{other}' settings: {e}"))?;
+                    let name = entry.name.as_str();
+                    let resolved =
+                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
+                            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
                     let cfg_json = serde_json::Value::Object(resolved).to_string();
                     let module = registry.open_auth(other, &cfg_json).map_err(|e| {
                         format!(
-                            "auth.admin_auth module '{other}' could not be loaded as a `kind: auth` \
-                             plugin: {e}"
+                            "auth.admin_auth provider '{name}' (module '{other}') could not be \
+                             loaded as a `kind: auth` plugin: {e}"
                         )
                     })?;
-                    modules.insert(other.to_string(), module);
+                    // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
+                    // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
+                    // sharing one module stay distinct admin identities.
+                    modules.insert(name.to_string(), module);
                     has_plugin = true;
                 }
             }
@@ -256,7 +268,6 @@ impl AdminAuthChain {
 impl fmt::Debug for AuthMiddleware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthMiddleware")
-            .field("upstream_creds", &self.upstream_creds)
             .field("keys_in_chain", &self.keys_in_chain)
             .field("chain_len", &self.chain.len())
             .finish()
@@ -286,7 +297,7 @@ impl AuthMiddleware {
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut has_plugin_module = false;
-        let mut chain: Vec<Box<dyn AuthModule>> = Vec::new();
+        let mut chain: Vec<(String, Box<dyn AuthModule>)> = Vec::new();
         for entry in &cfg.chain {
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
@@ -296,7 +307,9 @@ impl AuthMiddleware {
                 // its own): `grp:<role>` identifies as a principal carrying that role, so the
                 // governance re-key is e2e-testable. Compiled out of release binaries entirely.
                 #[cfg(test)]
-                "test-groups-module" => chain.push(Box::new(TestGroupsModule)),
+                "test-groups-module" => {
+                    chain.push((entry.name.clone(), Box::new(TestGroupsModule)))
+                }
                 other => {
                     // A `kind: auth` PLUGIN: resolve + open over the signed hybrid ABI (same trust
                     // posture, same loader as store/secret). The `settings:` map is the plugin's
@@ -316,7 +329,7 @@ impl AuthMiddleware {
                              plugin: {e}"
                         )
                     })?;
-                    chain.push(module);
+                    chain.push((entry.name.clone(), module));
                     has_plugin_module = true;
                 }
             }
@@ -329,7 +342,6 @@ impl AuthMiddleware {
         }
 
         Ok(Self {
-            upstream_creds: cfg.upstream_credentials,
             keys_in_chain,
             chain,
             has_plugin_module,
@@ -354,7 +366,7 @@ impl AuthMiddleware {
     /// v1 plugin catalog — reporting which compiled-in/external auth modules are ACTIVE (in the
     /// chain). Never a secret: a module name is a plugin identifier, not a credential.
     pub(crate) fn chain_names(&self) -> Vec<&'static str> {
-        self.chain.iter().map(|m| m.name()).collect()
+        self.chain.iter().map(|(_, m)| m.name()).collect()
     }
 
     /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
@@ -398,17 +410,21 @@ impl AuthMiddleware {
         // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
         // so would refresh its TTL and quietly extend the revocation window.
         let mut pending_pass: Vec<&str> = Vec::new();
-        for module in &self.chain {
+        for (provider, module) in &self.chain {
             let cache_here = match (cache, candidate) {
                 (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
                 _ => None,
             };
-            let outcome = match cache_here.and_then(|(c, cred)| c.get(module.name(), cred, now)) {
+            // CACHE KEY is the PROVIDER NAME, not the plugin's self-reported name (1.5.3): two named
+            // providers backed by the same module are DIFFERENT verifiers with different settings, so
+            // sharing a cache row between them would let one provider's verdict admit the other's
+            // credential. The name is the instance (audit §0), so the cache key must be the name.
+            let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
                 Some(hit) => hit,
                 None => {
                     let o = module.authenticate(candidate);
                     if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
-                        pending_pass.push(module.name());
+                        pending_pass.push(provider.as_str());
                     }
                     o
                 }
@@ -421,7 +437,7 @@ impl AuthMiddleware {
                         }
                         if cache_here.is_some() {
                             c.put(
-                                module.name(),
+                                provider,
                                 cred,
                                 &AuthOutcome::Identify(principal.clone()),
                                 now,
@@ -433,7 +449,7 @@ impl AuthMiddleware {
                     // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
                     // a VirtualKey (the ABI can't carry one) → `resolved: None`.
                     return ChainVerdict::Identified {
-                        module: module.name().to_string(),
+                        module: provider.clone(),
                         principal,
                         resolved: None,
                     };
@@ -1762,12 +1778,14 @@ impl AuthMiddleware {
     /// containing a PLUGIN module. Tests need this because the real constructor only sets
     /// `has_plugin_module` by actually `dlopen`ing a signed cdylib, and the property under test
     /// (that a blocking module does not run on the reactor) is about ANY blocking module.
+    /// `chain` entries are `(provider NAME, module)`: the name is the `identity-providers:` key that
+    /// chain position referenced, and is what a successful `Identify` reports as
+    /// [`ChainVerdict::Identified::module`].
     pub(crate) fn from_chain_for_test(
-        chain: Vec<Box<dyn AuthModule>>,
+        chain: Vec<(String, Box<dyn AuthModule>)>,
         has_plugin_module: bool,
     ) -> Self {
         Self {
-            upstream_creds: UpstreamCreds::Own,
             keys_in_chain: false,
             chain,
             has_plugin_module,

@@ -11,6 +11,68 @@ item under **Changed**.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (config): `identity-providers:` — define an identity provider once, reference it by bare
+  name.** A new top-level named-definition map (`name -> {module, settings, max_admin_scope, token,
+  browser_login}`); `auth.chain:` and `auth.admin_auth:` are now lists of bare NAMES referencing it.
+  The built-ins `keys` and `admin-tokens` are referenced bare and need a definition only when they
+  carry config. `max_admin_scope` moved ONTO the definition (it was an oddity on a data-plane chain
+  entry); an omitted value is the most restrictive ceiling (`read-only`), with the built-in
+  `admin-tokens` operator credential exempt as before. `auth.role_bindings:` is now nested by
+  PROVIDER NAME — which is also the runtime identity a chain reports — so two named providers backed
+  by one plugin hold independent grants instead of collapsing onto the plugin's self-reported name.
+  This reverses the 1.5.0 inlining: an IdP serving both planes used to be written twice, with two
+  copies of its settings that could silently drift.
+  **Migration:** `busbar --migrate-config <config.yaml>` lifts every inline chain entry into one
+  definition per module (deduping across the two chains) and rewrites the chains as name lists. The
+  retired inline form is a loud boot error.
+- **BREAKING (config): `auth.methods:` folded into the `identity-providers:` definition.**
+  `browser_login` and a method's opaque settings are inherently per-provider (a client id/secret
+  belongs to one IdP registration), so the parallel map is gone. Hosted-login buttons are now keyed
+  by PROVIDER NAME. **Migration:** handled by `--migrate-config`.
+- **BREAKING (config): `export:` is a NAMED map** (`<name>: {module, settings}`) instead of being
+  type-keyed, so the SAME module can back SEVERAL instances — two `request-log-webhook`s to two URLs
+  (app logs plus SIEM) was previously inexpressible. Modules: `prometheus`, `request-log-webhook`,
+  `request-log-file`, and the new `otlp`. The retired `generic-webhook` exporter folded into
+  `request-log-webhook` (its only extra, `auth_header:`, is now a setting there). `prometheus` and
+  `otlp` are process-singletons; a second instance is a loud boot error rather than a silent loss.
+  **Migration:** handled by `--migrate-config`.
+- **BREAKING (config): the `observability:` block is DELETED.** Its last remaining field
+  (`otlp_url`) is now an `export:` instance with `module: otlp`, so `export:` is the single
+  telemetry-egress surface. The tracer/log-init machinery is unchanged — only the config surface
+  driving it moved. **Migration:** handled by `--migrate-config`; the block is a loud boot error.
+- **BREAKING (config): `admin_insecure` → `admin_require_mtls`, INVERTED** (default `true`). The
+  boot guard behaves identically — a network-exposed `admin_listen` without `admin_tls.client_ca`
+  refuses to boot unless waived, loopback exempt — but the SAFE posture is now what an omitted key
+  gives you, and the waiver is the explicit `admin_require_mtls: false`. **Migration:** handled by
+  `--migrate-config` (`admin_insecure: true` becomes `admin_require_mtls: false`).
+- **BREAKING (config): `auth.upstream_credentials` → `pools.upstream_credentials`,** the reserved
+  all-pools default, with a per-pool `pools.<p>.upstream_credentials` override. Whose credential
+  reaches the upstream is a routing property, not an inbound-auth one. Scalar combine semantics: a
+  pool's value REPLACES the section default. **Migration:** handled by `--migrate-config`.
+- **1.5.3 FREEZE (forward-compat).** 1.5.3 is the break-once config release; these semantics are now
+  pinned by tests so a later release cannot silently redefine them:
+  - the hook-name word space (`RESERVED_HOOK_NAMES` ∪ the bare pool-strategy keywords) is CLOSED —
+    a future terminal must arrive STRUCTURED (`on_error: { hook: x }` is the shipped precedent),
+    never as a new bare word that would retroactively invalidate a legal 1.5.3 config;
+  - an OMITTED hook `phase:` means THE FOUR CORE STAGES (request/candidate/routing/response), not
+    "all stages ever", so a stage added by a later release cannot retroactively widen an existing
+    hook. `phase:` is plane-neutral and an inapplicable phase silently does not fire;
+  - a hook named in BOTH `pools.hooks:` and a pool's own `hooks:` fires ONCE, at its first
+    (section-level) position;
+  - the `pools:` reserved section-key set is CLOSED at `hooks` + `upstream_credentials`; every future
+    all-scope knob goes under a reserved `defaults:` sub-key, so adding one can never turn a legal
+    pool NAME into a boot failure. Both reserved words are rejected as pool names;
+  - `secrets:` stays MODULE-keyed — a deliberate, documented exemption from the named-instance
+    pattern, because it configures a module's `open()` rather than an instance;
+  - cross-kind `scope_allowed` is FAIL-CLOSED (an `allowed_pools`-only key grants NOTHING for a
+    future `mcp_server`/`agent` kind); only an OMITTED list is a wildcard. The doc comment that
+    claimed the opposite ("exhaustive per kind") is corrected.
+- **Config-facing naming: `module:` everywhere.** The admin hooks API's `plugin:` field is now
+  `module:` on the wire, matching `hooks.<n>.module` / `identity-providers.<n>.module` /
+  `export.<n>.module` / `store.module`. `plugin` is still accepted on read for overlay back-compat.
+
 ## [1.5.2], 2026-08-02
 
 ### Fixed

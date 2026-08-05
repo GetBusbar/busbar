@@ -9297,11 +9297,10 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
 }
 
 /// The `observability` section is live EXCEPT two fields the gap-sweep for
-/// `max_inbound_concurrent` also turned up: `request_log_webhook_url` seeds a process-global
-/// `OnceLock` that silently no-ops after the first `main()` call, and `otlp_url` feeds a one-shot
-/// `tracing_subscriber` init. The `advanced.response_headers` block (task #139; formerly
-/// `observability.emit_server_timing`) is boot-frozen the same way. None of the three are rebuilt by
-/// a config apply. Assert all three are flagged (dotted, same reasoning as `limits.*`).
+/// `max_inbound_concurrent` also turned up: the `advanced.response_headers` block (task #139;
+/// formerly `observability.emit_server_timing`) is boot-frozen the same way — baked into router
+/// middleware composition and a process-global `OnceLock`, neither rebuilt by a config apply — so it
+/// must be flagged reload-to-apply (dotted, same reasoning as `limits.*`).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
     let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
@@ -9312,9 +9311,6 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "observability": {
-                    "otlp_url": "https://otel.example.com:4317"
-                },
                 "advanced": {
                     "response_headers": { "server_timing": true, "route_policy": true }
                 }
@@ -9337,12 +9333,20 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         "router-baked middleware state / OnceLock-seeded response-header toggles must be flagged \
          reload-to-apply: {flagged:?}"
     );
-    // 1.5.3: `observability.request_log_webhook_url` retired out of this section into the
-    // `export.request-log-webhook` exporter (edited in config.yaml + plugin-reloaded), so it is no
-    // longer part of the single-value settings surface. `otlp_url` remains and stays boot-frozen.
-    assert!(
-        flagged.contains(&"observability.otlp_url"),
-        "the one-shot tracing-subscriber init must be flagged reload-to-apply: {flagged:?}"
+    // 1.5.3 (audit §3): the whole `observability:` block is DELETED — the request-log webhook and
+    // the OTLP trace sink are both named `export:` instances now, edited in config.yaml and applied
+    // via plugin reload, so neither is part of the single-value settings surface at all. Assert the
+    // section is REJECTED rather than silently accepted-and-ignored.
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "observability": { "otlp_url": "https://o:4317" } }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status().as_u16(),
+        400,
+        "the DELETED observability section must be rejected, never silently ignored"
     );
 
     handle.abort();

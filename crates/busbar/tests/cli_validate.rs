@@ -213,7 +213,9 @@ fn validate_fails_on_unresolvable_auth_chain_plugin() {
     write_configs(
         &dir,
         &format!(
-            "auth:\n  chain:\n    - oidc:\n        settings: {{}}\n{}",
+            // 1.5.3: the provider is DEFINED once and referenced by bare name (audit §2).
+            "identity-providers:\n  oidc:\n    module: oidc\n    settings: {{}}\n\
+             auth:\n  chain: [oidc]\n{}",
             plugins_block(&dir, true, true)
         ),
     );
@@ -520,7 +522,10 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
 
     // auth.chain naming a plugin module with plugins.enabled left at its default false.
     let dir = fixture_dir("gate-auth");
-    write_configs(&dir, "auth:\n  chain:\n    - oidc\n");
+    write_configs(
+        &dir,
+        "identity-providers:\n  oidc: { module: oidc }\nauth:\n  chain: [oidc]\n",
+    );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1, "{stderr}");
     assert!(

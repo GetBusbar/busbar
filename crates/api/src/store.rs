@@ -118,12 +118,31 @@ pub struct VirtualKey {
 }
 
 impl VirtualKey {
-    /// Whether this key may target the scope `(kind, value)` (C6: `allowed_scopes` omitted = all
-    /// scopes of every kind; an explicit list is exhaustive PER KIND; an explicit empty list is NO
-    /// scopes at all). The generalized replacement for the pool-only `pool_allowed` — every
-    /// existing call site checking pool admission calls this as `scope_allowed("pool", pool_name)`,
-    /// which is the exact same membership test over a differently-shaped list, so behavior for a
-    /// pool-only config is unchanged.
+    /// Whether this key may target the scope `(kind, value)`.
+    ///
+    /// - `allowed_scopes` OMITTED (`None`) = ALL scopes of EVERY kind (C6).
+    /// - an explicit list is EXHAUSTIVE ACROSS ALL KINDS — **not** "exhaustive per kind".
+    /// - an explicit EMPTY list is NO scopes at all (never "all").
+    ///
+    /// # FREEZE BLOCKER A2: CROSS-KIND SEMANTICS ARE FAIL-CLOSED, AND FROZEN
+    ///
+    /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
+    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.6), an
+    /// existing key that named only pools does not silently acquire access to every server or agent —
+    /// it acquires access to NONE of them, and an operator must add entries to grant any.
+    ///
+    /// This is the fail-CLOSED reading, and it is the one the code has always implemented; what was
+    /// wrong was this doc comment, which used to say the list is "exhaustive PER KIND". That phrasing
+    /// describes the fail-OPEN behavior (unlisted kind ⇒ unconstrained ⇒ allowed) and would have
+    /// licensed someone to "fix" the code to match it — turning every existing pool-scoped key into a
+    /// wildcard over a brand-new kind, silently, on upgrade. Corrected and pinned here (see
+    /// `scope_allowed_cross_kind_is_fail_closed`) because the semantics ship in 1.5.3 and freeze with
+    /// it: only an OMITTED list is a wildcard.
+    ///
+    /// The generalized replacement for the pool-only `pool_allowed` — every existing call site
+    /// checking pool admission calls this as `scope_allowed("pool", pool_name)`, which is the exact
+    /// same membership test over a differently-shaped list, so behavior for a pool-only config is
+    /// unchanged.
     pub fn scope_allowed(&self, kind: &str, value: &str) -> bool {
         match &self.allowed_scopes {
             None => true,
@@ -914,6 +933,52 @@ mod tests {
         assert!(
             !k.scope_allowed("pool", "fast"),
             "an explicit [] is the EMPTY set - no scopes, never all"
+        );
+    }
+
+    /// FREEZE BLOCKER A2 — CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
+    ///
+    /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
+    /// matters because 1.5.4 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
+    /// (an unlisted kind is "unconstrained", which is what this method's doc comment used to imply by
+    /// calling the list "exhaustive PER KIND") every already-issued pool-scoped key would silently
+    /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
+    /// version bump. The code has always been fail-closed; the doc comment was wrong, and both are
+    /// fixed and pinned here.
+    ///
+    /// Only an OMITTED (`None`) list is ever a wildcard. An explicit list — even one that mentions no
+    /// entry of the queried kind at all — is exhaustive ACROSS ALL KINDS.
+    #[test]
+    fn scope_allowed_cross_kind_is_fail_closed() {
+        let mut k = sample_key();
+
+        // A pool-only grant denies every future kind, by value AND by kind.
+        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
+        assert!(k.scope_allowed("pool", "fast"));
+        for future_kind in ["mcp_server", "agent", "some_kind_not_invented_yet"] {
+            assert!(
+                !k.scope_allowed(future_kind, "fast"),
+                "a pool-only grant must grant NOTHING for the future kind '{future_kind}' —                  the unlisted-kind case is FAIL-CLOSED and frozen (A2)"
+            );
+            assert!(!k.scope_allowed(future_kind, "anything-else"));
+        }
+
+        // The ONLY wildcard is an omitted list, and it spans every kind (C6, unchanged).
+        k.allowed_scopes = None;
+        assert!(k.scope_allowed("pool", "fast"));
+        assert!(k.scope_allowed("mcp_server", "filesystem"));
+        assert!(k.scope_allowed("agent", "planner"));
+
+        // A grant naming ONLY a future kind likewise denies pools — the rule is symmetric, so it
+        // cannot be read as "pool is special".
+        k.allowed_scopes = Some(vec![ScopeRef {
+            kind: "mcp_server".to_string(),
+            value: "filesystem".to_string(),
+        }]);
+        assert!(k.scope_allowed("mcp_server", "filesystem"));
+        assert!(
+            !k.scope_allowed("pool", "filesystem"),
+            "the fail-closed rule is symmetric across kinds"
         );
     }
 

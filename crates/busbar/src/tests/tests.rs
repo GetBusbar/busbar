@@ -188,6 +188,7 @@ async fn test_inbound_over_capacity_sheds_503_not_queued() {
 
 fn pool(members: Vec<PoolMember>) -> PoolCfg {
     PoolCfg {
+        upstream_credentials: None,
         members,
         breaker: None,
         failover: None,
@@ -1144,6 +1145,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,
         tls: None,
@@ -1286,7 +1288,6 @@ fn cfg_with_credentials(
         signing_key: Some(crate::config::SecretRef::file(
             key_path.to_string_lossy().to_string(),
         )),
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
         chain: vec![],
         admin_auth: vec![admin_entry],
         role_bindings: crate::config::RoleBindings::new(),

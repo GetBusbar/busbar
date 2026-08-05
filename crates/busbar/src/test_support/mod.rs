@@ -703,11 +703,9 @@ impl LaneSpec {
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::metrics::recorder_installed() {
         let cfg = crate::config::ExportCfg {
-            prometheus: Some(crate::config::PrometheusExportCfg {
-                settings: crate::config::PrometheusSettings {
-                    buffer_seconds: 60,
-                    key_gauge_limit: crate::config::default_key_gauge_limit(),
-                },
+            prometheus: Some(crate::config::PrometheusSettings {
+                buffer_seconds: 60,
+                key_gauge_limit: crate::config::default_key_gauge_limit(),
             }),
             ..Default::default()
         };
@@ -740,6 +738,8 @@ pub(crate) struct TestApp {
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
     pool_runtime: std::collections::HashMap<String, crate::state::PoolRuntime>,
+    /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
+    upstream_credentials: crate::auth::UpstreamCreds,
     fallback_pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
@@ -762,6 +762,7 @@ pub(crate) struct TestApp {
 impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
+            upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
@@ -886,20 +887,12 @@ impl TestApp {
         self.pools.insert(name.into(), weighted(members));
         self
     }
-    /// Install an `AuthMiddleware` with an EMPTY chain (open front door) and the given upstream-
-    /// credential mode — driving the egress credential-selection path. `Own` = the old `mode: none`;
-    /// `Passthrough` = the old `mode: passthrough`. Tests needing a `tokens`-chain ingress gate should
-    /// use `.auth(...)` with an explicit middleware; calling both is last-wins.
+    /// Set the ALL-POOLS upstream-credential mode (1.5.3: the reserved `pools.upstream_credentials:`
+    /// key — it used to be `auth.upstream_credentials`) — driving the egress credential-selection
+    /// path. `Own` = the old `mode: none`; `Passthrough` = the old `mode: passthrough`. Per-pool
+    /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
     pub(crate) fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
-        // Struct-update from `default_none()` (empty chain, empty client_tokens) so we only override
-        // the upstream-credential mode and stay forward-compatible with future `AuthCfg` fields.
-        let cfg = crate::config::AuthCfg {
-            upstream_credentials: uc,
-            ..crate::config::AuthCfg::default_none()
-        };
-        self.auth = Some(std::sync::Arc::new(
-            crate::auth::AuthMiddleware::new_builtin(&cfg),
-        ));
+        self.upstream_credentials = uc;
         self
     }
     /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
@@ -1068,6 +1061,7 @@ impl TestApp {
             store: store.clone(),
             by_model,
             pools: self.pools,
+            upstream_credentials: self.upstream_credentials,
             client: crate::state::UpstreamClients::build(1, || {
                 reqwest::Client::builder().build().unwrap()
             }),

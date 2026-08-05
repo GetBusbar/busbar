@@ -1596,7 +1596,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let base = &app.lanes[i].base_url;
 
         // Mode-aware key selection: passthrough uses caller token, others use lane's api_key
-        let key = match app.upstream_creds() {
+        let key = match app.pool_upstream_creds(pool_name) {
             // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
             // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
             // (LOW #15 SECURITY): borrowing the operator key would let an unauthenticated caller
@@ -1787,7 +1787,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if !status.is_success() {
                     // caveat: passthrough 401/403 is caller's key failing, not busbar's
                     // Do NOT trip breaker / change member health; relay verbatim to caller
-                    let is_passthrough_40x = app.upstream_creds()
+                    let is_passthrough_40x = app.pool_upstream_creds(pool_name)
                         == crate::auth::UpstreamCreds::Passthrough
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN);
 
