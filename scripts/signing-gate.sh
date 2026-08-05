@@ -105,10 +105,24 @@ mock:
   base_url: "http://127.0.0.1:9"
   api_key_env: MOCK_KEY
 EOF
+# The reference must be written in the CURRENT config grammar, per kind. 1.5.3 made two of these
+# DEFINE-ONCE maps, and the pre-1.5.3 spellings are now fail-closed boot refusals — which this gate
+# felt as its FIRST assertion (`signed-ok`) failing with a CONFIG error instead of a trust verdict,
+# i.e. it stopped testing signing at all:
+#   * auth — `auth.chain:` is a list of BARE NAMES into `identity-providers:`; a name with no
+#     definition there is "auth.chain references '<alias>', which is not defined in
+#     `identity-providers:`" (resolve_auth, crates/busbar/src/config/mod.rs). A plugin-backed provider
+#     needs only `module:`; `token:` is the built-in admin-tokens credential and is REJECTED on any
+#     other module, so it must not appear here.
+#   * hook — top-level `global_hooks:` was REMOVED; hooks are a named-definition map (`hooks: <name>:
+#     { module: … }`) referenced from `pools.hooks:`. `global_hooks:` is now a detect_legacy_markers
+#     hit that refuses to boot.
+# store/secret are unchanged. Each kind gets ONLY its own reference: a store or hook invocation must
+# not grow a spurious `identity-providers:` entry, which would itself be a dangling-module error.
 case "$PLUGIN_KIND" in
   store)  REF=$'store:\n  module: '"$PLUGIN_ALIAS" ;;
-  auth)   REF=$'auth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
-  hook)   REF=$'global_hooks:\n  - { module: '"$PLUGIN_ALIAS"$', kind: tap }' ;;
+  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_ALIAS"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
+  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_ALIAS"$'\n    kind: tap' ;;
   # kind:secret has no config-reference preflight — the trust verdict is asserted from the
   # --validate summary instead (see the SKIP-mode assertions below).
   secret) REF="" ;;
