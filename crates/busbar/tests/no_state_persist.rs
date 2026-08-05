@@ -36,7 +36,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 /// A minimal config that boots a full server: ephemeral ports (`:0`) so parallel runs never collide,
-/// admin bypassed (`admin_insecure`) and open auth so no secrets are needed, memory store (default).
+/// admin mTLS guard waived (`admin_require_mtls: false`) and open auth so no secrets are needed, memory store (default).
 fn write_configs(dir: &Path) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -47,7 +47,7 @@ fn write_configs(dir: &Path) {
         dir.join("config.yaml"),
         r#"listen: "127.0.0.1:0"
 admin_listen: "127.0.0.1:0"
-admin_insecure: true
+admin_require_mtls: false
 auth:
   chain: []
 providers:

@@ -211,13 +211,13 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 
 | 1.4.x alias | 1.5.0 canonical |
 |---|---|
-| `auth.mode` | `auth.chain` / `auth.upstream_credentials` |
+| `auth.mode` | `auth.chain` / `pools.upstream_credentials` (1.5.3) |
 | member `target` | member `model` |
 | `window_s` | `window_secs` |
 | `n` (breaker) | `consecutive_n` |
 | `deadline_secs` | `timeout_secs` |
 | `cap` (failover) | `max_hops` |
-| `otlp_endpoint` | `otlp_url` |
+| `otlp_endpoint` | an `export:` instance with `module: otlp` (1.5.3) |
 
 ---
 

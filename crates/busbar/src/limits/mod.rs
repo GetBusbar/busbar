@@ -24,7 +24,6 @@ use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
     DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
     DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
-    DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS,
 };
 
 /// The installed limits. `None` until `install` runs; `None` means "use the historical default",
@@ -146,12 +145,10 @@ pub(crate) fn max_inflight_webhook_deliveries() -> usize {
         .unwrap_or(crate::config::DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES)
 }
 
-/// Per-delivery webhook timeout (seconds).
-pub(crate) fn webhook_delivery_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.webhook_delivery_timeout_secs)
-        .unwrap_or(DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS)
-}
+// 1.5.3: there is deliberately NO process-global webhook-delivery-timeout accessor here. `export:`
+// carries NAMED webhook instances, each with its own `settings.delivery_timeout_secs`, so the
+// deadline is read PER TARGET at the delivery site (`export::webhook::Target::timeout`). A global
+// accessor would have to pick one instance's value and silently apply it to the others.
 
 /// Max per-key gauge series emitted per `/metrics` scrape.
 pub(crate) fn key_gauge_limit() -> usize {

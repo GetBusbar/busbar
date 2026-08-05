@@ -165,6 +165,79 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
+    // ── the 1.5.3 GRAMMAR-LOCK retirements (audit §2/§3/§4/§5) ──────────────────────────────────
+    // Every one of these would otherwise reach the typed parse as a bare `deny_unknown_fields`
+    // rejection with no upgrade breadcrumb (or, for `observability:`, as a whole block whose
+    // deletion would silently drop a trace sink). Detected HERE, before the typed parse, so the
+    // operator gets the named key + its new home + the `--migrate-config` pointer. Uses the SHARED
+    // `crate::config::RETIRED_CONFIG_KEYS_1_5_3` table so the marker, the migrator and the
+    // `augment_config_error` hint cannot drift.
+    let retired_home = |key: &str| -> &'static str {
+        crate::config::RETIRED_CONFIG_KEYS_1_5_3
+            .iter()
+            .find(|(old, _)| *old == key)
+            .map_or("its 1.5.3 replacement", |(_, new)| new)
+    };
+    // §3: the `observability:` BLOCK is DELETED outright. Its last field folded into `export:`.
+    if get(root, "observability").is_some() {
+        markers.push(format!(
+            "top-level `observability:` block (DELETED 1.5.3 → {}); all telemetry egress is now the \
+             single `export:` surface",
+            retired_home("otlp_url")
+        ));
+    }
+    // §5: the boot-guard flag inverted.
+    if get(root, "admin_insecure").is_some() {
+        markers.push(format!(
+            "top-level `admin_insecure:` (retired 1.5.3 → {})",
+            retired_home("admin_insecure")
+        ));
+    }
+    if let Some(auth) = get(root, "auth").and_then(|v| v.as_mapping().cloned()) {
+        // §4: the credential mode moved to the `pools:` section.
+        if get(&auth, "upstream_credentials").is_some() {
+            markers.push(format!(
+                "`auth.upstream_credentials:` (retired 1.5.3 → {})",
+                retired_home("upstream_credentials")
+            ));
+        }
+        // §2 / freeze blocker A7: the 1.5.2 hosted-login block folded into the provider definition.
+        if get(&auth, "methods").is_some() {
+            markers.push(format!(
+                "`auth.methods:` (retired 1.5.3 → {})",
+                retired_home("methods")
+            ));
+        }
+        // §2: an INLINE chain entry (`- ad: { settings: … }`) is gone — a chain is now a list of
+        // bare NAMES referencing `identity-providers:`. A map-shaped entry in either chain is the
+        // tell; a list of plain strings is already in the new shape (idempotent).
+        for plane in ["chain", "admin_auth"] {
+            if get(&auth, plane)
+                .and_then(|v| v.as_sequence().cloned())
+                .is_some_and(|seq| seq.iter().any(|e| e.is_mapping()))
+            {
+                markers.push(format!(
+                    "`auth.{plane}:` carries INLINE module entries (retired 1.5.3 → define the \
+                     provider once under `identity-providers:` and reference it by bare name)"
+                ));
+            }
+        }
+    }
+    // §3: the TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
+    // map (`export: { metrics: { module: prometheus, settings: … } }`). Distinguished by SHAPE, not
+    // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
+    if let Some(Value::Mapping(export)) = get(root, "export") {
+        if export.values().any(|v| {
+            v.as_mapping()
+                .is_some_and(|m| !m.contains_key(Value::from("module")))
+        }) {
+            markers.push(
+                "top-level `export:` is TYPE-KEYED (retired 1.5.3 → a NAMED map `<name>: { module, \
+                 settings }`, so the same module can back several instances)"
+                    .to_string(),
+            );
+        }
+    }
     if let Some(providers) = get(root, "providers").and_then(|v| v.as_mapping().cloned()) {
         for (name, p) in &providers {
             if p.as_mapping()
@@ -256,6 +329,16 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
     // metrics keys, and rewrites them into the new `export:` surface in place.
     migrate_observability_export(&mut root, &mut changes);
+    // ── the 1.5.3 GRAMMAR-LOCK migrations (audit §2/§3/§4/§5) ───────────────────────────────────
+    // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
+    // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
+    // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
+    // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
+    migrate_export_named_map(&mut root, &mut changes);
+    migrate_observability_block(&mut root, &mut changes);
+    migrate_admin_require_mtls(&mut root, &mut changes);
+    migrate_pools_upstream_credentials(&mut root, &mut changes);
+    migrate_identity_providers(&mut root, &mut changes, &mut todos);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -1027,6 +1110,15 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
         def.insert("phase".into(), phase);
     } else if let Some(phase) = m.get(Value::from("phase")) {
         def.insert("phase".into(), phase.clone());
+    } else if m.get(Value::from("kind")).and_then(|v| v.as_str()) == Some("tap") {
+        // SEMANTICS-PRESERVING (1.5.3): a legacy TAP with no `at:` fired at the REQUEST stage only.
+        // Under the frozen 1.5.3 rule an omitted `phase:` means ALL FOUR core stages, so migrating
+        // such a tap without pinning the stage would silently take it from one firing per request to
+        // four. Write the old default explicitly — a migration must never change behavior.
+        def.insert(
+            "phase".into(),
+            Value::Sequence(vec![Value::from("request")]),
+        );
     }
     if m.get(Value::from("default")).and_then(|v| v.as_bool()) == Some(true) {
         todos.push(format!(
@@ -1498,6 +1590,350 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
             let loc = format!("pools.{}.hooks", pname.as_str().unwrap_or("?"));
             rewrite_list(hooks, &loc, changes);
         }
+    }
+}
+
+/// The default instance NAME each built-in export module gets when the TYPE-KEYED `export:` block is
+/// rewritten into the 1.5.3 NAMED map. Chosen to read as an instance (what it IS) rather than as the
+/// module (what backs it), so the migrated config teaches the pattern: `metrics: { module: prometheus }`.
+/// Shared with the migrator tests so the goldens cannot drift from the rewrite.
+pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
+    // (retired type key, new instance name, `module:` value)
+    ("prometheus", "metrics", "prometheus"),
+    ("request-log-webhook", "req-log", "request-log-webhook"),
+    ("request-log-file", "req-log-file", "request-log-file"),
+    // The retired `generic-webhook` exporter FOLDED into `request-log-webhook` (1.5.3): its only
+    // extra was `auth_header:`, now just a setting there, and its other reason to exist (a SECOND
+    // webhook target) is what the named map itself provides.
+    ("generic-webhook", "req-log-audit", "request-log-webhook"),
+];
+
+/// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.
+fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
+    let entry = root
+        .entry("export".into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if !matches!(entry, Value::Mapping(_)) {
+        *entry = Value::Mapping(Mapping::new());
+    }
+    match entry {
+        Value::Mapping(m) => m,
+        _ => unreachable!("just normalized to a mapping"),
+    }
+}
+
+/// Pick an instance name not already taken in `export:` (`req-log`, `req-log-2`, …), so migrating a
+/// config that already carries a hand-written named instance never clobbers it.
+fn uniq_export_name(export: &Mapping, base: &str) -> String {
+    if !export.contains_key(Value::from(base)) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|c| !export.contains_key(Value::from(c.as_str())))
+        .expect("an unbounded counter always finds a free name")
+}
+
+/// 1.5.3 §3: rewrite the TYPE-KEYED `export:` block into the NAMED-DEFINITION map
+/// (`<name>: { module, settings }`). SHAPE-CONVERGENT and IDEMPOTENT: an entry that already names a
+/// `module:` is ALREADY an instance and is left untouched, so a second run is a no-op.
+fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(Value::Mapping(export)) = root.get(Value::from("export")).cloned() else {
+        return;
+    };
+    // Split: the retired TYPE keys to rewrite vs everything else (already-named instances) to keep.
+    let mut kept = Mapping::new();
+    let mut to_rewrite: Vec<(String, Value)> = Vec::new();
+    for (k, v) in export {
+        let key = k.as_str().unwrap_or_default().to_string();
+        let is_type_key = EXPORT_TYPE_KEY_TO_INSTANCE_NAME
+            .iter()
+            .any(|(t, _, _)| *t == key);
+        let already_named = v
+            .as_mapping()
+            .is_some_and(|m| m.contains_key(Value::from("module")));
+        if is_type_key && !already_named {
+            to_rewrite.push((key, v));
+        } else {
+            kept.insert(k, v);
+        }
+    }
+    if to_rewrite.is_empty() {
+        return;
+    }
+    for (type_key, body) in to_rewrite {
+        let (_, base_name, module) = EXPORT_TYPE_KEY_TO_INSTANCE_NAME
+            .iter()
+            .find(|(t, _, _)| *t == type_key)
+            .expect("only retired type keys reach here");
+        let name = uniq_export_name(&kept, base_name);
+        let mut inst = Mapping::new();
+        inst.insert("module".into(), Value::from(*module));
+        // The retired shape nested the bag under `settings:`; carry it through verbatim (an entry
+        // with no `settings:` becomes an instance with no settings, which is legal for every module
+        // whose settings are all-defaulted).
+        if let Some(settings) = body
+            .as_mapping()
+            .and_then(|m| m.get(Value::from("settings")))
+        {
+            inst.insert("settings".into(), settings.clone());
+        }
+        kept.insert(Value::from(name.as_str()), Value::Mapping(inst));
+        changes.push(format!(
+            "export.{type_key} (type-keyed) -> export.{name}: {{ module: {module} }} (1.5.3 named \
+             export map — the same module can now back several named instances)"
+        ));
+    }
+    root.insert("export".into(), Value::Mapping(kept));
+}
+
+/// 1.5.3 §3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
+/// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance with
+/// `module: otlp`. IDEMPOTENT: a config with no `observability:` block has nothing to fold.
+fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(Value::Mapping(mut obs)) = root.remove(Value::from("observability")) else {
+        return;
+    };
+    let url = take(&mut obs, "otlp_url").or_else(|| take(&mut obs, "otlp_endpoint"));
+    // A `null` URL is how the shipped example spelled "tracing off" — folding it into an instance
+    // would turn an OFF sink into a boot error (`settings.url` is REQUIRED), so drop it instead.
+    let url = url.filter(|v| !v.is_null());
+    if let Some(url) = url {
+        let export = export_map_mut(root);
+        let name = uniq_export_name(export, "traces");
+        let mut settings = Mapping::new();
+        settings.insert("url".into(), url);
+        let mut inst = Mapping::new();
+        inst.insert("module".into(), Value::from("otlp"));
+        inst.insert("settings".into(), Value::Mapping(settings));
+        export.insert(Value::from(name.as_str()), Value::Mapping(inst));
+        changes.push(format!(
+            "observability.otlp_url -> export.{name}: {{ module: otlp }} (the `observability:` block \
+             is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)"
+        ));
+    } else {
+        changes.push(
+            "observability: block removed (DELETED in 1.5.3; it carried no otlp_url to fold)"
+                .into(),
+        );
+    }
+}
+
+/// 1.5.3 §5: `admin_insecure: <bool>` -> `admin_require_mtls: <!bool>` (the flag INVERTED so the safe
+/// posture is the default). IDEMPOTENT: no `admin_insecure` key ⇒ nothing to do; a config that
+/// already carries `admin_require_mtls` keeps it (the retired key cannot coexist — it is a boot
+/// marker — so there is no precedence question to answer).
+fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(old) = take(root, "admin_insecure") else {
+        return;
+    };
+    // Anything not literally `true` is treated as the guard being ON, which is the fail-SAFE read of
+    // a malformed value (a waiver must be explicit).
+    let insecure = old.as_bool().unwrap_or(false);
+    root.insert("admin_require_mtls".into(), Value::from(!insecure));
+    changes.push(format!(
+        "admin_insecure: {insecure} -> admin_require_mtls: {} (INVERTED in 1.5.3 so the safe \
+         posture is the default)",
+        !insecure
+    ));
+}
+
+/// 1.5.3 §4: `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
+/// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
+/// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
+/// recent statement of intent) and the retired key is dropped with a named change entry.
+fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
+        return;
+    };
+    let Some(mode) = take(auth, "upstream_credentials") else {
+        return;
+    };
+    let pools = root
+        .entry("pools".into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if !matches!(pools, Value::Mapping(_)) {
+        *pools = Value::Mapping(Mapping::new());
+    }
+    if let Value::Mapping(pm) = pools {
+        if pm.contains_key(Value::from("upstream_credentials")) {
+            changes.push(
+                "auth.upstream_credentials dropped: pools.upstream_credentials is already set (the \
+                 1.5.3 home) and wins"
+                    .into(),
+            );
+        } else {
+            pm.insert("upstream_credentials".into(), mode);
+            changes.push(
+                "auth.upstream_credentials -> pools.upstream_credentials (the all-pools SCALAR \
+                 default; override it per pool with `pools.<p>.upstream_credentials`)"
+                    .into(),
+            );
+        }
+    }
+}
+
+/// 1.5.3 §2 + freeze blocker A7: lift every INLINE `auth.chain:` / `auth.admin_auth:` entry and every
+/// `auth.methods:` entry into the top-level `identity-providers:` NAMED-DEFINITION map, replacing the
+/// chain entries with bare NAME references.
+///
+/// **The DEDUPE is the whole point.** One IdP that served both planes had to be written twice, once
+/// per chain, with two independent copies of its settings. This produces ONE definition per MODULE and
+/// points both chains at it — so the duplication the old grammar forced is gone after migrating, not
+/// merely expressible.
+///
+/// SHAPE-CONVERGENT and IDEMPOTENT: a bare-string chain entry is already a name reference and passes
+/// straight through, so a second run finds nothing to lift.
+fn migrate_identity_providers(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    let Some(Value::Mapping(mut auth)) = root.remove(Value::from("auth")) else {
+        return;
+    };
+    // Start from any EXISTING definitions so a partially-migrated config converges rather than
+    // duplicating. Keyed by the definition NAME; `by_module` indexes them for the dedupe.
+    let mut defs = match root.remove(Value::from("identity-providers")) {
+        Some(Value::Mapping(m)) => m,
+        _ => Mapping::new(),
+    };
+    let mut by_module: Vec<(String, String)> = defs
+        .iter()
+        .filter_map(|(k, v)| {
+            let name = k.as_str()?.to_string();
+            let module = v.as_mapping()?.get(Value::from("module"))?.as_str()?;
+            Some((module.to_string(), name))
+        })
+        .collect();
+
+    // Lift one inline entry into a definition, REUSING the existing definition for that module when
+    // one is already present (the dedupe). Returns the NAME the chain should now reference.
+    let lift = |module: &str,
+                body: &Mapping,
+                defs: &mut Mapping,
+                by_module: &mut Vec<(String, String)>,
+                changes: &mut Vec<String>|
+     -> String {
+        if let Some((_, name)) = by_module.iter().find(|(m, _)| m == module) {
+            let name = name.clone();
+            // MERGE the second plane's typed fields into the ONE definition. A `token:` (admin-tokens)
+            // or a `max_admin_scope:` written on only one of the two chains must survive the fold.
+            if let Some(Value::Mapping(existing)) = defs.get_mut(Value::from(name.as_str())) {
+                for key in ["max_admin_scope", "token"] {
+                    if !existing.contains_key(Value::from(key)) {
+                        if let Some(v) = body.get(Value::from(key)) {
+                            existing.insert(key.into(), v.clone());
+                        }
+                    }
+                }
+            }
+            changes.push(format!(
+                "auth chain entry `{module}` -> the EXISTING identity-providers.{name} definition \
+                 (define once, reference by name)"
+            ));
+            return name;
+        }
+        let mut def = Mapping::new();
+        def.insert("module".into(), Value::from(module));
+        for key in ["max_admin_scope", "token", "settings"] {
+            if let Some(v) = body.get(Value::from(key)) {
+                def.insert(key.into(), v.clone());
+            }
+        }
+        // The definition NAME defaults to the module name — the minimal, least-surprising rename,
+        // and exactly what the built-ins are referenced as.
+        let name = module.to_string();
+        defs.insert(Value::from(name.as_str()), Value::Mapping(def));
+        by_module.push((module.to_string(), name.clone()));
+        changes.push(format!(
+            "auth chain entry `{module}: {{ … }}` -> identity-providers.{name} + a bare-name \
+             reference (1.5.3: define once, reference by name)"
+        ));
+        name
+    };
+
+    for plane in ["chain", "admin_auth"] {
+        let Some(Value::Sequence(seq)) = auth.get(Value::from(plane)).cloned() else {
+            continue;
+        };
+        let mut names: Vec<Value> = Vec::new();
+        for entry in seq {
+            match entry {
+                // Already a bare NAME reference — the new grammar.
+                Value::String(s) => names.push(Value::from(s)),
+                Value::Mapping(m) => {
+                    let Some((module, body)) = m
+                        .iter()
+                        .next()
+                        .and_then(|(k, v)| Some((k.as_str()?.to_string(), as_map(v.clone()))))
+                    else {
+                        continue;
+                    };
+                    let name = lift(&module, &body, &mut defs, &mut by_module, changes);
+                    names.push(Value::from(name.as_str()));
+                }
+                other => names.push(other),
+            }
+        }
+        auth.insert(plane.into(), Value::Sequence(names));
+    }
+
+    // FREEZE BLOCKER A7: `auth.methods:` folds INTO the provider definition — `browser_login` plus the
+    // method's flattened opaque settings are per-provider, so they belong on the definition and not in
+    // a second parallel map that could disagree with it.
+    if let Some(Value::Mapping(methods)) = take(&mut auth, "methods") {
+        for (k, v) in methods {
+            let Some(module) = k.as_str().map(str::to_string) else {
+                continue;
+            };
+            let mut body = as_map(v);
+            let browser_login = take(&mut body, "browser_login");
+            // Everything else on a `methods:` entry was the module's flattened opaque settings.
+            let mut settings = Mapping::new();
+            settings.insert("settings".into(), Value::Mapping(body));
+            let name = lift(&module, &settings, &mut defs, &mut by_module, changes);
+            if let Some(Value::Mapping(def)) = defs.get_mut(Value::from(name.as_str())) {
+                if let Some(bl) = browser_login {
+                    def.insert("browser_login".into(), bl);
+                }
+                // MERGE the method's settings into the definition's, rather than replacing: the
+                // chain entry for the same module may already have contributed its own.
+                if let Some(Value::Mapping(from)) = settings.get(Value::from("settings")).cloned() {
+                    let mut merged = match def.get(Value::from("settings")).cloned() {
+                        Some(Value::Mapping(m)) => m,
+                        _ => Mapping::new(),
+                    };
+                    for (sk, sv) in from {
+                        merged.insert(sk, sv);
+                    }
+                    if !merged.is_empty() {
+                        def.insert("settings".into(), Value::Mapping(merged));
+                    }
+                }
+            }
+            changes.push(format!(
+                "auth.methods.{module} -> identity-providers.{name} (browser_login + settings are \
+                 PER-PROVIDER in 1.5.3; the parallel methods map is gone)"
+            ));
+        }
+    }
+
+    // `role_bindings:` nests by the SAME string the chains reference. Because `lift` names each
+    // definition after its module, an existing `role_bindings.<module>` table is already correct —
+    // but say so, because a hand-RENAMED definition would need the bindings renamed with it.
+    if auth.contains_key(Value::from("role_bindings")) && !defs.is_empty() {
+        todos.push(
+            "auth.role_bindings is nested by the IDENTITY-PROVIDER NAME in 1.5.3. The migrator named \
+             each new definition after its module, so existing bindings still resolve — but if you \
+             RENAME a definition in `identity-providers:`, rename its `role_bindings:` table to match."
+                .into(),
+        );
+    }
+
+    root.insert("auth".into(), Value::Mapping(auth));
+    if !defs.is_empty() {
+        root.insert("identity-providers".into(), Value::Mapping(defs));
     }
 }
 

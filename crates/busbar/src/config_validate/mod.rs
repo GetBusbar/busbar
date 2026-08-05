@@ -916,7 +916,7 @@ pub(crate) fn validate_with_unset(
     for (hook_name, hook) in &cfg.hooks {
         if hook.plugin.trim().is_empty() {
             errors.push(format!(
-                "hook '{hook_name}' names no plugin: set `plugin:` to a `kind: hook` plugin's \
+                "hook '{hook_name}' names no plugin: set `module:` to a `kind: hook` plugin's \
                  signed-manifest name or alias"
             ));
         }
@@ -1290,7 +1290,14 @@ pub(crate) fn validate_with_unset(
         // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
         // caller's own credential (or an empty one) goes upstream. WARN (not hard-reject): a legit
         // Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key.
-        if auth.upstream_credentials == crate::auth::UpstreamCreds::Passthrough {
+        // 1.5.3: the mode moved off `auth:` onto the `pools:` section (audit §4) — the all-pools
+        // default plus any per-pool override. The warning fires if ANY of them is `passthrough`.
+        let any_passthrough = cfg.upstream_credentials == crate::auth::UpstreamCreds::Passthrough
+            || cfg
+                .pools
+                .values()
+                .any(|p| p.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough));
+        if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key =
                     crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
@@ -1318,6 +1325,20 @@ pub(crate) fn validate_with_unset(
     // values where 0/absurd is a foot-gun are constrained (e.g. `max_inbound_concurrent` accepts ANY
     // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
     validate_limits(&cfg.limits, &mut errors);
+
+    // PER-INSTANCE webhook bounds (1.5.3): `export:` holds NAMED instances, each with its own
+    // `delivery_timeout_secs`, so this check runs once per configured sink rather than once over a
+    // single process-global value that could only ever describe one of them.
+    for (i, w) in cfg.export.request_log_webhooks.iter().enumerate() {
+        if w.delivery_timeout_secs < 1 {
+            errors.push(format!(
+                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
+                 settings.delivery_timeout_secs: 0, which would abort every delivery — it must be \
+                 >= 1",
+                w.url
+            ));
+        }
+    }
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1379,13 +1400,6 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
         errors.push(
             "limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request whose \
              body is not instantly buffered)"
-                .to_string(),
-        );
-    }
-    if limits.webhook_delivery_timeout_secs < 1 {
-        errors.push(
-            "export.request-log-webhook.settings.delivery_timeout_secs must be >= 1 (0 would abort \
-             every webhook delivery)"
                 .to_string(),
         );
     }

@@ -28,6 +28,10 @@ use std::time::Duration;
 struct Target {
     url: Arc<String>,
     auth: Option<(String, String)>,
+    /// This instance's OWN per-delivery deadline (`settings.delivery_timeout_secs`). 1.5.3: the
+    /// `export:` map holds NAMED instances, so two webhook sinks can legitimately want different
+    /// deadlines — the timeout is therefore per target here, not a process-global read.
+    timeout: Duration,
 }
 
 /// The configured webhook sinks (request-log-webhook + generic-webhook), sized ONCE at boot. An unset
@@ -47,27 +51,23 @@ fn webhook_inflight() -> &'static AdmissionGate {
     })
 }
 
-/// Per-delivery timeout — relocated from `observability::webhook_delivery_timeout`. Read fresh so a
-/// live apply of the (export-sourced) timeout is honored, independent of the client's upstream timeout.
-fn webhook_delivery_timeout() -> Duration {
-    Duration::from_secs(crate::limits::webhook_delivery_timeout_secs())
-}
-
-/// Configure the webhook sinks once at startup from the `export:` block. Each URL is validated HERE
-/// (SSRF guard + `https://`-only) so an invalid target is rejected loudly and left disabled, rather
-/// than firing per-request POSTs at an unintended host. No-op when neither webhook exporter is present.
+/// Configure the webhook sinks once at startup from the resolved `export:` block — one [`Target`] per
+/// NAMED `module: request-log-webhook` instance, in config order. Each URL is validated HERE (SSRF
+/// guard + `https://`-only) so an invalid target is rejected loudly and left disabled, rather than
+/// firing per-request POSTs at an unintended host. No-op when no webhook instance is configured.
 pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
     let mut targets = Vec::new();
-    if let Some(w) = &cfg.request_log_webhook {
-        push_target(&mut targets, &w.settings.url, None);
-    }
-    if let Some(g) = &cfg.generic_webhook {
-        let auth = g
-            .settings
+    for w in &cfg.request_log_webhooks {
+        let auth = w
             .auth_header
             .as_ref()
             .map(|h| (h.name.clone(), h.value.clone()));
-        push_target(&mut targets, &g.settings.url, auth);
+        push_target(
+            &mut targets,
+            &w.url,
+            auth,
+            Duration::from_secs(w.delivery_timeout_secs),
+        );
     }
     if !targets.is_empty() {
         let _ = TARGETS.set(targets);
@@ -77,11 +77,17 @@ pub(crate) fn configure(cfg: &ExportCfg, client: Client) {
 
 /// Validate one URL and, if it survives, append a [`Target`]. A validation failure logs loudly and
 /// disables THAT sink (the others still deliver) — the exact posture the old single-webhook config had.
-fn push_target(targets: &mut Vec<Target>, url: &str, auth: Option<(String, String)>) {
+fn push_target(
+    targets: &mut Vec<Target>,
+    url: &str,
+    auth: Option<(String, String)>,
+    timeout: Duration,
+) {
     match validate_webhook_url(Some(url.to_string())) {
         Ok(Some(u)) => targets.push(Target {
             url: Arc::new(u),
             auth,
+            timeout,
         }),
         Ok(None) => {}
         Err(msg) => tracing::error!("{msg}; disabling this webhook exporter"),
@@ -117,6 +123,7 @@ pub(crate) fn deliver_logs(payload: Value) {
         };
         let url = target.url.clone();
         let auth = target.auth.clone();
+        let timeout = target.timeout;
         let client = client.clone();
         let payload = payload.clone();
         tokio::spawn(async move {
@@ -129,7 +136,7 @@ pub(crate) fn deliver_logs(payload: Value) {
                     crate::proxy::APPLICATION_JSON,
                 )
                 .body(body)
-                .timeout(webhook_delivery_timeout());
+                .timeout(timeout);
             if let Some((name, value)) = &auth {
                 if let (Ok(n), Ok(v)) = (
                     HeaderName::from_bytes(name.as_bytes()),

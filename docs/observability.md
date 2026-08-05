@@ -117,7 +117,7 @@ Scraping is not required for correctness. A gateway with metrics enabled and not
 
 The `pool` label is always a configured pool name or the sentinel `unresolved` (for routes that did not resolve to a pool). It is never a raw client-supplied model string, which would create unbounded label cardinality.
 
-An OTLP traces sink (`observability.otlp_url`) and a request-log webhook (`observability.request_log_webhook_url`) are available for deeper observability. Both are validated at startup against SSRF blocklists (no RFC-1918, loopback, or cloud-metadata targets, except OTLP allows plaintext `http://` to loopback for a local collector). See [configuration.md](configuration.md#observability).
+Deeper observability rides the single `export:` surface (1.5.3 — the `observability:` block is gone): a `module: otlp` instance for traces and a `module: request-log-webhook` instance for per-request logs. Both are validated at startup against SSRF blocklists (no RFC-1918, loopback, or cloud-metadata targets, except OTLP allows plaintext `http://` to loopback for a local collector). Because `export:` is a NAMED map, several instances of one module are allowed — e.g. two request-log webhooks, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
 
 ## Response headers
 

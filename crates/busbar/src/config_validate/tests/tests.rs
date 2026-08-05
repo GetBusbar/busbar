@@ -17,6 +17,7 @@ fn make_root_cfg(
         providers,
         models,
         pools,
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
         admin_auth: vec!["admin-tokens".to_string()],
         groups: std::collections::BTreeMap::new(),
@@ -91,6 +92,7 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
 
 fn make_pool(members: Vec<config::PoolMember>) -> config::PoolCfg {
     config::PoolCfg {
+        upstream_credentials: None,
         members,
         breaker: None,
         failover: None,
@@ -614,16 +616,18 @@ fn test_validate_model_without_provider_error() {
     assert!(errs[0].contains("references unknown provider"));
 }
 
-/// An `AuthCfg` with the given DATA-PLANE chain module names (bare entries) and upstream mode.
+/// An `AuthCfg` with the given DATA-PLANE chain provider names (bare built-in entries).
 /// The 1.4.x `make_auth(mode, client_tokens)` helper is gone with `client_tokens`/`modules`;
 /// chain semantics replace the mode string: `[keys]` = signed-key auth, `[]` = open front door.
-fn make_auth_chain(modules: &[&str], upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
+/// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section, audit
+/// §4) — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
+/// dozens of call sites still read as "this chain, that egress posture".
+fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
     let mut auth = config::AuthCfg::default_none();
     auth.chain = modules
         .iter()
         .map(|m| config::AuthChainEntry::bare(*m))
         .collect();
-    auth.upstream_credentials = upstream;
     // S2 (1.5.1): the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
     // otherwise). 1.5.2: it also requires a USABLE ADMIN MINT PATH — a vkey can only be minted
     // through an admin endpoint, so `[keys]` with nothing that can mint one is a boot error. Attach
@@ -1948,6 +1952,9 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
+    // 1.5.3 (audit §4): the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // resolved onto `RootCfg` — not a field of `auth:`.
+    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -1999,6 +2006,9 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
+    // 1.5.3 (audit §4): the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // resolved onto `RootCfg` — not a field of `auth:`.
+    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -4590,7 +4600,8 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
         request_body_read_timeout_secs,
         "request_body_read_timeout_secs"
     );
-    check_floor_one!(webhook_delivery_timeout_secs, "delivery_timeout_secs");
+    // 1.5.3: `delivery_timeout_secs` is validated PER named `request-log-webhook` export instance
+    // (see `validate`'s per-instance loop), not off a single process-global `LimitsResolved` field.
     check_floor_one!(
         max_inflight_webhook_deliveries,
         "max_inflight_deliveries must be >= 1"
@@ -4798,8 +4809,24 @@ fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
 
 // ─── 1.5.2 token-exchange Step 1: public_url + browser_login + key_ttl validation ───
 
+/// Parse an `auth:` block + its `identity-providers:` definitions from ONE YAML document (the two
+/// are siblings at the config root in 1.5.3) and resolve them into the runtime `AuthCfg`.
 fn parse_auth(yaml: &str) -> config::AuthCfg {
-    serde_yaml::from_str(yaml).expect("auth yaml parses")
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        auth: config::AuthDeployCfg,
+        #[serde(default, rename = "identity-providers")]
+        identity_providers: config::IdentityProviders,
+    }
+    let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
+    let mut errors = Vec::new();
+    let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    assert!(
+        errors.is_empty(),
+        "auth yaml must resolve cleanly: {errors:?}"
+    );
+    out
 }
 
 #[test]
@@ -4859,8 +4886,11 @@ fn test_public_url_rejects_path_and_metadata() {
 
 #[test]
 fn test_browser_login_requires_public_url() {
-    let auth =
-        parse_auth("methods:\n  oidc:\n    browser_login:\n      client_secret: { env: X }\n");
+    // 1.5.3/A7: `browser_login` lives on the `identity-providers:` DEFINITION, not a parallel
+    // `auth.methods:` map.
+    let auth = parse_auth(
+        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\n",
+    );
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.auth = Some(auth);
     cfg.public_url = None;

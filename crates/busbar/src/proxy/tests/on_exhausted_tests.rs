@@ -118,6 +118,7 @@ fn chat_body(pool: &str) -> Vec<u8> {
 
 fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> crate::state::PoolRuntime {
     crate::state::PoolRuntime {
+        upstream_credentials: None,
         members: Default::default(),
         failover: Some(crate::config::FailoverCfg {
             timeout_secs: 120,

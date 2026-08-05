@@ -196,6 +196,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
 /// A pool with a native ranking strategy and no gate.
 fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
+        upstream_credentials: None,
         members: vec![],
         breaker: None,
         failover: None,
@@ -210,6 +211,7 @@ fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
 /// A pool referencing a gate hook by name (native strategy defaults to weighted).
 fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
+        upstream_credentials: None,
         members: vec![],
         breaker: None,
         failover: None,
@@ -1034,6 +1036,9 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         "tap-req".to_string(),
         mk(HookKind::Tap, Some(crate::config::HookStage::Request)),
     );
+    // FREEZE BLOCKER A3: a tap with NEITHER `phase:` nor `at:` fires at THE FOUR CORE STAGES (not
+    // just `request`, and not "every stage that will ever exist") — so it is admitted at request AND
+    // response below. See `CORE_HOOK_PHASES`.
     hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, None));
     hooks.insert(
         "tap-completion".to_string(),
@@ -1055,11 +1060,16 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     // The same registry resolved for the RESPONSE stage admits exactly the response tap.
     let completion =
         resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Response);
-    assert_eq!(completion.len(), 1, "one completion-stage tap");
-    // And a stage nothing observes resolves empty (the zero-cost skip).
-    assert!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).is_empty(),
-        "no attempt-stage tap is configured"
+    assert_eq!(
+        completion.len(),
+        2,
+        "the explicit response-stage tap AND the unset tap (A3: omitted = the four core stages)"
+    );
+    // The ROUTING stage admits only the unset tap (A3), never the two stage-pinned ones.
+    assert_eq!(
+        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).len(),
+        1,
+        "only the phase-unset tap observes the routing stage (A3: omitted = the four core stages)"
     );
     // Every resolved tap here is `prompt: no`, so `send_prompt` (the middle tuple element) is false.
     assert!(

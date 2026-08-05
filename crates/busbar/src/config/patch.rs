@@ -76,13 +76,10 @@ section_patch!(
     }
 );
 
-section_patch!(
-    /// Per-field patch for [`crate::config::ObservabilityCfg`]. 1.5.3: the request-log webhook keys
-    /// retired to the `export.request-log-webhook` built-in exporter, so only `otlp_url` remains.
-    ObservabilityPatch => crate::config::ObservabilityCfg {
-        otlp_url: Option<String>,
-    }
-);
+// 1.5.3: there is NO `ObservabilityPatch` any more. The `observability:` BLOCK IS DELETED (audit
+// §3) — its last field (`otlp_url`) is now an `export:` instance with `module: otlp`, and the
+// `export:` block is edited in config.yaml + applied via plugin reload like every other exporter,
+// never through the single-value settings overlay.
 
 section_patch!(
     /// Per-field patch for [`crate::config::AdvancedCfg`].
@@ -162,12 +159,6 @@ mod tests {
             blocked_metadata_hosts: Some(blocked_metadata_hosts),
             allow_metadata_hosts: Some(allow_metadata_hosts),
             allow_all_metadata: Some(allow_all_metadata),
-        };
-
-        let crate::config::ObservabilityCfg { otlp_url } =
-            crate::config::ObservabilityCfg::default();
-        let _ = ObservabilityPatch {
-            otlp_url: Some(otlp_url),
         };
 
         let crate::config::AdvancedCfg {

@@ -234,12 +234,14 @@ Once the single-provider setup is working, extend the config to introduce a pool
 <!-- doc-check: config -->
 ```yaml
 # config.yaml, two providers, two models, one pool, with client auth
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   chain:
     - keys                                 # callers present minted signed keys
   signing_key: { env: BUSBAR_SIGNING_KEY } # required with `keys`; `busbar --generate-signing-key`
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]           # a bare PROVIDER NAME (defined above)
 
 providers:
   anthropic:
@@ -345,9 +347,11 @@ Omit the `auth` block entirely, or set `chain: []`. No `Authorization` header re
 ### auth: passthrough (forward your own key)
 
 ```yaml
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   chain: []
-  upstream_credentials: passthrough
 ```
 
 The caller's own token (`Authorization: Bearer`, `x-api-key`, or `x-goog-api-key`) is forwarded directly to the upstream provider. Use this when each caller has their own provider key and you want Busbar purely for routing and protocol translation, not credential management.
@@ -377,7 +381,7 @@ Busbar signs each outbound request with SigV4 (region parsed from the host); you
 
 **Bedrock ingress** (acting as a Bedrock endpoint for native AWS SDK clients) has two tracks:
 
-- **Open/passthrough** (`auth.chain: []`, optionally with `upstream_credentials: passthrough`): Busbar does not verify the inbound SigV4 signature. The credential is forwarded upstream (passthrough) or ignored (plain `chain: []`).
+- **Open/passthrough** (`auth.chain: []`, optionally with `pools.upstream_credentials: passthrough`): Busbar does not verify the inbound SigV4 signature. The credential is forwarded upstream (passthrough) or ignored (plain `chain: []`).
 - **With keys** (`auth.chain: [keys]`): Busbar verifies the inbound SigV4 signature natively (`crates/busbar/src/auth/mod.rs` `verify_bedrock_sigv4`). Mint a virtual key with `"issue_aws_credential": true` via `POST /api/v1/admin/keys`; the response includes `aws_access_key_id` + `aws_secret_access_key` (shown once). Configure your Bedrock SDK with those credentials: Busbar verifies the signature, then enforces the key's group limits and pool ACL. No `passthrough` required.
 
 ### Injecting `max_tokens` for cross-protocol calls

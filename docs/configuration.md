@@ -40,7 +40,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
     - [`affinity`](#affinity)
     - [Context-length failover](#context-length-failover)
   - [`limits`](#limits)
-  - [`observability`](#observability)
+  - [`export`](#export)
   - [Virtual keys and enforcement](#virtual-keys-and-enforcement)
   - [`plugins`](#plugins)
   - [`security`](#security)
@@ -251,7 +251,7 @@ tls:
 Each value is a secret REFERENCE (`{ file: ... }` / `{ env: VAR }` / `{ module: <secret-plugin> }`)
 resolving to PEM bytes. The same shape configures the admin listener under `admin_tls:` (with
 `client_ca` gating admin mTLS; a network-exposed `admin_listen` without `admin_tls.client_ca`
-refuses to boot unless `admin_insecure: true` is set deliberately).
+refuses to boot unless `admin_require_mtls: false` is set deliberately).
 
 Certs/keys are loaded once at startup; any missing or unparseable file is a fatal
 startup error naming the file. ALPN advertises http/1.1. Rotate certs by replacing
@@ -262,25 +262,39 @@ the files and restarting. Full operational guide:
 
 ### `auth`
 
-Front-door identity for the data plane plus the admin chain and role policy. Data-plane callers
-authenticate through `auth.chain` (ordered module entries); the built-in `keys` module verifies
-Busbar's own signed virtual keys, and identity-provider integrations load as `kind: auth`
-plugins. Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed
-key or an IdP credential a chain module verifies.
+Front-door identity for the data plane plus the admin chain and role policy.
 
-Installing an identity method under `auth.methods` also lets developers **self-serve** their own
-budgeted key by signing in — Busbar exposes a `GET`/`POST /auth/token` exchange automatically. See
+**1.5.3: define once, reference by name.** Every identity provider is DEFINED once in the top-level
+`identity-providers:` map (`name -> {module, settings, max_admin_scope, token, browser_login}`) and
+REFERENCED BY BARE NAME from `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. One IdP that
+serves both planes is therefore configured ONCE — under the retired grammar it had to be written
+inline in both chains, and nothing stopped the two copies from drifting. The built-ins `keys` (the
+signed-key verifier) and `admin-tokens` (the operator credential) are referenced bare and need a
+definition only when they carry config.
+
+Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed key or an IdP
+credential a chain provider verifies.
+
+Giving a provider definition a `browser_login:` block also lets developers **self-serve** their own
+budgeted key by signing in — Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (1.5.3
+folded the retired parallel `auth.methods:` map into the provider definition: a client id/secret
+belongs to ONE IdP registration, so it belongs on that provider.) See
 [Token exchange (self-serve keys)](token-exchange.md).
 
 ```yaml
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
+identity-providers:
+  ad:
+    module: ad                                            # a `kind: auth` plugin
+    settings: { server: "ldaps://corp", base_dn: "dc=corp" }
+    max_admin_scope: full                                 # PER-PROVIDER admin ceiling
+
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
-  upstream_credentials: own
-  chain:
-    - keys                                                # built-in signed-key verifier (no config)
-    - ad: { max_admin_scope: full, settings: { server: "ldaps://corp", base_dn: "dc=corp" } }
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  chain: [keys, ad]                                       # bare PROVIDER NAMES
+  admin_auth: [admin-tokens, ad]
   role_bindings:
     ad:
       growth-eng: { allowed_pools: [fast], group: growth }
@@ -290,10 +304,21 @@ auth:
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
-| `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
-| `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin_auth` `admin-tokens` entry with a `token:`, an admin module granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error** (fail-closed: the front door never silently opens). |
-| `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
-| `role_bindings` | map | no | `{}` | Role policy, NESTED BY MODULE: `role_bindings.<module>.<role> -> { allowed_pools?, group?, admin_scope? }`. See below. |
+| `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed — never a silently-skipped auth module). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error**. |
+| `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
+| `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
+
+**`identity-providers:` — the definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `module` | string | **yes** | — | Which auth module backs this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias. The SAME module may back SEVERAL named providers (different issuers, different ceilings) — the NAME is the instance. |
+| `settings` | map | no | `{}` | The module's own opaque config, pushed verbatim (SecretRef-typed values resolve first). |
+| `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants: `none` \| `read-only` \| `full`. Omitted = the MOST RESTRICTIVE default; the built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. |
+| `token` | secret reference | no | none | The operator ADMIN credential — only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
+| `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). |
+
+**Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3) — whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
 
 **Per-entry typed fields** (alongside the module's opaque `settings`):
 
@@ -1158,20 +1183,33 @@ limits:
 
 ---
 
-### `observability`
+### `export`
 
-All sinks are opt-in. Prometheus `/metrics` is always on and needs no config entry. It is auth-gated (same rules as `/stats`) and is not an unauthenticated endpoint.
+**1.5.3: `export:` is the single telemetry-egress surface, and the `observability:` block is DELETED.**
+It is a NAMED map — `<instance-name>: { module, settings }` — so the SAME module can back SEVERAL
+instances, which the retired type-keyed block could not express at all (two request-log webhooks to
+two URLs is a real deployment: app logs plus SIEM). Presence is the switch; an absent/empty block
+leaves collection inert.
 
 ```yaml
-observability:
-  otlp_url: "http://localhost:4318/v1/traces"
-  request_log_webhook_url: "https://logs.example.com/busbar"
+export:
+  metrics:  { module: prometheus,          settings: { buffer_seconds: 60 } }
+  req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
+  req-siem: { module: request-log-webhook, settings: { url: "https://siem.internal/ingest" } }
+  traces:   { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
 ```
 
-| Field | Type | Default | Notes |
+| `module` | Stream | `settings` | Notes |
 |---|---|---|---|
-| `otlp_url` | string | none | When set, installs an OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default). Remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. **Restart-to-apply**: fed to a one-shot `tracing_subscriber::registry().try_init()` at process start; a second call (a live `PUT`) is a structural no-op — `reload_to_apply` flags `observability.otlp_url` when set. |
-| `request_log_webhook_url` | string | none | When set, fires a fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. Must be `https://`. SSRF-guarded (same classes as `otlp_url` plus broadcast). At most 64 deliveries in flight; drops rather than queues. 2-second delivery timeout. **Restart-to-apply**: seeds a process-global `OnceLock` at boot; `OnceLock::set` silently no-ops on every call after the first, so a live `PUT` cannot change the target once one has been configured — `reload_to_apply` flags `observability.request_log_webhook_url` when set. The in-flight-delivery cap (default 64, tunable via `max_inflight_webhook_deliveries`) is sized from config on the FIRST webhook delivery — not necessarily at boot — and is then frozen for the rest of the process. This means a live `PUT` to `max_inflight_webhook_deliveries` sometimes takes effect (if no delivery has fired yet) and sometimes doesn't, depending on process history the API cannot observe; `reload_to_apply` does NOT flag it (flagging it unconditionally would be wrong whenever it does still apply). Known gap, tracked for post-1.5.0; `webhook_delivery_timeout_secs` has no such caching and is genuinely live on every call. |
+| `prometheus` | Metrics (PULL) | `buffer_seconds` (**required**), `key_gauge_limit` (default 2000) | Installs the recorder and serves `/metrics` (auth-gated, same rules as `/stats`). At most ONE instance — it owns the one well-known route, so a second is a boot error rather than a silent loss. `buffer_seconds: 0` is a boot error (it would retain nothing while still paying the recording cost); OMIT the instance to turn metrics off. |
+| `request-log-webhook` | Logs (PUSH) | `url` (**required**, `https://`-only), `auth_header: { name, value }`, `max_inflight_deliveries` (default 64), `delivery_timeout_secs` (default 2) | Fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. SSRF-guarded. Drops rather than queues when saturated. Timeout is PER INSTANCE; the in-flight bound is shared across instances and takes the maximum. |
+| `request-log-file` | Logs (PUSH) | `path` (**required**), `rotate_mb` | Appends each request-log line as JSONL. |
+| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. At most ONE instance (it installs the one process-global tracer subscriber). |
+
+The whole `export:` block is **restart-to-apply**: edit it in `config.yaml` and apply via a plugin
+reload / restart. It is deliberately NOT part of the single-value `PUT /config/settings` overlay — the
+sinks seed process-global `OnceLock`s (and, for OTLP, a one-shot `tracing_subscriber` init) that a
+live apply structurally cannot re-point.
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
 
@@ -1334,13 +1372,15 @@ admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own liste
 # Auth: data-plane callers present minted signed keys (the built-in `keys`
 # verifier); the admin API is gated by the admin-tokens operator credential.
 # ---------------------------------------------------------------------------
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
   #                                                        # (`busbar --generate-signing-key`)
   chain:
     - keys
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]           # a bare PROVIDER NAME (defined above)
 
 # ---------------------------------------------------------------------------
 # Groups: the ONE limit tree. Keys bind to a group at mint; enforcement walks
@@ -1469,11 +1509,11 @@ pools:
     on_exhausted: reject
 
 # ---------------------------------------------------------------------------
-# Observability: traces and per-request webhook logging.
+# Export: the single telemetry-egress surface (traces + per-request logging).
 # ---------------------------------------------------------------------------
-observability:
-  otlp_url: "http://localhost:4318/v1/traces"
-  request_log_webhook_url: "https://logs.example.com/busbar"
+export:
+  traces:  { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
+  req-log: { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
 
 # ---------------------------------------------------------------------------
 # Response headers — every busbar-injected header is opt-in, default OFF (see
@@ -1560,7 +1600,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `auth.chain` names an unknown module | Every chain entry must be the built-in `keys` or a loaded `kind: auth` plugin |
 | `role_bindings` faults | A binding under a module not in any chain, or a bound `group` that does not exist in `groups:` |
 | Admin token blank | The `admin-tokens` `token` secret reference resolves to a blank/whitespace-only value |
-| Exposed admin without mTLS | A non-loopback `admin_listen` without `admin_tls.client_ca`, unless `admin_insecure: true` is set deliberately |
+| Exposed admin without mTLS | A non-loopback `admin_listen` without `admin_tls.client_ca`, unless `admin_require_mtls: false` is set deliberately |
 | `${VAR}` unset in config | Unresolvable interpolation reference |
 | `${}` or unclosed `${` | Malformed interpolation syntax |
 
@@ -1569,7 +1609,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Condition |
 |---|
 | `chain: []` (open front door): no client authentication, development only |
-| `upstream_credentials: passthrough` with a provider whose credential reference resolves non-empty (credential-leak risk) |
+| `pools.upstream_credentials: passthrough` (or a pool override) with a provider whose credential reference resolves non-empty (credential-leak risk) |
 | Heterogeneous pool (members span more than one backend protocol, cross-protocol translation applies) |
 | A provider `api_key` reference resolves empty at boot (lane will fail auth) |
 | `allowed_pools` on a virtual key (admin API) names a pool not currently configured |

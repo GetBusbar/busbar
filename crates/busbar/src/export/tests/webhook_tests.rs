@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the built-in `request-log-webhook` / `generic-webhook` exporters — the request-log
-//! delivery + SSRF guard + AdmissionGate relocated out of `observability` (design §7.2).
+//! Tests for the built-in `request-log-webhook` exporter — the request-log delivery + SSRF guard +
+//! AdmissionGate relocated out of `observability` (design §7.2). 1.5.3: the separate
+//! `generic-webhook` exporter FOLDED into this one (its only extra, `auth_header:`, is now a setting
+//! here, and its other reason to exist — a SECOND target — is what the NAMED `export:` map provides).
 
 use super::*;
+
+/// A stand-in per-instance delivery deadline. 1.5.3: the timeout is carried on each named instance's
+/// [`Target`] rather than read from a process-global, so it is an argument here.
+const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The SSRF guard + auth-header wiring is relocated INTO the exporter: [`push_target`] accepts a
 /// valid external `https://` target, REJECTS an internal (cloud-metadata) one via the reused
@@ -17,7 +23,12 @@ use super::*;
 fn push_target_validates_and_carries_auth_header() {
     let mut targets = Vec::new();
 
-    push_target(&mut targets, "https://logs.example.com/busbar", None);
+    push_target(
+        &mut targets,
+        "https://logs.example.com/busbar",
+        None,
+        TEST_TIMEOUT,
+    );
     assert_eq!(
         targets.len(),
         1,
@@ -31,6 +42,7 @@ fn push_target_validates_and_carries_auth_header() {
         &mut targets,
         "https://169.254.169.254/latest/meta-data/",
         None,
+        TEST_TIMEOUT,
     );
     assert_eq!(
         targets.len(),
@@ -39,14 +51,20 @@ fn push_target_validates_and_carries_auth_header() {
     );
 
     // A plaintext target is rejected by the https-only scheme check.
-    push_target(&mut targets, "http://hook.example.com/log", None);
+    push_target(
+        &mut targets,
+        "http://hook.example.com/log",
+        None,
+        TEST_TIMEOUT,
+    );
     assert_eq!(targets.len(), 1, "the https-only guard rejects plaintext");
 
-    // The generic-webhook auth header is carried onto the target.
+    // The per-instance auth header is carried onto the target.
     push_target(
         &mut targets,
         "https://hook.example.com/events",
         Some(("Authorization".to_string(), "Bearer sekret".to_string())),
+        TEST_TIMEOUT,
     );
     assert_eq!(targets.len(), 2);
     let (name, value) = targets[1].auth.as_ref().expect("auth header carried");

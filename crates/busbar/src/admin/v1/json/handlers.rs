@@ -2580,8 +2580,8 @@ fn merge_root_settings(
     if req.admin_tls.is_some() {
         base.admin_tls = req.admin_tls;
     }
-    if req.admin_insecure.is_some() {
-        base.admin_insecure = req.admin_insecure;
+    if req.admin_require_mtls.is_some() {
+        base.admin_require_mtls = req.admin_require_mtls;
     }
     if req.rate_card.is_some() {
         base.rate_card = req.rate_card;
@@ -2604,12 +2604,12 @@ fn merge_root_settings(
             };
         )+};
     }
-    merge_section!(security, limits, observability, advanced, health, routing);
+    merge_section!(security, limits, advanced, health, routing);
     base
 }
 
 /// The RESTART-TO-APPLY fields a `PUT /config/settings` REQUEST touched: the process-level binds
-/// (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure` boot-guard waiver) are
+/// (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_require_mtls` boot-guard) are
 /// read ONCE in `main()` at process start and bound to sockets that a live `arc-swap` — or even a
 /// hot `POST /config/reload` — cannot rebind; the durable `store` backend is REUSED from the prior
 /// snapshot on every apply/reload (an in-flight governance ledger cannot migrate backends live), so
@@ -2628,7 +2628,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     push(req.tls.is_some(), "tls");
     push(req.admin_listen.is_some(), "admin_listen");
     push(req.admin_tls.is_some(), "admin_tls");
-    push(req.admin_insecure.is_some(), "admin_insecure");
+    push(req.admin_require_mtls.is_some(), "admin_require_mtls");
     push(req.store.is_some(), "store");
     // Four `limits.*` fields are boot-frozen, via TWO independent mechanisms — flag them
     // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
@@ -2698,19 +2698,14 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             "limits.max_inbound_concurrent",
         );
     }
-    // `observability.otlp_url` is boot-frozen — captured ONCE in `main()` and passed to
-    // `observability::init_logging`, a one-shot `tracing_subscriber::registry().try_init()` (a second
-    // call is a structural no-op). 1.5.3: the request-log webhook keys retired out of this section
-    // into the `export.request-log-webhook` exporter (edited in config.yaml + plugin-reloaded), so
-    // `otlp_url` is the only field left. DRIFT GUARD: an EXHAUSTIVE destructure of `ObservabilityPatch`.
-    if let Some(observability) = req.observability.as_ref() {
-        let crate::config::patch::ObservabilityPatch { otlp_url } = observability;
-        push(otlp_url.is_some(), "observability.otlp_url");
-    }
+    // 1.5.3: the `observability:` block IS DELETED (audit §3), so there is nothing to flag for it
+    // here. Its last field (`otlp_url`) is now the `module: otlp` `export:` instance, and the whole
+    // `export:` block is outside the single-value settings overlay — edited in config.yaml and
+    // applied via plugin reload, like every other exporter.
     // `advanced.response_headers` (task #139) is boot-frozen — moved out of `observability` (it used
     // to be `observability.emit_server_timing`, one of the three fields flagged just above) into its
     // own block alongside the brand-new `route_policy` toggle, which shares the SAME "captured once
-    // at boot" freezing as `request_log_webhook_url`: `response_headers.server_timing` is baked into
+    // at boot" freezing as `observability.otlp_url` did: `response_headers.server_timing` is baked into
     // router middleware state (same mechanism as the old `emit_server_timing`) and
     // `response_headers.route_policy` seeds a process-global `OnceLock`
     // (`proxy::configure_route_policy_headers`). DRIFT GUARD, same idiom as above: an EXHAUSTIVE

@@ -580,6 +580,7 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
         .pool_runtime(
             "pa",
             crate::state::PoolRuntime {
+                upstream_credentials: None,
                 breaker: Some(BreakerCfg {
                     trip: TripConfig {
                         mode: TripMode::Consecutive,
@@ -1183,8 +1184,6 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
 /// credential — NOT `Bearer sk-operator-secret` (the old borrow-the-operator-key behavior).
 #[tokio::test]
 async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
-    use crate::auth::AuthMiddleware;
-    use crate::config::AuthCfg;
     crate::metrics::init();
 
     // Upstream answers 200 so we can inspect the Authorization header it received.
@@ -1204,12 +1203,10 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
 
     // Passthrough mode + a MISCONFIGURED lane that DOES carry an operator key. Lane speaks OpenAI
     // (Bearer auth), ingress same-protocol openai.
-    let passthrough = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        ..AuthCfg::default_none()
-    };
+    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section (audit §4), so the
+    // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
+        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .lane(
             LaneSpec::new(
                 "glm-4.5",
@@ -1219,7 +1216,6 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
             .api_key("sk-operator-secret"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
         .build();
 
     let body = serde_json::to_vec(
@@ -2076,8 +2072,6 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
 /// from a double-attach) is a proxy tell the SDK's `APIError.request_id` would surface.
 #[tokio::test]
 async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once() {
-    use crate::auth::AuthMiddleware;
-    use crate::config::AuthCfg;
     crate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 401 carries a `request-id` response header; the same-proto passthrough
@@ -2093,12 +2087,10 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
     let server = MockServer::new(state.clone()).await;
 
     // Passthrough auth mode + anthropic lane, same-protocol anthropic ingress.
-    let passthrough = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        ..AuthCfg::default_none()
-    };
+    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section (audit §4), so the
+    // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
+        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .lane(
             LaneSpec::new(
                 "claude-3",
@@ -2108,7 +2100,6 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
             .provider("anthropic"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
         .build();
 
     let resp = forward_with_pool(

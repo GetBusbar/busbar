@@ -424,6 +424,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .pool_runtime(
             "fb",
             crate::state::PoolRuntime {
+                upstream_credentials: None,
                 breaker: Some(BreakerCfg {
                     trip: TripConfig {
                         mode: TripMode::Consecutive,

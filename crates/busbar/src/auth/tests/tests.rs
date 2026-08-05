@@ -276,16 +276,21 @@ fn test_empty_chain_is_open_front_door() {
 
 /// `upstream_credentials` selects WHOSE credential goes upstream; it does not gate the front
 /// door. With an empty chain both modes admit everything (the old none/passthrough split is now
-/// chain-shape for the front door + this knob for egress).
+/// chain-shape for the front door + this knob for egress). 1.5.3: the knob itself moved OFF `auth:`
+/// onto the `pools:` section, so the middleware no longer carries it at all — which is the strongest
+/// possible form of "it does not gate the front door".
 #[test]
 fn test_open_door_regardless_of_upstream_creds() {
     for uc in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
-        let mut cfg = crate::config::AuthCfg::default_none();
-        cfg.upstream_credentials = uc;
+        let cfg = crate::config::AuthCfg::default_none();
         let mw = AuthMiddleware::new_builtin(&cfg);
-        assert_eq!(mw.upstream_creds, uc);
         assert!(mw.validate_token(None));
         assert!(mw.validate_token(Some("anything")));
+        // The mode lives on the App (all-pools default + per-pool override), not on the chain.
+        let app = crate::test_support::TestApp::new()
+            .upstream_creds(uc)
+            .build();
+        assert_eq!(app.upstream_creds(), uc);
     }
 }
 
@@ -2451,16 +2456,17 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 
 #[test]
 fn test_auth_middleware_debug_redacts_tokens() {
-    // `AuthMiddleware`'s manual `Debug` must expose only shape
-    // (chain length, keys flag, upstream mode), never any credential material. There are no
-    // static client tokens anymore; the invariant is that ONLY the whitelisted shape fields
-    // appear, so a future field holding a secret cannot leak through a derived Debug.
+    // `AuthMiddleware`'s manual `Debug` must expose only shape (chain length + keys flag), never
+    // any credential material. There are no static client tokens anymore; the invariant is that ONLY
+    // the whitelisted shape fields appear, so a future field holding a secret cannot leak through a
+    // derived Debug. (1.5.3: the upstream-credential MODE is no longer on the middleware at all — it
+    // moved to the `pools:` section, audit §4 — so it is no longer part of this shape.)
     let cfg = chain_cfg(&["keys", "test-groups-module"]);
     let mw = AuthMiddleware::new_builtin(&cfg);
     let dbg = format!("{mw:?}");
     assert!(
-        dbg.contains("chain_len") && dbg.contains("Own"),
-        "AuthMiddleware Debug should report the chain length + upstream mode: {dbg}"
+        dbg.contains("chain_len"),
+        "AuthMiddleware Debug should report the chain length: {dbg}"
     );
     assert!(
         dbg.contains("keys_in_chain"),

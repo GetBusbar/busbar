@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashMap;
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -398,6 +397,10 @@ pub(crate) struct RootCfg {
     pub(crate) providers: HashMap<String, ProviderCfg>,
     pub(crate) models: HashMap<String, ModelCfg>,
     pub(crate) pools: HashMap<String, PoolCfg>,
+    /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
+    /// `pools.upstream_credentials:` key (1.5.3 — moved off the retired `auth.upstream_credentials:`).
+    /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule, audit §4).
+    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
     /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
     /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
     /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
@@ -473,117 +476,94 @@ pub(crate) struct TlsCfg {
     pub(crate) client_ca: Option<SecretRef>,
 }
 
-/// One entry in an auth chain (`auth.chain:` / `auth.admin_auth:`) - an ORDERED-LIST module entry
-/// (C2b/C2c): a bare module NAME for a module needing no config (`- keys`), or a single-key map
-/// whose key is the module name and whose value carries the busbar-TYPED fields alongside the
-/// module's own opaque `settings:`:
+/// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3, audit §2). The map
+/// KEY is the provider INSTANCE name — the bare name `auth.chain:`, `auth.admin_auth:` and
+/// `role_bindings:` all reference — and this value says which `kind: auth` module backs it, how it is
+/// configured, and what admin ceiling it carries.
 ///
 /// ```yaml
-/// chain:
-/// - keys
-/// - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
-/// admin_auth:
-/// - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+/// identity-providers:
+///   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+///   corp-ad:      { module: ad, settings: { server: "ldaps://corp" }, max_admin_scope: none }
+/// auth:
+///   chain:      [keys, corp-ad]     # ← bare NAMES
+///   admin_auth: [admin-tokens, corp-ad]
+///   role_bindings: { corp-ad: { platform: { admin_scope: full } } }
 /// ```
+///
+/// This REVERSES the 1.5.0 inlining: an IdP that serves BOTH planes used to be defined twice (once in
+/// `chain:`, once in `admin_auth:`) with two independent copies of its settings that could silently
+/// drift. Now it is defined ONCE and referenced twice.
+///
+/// The built-in `keys` (data-plane signed-key verifier) and `admin-tokens` (operator credential)
+/// are referenced BARE with no definition at all; a definition entry exists only when the provider
+/// needs config (e.g. `admin-tokens` carrying its `token:` secret ref).
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
+pub(crate) struct IdentityProviderCfg {
+    /// The module backing this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth`
+    /// plugin name/alias resolved through the validated plugin registry. REQUIRED, non-empty.
+    pub(crate) module: String,
+    /// Ceiling on the ADMIN scope obtainable through THIS PROVIDER, regardless of what
+    /// `role_bindings:` grants: `none` | `read-only` | `full`.
+    ///
+    /// 1.5.3 moved this ONTO the definition (audit §2): it used to sit on a data-plane CHAIN entry,
+    /// which was incoherent — an admin ceiling is a property of the identity source, not of one
+    /// plane's reference to it. Absent = the MOST RESTRICTIVE default (`read-only`) for every
+    /// provider EXCEPT the built-in `admin-tokens` operator credential, which is `full` by
+    /// definition and exempt. `full` from an external IdP is always an explicit opt-in.
+    #[serde(default)]
+    pub(crate) max_admin_scope: Option<String>,
+    /// The operator ADMIN credential, for a provider whose `module` is the built-in `admin-tokens`
+    /// (a secret reference). Meaningless on any other module (validated).
+    #[serde(default)]
+    pub(crate) token: Option<SecretRef>,
+    /// HOSTED-LOGIN parameters (freeze blocker A7). The 1.5.2 `auth.methods:` block FOLDED into this
+    /// definition: `browser_login` is inherently per-provider (a client id/secret belongs to ONE
+    /// IdP registration), so a separate parallel map was duplicate structure whose two halves could
+    /// disagree. PRESENCE of this block is what puts a button on the hosted login page; a provider
+    /// without it is headless-only (still usable via `POST /auth/token`).
+    #[serde(default)]
+    pub(crate) browser_login: Option<BrowserLoginCfg>,
+    /// The module's own opaque settings (pushed to the auth plugin verbatim).
+    #[serde(default)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The top-level `identity-providers:` map: provider NAME → [`IdentityProviderCfg`]. Insertion-ordered
+/// so the hosted-login button order (audit §2 / A7) is the operator's config order.
+pub(crate) type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
+
+/// A RESOLVED auth-chain entry: one `auth.chain:` / `auth.admin_auth:` NAME joined to the
+/// `identity-providers:` definition it references (or synthesized for a bare built-in that needs no
+/// definition). This is an INTERNAL type built by [`resolve_auth`] — it is never deserialized, because
+/// 1.5.3 removed the inline chain-entry form entirely (a chain is now a list of bare NAMES).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthChainEntry {
-    /// The module name (built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias).
+    /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
+    /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
+    pub(crate) name: String,
+    /// The module backing this provider (built-in `keys` / `admin-tokens`, or a plugin name/alias).
     pub(crate) module: String,
-    /// Ceiling on the ADMIN scope obtainable through this module, regardless of what
-    /// `role_bindings:` grants: `read-only` | `full`. Absent =
-    /// `read-only` for every module except the built-in `admin-tokens` operator credential (full by
-    /// definition and exempt) - `full` from an external chain is an explicit opt-in.
+    /// The provider's admin ceiling, from its definition. See [`IdentityProviderCfg::max_admin_scope`].
     pub(crate) max_admin_scope: Option<String>,
-    /// The operator ADMIN credential, for the built-in `admin-tokens` module (a secret reference).
-    /// Meaningless on other modules (validated).
+    /// The `admin-tokens` operator credential, from its definition.
     pub(crate) token: Option<SecretRef>,
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
 impl AuthChainEntry {
-    /// A bare, config-less entry (the `- keys` form).
+    /// A bare, definition-less built-in entry (`chain: [keys]` / `admin_auth: [admin-tokens]`).
     pub(crate) fn bare(module: impl Into<String>) -> Self {
+        let module = module.into();
         Self {
-            module: module.into(),
+            name: module.clone(),
+            module,
             max_admin_scope: None,
             token: None,
             settings: serde_json::Map::new(),
         }
-    }
-}
-
-/// The typed body of a configured chain entry (`{ <module>: { …this… } }`).
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-struct AuthChainEntryBody {
-    #[serde(default)]
-    max_admin_scope: Option<String>,
-    #[serde(default)]
-    token: Option<SecretRef>,
-    #[serde(default)]
-    settings: serde_json::Map<String, serde_json::Value>,
-}
-
-impl<'de> Deserialize<'de> for AuthChainEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct EntryVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
-            type Value = AuthChainEntry;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(
-                    "an auth chain entry: a bare module name (`- keys`) or a single-key map \
-                     `- <module>: { max_admin_scope?, token?, settings? }`",
-                )
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<AuthChainEntry, E>
-            where
-                E: serde::de::Error,
-            {
-                if v.trim().is_empty() {
-                    return Err(E::custom(
-                        "an auth chain entry module name must be non-empty",
-                    ));
-                }
-                Ok(AuthChainEntry::bare(v))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<AuthChainEntry, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let Some((module, body)) = map.next_entry::<String, AuthChainEntryBody>()? else {
-                    return Err(serde::de::Error::custom(
-                        "an auth chain map entry needs exactly one key (the module name)",
-                    ));
-                };
-                if map.next_key::<String>()?.is_some() {
-                    return Err(serde::de::Error::custom(
-                        "an auth chain map entry takes exactly ONE module key; write each module \
-                         as its own list item",
-                    ));
-                }
-                if module.trim().is_empty() {
-                    return Err(serde::de::Error::custom(
-                        "an auth chain entry module name must be non-empty",
-                    ));
-                }
-                Ok(AuthChainEntry {
-                    module,
-                    max_admin_scope: body.max_admin_scope,
-                    token: body.token,
-                    settings: body.settings,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(EntryVisitor)
     }
 }
 
@@ -612,9 +592,9 @@ pub(crate) struct RoleBindingCfg {
 pub(crate) type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
 
-/// Per-method browser-login parameters (`auth.methods.<name>.browser_login:`). PRESENCE of this
-/// block is what makes a method show a button on the hosted login page; a method WITHOUT it is
-/// headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
+/// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
+/// this block is what makes a provider show a button on the hosted login page; a provider WITHOUT it
+/// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
 /// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
 /// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -633,30 +613,68 @@ pub(crate) struct BrowserLoginCfg {
     pub(crate) client_id: Option<String>,
 }
 
-/// One entry in the `auth.methods:` MAP — a NAMED login method whose map KEY is the module name (the
-/// same namespace as `auth.chain` entries; a method reuses the chain module's verifier). The value
-/// carries the module's OPAQUE settings (issuer/audience/etc. for an OIDC module, flattened and
-/// passed through verbatim) alongside the reserved, busbar-typed `browser_login` block. `methods` is
-/// parallel to `chain`: `chain` is the data-plane verify order (untouched); `methods` is the hosted
-/// login surface. Because `settings` is a flattened catch-all, unknown keys are ABSORBED as opaque
-/// module settings by design; the `deny_unknown_fields` guarantee is enforced on `browser_login`.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+/// One RESOLVED hosted-login method — the projection of an `identity-providers:` definition that
+/// carries a `browser_login:` block (freeze blocker A7). Built by [`resolve_auth`], never
+/// deserialized: the config-facing shape is the provider definition itself, and this is just the
+/// slice of it the login machinery reads.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthMethodCfg {
-    /// Browser-login parameters; `Some` ⇒ this method renders a button on the hosted login page.
-    #[serde(default)]
+    /// The `kind: auth` PLUGIN backing this method — the provider definition's `module:`. Distinct
+    /// from the map KEY, which is the provider NAME (two named providers may share one module).
+    pub(crate) module: String,
+    /// Browser-login parameters; `Some` ⇒ this provider renders a button on the hosted login page.
     pub(crate) browser_login: Option<BrowserLoginCfg>,
-    /// The module's own opaque settings (everything that is not `browser_login`), pushed to the
-    /// module verbatim (issuer, audience, endpoints, …).
-    #[serde(flatten)]
+    /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// `auth.methods:` — insertion-ordered map (operator order = login-page button order), keyed by
-/// module name.
+/// The resolved hosted-login methods — insertion-ordered (operator order = login-page button order),
+/// keyed by PROVIDER NAME.
 pub(crate) type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 
+/// The WIRE shape of the `auth:` block (1.5.3). `chain:` / `admin_auth:` are lists of bare NAMES
+/// referencing the top-level `identity-providers:` map (or a bare built-in) — the inline
+/// `- <module>: { settings: … }` entry form is REMOVED, which is the whole point of audit §2.
 #[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
+pub(crate) struct AuthDeployCfg {
+    /// See [`AuthCfg::signing_key`].
+    #[serde(default)]
+    pub(crate) signing_key: Option<SecretRef>,
+    /// The DATA-PLANE authentication chain, as ordered PROVIDER NAMES. Empty (the default) is the
+    /// open front door. `keys` is the built-in signed-key verifier, referenced bare.
+    #[serde(default)]
+    pub(crate) chain: Vec<String>,
+    /// The ADMIN auth chain gating `/api/v1/admin/*`, as ordered PROVIDER NAMES. Default
+    /// `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot warning).
+    #[serde(default = "default_admin_auth_names")]
+    pub(crate) admin_auth: Vec<String>,
+    /// Role → policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
+    #[serde(default)]
+    pub(crate) role_bindings: RoleBindings,
+    /// See [`AuthCfg::key_ttl`].
+    #[serde(default)]
+    pub(crate) key_ttl: Option<String>,
+}
+
+impl Default for AuthDeployCfg {
+    /// The all-omitted `auth:` block: open front door (empty data chain) + the default
+    /// `[admin-tokens]` admin chain, matching the per-field serde defaults exactly.
+    fn default() -> Self {
+        Self {
+            signing_key: None,
+            chain: Vec::new(),
+            admin_auth: default_admin_auth_names(),
+            role_bindings: RoleBindings::new(),
+            key_ttl: None,
+        }
+    }
+}
+
+/// The RESOLVED `auth:` block — each `chain:`/`admin_auth:` NAME joined to its `identity-providers:`
+/// definition (see [`resolve_auth`]). This is what every runtime consumer reads; it is constructed by
+/// `resolve`, never parsed from YAML.
+#[derive(Debug, Clone)]
 pub(crate) struct AuthCfg {
     /// The key-signing key (S2): a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
@@ -665,31 +683,21 @@ pub(crate) struct AuthCfg {
     /// busbar NO LONGER auto-generates one when absent (the 1.5.0 generate-and-persist-beside-config
     /// behavior boot-looped a read-only config mount) - generate one with
     /// `busbar --generate-signing-key`. Rotating it revokes every outstanding key.
-    #[serde(default)]
     pub(crate) signing_key: Option<SecretRef>,
-    /// Upstream-credential mode: `own` (default — busbar's configured lane key) or `passthrough`
-    /// (forward the caller's credential upstream; the old `mode: passthrough`).
-    #[serde(default)]
-    pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
-    /// The DATA-PLANE authentication CHAIN - ordered module entries. Empty (the default) is the
-    /// open front door. `keys` is the built-in signed-key verifier.
-    #[serde(default)]
+    /// The DATA-PLANE authentication CHAIN — resolved provider entries in config order. Empty is the
+    /// open front door.
     pub(crate) chain: Vec<AuthChainEntry>,
     /// The ADMIN auth chain gating `/api/v1/admin/*` (the parallel of `chain` for the operator
     /// surface). Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot warning).
-    #[serde(default = "default_admin_auth")]
     pub(crate) admin_auth: Vec<AuthChainEntry>,
-    /// Role -> policy bindings, NESTED BY MODULE (see [`RoleBindingCfg`]).
-    #[serde(default)]
+    /// Role -> policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
     pub(crate) role_bindings: RoleBindings,
-    /// The `auth.methods:` MAP — named login methods for the hosted login page / headless token
-    /// exchange, parallel to `chain` (see [`AuthMethods`]). Default empty (no hosted login).
-    #[serde(default)]
+    /// The resolved hosted-login methods — every `identity-providers:` entry, keyed by provider name
+    /// (see [`AuthMethods`], freeze blocker A7). Empty when no providers are defined.
     pub(crate) methods: AuthMethods,
     /// Admin-set default lifetime for self-service / minted keys (`auth.key_ttl:`), a duration string
     /// (`"90d"`, `"24h"`, …) parsed by `parse_duration_secs`. Absent ⇒ the built-in
-    /// `DEFAULT_KEY_TTL_SECS` (90d). Consumed by the mint path (Step 4); additive here.
-    #[serde(default)]
+    /// `DEFAULT_KEY_TTL_SECS` (90d).
     pub(crate) key_ttl: Option<String>,
 }
 
@@ -698,7 +706,6 @@ impl AuthCfg {
     pub(crate) fn default_none() -> Self {
         Self {
             signing_key: None,
-            upstream_credentials: crate::auth::UpstreamCreds::Own,
             chain: vec![],
             admin_auth: default_admin_auth(),
             role_bindings: RoleBindings::new(),
@@ -744,6 +751,123 @@ pub(crate) const KEYS_MODULE: &str = "keys";
 /// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
 pub(crate) const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 
+/// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
+/// `identity-providers:` definition at all (audit §0/§2). A definition entry for one of these exists
+/// only when it needs config — `admin-tokens` carrying its `token:` secret ref is the one real case.
+pub(crate) const BUILTIN_IDENTITY_PROVIDERS: &[&str] = &[KEYS_MODULE, ADMIN_TOKENS_MODULE];
+
+/// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits
+/// `max_admin_scope:` (audit §2). "Most restrictive" is `read-only`, matching the pre-1.5.3 behavior
+/// exactly (the retired chain-entry field defaulted the same way); the built-in `admin-tokens`
+/// operator credential is EXEMPT (full by definition), which is why this is applied by
+/// [`resolve_auth`] only to non-`admin-tokens` providers.
+pub(crate) const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
+
+/// Join each `auth.chain:` / `auth.admin_auth:` NAME to its `identity-providers:` definition, producing
+/// the RESOLVED [`AuthCfg`] every runtime consumer reads (audit §2).
+///
+/// The DEDUPE property this whole redesign exists for: one provider definition referenced from BOTH
+/// chains yields two [`AuthChainEntry`]s that share one definition — same module, same settings, same
+/// ceiling, by construction. The pre-1.5.3 shape needed the operator to write the settings twice, and
+/// nothing stopped the two copies from drifting.
+///
+/// Errors are ACCUMULATED into `errors`:
+/// - a name with no definition that is not a bare built-in (a dangling reference — fail closed, never
+///   a silently-skipped auth module);
+/// - a `token:` on a provider whose module is not the built-in `admin-tokens` (meaningless there);
+/// - a definition with an empty `module:`.
+///
+/// The `max_admin_scope` DEFAULT is applied here, once, so every downstream reader sees the resolved
+/// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
+/// the built-in `admin-tokens` operator credential, which stays `None` (exempt, full by definition) —
+/// byte-identical to the pre-1.5.3 semantics.
+pub(crate) fn resolve_auth(
+    auth: &AuthDeployCfg,
+    providers: &IdentityProviders,
+    errors: &mut Vec<String>,
+) -> AuthCfg {
+    let mut resolve_one = |plane: &str, name: &String| -> AuthChainEntry {
+        match providers.get(name) {
+            Some(def) => {
+                let module = def.module.trim().to_string();
+                if module.is_empty() {
+                    errors.push(format!(
+                        "identity-providers.{name}.module must be a non-empty module name"
+                    ));
+                }
+                if def.token.is_some() && module != ADMIN_TOKENS_MODULE {
+                    errors.push(format!(
+                        "identity-providers.{name}: `token:` is the built-in `admin-tokens` \
+                         operator credential and is meaningless on `module: {module}`"
+                    ));
+                }
+                let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
+                    (module != ADMIN_TOKENS_MODULE).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                });
+                AuthChainEntry {
+                    name: name.clone(),
+                    module,
+                    max_admin_scope,
+                    token: def.token.clone(),
+                    settings: def.settings.clone(),
+                }
+            }
+            // A BARE BUILT-IN needs no definition (audit §0). Anything else is a dangling reference.
+            None if BUILTIN_IDENTITY_PROVIDERS.contains(&name.as_str()) => {
+                AuthChainEntry::bare(name.clone())
+            }
+            None => {
+                errors.push(format!(
+                    "auth.{plane} references '{name}', which is not defined in \
+                     `identity-providers:` (and is not a built-in: {}). Define it, or reference a \
+                     built-in by its bare name.",
+                    BUILTIN_IDENTITY_PROVIDERS.join(" / ")
+                ));
+                AuthChainEntry::bare(name.clone())
+            }
+        }
+    };
+
+    let chain = auth
+        .chain
+        .iter()
+        .map(|n| resolve_one("chain", n))
+        .collect::<Vec<_>>();
+    let admin_auth = auth
+        .admin_auth
+        .iter()
+        .map(|n| resolve_one("admin_auth", n))
+        .collect::<Vec<_>>();
+
+    // FREEZE BLOCKER A7 — every `identity-providers:` entry is a potential hosted-login method; the
+    // `browser_login:` block on it is what puts a BUTTON on the login page. (A provider that is not
+    // in either chain still resolves here: headless `POST /auth/token` against a defined provider is
+    // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
+    let methods: AuthMethods = providers
+        .iter()
+        .filter(|(_, def)| !BUILTIN_IDENTITY_PROVIDERS.contains(&def.module.trim()))
+        .map(|(name, def)| {
+            (
+                name.clone(),
+                AuthMethodCfg {
+                    module: def.module.trim().to_string(),
+                    browser_login: def.browser_login.clone(),
+                    settings: def.settings.clone(),
+                },
+            )
+        })
+        .collect();
+
+    AuthCfg {
+        signing_key: auth.signing_key.clone(),
+        chain,
+        admin_auth,
+        role_bindings: auth.role_bindings.clone(),
+        methods,
+        key_ttl: auth.key_ttl.clone(),
+    }
+}
+
 /// Append a targeted migration hint to a config-deserialize error when it is the removed 1.3.0
 /// `auth.mode:` key (rejected by `AuthCfg`'s `deny_unknown_fields`), so an upgrading operator gets
 /// actionable guidance instead of serde's bare "unknown field `mode`, expected one of …". Additive:
@@ -782,10 +906,48 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
              built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
              field yourself"
         )
+    } else if let Some((old, new)) = RETIRED_CONFIG_KEYS_1_5_3
+        .iter()
+        .copied()
+        .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
+    {
+        // The 1.5.3 GRAMMAR-LOCK retirements (audit §2/§3/§4/§5). Same shared-table discipline as
+        // the two branches above: one table drives this hint, the `detect_legacy_markers` boot
+        // loud-fail, AND the migrator's rewrite, so the three can never disagree about a key.
+        format!(
+            "{msg}\n  hint: `{old}` was retired in 1.5.3 — it is now `{new}`. Run \
+             `busbar --migrate-config <config.yaml>` to rewrite it in place"
+        )
     } else {
         msg
     }
 }
+
+/// The 1.5.3 GRAMMAR-LOCK retired keys (retired key → its new home), shared by
+/// [`augment_config_error`]'s loud-fail hint, `config::migrate::detect_legacy_markers` (the
+/// boot/`--validate` loud-fail) and `migrate_config`'s mechanical rewrite so the three cannot drift —
+/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`RETIRED_OBSERVABILITY_KEYS`] use.
+///
+/// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
+/// is frozen additive-only afterwards.
+pub(crate) const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
+    // §3: the whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
+    // retired leaves reports the block-level move (the leaves have nowhere left to live).
+    (
+        "observability",
+        "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / \
+         `module: otlp` instance (all telemetry egress is now the single `export:` surface)",
+    ),
+    // §5: inverted so the SAFE posture is the default.
+    ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)"),
+    // §4: whose credential reaches the upstream is a routing property, not an inbound-auth one.
+    ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override"),
+    // §2: the IdP is DEFINED once and REFERENCED by name.
+    ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)"),
+    // §3: the last `observability:` field folded into `export:`.
+    ("otlp_url", "an `export:` instance with `module: otlp` and `settings.url`"),
+    ("otlp_endpoint", "an `export:` instance with `module: otlp` and `settings.url`"),
+];
 
 /// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
 /// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
@@ -1109,6 +1271,12 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
 #[derive(Debug, Clone)]
 pub(crate) struct PoolCfg {
     pub(crate) members: Vec<PoolMember>,
+    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (audit §4: a
+    /// SCALAR, so the entity value REPLACES the inherited one — it does not union). `None` = inherit
+    /// the `pools:`-level default. Moved here (out of the retired `auth.upstream_credentials:`) in
+    /// 1.5.3: whose credential reaches the upstream is a routing property of the pool, not of the
+    /// inbound auth chain.
+    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// Per-pool breaker settings (resolved into `store::BreakerCfg` at startup; drives trip
     /// thresholds and cooldown backoff for this pool's lanes).
     pub(crate) breaker: Option<BreakerCfg>,
@@ -1187,6 +1355,9 @@ impl<'de> Deserialize<'de> for PoolCfg {
             /// (bare names referencing the top-level `hooks:` map) - in ONE ordered list.
             #[serde(default)]
             hooks: Option<Vec<String>>,
+            /// Per-pool override of the all-pools `pools.upstream_credentials:` default.
+            #[serde(default)]
+            upstream_credentials: Option<crate::auth::UpstreamCreds>,
         }
 
         let raw = RawPoolCfg::deserialize(deserializer)?;
@@ -1222,6 +1393,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
 
         Ok(PoolCfg {
             members: raw.members,
+            upstream_credentials: raw.upstream_credentials,
             breaker: raw.breaker,
             failover: raw.failover,
             on_exhausted: raw.on_exhausted,
@@ -1233,27 +1405,47 @@ impl<'de> Deserialize<'de> for PoolCfg {
     }
 }
 
-/// The top-level `pools:` map (1.5.3), which carries ONE reserved key alongside the pools:
+/// The FROZEN reserved key set of the `pools:` SECTION (freeze blocker A5, 1.5.3). These two names
+/// are section-level knobs, NOT pool names:
 ///
 /// ```yaml
 /// pools:
-///   hooks: [pii]        # RESERVED: attach these hooks to ALL pools (the only global mechanism)
-///   fast:               # a real pool
+///   hooks: [pii]                  # RESERVED (LIST → ADDITIVE): attach to ALL pools
+///   upstream_credentials: own     # RESERVED (SCALAR → OVERRIDE): the all-pools default
+///   fast:                         # a real pool
 ///     members: [ ... ]
 ///     hooks: [cheapest, pii]
+///     upstream_credentials: passthrough
 /// ```
 ///
-/// The reserved `hooks:` key is the ALL-POOLS attach list (bare hook names, referencing the top-level
-/// `hooks:` definition map). Every OTHER key is a pool. A pool may NOT be named `hooks` — that name is
-/// reserved for the all-pools list, and a pool spelled `hooks` is REJECTED at parse with a clear
-/// error. The custom `Deserialize` lifts the reserved key out first, then parses the remainder as the
-/// pool map.
+/// **THIS SET IS CLOSED AND MUST NEVER GROW.** Every reserved word here is a word an operator can no
+/// longer use as a POOL NAME, so ADDING one in a later release retroactively turns a previously-legal
+/// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
+/// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
+/// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
+/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.4/1.5.6): reserve the same two
+/// words in every plane section, even where a plane chooses not to implement one, so the word space is
+/// identical across planes.
+///
+/// Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
+pub(crate) const RESERVED_POOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+
+/// The top-level `pools:` map (1.5.3), which carries the [`RESERVED_POOLS_SECTION_KEYS`] alongside the
+/// pools themselves. Every key that is NOT one of those two reserved words is a pool. A pool may NOT be
+/// named `hooks` or `upstream_credentials` — both are REJECTED at parse with a clear error. The custom
+/// `Deserialize` lifts the reserved keys out first, then parses the remainder as the pool map.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PoolsCfg {
     /// The ALL-POOLS attach list — hook names that fire for EVERY pool (the reserved `pools.hooks:`
-    /// key). Empty when absent. Firing order: these fire BEFORE a pool's own hooks.
+    /// key). Empty when absent. Firing order: these fire BEFORE a pool's own hooks. LIST ⇒ ADDITIVE
+    /// (audit §4): a pool's own `hooks:` are appended to this, deduped by name (see freeze blocker
+    /// A4 / [`combine_hook_refs`]).
     pub(crate) all_pool_hooks: Vec<String>,
-    /// The real pools, keyed by name (every top-level key except the reserved `hooks`).
+    /// The ALL-POOLS `upstream_credentials:` default (the reserved `pools.upstream_credentials:`
+    /// key). SCALAR ⇒ OVERRIDE (audit §4): a pool's own value REPLACES this. `None` = absent ⇒ the
+    /// built-in default (`own`).
+    pub(crate) all_pool_upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    /// The real pools, keyed by name (every top-level key except [`RESERVED_POOLS_SECTION_KEYS`]).
     pub(crate) pools: HashMap<String, PoolCfg>,
 }
 
@@ -1262,10 +1454,26 @@ impl<'de> Deserialize<'de> for PoolsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // Parse into a raw name→Value map so the reserved `hooks` key can be lifted out before the
-        // remaining entries are parsed as pools. A bare list under `hooks` is the all-pools attach.
+        // Parse into a raw name→Value map so the reserved keys can be lifted out before the
+        // remaining entries are parsed as pools. A bare list under `hooks` is the all-pools attach;
+        // a bare `own`/`passthrough` scalar under `upstream_credentials` is the all-pools default.
         let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
             indexmap::IndexMap::deserialize(deserializer)?;
+        // A RESERVED key whose value is a MAPPING is an attempt to define a POOL by that name
+        // (freeze blocker A5). Caught here, BEFORE the typed lifts below, so the operator gets
+        // "that name is reserved" instead of a confusing "expected a sequence" type error.
+        for reserved in RESERVED_POOLS_SECTION_KEYS {
+            if raw
+                .get(*reserved)
+                .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
+            {
+                return Err(serde::de::Error::custom(format!(
+                    "a pool may not be named `{reserved}`: that key is RESERVED at the `pools:` \
+                     section level (the all-pools `hooks:` attach list and `upstream_credentials:` \
+                     default). Rename the pool."
+                )));
+            }
+        }
         let all_pool_hooks: Vec<String> = match raw.shift_remove("hooks") {
             None => Vec::new(),
             Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
@@ -1274,26 +1482,76 @@ impl<'de> Deserialize<'de> for PoolsCfg {
                 ))
             })?,
         };
+        let all_pool_upstream_credentials = match raw.shift_remove("upstream_credentials") {
+            None => None,
+            Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "the reserved `pools.upstream_credentials:` all-pools default must be \
+                         `own` or `passthrough`: {e}"
+                ))
+            })?),
+        };
         let mut pools = HashMap::new();
         for (name, value) in raw {
-            // A pool named `hooks` is rejected: `hooks` is the reserved all-pools key, not a pool.
-            // (Lifting `hooks` out above already consumed a LIST-valued `hooks`; a map-valued
-            // `hooks` — i.e. an attempt to define a POOL named `hooks` — would deserialize as a list
-            // above and fail there, so this guard is belt-and-suspenders + a precise message.)
-            if name == "hooks" {
-                return Err(serde::de::Error::custom(
-                    "a pool may not be named `hooks`: that key is reserved for the all-pools attach \
-                     list (`pools.hooks: [ ... ]`). Rename the pool.",
-                ));
+            // A pool named by a RESERVED section key is rejected (freeze blocker A5): those names are
+            // section-level knobs, not pools. (Lifting them out above already consumed the well-typed
+            // forms; this guard catches the map-valued "I meant a pool" spelling with a precise
+            // message instead of a confusing type error.)
+            if RESERVED_POOLS_SECTION_KEYS.contains(&name.as_str()) {
+                return Err(serde::de::Error::custom(format!(
+                    "a pool may not be named `{name}`: that key is RESERVED at the `pools:` section \
+                     level (the all-pools `hooks:` attach list and `upstream_credentials:` default). \
+                     Rename the pool."
+                )));
             }
             let pool: PoolCfg = PoolCfg::deserialize(value).map_err(serde::de::Error::custom)?;
             pools.insert(name, pool);
         }
         Ok(PoolsCfg {
             all_pool_hooks,
+            all_pool_upstream_credentials,
             pools,
         })
     }
+}
+
+/// Freeze blocker **A4** — the ADDITIVE-LIST DEDUPE rule, in ONE place so every plane section that
+/// ships an additive `hooks:` list (today `pools:`; later `tools:`/`agents:`) combines identically.
+///
+/// The audit's combine rule (§4) says section-level LISTS are ADDITIVE, but "additive" alone does not
+/// say what happens when the SAME hook name appears in BOTH `pools.hooks:` and a pool's own `hooks:`.
+/// Both answers were defensible, so 1.5.3 PINS one forever:
+///
+/// > **A hook named in both lists fires ONCE, at its FIRST position** — i.e. the section-level
+/// > position, since section-level hooks precede the entity's own.
+///
+/// Rationale: attaching a hook to all pools and then *also* naming it on one pool is the natural way
+/// an operator writes "…and definitely on this one" — reading that as "fire twice" would silently
+/// double-charge a gate's latency budget and double-count a tap's audit record. Deduping by NAME is
+/// safe precisely because the name IS the instance (audit §0): two DIFFERENT configurations of one
+/// module are two different NAMES, so dedupe can never collapse two distinct hooks.
+pub(crate) fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(section.len() + entity.len());
+    for name in section.iter().chain(entity.iter()) {
+        if !out.iter().any(|existing| existing == name) {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
+/// The RUNTIME projection of the A4 rule (see [`combine_hook_refs`]). busbar fires the section list
+/// and the entity list through two SEPARATE resolved chains (`App::global_gates` then
+/// `PoolRuntime::gates`), so the dedupe has to be applied to the ENTITY half: this returns the
+/// entity's own references with (a) intra-list duplicates and (b) anything already named at the
+/// section level removed. Concatenating `section` with this result reproduces
+/// [`combine_hook_refs`] exactly — the property `hook_refs_combine_is_section_then_entity_only`
+/// pins, so the two can never drift.
+pub(crate) fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
+    combine_hook_refs(section, entity)
+        .into_iter()
+        .skip(combine_hook_refs(section, &[]).len())
+        .collect()
 }
 
 /// A pool's native ranking STRATEGY — the base ordering strategy named in a pool's `hooks:` list
@@ -1394,6 +1652,35 @@ pub(crate) enum HookStage {
     Response,
 }
 
+/// # FREEZE BLOCKER A3: THE FROZEN MEANING OF AN OMITTED `phase:`
+///
+/// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
+/// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
+/// MCP tool-invocation stage in 1.5.4 or an A2A delegation stage in 1.5.6 would retroactively make
+/// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
+/// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
+/// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
+/// must NAME it.
+///
+/// Two further properties, frozen with it:
+///
+/// - **`phase:` is PLANE-NEUTRAL.** These four names describe the shape of a request's lifecycle
+///   (arrive → choose candidates → dispatch → finish), which every plane shares. A later plane REUSES
+///   them; it does NOT re-type `phase:` into a per-plane enum, because a re-typed `phase:` would break
+///   every existing hook definition.
+/// - **An INAPPLICABLE phase silently does not fire** — it is NOT a config error. A hook named on both
+///   `pools:` and (later) `tools:` may legitimately want a phase that only one plane reaches; making
+///   that an error would mean an operator could not write one hook definition for two planes, which
+///   is precisely the reuse the named-definition pattern exists to enable.
+///
+/// Pinned by `omitted_phase_is_exactly_the_four_core_stages` in the config tests.
+pub(crate) const CORE_HOOK_PHASES: &[HookStage] = &[
+    HookStage::Request,
+    HookStage::Candidate,
+    HookStage::Routing,
+    HookStage::Response,
+];
+
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
 /// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a
 /// request. `Reject` is fail-closed (503). `First` uses the configured member order (a
@@ -1456,6 +1743,26 @@ pub(crate) fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 ///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
 ///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
 ///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
+/// # FREEZE BLOCKER A1: THE HOOK-NAME NAMESPACE IS CLOSED AS OF 1.5.3
+///
+/// `RESERVED_HOOK_NAMES` and the pool `hooks:` strategy keywords share ONE word space: a bare word in
+/// a pool's `hooks:` list is EITHER a built-in ordering strategy OR a reference to a hook the operator
+/// defined, and a bare word in `on_error:` is EITHER a reserved terminal OR a fallback hook name.
+///
+/// **Therefore this list must NEVER GROW.** Adding a bare terminal in a later release (a new
+/// `on_error` word, a new ranking strategy, an MCP bounded-default floor) would retroactively
+/// INVALIDATE a config that is legal today: an operator's hook named `least_bad` boots fine in 1.5.3
+/// and would become a boot failure — or, worse, silently rebind to the new built-in — the moment the
+/// word were reserved. That is exactly the break 1.5.3 exists to make impossible.
+///
+/// **Every future terminal must therefore arrive STRUCTURED, never as a new bare word.** The
+/// mechanism already ships: `on_error:` takes `{ hook: <name> }` for a hook reference
+/// ([`OnErrorCfg`]), so a new BEHAVIOR gets a new structured key (e.g. `on_error: { strategy: x }`,
+/// `hooks: [{ strategy: x }]`) which no bare name can ever collide with. A structured form is
+/// unambiguously not a name, so it costs zero words from the frozen space.
+///
+/// Pinned by `reserved_hook_names_are_frozen` in the config tests, which asserts the EXACT contents
+/// (not a subset) so that adding a word here fails a test that points back at this comment.
 pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     // on_error terminals (see ON_ERROR_*) — includes `weighted`, which is ALSO the native floor.
     ON_ERROR_WEIGHTED,
@@ -1472,8 +1779,39 @@ pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     "admin-tokens",
 ];
 
-/// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` module (the single
-/// operator admin token; byte-identical to the pre-chain behavior).
+/// The FROZEN 1.5.3 hook-name word space (freeze blocker A1) — the UNION of [`RESERVED_HOOK_NAMES`]
+/// and the pool-`hooks:` strategy keywords accepted bare by [`is_strategy_name`]. This is the exact
+/// set of words an operator may NOT use as a hook name, and it is closed forever (see
+/// [`RESERVED_HOOK_NAMES`] for why, and for the structured escape hatch every future terminal uses).
+///
+/// Kept as its own constant, rather than derived, so the freeze is a VALUE a test can pin literally:
+/// `hook_name_word_space_is_frozen` asserts both that this equals the runtime union AND that its
+/// contents are exactly these eleven words.
+// Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
+// is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
+// the runtime union. Marked `allow(dead_code)` so the freeze artifact does not need a contrived
+// runtime read to survive `-D warnings`.
+#[allow(dead_code)]
+pub(crate) const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
+    "admin-tokens",
+    "cheapest",
+    "fastest",
+    "first",
+    "least_busy",
+    "nothing",
+    "reject",
+    "tokens",
+    "usage",
+    "weighted",
+];
+
+/// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` provider, referenced bare
+/// (the single operator admin token; byte-identical to the pre-chain behavior).
+fn default_admin_auth_names() -> Vec<String> {
+    vec![ADMIN_TOKENS_MODULE.to_string()]
+}
+
+/// The RESOLVED form of [`default_admin_auth_names`].
 fn default_admin_auth() -> Vec<AuthChainEntry> {
     vec![AuthChainEntry::bare(ADMIN_TOKENS_MODULE)]
 }
@@ -1495,6 +1833,14 @@ pub(crate) struct HookCfg {
     /// unresolvable or wrong-kind reference refuses to boot). This REPLACES the retired
     /// `socket`/`webhook` out-of-process transports: a hook now runs in-process behind the frozen
     /// plugin ABI. Required and non-empty.
+    ///
+    /// FREEZE BLOCKER A8: the WIRE name is `module`, matching the locked grammar's one word for "which
+    /// plugin backs this instance" everywhere (`hooks.<n>.module`, `identity-providers.<n>.module`,
+    /// `export.<n>.module`, `store.module`). The Rust field keeps the older `plugin` spelling only
+    /// because it is referenced at ~100 internal sites; nothing user-facing says `plugin:` any more.
+    /// `alias = "plugin"` is READ-ONLY back-compat so a config overlay written by an earlier build
+    /// still loads — serialization always emits `module`.
+    #[serde(rename = "module", alias = "plugin")]
     pub(crate) plugin: String,
     // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
@@ -1585,14 +1931,22 @@ pub(crate) struct HookCfg {
 }
 
 impl HookCfg {
-    /// Whether this hook observes at `stage`. The 1.5.3 `phase:` LIST is authoritative when
-    /// non-empty; otherwise fall back to the legacy single `at:` (defaulting to `request`), so a hook
-    /// carrying neither behaves exactly as before.
+    /// Whether this hook observes at `stage` (freeze blocker A3 — see [`CORE_HOOK_PHASES`]).
+    ///
+    /// Precedence, frozen:
+    /// 1. a non-empty `phase:` LIST is authoritative — the hook fires at exactly those stages;
+    /// 2. otherwise the legacy single `at:` (the admin-API registration surface still carries it),
+    ///    which pins one stage;
+    /// 3. otherwise — BOTH omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
+    ///    "every stage that will ever exist": a stage added by a later release is not in
+    ///    [`CORE_HOOK_PHASES`], so it cannot retroactively widen a hook that already shipped.
     pub(crate) fn fires_at_stage(&self, stage: HookStage) -> bool {
-        if self.phase.is_empty() {
-            self.at.unwrap_or(HookStage::Request) == stage
-        } else {
-            self.phase.contains(&stage)
+        if !self.phase.is_empty() {
+            return self.phase.contains(&stage);
+        }
+        match self.at {
+            Some(at) => at == stage,
+            None => CORE_HOOK_PHASES.contains(&stage),
         }
     }
 }
@@ -1977,11 +2331,18 @@ fn default_listen() -> String {
 /// listener, never sharing the data port — the management plane is privileged and stays isolated by
 /// default. The default binds LOOPBACK so a zero-config deployment boots (an exposed default would
 /// trip the mTLS boot-guard); to manage Busbar off-host, set an exposed `admin_listen` with
-/// `admin_tls.client_ca_file` (mTLS) or an explicit `admin_insecure` waiver.
+/// `admin_tls.client_ca_file` (mTLS) or an explicit `admin_require_mtls: false` waiver.
 pub(crate) const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
 
 fn default_admin_listen() -> String {
     DEFAULT_ADMIN_LISTEN_ADDR.into()
+}
+
+/// The serde default for `admin_require_mtls:` — **true**. 1.5.3 inverted the retired
+/// `admin_insecure:` boolean (audit §5): the SAFE posture is the DEFAULT and the waiver is the
+/// explicit `false`, so a config that says nothing gets the guard rather than the hole.
+fn default_admin_require_mtls() -> bool {
+    true
 }
 
 /// True iff `addr` (a `host:port` bind string) binds ONLY to the loopback interface, so a service
@@ -2137,16 +2498,29 @@ pub(crate) struct DeployCfg {
     pub(crate) providers_file: Option<String>,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
-    /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless `admin_insecure`.
+    /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
+    /// `admin_require_mtls: false`.
     #[serde(default)]
     pub(crate) admin_tls: Option<TlsCfg>,
-    /// Deliberate waiver of the exposed-admin-requires-mTLS boot-guard. `false` (default) ⇒ a
-    /// non-loopback `admin_listen` without `admin_tls.client_ca_file` REFUSES to boot. `true` ⇒ the
-    /// operator accepts a token-only admin plane on an exposed address (e.g. fronted by a mesh that
-    /// terminates mTLS). Never silently assumed.
-    #[serde(default)]
-    pub(crate) admin_insecure: bool,
-    pub(crate) auth: Option<AuthCfg>,
+    /// TOP-LEVEL boot-policy flag (audit §5): does a network-exposed admin plane REQUIRE mTLS?
+    /// `true` (the DEFAULT) ⇒ a non-loopback `admin_listen` without `admin_tls.client_ca` REFUSES to
+    /// boot. `false` ⇒ the operator deliberately accepts a token-only admin plane on an exposed
+    /// address (mTLS terminated upstream by a mesh). Loopback binds are exempt either way.
+    ///
+    /// 1.5.3 BREAKING: this INVERTS and replaces the retired `admin_insecure:` boolean, so the safe
+    /// posture is what an omitted key gives you. It lives at the TOP LEVEL, not under `admin_tls:`,
+    /// precisely because the mesh case has NO `admin_tls` block at all — nesting it would make the
+    /// waiver unreachable for the deployment that needs it. It is NOT redundant with
+    /// `admin_tls.client_ca`: that says "here is the CA", this says "an exposed plane must have one".
+    #[serde(default = "default_admin_require_mtls")]
+    pub(crate) admin_require_mtls: bool,
+    pub(crate) auth: Option<AuthDeployCfg>,
+    /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3, audit §2): provider NAME →
+    /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from
+    /// `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. Absent ⇒ only the bare built-ins
+    /// (`keys` / `admin-tokens`) are referenceable.
+    #[serde(default, rename = "identity-providers")]
+    pub(crate) identity_providers: IdentityProviders,
     pub(crate) providers: HashMap<String, ProviderDeploy>,
     pub(crate) models: HashMap<String, ModelCfg>,
     /// Pools are optional: a deployment can route to models directly (`/<model>/v1/messages`)
@@ -2183,15 +2557,15 @@ pub(crate) struct DeployCfg {
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub(crate) advanced: AdvancedCfg,
-    /// Optional observability sinks. 1.5.3: only `otlp_url` (tracing) remains here — the request-log
-    /// webhook + Prometheus metrics moved into the built-in EXPORTERS (`export:`, [`ExportCfg`]).
+    /// The top-level `export:` NAMED-DEFINITION map (1.5.3): instance name → [`ExportDefCfg`]. THE
+    /// single telemetry-egress surface. Absent/empty ⇒ collection inert (no recorder, no request-log
+    /// sink, no tracer).
+    ///
+    /// 1.5.3 also DELETED the `observability:` block outright (audit §3): its last remaining field
+    /// (`otlp_url`) is now an `export:` instance with `module: otlp`. A config still carrying
+    /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
-    pub(crate) observability: Option<ObservabilityCfg>,
-    /// The `export:` block — built-in observability exporters (design §2/§7). Absent ⇒ collection
-    /// inert (no recorder, no request-log sink). Replaces `observability.metrics` /
-    /// `observability.request_log_webhook_url` (retired 1.5.3).
-    #[serde(default)]
-    pub(crate) export: Option<ExportCfg>,
+    pub(crate) export: ExportDefs,
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -2593,6 +2967,23 @@ fn default_governance_store() -> String {
 /// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
 /// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
 /// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
+///
+/// # FREEZE BLOCKER A6: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
+///
+/// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
+/// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
+/// referenced by bare name (audit §0). **`secrets:` is deliberately NOT, and must stay that way.**
+///
+/// The reason is that `secrets:` does not configure an INSTANCE. It configures a MODULE's `open()` —
+/// the one-time initialization of the secret backend itself. There is nothing to reference by name:
+/// a `SecretRef` already names its module (`{ module: vault, settings: {…} }`), and the entry here
+/// supplies the module-wide half of that module's configuration. Wrapping it in a named map would
+/// invent an instance identity that no reference site can use, and would then require every
+/// `SecretRef` in the config to be rewritten to point at an instance name instead of a module — a
+/// large break that buys nothing.
+///
+/// This is recorded HERE, on the struct, precisely so nobody later "fixes" the inconsistency: the
+/// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SecretModuleCfg {
@@ -2781,62 +3172,77 @@ pub(crate) struct RateEntryCfg {
     pub(crate) cache_write_utok: f64,
 }
 
-/// Observability sinks. All fields optional; absent = that sink is disabled.
+/// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3, audit §0/§3). The map KEY is the
+/// exporter INSTANCE name; `module:` says which built-in exporter backs it and `settings:` is the
+/// opaque per-module bag — the SAME shape as `hooks:` / `identity-providers:` / `store:`.
 ///
-/// 1.5.3 RETIREMENT (design §2.1, §7): the request-log webhook moved OUT of this block into the
-/// `request-log-webhook` built-in EXPORTER (`export.request-log-webhook`, [`ExportCfg`]). The three
-/// retired keys (`request_log_webhook_url`, `max_inflight_webhook_deliveries`,
-/// `webhook_delivery_timeout_secs`) are gone from this struct, so a config that still carries any of
-/// them LOUD-FAILS at boot/`--validate` (`deny_unknown_fields` + the retired-key markers in
-/// `config::migrate::detect_legacy_markers`); `busbar --migrate-config` rewrites them in place.
-/// Only `otlp_url` (still core, tracing stays built-in per design §2.4) remains here.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(deny_unknown_fields)] // M8: a typo'd observability key must fail boot, not be silently ignored.
-pub(crate) struct ObservabilityCfg {
-    /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`). When set, busbar
-    /// installs an OpenTelemetry tracer + exports spans. C7: URL fields end `_url` (renamed from
-    /// the 1.4.x `otlp_endpoint`).
+/// The whole point of the rename from the retired TYPE-KEYED `export:` block is that the SAME module
+/// may back MULTIPLE named instances: two `request-log-webhook`s shipping to two different URLs is a
+/// real deployment (app logs + SIEM) that the type-keyed shape could not express at all.
+///
+/// The four modules map onto the export-ABI streams (audit §3): `prometheus` → Metrics (PULL
+/// `/metrics`), `request-log-webhook` / `request-log-file` → Logs (PUSH per request), `otlp` →
+/// Traces. `otlp` ABSORBS the DELETED `observability:` block's only remaining field (`otlp_url`), so
+/// `export:` is now the single telemetry-egress surface.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently disable telemetry.
+pub(crate) struct ExportDefCfg {
+    /// The built-in exporter module backing this instance: `prometheus` | `request-log-webhook` |
+    /// `request-log-file` | `otlp` (see [`EXPORT_MODULES`]). An unknown module is a boot error.
+    pub(crate) module: String,
+    /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
+    /// typed per module by [`resolve_export`], so a typo inside it still fails boot loudly.
     #[serde(default)]
-    pub(crate) otlp_url: Option<String>,
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The `export:` block (1.5.3) — the built-in observability EXPORTERS. PRESENCE + settings is the
-/// on/off switch (design §2 "plugin presence is the switch", §7 the lift-out). Each exporter is a
-/// compiled-in built-in module (like the built-in `env`/`file` secret modules) that CONSUMES the
-/// export kind + the plugin HTTP endpoint registration; an absent block = NO exporter = collection
-/// inert (zero-config default byte-identical to before). Replaces the retired
-/// `observability.metrics.*` (→ `prometheus`) and `observability.request_log_webhook_url` + webhook
-/// limits (→ `request-log-webhook`).
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(deny_unknown_fields)] // a typo'd exporter name must fail boot, not silently disable telemetry.
+/// The top-level `export:` NAMED-DEFINITION map: instance name → [`ExportDefCfg`]. Insertion-ordered
+/// so the resolved sink order (and therefore delivery order) is deterministic.
+pub(crate) type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;
+
+/// `export.<name>.module: prometheus` — the PULL metrics exporter (Metrics stream).
+pub(crate) const EXPORT_MODULE_PROMETHEUS: &str = "prometheus";
+/// `export.<name>.module: request-log-webhook` — the PUSH per-request webhook (Logs stream).
+pub(crate) const EXPORT_MODULE_REQUEST_LOG_WEBHOOK: &str = "request-log-webhook";
+/// `export.<name>.module: request-log-file` — the PUSH per-request JSONL append (Logs stream).
+pub(crate) const EXPORT_MODULE_REQUEST_LOG_FILE: &str = "request-log-file";
+/// `export.<name>.module: otlp` — the OTLP/HTTP trace exporter (Traces stream). Absorbs the DELETED
+/// `observability.otlp_url`.
+pub(crate) const EXPORT_MODULE_OTLP: &str = "otlp";
+
+/// Every built-in `export:` module, for the boot-time unknown-module diagnostic.
+pub(crate) const EXPORT_MODULES: &[&str] = &[
+    EXPORT_MODULE_PROMETHEUS,
+    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    EXPORT_MODULE_REQUEST_LOG_FILE,
+    EXPORT_MODULE_OTLP,
+];
+
+/// The RESOLVED `export:` block: the typed, per-module projection [`resolve_export`] lowers the named
+/// definition map into, and the shape every runtime consumer reads. NOT deserialized from YAML (the
+/// on-disk shape is [`ExportDefs`]).
+///
+/// Note the asymmetry, which is deliberate and load-bearing: the two LOG sinks are `Vec`s (multiple
+/// named instances are the whole point of the named map), while `prometheus` and `otlp` are at most
+/// ONE each — `prometheus` owns the single well-known `/metrics` route and `otlp` installs the one
+/// process-global tracer subscriber, so a second instance could not do anything except silently lose.
+/// A second instance of either is therefore a loud boot error, never a silent no-op.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ExportCfg {
-    /// The PULL Prometheus exporter: installs the recorder (collection stays core) and serves
-    /// `/metrics` via the plugin endpoint registration (`handle_http`, design §7.1). Absent ⇒ no
-    /// recorder installed, `/metrics` not mounted, every emit site a true no-op.
-    #[serde(default)]
-    pub(crate) prometheus: Option<PrometheusExportCfg>,
-    /// The PUSH request-log webhook exporter (design §7.2): a per-request POST behind the relocated
-    /// SSRF guard + bounded AdmissionGate. Absent ⇒ no request-log webhook.
-    #[serde(default, rename = "request-log-webhook")]
-    pub(crate) request_log_webhook: Option<WebhookExportCfg>,
-    /// The PUSH request-log FILE exporter: a per-request JSONL append.
-    #[serde(default, rename = "request-log-file")]
-    pub(crate) request_log_file: Option<FileExportCfg>,
-    /// The generic webhook exporter (logs + audit) — the same SSRF guard + AdmissionGate machinery as
-    /// `request-log-webhook`, plus a configurable auth header.
-    #[serde(default, rename = "generic-webhook")]
-    pub(crate) generic_webhook: Option<GenericWebhookExportCfg>,
+    /// The `prometheus` instance's settings, if one is configured. `None` ⇒ no recorder installed,
+    /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
+    pub(crate) prometheus: Option<PrometheusSettings>,
+    /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
+    pub(crate) request_log_webhooks: Vec<WebhookSettings>,
+    /// Every configured `request-log-file` instance, in config order. Empty ⇒ no file sink.
+    pub(crate) request_log_files: Vec<FileSettings>,
+    /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
+    pub(crate) otlp: Option<OtlpSettings>,
 }
 
-/// `export.prometheus` — the PULL metrics exporter.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PrometheusExportCfg {
-    pub(crate) settings: PrometheusSettings,
-}
-
-/// `export.prometheus.settings` — relocated from the retired `observability.metrics` block.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// `settings:` of an `export.<name>.module: prometheus` instance — relocated from the retired
+/// `observability.metrics` block.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrometheusSettings {
     /// Retention window (SECONDS) for the rolling quantile summary — REQUIRED, exactly as the retired
@@ -2847,37 +3253,33 @@ pub(crate) struct PrometheusSettings {
     pub(crate) key_gauge_limit: usize,
 }
 
-/// `export.request-log-webhook` — the PUSH request-log webhook exporter.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct WebhookExportCfg {
-    pub(crate) settings: WebhookSettings,
-}
-
-/// `export.request-log-webhook.settings` — relocated from the retired `observability` webhook keys.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
+/// `observability` webhook keys. Also absorbs the retired `generic-webhook` exporter: its ONLY extra
+/// over this one was `auth_header:`, which is now just a setting here, and its other reason to exist
+/// (a SECOND webhook target) is what the named-instance map itself provides.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WebhookSettings {
     /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded (relocated from the retired
     /// `observability.request_log_webhook_url`).
     pub(crate) url: String,
+    /// An optional auth header applied to every delivery from THIS instance (e.g.
+    /// `{ name: Authorization, value: "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's
+    /// `${VAR}` env interpolation, so a secret is never stored literally.
+    #[serde(default)]
+    pub(crate) auth_header: Option<ExportAuthHeader>,
     /// Max concurrent deliveries (default 64) — relocated from `max_inflight_webhook_deliveries`.
     #[serde(default = "default_max_inflight_webhook_deliveries")]
     pub(crate) max_inflight_deliveries: usize,
     /// Per-delivery timeout (seconds, default 2) — relocated from `webhook_delivery_timeout_secs`.
+    /// Applied PER INSTANCE (each sink carries its own deadline), which is what having named
+    /// instances is for.
     #[serde(default = "default_webhook_delivery_timeout_secs")]
     pub(crate) delivery_timeout_secs: u64,
 }
 
-/// `export.request-log-file` — the PUSH request-log file exporter.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FileExportCfg {
-    pub(crate) settings: FileSettings,
-}
-
-/// `export.request-log-file.settings`.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// `settings:` of an `export.<name>.module: request-log-file` instance.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FileSettings {
     /// The JSONL file path each request-log line is appended to — REQUIRED.
@@ -2887,37 +3289,99 @@ pub(crate) struct FileSettings {
     pub(crate) rotate_mb: Option<u64>,
 }
 
-/// `export.generic-webhook` — the generic (logs + audit) webhook exporter.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
+/// `observability.otlp_url` (audit §3). The tracer/log-init machinery in `crate::observability` is
+/// unchanged; only the config surface that drives it moved.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GenericWebhookExportCfg {
-    pub(crate) settings: GenericWebhookSettings,
-}
-
-/// `export.generic-webhook.settings` — the same SSRF/AdmissionGate machinery as the request-log
-/// webhook plus a configurable auth header.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GenericWebhookSettings {
-    /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded.
+pub(crate) struct OtlpSettings {
+    /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`) — REQUIRED. When an
+    /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
     pub(crate) url: String,
-    /// An optional auth header applied to every delivery (e.g. `{ name: Authorization, value:
-    /// "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's `${VAR}` env interpolation, so a
-    /// secret is never stored literally.
-    #[serde(default)]
-    pub(crate) auth_header: Option<GenericAuthHeader>,
-    #[serde(default = "default_max_inflight_webhook_deliveries")]
-    pub(crate) max_inflight_deliveries: usize,
-    #[serde(default = "default_webhook_delivery_timeout_secs")]
-    pub(crate) delivery_timeout_secs: u64,
 }
 
-/// One `{ name, value }` auth header for the generic webhook exporter.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// One `{ name, value }` auth header for a webhook export instance.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GenericAuthHeader {
+pub(crate) struct ExportAuthHeader {
     pub(crate) name: String,
     pub(crate) value: String,
+}
+
+/// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
+/// Errors are ACCUMULATED (not short-circuited) so `--validate` reports every bad exporter at once,
+/// the same posture `resolve` takes everywhere else.
+///
+/// Enforced here:
+/// - an unknown `module:` is a boot error naming the four built-ins (never a silently-ignored sink);
+/// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
+///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
+/// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
+///   process-singleton by construction and a second one could only lose silently).
+pub(crate) fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
+    let mut out = ExportCfg::default();
+    // The instance name that already claimed each singleton module, for the "named twice" diagnostic.
+    let mut prometheus_owner: Option<&str> = None;
+    let mut otlp_owner: Option<&str> = None;
+
+    for (name, def) in defs {
+        let settings = serde_json::Value::Object(def.settings.clone());
+        // Parse the opaque bag into this module's typed settings struct. One helper so every module
+        // produces the identical `export.<name>.settings: …` error prefix.
+        macro_rules! typed {
+            ($t:ty) => {
+                match serde_json::from_value::<$t>(settings) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        errors.push(format!("export.{name}.settings: {e}"));
+                        None
+                    }
+                }
+            };
+        }
+        match def.module.trim() {
+            EXPORT_MODULE_PROMETHEUS => {
+                if let Some(owner) = prometheus_owner {
+                    errors.push(format!(
+                        "export.{name}: a second `module: prometheus` instance (already defined as \
+                         '{owner}'). Prometheus serves the ONE well-known /metrics route, so a \
+                         second instance could only be silently ignored — keep a single instance."
+                    ));
+                    continue;
+                }
+                prometheus_owner = Some(name);
+                out.prometheus = typed!(PrometheusSettings);
+            }
+            EXPORT_MODULE_REQUEST_LOG_WEBHOOK => {
+                if let Some(v) = typed!(WebhookSettings) {
+                    out.request_log_webhooks.push(v);
+                }
+            }
+            EXPORT_MODULE_REQUEST_LOG_FILE => {
+                if let Some(v) = typed!(FileSettings) {
+                    out.request_log_files.push(v);
+                }
+            }
+            EXPORT_MODULE_OTLP => {
+                if let Some(owner) = otlp_owner {
+                    errors.push(format!(
+                        "export.{name}: a second `module: otlp` instance (already defined as \
+                         '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
+                         second instance could only be silently ignored — keep a single instance."
+                    ));
+                    continue;
+                }
+                otlp_owner = Some(name);
+                out.otlp = typed!(OtlpSettings);
+            }
+            other => errors.push(format!(
+                "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
+                 {}",
+                EXPORT_MODULES.join(" | ")
+            )),
+        }
+    }
+    out
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -3270,8 +3734,10 @@ pub(crate) struct LimitsResolved {
     pub(crate) max_honored_retry_after_secs: u64,
     pub(crate) default_max_tokens: u32,
     pub(crate) reasoning_effort_budgets: ReasoningEffortBudgets,
+    /// The SHARED webhook-delivery admission bound (max across every configured
+    /// `request-log-webhook` export instance — see `LimitsResolved::from_sections`). The per-delivery
+    /// TIMEOUT is deliberately NOT here: it is per instance on [`WebhookSettings`].
     pub(crate) max_inflight_webhook_deliveries: usize,
-    pub(crate) webhook_delivery_timeout_secs: u64,
     pub(crate) key_gauge_limit: usize,
     pub(crate) rate_sweep_interval: u32,
     pub(crate) usage_flush_interval_ms: u64,
@@ -3292,7 +3758,6 @@ impl Default for LimitsResolved {
     fn default() -> Self {
         Self::from_sections(
             &LimitsCfg::default(),
-            &ObservabilityCfg::default(),
             &AdvancedCfg::default(),
             &ExportCfg::default(),
             &HealthDefaultsCfg::default(),
@@ -3304,7 +3769,6 @@ impl Default for LimitsResolved {
 impl LimitsResolved {
     fn from_sections(
         limits: &LimitsCfg,
-        _obs: &ObservabilityCfg,
         advanced: &AdvancedCfg,
         export: &ExportCfg,
         health: &HealthDefaultsCfg,
@@ -3313,26 +3777,25 @@ impl LimitsResolved {
         // 1.5.3: the webhook + gauge limits moved from the retired `observability.*`/`metrics.*` keys
         // onto the built-in EXPORTER settings. Source them from `export.*` (historical defaults when
         // the exporter is absent) so the deep `crate::limits` readers (metrics gauge cap, webhook
-        // timeout) are unchanged while the CONFIG SURFACE they read from is the new one.
-        let (max_inflight_webhook_deliveries, webhook_delivery_timeout_secs) = export
-            .request_log_webhook
-            .as_ref()
-            .map(|w| {
-                (
-                    w.settings.max_inflight_deliveries,
-                    w.settings.delivery_timeout_secs,
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    default_max_inflight_webhook_deliveries(),
-                    default_webhook_delivery_timeout_secs(),
-                )
-            });
+        // admission bound) are unchanged while the CONFIG SURFACE they read from is the new one.
+        //
+        // `max_inflight_webhook_deliveries` seeds ONE shared `AdmissionGate` across every webhook
+        // instance, so with several named instances it takes the MAXIMUM of the CONFIGURED values:
+        // the shared bound must accommodate the most permissive sink, or a generous instance would be
+        // silently throttled by a stingy sibling. No instances ⇒ the historical default. (The
+        // per-delivery TIMEOUT needs no such reconciliation and is NOT projected here: it is applied
+        // per instance off `WebhookSettings::delivery_timeout_secs` at the delivery site, and bounds
+        // -checked per instance by `config_validate` — which is what named instances are FOR.)
+        let max_inflight_webhook_deliveries = export
+            .request_log_webhooks
+            .iter()
+            .map(|w| w.max_inflight_deliveries)
+            .max()
+            .unwrap_or_else(default_max_inflight_webhook_deliveries);
         let key_gauge_limit = export
             .prometheus
             .as_ref()
-            .map_or_else(default_key_gauge_limit, |p| p.settings.key_gauge_limit);
+            .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
         Self {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
@@ -3349,7 +3812,6 @@ impl LimitsResolved {
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             max_inflight_webhook_deliveries,
-            webhook_delivery_timeout_secs,
             key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
@@ -3410,21 +3872,25 @@ pub(crate) fn resolve(
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
 
-    // `export.prometheus.settings.buffer_seconds: 0` would ask busbar to retain observations for no
+    // Lower the `export:` NAMED-DEFINITION map into the typed per-module projection. Unknown modules,
+    // bad settings, and duplicate singleton instances land in `errors` here.
+    let export = resolve_export(&deploy.export, &mut errors);
+
+    // A prometheus instance with `buffer_seconds: 0` would ask busbar to retain observations for no
     // time at all: the rolling window is empty at every scrape, so `/metrics` renders quantiles over
     // nothing while the hot path still pays the full recording cost — opted-in metrics that report
-    // nothing. Omitting the `export.prometheus` block is how collection is turned OFF; `0` is not
-    // that, so it fails boot loudly rather than silently producing an inert collector.
-    if deploy
-        .export
+    // nothing. Omitting the instance is how collection is turned OFF; `0` is not that, so it fails
+    // boot loudly rather than silently producing an inert collector.
+    if export
+        .prometheus
         .as_ref()
-        .and_then(|e| e.prometheus.as_ref())
-        .is_some_and(|p| p.settings.buffer_seconds == 0)
+        .is_some_and(|p| p.buffer_seconds == 0)
     {
         errors.push(
-            "export.prometheus.settings.buffer_seconds: 0 retains no observations, so every scrape \
-             would report empty quantiles while still paying the recording cost — name a positive \
-             retention window in seconds, or omit the `export.prometheus` block to turn metrics off"
+            "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which \
+             retains no observations — every scrape would report empty quantiles while still paying \
+             the recording cost. Name a positive retention window in seconds, or remove the \
+             instance to turn metrics off"
                 .to_string(),
         );
     }
@@ -3502,7 +3968,14 @@ pub(crate) fn resolve(
     // each pool's own bare names populate `pool.gates`. An unresolvable/wrong-kind plugin behind a
     // `module:` is a FAIL-CLOSED plugin-preflight error (like a store/auth ref).
     let mut hooks_registry: HashMap<String, HookCfg> = HashMap::new();
-    let pools = deploy.pools.pools.clone();
+    let mut pools = deploy.pools.pools.clone();
+    // FREEZE BLOCKER A4 — additive-list DEDUPE. A hook named in BOTH `pools.hooks:` and a pool's own
+    // `hooks:` fires ONCE, at its FIRST (section-level) position. The section list is fired through
+    // `App::global_gates` and the pool's own through `PoolRuntime::gates`, so the dedupe is applied
+    // to the POOL half here, at the single lowering point — see [`entity_only_hook_refs`].
+    for pool in pools.values_mut() {
+        pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
+    }
     for (name, def) in &deploy.hooks {
         if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
             errors.push(format!(
@@ -3527,8 +4000,10 @@ pub(crate) fn resolve(
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
     // behind a bearer token alone. Loopback binds are safe (unreachable off-host); an explicit
-    // `admin_insecure: true` waives the guard for operators fronting admin with a mesh that
+    // `admin_require_mtls: false` waives the guard for operators fronting admin with a mesh that
     // terminates mTLS. Anything else that would expose admin without a client CA refuses to boot.
+    // 1.5.3: the flag INVERTED (`admin_insecure: true` → `admin_require_mtls: false`); the BEHAVIOR
+    // below is byte-identical, only the spelling of the waiver changed.
     {
         let admin_listen = &deploy.admin_listen;
         let exposed = !bind_is_loopback(admin_listen);
@@ -3536,15 +4011,31 @@ pub(crate) fn resolve(
             .admin_tls
             .as_ref()
             .is_some_and(|t| t.client_ca.is_some());
-        if exposed && !has_client_mtls && !deploy.admin_insecure {
+        if exposed && !has_client_mtls && deploy.admin_require_mtls {
             errors.push(format!(
                 "admin_listen '{admin_listen}' is network-exposed but the admin plane has no mTLS \
                  (admin_tls.client_ca is unset). Require client certificates by supplying \
-                 admin_tls.client_ca, bind admin_listen to loopback, or set admin_insecure: \
-                 true to deliberately run a token-only admin plane (e.g. behind a mesh)."
+                 admin_tls.client_ca, bind admin_listen to loopback, or set admin_require_mtls: \
+                 false to deliberately run a token-only admin plane (e.g. behind a mesh)."
             ));
         }
     }
+
+    // Join every `auth.chain:`/`auth.admin_auth:` NAME to its `identity-providers:` definition
+    // (audit §2 — define once, reference by name). Dangling references land in `errors`.
+    let resolved_auth = deploy
+        .auth
+        .as_ref()
+        .map(|a| resolve_auth(a, &deploy.identity_providers, &mut errors));
+    let admin_auth_names: Vec<String> = resolved_auth.as_ref().map_or_else(
+        || {
+            default_admin_auth()
+                .iter()
+                .map(|e| e.name.clone())
+                .collect()
+        },
+        |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
+    );
 
     if errors.is_empty() {
         Ok(RootCfg {
@@ -3553,23 +4044,19 @@ pub(crate) fn resolve(
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),
-            auth: deploy.auth.clone(),
+            auth: resolved_auth,
             providers: resolved_providers,
             models: deploy.models.clone(),
             pools,
+            upstream_credentials: deploy
+                .pools
+                .all_pool_upstream_credentials
+                .unwrap_or_default(),
             hooks: hooks_registry,
-            // The admin chain module names, from `auth.admin_auth:` (default `[admin-tokens]`
-            // when the whole `auth:` block is absent).
-            admin_auth: deploy
-                .auth
-                .as_ref()
-                .map(|a| a.admin_auth.iter().map(|e| e.module.clone()).collect())
-                .unwrap_or_else(|| {
-                    default_admin_auth()
-                        .iter()
-                        .map(|e| e.module.clone())
-                        .collect()
-                }),
+            // The admin chain PROVIDER NAMES, from `auth.admin_auth:` (default `[admin-tokens]`
+            // when the whole `auth:` block is absent). 1.5.3: the runtime identity of an admin chain
+            // entry is its provider NAME (what `role_bindings.<name>` binds), not its module.
+            admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
@@ -3591,18 +4078,17 @@ pub(crate) fn resolve(
                 .as_ref()
                 .map(|s| s.allow_all_metadata)
                 .unwrap_or(false),
-            // Project the operational-limit sections onto a flat resolved struct. The
-            // `observability:` / `advanced:` blocks are optional; absent ⇒ their section defaults
-            // (the historical hardcoded values, via the manual `Default` impls).
+            // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
+            // `export:` blocks are optional; absent ⇒ their section defaults (the historical
+            // hardcoded values, via the manual `Default` impls).
             limits: LimitsResolved::from_sections(
                 &deploy.limits,
-                &deploy.observability.clone().unwrap_or_default(),
                 &deploy.advanced,
-                &deploy.export.clone().unwrap_or_default(),
+                &export,
                 &deploy.health,
                 &deploy.routing,
             ),
-            export: deploy.export.clone().unwrap_or_default(),
+            export,
         })
     } else {
         Err(errors)

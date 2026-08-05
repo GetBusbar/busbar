@@ -76,6 +76,9 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
 
     let mut cfg = AuthCfg::default_none();
     let mut method = crate::config::AuthMethodCfg {
+        // 1.5.3/A7: the resolved method carries the PROVIDER's `module:` — the plugin it opens —
+        // separately from the map key, which is the provider NAME.
+        module: "acme-auth-static".into(),
         browser_login: Some(crate::config::BrowserLoginCfg {
             client_secret: Some(crate::config::SecretRef::env("BUSBAR_TEST_CLIENT_SECRET")),
             client_id: Some("client-abc".into()),
@@ -408,7 +411,11 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
-            assert_eq!(module, "static-auth", "role_bindings key = module.name()");
+            // 1.5.3 (audit §2): the verdict reports the IDENTITY-PROVIDER NAME — the
+            // `identity-providers:` key the chain referenced — NOT the plugin's own self-reported
+            // name. That is what makes two NAMED providers backed by one module independently
+            // bindable (`role_bindings.<name>`) instead of silently collapsing onto one identity.
+            assert_eq!(module, "my-auth", "role_bindings key = the PROVIDER NAME");
             assert_eq!(principal.id, "alice");
             assert_eq!(principal.roles, vec!["platform".to_string()]);
         }
@@ -758,10 +765,13 @@ impl busbar_api::AuthModule for BlockingModule {
 fn a_blocking_auth_plugin_does_not_park_the_reactor() {
     let (tx, entered) = std::sync::mpsc::channel();
     let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![Box::new(BlockingModule {
-            entered: tx,
-            hold: std::time::Duration::from_secs(3),
-        })],
+        vec![(
+            "blocking".to_string(),
+            Box::new(BlockingModule {
+                entered: tx,
+                hold: std::time::Duration::from_secs(3),
+            }) as Box<dyn crate::auth::AuthModule>,
+        )],
         /* has_plugin_module = */ true,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
@@ -802,7 +812,10 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
 #[test]
 fn an_in_process_chain_is_not_offloaded() {
     let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![Box::new(crate::auth::TestGroupsModule)],
+        vec![(
+            "test-groups-module".to_string(),
+            Box::new(crate::auth::TestGroupsModule) as Box<dyn crate::auth::AuthModule>,
+        )],
         /* has_plugin_module = */ false,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
@@ -889,7 +902,10 @@ impl busbar_api::AuthModule for CacheableIdentify {
 #[test]
 fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass)],
+        vec![(
+            "cacheable-pass".to_string(),
+            Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+        )],
         /* has_plugin_module = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
@@ -911,7 +927,16 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
 #[test]
 fn a_rejected_chain_admits_nothing_to_the_cache() {
     let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass), Box::new(CacheableReject)],
+        vec![
+            (
+                "cacheable-pass".to_string(),
+                Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+            ),
+            (
+                "cacheable-reject".to_string(),
+                Box::new(CacheableReject) as Box<dyn crate::auth::AuthModule>,
+            ),
+        ],
         /* has_plugin_module = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
@@ -935,7 +960,10 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
 #[test]
 fn pass_churn_cannot_evict_an_identity() {
     let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass)],
+        vec![(
+            "cacheable-pass".to_string(),
+            Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+        )],
         /* has_plugin_module = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
@@ -975,7 +1003,16 @@ fn pass_churn_cannot_evict_an_identity() {
 #[test]
 fn an_identified_chain_still_caches_the_leading_pass() {
     let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass), Box::new(CacheableIdentify)],
+        vec![
+            (
+                "cacheable-pass".to_string(),
+                Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+            ),
+            (
+                "cacheable-identify".to_string(),
+                Box::new(CacheableIdentify) as Box<dyn crate::auth::AuthModule>,
+            ),
+        ],
         /* has_plugin_module = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();

@@ -753,6 +753,7 @@ async fn test_failover_exclusions_remove_member_from_pool() {
         .pool_runtime(
             "pe",
             crate::state::PoolRuntime {
+                upstream_credentials: None,
                 members: Default::default(),
                 failover: Some(crate::config::FailoverCfg {
                     timeout_secs: 120,
@@ -879,7 +880,6 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     let token = "grp:metrics-scrapers";
     let auth_cfg = crate::config::AuthCfg {
         chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
         ..crate::config::AuthCfg::default_none()
     };
     let app = TestApp::new()
@@ -2234,11 +2234,6 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     let server = MockServer::new(state.clone()).await;
 
     // Scenario A: Passthrough mode — lane should NOT be tripped
-    let auth_cfg_passthrough = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        ..crate::config::AuthCfg::default_none()
-    };
     let app_passthrough = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2249,7 +2244,9 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
             .api_key("busbar-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_passthrough)))
+        // 1.5.3 (audit §4): the passthrough EGRESS posture is the `pools:`-level
+        // `upstream_credentials:`, independent of the (open) front-door chain.
+        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .build();
 
     // Scenario A response: pushed immediately before the forward() that consumes it.
@@ -2298,7 +2295,6 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
 
     let auth_cfg_token = AuthCfg {
         chain: vec![crate::config::AuthChainEntry::bare("keys")],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
         ..crate::config::AuthCfg::default_none()
     };
     let app_token = TestApp::new()
@@ -2407,11 +2403,6 @@ async fn test_passthrough_forwards_caller_token() {
 
     let server = MockServer::new(state.clone()).await;
 
-    let auth_cfg_passthrough = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        ..crate::config::AuthCfg::default_none()
-    };
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -2422,7 +2413,9 @@ async fn test_passthrough_forwards_caller_token() {
             .api_key("busbar-central-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_passthrough)))
+        // 1.5.3 (audit §4): the passthrough EGRESS posture is the `pools:`-level
+        // `upstream_credentials:`, independent of the (open) front-door chain.
+        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .build();
 
     // Caller's Bearer token (NOT busbar's key)
@@ -3433,6 +3426,7 @@ mod disposition_matrix_tests {
             attempt_timeout_ms: None,
         };
         let pool = crate::config::PoolCfg {
+            upstream_credentials: None,
             members: vec![crate::config::PoolMember {
                 reasoning: None,
                 model: "m".into(),
@@ -3474,6 +3468,7 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
+                upstream_credentials: crate::auth::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,

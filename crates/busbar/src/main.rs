@@ -783,10 +783,11 @@ async fn run() {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
 
-    // Optional observability sinks; grab before `deploy` is borrowed by resolve.
-    let observability_cfg = deploy.observability.clone().unwrap_or_default();
+    // The OTLP trace sink — 1.5.3: no longer an `observability:` block, but the `module: otlp`
+    // instance of the `export:` NAMED map (audit §3). Grabbed before `deploy` is borrowed by resolve.
+    let otlp_cfg = config::resolve_export(&deploy.export, &mut Vec::new()).otlp;
     // task #139: the `advanced.response_headers:` toggles (BOTH default false), read here — same
-    // BOOT-ONCE spot as `observability_cfg` above, for the same reason: `server_timing` is baked into
+    // BOOT-ONCE spot as `otlp_cfg` above, for the same reason: `server_timing` is baked into
     // router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
     // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
@@ -800,12 +801,16 @@ async fn run() {
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
     // process. Called before the App/router is built so the `/metrics` plugin route (DISTRIBUTION, via
     // the built-in exporter) sees a settled recorder decision.
+    // 1.5.3: `export:` is a NAMED-DEFINITION map, so the typed per-module projection is lowered here
+    // (and reused for `export::configure` below). Any error in it — unknown module, bad settings,
+    // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
+    // the same lowering; discarding the error list here just avoids reporting it twice.
+    let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     metrics::configure(
-        deploy
-            .export
+        resolved_export
+            .prometheus
             .as_ref()
-            .and_then(|e| e.prometheus.as_ref())
-            .map(|p| Duration::from_secs(p.settings.buffer_seconds)),
+            .map(|p| Duration::from_secs(p.buffer_seconds)),
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
@@ -822,7 +827,7 @@ async fn run() {
 
     // Install the tracing subscriber now (stderr fmt always; OTLP export if configured) so all
     // subsequent startup and request-path logging is captured.
-    observability::init_logging(observability_cfg.otlp_url.as_deref());
+    observability::init_logging(otlp_cfg.as_ref().map(|o| o.url.as_str()));
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -945,14 +950,12 @@ async fn run() {
          re-learned from live traffic"
     );
 
-    // Configure the built-in request-log EXPORTERS (webhook / file / generic) from the `export:`
-    // block, reusing the pooled client for webhook delivery. No-op when no request-log sink is
-    // configured (the default). The recorder-installing `prometheus` exporter is wired separately
-    // (`metrics::configure` above + the `/metrics` plugin route in `build_app_from_config`).
-    export::configure(
-        &deploy.export.clone().unwrap_or_default(),
-        app.client.get().clone(),
-    );
+    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` /
+    // `request-log-file` instance) from the resolved `export:` block, reusing the pooled client for
+    // webhook delivery. No-op when no request-log sink is configured (the default). The
+    // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
+    // the `/metrics` plugin route in `build_app_from_config`).
+    export::configure(&resolved_export, app.client.get().clone());
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. Re-spawned on every config reload/apply (see the admin
@@ -3104,6 +3107,9 @@ pub(crate) fn build_app_from_config(
             pool_name.clone(),
             state::PoolRuntime {
                 failover: pool_cfg.failover.clone(),
+                // 1.5.3 (audit §4): the pool's own `upstream_credentials:` OVERRIDES the all-pools
+                // `pools.upstream_credentials:` default; `None` inherits it.
+                upstream_credentials: pool_cfg.upstream_credentials,
                 affinity: pool_cfg.affinity.clone(),
                 breaker: pool_cfg.breaker.as_ref().map(store::BreakerCfg::from),
                 // Operator-declared member metadata (tier/cost/tags) keyed by lane idx, for the
@@ -3416,6 +3422,8 @@ pub(crate) fn build_app_from_config(
     };
 
     let app = App {
+        // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`, audit §4).
+        upstream_credentials: cfg.upstream_credentials,
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.

@@ -5,15 +5,13 @@
 //! registration (design §7.1), gated on `export.prometheus` presence.
 
 use super::*;
-use crate::config::{ExportCfg, PrometheusExportCfg, PrometheusSettings};
+use crate::config::{ExportCfg, PrometheusSettings};
 
 fn cfg_with_prometheus() -> ExportCfg {
     ExportCfg {
-        prometheus: Some(PrometheusExportCfg {
-            settings: PrometheusSettings {
-                buffer_seconds: 60,
-                key_gauge_limit: 2000,
-            },
+        prometheus: Some(PrometheusSettings {
+            buffer_seconds: 60,
+            key_gauge_limit: 2000,
         }),
         ..Default::default()
     }

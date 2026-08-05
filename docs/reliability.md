@@ -31,14 +31,16 @@ The following config creates a production-like setup: a weighted primary pool wi
 ```yaml
 listen: "0.0.0.0:8080"
 
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
 auth:
   chain:
     - keys                                 # built-in signed-key verifier: callers present minted keys
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
   #                                                        # generate with `busbar --generate-signing-key`,
   #                                                        # fleet-shared across every node
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]           # a bare PROVIDER NAME (defined above)
 
 groups:
   search-team:

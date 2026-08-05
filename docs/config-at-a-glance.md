@@ -18,7 +18,7 @@ boot.
 ```yaml
 listen: "0.0.0.0:8080"          # data-plane bind
 admin_listen: "127.0.0.1:8081"  # admin-plane bind (always its own listener; loopback by default)
-admin_insecure: false           # waive the "exposed admin requires mTLS" boot guard (opt-in)
+admin_require_mtls: true           # waive the "exposed admin requires mTLS" boot guard (opt-in)
 
 tls:                            # absent = plain HTTP. Each field is a SECRET REFERENCE.  → #tls
   cert: { file: /run/secrets/tls-cert.pem }
@@ -51,18 +51,26 @@ Referenced below wherever a section names a `module:` outside the built-in defau
 ## Identity — [`auth`](configuration.md#auth)
 
 ```yaml
+identity-providers:             # DEFINE each IdP ONCE; every chain references it BY BARE NAME
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  oidc:
+    module: oidc                # a kind:auth plugin
+    settings: { issuer: "https://login.example/" }
+    max_admin_scope: none       # per-provider ADMIN ceiling; omitted = read-only (most restrictive)
+
 auth:
-  chain: [keys]                 # ordered DATA-PLANE auth. `keys` = built-in signed-key verifier;
-                                # any other name loads a kind:auth plugin (e.g. oidc). [] = open (dev)
-  admin_auth:                   # chain gating /api/v1/admin/*
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }   # the operator credential (secret ref)
-  upstream_credentials: own     # own (default) | passthrough (forward the caller's key upstream)
+  chain: [keys, oidc]           # ordered DATA-PLANE auth, as bare PROVIDER NAMES.
+                                # `keys` = built-in signed-key verifier. [] = open (dev)
+  admin_auth: [admin-tokens]    # chain gating /api/v1/admin/*
   signing_key: { file: /run/secrets/busbar-signing.key }     # REQUIRED with keys; no auto-gen
   #                                                          # (`busbar --generate-signing-key`)
-  role_bindings:                # role → policy, NESTED BY MODULE (for kind:auth / IdP modules)
+  role_bindings:                # role → policy, NESTED BY PROVIDER NAME
     oidc:
       platform: { group: acme, admin_scope: full }   # admin_scope: read-only|full
 ```
+
+`upstream_credentials` is NOT here: whose key hits the provider is a ROUTING property, so it lives at
+`pools.upstream_credentials` (all-pools default) with a per-pool override.
 
 Keys themselves are **minted over the admin API** (`POST /api/v1/admin/keys`), not configured — a
 minted key is a signed, expiring token bound to at most one group. See
@@ -141,8 +149,10 @@ global_hooks:                               # hook instances firing on EVERY req
 ```yaml
 security:                       # SSRF metadata denylist tuning  → #security
   { allow_metadata_hosts: [], allow_all_metadata: false }
-observability:                  # opt-in sinks  → #observability
-  { otlp_url: null, request_log_webhook_url: null }
+export:                         # THE telemetry-egress surface: <name>: {module, settings}  → #export
+  metrics: { module: prometheus,          settings: { buffer_seconds: 60 } }
+  req-log: { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
+  traces:  { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
 limits:                         # global operational caps  → #limits
   { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
 health:                         # process-wide probe fallbacks  → #health-probing

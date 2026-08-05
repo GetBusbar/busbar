@@ -58,24 +58,29 @@ only ever mint their own key.
 1. Install an auth method plugin: [OIDC](/plugins/auth/oidc/),
    [GitHub](/plugins/auth/github/), or [LDAP](/plugins/auth/ldap/).
 2. Set **`public_url`** to the base developers' browsers actually reach.
-3. Declare the method under **`auth.methods`**:
+3. Declare the provider under **`identity-providers:`** with a `browser_login:` block. (1.5.3: the
+   retired parallel `auth.methods:` map folded into the provider definition — a client id/secret
+   belongs to ONE IdP registration, so it belongs on that provider.)
 
 ```yaml
 public_url: "https://busbar.example.com"     # busbar builds /auth/token against this
-auth:
-  key_ttl: 90d                               # issued-key lifetime (admin-set; default 90d)
-  methods:
-    oidc:
+identity-providers:
+  oidc:
+    module: oidc
+    settings:
       issuer:   "https://login.microsoftonline.com/<tenant>/v2.0"
       audience: "<client-id>"
-      browser_login:                         # presence turns on the hosted sign-in button;
-        client_secret: { env: OIDC_CLIENT_SECRET }   # omit the block for headless-only
+    browser_login:                           # presence turns on the hosted sign-in button;
+      client_secret: { env: OIDC_CLIENT_SECRET }   # omit the block for headless-only
+auth:
+  key_ttl: 90d                               # issued-key lifetime (admin-set; default 90d)
+  chain: [keys, oidc]                        # reference the provider BY BARE NAME
   role_bindings:
-    oidc:
+    oidc:                                    # NESTED BY PROVIDER NAME
       "<sso-group>": { group: engineering }  # which team's child_default budgets each dev
 ```
 
-That's the shape — **full per-method config** (issuer, audience, claim mapping, IdP
+That's the shape — **full per-provider config** (issuer, audience, claim mapping, IdP
 walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
 [GitHub](/plugins/auth/github/) · [LDAP](/plugins/auth/ldap/).
 

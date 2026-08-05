@@ -46,10 +46,11 @@ fn base_deploy() -> DeployCfg {
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
         admin_tls: None,
-        admin_insecure: false,
+        admin_require_mtls: true,
         config: Default::default(),
         providers_file: None,
         auth: None,
+        identity_providers: Default::default(),
         providers: HashMap::new(),
         models: HashMap::new(),
         pools: Default::default(),
@@ -60,11 +61,10 @@ fn base_deploy() -> DeployCfg {
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
-        observability: None,
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
-        export: None,
+        export: Default::default(),
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
     }
@@ -192,8 +192,12 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
         ("token: \"sk-bb-legacy\"", "token"),
         ("client_tokens: [\"sk-bb-legacy\"]", "client_tokens"),
         ("modules:\n  sso:\n    allowed_groups: [eng]", "modules"),
+        // 1.5.3 removals: the credential mode moved to `pools.upstream_credentials` (audit §4) and
+        // the hosted-login block folded into the `identity-providers:` definition (freeze blocker A7).
+        ("upstream_credentials: passthrough", "upstream_credentials"),
+        ("methods:\n  oidc:\n    issuer: https://idp", "methods"),
     ] {
-        let err = serde_yaml::from_str::<AuthCfg>(yaml)
+        let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(yaml)
             .expect_err("a removed auth key must be rejected at parse");
         let msg = err.to_string();
         assert!(
@@ -294,23 +298,36 @@ fn test_removed_key_aliases_are_rejected() {
     assert_eq!(new.max_hops, 5);
 }
 
-/// C7 rename: `observability.otlp_endpoint` is now `otlp_url`. The new spelling parses; the old
-/// one is an unknown-field error (deny_unknown_fields).
+/// 1.5.3 §3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
+/// 1.4.x `otlp_endpoint`) is now the `settings.url` of an `export:` instance with `module: otlp`.
+/// The new spelling resolves; the 1.4.x key inside the settings bag is rejected (`OtlpSettings` is
+/// `deny_unknown_fields`), so the retirement is loud rather than a silently-dropped trace sink.
+///
+/// RED-BEFORE-GREEN: before this unit `otlp_url` was an `ObservabilityCfg` field and there was no
+/// `otlp` export module at all, so neither half of this compiled.
 #[test]
-fn test_observability_otlp_url_rename() {
-    let cfg: ObservabilityCfg =
-        serde_yaml::from_str("otlp_url: \"http://localhost:4318/v1/traces\"")
-            .expect("otlp_url parses");
+fn test_otlp_folds_into_an_export_instance() {
+    let defs: crate::config::ExportDefs = serde_yaml::from_str(
+        "traces:\n  module: otlp\n  settings: { url: \"http://localhost:4318/v1/traces\" }\n",
+    )
+    .expect("an otlp export instance parses");
+    let mut errors = Vec::new();
+    let export = crate::config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
-        cfg.otlp_url.as_deref(),
+        export.otlp.as_ref().map(|o| o.url.as_str()),
         Some("http://localhost:4318/v1/traces")
     );
-    let err = serde_yaml::from_str::<ObservabilityCfg>("otlp_endpoint: \"http://localhost:4318\"")
-        .expect_err("the removed otlp_endpoint key must be rejected");
-    let msg = err.to_string();
+
+    let defs: crate::config::ExportDefs = serde_yaml::from_str(
+        "traces:\n  module: otlp\n  settings: { otlp_endpoint: \"http://localhost:4318\" }\n",
+    )
+    .expect("the outer instance shape still parses (settings is an opaque bag)");
+    let mut errors = Vec::new();
+    let _ = crate::config::resolve_export(&defs, &mut errors);
     assert!(
-        msg.contains("unknown field") && msg.contains("otlp_endpoint"),
-        "{msg}"
+        errors.iter().any(|e| e.contains("otlp_endpoint")),
+        "the 1.4.x otlp_endpoint key must be rejected inside otlp settings; got {errors:?}"
     );
 }
 
@@ -326,13 +343,13 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
     let err = serde_yaml::from_str::<DeployCfg>(
         "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
     )
-    .expect_err("the retired webhook key must be rejected");
+    .expect_err("the retired observability block must be rejected");
     let hint = crate::config::augment_config_error(err);
     assert!(
-        hint.contains("request_log_webhook_url")
-            && hint.contains("export.request-log-webhook")
+        hint.contains("observability")
+            && hint.contains("request-log-webhook")
             && hint.contains("--migrate-config"),
-        "the retired-key error must name the new export home + the migrator; got: {hint}"
+        "the retired block's error must name the new export home + the migrator; got: {hint}"
     );
 
     let err = serde_yaml::from_str::<DeployCfg>(
@@ -347,16 +364,18 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
 }
 
 /// task #139: `observability.emit_server_timing` MOVED to
-/// `advanced.response_headers.server_timing`. The old location is now an `unknown field` boot error
-/// (`deny_unknown_fields` on `ObservabilityCfg`) — LOUD and fail-closed, exactly the `otlp_endpoint`
-/// treatment above; `busbar --migrate-config` moves it (see `migrate_tests.rs`).
+/// `advanced.response_headers.server_timing`. 1.5.3 went further and DELETED the whole
+/// `observability:` block (audit §3), so the old location is now an unknown TOP-LEVEL field — LOUD
+/// and fail-closed; `busbar --migrate-config` moves it (see `migrate_tests.rs`).
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
-    let err = serde_yaml::from_str::<ObservabilityCfg>("emit_server_timing: true")
-        .expect_err("the removed emit_server_timing key must be rejected");
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "observability:\n  emit_server_timing: true\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("the removed observability block must be rejected");
     let msg = err.to_string();
     assert!(
-        msg.contains("unknown field") && msg.contains("emit_server_timing"),
+        msg.contains("unknown field") && msg.contains("observability"),
         "{msg}"
     );
 }
@@ -460,7 +479,8 @@ fn admin_plane_boot_guard() {
     fn build(
         admin_listen: &str,
         client_ca: Option<&str>,
-        admin_insecure: bool,
+        // 1.5.3: the flag INVERTED — this is `admin_require_mtls`, so `false` is the waiver.
+        require_mtls: bool,
     ) -> Result<RootCfg, Vec<String>> {
         let mut defs = HashMap::new();
         defs.insert(
@@ -477,29 +497,64 @@ fn admin_plane_boot_guard() {
             key: SecretRef::file("key.pem"),
             client_ca: Some(SecretRef::file(ca)),
         });
-        deploy.admin_insecure = admin_insecure;
+        deploy.admin_require_mtls = require_mtls;
         resolve(&deploy, &defs)
     }
 
-    // DEFAULT: the zero-config admin listener is loopback, so it boots with no mTLS.
+    // DEFAULT: the zero-config admin listener is loopback, so it boots with no mTLS. Note the
+    // argument: 1.5.3's DEFAULT is `admin_require_mtls: true` — the guard is ON unless waived.
     assert!(
-        build(DEFAULT_ADMIN_LISTEN_ADDR, None, false).is_ok(),
+        build(DEFAULT_ADMIN_LISTEN_ADDR, None, true).is_ok(),
         "the default loopback admin_listen must resolve"
     );
     // Loopback admin plane is safe without mTLS (unreachable off-host).
-    assert!(build("127.0.0.1:8081", None, false).is_ok());
-    assert!(build("[::1]:8081", None, false).is_ok());
-    assert!(build("localhost:8081", None, false).is_ok());
+    assert!(build("127.0.0.1:8081", None, true).is_ok());
+    assert!(build("[::1]:8081", None, true).is_ok());
+    assert!(build("localhost:8081", None, true).is_ok());
     // EXPOSED admin plane without mTLS and without waiver: REFUSE TO BOOT.
-    let err = build("0.0.0.0:8081", None, false)
+    let err = build("0.0.0.0:8081", None, true)
         .expect_err("exposed admin without mTLS must refuse to boot");
     let joined = err.join("\n");
     assert!(joined.contains("admin_listen"), "guard message: {joined}");
     assert!(joined.contains("mTLS"), "guard message: {joined}");
+    assert!(
+        joined.contains("admin_require_mtls: false"),
+        "the guard must name the 1.5.3 waiver spelling (not the retired `admin_insecure`): {joined}"
+    );
     // Exposed admin WITH client-cert mTLS: allowed.
-    assert!(build("0.0.0.0:8081", Some("client-ca.pem"), false).is_ok());
-    // Exposed admin with an explicit insecure waiver: allowed (operator's deliberate choice).
-    assert!(build("0.0.0.0:8081", None, true).is_ok());
+    assert!(build("0.0.0.0:8081", Some("client-ca.pem"), true).is_ok());
+    // Exposed admin with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
+    assert!(build("0.0.0.0:8081", None, false).is_ok());
+}
+
+/// FREEZE (audit §5): 1.5.3 INVERTED the exposed-admin boot guard (`admin_insecure: true` →
+/// `admin_require_mtls: false`) so the SAFE posture is what an OMITTED key gives you — the single
+/// most consequential default in the config. An omitted key must resolve to the guard being ON, and
+/// the RETIRED key must LOUD-FAIL at parse rather than being silently ignored (which would leave an
+/// operator believing a waiver still applied).
+///
+/// RED-BEFORE-GREEN: before this unit `admin_insecure` was a live field (so it parsed clean) and
+/// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
+#[test]
+fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
+    let deploy: DeployCfg =
+        serde_yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
+    assert!(
+        deploy.admin_require_mtls,
+        "an OMITTED admin_require_mtls must default to the SAFE posture (guard ON)"
+    );
+
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("the retired admin_insecure key must be rejected at parse");
+    let hint = crate::config::augment_config_error(err);
+    assert!(
+        hint.contains("admin_insecure")
+            && hint.contains("admin_require_mtls")
+            && hint.contains("--migrate-config"),
+        "the retired-key error must name the new key + the migrator; got: {hint}"
+    );
 }
 
 /// The shipped example config.yaml must parse and resolve cleanly against providers.yaml
@@ -1130,7 +1185,7 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     std::env::set_var(var, payload);
 
     let template = format!(
-        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [{{ tokens: {{ settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}] }}\n"
+        "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ tokens: {{ module: tokens, settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}\n"
     );
 
     // Sanity check FIRST: prove the underlying vulnerability is real by splicing the payload
@@ -1141,8 +1196,7 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
-    let auth = deploy.auth.expect("auth block must be present");
-    let client_tokens = auth.chain[0]
+    let client_tokens = deploy.identity_providers["tokens"]
         .settings
         .get("client_tokens")
         .and_then(|v| v.as_array())
@@ -1173,10 +1227,11 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
 }
 
 /// The second real, exploitable shape from the same audit: an OPAQUE `settings:` map
-/// (`serde_json::Map<String, serde_json::Value>`, used by `AuthChainEntry` / hook module settings
+/// (`serde_json::Map<String, serde_json::Value>`, used by `identity-providers:` / hook module settings
 /// / `SecretRef`) is a generic map, not a fixed struct — it carries no `deny_unknown_fields`
 /// equivalent, so an injected sibling key silently reconfigures a third-party auth/hook plugin.
-/// Mirrors `config/mod.rs`'s own documented flow-style example: `ad: { settings: { server: "..." } }`.
+/// Mirrors the documented flow-style example:
+/// `identity-providers: { ad: { module: ad, settings: { server: "..." } } }`.
 #[test]
 fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     let var = "BUSBAR_T_STRUCT_SETTINGS_KEY";
@@ -1185,14 +1240,14 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     std::env::set_var(var, payload);
 
     let template = format!(
-        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [{{ ad: {{ settings: {{ server: \"${{{var}}}\" }} }} }}] }}\n"
+        "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ ad: {{ module: ad, settings: {{ server: \"${{{var}}}\" }} }} }}\n"
     );
 
     // Sanity: the unguarded splice really does add the sibling key through real deserialization.
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
-    let settings = &deploy.auth.expect("auth block").chain[0].settings;
+    let settings = &deploy.identity_providers["ad"].settings;
     assert_eq!(
         settings.get("evil_key").and_then(|v| v.as_str()),
         Some("evil_val"),
@@ -1655,22 +1710,27 @@ fn breaker_cfg_default_matches_serde_default_fns() {
 #[test]
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
-    let auth = AuthCfg {
+    let auth = crate::config::AuthDeployCfg {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        chain: vec![AuthChainEntry::bare(KEYS_MODULE)],
-        admin_auth: vec![AuthChainEntry {
-            module: ADMIN_TOKENS_MODULE.to_string(),
-            max_admin_scope: None,
-            token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
-            settings: serde_json::Map::new(),
-        }],
+        chain: vec![KEYS_MODULE.to_string()],
+        admin_auth: vec![ADMIN_TOKENS_MODULE.to_string()],
         role_bindings: RoleBindings::new(),
-        methods: Default::default(),
         key_ttl: None,
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
+    // The `admin-tokens` operator credential now lives on its `identity-providers:` DEFINITION
+    // (audit §2), not inline on a chain entry — so the Debug dump must stay clean there too.
+    deploy.identity_providers.insert(
+        ADMIN_TOKENS_MODULE.to_string(),
+        crate::config::IdentityProviderCfg {
+            module: ADMIN_TOKENS_MODULE.to_string(),
+            max_admin_scope: None,
+            token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+            browser_login: None,
+            settings: serde_json::Map::new(),
+        },
+    );
     deploy.tls = Some(TlsCfg {
         cert: SecretRef::file("/run/secrets/cert.pem"),
         key: SecretRef::env("BUSBAR_T_DEBUG_SECRET"),
@@ -1713,9 +1773,8 @@ models:
         serde_yaml::from_str(yaml).expect("config without a limits block must parse");
     let l = LimitsResolved::from_sections(
         &deploy.limits,
-        &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        &deploy.export.clone().unwrap_or_default(),
+        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
         &deploy.health,
         &deploy.routing,
     );
@@ -1761,10 +1820,8 @@ models:
         l.max_inflight_webhook_deliveries,
         DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
     );
-    assert_eq!(
-        l.webhook_delivery_timeout_secs,
-        DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS
-    );
+    // 1.5.3: the per-delivery webhook TIMEOUT is no longer projected onto `LimitsResolved` — it is
+    // per named `request-log-webhook` export instance (see `WebhookSettings::delivery_timeout_secs`).
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
@@ -1780,7 +1837,6 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
     let a = LimitsResolved::default();
     let b = LimitsResolved::from_sections(
         &LimitsCfg::default(),
-        &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
@@ -1817,7 +1873,8 @@ limits:
   request_body_max_bytes: 1048576
   pool_idle_timeout_secs: 77
 export:
-  prometheus:
+  metrics:
+    module: prometheus
     settings:
       buffer_seconds: 30
       key_gauge_limit: 9
@@ -1832,9 +1889,8 @@ routing:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("limits override must parse");
     let l = LimitsResolved::from_sections(
         &deploy.limits,
-        &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        &deploy.export.clone().unwrap_or_default(),
+        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
         &deploy.health,
         &deploy.routing,
     );
@@ -1878,7 +1934,6 @@ limits:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("parse");
     let l = LimitsResolved::from_sections(
         &deploy.limits,
-        &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
@@ -2021,77 +2076,160 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
 }
 
-// ── auth chain entries + role_bindings (C2b/C2c, S4) ─────────────────────────────────────────────
+// ── identity providers + auth chain references (audit §2, S4) ────────────────────────────────────
 
-/// An auth chain entry parses from its two spellings: a bare module name and a single-key map
-/// carrying the typed fields (max_admin_scope / token / settings) alongside the module name.
+/// 1.5.3 (audit §2): an IdP is DEFINED ONCE in the top-level `identity-providers:` map and
+/// REFERENCED BY BARE NAME from `auth.chain:` AND `auth.admin_auth:`. This covers the definition's
+/// shape (every typed field parses) plus the property the whole redesign exists for: ONE definition
+/// serving BOTH planes, so its settings cannot drift between them.
+///
+/// RED-BEFORE-GREEN: before this unit `identity-providers:` did not exist and a chain entry was an
+/// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
-fn test_auth_chain_entry_forms_parse() {
-    // Bare name.
-    let bare: AuthChainEntry = serde_yaml::from_str("keys").expect("bare name parses");
-    assert_eq!(bare, AuthChainEntry::bare("keys"));
-    assert_eq!(bare.module, KEYS_MODULE);
-    assert!(bare.max_admin_scope.is_none() && bare.token.is_none() && bare.settings.is_empty());
-
-    // Single-key map with every typed field.
-    let full: AuthChainEntry = serde_yaml::from_str(
-        "ad:\n  max_admin_scope: full\n  token: { env: BUSBAR_T_AD_TOKEN }\n  settings:\n    server: \"ldaps://corp\"\n",
+fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "identity-providers:\n  \
+           corp-ad: { module: ad, max_admin_scope: full, settings: { server: \"ldaps://corp\" } }\n  \
+           admin-tokens: { module: admin-tokens, token: { env: BUSBAR_T_AD_TOKEN } }\n\
+         auth:\n  chain: [keys, corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
+         providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect("single-key map parses");
-    assert_eq!(full.module, "ad");
-    assert_eq!(full.max_admin_scope.as_deref(), Some("full"));
-    assert_eq!(
-        full.token.as_ref().and_then(|t| t.env_var()),
-        Some("BUSBAR_T_AD_TOKEN")
+    .expect("the 1.5.3 identity-providers grammar parses");
+
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
     );
+    assert!(errors.is_empty(), "{errors:?}");
+
+    // A BARE BUILT-IN needs no definition at all.
+    assert_eq!(auth.chain[0], AuthChainEntry::bare(KEYS_MODULE));
+
+    // THE DEDUPE PROPERTY: `corp-ad` appears in BOTH chains and resolves from the SAME definition,
+    // so its module/settings/ceiling are identical BY CONSTRUCTION — the pre-1.5.3 grammar made the
+    // operator write them twice, and nothing stopped the two copies from disagreeing.
+    let data = &auth.chain[1];
+    let admin = &auth.admin_auth[1];
+    assert_eq!(data.name, "corp-ad");
+    assert_eq!(data.module, "ad");
+    assert_eq!(data.max_admin_scope.as_deref(), Some("full"));
     assert_eq!(
-        full.settings.get("server").and_then(|v| v.as_str()),
+        data.settings.get("server").and_then(|v| v.as_str()),
         Some("ldaps://corp")
     );
-
-    // The admin-tokens operator credential shape (the governance.admin_token replacement).
-    let admin: AuthChainEntry =
-        serde_yaml::from_str("admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }")
-            .expect("admin-tokens entry parses");
-    assert_eq!(admin.module, ADMIN_TOKENS_MODULE);
     assert_eq!(
-        admin.token.as_ref().and_then(|t| t.env_var()),
-        Some("BUSBAR_ADMIN_TOKEN")
+        data, admin,
+        "one definition, referenced twice — never two independently-drifting copies"
+    );
+
+    // The operator credential's `token:` lives on the DEFINITION now, not on a chain entry.
+    assert_eq!(
+        auth.admin_auth[0].token.as_ref().and_then(|t| t.env_var()),
+        Some("BUSBAR_T_AD_TOKEN")
     );
 }
 
-/// Malformed chain entries fail loudly: a TWO-key map (each module must be its own list item), an
-/// empty map, an empty module name, and an unknown typed field are all parse errors.
+/// FREEZE (audit §2): an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
+/// (`read-only`) for every provider — EXCEPT the built-in `admin-tokens` operator credential, which
+/// is full-by-definition and stays exempt. This preserves the pre-1.5.3 semantics EXACTLY while
+/// moving the field off the chain entry onto the definition, so upgrading cannot silently widen or
+/// narrow an existing deployment's admin ceiling.
 #[test]
-fn test_auth_chain_entry_malformed_rejected() {
-    let err = serde_yaml::from_str::<AuthChainEntry>("a: {}\nb: {}")
-        .expect_err("a two-key map entry must error");
-    assert!(err.to_string().contains("exactly ONE module key"), "{err}");
+fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
+         auth:\n  chain: [corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("parses");
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        auth.chain[0].max_admin_scope.as_deref(),
+        Some(crate::config::DEFAULT_MAX_ADMIN_SCOPE),
+        "an external IdP with no declared ceiling gets the MOST RESTRICTIVE default"
+    );
+    assert_eq!(
+        auth.admin_auth[0].max_admin_scope, None,
+        "the built-in admin-tokens operator credential is EXEMPT (full by definition)"
+    );
+}
 
-    let err =
-        serde_yaml::from_str::<AuthChainEntry>("{}").expect_err("an empty map entry must error");
-    assert!(err.to_string().contains("exactly one key"), "{err}");
+/// FAIL-CLOSED: a chain naming a provider that is neither defined nor a bare built-in is a boot
+/// error, never a silently-skipped auth module (which would quietly weaken the front door).
+#[test]
+fn test_dangling_identity_provider_reference_is_an_error() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("parses");
+    let mut errors = Vec::new();
+    let _ = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("ghost") && e.contains("identity-providers")),
+        "a dangling chain reference must name the provider + the definition map; got {errors:?}"
+    );
+}
 
-    let err =
-        serde_yaml::from_str::<AuthChainEntry>("\"\"").expect_err("an empty bare name must error");
-    assert!(err.to_string().contains("non-empty"), "{err}");
+/// The INLINE chain entry is GONE (audit §2): a chain is a list of bare NAMES, so the retired
+/// single-key-map form is a parse error rather than a second, silently-accepted grammar.
+#[test]
+fn test_inline_auth_chain_entry_is_rejected() {
+    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(
+        "chain:\n  - ad: { settings: { server: \"ldaps://corp\" } }\n",
+    )
+    .expect_err("the retired inline chain entry must be rejected");
+    assert!(
+        err.to_string().contains("string"),
+        "the error should say a chain entry is a bare NAME; got: {err}"
+    );
+}
 
-    // The typed body is deny_unknown_fields: a typo'd field fails, not silently dropped.
-    let err = serde_yaml::from_str::<AuthChainEntry>("ad: { max_admin_scop: full }")
-        .expect_err("a typo'd typed field must error");
+/// `identity-providers:` is `deny_unknown_fields`: a typo'd definition key fails boot rather than
+/// silently dropping (most consequentially) a `max_admin_scope` ceiling.
+#[test]
+fn test_identity_provider_typo_rejected_at_parse() {
+    let err = serde_yaml::from_str::<crate::config::IdentityProviders>(
+        "ad: { module: ad, max_admin_scop: full }\n",
+    )
+    .expect_err("a typo'd definition key must error");
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// An `AuthChainEntry` that is neither a string nor a map (e.g. a bare integer) has no matching
-/// `visit_*` override, so serde's default type-mismatch path builds the error from the Visitor's
-/// own `expecting()` text — proving that text is real and reachable, not dead documentation.
+/// A `token:` is the built-in `admin-tokens` operator credential and is MEANINGLESS on any other
+/// module — writing one there is an operator error (they believe a credential is configured) and
+/// must fail boot, not be silently ignored.
 #[test]
-fn test_auth_chain_entry_wrong_type_uses_the_real_expecting_message() {
-    let err = serde_yaml::from_str::<AuthChainEntry>("123")
-        .expect_err("an integer is not a valid auth chain entry shape");
+fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
+         auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("parses");
+    let mut errors = Vec::new();
+    let _ = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
     assert!(
-        err.to_string().contains("an auth chain entry"),
-        "the error must surface the Visitor's real expecting() text, not a generic serde message: {err}"
+        errors
+            .iter()
+            .any(|e| e.contains("token") && e.contains("corp-ad")),
+        "a token on a non-admin-tokens provider must be rejected; got {errors:?}"
     );
 }
 
@@ -2181,9 +2319,7 @@ fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
 #[test]
 fn test_auth_role_bindings_nested_map_parses() {
     let yaml = r#"
-chain:
-  - keys
-  - ad: { max_admin_scope: hooks-register }
+chain: [keys, ad]
 role_bindings:
   ad:
     platform:
@@ -2194,16 +2330,14 @@ role_bindings:
       allowed_pools: []
     everyone: {}
 "#;
-    let auth: AuthCfg = serde_yaml::from_str(yaml).expect("role_bindings parse");
-    assert_eq!(auth.chain.len(), 2);
-    assert_eq!(auth.chain[0], AuthChainEntry::bare("keys"));
-    assert_eq!(auth.chain[1].module, "ad");
-    assert_eq!(
-        auth.chain[1].max_admin_scope.as_deref(),
-        Some("hooks-register")
-    );
+    let auth: crate::config::AuthDeployCfg =
+        serde_yaml::from_str(yaml).expect("role_bindings parse");
+    // 1.5.3: a chain is a list of bare PROVIDER NAMES; `max_admin_scope` moved onto the
+    // `identity-providers:` definition (audit §2), so it is not on the chain entry any more.
+    assert_eq!(auth.chain, ["keys", "ad"]);
 
-    let ad = auth.role_bindings.get("ad").expect("ad module bindings");
+    // `role_bindings:` stays nested by the SAME string the chain references — the provider NAME.
+    let ad = auth.role_bindings.get("ad").expect("ad provider bindings");
     let platform = ad.get("platform").expect("platform role");
     assert_eq!(
         platform.allowed_pools,
@@ -2215,11 +2349,8 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the bare admin-tokens module.
-    assert_eq!(
-        auth.admin_auth,
-        vec![AuthChainEntry::bare(ADMIN_TOKENS_MODULE)]
-    );
+    // The serde default for admin_auth is the bare admin-tokens provider NAME.
+    assert_eq!(auth.admin_auth, [ADMIN_TOKENS_MODULE]);
 }
 
 // ── groups / limits (S3) ─────────────────────────────────────────────────────────────────────────
@@ -2636,11 +2767,16 @@ fn test_resolve_projects_admin_auth_names() {
 
     // auth present with a custom admin chain: names projected in order.
     let mut deploy = base_deploy();
-    let auth: AuthCfg = serde_yaml::from_str(
-        "chain: [keys]\nadmin_auth:\n  - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n  - ad: { max_admin_scope: read-only }\n",
-    )
-    .expect("auth parses");
+    let auth: crate::config::AuthDeployCfg =
+        serde_yaml::from_str("chain: [keys]\nadmin_auth: [admin-tokens, ad]\n")
+            .expect("auth parses");
     deploy.auth = Some(auth);
+    // 1.5.3: the operator credential + the external IdP's ceiling live on their DEFINITIONS.
+    deploy.identity_providers = serde_yaml::from_str(
+        "admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\n\
+         ad: { module: ad, max_admin_scope: read-only }\n",
+    )
+    .expect("identity-providers parse");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE, "ad"]);
     // The operator credential stays reachable as a SecretRef through the resolved auth block.
@@ -2831,21 +2967,42 @@ models: {}
     assert_eq!(deploy2.public_url, None);
 }
 
+/// FREEZE BLOCKER A7: the 1.5.2 `auth.methods:` block FOLDED INTO the `identity-providers:`
+/// definition. `browser_login` and the module's opaque settings are inherently PER PROVIDER — a
+/// client id/secret belongs to one IdP registration — so a second parallel map keyed by the same
+/// namespace was duplicate structure whose two halves could disagree about the same provider.
+///
+/// The resolved hosted-login method is now a PROJECTION of the definition, keyed by PROVIDER NAME
+/// and carrying the definition's `module:` separately (two named providers may share one plugin).
+///
+/// RED-BEFORE-GREEN: before this unit `auth.methods:` was a live config block that parsed, so this
+/// resolution path did not exist.
 #[test]
 fn test_auth_method_browser_login_parses() {
-    // The `auth.methods` MAP (decision 1): key = module name; opaque settings flattened; the reserved
-    // `browser_login` block carries the confidential-client secret as a SecretRef.
     let yaml = "\
-methods:
-  oidc:
+oidc:
+  module: oidc-plugin
+  browser_login:
+    client_secret: { env: BUSBAR_OIDC_SECRET }
+    client_id: busbar-web
+  settings:
     issuer: https://idp.example/
     audience: busbar
-    browser_login:
-      client_secret: { env: BUSBAR_OIDC_SECRET }
-      client_id: busbar-web
 ";
-    let auth: AuthCfg = serde_yaml::from_str(yaml).expect("auth.methods browser_login must parse");
+    let providers: crate::config::IdentityProviders =
+        serde_yaml::from_str(yaml).expect("the provider definition must parse");
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        &serde_yaml::from_str("chain: [oidc]\n").expect("auth parses"),
+        &providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
     let method = auth.methods.get("oidc").expect("oidc method present");
+    assert_eq!(
+        method.module, "oidc-plugin",
+        "the method carries the definition's MODULE, distinct from its NAME"
+    );
     let bl = method
         .browser_login
         .as_ref()
@@ -2858,7 +3015,7 @@ methods:
         bl.client_secret.as_ref().and_then(|s| s.env_var()),
         Some("BUSBAR_OIDC_SECRET")
     );
-    // Opaque module settings are flattened through, NOT swallowed into browser_login.
+    // Opaque module settings pass through, NOT swallowed into browser_login.
     assert_eq!(
         method.settings.get("issuer").and_then(|v| v.as_str()),
         Some("https://idp.example/")
@@ -2875,13 +3032,13 @@ methods:
 fn test_browser_login_deny_unknown_field() {
     // A typo under `browser_login` must fail parse (deny_unknown_fields on BrowserLoginCfg).
     let yaml = "\
-methods:
-  oidc:
-    browser_login:
-      client_secret: { env: X }
-      client_idd: oops
+oidc:
+  module: oidc-plugin
+  browser_login:
+    client_secret: { env: X }
+    client_idd: oops
 ";
-    let err = serde_yaml::from_str::<AuthCfg>(yaml)
+    let err = serde_yaml::from_str::<crate::config::IdentityProviders>(yaml)
         .expect_err("typo under browser_login must be rejected");
     assert!(
         err.to_string().contains("client_idd") || err.to_string().contains("unknown field"),
@@ -3037,4 +3194,353 @@ advanced:
     assert!(d3.config.overlay.is_none());
     assert!(d3.providers_file.is_none());
     assert_eq!(d3.advanced.worker_threads, None);
+}
+
+// ── 1.5.3 FREEZE PINS (fwd-compat triage §A) ─────────────────────────────────────────────────────
+//
+// Each test below pins a semantic that 1.5.3 SHIPS and later releases must REUSE. They exist because
+// 1.5.3 is the break-once release: after it the grammar is additive-only forever, so anything a
+// later release could silently redefine has to be nailed down NOW, with a test that fails loudly if
+// someone changes it later. Every one names the finding it discharges.
+
+/// FREEZE BLOCKER A1 — the hook-name namespace is CLOSED.
+///
+/// `RESERVED_HOOK_NAMES` and the bare strategy keywords accepted in a pool's `hooks:` list share ONE
+/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, the MCP
+/// bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
+/// hook named `least_bad` boots fine in 1.5.3 and would become a boot failure (or, worse, silently
+/// rebind to the new built-in) the moment the word were reserved.
+///
+/// So this asserts the EXACT contents of the frozen word space, not a subset. A future terminal must
+/// arrive STRUCTURED (`on_error: { hook: x }` is the shipped precedent — see `OnErrorCfg`), never as
+/// a new bare word, and a structured form costs zero words from this space.
+#[test]
+fn reserved_hook_names_are_frozen() {
+    let mut frozen: Vec<&str> = crate::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
+    frozen.sort_unstable();
+
+    // (a) The declared frozen list is EXACTLY these eleven words — spelled out literally so a
+    //     diff shows a reviewer precisely which word someone tried to add.
+    assert_eq!(
+        frozen,
+        [
+            "admin-tokens",
+            "cheapest",
+            "fastest",
+            "first",
+            "least_busy",
+            "nothing",
+            "reject",
+            "tokens",
+            "usage",
+            "weighted",
+        ],
+        "the 1.5.3 hook-name word space is FROZEN: a new bare terminal would retroactively \
+         invalidate a legal 1.5.3 config. Add the new behavior as a STRUCTURED value instead \
+         (e.g. `{{ hook: x }}`) — see RESERVED_HOOK_NAMES' doc comment."
+    );
+
+    // (b) The declared list really IS the runtime union, so freezing the constant freezes the
+    //     BEHAVIOR and not just a parallel piece of documentation.
+    let mut runtime: Vec<&str> = crate::config::RESERVED_HOOK_NAMES.to_vec();
+    for word in crate::config::FROZEN_HOOK_NAME_WORD_SPACE {
+        // Every frozen word is either reserved outright or accepted bare as a pool strategy.
+        assert!(
+            crate::config::RESERVED_HOOK_NAMES.contains(word) || super::is_strategy_name(word),
+            "'{word}' is declared frozen but is neither reserved nor a strategy keyword"
+        );
+    }
+    runtime.sort_unstable();
+    runtime.dedup();
+    assert_eq!(
+        runtime, frozen,
+        "RESERVED_HOOK_NAMES and FROZEN_HOOK_NAME_WORD_SPACE must not drift"
+    );
+
+    // (c) And the reservation is ENFORCED: a hook definition named with a frozen word fails boot.
+    let mut deploy = base_deploy();
+    deploy.hooks.insert(
+        "cheapest".to_string(),
+        serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
+    );
+    let errs = resolve(&deploy, &HashMap::new())
+        .expect_err("a hook named with a reserved word must refuse to boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("cheapest") && e.contains("reserved")),
+        "the error must name the reserved word: {errs:?}"
+    );
+}
+
+/// FREEZE BLOCKER A3 — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
+///
+/// If omission meant "all stages", an MCP tool-invocation stage added in 1.5.4 (or an A2A delegation
+/// stage in 1.5.6) would retroactively make every already-deployed unscoped hook start firing at
+/// brand-new points in a brand-new plane — a silent widening of what the operator signed off on, with
+/// no config change and no diagnostic. Pinning the default to a FROZEN list makes a later stage
+/// strictly additive: to fire there, a hook must NAME it.
+///
+/// Also pinned here: `phase:` is PLANE-NEUTRAL (these four names describe a request lifecycle every
+/// plane shares, so a later plane REUSES them rather than re-typing the field), and an INAPPLICABLE
+/// phase silently does not fire rather than being a config error — otherwise one hook definition
+/// could not serve two planes, which is the reuse the named-definition pattern exists for.
+#[test]
+fn omitted_phase_is_exactly_the_four_core_stages() {
+    use crate::config::HookStage;
+
+    assert_eq!(
+        crate::config::CORE_HOOK_PHASES,
+        &[
+            HookStage::Request,
+            HookStage::Candidate,
+            HookStage::Routing,
+            HookStage::Response
+        ],
+        "the omitted-phase default is FROZEN at the four core stages; a stage added later must NOT \
+         join this list, or it would retroactively widen every existing unscoped hook"
+    );
+
+    // A definition with NO `phase:` fires at every core stage — and at NOTHING else, by construction
+    // (the enum is exhausted by the frozen list, so a future variant is excluded until named).
+    let def: crate::config::HookDefCfg =
+        serde_yaml::from_str("module: h\nkind: tap").expect("hook def parses");
+    let cfg = super::hook_cfg_from_def(&def).expect("lowers");
+    assert!(cfg.phase.is_empty(), "the definition names no phase");
+    for stage in crate::config::CORE_HOOK_PHASES {
+        assert!(
+            cfg.fires_at_stage(*stage),
+            "an omitted phase must fire at the core stage {stage:?}"
+        );
+    }
+
+    // An EXPLICIT phase list is exact: naming one stage excludes the other three.
+    let def: crate::config::HookDefCfg =
+        serde_yaml::from_str("module: h\nkind: tap\nphase: [response]").expect("parses");
+    let cfg = super::hook_cfg_from_def(&def).expect("lowers");
+    assert!(cfg.fires_at_stage(HookStage::Response));
+    assert!(!cfg.fires_at_stage(HookStage::Request));
+    assert!(!cfg.fires_at_stage(HookStage::Candidate));
+    assert!(!cfg.fires_at_stage(HookStage::Routing));
+}
+
+/// FREEZE BLOCKER A4 — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
+/// pool's own `hooks:` fires ONCE, at its FIRST (section-level) position.
+///
+/// The locked combine rule (audit §4) says section-level LISTS are ADDITIVE but never said what
+/// happens on an overlap. Both answers were defensible, so 1.5.3 pins one: attaching a hook to all
+/// pools and then ALSO naming it on one pool is how an operator writes "…and definitely on this
+/// one", and reading that as "fire twice" would double-charge a gate's latency budget and
+/// double-count a tap's audit record.
+///
+/// RED-BEFORE-GREEN: before this unit the two lists were lowered independently, so an overlapping
+/// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
+#[test]
+fn additive_hook_lists_dedupe_at_first_position() {
+    // The rule itself, at the single combine point.
+    let section = vec!["audit".to_string(), "pii".to_string()];
+    let entity = vec![
+        "cheapest".to_string(),
+        "pii".to_string(),
+        "audit".to_string(),
+    ];
+    assert_eq!(
+        crate::config::combine_hook_refs(&section, &entity),
+        ["audit", "pii", "cheapest"],
+        "a name in both lists fires ONCE, at its FIRST (section) position"
+    );
+    // The runtime projection: the entity half keeps only what the section did not already name, and
+    // section ++ entity-only reproduces the combined order exactly.
+    let entity_only = crate::config::entity_only_hook_refs(&section, &entity);
+    assert_eq!(entity_only, ["cheapest"]);
+    let mut rebuilt = section.clone();
+    rebuilt.extend(entity_only);
+    assert_eq!(rebuilt, crate::config::combine_hook_refs(&section, &entity));
+
+    // End to end through `resolve`: the pool's own gate list drops the name the all-pools list
+    // already carries, so the hook is fired by exactly one of the two resolved chains.
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "hooks:\n  audit: { module: h, kind: gate }\n\
+         pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [cheapest, audit]\n\
+         providers: {}\nmodels: {}\n",
+    )
+    .expect("parses");
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    assert_eq!(cfg.global_hooks, ["audit"]);
+    assert!(
+        cfg.pools["fast"].gates.is_empty(),
+        "the pool's duplicate reference is deduped away, so `audit` fires exactly once: {:?}",
+        cfg.pools["fast"].gates
+    );
+
+    // A pool hook the section list does NOT name is untouched.
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "hooks:\n  audit: { module: h, kind: gate }\n  pii: { module: h, kind: gate }\n\
+         pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [pii]\n\
+         providers: {}\nmodels: {}\n",
+    )
+    .expect("parses");
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    assert_eq!(cfg.pools["fast"].gates, ["pii"]);
+}
+
+/// FREEZE BLOCKER A5 — the `pools:` reserved section-key set is CLOSED at exactly two words.
+///
+/// Every reserved word here is a word an operator can no longer use as a POOL NAME, so ADDING one in
+/// a later release retroactively turns a previously-legal config into a boot failure. The set is
+/// therefore frozen, and every FUTURE all-scope knob must land under a reserved `defaults:` sub-key
+/// (`pools.defaults.<knob>`) — one word paid once, additive forever.
+///
+/// RED-BEFORE-GREEN: before this unit only `hooks` was reserved (so a pool named
+/// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
+#[test]
+fn pools_reserved_section_keys_are_frozen() {
+    assert_eq!(
+        crate::config::RESERVED_POOLS_SECTION_KEYS,
+        ["hooks", "upstream_credentials"],
+        "the `pools:` reserved-key set is CLOSED. A new all-scope knob must go under a reserved \
+         `defaults:` sub-key, never a new top-level reserved word — adding one would turn a \
+         legal pool NAME into a boot failure."
+    );
+
+    // BOTH reserved words are rejected as pool names, with a message that says why.
+    for reserved in crate::config::RESERVED_POOLS_SECTION_KEYS {
+        let err = serde_yaml::from_str::<crate::config::PoolsCfg>(&format!(
+            "{reserved}:\n  members: [ {{ model: a }} ]\n"
+        ))
+        .expect_err("a pool named with a reserved section key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(reserved) && msg.contains("RESERVED"),
+            "the error must name the reserved word and say it is reserved; got: {msg}"
+        );
+    }
+}
+
+/// FREEZE BLOCKER A5 (the other half) + audit §4: `pools.upstream_credentials:` is the ALL-POOLS
+/// SCALAR default and a pool's own value OVERRIDES it (replaces — scalars never union). Pinned
+/// end-to-end because "scalar overrides, list is additive" is the rule every future inherited
+/// setting will be read against.
+#[test]
+fn pools_upstream_credentials_is_a_scalar_override() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "pools:\n  upstream_credentials: own\n\
+         \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
+         \x20 cold:\n    members: []\n\
+         providers: {}\nmodels: {}\n",
+    )
+    .expect("parses");
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
+    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+    assert_eq!(
+        cfg.pools["fast"].upstream_credentials,
+        Some(crate::auth::UpstreamCreds::Passthrough),
+        "a pool's own value REPLACES the all-pools default"
+    );
+    assert_eq!(
+        cfg.pools["cold"].upstream_credentials, None,
+        "a pool that sets nothing INHERITS (None = defer to the section default)"
+    );
+
+    // Omitted at both levels ⇒ the built-in default, unchanged from pre-1.5.3 behavior.
+    let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolves");
+    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+}
+
+/// FREEZE BLOCKER A6 — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
+/// named-instance pattern, because it configures a MODULE's `open()` rather than an INSTANCE.
+///
+/// This is pinned (rather than only documented on the struct) so that a later "consistency" pass
+/// that wraps it in a `name -> {module, settings}` map fails a test whose message explains why the
+/// inconsistency is correct: there is no reference site that could name an instance — a `SecretRef`
+/// already names its MODULE — so a named map would invent an identity nothing can use and force
+/// every `SecretRef` in every config to be rewritten for no behavioral gain.
+#[test]
+fn secrets_block_stays_module_keyed_by_design() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("the module-keyed `secrets:` block parses");
+    let vault = deploy
+        .secrets
+        .get("vault")
+        .expect("keyed by the MODULE name, not an instance name");
+    assert_eq!(
+        vault.settings.get("address").and_then(|v| v.as_str()),
+        Some("https://vault.internal")
+    );
+    // The tell that this is NOT the named-instance pattern: there is no `module:` field to name,
+    // because the KEY already is the module. If someone adds one, this fails and they read the
+    // struct doc explaining the exemption.
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("`secrets:` entries take no `module:` — the key IS the module (A6)");
+    assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+/// Audit §3: `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
+/// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
+/// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, `otlp` installs the
+/// one tracer subscriber) reject a second instance LOUDLY rather than silently ignoring it.
+///
+/// RED-BEFORE-GREEN: the type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
+/// unrepresentable and this test could not be written at all.
+#[test]
+fn export_named_map_allows_two_instances_of_one_module() {
+    let defs: crate::config::ExportDefs = serde_yaml::from_str(
+        "req-log:  { module: request-log-webhook, settings: { url: \"https://logs.example.com/a\" } }\n\
+         req-siem: { module: request-log-webhook, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
+    )
+    .expect("two instances of one module parse");
+    let mut errors = Vec::new();
+    let export = crate::config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(export.request_log_webhooks.len(), 2);
+    assert_eq!(
+        export.request_log_webhooks[0].url,
+        "https://logs.example.com/a"
+    );
+    assert_eq!(
+        export.request_log_webhooks[1].url,
+        "https://siem.internal/b"
+    );
+    // Per-INSTANCE settings really are independent — the whole point of named instances.
+    assert_eq!(export.request_log_webhooks[0].delivery_timeout_secs, 2);
+    assert_eq!(export.request_log_webhooks[1].delivery_timeout_secs, 9);
+
+    // A second singleton instance is a loud error, never a silent loss.
+    for module in ["prometheus", "otlp"] {
+        let settings = if module == "prometheus" {
+            "{ buffer_seconds: 60 }"
+        } else {
+            "{ url: \"http://otel:4318/v1/traces\" }"
+        };
+        let defs: crate::config::ExportDefs = serde_yaml::from_str(&format!(
+            "one: {{ module: {module}, settings: {settings} }}\n\
+             two: {{ module: {module}, settings: {settings} }}\n"
+        ))
+        .expect("parses");
+        let mut errors = Vec::new();
+        let _ = crate::config::resolve_export(&defs, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("second") && e.contains(module)),
+            "a second `{module}` instance must be rejected; got {errors:?}"
+        );
+    }
+
+    // An unknown module names the four built-ins rather than being silently dropped.
+    let defs: crate::config::ExportDefs =
+        serde_yaml::from_str("x: { module: nope }\n").expect("parses");
+    let mut errors = Vec::new();
+    let _ = crate::config::resolve_export(&defs, &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("nope") && e.contains("request-log-webhook")),
+        "an unknown export module must name the built-ins; got {errors:?}"
+    );
 }

@@ -521,7 +521,7 @@ pub(crate) async fn forward_once(
     let base = &app.lanes[i].base_url;
 
     // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
-    let key = match app.upstream_creds() {
+    let key = match app.pool_upstream_creds(pool) {
         // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
         // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
         // (LOW #15 SECURITY): borrowing the operator key would let an unauthenticated caller
