@@ -215,11 +215,11 @@ jobs:
 
   # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
   # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
-  # (sqlite/postgres/redis) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
+  # (sqlite/postgres/valkey) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
   # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
   # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
   # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
-  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-redis,
+  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-valkey,
   # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
   # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
   # on a version tag, independently versioned from busbar itself. busbar's own release publishes
@@ -236,10 +236,10 @@ jobs:
   #
   # Every first-party store/auth/secret plugin crate has now been EXTRACTED out of this monorepo
   # entirely: `crates/auth-oidc` + `crates/auth-oidc-plugin`, `crates/secret-vault` +
-  # `crates/secret-vault-plugin`, `crates/store-redis` + `crates/store-redis-plugin`,
+  # `crates/secret-vault-plugin`, the Valkey store crate + its plugin crate,
   # `crates/store-postgres` + `crates/store-postgres-plugin`, and `crates/store-sqlite` +
   # `crates/store-sqlite-plugin` all now live in their own repos (GetBusbar/auth-oidc,
-  # GetBusbar/hashicorp-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
+  # GetBusbar/hashicorp-vault, GetBusbar/store-valkey, GetBusbar/store-postgres,
   # GetBusbar/store-sqlite) — same-repo 2-crate Cargo workspaces bringing the real logic crate
   # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
   # workspace" commit established. None of their coverage comes from an in-tree crate any more;

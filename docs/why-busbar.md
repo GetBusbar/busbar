@@ -60,7 +60,7 @@ Busbar ships as a single static binary. Deployment is:
 2. Set the environment variables your config references (one per provider key).
 3. Run the binary.
 
-There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, or `redis` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
+There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 

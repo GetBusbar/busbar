@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The durable-store CONTRACT — the data types a `db` plugin (SQLite built-in, Postgres, Redis, …)
+//! The durable-store CONTRACT — the data types a `db` plugin (SQLite built-in, Postgres, Valkey, …)
 //! reads and writes, plus the `Store` trait itself and its error type. The plain records that cross
 //! the seam live here too, so a plugin crate can name them without depending on the engine.
 //!
@@ -690,7 +690,7 @@ pub trait Store: Send + Sync + 'static {
     ///
     /// DEFAULT: a read-modify-write fallback (get + apply + put) for stores without a native
     /// atomic add - correct for a single writer; a real shared backend overrides with an atomic
-    /// accumulate (SQL `UPDATE x = x + delta` UPSERT / redis `HINCRBY`).
+    /// accumulate (SQL `UPDATE x = x + delta` UPSERT / valkey `HINCRBY`).
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
         let mut cur = self.get_usage(bucket_id, window_start)?;
         cur.apply_delta(delta);
@@ -816,7 +816,7 @@ pub trait Store: Send + Sync + 'static {
     }
 
     /// Append one admin AUDIT record for DURABLE persistence (design: the audit log's durable home is
-    /// the configured store — memory = ephemeral, sqlite/postgres/redis = durable). The engine keeps
+    /// the configured store — memory = ephemeral, sqlite/postgres/valkey = durable). The engine keeps
     /// the hot in-memory hash-chained ring for reads and write-THROUGHs each appended entry here, so a
     /// hard crash loses ~0 entries and the ring's size bound stops pruning HISTORY (the store keeps it
     /// all). Append-only, ordered by `seq`; a store never rewrites or recomputes the digest.
@@ -1074,9 +1074,9 @@ mod tests {
     }
 
     /// The `Serialize`/`Deserialize` on `VirtualKey` is a load-bearing PERSISTENCE contract (a
-    /// redis-shaped store round-trips it as JSON): it MUST stay faithful, so it is emphatically NOT
+    /// valkey-shaped store round-trips it as JSON): it MUST stay faithful, so it is emphatically NOT
     /// redacted. This pins that contract so a well-meaning "redact the Serialize too" change (which
-    /// would silently corrupt every redis-persisted key) fails loudly here instead. The
+    /// would silently corrupt every valkey-persisted key) fails loudly here instead. The
     /// logging-surface leak is closed by the redacting `Debug` above, not by lossy serialization.
     /// `CredentialSecret` deliberately has NO `Serialize` at all (see its doc) — persisting the raw
     /// `secret` string is a backend-owned concern, not this crate's, so there is no equivalent
@@ -1109,7 +1109,7 @@ mod tests {
     /// The minimal pure-auth JSON round-trips, and the optional fields default: a row with no
     /// `allowed_pools` / `group` / `labels` / `expires_at` / `deleted_at` / `revision` deserializes
     /// to all-pools / no-group / no labels / never-expires / live / revision-0. Guards the
-    /// redis-style JSON persistence for the 1.5.0 pure-auth key shape, including the fields added by
+    /// valkey-style JSON persistence for the 1.5.0 pure-auth key shape, including the fields added by
     /// the credentials-generalization redesign.
     #[test]
     fn virtual_key_minimal_json_defaults_optionals() {

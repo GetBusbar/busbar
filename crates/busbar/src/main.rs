@@ -908,7 +908,7 @@ async fn run() {
 
     // DURABLE AUDIT (#17): the audit log is STATEFUL, so its single durable home is the configured
     // governance store — never a side-car file (store-or-RAM rule). When a durable store is configured
-    // (sqlite/postgres/redis), attach it as the write-through SINK (every future admin mutation
+    // (sqlite/postgres/valkey), attach it as the write-through SINK (every future admin mutation
     // persists as it is appended) and RESTORE the ring from it: the store is the source of truth, so
     // its history (which can exceed the RAM ring bound) survives restart with the hash chain intact.
     // The RAM default (`store: memory`) has no durable audit — the sink no-ops and the restore reads

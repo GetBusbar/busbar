@@ -843,7 +843,7 @@ fn gov_with_store(store: &str) -> crate::config::StoreCfg {
 fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let dir = tmp_plugin_dir("disabled-store");
     let err = crate::plugins_preflight(
-        Some(&gov_with_store("redis")),
+        Some(&gov_with_store("valkey")),
         None,
         &Default::default(),
         &plugins_cfg(&dir, false),
@@ -851,10 +851,10 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("redis"), "names the store: {err}");
+    assert!(err.contains("valkey"), "names the store: {err}");
     // The ABSENT-block default behaves identically.
     let err = crate::plugins_preflight(
-        Some(&gov_with_store("redis")),
+        Some(&gov_with_store("valkey")),
         None,
         &Default::default(),
         &crate::config::PluginsCfg::default(),
@@ -1007,23 +1007,23 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
 }
 
 /// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
-/// BOTH — "you can't use redis and a third-party redis".
+/// BOTH — "you can't use valkey and a third-party valkey".
 #[test]
 fn alias_conflict_fails_boot_naming_both() {
     let dir = tmp_plugin_dir("conflict");
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let a = unsigned_tarball(
-        plugin_manifest("busbar-store-redis", "redis", "busbar"),
+        plugin_manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
         b"a",
     );
-    let b = unsigned_tarball(plugin_manifest("acme-store-redis", "redis", "acme"), b"b");
+    let b = unsigned_tarball(plugin_manifest("acme-store-valkey", "valkey", "acme"), b"b");
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
     let err = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
         .unwrap_err();
     assert!(
-        err.contains("busbar-store-redis") && err.contains("acme-store-redis"),
+        err.contains("busbar-store-valkey-plugin") && err.contains("acme-store-valkey"),
         "names both plugins: {err}"
     );
     assert!(err.contains("alias conflict"), "got {err}");

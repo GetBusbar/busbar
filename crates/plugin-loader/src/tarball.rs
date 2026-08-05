@@ -200,8 +200,8 @@ mod tests {
 
     fn manifest() -> Manifest {
         Manifest {
-            name: "busbar-store-redis".into(),
-            alias: "redis".into(),
+            name: "busbar-store-valkey-plugin".into(),
+            alias: "valkey".into(),
             kind: "store".into(),
             version: "1.5.0".into(),
             publisher: "busbar".into(),
@@ -223,10 +223,10 @@ mod tests {
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let lib = b"\x7fELF pretend library";
         let m = sign(&key, manifest(), lib);
-        let tarball = package(&m, "libbusbar_store_redis.so", lib).unwrap();
+        let tarball = package(&m, "libbusbar_store_valkey.so", lib).unwrap();
         let up = unpack(&tarball).unwrap();
         assert_eq!(up.manifest, m);
-        assert_eq!(up.lib_name, "libbusbar_store_redis.so");
+        assert_eq!(up.lib_name, "libbusbar_store_valkey.so");
         assert_eq!(up.lib_bytes, lib);
     }
 
@@ -332,7 +332,9 @@ mod tests {
 
     #[test]
     fn tarball_extension_matcher() {
-        assert!(is_plugin_tarball("busbar-store-redis-1.5.0-aarch64.tar.gz"));
+        assert!(is_plugin_tarball(
+            "busbar-store-valkey-1.5.0-aarch64.tar.gz"
+        ));
         assert!(is_plugin_tarball("x.tgz"));
         assert!(!is_plugin_tarball("x.so"));
         assert!(!is_plugin_tarball("x.tar"));

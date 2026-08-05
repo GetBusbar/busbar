@@ -643,22 +643,22 @@ store:
 | `memory` (default) | compiled in, no plugin | none |
 | `sqlite` / `busbar-store-sqlite` | `busbar-store-sqlite-<ver>-<target>.tar.gz` | `db_path` (file path), `busy_timeout_ms` (default 5000) |
 | `postgres` / `busbar-store-postgres` | `busbar-store-postgres-<ver>-<target>.tar.gz` | `url` (`postgres://` libpq URL); cluster-shared |
-| `redis` / `busbar-store-valkey` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
+| `valkey` / `busbar-store-valkey-plugin` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
 store's tarball in `plugins.dir`, or Busbar refuses to boot naming the flag/plugin.
 
-**Fleet semantics (honest):** with a cluster-shared store (postgres/redis) behind N Busbar nodes,
+**Fleet semantics (honest):** with a cluster-shared store (postgres/valkey) behind N Busbar nodes,
 virtual keys, accumulated usage, the audit log, and the revocation denylist are genuinely shared.
 The limit hard caps are enforced PER NODE from each node's in-memory counters and reconciled
 durably through ADDITIVE flushes, so the shared store converges on the true fleet total, but
 between flushes N nodes splitting traffic can admit up to ~N times a configured cap. The caps are
 not a synchronous cluster-wide gate.
 
-**Metering retention (ALL backends, not just Redis):** `usage_metering` rows are one per (key,
+**Metering retention (ALL backends, not just Valkey):** `usage_metering` rows are one per (key,
 metering-bucket day, model, provider), accumulated forever — Busbar has no prune path on any store
-backend (sqlite, postgres, redis, or a third-party plugin), because metering is observability only,
+backend (sqlite, postgres, valkey, or a third-party plugin), because metering is observability only,
 never consulted for enforcement (`add_metering`'s own doc comment, `crates/api/src/store.rs`). Row
 CARDINALITY is bounded by your config (keys × buckets × models × providers), but the TIME dimension
 is not, so the table grows without bound unless you retain it yourself. `list_metering(bucket)` reads
@@ -666,7 +666,7 @@ exactly one day, so deleting rows for buckets older than N days is safe and cann
 billing, or any other enforcement path — it is a plain `DELETE` against your store's own schema, on
 your own retention horizon; Busbar does not choose one for you.
 
-**Backend caveats:** the Valkey store (Redis-protocol compatible) supports TLS (`rediss://`), transparent reconnect, and atomic
+**Backend caveats:** the Valkey store supports TLS (`rediss://`), transparent reconnect, and atomic
 multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings; it writes WITHOUT
 TTLs (usage/metering/audit grow unboundedly by design: apply your own retention, per the metering
 note above). The Postgres store currently connects `NoTls` and without automatic reconnect: run it

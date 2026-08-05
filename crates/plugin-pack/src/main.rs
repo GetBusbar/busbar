@@ -8,10 +8,10 @@
 //!
 //! ```text
 //! busbar-plugin-pack pack \
-//!     --lib target/release/libbusbar_store_redis_plugin.so \
-//!     --name busbar-store-redis --alias redis --kind store \
+//!     --lib target/release/libbusbar_store_valkey_plugin.so \
+//!     --name busbar-store-valkey-plugin --alias valkey --kind store \
 //!     --version 1.5.0 --publisher busbar \
-//!     --out busbar-store-redis-1.5.0-x86_64-linux.tar.gz
+//!     --out busbar-store-valkey-1.5.0-x86_64-linux.tar.gz
 //! ```
 //!
 //! The ed25519 SIGNING key is read from the `BUSBAR_SIGN_KEY` environment variable (64 hex chars:

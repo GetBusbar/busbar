@@ -3595,8 +3595,8 @@ mod tests {
     }
 
     /// CONFLICT at the ADMIN INSTALL boundary: an upload whose alias collides with a DIFFERENT
-    /// already-installed loadable plugin is a `409` naming both ("can't use redis and a
-    /// third-party redis"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
+    /// already-installed loadable plugin is a `409` naming both ("can't use valkey and a
+    /// third-party valkey"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
     #[test]
     fn install_alias_conflict_is_rejected() {
         let key = SigningKey::from_bytes(&[9u8; 32]);
@@ -3605,7 +3605,7 @@ mod tests {
 
         let first = signed_tarball(
             &key,
-            test_manifest("acme-store-redis", "redis", "acme", "1.0.0"),
+            test_manifest("acme-store-valkey", "valkey", "acme", "1.0.0"),
             b"lib a",
         );
         svc.install_store_plugin("first.tar.gz", &first)
@@ -3614,7 +3614,7 @@ mod tests {
         // A DIFFERENT plugin claiming the same alias -> conflict naming both.
         let clash = signed_tarball(
             &key,
-            test_manifest("other-store-redis", "redis", "acme", "1.0.0"),
+            test_manifest("other-store-valkey", "valkey", "acme", "1.0.0"),
             b"lib b",
         );
         let err = svc
@@ -3622,7 +3622,7 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(&err, AdminError::Conflict(msg)
-                if msg.contains("acme-store-redis") && msg.contains("other-store-redis")),
+                if msg.contains("acme-store-valkey") && msg.contains("other-store-valkey")),
             "names both plugins: {err:?}"
         );
         assert!(!dir.join("clash.tar.gz").exists());
@@ -3630,7 +3630,7 @@ mod tests {
         // Upgrading the SAME plugin in place (same name, same file) is allowed.
         let upgrade = signed_tarball(
             &key,
-            test_manifest("acme-store-redis", "redis", "acme", "1.1.0"),
+            test_manifest("acme-store-valkey", "valkey", "acme", "1.1.0"),
             b"lib a v2",
         );
         svc.install_store_plugin("first.tar.gz", &upgrade)

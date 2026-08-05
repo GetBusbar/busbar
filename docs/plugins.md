@@ -2,7 +2,7 @@
 
 Busbar ships as one small static binary (see the image-size badge on the repo) with nothing
 compiled in that you did not ask for: no SQLite built in — add it as a signed plugin — no Postgres,
-no Redis. The default deploy needs no plugins at all. When you do need more, a durable store, a
+no Valkey. The default deploy needs no plugins at all. When you do need more, a durable store, a
 secret backend, auth or hook modules, you add exactly that capability as a signed plugin tarball
 dropped into a directory. Lightweight by default, extend when needed.
 
@@ -36,15 +36,15 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
 
 ```json
 {
-  "name": "busbar-store-valkey",
-  "alias": "redis",
+  "name": "busbar-store-valkey-plugin",
+  "alias": "valkey",
   "kind": "store",
   "version": "1.5.0",
   "publisher": "busbar",
   "abi_version": 2,
   "sha256": "<64-hex sha256 of the cdylib bytes>",
   "signature": "<128-hex ed25519 signature over the canonical manifest>",
-  "description": "busbar redis store plugin",
+  "description": "busbar valkey store plugin",
   "homepage": "",
   "license": "Apache-2.0"
 }
@@ -85,8 +85,8 @@ you can name the tarball anything.
 > product (busbar-ui) does exactly this, and its own test fixtures deliberately include an `&`,
 > `<`, and `>` in a URL field to keep the case covered.
 
-`name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
-config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
+`name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey-plugin`); `alias` is the short
+config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
 cdylib was built against — it is set **per kind**: `store` and `auth` are at `2`, `secret` and
 `hook` at `1` (auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives). The loader
@@ -111,12 +111,12 @@ plugins:
     acme-store-dynamo: "2.0.0"
 
 store:
-  module: redis          # alias or canonical name, resolved against the signed manifests
-  settings: { url: "rediss://:password@redis.internal:6380/0" }
+  module: valkey          # alias or canonical name, resolved against the signed manifests
+  settings: { url: "rediss://:password@valkey.internal:6380/0" }
 ```
 
 With `enabled: false` (or the block absent) a tarball in the directory is inert: Busbar does not
-read it, and referencing a plugin store (`store.module: redis`) fails boot with an error naming
+read it, and referencing a plugin store (`store.module: valkey`) fails boot with an error naming
 `plugins.enabled`. See [configuration.md](configuration.md#plugins) for the field reference.
 
 ## Building a store plugin
@@ -515,7 +515,7 @@ receive more than it declared.
 Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
 signing identity, but the *release* it ships from depends on the plugin:
 
-- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-valkey`), the
+- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-valkey-plugin`), the
   **auth plugin** (`busbar-auth-oidc`), and the **secret plugin** (`busbar-hashicorp-vault`) each
   live in their own standalone repo (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`,
   `GetBusbar/store-valkey`, `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and
@@ -567,8 +567,8 @@ get code executed, and a compromised or replayed plugin must not load.
    With plugins enabled, ANY invalid artifact in the directory aborts boot with the file and the
    exact reason named. There is no partial or degraded boot.
 5. **Conflicts are hard errors.** No two loadable plugins may share a name or alias, and no alias
-   may collide with another plugin's name. You cannot run the first-party `redis` store and a
-   third-party plugin that also claims `redis`; boot stops and names both.
+   may collide with another plugin's name. You cannot run the first-party `valkey` store and a
+   third-party plugin that also claims `valkey`; boot stops and names both.
 6. **Verified bytes are the loaded bytes.** The tarball is unpacked and verified fully in memory;
    the manifest never touches disk. On Linux the verified library bytes go into a `memfd` and are
    loaded from `/proc/self/fd/N`: zero disk files, no path for anyone to race or swap. On macOS
@@ -603,12 +603,12 @@ load fail-closed. See [ADR-0010](adr/0010-plugin-licensing.md) for the full mode
 ```sh
 $ busbar --list-plugins
 plugins dir: plugins (plugins.enabled: true)
-FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS
-busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey      redis        store  1.5.0     first-party              LOADS (store.module: redis)
-busbar-store-sqlite-1.5.0.tar.gz   busbar-store-sqlite      sqlite       store  1.5.0     first-party              ready
-acme-store-dynamo-1.0.0.tar.gz     acme-store-dynamo        dynamo       store  1.0.0     unknown-publisher        SKIPPED: publisher 'acme' is not in the allowlist; ...
-old-redis.tar.gz                   busbar-store-valkey      redis        store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
-broken.tar.gz                      -                        -            -      -         INVALID                  INVALID: manifest.json does not parse: ...
+FILE                               NAME                        ALIAS    KIND   VERSION   SIGNATURE                STATUS
+busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey-plugin  valkey   store  1.5.0     first-party              LOADS (store.module: valkey)
+busbar-store-sqlite-1.5.0.tar.gz   busbar-store-sqlite-plugin  sqlite   store  1.5.0     first-party              ready
+acme-store-dynamo-1.0.0.tar.gz     acme-store-dynamo           dynamo   store  1.0.0     unknown-publisher        SKIPPED: publisher 'acme' is not in the allowlist; ...
+old-valkey.tar.gz                  busbar-store-valkey-plugin  valkey   store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
+broken.tar.gz                      -                           -        -      -         INVALID                  INVALID: manifest.json does not parse: ...
 ```
 
 `--list-plugins` is manifest-only: it never loads plugin code, so it is safe to run against a

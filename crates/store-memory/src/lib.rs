@@ -496,7 +496,7 @@ mod tests {
     }
 
     /// Additive per-model delta accumulate: two adds sum, a second model materializes its own row,
-    /// and negative deltas floor at 0 (parity contract with sqlite/postgres/redis).
+    /// and negative deltas floor at 0 (parity contract with sqlite/postgres/valkey).
     #[test]
     fn add_usage_accumulates_per_model() {
         let s = MemoryStore::new();

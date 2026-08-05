@@ -2070,3 +2070,110 @@ pools:
         );
     }
 }
+
+/// 1.5.3 §C — the redis→valkey rename. The first-party Valkey store plugin was renamed
+/// wholesale: repo, crate, artifact, manifest NAME (`busbar-store-valkey-plugin`) and the config
+/// ALIAS (`valkey`). Nothing resolves `redis` any more — the loader matches a `store.module:` against
+/// the installed manifests' `name`/`alias`, and neither spelling exists on the renamed artifact — so
+/// an un-migrated `store.module: redis` is not a "wrong backend", it is a boot that cannot find its
+/// store at all.
+///
+/// Both halves of the contract are asserted here:
+///   (a) `detect_legacy_markers` LOUD-FAILS boot/`--validate` with a marker naming the old spelling,
+///       the new one, and the `--migrate-config` breadcrumb — instead of the generic
+///       "does not match any plugin" the loader would otherwise produce.
+///   (b) `--migrate-config` mechanically rewrites the value, records a `changes` entry, and is
+///       idempotent (a config already saying `valkey` is untouched and un-flagged).
+///
+/// RED-BEFORE-GREEN: before `migrate_store_module` existed the migrated document still said
+/// `redis` and `detect_legacy_markers` returned nothing for it.
+#[test]
+fn migrate_store_module_redis_to_valkey() {
+    for old in ["redis", "busbar-store-redis", "busbar-store-redis-plugin"] {
+        let raw = format!(
+            "store:\n  module: {old}\n  settings: {{ url: \"redis://127.0.0.1:6379/0\" }}\n\
+             providers: {{}}\nmodels: {{}}\npools: {{}}\n"
+        );
+
+        // (a) the loud fail-closed detector.
+        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let joined = detect_legacy_markers(&doc).join("\n");
+        assert!(
+            joined.contains(old) && joined.contains("valkey"),
+            "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
+             got: {joined}"
+        );
+
+        // (b) the mechanical rewrite.
+        let (out, doc) = migrate_to_value(&raw);
+        assert_eq!(
+            dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
+            Some("valkey"),
+            "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
+            out.yaml
+        );
+        // The settings bag rides along untouched — the URL SCHEME is the upstream driver's, not a
+        // busbar-owned name, so the migrator must not touch it.
+        assert_eq!(
+            dig(&doc, &["store", "settings", "url"]).and_then(|v| v.as_str()),
+            Some("redis://127.0.0.1:6379/0"),
+            "the operator's connection URL must survive verbatim; migrated:\n{}",
+            out.yaml
+        );
+        assert!(
+            out.changes.iter().any(|c| c.contains("store.module")),
+            "the rewrite must be RECORDED in the change ledger; got {:?}",
+            out.changes
+        );
+
+        // The migrated document must not itself trip the detector (the operator ran the migrator;
+        // running it again must not keep telling them to run it).
+        assert!(
+            detect_legacy_markers(&doc).is_empty(),
+            "the migrated document still trips the 1.x detector: {:?}",
+            detect_legacy_markers(&doc)
+        );
+    }
+
+    // IDEMPOTENT: a config already on the new alias is untouched and un-flagged.
+    let already = "store:\n  module: valkey\nproviders: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_to_value(already);
+    assert_eq!(
+        dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
+        Some("valkey")
+    );
+    assert!(
+        !out.changes.iter().any(|c| c.contains("store.module")),
+        "a config already on the new alias must produce no store.module change; got {:?}",
+        out.changes
+    );
+    // …and an UNRELATED store module is not touched either.
+    let other = "store:\n  module: postgres\nproviders: {}\nmodels: {}\npools: {}\n";
+    let (_, doc) = migrate_to_value(other);
+    assert_eq!(
+        dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
+        Some("postgres")
+    );
+}
+
+/// B1 (see `a_wrong_shaped_key_is_never_taken_and_discarded`) for the 1.5.3 store rename: a `store:`
+/// block written in a shape the rename cannot read is LEFT EXACTLY AS WRITTEN, in place, and named
+/// in `todos` — never lifted out of the document and dropped. An absent `store:` is the legal
+/// `memory` default, so a silent drop here would turn a durable deployment ephemeral and still pass
+/// `--validate`: precisely the failure mode `Taken` exists to make structurally impossible.
+#[test]
+fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
+    let raw = "store: redis\nproviders: {}\nmodels: {}\npools: {}\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert_eq!(
+        dig(&doc, &["store"]).and_then(|v| v.as_str()),
+        Some("redis"),
+        "a scalar `store:` must be left EXACTLY as written, never dropped; migrated:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.starts_with("store:")),
+        "the malformed `store:` was preserved but not reported; todos: {:?}",
+        out.todos
+    );
+}

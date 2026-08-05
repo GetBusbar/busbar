@@ -1992,7 +1992,10 @@ mod tests {
         let doc = OverlayDoc {
             plugin_versions: BTreeMap::from([
                 ("acme-store-x".to_string(), "1.4.0".to_string()),
-                ("busbar-store-redis".to_string(), "1.5.0".to_string()),
+                (
+                    "busbar-store-valkey-plugin".to_string(),
+                    "1.5.0".to_string(),
+                ),
             ]),
             ..Default::default()
         };
@@ -2021,7 +2024,7 @@ mod tests {
             deploy
                 .plugins
                 .first_party_floors
-                .get("busbar-store-redis")
+                .get("busbar-store-valkey-plugin")
                 .map(String::as_str),
             Some("1.5.0"),
         );

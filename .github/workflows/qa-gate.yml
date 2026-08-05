@@ -67,8 +67,9 @@ jobs:
       # checkout steps that drift (the 1.5.0 ship found the hand-written list covering 6 of 8).
       #
       # Per-entry knobs the old hand-written steps carried now live in the registry:
-      #   - checkout_dir: clone destination when it differs from the repo name (store-valkey →
-      #     store-redis, the legacy sibling path release-check.sh and local checkouts still use).
+      #   - checkout_dir: clone destination when it differs from the repo name. No entry needs it
+      #     today (the last user, the Valkey store, was renamed repo-and-directory in 1.5.3); the
+      #     knob stays for the next repo rename.
       #   - checkout_ref: non-default branch to clone (headroom-hook pins `dev` — it carries the
       #     sibling-relative-path dependency fix this build actually needs; mirrors busbar's own
       #     main/dev split. Formerly a hand-written `ref: dev` here — see plugins.yaml).
@@ -118,7 +119,7 @@ jobs:
         with:
           workspaces: busbarAI
 
-      - name: Confirm Docker is available (Postgres/Redis phases need it)
+      - name: Confirm Docker is available (Postgres/Valkey phases need it)
         run: docker ps
         working-directory: busbarAI
 

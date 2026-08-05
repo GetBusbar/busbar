@@ -1,6 +1,6 @@
 # plugin-ci — the ONE canonical build/test/signoff pipeline every first-party plugin repo calls,
 # via `workflow_call`, instead of hand-copying a ci.yml into each repo. That copying already
-# drifted once (store-redis's manual health-check step used a `redis-cli` binary the runner didn't
+# drifted once (store-valkey's manual health-check step used a `valkey-cli` binary the runner didn't
 # have; the other three repos didn't have that bug because they never had that step at all) — this
 # file exists so every plugin repo's CI is the SAME file, not a fork of it.
 #
@@ -8,7 +8,7 @@
 #   1. Checkout the plugin + a sibling checkout of busbar (this repo) at BUSBAR_REF — the same
 #      interim local-path-dependency pattern every plugin's Cargo.toml already uses. Update
 #      BUSBAR_REF's default below once 1.5.0 ships and plugins can track `main` again.
-#   2. Optionally boot a real backend service container (`postgres:16` / `redis:7` /
+#   2. Optionally boot a real backend service container (`postgres:16` / `valkey/valkey:8` /
 #      `hashicorp/vault` dev-mode) — never a mock. `pg_isready`/the image's own Docker healthcheck
 #      (or, for vault, a `wget` against its own `/v1/sys/health` endpoint) gates every later step so
 #      nothing races an unready service.
@@ -41,7 +41,7 @@ on:
         required: true
         type: string
       service:
-        description: "none | postgres | redis | vault | mysql | wiremock | openldap — which real backend service container to boot"
+        description: "none | postgres | valkey | vault | mysql | wiremock | openldap — which real backend service container to boot"
         required: false
         type: string
         default: "none"
@@ -77,15 +77,15 @@ jobs:
           - 5432:5432
         options: >-
           ${{ inputs.service == 'postgres' && '--health-cmd "pg_isready -U busbar" --health-interval 10s --health-timeout 5s --health-retries 5' || '' }}
-      redis:
-        image: ${{ inputs.service == 'redis' && 'redis:7' || '' }}
+      valkey:
+        image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8' || '' }}
         ports:
           - 6379:6379
-        # Runs INSIDE the container (it has its own redis-cli — the runner does not); GitHub
+        # Runs INSIDE the container (it has its own valkey-cli — the runner does not); GitHub
         # Actions blocks every job step from starting until this reports healthy, so no separate
-        # manual "wait for redis" step is needed or correct here.
+        # manual "wait for valkey" step is needed or correct here.
         options: >-
-          ${{ inputs.service == 'redis' && '--health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10' || '' }}
+          ${{ inputs.service == 'valkey' && '--health-cmd "valkey-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10' || '' }}
       # Real MySQL 8 server (BUSBAR_TEST_MYSQL_URL, set on the Test steps below). `sql_mode` is a
       # dynamic variable (no restart needed) so strict mode is set via `SET GLOBAL` in a step below
       # once the container's healthy, rather than a boot flag — GitHub's `services:` block has no
@@ -176,7 +176,10 @@ jobs:
           # Both conventional service-URL env var names are set whenever a service is active; a
           # plugin's tests read whichever one applies to it and ignore the other.
           BUSBAR_TEST_POSTGRES_URL: ${{ inputs.service == 'postgres' && 'postgres://busbar:busbar@localhost:5432/busbar_test' || '' }}
-          REDIS_URL: ${{ inputs.service == 'redis' && 'redis://localhost:6379/0' || '' }}
+          # `redis://` is the VALKEY driver's own URL SCHEME (Valkey is wire-compatible and the
+          # upstream client crate registers exactly that scheme) — an unrenamable upstream
+          # identifier, not a busbar-owned name. The env var IS busbar-owned, so it is VALKEY_URL.
+          VALKEY_URL: ${{ inputs.service == 'valkey' && 'redis://localhost:6379/0' || '' }}
           BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
           BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
           BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
@@ -192,7 +195,7 @@ jobs:
         working-directory: busbarAI
         env:
           BUSBAR_TEST_POSTGRES_URL: ${{ inputs.service == 'postgres' && 'postgres://busbar:busbar@localhost:5432/busbar_test' || '' }}
-          REDIS_URL: ${{ inputs.service == 'redis' && 'redis://localhost:6379/0' || '' }}
+          VALKEY_URL: ${{ inputs.service == 'valkey' && 'redis://localhost:6379/0' || '' }}
           BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
           BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
           BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
@@ -358,8 +361,8 @@ jobs:
           # restart. busbar's restart deliberately does not self-respawn (supervisor_detected), so
           # this step plays supervisor and relaunches it itself.
           # Empty `settings: {}` only works for a plugin with a usable default for every required
-          # field (sqlite's default file path, redis's default localhost) -- postgres and mysql
-          # have no sensible default connection target and correctly REFUSE to open() without one,
+          # field (sqlite's default file path) -- postgres, mysql and valkey have no sensible
+          # default connection target and correctly REFUSE to open() without one,
           # which means the restarted busbar process below never comes back up and every later
           # curl in this step fails with "Failed to connect" (exit 7). Inject real settings for the
           # backends that actually need them, matching the service containers' own credentials
@@ -373,7 +376,7 @@ jobs:
             # Logical DB 5, NOT the default 0: the repo's own `cargo test` step ran against this
             # same service container minutes earlier and its e2e keys persist (a minted key naming
             # a group absent from this step's minimal config fail-closes the restarted boot).
-            redis)    STORE_SETTINGS='{"url": "redis://127.0.0.1:6379/5"}' ;;
+            valkey)   STORE_SETTINGS='{"url": "redis://127.0.0.1:6379/5"}' ;;
             *)        STORE_SETTINGS='{}' ;;
           esac
           echo "set store module..."
@@ -433,7 +436,7 @@ jobs:
           case "${{ inputs.service }}" in
             postgres) STORE_SETTINGS_FLOW='{ url: "postgres://busbar:busbar@127.0.0.1:5432/busbar_test" }' ;;
             mysql)    STORE_SETTINGS_FLOW='{ url: "mysql://busbar:busbar@127.0.0.1:3306/busbar_test" }' ;;
-            redis)    STORE_SETTINGS_FLOW='{ url: "redis://127.0.0.1:6379/6" }' ;;  # own DB — see the redis notes above
+            valkey)   STORE_SETTINGS_FLOW='{ url: "redis://127.0.0.1:6379/6" }' ;;  # own DB — see the valkey notes above
             *)        STORE_SETTINGS_FLOW='{}' ;;
           esac
           # Ephemeral signing key (see the INSTALL-AND-SERVE step above): auth.chain names `keys`,

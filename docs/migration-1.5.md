@@ -166,7 +166,7 @@ from the token ledger × the current `rate_card` + the flat `per_request_fee`. M
 ## 5. Store: durable backends are signed plugins; `memory` is the default
 
 The default store is now `memory` — the compiled-in **ephemeral** RAM store (keys, usage, audit
-reset on restart). Every durable backend (`sqlite` / `postgres` / `redis`) is a signed plugin
+reset on restart). Every durable backend (`sqlite` / `postgres` / `valkey`) is a signed plugin
 tarball loaded through `plugins`, so it requires `plugins.enabled: true` and the tarball in
 `plugins.dir`.
 
@@ -174,9 +174,11 @@ tarball loaded through `plugins`, so it requires `plugins.enabled: true` and the
 # 1.5.0
 plugins: { enabled: true, dir: /etc/busbar/plugins }
 store:
-  module: postgres                                 # or sqlite / redis, or memory (default)
+  module: postgres                                 # or sqlite / valkey, or memory (default)
   settings: { url: "postgres://user:pass@host/busbar" }
 ```
+
+> **Renamed in 1.5.3 — the only place these words still appear:** the first-party Redis-protocol store plugin is now **Valkey**. `store.module: redis` → `valkey`, artifact `busbar-store-redis-*.tar.gz` → `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` → `busbar-store-valkey-plugin`. `busbar --migrate-config` rewrites the module for you and boot loud-fails on the old spelling; install the renamed tarball, and leave your `settings.url` alone (`redis://` / `rediss://` is the driver's URL scheme, not a Busbar name). Any `plugins.min_versions` / pinned version floor keyed by the OLD name no longer applies — re-pin it under the new name if you rely on it.
 
 See [Configuration → `store`](configuration.md#store) and [plugins.md](plugins.md).
 
@@ -260,7 +262,7 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 - [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-webrequest-hook` for the HTTP sidecar), referenced by bare name
 - [ ] `governance:` → `groups:` + `rate_card:` + `per_request_fee:` + `store:`
 - [ ] per-key `rpm_limit`/`tpm_limit`/`max_budget_cents`/`budget_period` → group `limits:`
-- [ ] durable store → `store: { module: sqlite|postgres|redis }` + `plugins.enabled: true` (default is ephemeral `memory`)
+- [ ] durable store → `store: { module: sqlite|postgres|valkey }` + `plugins.enabled: true` (default is ephemeral `memory`)
 - [ ] tls `cert_file`/`key_file`/`client_ca_file` → `cert`/`key`/`client_ca` secret references
 - [ ] provider `api_key_env:` → `api_key: { env: VAR }`
 - [ ] `busbar --validate`, then **re-mint every virtual key** (1.4.x keys no longer authenticate)

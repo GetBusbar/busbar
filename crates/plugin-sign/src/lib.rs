@@ -10,8 +10,8 @@
 //!
 //! The manifest carries:
 //!
-//! - **identity**: `name` (canonical, e.g. `busbar-store-redis`), `alias` (the short config name,
-//!   e.g. `redis`), `kind` (`store` | `auth` | `hook` | `secret`), `version` (semver);
+//! - **identity**: `name` (canonical, e.g. `busbar-store-valkey-plugin`), `alias` (the short config name,
+//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret`), `version` (semver);
 //! - **binding + compat**: `sha256` (of the library bytes, pinning the manifest to that exact
 //!   binary) and `abi_version` (which busbar C ABI the cdylib exports for its `kind`);
 //! - **authenticity**: `publisher` + `signature` over the *canonical whole manifest*;
@@ -95,9 +95,9 @@ pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    /// Canonical plugin name, e.g. `busbar-store-redis`. Lowercase `[a-z0-9-]+`.
+    /// Canonical plugin name, e.g. `busbar-store-valkey-plugin`. Lowercase `[a-z0-9-]+`.
     pub name: String,
-    /// Short config alias, e.g. `redis` - what `governance.store:` may reference. Lowercase
+    /// Short config alias, e.g. `valkey` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
     /// Plugin category: `store` | `secret` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
@@ -910,7 +910,11 @@ mod tests {
         let artifact = b"\x7fELF first-party plugin";
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER),
+            manifest(
+                "busbar-store-valkey-plugin",
+                "valkey",
+                FIRST_PARTY_PUBLISHER,
+            ),
             artifact,
         );
         // Manifest round-trips through JSON (it travels inside the tarball).
@@ -988,7 +992,11 @@ mod tests {
     fn first_party_version_floats_free_of_the_binary_version() {
         let release = test_key(1);
         let artifact = b"current first-party build on its own version line";
-        let mut m = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
+        let mut m = manifest(
+            "busbar-store-valkey-plugin",
+            "valkey",
+            FIRST_PARTY_PUBLISHER,
+        );
         m.version = "1.0.1".into(); // binary is 1.5.0 — and that must not matter
         let m = sign(&release, m, artifact);
         let pol = policy(Some(&release), &[], false, false);
@@ -1006,9 +1014,10 @@ mod tests {
         // A per-name floor (rollback pin / registry floor) still hard-rejects below it, and no
         // loose opt-in flag can launder that (verified first-party never consults opt-ins).
         let mut floored = policy(Some(&release), &[], true, true);
-        floored
-            .first_party_floors
-            .insert("busbar-store-redis".to_string(), "1.0.2".to_string());
+        floored.first_party_floors.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "1.0.2".to_string(),
+        );
         let err = evaluate(artifact, &m, &floored).unwrap_err();
         assert!(
             err.reason.contains("first-party anti-downgrade"),
@@ -1024,7 +1033,11 @@ mod tests {
         let release = test_key(1);
         let artifact_a = b"old first-party A";
         let artifact_b = b"old first-party B";
-        let mut a = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
+        let mut a = manifest(
+            "busbar-store-valkey-plugin",
+            "valkey",
+            FIRST_PARTY_PUBLISHER,
+        );
         a.version = "1.4.0".into();
         let a = sign(&release, a, artifact_a);
         let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
@@ -1033,8 +1046,10 @@ mod tests {
 
         // Floor A at 1.4.1 (above what A ships) and leave B unpinned.
         let mut pol = policy(Some(&release), &[], false, false);
-        pol.first_party_floors
-            .insert("busbar-store-redis".to_string(), "1.4.1".to_string());
+        pol.first_party_floors.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "1.4.1".to_string(),
+        );
 
         // A is below ITS OWN floor and is rejected.
         let err = evaluate(artifact_a, &a, &pol).unwrap_err();
@@ -1061,7 +1076,11 @@ mod tests {
         let artifact = b"bytes";
         let m = sign(
             &release,
-            manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER),
+            manifest(
+                "busbar-store-valkey-plugin",
+                "valkey",
+                FIRST_PARTY_PUBLISHER,
+            ),
             artifact,
         );
         // No embedded key in this build: default posture rejects, naming the situation.
@@ -1095,7 +1114,11 @@ mod tests {
         // Attacker signs a busbar-branded manifest with their own key.
         let m = sign(
             &attacker,
-            manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER),
+            manifest(
+                "busbar-store-valkey-plugin",
+                "valkey",
+                FIRST_PARTY_PUBLISHER,
+            ),
             artifact,
         );
         // Embedded key present, attacker NOT in publishers. Default posture: rejected as unsigned
@@ -1137,7 +1160,11 @@ mod tests {
     fn stripped_signature_old_first_party_is_rejected_by_default() {
         let release = test_key(1);
         let artifact = b"old vulnerable first-party build";
-        let mut old = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
+        let mut old = manifest(
+            "busbar-store-valkey-plugin",
+            "valkey",
+            FIRST_PARTY_PUBLISHER,
+        );
         old.version = "1.0.0".into(); // below the 1.5.0 binary
         let old = sign(&release, old, artifact);
         // Strip the (valid) signature: now it is an unsigned artifact claiming to be busbar.
@@ -1183,7 +1210,7 @@ mod tests {
         assert!(evaluate(artifact, &forged, &pol).is_err());
         // Flip the ALIAS (the config-selection identity): signature must break.
         let mut forged = m.clone();
-        forged.alias = "redis".into();
+        forged.alias = "valkey".into();
         assert!(evaluate(artifact, &forged, &pol).is_err());
         // Swap the library under a good manifest -> hash mismatch.
         assert!(evaluate(b"different!", &m, &pol).is_err());
@@ -1274,13 +1301,13 @@ mod tests {
 
     #[test]
     fn name_and_semver_validators() {
-        assert!(valid_name("busbar-store-redis"));
-        assert!(valid_name("redis"));
+        assert!(valid_name("busbar-store-valkey-plugin"));
+        assert!(valid_name("valkey"));
         assert!(!valid_name(""));
-        assert!(!valid_name("Redis"));
+        assert!(!valid_name("Valkey"));
         assert!(!valid_name("re dis"));
-        assert!(!valid_name("-redis"));
-        assert!(!valid_name("redis-"));
+        assert!(!valid_name("-valkey"));
+        assert!(!valid_name("valkey-"));
         assert!(!valid_name("../evil"));
         assert!(valid_semver("1.5.0"));
         assert!(valid_semver("1.5.0-rc1"));
@@ -1439,13 +1466,19 @@ mod tests {
     fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
         let release = test_key(1);
         let artifact = b"old first-party build";
-        let mut old = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
+        let mut old = manifest(
+            "busbar-store-valkey-plugin",
+            "valkey",
+            FIRST_PARTY_PUBLISHER,
+        );
         old.version = "1.0.0".into(); // below `binary_version` ("1.5.0", set by `policy()`)
         let old = sign(&release, old, artifact);
 
         let mut pol = policy(Some(&release), &[], false, false);
-        pol.first_party_floors
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+        pol.first_party_floors.insert(
+            "busbar-store-valkey-plugin".to_string(),
+            "v9.9.9".to_string(),
+        );
 
         let err = evaluate(artifact, &old, &pol).unwrap_err();
         assert_eq!(err.kind, RejectKind::AntiDowngrade);
@@ -1579,8 +1612,8 @@ mod tests {
         let key = test_key(1);
         let artifact = b"pre-existing manifest bytes";
         let json = r#"{
-            "name": "busbar-store-redis",
-            "alias": "redis",
+            "name": "busbar-store-valkey-plugin",
+            "alias": "valkey",
             "kind": "store",
             "version": "1.5.0",
             "publisher": "acme",
@@ -1604,7 +1637,7 @@ mod tests {
     fn manifest_with_host_busbar_loads() {
         let key = test_key(1);
         let artifact = b"same-host bytes";
-        let mut m = manifest("busbar-store-redis", "redis", "acme");
+        let mut m = manifest("busbar-store-valkey-plugin", "valkey", "acme");
         m.host = Some(HOST_IDENTITY.to_string());
         let m = sign(&key, m, artifact);
         validate_structure(&m, artifact, &abi, HOST_IDENTITY)

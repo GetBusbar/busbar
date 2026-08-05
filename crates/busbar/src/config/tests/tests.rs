@@ -2810,8 +2810,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let old = sign(
         &release,
         Manifest {
-            name: "busbar-store-redis".into(),
-            alias: "redis".into(),
+            name: "busbar-store-valkey-plugin".into(),
+            alias: "valkey".into(),
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
             publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
@@ -2853,9 +2853,10 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
     // it loads; the pin binds and nothing older passes (asserted below).
     let mut explicit = cfg.to_policy().expect("explicit policy");
-    explicit
-        .first_party_floors
-        .insert("busbar-store-redis".to_string(), "0.9.0".to_string());
+    explicit.first_party_floors.insert(
+        "busbar-store-valkey-plugin".to_string(),
+        "0.9.0".to_string(),
+    );
     explicit.first_party_key = Some(release.verifying_key());
     assert!(
         matches!(
@@ -2873,8 +2874,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let older = sign(
         &release,
         Manifest {
-            name: "busbar-store-redis".into(),
-            alias: "redis".into(),
+            name: "busbar-store-valkey-plugin".into(),
+            alias: "valkey".into(),
             kind: "store".into(),
             version: "0.8.0".into(),
             publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
