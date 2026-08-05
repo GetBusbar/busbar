@@ -299,11 +299,18 @@ jobs:
           # at validate/boot. Without it busbar exits 1 with "auth.signing_key is required".
           "$PWD/busbarAI/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
           cat > "$WORKDIR/config.yaml" <<EOF
+          # 1.5.3 define-once auth grammar: an identity provider is declared ONCE under
+          # identity-providers: (module + its own config) and referenced from the chains by BARE
+          # NAME. The pre-1.5.3 inline form (admin_auth: - admin-tokens: { token: ... }) is a
+          # retired marker that detect_legacy_markers fail-closes on, so busbar never boots.
+          identity-providers:
+            admin-tokens:
+              module: admin-tokens
+              token: { env: BUSBAR_ADMIN_TOKEN }
           auth:
             chain: [keys]
             signing_key: { file: $WORKDIR/signing.key }
-            admin_auth:
-              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+            admin_auth: [admin-tokens]
           # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
           # ephemeral key and the binary above embeds the matching public key, so acceptance here
           # exercises the real first-party signature verification path.
@@ -443,11 +450,15 @@ jobs:
           # so auth.signing_key is REQUIRED at validate/boot (1.5.1+, no auto-generation).
           "$PWD/busbarAI/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
           cat > "$WORKDIR/config.yaml" <<EOF
+          # 1.5.3 define-once auth grammar — see the INSTALL-AND-SERVE step above.
+          identity-providers:
+            admin-tokens:
+              module: admin-tokens
+              token: { env: BUSBAR_ADMIN_TOKEN }
           auth:
             chain: [keys]
             signing_key: { file: $WORKDIR/signing.key }
-            admin_auth:
-              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+            admin_auth: [admin-tokens]
           # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
           # ephemeral key and the binary above embeds the matching public key, so acceptance here
           # exercises the real first-party signature verification path.
@@ -598,20 +609,31 @@ jobs:
           listen: "127.0.0.1:8080"
           admin_listen: "127.0.0.1:8081"
           public_url: "https://gate.busbar.ci"
+          # 1.5.3 define-once auth grammar: BOTH planes are lists of BARE NAMES into
+          # identity-providers:. The retired inline forms (a map-shaped chain/admin_auth entry) are
+          # markers detect_legacy_markers fail-closes on. role_bindings: keys off the provider NAME,
+          # so keeping the definition named "oidc" keeps the binding below working unchanged.
+          # oidc's own parameters live in its settings: bag (a SIBLING of module:, per
+          # IdentityProviderCfg — issuer/audience/... at the definition level is a deny_unknown_fields
+          # rejection). ca_cert_pem's block scalar is emitted at column 12 by the sed above, deeper
+          # than the 6-column key, so the block still parses at this shallower nesting.
+          identity-providers:
+            admin-tokens:
+              module: admin-tokens
+              token: { env: BUSBAR_ADMIN_TOKEN }
+            oidc:
+              module: oidc
+              settings:
+                issuer: "$ISS"
+                audience: "$AUD"
+                jwks_url: "https://127.0.0.1:8443/jwks.json"
+                ca_cert_pem: |
+          $CA_PEM
           auth:
             key_ttl: "7d"
             signing_key: { file: "$WORKDIR/signing.key" }
-            chain:
-              - keys
-              - oidc:
-                  settings:
-                    issuer: "$ISS"
-                    audience: "$AUD"
-                    jwks_url: "https://127.0.0.1:8443/jwks.json"
-                    ca_cert_pem: |
-          $CA_PEM
-            admin_auth:
-              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+            chain: [keys, oidc]
+            admin_auth: [admin-tokens]
             role_bindings:
               oidc:
                 eng:
