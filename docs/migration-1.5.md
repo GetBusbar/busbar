@@ -429,7 +429,10 @@ identity-providers:
   oidc:
     module: oidc
     settings: { issuer: "https://idp.example.com/", audience: "busbar" }
-    max_admin_scope: none          # per-provider admin ceiling, on the DEFINITION
+    #                              # per-provider admin ceiling, on the DEFINITION:
+    #                              # OMIT max_admin_scope for the most restrictive default
+    #                              # (read-only). The only accepted values are `read-only`
+    #                              # and `full`.
 
 hooks:                             # define once…
   audit: { module: busbar-audit-hook, kind: tap, phase: [response] }
@@ -469,7 +472,7 @@ purpose.
 
 - [ ] `busbar --migrate-config config.yaml > config-1.5.3.yaml`, then `busbar --validate`
 - [ ] `global_hooks:` + every inline hook instance → a top-level `hooks:` definition map + bare-name `pools.hooks:` / `pools.<p>.hooks:` lists
-- [ ] every inline `auth.chain` / `auth.admin_auth` entry and every `auth.methods:` / `auth.modules:` entry → an `identity-providers:` definition, referenced by bare name (put `max_admin_scope:` on the definition; prefer `none` for an external IdP)
+- [ ] every inline `auth.chain` / `auth.admin_auth` entry and every `auth.methods:` / `auth.modules:` entry → an `identity-providers:` definition, referenced by bare name (`max_admin_scope:` belongs on the definition; its only accepted values are `read-only` and `full` — for an external IdP, OMIT it and get the most restrictive default, `read-only`)
 - [ ] `observability:` + top-level `metrics:` → `export:` instances (`prometheus` / `otlp` / `request-log-webhook` / `request-log-file`)
 - [ ] `observability.emit_server_timing` → `advanced.response_headers.server_timing`
 - [ ] `admin_insecure: true` → `admin_require_mtls: false` (or drop it and keep the safe default)

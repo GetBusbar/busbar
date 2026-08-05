@@ -47,7 +47,8 @@ identity-providers:
   # corp-ad:
   #   module: ad
   #   settings: { server: "ldaps://corp", base_dn: "dc=corp" }
-  #   max_admin_scope: none      # per-provider ADMIN ceiling; omitted = read-only (most restrictive)
+  #   max_admin_scope: read-only # per-provider ADMIN ceiling; `read-only` | `full` ONLY.
+  #                              # OMIT it for read-only, the most restrictive default.
 
 # auth.chain - an ORDERED list of identity-provider NAMES identifying the caller. `keys` is the
 # built-in signed-key verifier: clients present busbar-minted keys (POST /api/v1/admin/keys).
