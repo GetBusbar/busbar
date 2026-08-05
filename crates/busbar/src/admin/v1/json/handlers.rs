@@ -2374,7 +2374,8 @@ pub(crate) struct RestartReq {
 }
 
 /// `POST /api/v1/admin/restart` — apply the restart-scoped settings (`listen`, `admin_listen`,
-/// `tls`, `admin_tls`, `admin_insecure`, `store`) by restarting, so an operator never needs a shell.
+/// `tls`, `admin_tls`, `admin_require_mtls`, `store`) by restarting, so an operator never needs a
+/// shell.
 ///
 /// This drains through the SAME path a signal takes, so the final budget flush and the tracing
 /// shutdown happen exactly as they do on SIGTERM. It is deliberately not an
@@ -2878,8 +2879,8 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 /// the base `DeployCfg` (re-read from disk), re-resolved + re-validated (an invalid result is a `400`
 /// that changes NOTHING), built into a new `App`, and swapped in — so `rate_card`/`per_request_fee`/
 /// `security`/`limits`/… go LIVE immediately. The process-level binds
-/// (`listen`/`admin_listen`/`tls`/`admin_tls`/`admin_insecure`) and the durable `store` backend are
-/// stored + flagged RESTART-TO-APPLY (they cannot hot-swap — sockets/TLS are bound once at process
+/// (`listen`/`admin_listen`/`tls`/`admin_tls`/`admin_require_mtls`) and the durable `store` backend
+/// are stored + flagged RESTART-TO-APPLY (they cannot hot-swap — sockets/TLS bind once at process
 /// start and the store backend is reused across a hot reload; a RESTART makes them live) — the
 /// response's `reload_to_apply` names exactly which. Full scope; `If-Match` optimistic
 /// concurrency; audited (every attempt) + versioned; overlay-persisted so it survives a restart.
@@ -3933,7 +3934,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/restart"),
         json!({
             "post": {
-                "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back",
+                "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
                 "responses": {
                     "202": {"description": "`{restarting, supervisor_detected, note}` — draining; in-flight requests finish first"},
@@ -3952,7 +3953,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "put": {
-                "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
+                "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
