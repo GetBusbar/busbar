@@ -303,13 +303,23 @@ mock:
   base_url: "http://127.0.0.1:9"
 EOF
 # (1) NO signing_key — must fail-closed at --validate with the actionable error.
+# executable-config-lint: allow — DELIBERATELY INVALID: this config omits auth.signing_key precisely
+# so the assertion below can prove busbar fail-closes on it. It must never be "fixed".
+# NOTE on the auth shape used by every generated config in this script: 1.5.3 retired the INLINE
+# chain/admin_auth entry, so a provider is DEFINED once under `identity-providers:` and REFERENCED by
+# bare name. The old `admin_auth: [- admin-tokens: { token: … }]` is now a detect_legacy_markers hit
+# that refuses to boot — which would make this assertion pass for the WRONG reason: the config would
+# be rejected for its own grammar rather than for the missing signing_key it is testing.
 cat >"${sk_work}/config-nokey.yaml" <<EOF
 listen: "127.0.0.1:0"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
 auth:
   chain:
     - keys
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]
 providers:
   mock:
     api_key: { env: MOCK_KEY }
@@ -335,12 +345,15 @@ ok "keys verifier with no signing_key fail-closes at --validate with the expecte
 [ -s "${sk_work}/signing.key" ] || { echo "  --generate-signing-key produced no key" >&2; exit 1; }
 cat >"${sk_work}/config-key.yaml" <<EOF
 listen: "127.0.0.1:0"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
 auth:
   chain:
     - keys
   signing_key: { file: "${sk_work}/signing.key" }
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]
 providers:
   mock:
     api_key: { env: MOCK_KEY }
@@ -581,12 +594,15 @@ EOF
   cat >"${work}/config.yaml" <<EOF
 listen: "127.0.0.1:${listen_port}"
 admin_listen: "127.0.0.1:${admin_port}"
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
 auth:
   chain:
     - keys
   signing_key: { file: "${work}/signing.key" }
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  admin_auth: [admin-tokens]
 plugins:
   enabled: true
   dir: "${PLUGIN_DIST}"
