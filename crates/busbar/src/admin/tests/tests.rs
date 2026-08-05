@@ -3549,6 +3549,8 @@ async fn test_admin_v1_hooks_read_surface() {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     };
     let app = TestApp::new()
         .governance(gov)
@@ -3632,6 +3634,8 @@ async fn test_admin_v1_hook_health_best_effort() {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     };
     let app = TestApp::new()
         .governance(gov)
@@ -3709,6 +3713,8 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     };
     let app = TestApp::new().governance(gov).hook("myhook", gate).build();
     let router = crate::build_router(app);
@@ -3933,6 +3939,8 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         global: false,
         default: false,
         signals: Vec::new(),
+        groups: Vec::new(),
+        phase: Vec::new(),
     };
     let app = TestApp::new()
         .governance(gov)
@@ -10645,6 +10653,8 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
                 global: false,
                 default: false,
                 signals: Vec::new(),
+                groups: Vec::new(),
+                phase: Vec::new(),
             },
         )
         .build();

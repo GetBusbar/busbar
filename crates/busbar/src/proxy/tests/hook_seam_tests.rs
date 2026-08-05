@@ -581,19 +581,20 @@ impl crate::hooks::RoutingPolicy for CaptureTap {
 }
 
 /// Build an in-process TAP capture as the App stage-tap triple.
-async fn webhook_tap() -> (
-    Arc<CaptureTap>,
-    (
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    ),
-) {
+async fn webhook_tap() -> (Arc<CaptureTap>, crate::hooks::TapEntry) {
     let cap = Arc::new(CaptureTap {
         last: std::sync::Mutex::new(None),
     });
     let policy: Arc<dyn crate::hooks::RoutingPolicy> = cap.clone();
-    (cap, (std::time::Duration::from_millis(500), false, policy))
+    (
+        cap,
+        (
+            std::time::Duration::from_millis(500),
+            false,
+            policy,
+            Vec::new(),
+        ),
+    )
 }
 
 /// Poll the in-process tap capture until `notify` records a projection (taps are detached tasks).

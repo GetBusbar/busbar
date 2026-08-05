@@ -2319,6 +2319,8 @@ mod tests {
             global,
             default: false,
             signals: Vec::new(),
+            groups: Vec::new(),
+            phase: Vec::new(),
         }
     }
 

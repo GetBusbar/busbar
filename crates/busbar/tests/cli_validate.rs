@@ -533,7 +533,7 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
     let dir = fixture_dir("gate-hook");
     write_configs(
         &dir,
-        "global_hooks:\n  - kind: tap\n    module: webrequest\n    prompt: ro\n",
+        "hooks:\n  audit:\n    kind: tap\n    module: webrequest\n    prompt: ro\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1, "{stderr}");

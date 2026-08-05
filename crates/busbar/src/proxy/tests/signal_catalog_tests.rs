@@ -56,6 +56,8 @@ fn declaring_hook(signals: Vec<Signal>) -> crate::config::HookCfg {
         global: false,
         default: false,
         signals,
+        groups: Vec::new(),
+        phase: Vec::new(),
     }
 }
 

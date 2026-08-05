@@ -1146,6 +1146,10 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
                 outcome: Some("rejected_by_auth"),
                 status: Some(status),
             },
+            // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
+            // group-scoped taps do not (a groupless caller matches only an unscoped hook).
+            None,
+            &app.groups_registry,
         );
     }
     unauthorized_response(path)

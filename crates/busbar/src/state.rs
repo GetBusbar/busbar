@@ -270,33 +270,17 @@ pub(crate) struct App {
     /// carries the tap's `prompt: ro` grant so a granted tap receives the prompt-content projection and
     /// a `prompt: no` tap receives shape-only. Other stages (candidate/routing/response + synthetic
     /// rejected-completion) are follow-ups.
-    pub(crate) tap_hooks: Vec<(
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    )>,
+    pub(crate) tap_hooks: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub(crate) tap_hooks_candidate: Vec<(
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    )>,
+    pub(crate) tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
     /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub(crate) tap_hooks_routing: Vec<(
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    )>,
+    pub(crate) tap_hooks_routing: Vec<crate::hooks::TapEntry>,
     /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
     /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
     /// see gate denials too) and response status.
-    pub(crate) tap_hooks_response: Vec<(
-        std::time::Duration,
-        bool,
-        Arc<dyn crate::hooks::RoutingPolicy>,
-    )>,
+    pub(crate) tap_hooks_response: Vec<crate::hooks::TapEntry>,
     /// GLOBAL DECISION gates — the non-rewrite `kind: gate` hooks in `global_hooks`, resolved to
     /// their full `ResolvedPolicy` (transport + on_error/on_empty/grants), each with its `priority`.
     /// Fired CONCURRENTLY on every request in the phase-2 decision reconcile, merged with the pool's

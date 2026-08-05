@@ -52,8 +52,8 @@ fn base_deploy() -> DeployCfg {
         auth: None,
         providers: HashMap::new(),
         models: HashMap::new(),
-        pools: HashMap::new(),
-        global_hooks: Vec::new(),
+        pools: Default::default(),
+        hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
         per_request_fee: 0,
@@ -394,7 +394,7 @@ models:
     max_concurrent: 10
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
-    assert!(deploy.pools.is_empty());
+    assert!(deploy.pools.pools.is_empty());
     assert!(deploy.models.contains_key("claude"));
     assert_eq!(
         deploy.providers["anthropic"].api_key.env_var(),
@@ -638,8 +638,10 @@ fn test_pool_policy_strategies_parse() {
         let yaml = format!("hooks: [{name}]\nmembers: []\n");
         let pool: PoolCfg = serde_yaml::from_str(&yaml).expect("strategy name must parse");
         assert_eq!(pool.policy, expected, "{name} must parse to its strategy");
-        assert!(pool.gates.is_empty(), "gates stay empty until resolve()");
-        assert!(pool.module_hooks.is_empty());
+        assert!(
+            pool.gates.is_empty(),
+            "a strategy-only list references no hooks"
+        );
         assert!(pool.base_named, "a named strategy names the base");
     }
     // Absent hooks: defaults to the zero-cost weighted strategy; base NOT named, so the pool
@@ -647,7 +649,6 @@ fn test_pool_policy_strategies_parse() {
     let absent: PoolCfg = serde_yaml::from_str("members: []\n").expect("absent parses");
     assert_eq!(absent.policy, PoolPolicy::Weighted);
     assert!(absent.gates.is_empty());
-    assert!(absent.module_hooks.is_empty());
     assert!(!absent.base_named, "an absent hooks: did not name the base");
 }
 
@@ -675,58 +676,33 @@ fn test_pool_retired_keys_rejected() {
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
-/// The unified `hooks: [...]` pool form desugars into the internal (base policy, module refs)
-/// representation: an ordering-strategy name sets the base ranking, a `{ module: ... }` map is an
-/// inline hook instance. List order of module refs is preserved.
+/// The unified `hooks: [...]` pool form (1.5.3) mixes an optional ordering-strategy keyword with
+/// bare hook NAMES referencing the top-level `hooks:` definition map. The strategy sets the base
+/// ranking; every other bare name lands in `gates` in config order (no inline instances).
 #[test]
 fn test_pool_hooks_list_desugars() {
-    // strategy + module ref: base explicitly named, ref captured
-    let pool: PoolCfg = serde_yaml::from_str(
-        "hooks:\n  - cheapest\n  - { module: webhook, settings: { url: \"https://sidecar/hook\" }, on_error: reject }\nmembers: []\n",
-    )
-    .expect("hooks list must parse");
+    // strategy + hook name: base explicitly named, the name captured in gates.
+    let pool: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii]\nmembers: []\n")
+        .expect("hooks list must parse");
     assert_eq!(pool.policy, PoolPolicy::Cheapest);
     assert!(pool.base_named, "a named strategy sets base_named");
-    assert_eq!(pool.module_hooks.len(), 1);
-    let r = &pool.module_hooks[0];
-    assert_eq!(r.module, "webhook");
-    assert_eq!(
-        r.settings.get("url").and_then(|v| v.as_str()),
-        Some("https://sidecar/hook")
-    );
-    assert_eq!(r.on_error, Some(OnErrorCfg::Terminal("reject".to_string())));
-    assert!(
-        pool.gates.is_empty(),
-        "gates are filled by resolve(), not parse"
-    );
+    assert_eq!(pool.gates, vec!["pii".to_string()]);
 
-    // module ref only: base stays default (weighted placeholder); base NOT named
-    let g: PoolCfg = serde_yaml::from_str(
-        "hooks:\n  - { module: socket, settings: { path: /run/hook.sock } }\nmembers: []\n",
-    )
-    .expect("module-ref-only list parses");
+    // hook name only: base stays default (weighted placeholder); base NOT named.
+    let g: PoolCfg =
+        serde_yaml::from_str("hooks: [pii]\nmembers: []\n").expect("name-only list parses");
     assert_eq!(g.policy, PoolPolicy::Weighted);
-    assert_eq!(g.module_hooks.len(), 1);
-    assert_eq!(g.module_hooks[0].module, "socket");
+    assert_eq!(g.gates, vec!["pii".to_string()]);
     assert!(
         !g.base_named,
-        "a ref-only pool did not name its base ordering"
+        "a name-only pool did not name its base ordering"
     );
 
-    // Several module refs: config order is preserved (the phase-2 chain tie-break).
-    let multi: PoolCfg = serde_yaml::from_str(
-        "hooks:\n  - cheapest\n  - { module: webhook, settings: { url: \"https://a/\" } }\n  - { module: socket, settings: { path: /b.sock } }\nmembers: []\n",
-    )
-    .expect("multi-ref list parses");
+    // Several names: config order is preserved (the phase-2 chain tie-break).
+    let multi: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii, dlp]\nmembers: []\n")
+        .expect("multi-name list parses");
     assert_eq!(multi.policy, PoolPolicy::Cheapest);
-    assert_eq!(
-        multi
-            .module_hooks
-            .iter()
-            .map(|r| r.module.as_str())
-            .collect::<Vec<_>>(),
-        ["webhook", "socket"]
-    );
+    assert_eq!(multi.gates, vec!["pii".to_string(), "dlp".to_string()]);
 }
 
 /// Two ordering strategies in one `hooks:` list is an error (a pool has one base ordering).
@@ -740,31 +716,25 @@ fn test_pool_hooks_two_strategies_error() {
     );
 }
 
-/// A bare NON-strategy name in a pool `hooks:` list is a parse error: out-of-process hooks are
-/// inline `{ module: ... }` refs, never bare names (there is no named registry to reference).
+/// A bare NON-strategy name in a pool `hooks:` list is a HOOK-NAME REFERENCE (1.5.3), captured in
+/// `gates`; its existence + `kind: gate` are validated later against the top-level `hooks:` map.
 #[test]
-fn test_pool_hooks_bare_unknown_name_rejected() {
-    let e = serde_yaml::from_str::<PoolCfg>("hooks: [pii-guard]\nmembers: []\n")
-        .expect_err("a bare non-strategy name must error");
-    let msg = e.to_string();
-    assert!(
-        msg.contains("unknown built-in hook") && msg.contains("pii-guard"),
-        "{msg}"
-    );
-    assert!(
-        msg.contains("module"),
-        "the error must teach the inline module-ref form: {msg}"
-    );
+fn test_pool_hooks_bare_name_is_a_reference() {
+    let pool: PoolCfg = serde_yaml::from_str("hooks: [pii-guard]\nmembers: []\n")
+        .expect("a bare hook name is a reference, not an error");
+    assert_eq!(pool.gates, vec!["pii-guard".to_string()]);
+    assert_eq!(pool.policy, PoolPolicy::Weighted);
+    assert!(!pool.base_named);
 }
 
-/// `HookModuleRef` is deny_unknown_fields: transport keys live under `settings:`, not alongside
-/// `module:`; a stray key is rejected at parse.
+/// The top-level `hooks:` DEFINITION map is deny_unknown_fields: a stray key alongside `module:` is
+/// rejected at parse (a typo fails boot, never a silent no-op).
 #[test]
-fn test_pool_hook_module_ref_unknown_key_rejected() {
-    let e = serde_yaml::from_str::<PoolCfg>(
-        "hooks:\n  - { module: webhook, url: \"https://a/\" }\nmembers: []\n",
+fn test_hook_definition_unknown_key_rejected() {
+    let e = serde_yaml::from_str::<crate::config::HookDefCfg>(
+        "{ module: busbar-phi, url: \"https://a/\" }",
     )
-    .expect_err("a top-level url key on a module ref must error");
+    .expect_err("a stray url key on a hook definition must error");
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
@@ -2523,109 +2493,136 @@ advanced:
 
 // ── resolve(): hook-registry synthesis + admin_auth projection (S9) ──────────────────────────────
 
-/// `resolve` synthesizes the runtime hook registry from the inline refs: each pool module ref and
-/// each global ref becomes a named registry entry (module/plugin name, `#N` suffix on collision,
-/// pools iterated in SORTED order), pool `gates` and `global_hooks` carry the synthesized names in
-/// config order, pool refs default `kind: gate` and global refs default `kind: tap`, and `module:`
-/// projects onto `HookCfg.plugin` with `settings:` carried through OPAQUE.
+/// `resolve` builds the runtime hook registry from the top-level `hooks:` DEFINITION map (1.5.3):
+/// each named definition becomes a registry entry keyed by its OWN name (`module:` → `HookCfg.plugin`,
+/// `settings:`/`groups:`/`phase:` carried through), the SAME module can back two independent names,
+/// per-pool bare-name references land in `pool.gates` in config order, and the reserved all-pools
+/// attach (`pools.hooks:`) lowers to the runtime `global_hooks`.
 #[test]
-fn test_resolve_synthesizes_hook_registry_from_inline_refs() {
+fn test_resolve_builds_registry_from_named_defs() {
     let mut deploy = base_deploy();
-    // Pool "b" first in insertion, "a" second: synthesis iterates SORTED, so "a" claims the bare
-    // module name and later refs collide into #N suffixes deterministically.
-    let pool_b: PoolCfg = serde_yaml::from_str(
-        "members: []\nhooks:\n  - { module: audit-plugin, settings: { url: \"https://b/hook\" } }\n  - { module: gate-plugin, settings: { path: /b.sock } }\n",
+    // Two named hooks sharing ONE module, plus a tap — each an independent instance with its own scope.
+    deploy.hooks = serde_yaml::from_str(
+        "pii-eng:\n  module: busbar-phi\n  kind: gate\n  groups: [engineering]\n  settings: { team: alpha }\n\
+         pii-all:\n  module: busbar-phi\n  kind: gate\n\
+         audit:\n  module: busbar-audit\n  kind: tap\n  phase: [response]\n",
     )
     .unwrap();
-    let pool_a: PoolCfg = serde_yaml::from_str(
-        "members: []\nhooks:\n  - cheapest\n  - { module: audit-plugin, settings: { url: \"https://a/hook\", team: alpha }, kind: tap, timeout_ms: 9, priority: 3 }\n",
-    )
-    .unwrap();
-    deploy.pools.insert("b".to_string(), pool_b);
-    deploy.pools.insert("a".to_string(), pool_a);
-    deploy.global_hooks = serde_yaml::from_str(
-        "- { module: audit-plugin, settings: { url: \"https://global/audit\" } }\n",
-    )
-    .unwrap();
+    let pool_a: PoolCfg =
+        serde_yaml::from_str("members: []\nhooks: [cheapest, pii-eng]\n").unwrap();
+    let pool_b: PoolCfg = serde_yaml::from_str("members: []\nhooks: [pii-all]\n").unwrap();
+    deploy.pools.pools.insert("a".to_string(), pool_a);
+    deploy.pools.pools.insert("b".to_string(), pool_b);
+    deploy.pools.all_pool_hooks = vec!["audit".to_string()];
 
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
 
-    // Names: pool a (sorted first) claims "audit-plugin"; pool b collides into "audit-plugin#2" and
-    // claims "gate-plugin"; the global ref lands "audit-plugin#3".
     let mut names: Vec<&String> = cfg.hooks.keys().collect();
     names.sort();
-    assert_eq!(
-        names,
-        [
-            "audit-plugin",
-            "audit-plugin#2",
-            "audit-plugin#3",
-            "gate-plugin"
-        ]
-    );
+    assert_eq!(names, ["audit", "pii-all", "pii-eng"]);
 
-    // Gates carry the synthesized names in config order; base policy survives.
-    assert_eq!(cfg.pools["a"].gates, ["audit-plugin"]);
+    // Same module, two independent names + independent scope.
+    assert_eq!(cfg.hooks["pii-eng"].plugin, "busbar-phi");
+    assert_eq!(cfg.hooks["pii-all"].plugin, "busbar-phi");
+    assert_eq!(cfg.hooks["pii-eng"].groups, ["engineering"]);
+    assert!(
+        cfg.hooks["pii-all"].groups.is_empty(),
+        "pii-all is unscoped (all callers)"
+    );
+    // Settings carried through OPAQUE; kind defaults to gate for a named def.
+    assert_eq!(
+        cfg.hooks["pii-eng"]
+            .settings
+            .get("team")
+            .and_then(|v| v.as_str()),
+        Some("alpha")
+    );
+    assert_eq!(cfg.hooks["pii-all"].kind, HookKind::Gate);
+
+    // The tap's phase list carries through and drives stage selection.
+    assert_eq!(cfg.hooks["audit"].kind, HookKind::Tap);
+    assert!(cfg.hooks["audit"].fires_at_stage(crate::config::HookStage::Response));
+    assert!(!cfg.hooks["audit"].fires_at_stage(crate::config::HookStage::Request));
+
+    // Per-pool bare names land in gates in config order; base policy survives; all-pools → global.
+    assert_eq!(cfg.pools["a"].gates, ["pii-eng"]);
     assert_eq!(cfg.pools["a"].policy, PoolPolicy::Cheapest);
-    assert_eq!(cfg.pools["b"].gates, ["audit-plugin#2", "gate-plugin"]);
-    assert_eq!(cfg.global_hooks, ["audit-plugin#3"]);
-
-    // Plugin projection: module -> HookCfg.plugin; settings carried through OPAQUE (nothing consumed).
-    let a_hook = &cfg.hooks["audit-plugin"];
-    assert_eq!(a_hook.plugin, "audit-plugin");
-    assert_eq!(
-        a_hook.settings.get("url").and_then(|v| v.as_str()),
-        Some("https://a/hook"),
-        "settings stay opaque — nothing is consumed out"
-    );
-    assert_eq!(
-        a_hook.settings.get("team").and_then(|v| v.as_str()),
-        Some("alpha"),
-        "non-transport settings stay opaque"
-    );
-    // Typed per-instance fields carry through; an explicit kind wins over the default.
-    assert_eq!(a_hook.kind, HookKind::Tap);
-    assert_eq!(a_hook.timeout_ms, 9);
-    assert_eq!(a_hook.priority, 3);
-
-    let b_sock = &cfg.hooks["gate-plugin"];
-    assert_eq!(b_sock.plugin, "gate-plugin");
-    assert_eq!(b_sock.kind, HookKind::Gate, "pool refs default kind: gate");
-    assert_eq!(b_sock.timeout_ms, DEFAULT_POLICY_TIMEOUT_MS);
-    assert_eq!(
-        b_sock.on_error, ON_ERROR_NOTHING,
-        "on_error defaults nothing"
-    );
-
-    let global = &cfg.hooks["audit-plugin#3"];
-    assert_eq!(global.kind, HookKind::Tap, "global refs default kind: tap");
-    assert_eq!(global.plugin, "audit-plugin");
+    assert_eq!(cfg.pools["b"].gates, ["pii-all"]);
+    assert_eq!(cfg.global_hooks, ["audit"]);
 }
 
-/// A module ref naming an EMPTY plugin is a FAIL-CLOSED resolve() error naming the offending
-/// location; a bare built-in name in `global_hooks` (strategies have no global meaning) is an error;
-/// and the plugin's real existence/kind is resolved against the registry at the plugin pre-flight.
+/// A named definition with an EMPTY `module:` is a FAIL-CLOSED resolve() error naming the hook; a
+/// definition name that shadows a reserved word (an on_error terminal / built-in strategy) is
+/// rejected too.
 #[test]
-fn test_resolve_rejects_bad_hook_refs() {
-    // An empty module name (no plugin) in a pool is fail-closed at resolve.
+fn test_resolve_rejects_bad_hook_defs() {
     let mut deploy = base_deploy();
-    let pool: PoolCfg = serde_yaml::from_str(
-        "members: []\nhooks:\n  - { module: \"  \", settings: { url: \"https://x/\" } }\n",
-    )
-    .unwrap();
-    deploy.pools.insert("p".to_string(), pool);
+    deploy.hooks = serde_yaml::from_str("bad:\n  module: \"  \"\n").unwrap();
     let errs = resolve(&deploy, &HashMap::new()).expect_err("empty module must fail resolve");
     let joined = errs.join("\n");
     assert!(
-        joined.contains("pools.p.hooks") && joined.contains("non-empty"),
+        joined.contains("hooks.bad") && joined.contains("non-empty"),
         "{joined}"
     );
 
-    // A bare built-in name under global_hooks is an error (ordering strategies are pool-scoped).
+    // A definition named after a reserved word (a built-in strategy) is rejected.
     let mut deploy = base_deploy();
-    deploy.global_hooks = vec![HookRefEntry::Builtin("cheapest".to_string())];
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("bare global builtin must fail");
-    assert!(errs.join("\n").contains("global_hooks"), "{errs:?}");
+    deploy.hooks = serde_yaml::from_str("cheapest:\n  module: busbar-phi\n").unwrap();
+    let errs = resolve(&deploy, &HashMap::new()).expect_err("reserved def name must fail");
+    assert!(errs.join("\n").contains("reserved name"), "{errs:?}");
+}
+
+/// The named-hook SCOPE check (`caller_in_hook_groups`): a hook scoped to a group fires for a caller
+/// in that group OR any DESCENDANT (the group is an ancestor of the caller's leaf), never for a
+/// caller in another branch; an UNSCOPED hook fires for everyone; a groupless caller matches only an
+/// unscoped hook.
+#[test]
+fn test_caller_in_hook_groups_scope() {
+    use crate::config::caller_in_hook_groups;
+    // acme → engineering → user:bob ; acme → sales → user:sue
+    let tree: std::collections::BTreeMap<String, crate::config::GroupCfg> = serde_yaml::from_str(
+        "acme: {}\n\
+         engineering: { parent: acme }\n\
+         sales: { parent: acme }\n\
+         'user:bob': { parent: engineering }\n\
+         'user:sue': { parent: sales }\n",
+    )
+    .expect("groups tree parses");
+    let eng = ["engineering".to_string()];
+
+    // A hook scoped to engineering fires for the engineering leaf (ancestor match), not the sales one.
+    assert!(caller_in_hook_groups(Some("user:bob"), &eng, &tree));
+    assert!(!caller_in_hook_groups(Some("user:sue"), &eng, &tree));
+    // The scoped group's own members match; a sibling branch does not.
+    assert!(caller_in_hook_groups(Some("engineering"), &eng, &tree));
+    assert!(!caller_in_hook_groups(Some("sales"), &eng, &tree));
+    // An UNSCOPED hook (empty groups) fires for every caller — including a groupless one.
+    assert!(caller_in_hook_groups(Some("user:sue"), &[], &tree));
+    assert!(caller_in_hook_groups(None, &[], &tree));
+    // A groupless caller never matches a SCOPED hook.
+    assert!(!caller_in_hook_groups(None, &eng, &tree));
+}
+
+/// A pool named `hooks` is REJECTED at parse (the key is reserved for the all-pools attach list), and
+/// the reserved `pools.hooks:` list is lifted out as the all-pools attach.
+#[test]
+fn test_pools_reserved_hooks_key() {
+    // The reserved key is the all-pools attach; the rest are pools.
+    let pools: crate::config::PoolsCfg =
+        serde_yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
+            .expect("pools with reserved hooks key parses");
+    assert_eq!(pools.all_pool_hooks, ["pii"]);
+    assert!(pools.pools.contains_key("fast"));
+    assert!(!pools.pools.contains_key("hooks"));
+    assert_eq!(pools.pools["fast"].gates, ["pii".to_string()]);
+
+    // A pool literally named `hooks` (a MAP value) is rejected with a clear message.
+    let e = serde_yaml::from_str::<crate::config::PoolsCfg>("hooks:\n  members: []\n")
+        .expect_err("a pool named `hooks` must be rejected");
+    assert!(
+        e.to_string().contains("reserved") || e.to_string().contains("all-pools"),
+        "{e}"
+    );
 }
 
 /// `resolve` projects the ADMIN chain module names from `auth.admin_auth:` onto
