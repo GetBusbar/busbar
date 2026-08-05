@@ -880,7 +880,7 @@ async fn run() {
     // The admin plane ALWAYS runs on its own listener (`admin_listen`, default loopback 127.0.0.1:8081)
     // with its own optional TLS/mTLS — never on the data listener. The exposed-admin-requires-mTLS
     // boot-guard has already run in `config::resolve`, so by here `admin_listen` is loopback, mTLS,
-    // or an explicit `admin_insecure` waiver.
+    // or an explicit `admin_require_mtls: false` waiver.
     let admin_listen = cfg.admin_listen.clone();
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
