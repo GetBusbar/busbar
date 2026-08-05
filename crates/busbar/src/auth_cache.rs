@@ -49,16 +49,60 @@ struct Entry {
 /// The cache key: `(module_name, sha256_hex(credential))`.
 type CacheKey = (String, String);
 
+/// A FLUSH GENERATION token: the value of the cache's flush counter at a moment in time.
+///
+/// THE HAZARD IT CLOSES. `POST /api/v1/admin/auth/cache/flush` is documented as INSTANT REVOCATION
+/// of the cached-allow window, and it returns `200 {"flushed": N}`. But an authentication already
+/// IN FLIGHT across the flush computed its allow verdict BEFORE the flush and inserted it AFTER —
+/// so the flush returned success having revoked nothing, and the pre-flush verdict kept serving for
+/// up to `MAX_IDENTIFY_TTL_SECS` (an hour). The window is real and wide, not theoretical: the
+/// shipped OIDC module does a blocking JWKS HTTPS round-trip with a 10-second timeout, and an admin
+/// plugin chain runs on the blocking pool with its own multi-second budget.
+///
+/// THE FIX is the pattern this codebase already uses twice — `RevocationSync`'s union-never-replace
+/// and `GovState::refresh_lock`'s serialize-the-swap: capture the generation BEFORE the module call
+/// and hand it back to [`CredentialCache::put`], which drops the insert if the generation moved.
+/// Because the token is a distinct TYPE that only [`CredentialCache::generation`] can produce, a
+/// future call site cannot insert without having captured one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct CacheGeneration(u64);
+
+/// The mutex-protected cache state. Held together under ONE lock on purpose: the flush counter has
+/// to move in the same critical section that clears the map, or `put`'s "has the generation moved?"
+/// check and the flush's clear could interleave and let a stale verdict land anyway.
+struct CacheState {
+    entries: HashMap<CacheKey, Entry>,
+    /// Monotonic insert counter — the eviction ordering.
+    seq: u64,
+    /// Monotonic FLUSH counter. Bumped by every `flush_all`/`flush_module`.
+    flush_gen: u64,
+}
+
 pub(crate) struct CredentialCache {
-    /// The entry map plus a monotonic insert counter (the eviction ordering).
-    entries: Mutex<(HashMap<CacheKey, Entry>, u64)>,
+    state: Mutex<CacheState>,
 }
 
 impl CredentialCache {
     pub(crate) fn new() -> Self {
         Self {
-            entries: Mutex::new((HashMap::new(), 0)),
+            state: Mutex::new(CacheState {
+                entries: HashMap::new(),
+                seq: 0,
+                flush_gen: 0,
+            }),
         }
+    }
+
+    /// The CURRENT flush generation. Capture this BEFORE consulting an auth module, and pass it to
+    /// [`CredentialCache::put`] afterwards: any flush that lands in between moves the counter, and
+    /// the `put` is then dropped rather than resurrecting a pre-flush allow verdict. See
+    /// [`CacheGeneration`].
+    pub(crate) fn generation(&self) -> CacheGeneration {
+        CacheGeneration(self.lock().flush_gen)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Look up a cached verdict for `(module, credential)` at time `now`. `None` = miss (expired
@@ -68,14 +112,14 @@ impl CredentialCache {
             module.to_string(),
             crate::sigv4::sha256_hex(credential.as_bytes()),
         );
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.0.get(&key) {
+        let mut guard = self.lock();
+        match guard.entries.get(&key) {
             Some(e) if e.expires_at > now => Some(match &e.verdict {
                 CachedVerdict::Identify(p) => AuthOutcome::Identify(p.clone()),
                 CachedVerdict::Pass => AuthOutcome::Pass,
             }),
             Some(_) => {
-                guard.0.remove(&key);
+                guard.entries.remove(&key);
                 None
             }
             None => None,
@@ -86,7 +130,19 @@ impl CredentialCache {
     /// cached. The `Identify` TTL is the module's suggestion clamped to the hard cap; `Pass` gets
     /// the short base TTL plus a per-key jitter (derived from the credential hash — deterministic,
     /// no clock/RNG — so distinct credentials expire at distinct offsets).
-    pub(crate) fn put(&self, module: &str, credential: &str, outcome: &AuthOutcome, now: u64) {
+    ///
+    /// `gen` is the generation captured BEFORE the module was consulted ([`CredentialCache::generation`]).
+    /// If a flush landed in between, the generation has moved and this insert is DROPPED: an
+    /// admin-ordered revocation must not be undone by a verdict that predates it. The check runs
+    /// under the same lock the flush clears the map under, so the two cannot interleave.
+    pub(crate) fn put(
+        &self,
+        module: &str,
+        credential: &str,
+        outcome: &AuthOutcome,
+        now: u64,
+        r#gen: CacheGeneration,
+    ) {
         let hash = crate::sigv4::sha256_hex(credential.as_bytes());
         let (verdict, ttl) = match outcome {
             AuthOutcome::Identify(p) => (
@@ -102,8 +158,15 @@ impl CredentialCache {
             }
             AuthOutcome::Reject => return,
         };
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let (map, seq) = &mut *guard;
+        let mut guard = self.lock();
+        if guard.flush_gen != r#gen.0 {
+            // A flush landed while this authentication was in flight. The verdict is PRE-flush, so
+            // caching it now would silently re-open the cached-allow window the operator just closed.
+            return;
+        }
+        let CacheState {
+            entries: map, seq, ..
+        } = &mut *guard;
         if map.len() >= MAX_ENTRIES {
             map.retain(|_, e| e.expires_at > now);
             if map.len() >= MAX_ENTRIES {
@@ -130,19 +193,29 @@ impl CredentialCache {
 
     /// Drop every cached verdict for one module (its partition) — the settings-change /
     /// revocation seam.
+    ///
+    /// Bumps the FLUSH GENERATION in the same critical section, so an in-flight authentication whose
+    /// verdict predates this call cannot re-insert after it (see [`CacheGeneration`]). The bump is
+    /// GLOBAL rather than per-module on purpose: the cost of dropping a concurrent OTHER module's
+    /// insert is one cache miss, while the cost of getting the partitioning wrong is a missed
+    /// revocation.
     pub(crate) fn flush_module(&self, module: &str) -> usize {
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let before = guard.0.len();
-        guard.0.retain(|(m, _), _| m != module);
-        before - guard.0.len()
+        let mut guard = self.lock();
+        guard.flush_gen += 1;
+        let before = guard.entries.len();
+        guard.entries.retain(|(m, _), _| m != module);
+        before - guard.entries.len()
     }
 
     /// Drop everything — the admin flush endpoint's no-body form (instant revocation of every
-    /// cached-allow window).
+    /// cached-allow window). Bumps the flush generation for the reason [`CredentialCache::flush_module`]
+    /// documents: without it this endpoint reported `200 {"flushed": N}` while an authentication in
+    /// flight put its PRE-flush allow verdict straight back.
     pub(crate) fn flush_all(&self) -> usize {
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let n = guard.0.len();
-        guard.0.clear();
+        let mut guard = self.lock();
+        guard.flush_gen += 1;
+        let n = guard.entries.len();
+        guard.entries.clear();
         n
     }
 }
@@ -164,7 +237,7 @@ mod tests {
         let c = CredentialCache::new();
         let t = 1_000_000;
 
-        c.put("m", "cred-a", &ident(None), t);
+        c.put("m", "cred-a", &ident(None), t, c.generation());
         assert!(matches!(
             c.get("m", "cred-a", t + DEFAULT_IDENTIFY_TTL_SECS - 1),
             Some(AuthOutcome::Identify(_))
@@ -176,7 +249,7 @@ mod tests {
         );
 
         // Module-suggested TTL is CLAMPED to the hard cap.
-        c.put("m", "cred-b", &ident(Some(999_999)), t);
+        c.put("m", "cred-b", &ident(Some(999_999)), t, c.generation());
         assert!(
             c.get("m", "cred-b", t + MAX_IDENTIFY_TTL_SECS + 1)
                 .is_none(),
@@ -184,7 +257,7 @@ mod tests {
         );
 
         // Pass cached briefly (base + ≤2s jitter)…
-        c.put("m", "cred-c", &AuthOutcome::Pass, t);
+        c.put("m", "cred-c", &AuthOutcome::Pass, t, c.generation());
         assert!(matches!(
             c.get("m", "cred-c", t + 1),
             Some(AuthOutcome::Pass)
@@ -192,7 +265,7 @@ mod tests {
         assert!(c.get("m", "cred-c", t + PASS_TTL_SECS + 3).is_none());
 
         // …and Reject NEVER lands.
-        c.put("m", "cred-d", &AuthOutcome::Reject, t);
+        c.put("m", "cred-d", &AuthOutcome::Reject, t, c.generation());
         assert!(
             c.get("m", "cred-d", t + 1).is_none(),
             "Reject is never cached"
@@ -205,8 +278,8 @@ mod tests {
     fn module_partitions_and_flush() {
         let c = CredentialCache::new();
         let t = 1_000_000;
-        c.put("m1", "cred", &ident(None), t);
-        c.put("m2", "cred", &ident(None), t);
+        c.put("m1", "cred", &ident(None), t, c.generation());
+        c.put("m2", "cred", &ident(None), t, c.generation());
         assert_eq!(c.flush_module("m1"), 1);
         assert!(c.get("m1", "cred", t + 1).is_none());
         assert!(
@@ -224,16 +297,71 @@ mod tests {
         let c = CredentialCache::new();
         let t = 1_000_000;
         for i in 0..MAX_ENTRIES {
-            c.put("m", &format!("cred-{i}"), &ident(Some(3600)), t);
+            c.put(
+                "m",
+                &format!("cred-{i}"),
+                &ident(Some(3600)),
+                t,
+                c.generation(),
+            );
         }
-        c.put("m", "one-more", &ident(Some(3600)), t);
-        let guard = c.entries.lock().unwrap();
-        assert!(guard.0.len() <= MAX_ENTRIES, "cap held: {}", guard.0.len());
+        c.put("m", "one-more", &ident(Some(3600)), t, c.generation());
+        let guard = c.lock();
+        assert!(
+            guard.entries.len() <= MAX_ENTRIES,
+            "cap held: {}",
+            guard.entries.len()
+        );
         drop(guard);
         assert!(
             c.get("m", "cred-0", t + 1).is_none(),
             "the oldest-inserted entry was the eviction victim"
         );
         assert!(c.get("m", "one-more", t + 1).is_some());
+    }
+
+    /// C2: an authentication IN FLIGHT across a flush cannot re-insert its PRE-flush allow verdict.
+    ///
+    /// This is the exact interleaving `POST /api/v1/admin/auth/cache/flush` promised to close and
+    /// did not: the module is consulted (a JWKS round-trip — seconds, not microseconds), the
+    /// operator flushes, the flush returns `200 {"flushed": N}` — and then the in-flight request's
+    /// `put` lands, restoring the allow for up to `MAX_IDENTIFY_TTL_SECS` (an hour). The endpoint
+    /// reported a revocation that had not happened.
+    #[test]
+    fn a_flush_cannot_be_undone_by_an_authentication_already_in_flight() {
+        let c = CredentialCache::new();
+        let t = 1_000_000;
+
+        // A request begins: capture the generation, THEN consult the (slow) module.
+        let in_flight = c.generation();
+        // Meanwhile the operator revokes: flush_all clears everything and closes the window.
+        c.put("oidc", "seed", &ident(Some(3600)), t, c.generation());
+        assert_eq!(c.flush_all(), 1, "the flush reports what it dropped");
+        // …and only NOW does the in-flight authentication come back with its stale allow verdict.
+        c.put("oidc", "victim", &ident(Some(3600)), t, in_flight);
+
+        assert!(
+            c.get("oidc", "victim", t + 1).is_none(),
+            "a verdict computed BEFORE the flush must not land AFTER it — that is the entire \
+             cached-allow window the flush endpoint exists to close"
+        );
+
+        // A FRESH authentication (generation captured after the flush) caches normally: the guard
+        // closes the revocation window, it does not disable the cache.
+        let fresh = c.generation();
+        c.put("oidc", "victim", &ident(Some(3600)), t, fresh);
+        assert!(
+            c.get("oidc", "victim", t + 1).is_some(),
+            "post-flush authentications must still populate the cache"
+        );
+
+        // A per-MODULE flush closes the same window (the generation is global on purpose).
+        let in_flight2 = c.generation();
+        c.flush_module("oidc");
+        c.put("oidc", "victim2", &ident(Some(3600)), t, in_flight2);
+        assert!(
+            c.get("oidc", "victim2", t + 1).is_none(),
+            "flush_module must also invalidate in-flight verdicts"
+        );
     }
 }

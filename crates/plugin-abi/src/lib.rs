@@ -71,6 +71,19 @@ pub use busbar_api::{Signal, SignalBag, SignalValue};
 pub const TRANSPORT_VERSION: u32 = 1;
 
 /// The kind strings a plugin may declare via `busbar_plugin_kind()` and its signed manifest `kind`.
+///
+/// EACH kind comes in TWO forms and they are NOT interchangeable:
+///
+/// * the plain `&str` (`STORE`, `SECRET`, …) — for comparisons, manifests, logs, anything Rust-side;
+/// * the `*_NUL` `&[u8]` sibling (`STORE_NUL`, `SECRET_NUL`, …) — the ONLY form that may back a
+///   [`PluginKindFn`] return value.
+///
+/// The reason is the ABI itself: `busbar_plugin_kind()` returns a bare `*const u8` with NO length,
+/// and the engine reads it with `CStr::from_ptr`. A plain `&str` is NOT NUL-terminated, so the
+/// obvious hand-written `busbar_plugin_kind() { kind::EXPORT.as_ptr() }` compiles cleanly and is an
+/// UNBOUNDED out-of-bounds read in the engine (undefined behavior). Return `kind::EXPORT_NUL.as_ptr()`
+/// instead — same discipline the [`symbol`] constants have always used (`b"busbar_abi\0"`). Plugins
+/// built on `busbar-plugin-sdk` never touch either form: the SDK's export macro emits the safe one.
 pub mod kind {
     /// A durable governance store (`Box<dyn busbar_api::Store>`).
     pub const STORE: &str = "store";
@@ -85,6 +98,17 @@ pub mod kind {
     /// (metrics/logs/audit/traces) OUT to an external backend. Its payload schema lives in
     /// [`crate::export`].
     pub const EXPORT: &str = "export";
+
+    /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const STORE_NUL: &[u8] = b"store\0";
+    /// [`SECRET`], NUL-terminated — return `SECRET_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const SECRET_NUL: &[u8] = b"secret\0";
+    /// [`AUTH`], NUL-terminated — return `AUTH_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const AUTH_NUL: &[u8] = b"auth\0";
+    /// [`HOOK`], NUL-terminated — return `HOOK_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const HOOK_NUL: &[u8] = b"hook\0";
+    /// [`EXPORT`], NUL-terminated — return `EXPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const EXPORT_NUL: &[u8] = b"export\0";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).
@@ -362,7 +386,15 @@ pub enum SecretResponse {
 pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
 
 /// `busbar_plugin_kind` — returns a pointer to a NUL-terminated static string naming the ONE kind
-/// this library speaks (`"store"` | `"secret"` | `"auth"` | `"hook"`).
+/// this library speaks: `"store"` | `"secret"` | `"auth"` | `"hook"` | `"export"` (the full set is
+/// [`kind`]).
+///
+/// The return carries NO LENGTH: the engine reads it with `CStr::from_ptr` and walks to the first
+/// NUL byte. A pointer into a non-NUL-terminated buffer is therefore an unbounded out-of-bounds read
+/// in the ENGINE's address space — undefined behavior, not a load error. So the pointer MUST come
+/// from one of the NUL-terminated [`kind`] siblings (`kind::STORE_NUL.as_ptr()`, …), never from the
+/// plain `kind::STORE.as_ptr()` (a `&str`, which has no terminator). Plugins built on
+/// `busbar-plugin-sdk` get the safe form from the export macro and never write this by hand.
 pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
 
 /// `busbar_open` — construct an instance from a JSON config blob. On `STATUS_OK`, `*out_handle` is
@@ -430,6 +462,39 @@ mod tests {
     fn max_plugin_response_len_is_exactly_256_mebibytes() {
         assert_eq!(MAX_PLUGIN_RESPONSE_LEN, 268_435_456);
         assert_eq!(MAX_PLUGIN_RESPONSE_LEN, 256 * 1024 * 1024);
+    }
+
+    /// Every kind has a NUL-TERMINATED sibling whose bytes are exactly the plain `&str` plus one
+    /// trailing NUL, and every one of them is a legal C string. `busbar_plugin_kind()` returns a
+    /// bare `*const u8` with NO length, and the loader does `CStr::from_ptr` on it — so the ONLY
+    /// safe thing a hand-written export may return is the pointer to one of THESE. The plain
+    /// `kind::*` `&str`s are NOT NUL-terminated; returning `kind::EXPORT.as_ptr()` compiles and is
+    /// an unbounded out-of-bounds read. This test is the mechanical proof the safe siblings exist,
+    /// stay in lockstep with the strings, and are C-legal.
+    #[test]
+    fn every_kind_has_a_nul_terminated_sibling_that_is_a_legal_c_string() {
+        let pairs: [(&str, &[u8]); 5] = [
+            (kind::STORE, kind::STORE_NUL),
+            (kind::SECRET, kind::SECRET_NUL),
+            (kind::AUTH, kind::AUTH_NUL),
+            (kind::HOOK, kind::HOOK_NUL),
+            (kind::EXPORT, kind::EXPORT_NUL),
+        ];
+        for (s, nul) in pairs {
+            assert_eq!(
+                nul.len(),
+                s.len() + 1,
+                "{s}: the NUL sibling is the string plus exactly one terminator"
+            );
+            assert_eq!(&nul[..s.len()], s.as_bytes(), "{s}: bytes must match");
+            let c = std::ffi::CStr::from_bytes_with_nul(nul)
+                .unwrap_or_else(|e| panic!("{s}: not a legal C string: {e}"));
+            assert_eq!(
+                c.to_str().expect("ASCII"),
+                s,
+                "{s}: CStr round-trips to the plain form (this is exactly what the loader does)"
+            );
+        }
     }
 
     fn sample_audit() -> AuditRecord {

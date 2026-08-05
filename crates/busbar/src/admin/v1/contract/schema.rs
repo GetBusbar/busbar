@@ -233,7 +233,15 @@ pub(crate) struct ConfigSettingsView {
     pub(crate) applied: bool,
     pub(crate) config_version: u64,
     /// The current effective root-section overlay (only the fields the operator has set; base
-    /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
+    /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
+    /// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today
+    /// `store.settings`, whose `url` is a credential in busbar's own docs) appears as
+    /// `settings_keys` — sorted key names, no values. Same on the GET and on the PUT echo.
+    ///
+    /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
+    /// bag; the redaction applies to the bags nested INSIDE it.
+    // settings-leak-lint: allow — response ENVELOPE member; every bag nested inside it is reduced to
+    // `settings_keys` by `service::redact_settings_bags` before serialization (both verbs).
     pub(crate) settings: serde_json::Value,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
@@ -311,18 +319,25 @@ pub(crate) struct PluginSchemaView {
 }
 
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-/// and their version.
+/// (KEY NAMES only — see [`super::HookView::settings_keys`]) and their version.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct HookDesiredStatus {
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// Sorted KEY NAMES of the desired settings bag, never its values.
+    pub(crate) settings_keys: Vec<String>,
     pub(crate) settings_version: u64,
 }
 
 /// The REPORTED settings side of `hooks/{name}/status`: what the hook says it is actually running
 /// (present only when the hook answered `status`).
+///
+/// KEY NAMES only, and for a sharper reason than the desired side: the reported bag is the hook's
+/// ECHO of the SECRET-RESOLVED settings busbar pushed it, i.e. the PLAINTEXT of every `SecretRef` —
+/// and this read is reachable at READ-ONLY admin scope. `null` when the hook answered `status` but
+/// reported no settings.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct HookReportedStatus {
-    pub(crate) settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Sorted KEY NAMES of the observed settings bag, never its values.
+    pub(crate) settings_keys: Option<Vec<String>>,
     pub(crate) settings_version: Option<u64>,
 }
 
@@ -335,6 +350,10 @@ pub(crate) struct HookStatusView {
     pub(crate) desired: HookDesiredStatus,
     pub(crate) reported: Option<HookReportedStatus>,
     pub(crate) drift: Option<bool>,
+    /// The DESIRED settings KEY NAMES the hook is not actually running — the actionable half of
+    /// `drift`, carrying names this body already serves and no value from either bag. Invariantly an
+    /// array (empty on the no-answer branch, where no drift is known).
+    pub(crate) drift_keys: Vec<String>,
     /// Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when
     /// the hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/
     /// `label`/`unit`/`viz`/`max` members.

@@ -3476,17 +3476,7 @@ pub(crate) fn build_app_from_config(
         auth_scope_caps: cfg
             .auth
             .as_ref()
-            .map(|a| {
-                a.chain
-                    .iter()
-                    .chain(a.admin_auth.iter())
-                    .filter_map(|e| {
-                        e.max_admin_scope
-                            .as_ref()
-                            .map(|sc| (e.module.clone(), sc.clone()))
-                    })
-                    .collect()
-            })
+            .map(project_auth_scope_caps)
             .unwrap_or_default(),
         role_bindings: cfg
             .auth
@@ -3757,6 +3747,31 @@ fn build_split_routers_with_limits(
 /// 503 immediately rather than queued for a permit (Bug 4). Applied as the last `.layer()` so it is
 /// outermost (it must admission-control before any inner work, including body buffering). Factored
 /// out so the add-only-when-`>0` rule is unit-testable in isolation.
+/// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
+/// trust CEILING (`max_admin_scope:`) the admin authorization step floors every non-`admin-tokens`
+/// verdict against.
+///
+/// KEYED BY PROVIDER NAME, not by the backing plugin MODULE. That is the whole point of the 1.5.3
+/// named-definition pattern and the invariant [`crate::auth::ChainVerdict::Identified`] states
+/// verbatim: two NAMED providers may share one plugin module and must get INDEPENDENT bindings and
+/// ceilings. The lookup side (`auth::module_admin_scope_cap`) reads this map with the provider NAME
+/// (the identity a chain verdict carries), and `role_bindings` is name-keyed too — so a module-keyed
+/// build here disagreed with both. The dominant effect was fail-CLOSED (a miss floors to
+/// `read-only`, silently ignoring an operator's explicit `max_admin_scope: full`), but a config in
+/// which one provider's NAME equals a DIFFERENT provider's MODULE handed the first provider's
+/// ceiling to the second — an escalation. Name-keying closes both.
+fn project_auth_scope_caps(a: &config::AuthCfg) -> std::collections::HashMap<String, String> {
+    a.chain
+        .iter()
+        .chain(a.admin_auth.iter())
+        .filter_map(|e| {
+            e.max_admin_scope
+                .as_ref()
+                .map(|sc| (e.name.clone(), sc.clone()))
+        })
+        .collect()
+}
+
 fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
     if max_inbound_concurrent > 0 {
         router.layer(limits::admission::InboundAdmissionLayer::new(

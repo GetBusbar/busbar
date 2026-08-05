@@ -1436,6 +1436,22 @@ pub(crate) async fn delete_group(
         Ok(installed) => {
             audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_APPLIED, &actor);
             record_group_version(&installed, &actor, &format!("group.delete {resource}"));
+            // RECLAIM the group's in-memory budget cells — AFTER the deletion is durable and the new
+            // `App` (which no longer knows the group) is installed, exactly as `delete_key` reclaims
+            // its key's cell after the tombstone commits and for the same reason: dropping them any
+            // earlier would let a request still charging through the outgoing cost model re-create
+            // them in the gap. `GovState` is process-lifetime and Arc-shared across applies, so
+            // nothing else would ever have dropped them.
+            if let Some(gov) = installed.governance.as_ref() {
+                let dropped = gov.reclaim_group_cells(&name);
+                if dropped > 0 {
+                    tracing::debug!(
+                        group = %name,
+                        cells = dropped,
+                        "reclaimed the deleted group's in-memory budget cells"
+                    );
+                }
+            }
             with_config_etag(
                 StatusCode::NO_CONTENT.into_response(),
                 installed.config_version,
@@ -2769,9 +2785,13 @@ fn current_root_settings(
 /// `GET /api/v1/admin/config/settings` — read the API-set single-value config overlay (the `root`
 /// section: `listen`/`tls`/`rate_card`/`store`/`security`/`limits`/…). Reports ONLY the operator's
 /// overrides (the fields set via `PUT /config/settings`); base `config.yaml` stands for the rest.
-/// Read scope; carries the config-plane `ETag` so a `PUT` can chain `If-Match` off this read. Never a
-/// secret in the clear beyond what the operator themselves supplied (TLS refs are secret-references,
-/// not raw key bytes).
+/// Read scope; carries the config-plane `ETag` so a `PUT` can chain `If-Match` off this read. NEVER a
+/// secret: TLS refs are secret-references rather than raw key bytes, and every opaque `settings:` bag
+/// in the tree (today `store.settings`, whose `url` is a credential in busbar's own docs) is reduced
+/// to its `settings_keys` by `service::redact_settings_bags` before serialization. Consequence worth
+/// stating: this body is no longer a verbatim `PUT /config/settings` payload — a naive round-trip is
+/// REJECTED (`settings_keys` is not a `RootSettings` field) rather than silently rewriting a
+/// credential, and the values remain readable only where they are writable.
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let current = handle.load();
     // `current_root_settings` does a SYNCHRONOUS overlay file open+read+JSON-parse. Under 1.5.3's
@@ -2800,13 +2820,23 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
             return err_json(&AdminError::Internal);
         }
     };
-    let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
+    // REDACT every opaque `settings:` bag in the tree to its KEY NAMES before it goes on the wire —
+    // the same projection every other admin read uses, applied structurally. `RootSettings` carries
+    // `store: Option<StoreCfg>` and therefore `store.settings`, whose `url` busbar's own docs spell
+    // with a credential (`rediss://:password@…`; `plugin-pack` marks a store `url` `x-busbar-secret`).
+    // This GET needs only READ-ONLY scope while `PUT /config/settings` needs FULL — so unredacted,
+    // it handed any read-only admin the governance ledger's credential (keys, budgets, the
+    // hash-chained audit log) out of band of busbar.
+    let mut settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
+    crate::admin::v1::service::redact_settings_bags(&mut settings);
     with_config_etag(
         ok_json(
             StatusCode::OK,
             &json!({
                 "applied": false,
                 "config_version": current.config_version,
+                // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
+                // already reduced every bag inside `settings` to its key names.
                 "settings": settings,
             }),
         ),
@@ -3010,13 +3040,21 @@ pub(crate) async fn put_config_settings(
                 );
                 (reload_to_apply, note)
             };
-            let settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
+            // Redacted on the WRITE echo too, by the same helper: `merged` is the whole root, not
+            // just what this caller sent, so the echo would otherwise hand back opaque bags (a
+            // `store.settings` credential among them) the caller never supplied. One projection for
+            // this resource on both verbs — a reader of the schema does not have to learn that the
+            // PUT echo is shaped differently from the GET.
+            let mut settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
+            crate::admin::v1::service::redact_settings_bags(&mut settings);
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
                     &json!({
                         "applied": true,
                         "config_version": installed.config_version,
+                        // settings-leak-lint: allow — the envelope member; `redact_settings_bags`
+                        // above has already reduced every bag inside `settings` to its key names.
                         "settings": settings,
                         "reload_to_apply": reload_to_apply,
                         "note": note,
@@ -3041,6 +3079,8 @@ pub(crate) async fn put_config_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
+    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
+    // WRITING the bag; it is never serialized back to a reader (the read serves `settings_keys`).
     settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -3308,11 +3348,18 @@ pub(crate) async fn hook_schema(
 }
 
 /// `GET /api/v1/admin/hooks/{name}/status` — the hook's OBSERVED state, live-queried over its
-/// transport: the settings it is actually running + its version (vs busbar's DESIRED registry
-/// copy, with a `drift` verdict) and its self-reported metrics (validated + bounded — a hostile
+/// transport: the KEY NAMES of the settings it is actually running + its version (vs busbar's
+/// DESIRED registry copy, with a `drift` verdict and the drifting KEY NAMES in `drift_keys`) and its
+/// self-reported metrics (validated + bounded — a hostile
 /// hook cannot flood; names/help are charset-enforced/sanitized so no content can ride a metric).
 /// `reported: null` when the hook doesn't answer status (fail-open; the desired view still serves).
 /// This is the control-plane read: a dashboard built on busbar sees what each plug is doing.
+///
+/// NEITHER bag's VALUES are served, at either end. `reported.settings` was the hook's echo of the
+/// SECRET-RESOLVED bag busbar pushes it, i.e. the plaintext of every `SecretRef` — at READ-ONLY
+/// admin scope. Drift is computed inside `hooks::settings_drift_keys` (against the resolved desired
+/// bag, so a `SecretRef` field no longer reports drift on every poll) and reported as a boolean plus
+/// the drifting KEY NAMES.
 pub(crate) async fn hook_status(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -3328,11 +3375,12 @@ pub(crate) async fn hook_status(
     let body = match reported {
         Some(r) => {
             // Drift: the hook runs a different settings version, or a DESIRED key is missing/
-            // changed in its observed settings (extra self-managed keys are NOT drift).
-            let settings_drift = r
-                .settings
-                .as_ref()
-                .is_some_and(|obs| hook.settings.iter().any(|(k, v)| obs.get(k) != Some(v)));
+            // changed in its observed settings (extra self-managed keys are NOT drift). The
+            // comparison happens inside `hooks::settings_drift_keys` and yields KEY NAMES ONLY —
+            // see that function for why NEITHER bag's values may be served here.
+            let drift_keys =
+                crate::hooks::settings_drift_keys(hook, &current.hook_env, r.settings.as_ref());
+            let settings_drift = !drift_keys.is_empty();
             let version_drift = r.settings_version.is_some_and(|v| v != desired_version);
             let metrics = r
                 .metrics
@@ -3367,9 +3415,18 @@ pub(crate) async fn hook_status(
                 .unwrap_or_default();
             json!({
                 "name": name,
-                "desired": {"settings": hook.settings, "settings_version": desired_version},
-                "reported": {"settings": r.settings, "settings_version": r.settings_version},
+                "desired": {
+                    "settings_keys": crate::admin::v1::service::settings_keys(&hook.settings),
+                    "settings_version": desired_version,
+                },
+                "reported": {
+                    "settings_keys": r.settings.as_ref().map(crate::admin::v1::service::settings_keys),
+                    "settings_version": r.settings_version,
+                },
                 "drift": settings_drift || version_drift,
+                // WHICH desired keys the hook is not running — the drift signal an operator can act
+                // on, carrying names the body already serves and no value from either bag.
+                "drift_keys": drift_keys,
                 "metrics": metrics,
                 "as_of": as_of,
                 "source": "live",
@@ -3377,9 +3434,15 @@ pub(crate) async fn hook_status(
         }
         None => json!({
             "name": name,
-            "desired": {"settings": hook.settings, "settings_version": desired_version},
+            "desired": {
+                "settings_keys": crate::admin::v1::service::settings_keys(&hook.settings),
+                "settings_version": desired_version,
+            },
             "reported": serde_json::Value::Null,
             "drift": serde_json::Value::Null,
+            // Invariantly an array, same rationale as `metrics` below: no drift is KNOWN here, so
+            // the list is empty rather than absent.
+            "drift_keys": [],
             // `metrics` is INVARIANTLY an array — `[]` here (not `{}`) so a strict consumer decoding
             // it as an array never has to special-case the no-status branch (busbar-ui review R5).
             "metrics": [],

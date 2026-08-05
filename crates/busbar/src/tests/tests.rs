@@ -2509,3 +2509,51 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D1: `App.auth_scope_caps` is keyed by PROVIDER NAME, not by the backing plugin MODULE.
+///
+/// Two named providers sharing one plugin module must get INDEPENDENT ceilings (the invariant
+/// `ChainVerdict::Identified` documents), and the read side (`auth::module_admin_scope_cap`) looks
+/// the ceiling up by the provider NAME a chain verdict carries. This test is the one shape the whole
+/// suite lacked: a config where name != module, plus the escalation shape where one provider's NAME
+/// collides with a DIFFERENT provider's MODULE.
+#[test]
+fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
+    use crate::config::{AuthCfg, AuthChainEntry};
+    let entry = |name: &str, module: &str, cap: Option<&str>| AuthChainEntry {
+        name: name.to_string(),
+        module: module.to_string(),
+        max_admin_scope: cap.map(str::to_string),
+        token: None,
+        settings: serde_json::Map::new(),
+    };
+    let mut auth = AuthCfg::default_none();
+    // Two NAMED providers on ONE plugin module, with DIFFERENT ceilings — plus a third provider
+    // whose NAME is literally the module name the other two ride, the collision that escalated.
+    auth.admin_auth = vec![
+        entry("corp-sso", "oidc", Some("full")),
+        entry("vendor-sso", "oidc", Some("read-only")),
+        entry("oidc", "some-other-module", Some("none")),
+    ];
+    let caps = project_auth_scope_caps(&auth);
+
+    assert_eq!(
+        caps.get("corp-sso").map(String::as_str),
+        Some("full"),
+        "the operator's explicit ceiling must be found under the PROVIDER NAME (module-keying \
+         silently floored this to read-only)"
+    );
+    assert_eq!(
+        caps.get("vendor-sso").map(String::as_str),
+        Some("read-only"),
+        "the sibling provider on the same module keeps its OWN, independent ceiling"
+    );
+    assert_eq!(
+        caps.get("oidc").map(String::as_str),
+        Some("none"),
+        "the provider actually NAMED `oidc` owns that key — not whichever provider happens to run \
+         the `oidc` module (module-keying made a last-writer-wins collision here, handing one \
+         provider's ceiling to another)"
+    );
+    assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
+}

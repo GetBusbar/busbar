@@ -2071,3 +2071,71 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
         cap.messages()
     );
 }
+
+/// A1 — the settings-drift signal is computed against the RESOLVED desired bag, and yields KEY NAMES
+/// ONLY.
+///
+/// Two defects in one line of `GET /api/v1/admin/hooks/{name}/status`. It serialized
+/// `reported.settings` verbatim — the hook's ECHO of the bag busbar pushed it, which
+/// `configure_hook` resolves first, so that field carried the PLAINTEXT of every `SecretRef` at
+/// READ-ONLY admin scope. And it compared that resolved echo against the UNRESOLVED `hook.settings`,
+/// so a `SecretRef` field could NEVER match and reported drift on every single poll, forever — a
+/// permanent false positive on the one signal the endpoint exists to raise.
+#[test]
+fn settings_drift_compares_resolved_values_and_reports_only_key_names() {
+    let var = "BUSBAR_TEST_HOOK_DRIFT_SECRET";
+    // The var name is unique to this test, so no sibling reads or clobbers it.
+    std::env::set_var(var, "hunter2-resolved");
+    let env = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "plugin": "test-hook",
+        "timeout_ms": 5,
+        "on_error": "weighted"
+    }))
+    .unwrap();
+    hook.settings = serde_json::json!({
+        "api_token": { "env": var },
+        "ratio": 0.4
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    // The hook echoes back exactly what it was configured with — i.e. the RESOLVED secret.
+    let in_sync = serde_json::json!({ "api_token": "hunter2-resolved", "ratio": 0.4 })
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(
+        crate::hooks::settings_drift_keys(&hook, &env, Some(&in_sync)).is_empty(),
+        "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
+         against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
+    );
+
+    // A hook running a stale value drifts — and the signal is the KEY NAME, never either value.
+    let drifted = serde_json::json!({
+        "api_token": "hunter1-stale",
+        "ratio": 0.4,
+        "self_managed": "not drift"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let keys = crate::hooks::settings_drift_keys(&hook, &env, Some(&drifted));
+    assert_eq!(
+        keys,
+        vec!["api_token".to_string()],
+        "drift is reported as DESIRED key names only (an extra self-managed key is not drift)"
+    );
+    assert!(
+        !format!("{keys:?}").contains("hunter"),
+        "no value from either bag may ride out on the drift signal: {keys:?}"
+    );
+
+    // A hook that reports no settings at all is fail-open, not drift.
+    assert!(crate::hooks::settings_drift_keys(&hook, &env, None).is_empty());
+}

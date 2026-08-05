@@ -1842,3 +1842,142 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         "both planes reference the ONE deduped definition"
     );
 }
+
+/// B2: a 1.4.x `budget_period` the migrator cannot express EXACTLY must never collapse silently
+/// onto the ALL-TIME window.
+///
+/// `weekly` and `hourly` are both real 1.4.x periods (the tree's own admin tests name `weekly`), and
+/// the old `_ => "total"` catch-all mapped BOTH to `per: total` — `WINDOW_TOTAL => 0`, the window
+/// that NEVER ROLLS. That silently turned a recurring cap into a LIFETIME cap: once the group spends
+/// it, it is blocked forever, with nothing in `changes`/`todos` to say so. The goldens only ever
+/// exercised `monthly`/`daily`, which is why they stayed green.
+///
+/// So: `hourly` now maps EXACTLY (`hour`), `weekly` lands on the longest ROLLING window with a loud
+/// TODO naming both the period and the window, and NOTHING recurring reaches `total`.
+#[test]
+fn unmappable_budget_period_never_silently_becomes_the_all_time_window() {
+    let raw = "\
+governance:
+  enabled: true
+  budget_groups:
+    weekly-team: { max_budget_cents: 700000, budget_period: weekly }
+    hourly-team: { max_budget_cents: 1000, budget_period: hourly }
+    burst-team: { max_budget_cents: 500, budget_period: fortnightly }
+    forever-team: { max_budget_cents: 900, budget_period: total }
+providers: {}
+models: {}
+pools: {}
+";
+    let (out, doc) = migrate_to_value(raw);
+    let per = |group: &str| -> String {
+        dig(&doc, &["groups", group, "limits"])
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s.first())
+            .and_then(|l| l.as_mapping())
+            .and_then(|m| m.get(serde_yaml::Value::from("per")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>")
+            .to_string()
+    };
+
+    // `hourly` has an EXACT 1.5.3 window; it must land there and stay silent.
+    assert_eq!(per("hourly-team"), "hour", "hourly -> the `hour` window");
+
+    // `weekly` has NO 1.5.3 window. Whatever it maps to, it must still ROLL.
+    let weekly = per("weekly-team");
+    assert_ne!(
+        weekly, "total",
+        "a recurring weekly cap must NEVER become the all-time window (it never rolls, so the cap \
+         becomes a lifetime cap)"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("weekly") && t.contains(&weekly)),
+        "an approximated window must be LOUD — a todo naming the period AND the window it was \
+         mapped to; got {:?}",
+        out.todos
+    );
+
+    // An unrecognized word gets the same treatment, never a silent all-time collapse.
+    let burst = per("burst-team");
+    assert_ne!(
+        burst, "total",
+        "an unrecognized period must not become total"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("fortnightly") && t.contains(&burst)),
+        "an unrecognized period must be named in the todos; got {:?}",
+        out.todos
+    );
+
+    // …while an EXPLICIT all-time cap still maps to `total`, silently: that one really is all-time.
+    assert_eq!(per("forever-team"), "total");
+    assert!(
+        !out.todos.iter().any(|t| t.contains("forever-team")),
+        "an exact mapping must not push a todo; got {:?}",
+        out.todos
+    );
+}
+
+/// B1: the migrator NEVER takes a key off the document and then discards the value because it was
+/// not the shape the migration expected.
+///
+/// Three sites did exactly that, with no `changes`, no `todos` and no warning: the top-level
+/// `hooks:` map, the top-level `global_hooks:` list, and the PER-POOL `hooks:` list. The reported
+/// failure is the third: an operator writes the scalar form `pools: { frontier: { hooks: baa-gate }
+/// }`, hits a loud 1.5.3 parse error, runs `busbar --migrate-config` — and the key is dropped on the
+/// floor. `busbar --validate` then PASSES, because an ABSENT `hooks:` is the legal default, so the
+/// pool ships with its rejecting compliance gate silently gone.
+///
+/// The contract asserted here (and enforced structurally by `Taken`): every malformed-shape key is
+/// still IN the migrated document, EXACTLY as written, and is named in `todos`.
+#[test]
+fn a_wrong_shaped_key_is_never_taken_and_discarded() {
+    let raw = "\
+hooks: some-hook-name
+global_hooks: audit-tap
+providers: {}
+models: {}
+pools:
+  frontier:
+    hooks: baa-gate
+    members: []
+";
+    let (out, doc) = migrate_to_value(raw);
+
+    // THE reported case: the pool's compliance gate survives the migration.
+    assert_eq!(
+        dig(&doc, &["pools", "frontier", "hooks"]).and_then(|v| v.as_str()),
+        Some("baa-gate"),
+        "a scalar `pools.frontier.hooks:` must be left EXACTLY as written, never dropped — an \
+         absent `hooks:` is a legal default, so --validate would then PASS with the gate gone. \
+         Migrated document:\n{}",
+        out.yaml
+    );
+    // …and the other two take-then-discard sites.
+    assert_eq!(
+        dig(&doc, &["hooks"]).and_then(|v| v.as_str()),
+        Some("some-hook-name"),
+        "a non-mapping top-level `hooks:` must survive; got:\n{}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["global_hooks"]).and_then(|v| v.as_str()),
+        Some("audit-tap"),
+        "a non-sequence `global_hooks:` must survive; got:\n{}",
+        out.yaml
+    );
+
+    // Surviving silently is not enough — the operator has to be TOLD, per key.
+    for key in ["pools.frontier.hooks", "hooks", "global_hooks"] {
+        assert!(
+            out.todos.iter().any(|t| t.starts_with(&format!("{key}:"))),
+            "`{key}` was preserved but not reported; every malformed-shape key must push a todo. \
+             todos: {:?}",
+            out.todos
+        );
+    }
+}

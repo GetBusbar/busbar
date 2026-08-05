@@ -236,7 +236,10 @@ HTTP POSTs; on `kind: hook` plugins they ride `busbar_call` with the same JSON p
   API reports `schema: null`.
 - **`status`** (`{"status": true}`): the control-plane read: reply your **observed** state,
   `{"status": {"settings_version": N, "settings": {...}, "metrics": [ ... ]}}`, and Busbar surfaces
-  it at `GET /api/v1/admin/hooks/{name}/status` with a desired-vs-reported **drift** verdict. The
+  it at `GET /api/v1/admin/hooks/{name}/status` with a desired-vs-reported **drift** verdict. Busbar
+  serves only the settings **key names** there (`settings_keys`) — never the values, on either side:
+  the bag you echo is the SECRET-RESOLVED one Busbar pushed you, and that read is reachable at
+  read-only admin scope. The drifting key names are reported in `drift_keys`. The
   `metrics` ARRAY is how your hook feeds its own operational data to the control plane (a Headroom
   compressor reports `chars_saved_total`; a dashboard built on Busbar sees what each plug is doing)
   instead of running its own dashboard. Each entry is Prometheus/OpenMetrics-shaped:

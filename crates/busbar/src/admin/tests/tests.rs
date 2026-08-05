@@ -763,9 +763,17 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
             .json()
             .await
             .unwrap();
+    // The COMMIT is visible as the settings KEY NAMES — never the values. A hook's settings bag is a
+    // `SecretRef` carrier (and `GET /hooks/{name}` is READ-ONLY scope), so it is projected exactly
+    // like every other admin settings bag; see `HookView::settings_keys`.
     assert_eq!(
-        got["settings"]["ratio"], 0.4,
-        "committed settings visible: {got}"
+        got["settings_keys"],
+        serde_json::json!(["ratio"]),
+        "committed settings visible as KEY NAMES: {got}"
+    );
+    assert!(
+        got.get("settings").is_none(),
+        "the raw settings bag must never be on this wire: {got}"
     );
 
     // Schema proxy: the plugin's `describe` reply is the {schema, dashboard?} envelope; the engine
@@ -13398,6 +13406,134 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     assert!(
         base["unparseable"].is_null(),
         "a parseable, live definition carries no flag: {base}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A2 — SECRET CONTAINMENT ON THE HOOK-REGISTRY READS. Same class as the named-map reads above, and
+/// the same fix: `GET /hooks` and `GET /hooks/{name}` are READ-ONLY admin scope, and a hook's
+/// `settings:` bag is a `SecretRef` carrier by design (busbar resolves it before every configure
+/// push) — so a literal credential written there is fully supported and must never be projected.
+/// The `HookView` doc used to claim hook settings are "never a secret by contract", the SAME claim
+/// `NamedDefView` had to retract.
+#[tokio::test]
+async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut cfg: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "plugin": "test-hook",
+        "timeout_ms": 5,
+        "on_error": "weighted"
+    }))
+    .unwrap();
+    cfg.settings = serde_json::json!({
+        "endpoint": "https://gate.example.com",
+        "api_token": "hunter2-hook"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let app = TestApp::new().governance(gov).hook("baa-gate", cfg).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    for url in [
+        format!("http://{addr}/api/v1/admin/hooks"),
+        format!("http://{addr}/api/v1/admin/hooks/baa-gate"),
+    ] {
+        let body = client
+            .get(&url)
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            !body.contains("hunter2-hook"),
+            "{url} projected a hook settings VALUE at READ-ONLY admin scope: {body}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let view = json
+            .get("items")
+            .and_then(|i| i.get(0))
+            .cloned()
+            .unwrap_or(json);
+        assert_eq!(
+            view["settings_keys"],
+            serde_json::json!(["api_token", "endpoint"]),
+            "the hook read must project the settings KEY NAMES, sorted"
+        );
+        assert!(
+            view.get("settings").is_none(),
+            "the raw hook settings bag must not be projected at all: {view}"
+        );
+    }
+    handle.abort();
+}
+
+/// A3 — SECRET CONTAINMENT ON `GET /api/v1/admin/config/settings`. This read serializes the WHOLE
+/// `RootSettings`, which carries `store: Option<StoreCfg>` and therefore `store.settings` — the bag
+/// busbar's own docs spell with a credential (`url: rediss://:password@…`), and whose `url`
+/// `plugin-pack` marks `x-busbar-secret`. `PUT /config/settings` requires FULL scope; this GET
+/// requires only READ-ONLY — so unredacted it handed a read-only reader the governance ledger's
+/// credential (keys, budgets, the hash-chained audit log) entirely out of band of busbar.
+#[tokio::test]
+async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
+    let (dir, _overlay, addr, handle) = settings_test_app("secretbag").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    // An operator configures the durable store the way the docs show — credential in the URL.
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "store": {
+                    "module": "memory",
+                    "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
+                }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+
+    let body = admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !body.contains("hunter2-store"),
+        "the store credential reached a READ-ONLY-scope read: {body}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let store = &json["settings"]["store"];
+    assert_eq!(
+        store["module"], "memory",
+        "the non-secret shape still introspects: {json}"
+    );
+    assert_eq!(
+        store["settings_keys"],
+        serde_json::json!(["url"]),
+        "the bag is projected as KEY NAMES, so `what is configured` survives: {json}"
+    );
+    assert!(
+        store.get("settings").is_none(),
+        "no raw settings bag anywhere on this wire: {json}"
     );
 
     handle.abort();

@@ -27,14 +27,62 @@ use crate::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
 
-/// The KEY NAMES of one opaque `settings:` bag, sorted — the REDACTED projection every named-map
-/// read serves instead of the bag itself (see [`NamedDefView::settings_keys`]: a settings value may
-/// be a credential and these reads are reachable at READ-ONLY admin scope). One function so the two
-/// section projections cannot drift apart on the one field that must not leak.
-fn settings_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+/// The KEY NAMES of one opaque `settings:` bag, sorted — the REDACTED projection EVERY admin read
+/// serves instead of the bag itself (see [`NamedDefView::settings_keys`]: a settings value may be a
+/// credential and these reads are reachable at READ-ONLY admin scope).
+///
+/// THE ONE PROJECTION, deliberately: named-map definitions, hook definitions, hook STATUS (desired
+/// and reported), and the whole-`RootSettings` config read all go through this function (or through
+/// [`redact_settings_bags`], which is this function applied structurally). A second redaction scheme
+/// is how a leak comes back — and `scripts/settings-leak-lint.sh` fails the build for any admin
+/// projection that grows a raw `settings` bag instead of using one of these two.
+pub(crate) fn settings_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut keys: Vec<String> = settings.keys().cloned().collect();
     keys.sort();
     keys
+}
+
+/// [`settings_keys`] applied STRUCTURALLY to an already-serialized admin body: every `"settings"`
+/// member, at any depth, is replaced by a `"settings_keys"` member holding its sorted key names.
+///
+/// For the reads that serialize a whole typed config tree rather than hand-building a view — today
+/// `GET /api/v1/admin/config/settings`, which does `serde_json::to_value(&RootSettings)` and so
+/// carries `store.settings` (busbar's OWN docs spell that bag with a credential:
+/// `url: rediss://:password@…`, and `plugin-pack` marks a store `url` `x-busbar-secret`). That read
+/// requires only READ-ONLY scope while the matching `PUT` requires FULL, so before this a read-only
+/// admin could lift the governance ledger's credential — keys, budgets, the hash-chained audit log —
+/// entirely out of band of busbar.
+///
+/// A `settings` value that is NOT an object is redacted to an EMPTY key list rather than passed
+/// through: `config::secret::resolve_settings` forwards a non-object bag verbatim, so a bare scalar
+/// credential there is fully supported and must not ride out on the "it isn't a map so it can't be a
+/// secret" assumption.
+pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(bag) = map.remove("settings") {
+                let keys = match bag {
+                    serde_json::Value::Object(o) => settings_keys(&o),
+                    _ => Vec::new(),
+                };
+                map.insert(
+                    "settings_keys".to_string(),
+                    serde_json::Value::Array(
+                        keys.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
+            }
+            for (_, child) in map.iter_mut() {
+                redact_settings_bags(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_settings_bags(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
@@ -2437,7 +2485,7 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             }),
             on_error: cfg.on_error.clone(),
             timeout_ms: cfg.timeout_ms,
-            settings: cfg.settings.clone(),
+            settings_keys: settings_keys(&cfg.settings),
             global: cfg.global || global_hooks.iter().any(|n| n == name),
         }
     }

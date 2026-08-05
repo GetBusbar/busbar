@@ -1113,6 +1113,33 @@ impl GovState {
         c.by_credential.retain(|_, (key, _)| key.id != id);
     }
 
+    /// Reclaim the in-memory budget CELLS of a group that no longer exists — the group-shaped twin of
+    /// the `self.budget.write(id).remove(id)` line [`GovState::delete_key`] runs, and it carries the
+    /// same ordering rule: call it AFTER the deletion is durable and the new `App` (without the
+    /// group) is installed, never before. Dropping the cells first would let a request still charging
+    /// through the outgoing cost model re-create them in the gap.
+    ///
+    /// Returns the number of cells dropped. A group's cells are `group:<name>@<window>[#<scope>]`,
+    /// one per (window, pool scope), so this is a prefix sweep across every shard rather than a
+    /// single-key remove. It is only reachable for a group that is GONE, so there is no cap left for
+    /// the drop to reset; the write-behind flush is additive and already committed whatever spend was
+    /// ledgered, so no durable data is lost either.
+    ///
+    /// Without this, a deleted group's all-time cell stayed resident for the life of the process:
+    /// the amortized sweep exempts a cell that still backs an enforced cap, and nothing ever removed
+    /// the ones that stopped backing one. With SSO auto-provisioning creating a group per subject,
+    /// that is a monotonic leak that no admin read (`groups_registry.len()` included) can see.
+    pub(crate) fn reclaim_group_cells(&self, group: &str) -> usize {
+        let prefix = format!("{}{group}@", crate::cost::GROUP_BUCKET_PREFIX);
+        let mut dropped = 0usize;
+        for mut shard in self.budget.write_all() {
+            let before = shard.len();
+            shard.retain(|id, _| !id.starts_with(&prefix));
+            dropped += before - shard.len();
+        }
+        dropped
+    }
+
     /// ROTATE a key's CREDENTIAL in place. The key `id` stays STABLE — budgets, rate windows, usage
     /// history and audit attribution carry over — and the previous credential stops authenticating
     /// IMMEDIATELY and fleet-wide. An attached AWS SigV4 credential (if any) is NOT rotated here;
@@ -1596,13 +1623,21 @@ impl GovState {
                     if c.window_start != 0 {
                         return c.window_start.saturating_add(max_window) > now;
                     }
-                    // The all-time window never rolls, so age these by last use instead. ONLY the
-                    // attribution cells: a `group:` cell in the all-time window holds an ENFORCED
-                    // cap whose spend must not reset, and hydrate is boot-only so it would never
-                    // come back. A key's own bucket is uncapped by construction
-                    // (`cost::chain_for` pins its caps to `None`) and the flush is additive, so
-                    // dropping a clean, long-idle one loses no enforcement and no durable data.
-                    id.starts_with("group:")
+                    // The all-time window never rolls, so age these by last use instead. The
+                    // `group:` exemption is NARROW, and exactly as narrow as its own rationale: a
+                    // cell is exempt only while it STILL BACKS AN ENFORCED CAP ("spend that must
+                    // not reset", and hydrate is boot-only so it would never come back).
+                    //
+                    // It used to be the blanket `id.starts_with("group:")`, which also pinned two
+                    // populations the rationale never covered: cells of DELETED groups, and cells
+                    // of UNCAPPED ones. With SSO auto-provisioning (`max_auto_provisioned_groups`
+                    // defaults to 0 = UNLIMITED) every subject ever seen leaves a permanently
+                    // resident cell behind after offboarding, and `groups_registry.len()` stays
+                    // flat, so nothing on the admin surface reveals the growth — a monotonic leak
+                    // on a product that advertises ~5 MB RSS. A cell whose group is gone, or whose
+                    // bucket carries no cap, enforces NOTHING; it now ages out by last touch like
+                    // any other attribution cell (and, like them, only while clean).
+                    still_enforces_a_cap(cost, id)
                         || c.dirty
                         || c.last_touch.saturating_add(max_window) > now
                 });
@@ -1980,4 +2015,33 @@ impl GovState {
         c.by_credential = fresh_cred;
         Ok(())
     }
+}
+
+/// Whether an ALL-TIME (`window_start == 0`) budget cell still backs an ENFORCED cap — the exact
+/// (and only) reason the amortized shard sweep exempts a cell from age-based eviction.
+///
+/// A cell qualifies only when its id names a group that STILL EXISTS in the live cost model AND that
+/// group still carries a bucket with this very `bucket_id` AND that bucket still has at least one
+/// windowed cap. Anything else — a group deleted through `DELETE /groups/{name}` or dropped from
+/// config, an auto-provisioned `user:<sub>` leaf that never carried a cap at all, a bucket whose
+/// limit the operator removed — enforces nothing, so pinning its cell in memory forever buys nothing
+/// and leaks. Those age out by last touch (and only while clean) exactly like a key's own uncapped
+/// attribution cell.
+///
+/// Non-`group:` ids are never exempt here (a key bucket is uncapped by construction).
+fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
+    let Some(rest) = bucket_id.strip_prefix(crate::cost::GROUP_BUCKET_PREFIX) else {
+        return false;
+    };
+    // `group:<name>@<window>[#<scope>]` — the name is everything before the FIRST `@` (a group name
+    // cannot contain one; `config_validate` charset-checks it).
+    let Some(name) = rest.split('@').next() else {
+        return false;
+    };
+    cost.group_named(name).is_some_and(|g| {
+        g.buckets.iter().any(|b| {
+            b.bucket_id == bucket_id
+                && (b.requests_cap.is_some() || b.tokens_cap.is_some() || b.budget_cap.is_some())
+        })
+    })
 }

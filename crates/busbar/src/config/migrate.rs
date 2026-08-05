@@ -324,7 +324,7 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
     migrate_hook_stages(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
-    migrate_response_headers(&mut root, &mut changes);
+    migrate_response_headers(&mut root, &mut changes, &mut todos);
     // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
     // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
     // metrics keys, and rewrites them into the new `export:` surface in place.
@@ -371,6 +371,98 @@ fn as_map(v: Value) -> Mapping {
     match v {
         Value::Mapping(m) => m,
         _ => Mapping::new(),
+    }
+}
+
+/// The outcome of a SHAPE-CHECKED take ([`take_mapping`] / [`take_sequence`]) — the one seam every
+/// "remove this key, then look at its shape" site in this module goes through.
+///
+/// THE BUG CLASS THIS TYPE EXISTS TO KILL. The shape it replaced was written five different times as
+/// some spelling of `take(root, "k").and_then(|v| v.as_sequence().cloned()).unwrap_or_default()` (or
+/// `take(...)` + `let Some(Mapping) = … else { continue }`). Every one of them REMOVED the operator's
+/// key from the document and then, if the value was not the expected shape, dropped it on the floor:
+/// no `changes` entry, no `todos` entry, no warning. The migrated document simply no longer contained
+/// what the operator wrote — and because an ABSENT key is usually a legal default, `busbar --validate`
+/// then PASSED, so nothing downstream ever surfaced the loss either. (The concrete report: a pool
+/// written as `pools: { frontier: { hooks: baa-gate } }` — the scalar form, which 1.5.3 rejects loudly
+/// — came out of `--migrate-config` with its compliance gate silently gone.)
+///
+/// TWO PROPERTIES MAKE THE RECURRENCE STRUCTURAL, not a matter of remembering:
+///
+/// 1. **Take-on-match.** The key is removed ONLY when the shape matches. A wrong-shaped value is
+///    never lifted out of the document in the first place, so there is no window in which a caller
+///    could forget to put it back — and it keeps its original POSITION in the mapping, not a
+///    restored-at-the-end one. The helper pushes the operator-facing TODO itself.
+/// 2. **`Malformed` is a distinct variant, and there is no `unwrap_or_default`.** `Absent` and
+///    `Malformed` cannot be conflated (conflating them is exactly what `unwrap_or_default()` did),
+///    and because this enum is not `Option` a caller cannot silently swallow the third case: the
+///    compiler makes them write the arm. A caller that then goes on to WRITE the same key back must
+///    check `contains_key` first — see [`migrate_hooks_block`]'s final write.
+#[must_use]
+enum Taken<T> {
+    /// The key was present in the expected shape and has been REMOVED from the document.
+    Got(T),
+    /// The key was not present at all. Nothing was changed.
+    Absent,
+    /// The key was present in the WRONG shape. It has been LEFT EXACTLY AS WRITTEN, in place, and a
+    /// TODO naming it was already pushed — the caller must not migrate it, and must not overwrite it.
+    Malformed,
+}
+
+/// Shape-check `m[k]`, and remove-and-return it ONLY if it matches. See [`Taken`] for why this is
+/// take-on-match rather than take-then-restore. `ctx` is the operator-facing path prefix for the TODO
+/// (`"pools.frontier"`), `want` the shape noun (`"a mapping"` / `"a list"`).
+fn take_shaped(
+    m: &mut Mapping,
+    k: &str,
+    want: &str,
+    matches_shape: fn(&Value) -> bool,
+    ctx: &str,
+    todos: &mut Vec<String>,
+) -> Taken<Value> {
+    let Some(found) = m.get(Value::from(k)) else {
+        return Taken::Absent;
+    };
+    if !matches_shape(found) {
+        let shape = one_line(found);
+        let path = if ctx.is_empty() {
+            k.to_string()
+        } else {
+            format!("{ctx}.{k}")
+        };
+        todos.push(format!(
+            "{path}: is not {want} (`{shape}`) — it was left EXACTLY as written and was NOT \
+             migrated, because this migrator cannot mechanically convert that shape and will never \
+             silently drop what you wrote. Fix it by hand and re-run `--migrate-config`."
+        ));
+        return Taken::Malformed;
+    }
+    // Shape confirmed: NOW remove it. (The `get` above borrowed `m`; that borrow ends here.)
+    Taken::Got(m.remove(Value::from(k)).expect("just found"))
+}
+
+/// [`take_shaped`] for a MAPPING-valued key.
+fn take_mapping(m: &mut Mapping, k: &str, ctx: &str, todos: &mut Vec<String>) -> Taken<Mapping> {
+    match take_shaped(m, k, "a mapping", |v| v.is_mapping(), ctx, todos) {
+        Taken::Got(Value::Mapping(mm)) => Taken::Got(mm),
+        Taken::Got(_) => unreachable!("shape was checked"),
+        Taken::Absent => Taken::Absent,
+        Taken::Malformed => Taken::Malformed,
+    }
+}
+
+/// [`take_shaped`] for a SEQUENCE-valued key.
+fn take_sequence(
+    m: &mut Mapping,
+    k: &str,
+    ctx: &str,
+    todos: &mut Vec<String>,
+) -> Taken<Vec<Value>> {
+    match take_shaped(m, k, "a list", |v| v.is_sequence(), ctx, todos) {
+        Taken::Got(Value::Sequence(s)) => Taken::Got(s),
+        Taken::Got(_) => unreachable!("shape was checked"),
+        Taken::Absent => Taken::Absent,
+        Taken::Malformed => Taken::Malformed,
     }
 }
 
@@ -532,23 +624,72 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
     );
 }
 
-/// Map a 1.4.x `budget_period` word to the 1.5.0 C8 window noun.
-fn window_noun(period: &str) -> &'static str {
+/// The window a period this migrator cannot express EXACTLY falls back to: the LONGEST window that
+/// still ROLLS. Never `total` — `total` is the ALL-TIME window (`WINDOW_TOTAL => 0`), which never
+/// rolls, so collapsing an unrecognized RECURRING period onto it silently converts the operator's
+/// recurring cap into a LIFETIME cap that, once spent, blocks the group forever. Every use of this
+/// fallback is accompanied by a TODO naming the period AND the window it landed on.
+const APPROX_WINDOW: &str = "month";
+
+/// Map a 1.4.x `budget_period` word to the 1.5.0 C8 window noun (`minute` | `hour` | `day` |
+/// `month` | `total` — the only five [`crate::config::groups::LimitWindow`] spells).
+///
+/// THE ONE RULE: a migration must never silently change what the operator wrote. So the mapping is
+/// split three ways instead of a catch-all:
+///
+/// * EXACT — the 1.4.x word has a 1.5.3 window with the same meaning. Silent.
+/// * APPROXIMATED — the word names a real recurring period 1.5.3 has NO window for (`weekly`,
+///   `yearly`). It lands on [`APPROX_WINDOW`] and pushes a TODO naming both, because the AMOUNT the
+///   operator wrote no longer means what it meant.
+/// * UNRECOGNIZED — anything else (a typo, a period from a fork). Same fallback, same loud TODO.
+///
+/// The `_ => "total"` this replaced was the silent third case: `weekly` (a period the tree's own
+/// tests name as 1.4.x) and `hourly` both collapsed to the ALL-TIME window with no ledger entry at
+/// all, turning a recurring cap into a lifetime one. `ctx` names the limit being migrated so the
+/// TODO points at a specific group.
+fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> &'static str {
     match period {
-        "daily" | "day" => "day",
-        "monthly" | "month" => "month",
-        "minute" => "minute",
-        "hour" => "hour",
-        _ => "total",
+        // EXACT — every spelling that has a 1.5.3 window meaning exactly the same thing.
+        "minute" | "minutely" | "per_minute" => "minute",
+        "hour" | "hourly" | "per_hour" => "hour",
+        "day" | "daily" | "per_day" => "day",
+        "month" | "monthly" | "per_month" => "month",
+        // The 1.4.x default when `budget_period:` is absent, and an explicit all-time cap. This is
+        // the ONLY path that may legitimately produce the never-rolling window.
+        "total" | "lifetime" | "all_time" | "alltime" | "never" => "total",
+        // APPROXIMATED / UNRECOGNIZED — LOUD, always.
+        other => {
+            let known = matches!(other, "week" | "weekly" | "per_week")
+                || matches!(
+                    other,
+                    "year" | "yearly" | "annual" | "annually" | "per_year"
+                );
+            let why = if known {
+                format!("1.5.3 has no `{other}` window")
+            } else {
+                format!("`{other}` is not a period this migrator recognizes")
+            };
+            todos.push(format!(
+                "{ctx}: budget_period `{other}` -> per: {APPROX_WINDOW} ({why}). The AMOUNT was \
+                 carried over UNCHANGED, so the cap now spends over a {APPROX_WINDOW} instead of a \
+                 `{other}` — re-scale it by hand, or split the group's limits across the windows \
+                 1.5.3 does have (minute | hour | day | month | total)."
+            ));
+            APPROX_WINDOW
+        }
     }
 }
 
 /// `governance:` -> store / rate_card / per_request_fee / groups / advanced / auth.admin_auth.
 fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let Some(gov) = take(root, "governance") else {
-        return;
+    // Take-on-match (see `Taken`): `as_map` on a taken value silently turned a non-mapping
+    // `governance:` into an empty one — i.e. removed the operator's block and replaced it with
+    // nothing. A malformed one now stays in the document (and `governance:` is retired in 1.5.x, so
+    // `--validate` also rejects it loudly) with a TODO.
+    let mut gov = match take_mapping(root, "governance", "", todos) {
+        Taken::Got(m) => m,
+        Taken::Absent | Taken::Malformed => return,
     };
-    let mut gov = as_map(gov);
 
     // 1.4.x's ONLY durable governance backend was SQLite at `governance.db_path` (default
     // "busbar-governance.db") -- `GovernanceCfg` never had a `store` module-selector field (verified
@@ -658,9 +799,12 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             );
         }
     }
-    if let Some(groups) = take(&mut gov, "budget_groups") {
+    // Take-on-match (see `Taken`): the old `take` + `if let Value::Mapping` removed a non-mapping
+    // `budget_groups:` and then wrote an EMPTY top-level `groups:` plus a "budget caps became
+    // generic limits" changelog line — announcing a migration of data it had just dropped.
+    if let Taken::Got(gm) = take_mapping(&mut gov, "budget_groups", "governance", todos) {
         let mut out = Mapping::new();
-        if let Value::Mapping(gm) = groups {
+        {
             for (name, g) in gm {
                 let mut g = as_map(g);
                 let mut entry = Mapping::new();
@@ -673,7 +817,8 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                     .unwrap_or_else(|| "total".into());
                 let mut limit = Mapping::new();
                 limit.insert("budget".into(), amount);
-                limit.insert("per".into(), window_noun(&period).into());
+                let ctx = format!("groups.{}", name.as_str().unwrap_or("?"));
+                limit.insert("per".into(), window_noun(&period, &ctx, todos).into());
                 entry.insert(
                     "limits".into(),
                     Value::Sequence(vec![Value::Mapping(limit)]),
@@ -1026,7 +1171,10 @@ fn migrate_auth(
                 if let Some(bu) = budget {
                     let mut l = Mapping::new();
                     l.insert("budget".into(), bu);
-                    l.insert("per".into(), window_noun(&period).into());
+                    l.insert(
+                        "per".into(),
+                        window_noun(&period, &format!("groups.{gname}"), todos).into(),
+                    );
                     limits.push(Value::Mapping(l));
                 }
                 let mut entry = Mapping::new();
@@ -1212,10 +1360,12 @@ fn uniq_def_name(defs: &Mapping, base: &str) -> String {
 ///
 /// A config already in the new shape (a `hooks:` map of `module:` defs) passes through untouched.
 fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let hooks_src = take(root, "hooks").and_then(|v| match v {
-        Value::Mapping(m) => Some(m),
-        _ => None,
-    });
+    // Take-on-match (see `Taken`): a `hooks:` that is not a mapping stays EXACTLY where the operator
+    // wrote it, with a TODO, instead of being lifted out and dropped.
+    let hooks_src = match take_mapping(root, "hooks", "", todos) {
+        Taken::Got(m) => Some(m),
+        Taken::Absent | Taken::Malformed => None,
+    };
     let mut defs = Mapping::new();
     let mut all_pools: Vec<Value> = Vec::new();
 
@@ -1245,10 +1395,14 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 
     // `global_hooks:` -> the reserved `pools.hooks:` all-pools attach.
-    for entry in take(root, "global_hooks")
-        .and_then(|v| v.as_sequence().cloned())
-        .unwrap_or_default()
-    {
+    let global_hooks_src = match take_sequence(root, "global_hooks", "", todos) {
+        Taken::Got(s) => s,
+        // Absent is the normal path; Malformed left the operator's value in place with a TODO (and
+        // `global_hooks:` is a RETIRED key in 1.5.3, so a leftover one also fails `--validate` loudly
+        // — which is the point: it is no longer possible for it to just vanish).
+        Taken::Absent | Taken::Malformed => Vec::new(),
+    };
+    for entry in global_hooks_src {
         match entry {
             Value::String(name) => {
                 if !all_pools.iter().any(|v| v.as_str() == Some(name.as_str())) {
@@ -1287,8 +1441,14 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
             let Some(Value::Mapping(p)) = pools.get_mut(&pk) else {
                 continue;
             };
-            let Some(existing) = take(p, "hooks").and_then(|v| v.as_sequence().cloned()) else {
-                continue;
+            let pool_ctx = format!("pools.{}", pk.as_str().unwrap_or("?"));
+            let existing = match take_sequence(p, "hooks", &pool_ctx, todos) {
+                Taken::Got(s) => s,
+                // THE reported case: `pools.<x>.hooks: baa-gate` (the scalar form 1.5.3 rejects).
+                // It stays in the document with a TODO — before this it was removed here and never
+                // written back, and since an absent `hooks:` is a legal default `--validate` then
+                // PASSED with the pool's rejecting compliance gate silently gone.
+                Taken::Absent | Taken::Malformed => continue,
             };
             let mut new_list: Vec<Value> = Vec::new();
             for entry in existing {
@@ -1320,7 +1480,20 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 
     if !defs.is_empty() {
-        root.insert("hooks".into(), Value::Mapping(defs));
+        // The key is still present ⇒ `take_mapping` above found it MALFORMED and deliberately left
+        // the operator's value in place. Writing here would destroy exactly what that arm preserved,
+        // so it doesn't — it says so instead (`Taken`, property 2).
+        if root.contains_key(Value::from("hooks")) {
+            todos.push(format!(
+                "hooks: {} hook definition(s) lifted from `global_hooks:`/inline pool hooks could \
+                 NOT be written, because the top-level `hooks:` key is present in a shape this \
+                 migrator cannot merge into and was left as you wrote it. Fix `hooks:` (a mapping \
+                 of NAME -> {{ module: … }}) and re-run `--migrate-config`.",
+                defs.len()
+            ));
+        } else {
+            root.insert("hooks".into(), Value::Mapping(defs));
+        }
     }
     if !all_pools.is_empty() {
         let pools = root
@@ -1328,9 +1501,22 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         if let Value::Mapping(pm) = pools {
             // Merge with any existing reserved all-pools list (idempotent dedup).
-            let mut merged = take(pm, "hooks")
-                .and_then(|v| v.as_sequence().cloned())
-                .unwrap_or_default();
+            let mut merged = match take_sequence(pm, "hooks", "pools", todos) {
+                Taken::Got(s) => s,
+                Taken::Absent => Vec::new(),
+                // A malformed reserved `pools.hooks:` stays as written; the attaches cannot be
+                // merged into it, so say so rather than replacing the operator's value.
+                Taken::Malformed => {
+                    todos.push(
+                        "pools.hooks: the all-pools hook attaches derived from this config could \
+                         NOT be merged in, because `pools.hooks:` is present in a shape this \
+                         migrator cannot merge into and was left as you wrote it. Fix it (a list \
+                         of hook names) and re-run `--migrate-config`."
+                            .into(),
+                    );
+                    return;
+                }
+            };
             for n in all_pools {
                 let dup = n.as_str().is_some() && merged.iter().any(|v| v.as_str() == n.as_str());
                 if !dup {
@@ -1354,13 +1540,34 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
         // pool's `hooks:` list (a bare built-in name stays bare). Runs here (always) rather than
         // in `migrate_hooks_block` (which returns early for a config with no `hooks:` registry),
         // so a pool `policy:` migrates whether or not the config had a hooks block.
-        if let Some(policy) = take(p, "policy").and_then(|v| v.as_str().map(str::to_string)) {
-            let mut list = take(p, "hooks")
-                .and_then(|v| v.as_sequence().cloned())
-                .unwrap_or_default();
-            list.insert(0, policy.as_str().into());
-            p.insert("hooks".into(), Value::Sequence(list));
-            changes.push(format!("pools.{pname}.policy -> hooks: [{policy}, ...]"));
+        // Take-on-match, in BOTH keys (see `Taken`). `policy:` is only removed once it is confirmed
+        // to be a scalar name, and the prepend only happens once `hooks:` is confirmed absent or a
+        // real list — so neither key can be lifted out and dropped, and a malformed `hooks:` is
+        // never overwritten by a synthesized one-element list.
+        let policy = p
+            .get(Value::from("policy"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(policy) = policy {
+            let pool_ctx = format!("pools.{pname}");
+            match take_sequence(p, "hooks", &pool_ctx, todos) {
+                Taken::Got(mut list) => {
+                    take(p, "policy");
+                    list.insert(0, policy.as_str().into());
+                    p.insert("hooks".into(), Value::Sequence(list));
+                    changes.push(format!("pools.{pname}.policy -> hooks: [{policy}, ...]"));
+                }
+                Taken::Absent => {
+                    take(p, "policy");
+                    p.insert("hooks".into(), Value::Sequence(vec![policy.as_str().into()]));
+                    changes.push(format!("pools.{pname}.policy -> hooks: [{policy}]"));
+                }
+                Taken::Malformed => todos.push(format!(
+                    "pools.{pname}.policy: could not be folded into `hooks:` (see the `hooks:` todo \
+                     above); BOTH keys were left EXACTLY as written. The retired `policy:` key is \
+                     rejected by 1.5.3, so fix `hooks:` and re-run `--migrate-config`."
+                )),
+            }
         }
         if let Some(Value::Sequence(members)) = p.get_mut(Value::from("members")) {
             for mem in members.iter_mut() {
@@ -1576,17 +1783,40 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
 /// Unlike `migrate_observability`'s same-section rename, this one CROSSES top-level sections, so it
 /// removes the key from `observability` (if present) and inserts it under `advanced.response_headers`,
 /// creating either mapping if it did not already exist.
-fn migrate_response_headers(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) else {
+fn migrate_response_headers(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    if !matches!(
+        root.get(Value::from("observability")),
+        Some(Value::Mapping(m)) if m.contains_key(Value::from("emit_server_timing"))
+    ) {
         return;
+    }
+    // Take-on-match (see `Taken`) BEFORE touching `observability:`: an `advanced:` that is not a
+    // mapping used to be removed here and replaced with a freshly-built one — the operator's
+    // `advanced:` value gone, with no todo. Now it stays as written, and the SOURCE key stays with
+    // it (nothing is half-migrated).
+    let mut advanced = match take_mapping(root, "advanced", "", todos) {
+        Taken::Got(m) => m,
+        Taken::Absent => Mapping::new(),
+        Taken::Malformed => {
+            todos.push(
+                "observability.emit_server_timing: could not be folded into \
+                 `advanced.response_headers.server_timing` (see the `advanced:` todo above); BOTH \
+                 keys were left EXACTLY as written. Fix `advanced:` and re-run `--migrate-config`."
+                    .into(),
+            );
+            return;
+        }
+    };
+    let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) else {
+        unreachable!("shape checked above");
     };
     let Some(v) = take(obs, "emit_server_timing") else {
-        return;
+        unreachable!("presence checked above");
     };
-    // Take the existing `advanced:` mapping (if any) out of `root`, normalize it to a mapping (an
-    // absent or non-mapping value becomes an empty one), splice in `response_headers.server_timing`,
-    // then put it back. Avoids relying on a `Mapping::entry` API this serde_yaml version may lack.
-    let mut advanced = as_map(take(root, "advanced").unwrap_or(Value::Mapping(Mapping::new())));
     let mut response_headers = as_map(
         advanced
             .remove(Value::from("response_headers"))
