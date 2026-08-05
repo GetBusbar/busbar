@@ -1,0 +1,108 @@
+# qa/segments.toml — the qa-gate umbrella's SOURCE OF TRUTH (busbar 1.5.3, unit G).
+#
+# qa-gate is a REGISTRY-DRIVEN umbrella: it fans out one independent, independently-reported job per
+# `active` segment (green-on-completion — no segment's failure is masked by another), and holds every
+# not-yet-shipped capability as a `reserved` manifest slot that reports PASS/SKIP (empty set) so the
+# umbrella is green TODAY while the roadmap's future segments already own their slot.
+#
+# "Add more whenever" is a ONE-LINE change: a new segment is a new [[segment]] block; arming a
+# reserved segment is `status = "reserved"` -> `"active"`. NO YAML plumbing changes — exactly the
+# posture the real qa-gate.yml already uses looping the plugins.yaml registry feed.
+#
+# FIELDS
+#   id      segment name (also the CI job/leg name).
+#   status  active   -> runs its `run` command; the umbrella is red if it fails.
+#           reserved -> defined-but-INERT; the runner reports PASS/SKIP (empty set). Flips to active
+#                       when its feature ships — additive, no restructure.
+#   tier    fast      -> pure in-process / fixture / script; cheap, runs on the per-push ci.yml cadence.
+#           live-mock -> stands up REAL upstreams/receivers (the ~2h release-check soak); runs on the
+#                        `qa`-branch promotion, NOT every dev push.
+#   run     the command the segment runs (cwd = repo root). Reserved segments still name their FUTURE
+#           run command so arming them is purely a status flip.
+#
+# INVARIANT (design §6): PRESERVE all current qa-gate coverage — every test that runs today runs
+# inside exactly one segment; the umbrella's union is a SUPERSET of today's gate. `core-data-plane` +
+# `plugins` are that preserved coverage, re-homed onto release-check.sh, not rewritten.
+#
+# Reserved -> release map (honesty markers, catalog qa-gate-test-catalog-1.5.3.md §4):
+#   mcp-integrity -> 1.5.4    a2a -> 1.5.6    smart-router -> 1.5.5
+
+# ── ACTIVE (LIVE 1.5.3, green-on-completion) ──────────────────────────────────────────────────────
+
+[[segment]]
+id     = "export"
+status = "active"
+tier   = "fast"
+# LIVE 1.5.3. Fast cases (EXP-01/02/03/09/11) are in-process; the webhook/scrape live-mock rows
+# (EXP-04..08/10) belong to a live-mock companion the umbrella schedules on the qa cadence.
+# TODO(unit D): the `qa_export` integration test target lands with the admin/export test surface;
+# until then the runner reports this active segment PASS(pending) with a loud marker.
+run    = "cargo test -p busbar --test qa_export"
+
+[[segment]]
+id     = "hook-bindings"
+status = "active"
+tier   = "fast"
+# LIVE 1.5.3. Drives the NAMED-HOOKS grammar (catalog §2.2 HB-01..HB-12, audit-decisions §1): a hook
+# is DEFINED once in the top-level `hooks:` map and REFERENCED BY BARE NAME from `pools.hooks`
+# (all-pools) / `pools.<p>.hooks` (per-pool), the two lists combining ADDITIVELY. Scope is the hook's
+# `groups:` (a user is a leaf group, `user:bob`); `phase:` is a LIST of stages.
+# There is NO `plane:`/`target:`/`principal:`/`bind:` dimension and no `bindings:` grammar — those
+# invented dimensions were DELETED in the 1.5.3 audit, so no case here references them. Future planes
+# attach via their own `tools.hooks` / `agents.hooks` key against the SAME `hooks:` definitions — an
+# additive attach point, not a reserved selector value, so nothing is reserved-but-rejected here.
+# The two fail-closed cases are HB-11 (a bare name with no `hooks:` definition is a BOOT error) and
+# HB-12 (a pool literally NAMED `hooks` is rejected — `hooks` and `upstream_credentials` are reserved
+# keys at the `pools:` section level, audit §4).
+# TODO(unit D): the `qa_hook_bindings` integration test target lands with unit D's admin surface;
+# until then the runner reports this active segment PASS(pending).
+run    = "cargo test -p busbar --test qa_hook_bindings"
+
+[[segment]]
+id     = "config-stability"
+status = "active"
+tier   = "fast"
+# LIVE 1.5.3 and GREEN NOW: this segment runs the real config-stability gate (unit F) — the drift
+# guard + additive-only classifier + its self-test (catalog CFG-05..CFG-13). Points at the script
+# gate (which exists and passes on this branch) rather than a not-yet-present cargo test target, so
+# the segment is genuinely green today. The future `qa_config_stability` Rust test is an ADDITIVE
+# companion, not a prerequisite.
+run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
+
+[[segment]]
+id     = "core-data-plane"
+status = "active"
+tier   = "live-mock"
+# LIVE 1.5.3, PRESERVED. The existing routing/proxy/admission/failover + budgets/rps + auth/SSO
+# coverage, re-homed onto release-check.sh (no coverage lost). `--segment` names the slice; today
+# release-check.sh runs its full gate (coverage-preserving) and records the segment label, with a
+# documented TODO to partition phases per-segment (an additive refinement).
+run    = "./scripts/release-check.sh --segment core-data-plane"
+
+[[segment]]
+id     = "plugins"
+status = "active"
+tier   = "live-mock"
+# LIVE 1.5.3, PRESERVED. The existing plugin ABI / loader / fleet coverage, re-homed onto
+# release-check.sh (see core-data-plane note on the `--segment` partitioning TODO).
+run    = "./scripts/release-check.sh --segment plugins"
+
+# ── RESERVED (defined-but-INERT manifest slots — PASS/SKIP until their release arms them) ──────────
+
+[[segment]]
+id     = "mcp-integrity"
+status = "reserved"   # -> active in 1.5.4 (pure MCP)
+tier   = "live-mock"
+run    = "cargo test -p busbar --test qa_mcp_integrity"
+
+[[segment]]
+id     = "a2a"
+status = "reserved"   # -> active in 1.5.6 (A2A)
+tier   = "live-mock"
+run    = "cargo test -p busbar --test qa_a2a"
+
+[[segment]]
+id     = "smart-router"
+status = "reserved"   # -> active in 1.5.5 (smart-router)
+tier   = "fast"
+run    = "cargo test -p busbar --test qa_smart_router"

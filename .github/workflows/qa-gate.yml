@@ -143,3 +143,37 @@ jobs:
           DEV_GATE: "1"
         run: cargo test --release -p busbar-plugin-loader
         working-directory: busbarAI
+
+  # QA-GATE SEGMENTATION umbrella (1.5.3 unit G; design §6 + qa-gate-test-catalog-1.5.3.md §1/§3).
+  # qa-gate is a REGISTRY-DRIVEN umbrella of independent segments — qa/segments.toml is the single
+  # source of truth (mirroring how the release-check job above loops the plugins.yaml feed). This job
+  # introduces the umbrella WITHOUT disturbing the proven ~2h release-check job above: it self-tests
+  # the manifest shape, then fans out the FAST tier (the catalog's per-cadence split: fast segments
+  # are cheap in-process/fixture/script; the live-mock segments — core-data-plane + plugins — are the
+  # PRESERVED coverage the release-check job above already runs in full, so no coverage is lost and
+  # the real-money 2h gate is not doubled).
+  #
+  # SELF-MEASURING: `--run` records each segment's wall-clock and prints a timing summary SORTED
+  # LONGEST-FIRST, so the very first qa run makes the long pole (Amdahl) obvious. The live-mock pole
+  # (release-check ~2h) shows up as that job's own duration above; when we shard it per-segment/
+  # per-plugin (a documented additive refinement to release-check.sh's --segment), those legs join
+  # this summary — this instrumentation is exactly what tells us whether that sharding is worth it.
+  qa-segmentation:
+    name: qa-gate segmentation umbrella (fast tier + timing)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      # Prove the umbrella's shape before running anything (segmentation self-test).
+      - name: Segmentation self-test
+        run: scripts/qa-segments.sh --selftest
+      # Fan out the fast-tier active segments (export/hook-bindings scaffold PASS(pending) until unit
+      # D's admin API lands; config-stability runs the real gate; reserved smart-router PASS/SKIP),
+      # printing the longest-first timing summary.
+      - name: Run fast-tier segments (+ timing summary)
+        run: scripts/qa-segments.sh --run --tier fast
