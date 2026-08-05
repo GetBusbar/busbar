@@ -439,6 +439,22 @@ async fn apply(
                     None
                 }
             };
+            // THE TYPED SCHEMA CHECK — the SAME `deny_unknown_fields` parse `config.yaml` gets, run
+            // against the SAME structs (`NamedMapSection::validate_def` delegates to the one
+            // `parse_def` the overlay applier uses). Without it the API's grammar and the file's
+            // grammar were two different things: a typo'd key (`buffer:` for `buffer_size:`) passed
+            // the structural check above, was persisted verbatim into the overlay, and was then
+            // silently DROPPED at the next rebuild with only a `tracing::error!` — an accepted 200
+            // for config that never took effect. Runs BEFORE anything is persisted or swapped, and
+            // covers PATCH …/settings too (its composed document is the thing that must parse).
+            if let Some(def) = next_def.as_ref() {
+                if let Err(e) = txn_section.validate_def(&txn_name, def) {
+                    return Ok(Outcome::Value(Err((
+                        AdminError::Validation(e),
+                        Cond::InvalidConfig,
+                    ))));
+                }
+            }
             // TRUST CEILING (identity-providers): a `max_admin_scope` may be lowered or left alone,
             // never RAISED through the API. See this module's header for why refusing outright is
             // the right rule rather than gating the raise on a scope the caller necessarily holds.
@@ -576,7 +592,9 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
 /// Structural validation of a PUT definition, BEFORE any rebuild: the name is a durable registry key
 /// written verbatim into the overlay and every audit row, and `settings:` is persisted verbatim, so
 /// both are bounded here exactly as the hooks write path bounds its own. The typed
-/// `deny_unknown_fields` parse (the real schema check) happens at the overlay-apply seam.
+/// `deny_unknown_fields` parse (the real schema check) runs inside [`apply`]'s transaction against
+/// the section's own config struct, before anything is persisted — see the `validate_def` call
+/// there.
 fn validate_definition(
     section: NamedMapSection,
     name: &str,

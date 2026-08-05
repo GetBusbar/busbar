@@ -1,5 +1,16 @@
 use super::*;
 
+/// Prefix on the DEGRADED-BUT-APPLIED error [`GovState::delete_key`] returns when the durable
+/// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
+/// operator (and the admin surface, and the tests) can tell "the revocation IS durable, only the
+/// cache reconcile is behind" apart from a plain failure that means nothing happened.
+pub(crate) const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
+
+/// The [`GovState::rotate_key`] twin of [`REVOCATION_DURABLE_MARKER`]: the store IS rotated (the
+/// previous credential is dead) but the newly-minted secret could not be returned, so the correct
+/// operator response is RE-ROTATE, not "retry, nothing happened".
+pub(crate) const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
+
 impl GovState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(store: Arc<dyn Store>, admin_token: Option<String>) -> StoreResult<Self> {
@@ -562,10 +573,7 @@ impl GovState {
                          binding in the store; evicting the prior binding directly from the cache \
                          so its token stops verifying immediately"
                     );
-                    let mut c = self.caches_write();
-                    c.by_id.remove(&old);
-                    c.by_credential.retain(|_, (key, _)| key.id != old);
-                    drop(c);
+                    self.evict_key_from_caches(&old);
                     return Err(StoreError(format!(
                         "self-serve refresh for '{user_sub}' rotated the store successfully (the \
                          prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
@@ -1048,17 +1056,61 @@ impl GovState {
     }
 
     /// Delete a key by id and refresh the cache.
+    ///
+    /// REVOCATION IS DURABLE-FIRST, AND THE OUTCOME SAYS SO. `store.delete_key` commits the
+    /// tombstone; only then does the in-memory cache get reconciled. A bare `self.refresh()?` here
+    /// was the wrong failure mode for a REVOCATION: on a transient store blip the tombstone was
+    /// already committed, the cache still resolved the key, and the operator got a 500 — from which
+    /// the only reasonable reading is "the revocation did not take, the key is still live". Both
+    /// halves of that were wrong (it DID take durably) and dangerous (the credential kept working).
+    ///
+    /// So: evict THIS id from the verify/credential caches directly — a local map mutation under
+    /// `caches_write`, no store I/O, so it cannot fail the way a full `refresh()` can — which is
+    /// what actually stops the credential resolving. Then report a refresh failure as
+    /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
+    /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub(crate) fn delete_key(&self, id: &str) -> StoreResult<()> {
         self.store.delete_key(id)?;
+        // The targeted eviction FIRST and unconditionally: this is the step that stops the
+        // credential resolving, and it must happen whether or not the full reconcile succeeds.
+        self.evict_key_from_caches(id);
         let refreshed = self.refresh();
-        // AFTER `refresh()`, which is what stops the credential resolving — dropping the cell before
-        // it lets a request admitted in the gap re-insert. The key bucket is uncapped
+        // AFTER the eviction, which is what stops the credential resolving — dropping the cell
+        // before it lets a request admitted in the gap re-insert. The key bucket is uncapped
         // (`cost::chain_for`), so this reclaims attribution state only and can never reset a cap.
         //
         // A still-dirty cell would also be flushed after the store cascade-deleted the key's
         // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
         self.budget.write(id).remove(id);
-        refreshed
+        if let Err(refresh_err) = refreshed {
+            tracing::error!(
+                key_id = %id,
+                refresh_err = %refresh_err,
+                "delete_key: the tombstone is COMMITTED in the store and the key was evicted from \
+                 the in-memory caches (it no longer authenticates), but the full cache reconcile \
+                 failed; other cache entries may be stale until the next successful refresh"
+            );
+            return Err(StoreError(format!(
+                "{REVOCATION_DURABLE_MARKER}: key '{id}' IS revoked — the tombstone is committed in \
+                 the store and the credential was evicted from the in-memory cache, so it no longer \
+                 authenticates. Only the full cache reconcile failed ({refresh_err}); OTHER cache \
+                 entries may be stale until the next successful refresh. Do NOT re-issue this \
+                 revocation expecting it to have been a no-op — it took effect."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Evict ONE key id from both in-memory verify indices. Pure local map mutation under
+    /// `caches_write` (a poison-recovering lock), so — unlike [`GovState::refresh`], which needs a
+    /// `list_keys`/`list_credentials_since` store round-trip — it cannot fail. That is exactly why
+    /// the durable-write paths reach for it when a reconcile fails: the specific hazard (a
+    /// just-revoked or just-rotated credential still verifying against a store that no longer agrees)
+    /// is closed immediately, even if the rest of the cache stays stale until the next refresh.
+    fn evict_key_from_caches(&self, id: &str) {
+        let mut c = self.caches_write();
+        c.by_id.remove(id);
+        c.by_credential.retain(|_, (key, _)| key.id != id);
     }
 
     /// ROTATE a key's CREDENTIAL in place. The key `id` stays STABLE — budgets, rate windows, usage
@@ -1106,7 +1158,31 @@ impl GovState {
         let generation = generate_binding_generation().store()?;
         key.generation_hash = binding_marker(&key.id, &generation);
         self.store.put_key(&key)?;
-        self.refresh()?;
+        // Same durable-first honesty as `delete_key`: `put_key` has COMMITTED the new generation, so
+        // the OLD credential is durably dead the moment this returns — a bare `self.refresh()?` here
+        // returned a 500 with no new secret, from which the admin reads "rotation did not happen",
+        // while the cache went on resolving the OLD credential against a store that disagreed.
+        // Evict this id directly (no store I/O, cannot fail) so the old credential stops verifying
+        // immediately, then say plainly that the rotation IS durable and only the new secret was
+        // lost — which is a RE-ROTATE, not a retry-because-nothing-happened.
+        if let Err(refresh_err) = self.refresh() {
+            self.evict_key_from_caches(id);
+            tracing::error!(
+                key_id = %id,
+                refresh_err = %refresh_err,
+                "rotate_key: the new generation is COMMITTED in the store (the previous credential \
+                 is dead) and the key was evicted from the in-memory caches, but the full cache \
+                 reconcile failed, so the freshly-minted token could not be returned"
+            );
+            return Err(StoreError(format!(
+                "{ROTATION_DURABLE_MARKER}: key '{id}' WAS rotated — the new generation is \
+                 committed in the store, so the PREVIOUS credential is permanently dead and was \
+                 evicted from the in-memory cache. Only the cache reconcile failed \
+                 ({refresh_err}), so the newly-minted token could not be returned and is now \
+                 unrecoverable. This was NOT a no-op: rotate this key again to obtain a usable \
+                 credential."
+            )));
+        }
         let token = material.signer.mint(&key.id, exp, Some(&generation));
         Ok(Some(RotatedCredential { key, token, exp }))
     }

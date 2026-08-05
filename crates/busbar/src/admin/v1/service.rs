@@ -48,6 +48,7 @@ fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) 
         max_admin_scope: cfg.max_admin_scope.clone(),
         token_configured: Some(cfg.token.is_some()),
         browser_login_configured: Some(cfg.browser_login.is_some()),
+        unparseable: None,
     }
 }
 
@@ -63,6 +64,38 @@ fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefVie
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
+        unparseable: None,
+    }
+}
+
+/// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly
+/// FLAGGED (`unparseable`). Such an entry is stored in the overlay but dropped at every rebuild, so
+/// it is not live anywhere — before this it was invisible to every read surface and announced only
+/// by a boot log line, which an operator who does not tail logs can never discover. `module` and
+/// `settings_keys` are a best-effort projection of the RAW stored document (still key names only, so
+/// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
+fn unparseable_def_view(
+    name: &str,
+    entry: &crate::config::overlay::UnparseableNamedDef,
+) -> NamedDefView {
+    NamedDefView {
+        name: name.to_string(),
+        module: entry
+            .raw
+            .get("module")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        settings_keys: entry
+            .raw
+            .get("settings")
+            .and_then(|s| s.as_object())
+            .map(settings_keys)
+            .unwrap_or_default(),
+        max_admin_scope: None,
+        token_configured: None,
+        browser_login_configured: None,
+        unparseable: Some(entry.error.clone()),
     }
 }
 
@@ -1156,6 +1189,18 @@ impl AdminService {
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
         };
+        // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
+        // but NOT live (dropped at each rebuild), and listing them here is what makes that
+        // discoverable to an operator inspecting state rather than boot logs. A name that is live
+        // wins — the registry only ever holds names the applier actually dropped.
+        for (name, entry) in crate::config::overlay::unparseable_named_map_entries(
+            self.app.overlay_path.as_deref(),
+            section,
+        ) {
+            if !defs.iter().any(|d| d.name == name) {
+                defs.push(unparseable_def_view(&name, &entry));
+            }
+        }
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(defs))
     }
@@ -1179,7 +1224,18 @@ impl AdminService {
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
         };
-        view.ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+        view.or_else(|| {
+            // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
+            // 404 for a name that is sitting in the operator's own overlay is precisely the silent
+            // drop this surfaces.
+            crate::config::overlay::unparseable_named_map_entries(
+                self.app.overlay_path.as_deref(),
+                section,
+            )
+            .get(name)
+            .map(|entry| unparseable_def_view(name, entry))
+        })
+        .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the

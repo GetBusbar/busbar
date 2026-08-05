@@ -115,19 +115,35 @@ impl NamedMapSection {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        match self {
-            NamedMapSection::IdentityProviders => {
-                let cfg: IdentityProviderCfg = serde_json::from_value(def.clone())
-                    .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))?;
-                deploy.identity_providers.insert(name.to_string(), cfg);
-            }
-            NamedMapSection::Export => {
-                let cfg: ExportDefCfg = serde_json::from_value(def.clone())
-                    .map_err(|e| format!("invalid `export.{name}` definition: {e}"))?;
-                deploy.export.insert(name.to_string(), cfg);
-            }
-        }
+        self.parse_def(name, def)?.install(deploy, name);
         Ok(())
+    }
+
+    /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
+    /// unknown key is a loud reject exactly as `config.yaml` would give.
+    ///
+    /// Split out of [`NamedMapSection::insert`] so the ADMIN WRITE PATH can run the identical parse
+    /// BEFORE it persists anything, without needing a `DeployCfg` to insert into. Both callers go
+    /// through this one function precisely so the two paths can never disagree about the grammar:
+    /// the API rejects exactly what the file rejects, because it runs the same `serde` parse against
+    /// the same structs. (Before this existed the API only checked "is it an object with a
+    /// non-empty `module`", accepted an unknown field, persisted it verbatim, and then DROPPED it at
+    /// the next rebuild with only a log line — two paths, two grammars.)
+    pub(crate) fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+        match self {
+            NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
+                .map(NamedDef::IdentityProvider)
+                .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}")),
+            NamedMapSection::Export => serde_json::from_value(def.clone())
+                .map(NamedDef::Export)
+                .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+        }
+    }
+
+    /// `Ok(())` iff `def` parses into this section's typed config — the write-path validation twin of
+    /// [`NamedMapSection::parse_def`], which it delegates to so there is only ever one grammar.
+    pub(crate) fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
+        self.parse_def(name, def).map(|_| ())
     }
 
     /// Every OTHER config site that still references `name` BY BARE NAME, as human path strings.
@@ -173,6 +189,29 @@ impl NamedMapSection {
                 .get(name)
                 .and_then(|def| def.max_admin_scope.clone()),
             NamedMapSection::Export => None,
+        }
+    }
+}
+
+/// One successfully-parsed named-map definition, still un-installed. The intermediate value of
+/// [`NamedMapSection::parse_def`] — it exists so "did this parse?" and "install it" are the SAME
+/// parse rather than two, which is what keeps the API's reject set identical to the file's.
+pub(crate) enum NamedDef {
+    IdentityProvider(IdentityProviderCfg),
+    Export(ExportDefCfg),
+}
+
+impl NamedDef {
+    /// Install this parsed definition into `deploy` under `name`. Infallible: the fallible half was
+    /// the parse.
+    fn install(self, deploy: &mut DeployCfg, name: &str) {
+        match self {
+            NamedDef::IdentityProvider(cfg) => {
+                deploy.identity_providers.insert(name.to_string(), cfg);
+            }
+            NamedDef::Export(cfg) => {
+                deploy.export.insert(name.to_string(), cfg);
+            }
         }
     }
 }

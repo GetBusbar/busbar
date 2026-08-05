@@ -76,6 +76,10 @@ struct TestGate {
     /// scrape reads a real observed metric back over the ABI. `AtomicU64` keeps `&self` (the handler
     /// is shared behind the ABI handle).
     decides: std::sync::atomic::AtomicU64,
+    /// A monotonically incrementing NOTIFY count, surfaced via `status` alongside `decides`. Without
+    /// it the fire-and-forget tap dispatch is unobservable from the engine side (the SDK's default
+    /// `notify` is a no-op), so a `notify` seam stubbed out entirely would still pass every test.
+    notifies: std::sync::atomic::AtomicU64,
 }
 
 impl TestGate {
@@ -137,6 +141,14 @@ impl HookHandler for TestGate {
         serde_json::json!({"rewrite": {"messages": [{"role": "user", "content": "rewritten by test gate"}]}})
     }
 
+    fn notify(&self, _payload: &serde_json::Value) {
+        // Count the tap so the engine can OBSERVE that a fire-and-forget dispatch actually crossed
+        // the ABI (read back via `status`). The SDK default is a silent no-op, which is exactly what
+        // made the dlopen notify test unfalsifiable.
+        self.notifies
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn describe(&self) -> serde_json::Value {
         if self.empty_management {
             return serde_json::json!({});
@@ -151,10 +163,13 @@ impl HookHandler for TestGate {
             return serde_json::json!({});
         }
         let n = self.decides.load(std::sync::atomic::Ordering::Relaxed);
+        let taps = self.notifies.load(std::sync::atomic::Ordering::Relaxed);
+        // `test_decides_total` stays FIRST: existing tests read `metrics[0]` by position.
         serde_json::json!({
             "status": {
                 "metrics": [
-                    {"name": "test_decides_total", "type": "counter", "value": n as f64}
+                    {"name": "test_decides_total", "type": "counter", "value": n as f64},
+                    {"name": "test_notifies_total", "type": "counter", "value": taps as f64}
                 ]
             }
         })
@@ -189,6 +204,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         nack_configure: c.nack_configure,
         panic_decide: c.panic_decide,
         decides: std::sync::atomic::AtomicU64::new(0),
+        notifies: std::sync::atomic::AtomicU64::new(0),
     }))
 }
 

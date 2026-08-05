@@ -326,8 +326,8 @@ pub(crate) fn persist_groups(
 /// the overlay, and WINS over base `config.yaml`, or ABSENT, and base stands). It mirrors the
 /// uncovered `DeployCfg` surface: the process-level binds (`listen`/`tls`/`admin_listen`/`admin_tls`/
 /// `admin_require_mtls`), the cost inputs (`rate_card`/`per_request_fee`), the durable `store`, the
-/// `security` SSRF controls, and the operational-limit blocks (`limits`/`advanced`/
-/// `metrics`/`health`/`routing`). Every field is `Option`: a `PUT /config/settings` overwrites only
+/// `security` SSRF controls, and the operational-limit blocks (`limits`/`advanced`/`health`/
+/// `routing`). Every field is `Option`: a `PUT /config/settings` overwrites only
 /// the fields it names (a partial edit), and the merge (`apply_to_deploy`) splices exactly those onto
 /// the resolved base `DeployCfg` BEFORE `resolve` — so the limits projection + admin-mTLS boot-guard
 /// re-run over the merged shape exactly as for a hand-written config. `deny_unknown_fields` so a
@@ -860,6 +860,55 @@ pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDo
             }
         }
     }
+}
+
+/// One overlay named-map definition this binary cannot parse: the parse ERROR plus the RAW stored
+/// document, so the admin read can project the operator's own `module`/`settings` keys back at them
+/// instead of showing an anonymous hole.
+#[derive(Debug, Clone)]
+pub(crate) struct UnparseableNamedDef {
+    pub(crate) error: String,
+    pub(crate) raw: serde_json::Value,
+}
+
+/// Every definition STORED in the overlay at `path` under `section` that this binary CANNOT parse —
+/// `name -> {error, raw}`, empty when everything parses (and when there is no overlay at all).
+///
+/// MED-2/LOW-1. [`apply_named_maps_to_deploy`] drops such an entry with a `tracing::error!` and then
+/// omits it forever: the definition sits in the operator's overlay, is never applied, and NOTHING
+/// outside a boot log line says so — the admin read simply showed the name as absent, which is
+/// indistinguishable from "I never wrote it". This is the read-side signal that closes that: the
+/// admin named-map surface calls it and flags each such entry explicitly (`unparseable`), so an
+/// operator inspecting STATE discovers the drop. The entry is only ever REPORTED — never deleted,
+/// never rewritten; the operator's data stays exactly as they left it.
+///
+/// Derived at read time from the overlay file rather than remembered from the last apply, so it
+/// needs no diagnostics channel threaded through the seven rebuild sites and can never go stale
+/// against the overlay it describes. `parse_def` is the SAME parse the applier runs, so this
+/// reports exactly the set the applier drops.
+pub(crate) fn unparseable_named_map_entries(
+    path: Option<&Path>,
+    section: crate::config::named_map::NamedMapSection,
+) -> BTreeMap<String, UnparseableNamedDef> {
+    let mut out = BTreeMap::new();
+    let Some(doc) = path.and_then(read) else {
+        return out;
+    };
+    let Some(entries) = doc.named_maps.get(section.key()) else {
+        return out;
+    };
+    for (name, def) in entries {
+        if let Err(error) = section.validate_def(name, def) {
+            out.insert(
+                name.clone(),
+                UnparseableNamedDef {
+                    error,
+                    raw: def.clone(),
+                },
+            );
+        }
+    }
+    out
 }
 
 /// Apply EVERY pre-resolve overlay section that is not the `root` block — the `plugin_versions` pins

@@ -3608,3 +3608,167 @@ async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
         "the mapped error should describe the join failure: {err}"
     );
 }
+
+/// A `Store` decorator whose `list_keys` can be ARMED to fail — the transient store blip that makes
+/// `GovState::refresh` (a `list_keys` + `list_credentials_since` round-trip) return `Err` while
+/// every DURABLE write beneath it has already committed. Everything else delegates to a real
+/// `MemoryStore`, so `delete_key`/`put_key`/`get_key` behave exactly as in production.
+struct RefreshBlipStore {
+    inner: MemoryStore,
+    fail_list: std::sync::atomic::AtomicBool,
+}
+
+impl RefreshBlipStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            fail_list: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    fn arm(&self) {
+        self.fail_list
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Store for RefreshBlipStore {
+    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        if self.fail_list.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StoreError("transient store blip".to_string()));
+        }
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, since: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+        self.inner.list_metering(since)
+    }
+}
+
+/// HIGH-2 (REVOCATION HONESTY). `delete_key` commits a DURABLE tombstone and only then reconciles
+/// the in-memory cache. When that reconcile fails the old code returned a bare `Err` — so the
+/// operator saw a 500 (reasonable reading: "the revocation did not take") while the cache went on
+/// resolving the key, i.e. the revoked credential KEPT WORKING and the operator was told it had not
+/// been revoked. Both halves must be fixed: the credential must stop resolving immediately (a
+/// targeted single-entry eviction, which needs no store I/O and so cannot fail the way `refresh`
+/// can), and the error must say the revocation IS durable rather than implying nothing happened.
+#[test]
+fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
+    let store = Arc::new(RefreshBlipStore::new());
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "doomed".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    assert!(
+        gov.lookup_by_sub(&key.id).is_some(),
+        "the key resolves before revocation"
+    );
+
+    store.arm(); // the cache reconcile will now fail; the durable delete still commits
+    let err = gov
+        .delete_key(&key.id)
+        .expect_err("a failing reconcile is still surfaced to the caller");
+
+    // (1) THE SAFETY HALF: the revoked credential must NOT keep resolving.
+    assert!(
+        gov.lookup_by_sub(&key.id).is_none(),
+        "a key whose durable tombstone committed must stop resolving even when the full cache \
+         refresh failed — otherwise the revoked credential keeps authenticating"
+    );
+    // (2) THE HONESTY HALF: the operator must be able to tell "applied, cache degraded" from
+    // "nothing happened".
+    let msg = err.to_string();
+    assert!(
+        msg.contains(crate::governance::state::REVOCATION_DURABLE_MARKER),
+        "the failure must be flagged as DEGRADED-BUT-APPLIED, not a bare error implying the \
+         revocation did not take: {msg}"
+    );
+    assert!(
+        msg.contains("transient store blip"),
+        "and must still name the underlying cause: {msg}"
+    );
+}
+
+/// MED-1 (ROTATION HONESTY) — the same shape as HIGH-2. `store.put_key` commits the new
+/// `generation_hash` (so the PREVIOUS credential is durably dead) and only then is the cache
+/// reconciled. A bare `Err` from that reconcile returned a 500 with no new secret, from which an
+/// admin concludes "rotation did not happen" and the OLD credential is still fine — while the stale
+/// cache in fact went on resolving that old credential. After the fix the old credential stops
+/// resolving immediately and the error says plainly that the rotation IS durable.
+#[test]
+fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
+    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+    let store = Arc::new(RefreshBlipStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+    let (binding, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "rotate-me".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            2_000,
+            1_000,
+        )
+        .expect("mint");
+    assert!(
+        gov.verify_token(&token, 1_500).is_some(),
+        "the original token verifies before the rotation"
+    );
+
+    store.arm();
+    let err = match gov.rotate_key(&binding.id, 3_000) {
+        Err(e) => e,
+        Ok(_) => panic!("a failing reconcile is still surfaced"),
+    };
+
+    // (1) SAFETY: the store already holds the NEW generation, so the old token is durably dead —
+    // the cache must not go on honouring it.
+    assert!(
+        gov.verify_token(&token, 1_500).is_none(),
+        "the PREVIOUS credential must stop verifying the moment the new generation is committed, \
+         even when the cache refresh failed"
+    );
+    // (2) HONESTY: "rotated, but the new secret could not be returned" is a RE-ROTATE, not a
+    // retry-because-nothing-happened.
+    let msg = err.to_string();
+    assert!(
+        msg.contains(crate::governance::state::ROTATION_DURABLE_MARKER),
+        "the failure must say the rotation IS durable: {msg}"
+    );
+    assert!(
+        msg.contains("transient store blip"),
+        "and must still name the underlying cause: {msg}"
+    );
+}

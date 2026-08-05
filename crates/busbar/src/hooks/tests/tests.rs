@@ -1556,8 +1556,13 @@ async fn dlopen_transform_rewrite_and_reject() {
     }
 }
 
-/// A `notify` tap over the dlopen seam is fire-and-forget: it never blocks, never panics, and
-/// tolerates a malformed projection (swallowed).
+/// A `notify` tap over the dlopen seam is fire-and-forget AND actually DISPATCHED: a well-formed
+/// projection reaches the plugin's `notify`, a malformed one is swallowed BEFORE the ABI call, and
+/// neither errors or tears down the seam.
+///
+/// The dispatch is observed through the plugin's own `test_notifies_total` counter, read back over
+/// `status`. Without that observation this test asserted nothing at all — `notify` returns `()`, so
+/// a seam stubbed to a no-op would have passed it just as happily as the real one.
 #[tokio::test]
 async fn dlopen_notify_is_fire_and_forget() {
     let Some(env) = test_env() else {
@@ -1566,9 +1571,44 @@ async fn dlopen_notify_is_fire_and_forget() {
     };
     let budget = std::time::Duration::from_secs(5);
     let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
+    /// The plugin's tap counter, read over the SAME handle the notifies went to.
+    async fn taps(policy: &Arc<dyn RoutingPolicy>) -> f64 {
+        let status = policy
+            .status(std::time::Duration::from_secs(5))
+            .await
+            .expect("status");
+        let metrics = status.metrics.expect("metrics");
+        let tap = metrics
+            .iter()
+            .find(|m| m["name"] == "test_notifies_total")
+            .expect("test_notifies_total metric");
+        tap["value"].as_f64().expect("counter value")
+    }
+
+    assert_eq!(taps(&policy).await, 0.0, "no tap dispatched yet");
     let projection = serde_json::to_vec(&serde_json::json!({"request": {"pool": "p"}})).unwrap();
-    policy.notify(&projection, budget).await; // completes without error
-    policy.notify(b"not json", budget).await; // malformed projection swallowed
+    policy.notify(&projection, budget).await;
+    assert_eq!(
+        taps(&policy).await,
+        1.0,
+        "a well-formed tap projection must actually reach the plugin's `notify` over the ABI"
+    );
+
+    // A MALFORMED projection is swallowed at the engine boundary: no panic, no error (the call
+    // returns `()` either way) and — the part that is observable — no ABI dispatch at all.
+    policy.notify(b"not json", budget).await;
+    assert_eq!(
+        taps(&policy).await,
+        1.0,
+        "a malformed tap projection must be swallowed BEFORE the ABI call, not forwarded"
+    );
+
+    // The seam is still live and correct after both taps — a fire-and-forget call must never
+    // poison or close the handle it rode.
+    match policy.transform(&dreq("hello"), budget).await {
+        busbar_api::TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
+        other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
+    }
 }
 
 /// `status` + `describe` over the dlopen seam: the plugin reports a metric (via `fetch_status`) and a

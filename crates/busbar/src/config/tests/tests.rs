@@ -3572,3 +3572,56 @@ fn export_named_map_allows_two_instances_of_one_module() {
         "an unknown export module must name the built-ins; got {errors:?}"
     );
 }
+
+/// LOW-3 (DOC/CODE DRIFT). `RootSettings`' doc enumerates the `DeployCfg` blocks the `root` overlay
+/// section covers. That list is the operator-facing description of an API surface, so a name in it
+/// that the struct has no field for is a documented capability that does not exist — it listed
+/// `metrics`, retired in 1.5.3.
+///
+/// Gated generically rather than by spot-fixing the word: every backticked name in the enumerating
+/// sentence must be a real field of the struct, so the next retired (or added) block cannot drift
+/// the doc out of agreement with the code either.
+#[test]
+fn root_settings_doc_lists_only_fields_that_exist() {
+    let src = include_str!("../overlay.rs");
+    let anchor = "pub(crate) struct RootSettings {";
+    let at = src.find(anchor).expect("RootSettings struct");
+
+    // The struct's real field set.
+    let body = &src[at + anchor.len()..];
+    let body = &body[..body.find("\n}").expect("struct end")];
+    let fields: Vec<&str> = body
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("pub(crate) "))
+        .filter_map(|l| l.split(':').next())
+        .collect();
+    assert!(
+        fields.contains(&"listen") && !fields.contains(&"metrics"),
+        "sanity: parsed fields {fields:?}"
+    );
+
+    // The doc's enumerating sentence: "It mirrors the uncovered `DeployCfg` surface: … Every field
+    // is `Option` …". Everything backticked in it is a covered block name. (The `///` line prefixes
+    // fall out for free — they are not backticked.)
+    let doc = &src[..at];
+    let start = doc
+        .rfind("It mirrors the")
+        .expect("the enumerating sentence");
+    let span = &doc[start..];
+    let span = &span[..span.find("Every field is").expect("end of the enumeration")];
+    let listed: Vec<&str> = span
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| *t != "DeployCfg")
+        .collect();
+    assert!(listed.len() > 5, "sanity: parsed doc names {listed:?}");
+    for name in listed {
+        assert!(
+            fields.contains(&name),
+            "`RootSettings`' doc lists `{name}` among the blocks the `root` overlay section \
+             covers, but the struct has no such field — a documented capability that does not \
+             exist. Fields: {fields:?}"
+        );
+    }
+}
