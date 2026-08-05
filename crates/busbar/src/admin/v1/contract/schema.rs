@@ -220,10 +220,21 @@ pub(crate) struct SigningKeyRotateView {
 /// `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
 /// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 /// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
-/// only `Arc<App>`, never the router) — two independent freezing mechanisms. `observability` is live
-/// EXCEPT `otlp_url` (feeds a one-shot `tracing_subscriber` init, boot-frozen). (1.5.3: the
-/// request-log webhook + Prometheus metrics retired out of the single-value settings surface into the
-/// built-in `export:` exporters, edited in `config.yaml` + applied via plugin reload.)
+/// only `Arc<App>`, never the router) — two independent freezing mechanisms. There is NO
+/// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
+/// grammar, and `RootSettings` (what this endpoint projects) carries neither field — a PUT naming
+/// `observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry
+/// egress is now `export:`, a NAMED MAP of exporter instances that this endpoint does not reach at
+/// all: it is edited in `config.yaml` and made live by a plugin reload, not by `PUT /config/settings`.
+/// Each `export:` entry is keyed by an operator-chosen instance name and carries a `module:` naming
+/// the exporter plus a `settings:` bag that module validates, and MAY carry a `streams:`
+/// subscription list. The built-in modules are `prometheus` (carries the `metrics` stream), `otlp`
+/// (`traces`), and `request-log-webhook` + `request-log-file` (`logs`); subscribing an instance to a
+/// stream its module does not carry is rejected rather than silently delivering nothing. An entry
+/// MAY also carry a `fields:` projection, but do NOT plan on it in 1.5.3: it is parsed and enforced
+/// yet unreachable with every built-in module, because each stream they carry has a pinned field
+/// that has no producer yet, so any `fields:` on them is rejected. Omit it and receive the stream's
+/// produced default set.
 /// `advanced` is live EXCEPT `response_headers` (task #139): `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a

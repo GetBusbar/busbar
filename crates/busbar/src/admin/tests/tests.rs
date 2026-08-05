@@ -13092,6 +13092,75 @@ async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// AN UNREFERENCED DEFINITION'S `module:` MUST NAME A MODULE THAT EXISTS. The sibling rules above
+/// are VALUE-level (a token, a ceiling) and need only the definition itself; this one needs the
+/// plugin REGISTRY, because a valid identity-provider module is either a built-in
+/// (`BUILTIN_IDENTITY_PROVIDERS`) or a loaded `kind: auth` plugin. `export:` has had this check
+/// since 1.5.3 (`resolve_export` refuses an unknown exporter and names the built-ins), but the
+/// identity-provider side had nothing: `resolve_auth` is keyed off the RESOLVED chain and
+/// `plugins_preflight` derived its auth refs from `auth.chain` alone, so a definition that nothing
+/// references — the exact thing this endpoint writes — was checked by no layer at all. The API
+/// answered 200 and stored a provider that can never authenticate anyone.
+#[tokio::test]
+async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
+    let (dir, addr, handle) = {
+        let (dir, _overlay, addr, handle) = named_map_app("unknown-module", false).await;
+        (dir, addr, handle)
+    };
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/typo"
+    )))
+    .body(r#"{"module":"not-a-real-idp"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "a `module:` naming nothing that exists must be refused where it is written"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("not-a-real-idp"),
+        "the refusal names the unknown module: {body}"
+    );
+    assert!(
+        msg.contains("keys") && msg.contains("admin-tokens"),
+        "the refusal lists the valid modules, the way the `streams:` error names its whole valid \
+         set: {body}"
+    );
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/typo"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        404,
+        "the refused PUT stored nothing"
+    );
+
+    // The CONTROL: a built-in module through the identical path is still accepted, so the new rule
+    // rejects the unknown name and nothing else.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/typo"
+    )))
+    .body(r#"{"module":"keys"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// DANGLING-REFERENCE GUARD: a DELETE that would leave another config section naming a definition
 /// that no longer exists is refused as a TERMINAL `conflict` naming the referent — never applied
 /// and then discovered at the next resolve. The fixture's base `auth.role_bindings` names
