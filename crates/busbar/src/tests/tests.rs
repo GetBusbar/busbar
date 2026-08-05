@@ -846,6 +846,7 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         Some(&gov_with_store("valkey")),
         None,
         &Default::default(),
+        &Default::default(),
         &plugins_cfg(&dir, false),
         &Default::default(),
     )
@@ -856,6 +857,7 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let err = crate::plugins_preflight(
         Some(&gov_with_store("valkey")),
         None,
+        &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
@@ -877,6 +879,7 @@ fn disabled_plugins_are_inert_even_when_present() {
     let reg = crate::plugins_preflight(
         None,
         None,
+        &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, false),
         &Default::default(),
@@ -904,6 +907,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         Some(&gov_with_store("sqlite")),
         None,
         &Default::default(),
+        &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
     )
@@ -924,6 +928,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         Some(&gov_with_store("sqlite")),
         None,
         &Default::default(),
+        &Default::default(),
         &cfg,
         &Default::default(),
     )
@@ -936,6 +941,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let reg2 = crate::plugins_preflight(
         Some(&gov_with_store("busbar-store-sqlite")),
         None,
+        &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
@@ -957,6 +963,7 @@ fn unknown_store_name_is_a_clear_boot_error() {
     let err = crate::plugins_preflight(
         Some(&gov_with_store("dynamo")),
         None,
+        &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
@@ -981,6 +988,7 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
         None,
         None,
         &Default::default(),
+        &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
     )
@@ -997,6 +1005,7 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     let err = crate::plugins_preflight(
         None,
         None,
+        &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
@@ -1020,8 +1029,15 @@ fn alias_conflict_fails_boot_naming_both() {
     let b = unsigned_tarball(plugin_manifest("acme-store-valkey", "valkey", "acme"), b"b");
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
-        .unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(
         err.contains("busbar-store-valkey-plugin") && err.contains("acme-store-valkey"),
         "names both plugins: {err}"
@@ -1052,8 +1068,15 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
     std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
-        .expect("allow_unsigned permits the unsigned secret plugin");
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .expect("allow_unsigned permits the unsigned secret plugin");
     (dir, reg)
 }
 
@@ -1113,8 +1136,15 @@ fn secrets_block_rejects_non_secret_kind() {
     // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
-        .unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap();
     let err = validate_secret_module(&reg, "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
@@ -1248,8 +1278,15 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
-        .unwrap();
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &cfg,
+        &Default::default(),
+    )
+    .unwrap();
     let root = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "x".to_string(),
         settings: serde_json::Map::new(),
