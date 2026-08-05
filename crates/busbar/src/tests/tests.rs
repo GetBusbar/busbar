@@ -1168,6 +1168,8 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
         allow_all_metadata: false,
         limits: crate::config::LimitsResolved::default(),
         export: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
     }
 }
 

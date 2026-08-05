@@ -11,6 +11,26 @@ item under **Changed**.
 
 ## [Unreleased]
 
+### Added
+
+- **Admin API: the named-definition maps are now CRUD-able, with the same conventions as `/hooks`.**
+  `GET/PUT/DELETE /api/v1/admin/identity-providers/{name}`, `PATCH
+  /api/v1/admin/identity-providers/{name}/settings` and their `/export` twins (plus the two
+  collection reads) mirror the frozen config grammar exactly — the admin path segment IS the config
+  key. Reads are `read-only` scope, writes are `full`; every write is `If-Match` version-guarded,
+  audited, written to the config-version history, refused on a base-`config.yaml`-defined entry (409
+  — edit the file, the API never silently shadows operator config), and persisted to a new
+  `named_maps` overlay section before the engine swaps (persist-then-swap, fail-closed). A DELETE
+  that would leave another config section naming the definition (e.g. an identity provider still in
+  `auth.chain:`) is a terminal `conflict` naming the referent. Secrets are never projected: a
+  provider's `token:` reads back as a boolean, never as the reference.
+  **`max_admin_scope` can only be LOWERED through the API** — raising the per-provider admin trust
+  ceiling is refused outright (409 `conflict`), including on a create, because the ceiling is
+  operator FILE policy and every admin mutation already holds `full` scope. Lower it here; raise it
+  in `config.yaml`.
+  One generic, section-parameterized handler serves all of it, so the `tools:` (1.5.4 MCP) and
+  `agents:` (1.5.6 A2A) registries get the identical surface additively, with no breaking change.
+
 ### Changed
 
 - **BREAKING (config): `identity-providers:` — define an identity provider once, reference it by bare
