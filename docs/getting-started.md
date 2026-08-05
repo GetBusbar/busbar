@@ -56,7 +56,7 @@ This guide takes you from zero to a working request in about five minutes.
 curl -fsSL https://getbusbar.com/install.sh | sh
 ```
 
-Drops `busbar` and `providers.yaml` where you run it (no sudo). To install onto your PATH instead: `BUSBAR_INSTALL_DIR=/usr/local/bin curl -fsSL https://getbusbar.com/install.sh | sh`.
+Drops `busbar` and `providers.yaml` where you run it (no sudo). To install onto your PATH instead: `curl -fsSL https://getbusbar.com/install.sh | sudo env BUSBAR_INSTALL_DIR=/usr/local/bin sh`.
 
 **Or download manually**: grab the archive for your platform from the [latest release](https://github.com/GetBusbar/busbar/releases/latest) (Linux `x86_64`/`aarch64`, macOS Intel/Apple Silicon, Windows `x86_64`), plus the provider catalog from [getbusbar.com/providers.yaml](https://getbusbar.com/providers.yaml). The binary is self-contained (no runtime, no virtualenv, no dependencies):
 
