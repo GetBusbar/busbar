@@ -77,12 +77,10 @@ section_patch!(
 );
 
 section_patch!(
-    /// Per-field patch for [`crate::config::ObservabilityCfg`].
+    /// Per-field patch for [`crate::config::ObservabilityCfg`]. 1.5.3: the request-log webhook keys
+    /// retired to the `export.request-log-webhook` built-in exporter, so only `otlp_url` remains.
     ObservabilityPatch => crate::config::ObservabilityCfg {
         otlp_url: Option<String>,
-        request_log_webhook_url: Option<String>,
-        max_inflight_webhook_deliveries: usize,
-        webhook_delivery_timeout_secs: u64,
     }
 );
 
@@ -95,14 +93,6 @@ section_patch!(
         // baked into router middleware state and `route_policy` seeds a process-wide `OnceLock`, so a
         // live PUT is stored but does not take effect until a restart (see `reload_to_apply_fields`).
         response_headers: crate::config::ResponseHeadersCfg,
-    }
-);
-
-section_patch!(
-    /// Per-field patch for [`crate::config::MetricsCfg`].
-    MetricsPatch => crate::config::MetricsCfg {
-        buffer_seconds: u64,
-        key_gauge_limit: usize,
     }
 );
 
@@ -174,17 +164,10 @@ mod tests {
             allow_all_metadata: Some(allow_all_metadata),
         };
 
-        let crate::config::ObservabilityCfg {
-            otlp_url,
-            request_log_webhook_url,
-            max_inflight_webhook_deliveries,
-            webhook_delivery_timeout_secs,
-        } = crate::config::ObservabilityCfg::default();
+        let crate::config::ObservabilityCfg { otlp_url } =
+            crate::config::ObservabilityCfg::default();
         let _ = ObservabilityPatch {
             otlp_url: Some(otlp_url),
-            request_log_webhook_url: Some(request_log_webhook_url),
-            max_inflight_webhook_deliveries: Some(max_inflight_webhook_deliveries),
-            webhook_delivery_timeout_secs: Some(webhook_delivery_timeout_secs),
         };
 
         let crate::config::AdvancedCfg {
@@ -203,20 +186,6 @@ mod tests {
             rate_sweep_interval: Some(rate_sweep_interval),
             usage_flush_interval_ms: Some(usage_flush_interval_ms),
             response_headers: Some(response_headers),
-        };
-
-        // `MetricsCfg` has no `Default` impl — `buffer_seconds` is deliberately REQUIRED (no serde
-        // default), so a literal instance stands in for `::default()`.
-        let crate::config::MetricsCfg {
-            buffer_seconds,
-            key_gauge_limit,
-        } = crate::config::MetricsCfg {
-            buffer_seconds: 60,
-            key_gauge_limit: 1_000,
-        };
-        let _ = MetricsPatch {
-            buffer_seconds: Some(buffer_seconds),
-            key_gauge_limit: Some(key_gauge_limit),
         };
 
         let crate::config::HealthDefaultsCfg {

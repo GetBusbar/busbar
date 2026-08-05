@@ -2604,15 +2604,7 @@ fn merge_root_settings(
             };
         )+};
     }
-    merge_section!(
-        security,
-        limits,
-        observability,
-        advanced,
-        metrics,
-        health,
-        routing
-    );
+    merge_section!(security, limits, observability, advanced, health, routing);
     base
 }
 
@@ -2706,38 +2698,13 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             "limits.max_inbound_concurrent",
         );
     }
-    // Two `observability.*` fields are boot-frozen — same class as `limits.max_inbound_concurrent`
-    // above, different mechanisms:
-    //
-    // `request_log_webhook_url` is captured ONCE in `main()` and seeds a process-global
-    // `OnceLock<Arc<String>>` (`observability::configure_webhook`) — `OnceLock::set` silently no-ops
-    // on every call after the first, so the webhook target cannot change for the life of the process.
-    //
-    // `otlp_url` is captured ONCE in `main()` and passed to `observability::init_logging`, a one-shot
-    // `tracing_subscriber::registry().try_init()` — a second call is a structural no-op (logs
-    // "already initialized" and drops the new exporter).
-    //
-    // DRIFT GUARD, same idiom as above: an EXHAUSTIVE destructure of `ObservabilityPatch` (no `..`).
-    // `max_inflight_webhook_deliveries` is NOT cleanly classifiable as boot-frozen (its `OnceLock`
-    // is sized from config on FIRST webhook delivery, whichever moment that is post-boot, not
-    // necessarily at boot — so an operator's PUT sometimes does take effect, if no delivery has
-    // fired yet, and sometimes doesn't; flagging it unconditionally restart-scoped would be wrong in
-    // the cases it IS still live). Left unflagged and undocumented as a known, lower-severity gap
-    // rather than guessed at here; see docs/configuration.md.
+    // `observability.otlp_url` is boot-frozen — captured ONCE in `main()` and passed to
+    // `observability::init_logging`, a one-shot `tracing_subscriber::registry().try_init()` (a second
+    // call is a structural no-op). 1.5.3: the request-log webhook keys retired out of this section
+    // into the `export.request-log-webhook` exporter (edited in config.yaml + plugin-reloaded), so
+    // `otlp_url` is the only field left. DRIFT GUARD: an EXHAUSTIVE destructure of `ObservabilityPatch`.
     if let Some(observability) = req.observability.as_ref() {
-        let crate::config::patch::ObservabilityPatch {
-            request_log_webhook_url,
-            otlp_url,
-            // GENUINELY LIVE — read fresh on every call via `crate::limits::webhook_delivery_timeout_secs()`,
-            // backed by the `INSTALLED` snapshot refreshed on every apply. Not cached, not boot-captured.
-            webhook_delivery_timeout_secs: _,
-            // See the doc comment above: state-dependent, neither cleanly live nor cleanly frozen.
-            max_inflight_webhook_deliveries: _,
-        } = observability;
-        push(
-            request_log_webhook_url.is_some(),
-            "observability.request_log_webhook_url",
-        );
+        let crate::config::patch::ObservabilityPatch { otlp_url } = observability;
         push(otlp_url.is_some(), "observability.otlp_url");
     }
     // `advanced.response_headers` (task #139) is boot-frozen — moved out of `observability` (it used

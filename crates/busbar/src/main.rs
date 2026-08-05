@@ -67,6 +67,7 @@ pub(crate) use busbar_api::durable;
 mod egress_auth;
 mod endpoints;
 mod eventstream;
+mod export;
 mod governance;
 mod handlers;
 mod health;
@@ -794,15 +795,17 @@ async fn run() {
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
     crate::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
-    // METRICS OPT-IN, read here and nowhere else: `observability.metrics` present ⇒ install the
-    // recorder with the operator's REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay
-    // off for the life of the process. Called before the router is built so `/metrics` mounting sees
-    // a settled decision.
+    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in `prometheus`
+    // EXPORTER (`export.prometheus`) — present ⇒ install the recorder (COLLECTION) with the operator's
+    // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
+    // process. Called before the App/router is built so the `/metrics` plugin route (DISTRIBUTION, via
+    // the built-in exporter) sees a settled recorder decision.
     metrics::configure(
         deploy
-            .metrics
+            .export
             .as_ref()
-            .map(|m| Duration::from_secs(m.buffer_seconds)),
+            .and_then(|e| e.prometheus.as_ref())
+            .map(|p| Duration::from_secs(p.settings.buffer_seconds)),
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
@@ -942,9 +945,12 @@ async fn run() {
          re-learned from live traffic"
     );
 
-    // configure the request-log webhook (reusing the pooled client). No-op if unset.
-    observability::configure_webhook(
-        observability_cfg.request_log_webhook_url.clone(),
+    // Configure the built-in request-log EXPORTERS (webhook / file / generic) from the `export:`
+    // block, reusing the pooled client for webhook delivery. No-op when no request-log sink is
+    // configured (the default). The recorder-installing `prometheus` exporter is wired separately
+    // (`metrics::configure` above + the `/metrics` plugin route in `build_app_from_config`).
+    export::configure(
+        &deploy.export.clone().unwrap_or_default(),
         app.client.get().clone(),
     );
 
@@ -1727,6 +1733,7 @@ pub(crate) fn plugins_preflight(
     auth_cfg: Option<&config::AuthCfg>,
     hooks_cfg: &std::collections::HashMap<String, config::HookCfg>,
     plugins_cfg: &config::PluginsCfg,
+    export_cfg: &config::ExportCfg,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
     let store_ref = store_cfg
         .map(|g| g.module.as_str())
@@ -1995,7 +2002,7 @@ pub(crate) fn plugins_preflight(
             _ => None,
         })
         .collect();
-    let route_decls: Vec<(
+    let mut route_decls: Vec<(
         String,
         crate::plugin_routes::RouteKind,
         busbar_plugin_loader::Route,
@@ -2011,6 +2018,13 @@ pub(crate) fn plugins_preflight(
                 .map(move |r| (name.clone(), kind, r))
         })
         .collect();
+    // The BUILT-IN exporters (`crate::export`) also claim routes (the `prometheus` exporter's
+    // `GET /metrics`). Prepend them in the SAME collision set so a loaded third-party export/hook
+    // plugin that tries to claim a path a built-in already owns fails LOUD at `--validate`/boot, e.g.
+    // `plugin "datadog" cannot register GET /metrics — already registered by "prometheus"`.
+    let mut built_in = crate::export::route_owners(export_cfg);
+    built_in.append(&mut route_decls);
+    let route_decls = built_in;
     crate::plugin_routes::preflight_route_collisions(&route_decls)
         .map_err(|e| format!("plugin route registration conflict: {e}"))?;
 
@@ -2236,6 +2250,7 @@ pub(crate) fn preflight_plugins_and_secrets(
         cfg.auth.as_ref(),
         &cfg.hooks,
         &deploy.plugins,
+        &cfg.export,
     )?;
     validate_secret_modules(&registry, &cfg.secrets)?;
     validate_secret_refs(&registry, cfg)?;
@@ -2511,6 +2526,9 @@ pub(crate) fn build_app_from_config(
             validation_errors.join("\n  - ")
         ));
     }
+    // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
+    // before `cfg`'s fields are consumed by the `App` struct literal.
+    let cfg_export = cfg.export.clone();
     let auth_cfg = cfg
         .auth
         .clone()
@@ -2563,6 +2581,7 @@ pub(crate) fn build_app_from_config(
         cfg.auth.as_ref(),
         &cfg.hooks,
         &plugins_cfg,
+        &cfg.export,
     )?);
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
@@ -3502,9 +3521,15 @@ pub(crate) fn build_app_from_config(
             },
             |p| p.request_id_counter.clone(),
         ),
-        // Plugin HTTP routes (design §5): empty until export/hook plugins declare routes into the
-        // snapshot. An empty table mounts nothing and leaves the auth middleware unaffected.
-        plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
+        // Plugin HTTP routes (design §5): the BUILT-IN exporters (`crate::export`) declare their
+        // routes into the snapshot — today the `prometheus` exporter's `GET /metrics` when
+        // `export.prometheus` is configured. Rebuilt on every config apply, so adding/removing
+        // `export.prometheus` mounts/unmounts `/metrics` with no router rebuild (design §7.1). A
+        // collision (a future loaded export/hook plugin claiming a built-in's path) is a LOUD build
+        // failure naming the owner, never last-writer-wins.
+        plugin_routes: std::sync::Arc::new(crate::plugin_routes::build_route_table(
+            crate::export::route_decls(&cfg_export),
+        )?),
     };
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
@@ -3575,18 +3600,18 @@ fn base_data_router(
     let router = Router::new()
         .route("/stats", get(endpoints::stats))
         .route("/healthz", get(endpoints::healthz));
-    // METRICS ARE OPT-IN (`observability.metrics`). Not opted in ⇒ neither exposition route is
-    // mounted at all, so an un-opted-in deployment has no scrape surface to speak of and the
-    // unknown path falls through to the same native-envelope 404 as any other (no bare-proxy tell).
+    // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
+    // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
+    // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
+    // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
+    // stale (design §7.1). The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
+    // when the recorder is installed (`metrics::enabled()`), reserved against plugin claims.
     let router = if metrics::enabled() {
-        router
-            .route("/metrics", get(metrics::handler))
-            // The Prometheus scrape of HOOK-reported metrics — a SEPARATE exposition from busbar's
-            // own `/metrics` so a hook can never type-conflict or shadow a first-party series.
-            // Verbatim hook metric names + an auto `hook="<name>"` label, so an external dashboard
-            // built against a hook repoints here and just works. Stale-while-revalidate; never
-            // blocks on a hook socket.
-            .route("/metrics/hooks", get(crate::hooks::scrape::handler))
+        // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
+        // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
+        // an external dashboard built against a hook repoints here and just works.
+        // Stale-while-revalidate; never blocks on a hook socket.
+        router.route("/metrics/hooks", get(crate::hooks::scrape::handler))
     } else {
         router
     };

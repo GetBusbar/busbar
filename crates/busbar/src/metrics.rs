@@ -39,8 +39,6 @@
 //! Client-supplied values (raw model strings from request bodies, user-facing key secrets, etc.)
 //! MUST NOT appear as metric labels. See the taxonomy constant block below for per-metric notes.
 
-use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -276,7 +274,7 @@ const POOL_QUEUED: &str = "busbar_pool_queued";
 
 /// Prometheus text exposition format content-type (version 0.0.4), returned by the `/metrics`
 /// scrape handler. Defined as a constant so the string is not duplicated across handler and tests.
-const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
+pub(crate) const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
 
 /// Install the global Prometheus recorder. Idempotent: safe to call once at startup and
 /// repeatedly from tests (the global recorder can only be installed once per process, so the
@@ -707,7 +705,7 @@ pub(crate) fn render() -> String {
 /// No-op when governance is disabled (the governance arc is `None`). Pool and lane label spaces
 /// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
 /// keys the admin has created. No client-supplied label values are ever emitted.
-fn refresh_scrape_gauges(app: &App) {
+pub(crate) fn refresh_scrape_gauges(app: &App) {
     let now = crate::state::now();
 
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
@@ -988,31 +986,12 @@ fn emit_lane_gauges(
     }
 }
 
-/// `GET /metrics` — Prometheus text exposition (OpenMetrics-compatible 0.0.4).
-///
-/// Refreshes all scrape-time gauges (spend, budget-remaining, tokens, lane health) from
-/// in-process reads immediately before rendering, so values are current at observation time.
-pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    // Refresh scrape-time gauges on a blocking thread so the SQLite usage reads do not stall
-    // the Tokio executor. `refresh_scrape_gauges` is synchronous (SQLite is not async), so it
-    // must not run on an async task thread. `spawn_blocking` returns a `JoinHandle`; we await it
-    // so the gauges are populated before `render()` reads the registry. On a join error (the
-    // blocking task panicked) we log and fall through to render whatever the registry holds from
-    // the previous scrape — a slightly stale value is better than a 500.
-    let app_clone = app.clone();
-    let refresh = tokio::task::spawn_blocking(move || {
-        refresh_scrape_gauges(&app_clone);
-    });
-    if let Err(e) = refresh.await {
-        tracing::warn!(error = %e, "metrics scrape: gauge refresh task panicked; rendering stale gauges");
-    }
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
-        render(),
-    )
-        .into_response()
-}
+// `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
+// lifted the DISTRIBUTION half out to the built-in `prometheus` EXPORTER
+// ([`crate::export::prometheus`]), which serves it via the plugin HTTP endpoint registration
+// (`handle_http`) and renders the SAME registry through [`render`] after refreshing the scrape-time
+// gauges via [`refresh_scrape_gauges`]. COLLECTION (this recorder + the emit sites + the gauge
+// derivation) stays core (design §9).
 
 #[cfg(test)]
 mod tests {

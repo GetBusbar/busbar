@@ -696,6 +696,28 @@ impl LaneSpec {
     }
 }
 
+/// The plugin route table a test `App` carries: the built-in `prometheus` exporter's `GET /metrics`
+/// route when the recorder is installed (`metrics::init()`), else empty. Mirrors production, where the
+/// route is built from `export.prometheus` presence — here the recorder handle is the stand-in switch
+/// (the harness has no `export:` config surface).
+fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
+    if crate::metrics::recorder_installed() {
+        let cfg = crate::config::ExportCfg {
+            prometheus: Some(crate::config::PrometheusExportCfg {
+                settings: crate::config::PrometheusSettings {
+                    buffer_seconds: 60,
+                    key_gauge_limit: crate::config::default_key_gauge_limit(),
+                },
+            }),
+            ..Default::default()
+        };
+        crate::plugin_routes::build_route_table(crate::export::route_decls(&cfg))
+            .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
+    } else {
+        crate::plugin_routes::PluginRouteTable::empty()
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) struct TestApp {
     lanes: Vec<LaneSpec>,
@@ -1006,6 +1028,8 @@ impl TestApp {
         self.build_with_store().0
     }
 
+    // (helper defined at module scope below — see `test_plugin_route_table`)
+
     /// As [`build`], but also hands back the concrete `Arc<HealthState>` — `App::store` is a
     /// `dyn LaneRuntime` trait object with no downcast support, so a test that needs to reach
     /// test-only breaker-cell manipulation (`HealthState::cell`/`cell_open`, real Open/HalfOpen
@@ -1131,7 +1155,12 @@ impl TestApp {
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),
             )),
-            plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
+            // Mirror production: `/metrics` is served via the built-in `prometheus` exporter's plugin
+            // route (design §7.1). The test harness has no `export:` config, so synthesize the
+            // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
+            // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
+            // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
+            plugin_routes: std::sync::Arc::new(test_plugin_route_table()),
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions

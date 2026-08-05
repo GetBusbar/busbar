@@ -3496,6 +3496,7 @@ mod disposition_matrix_tests {
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
                 limits: crate::config::LimitsResolved::default(),
+                export: Default::default(),
             }
         };
 

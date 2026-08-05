@@ -75,6 +75,20 @@ pub(crate) enum RouteKind {
 pub(crate) trait PluginHttpDispatch: Send + Sync {
     /// Serve one inbound request the engine already auth-gated + matched to this plugin's route.
     fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse;
+
+    /// The app-aware serve arm: BUILT-IN export/hook dispatchers that need the LIVE `App` snapshot
+    /// (the built-in `prometheus` exporter's scrape-time gauge refresh, design §7.1) override this; a
+    /// loaded out-of-tree plugin (which cannot receive the app across the ABI) uses the default, which
+    /// ignores the app and calls [`PluginHttpDispatch::handle_http`]. Called on a blocking thread (see
+    /// [`plugin_route_dispatch`]), so a synchronous read (SQLite) inside an override cannot stall the
+    /// async executor.
+    fn handle_http_with_app(
+        &self,
+        _app: &crate::state::App,
+        req: &HttpEndpointRequest,
+    ) -> HttpEndpointResponse {
+        self.handle_http(req)
+    }
 }
 
 /// A loader `DynExport` presented as a [`PluginHttpDispatch`]: the production bridge from the engine's
@@ -128,7 +142,10 @@ pub(crate) struct PluginRouteTable {
 }
 
 impl PluginRouteTable {
-    /// The EMPTY table — the App default when no plugin declared an HTTP route.
+    /// The EMPTY table — used by test harnesses that build an `App` with no exporters. Production
+    /// builds the table from the built-in exporters (`crate::export::route_decls`), so this is
+    /// test-only now.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn empty() -> Self {
         Self::default()
     }
@@ -170,11 +187,12 @@ impl PluginRouteTable {
         &self,
         path: &str,
         method: RouteMethod,
+        app: &crate::state::App,
         req: &HttpEndpointRequest,
     ) -> Option<HttpEndpointResponse> {
         self.by_path_method
             .get(&(path.to_string(), method))
-            .map(|reg| reg.dispatch.handle_http(req))
+            .map(|reg| reg.dispatch.handle_http_with_app(app, req))
     }
 }
 
@@ -353,10 +371,22 @@ async fn plugin_route_dispatch(
         headers: project_request_headers(&headers),
         body: body.to_vec(),
     };
-    match app.plugin_routes.dispatch(&path, rm, &ep_req) {
-        Some(resp) => relay_response(resp),
+    // Resolve + serve on a BLOCKING thread: a plugin's `handle_http` (and the built-in prometheus
+    // exporter's scrape-time SQLite gauge refresh) may block, and this is off the data-plane hot path,
+    // so it must not run on an async worker. `app` is an `Arc<App>` moved into the closure; the table
+    // + dispatcher are resolved from the CURRENT snapshot at serve time (no baked handle).
+    let served = tokio::task::spawn_blocking(move || {
+        app.plugin_routes
+            .dispatch(&path, rm, &app, &ep_req)
+            .map(relay_response)
+    })
+    .await;
+    match served {
+        Ok(Some(resp)) => resp,
         // A mounted route with no current owner => a hot-swap dropped it. 404, never a stale handle.
-        None => StatusCode::NOT_FOUND.into_response_stub(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response_stub(),
+        // The blocking task panicked — relay a 502 rather than tearing the listener down.
+        Err(_) => StatusCode::BAD_GATEWAY.into_response_stub(),
     }
 }
 

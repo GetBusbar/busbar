@@ -123,6 +123,28 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                 .into(),
         );
     }
+    // 1.5.3 observability→export lift-out (§2.1, §7): the top-level `metrics:` block and the
+    // `observability.request_log_webhook_url` / `max_inflight_webhook_deliveries` /
+    // `webhook_delivery_timeout_secs` keys are RETIRED into the built-in exporters. An un-migrated
+    // config carrying any of them LOUD-FAILS here (before the typed parse) with the migrate
+    // breadcrumb, so a lifted-out sink is never silently lost. Uses the SHARED
+    // `crate::config::RETIRED_OBSERVABILITY_KEYS` table so the marker, the migrator, and the
+    // `augment_config_error` hint cannot drift.
+    if get(root, "metrics").is_some() {
+        markers.push(
+            "top-level `metrics:` block (retired 1.5.3 → export.prometheus.settings.{buffer_seconds, \
+             key_gauge_limit})"
+                .into(),
+        );
+    }
+    if let Some(obs) = get(root, "observability").and_then(|v| v.as_mapping().cloned()) {
+        for (old, new) in crate::config::RETIRED_OBSERVABILITY_KEYS {
+            // `metrics` is the top-level block handled just above; the rest are `observability.*` keys.
+            if *old != "metrics" && get(&obs, old).is_some() {
+                markers.push(format!("`observability.{old}:` (retired 1.5.3 → {new})"));
+            }
+        }
+    }
     if let Some(providers) = get(root, "providers").and_then(|v| v.as_mapping().cloned()) {
         for (name, p) in &providers {
             if p.as_mapping()
@@ -210,6 +232,10 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_hook_stages(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
     migrate_response_headers(&mut root, &mut changes);
+    // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
+    // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
+    // metrics keys, and rewrites them into the new `export:` surface in place.
+    migrate_observability_export(&mut root, &mut changes);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -1207,6 +1233,77 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     if let Some(v) = take(obs, "otlp_endpoint") {
         obs.insert("otlp_url".into(), v);
         changes.push("observability.otlp_endpoint -> otlp_url".into());
+    }
+}
+
+/// 1.5.3 observability→export lift-out (§2.1, §7): mechanically rewrite the retired
+/// `observability.request_log_webhook_url` (+ `max_inflight_webhook_deliveries` /
+/// `webhook_delivery_timeout_secs`) → `export.request-log-webhook.settings.*`, and the top-level
+/// `metrics:` block → `export.prometheus.settings.*`. Because the exporters are BUILT-IN (not
+/// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
+/// ONCE and the sink is preserved, not lost. Idempotent: a config already in the new shape has no
+/// retired keys to move, so a second run is a no-op.
+fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
+    // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
+    fn export_mut(root: &mut Mapping) -> &mut Mapping {
+        let entry = root
+            .entry("export".into())
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if !matches!(entry, Value::Mapping(_)) {
+            *entry = Value::Mapping(Mapping::new());
+        }
+        match entry {
+            Value::Mapping(m) => m,
+            _ => unreachable!("just normalized to a mapping"),
+        }
+    }
+
+    // (a) request-log webhook keys off `observability:`.
+    let mut webhook_settings = Mapping::new();
+    if let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) {
+        if let Some(url) = take(obs, "request_log_webhook_url") {
+            webhook_settings.insert("url".into(), url);
+        }
+        if let Some(v) = take(obs, "max_inflight_webhook_deliveries") {
+            webhook_settings.insert("max_inflight_deliveries".into(), v);
+        }
+        if let Some(v) = take(obs, "webhook_delivery_timeout_secs") {
+            webhook_settings.insert("delivery_timeout_secs".into(), v);
+        }
+        // An `observability:` mapping emptied to nothing is dropped so the migrated doc has no bare
+        // `observability: {}` (which is valid but noise). Keep it if `otlp_url` (or anything) remains.
+        if obs.is_empty() {
+            root.remove(Value::from("observability"));
+        }
+    }
+    if webhook_settings.contains_key(Value::from("url")) {
+        let mut body = Mapping::new();
+        body.insert("settings".into(), Value::Mapping(webhook_settings));
+        export_mut(root).insert("request-log-webhook".into(), Value::Mapping(body));
+        changes.push(
+            "observability.request_log_webhook_url (+ webhook limits) -> \
+             export.request-log-webhook.settings (built-in exporter)"
+                .into(),
+        );
+    }
+
+    // (b) the top-level `metrics:` block -> export.prometheus.settings.
+    if let Some(Value::Mapping(mut metrics)) = root.remove(Value::from("metrics")) {
+        let mut settings = Mapping::new();
+        if let Some(v) = take(&mut metrics, "buffer_seconds") {
+            settings.insert("buffer_seconds".into(), v);
+        }
+        if let Some(v) = take(&mut metrics, "key_gauge_limit") {
+            settings.insert("key_gauge_limit".into(), v);
+        }
+        // Carry through any other keys verbatim (forward-compat) so nothing is silently dropped.
+        for (k, v) in metrics {
+            settings.insert(k, v);
+        }
+        let mut body = Mapping::new();
+        body.insert("settings".into(), Value::Mapping(settings));
+        export_mut(root).insert("prometheus".into(), Value::Mapping(body));
+        changes.push("metrics: block -> export.prometheus.settings (built-in exporter)".into());
     }
 }
 

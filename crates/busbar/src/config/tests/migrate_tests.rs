@@ -1024,3 +1024,147 @@ fn migrate_emit_server_timing_absent_is_a_no_op() {
         out.changes
     );
 }
+
+/// 1.5.3 observability→export lift-out: an un-migrated config carrying `observability.request_log_webhook_url`
+/// or a top-level `metrics:` block LOUD-FAILS at boot/`--validate` — `detect_legacy_markers` names
+/// each retired key with the migrate breadcrumb.
+///
+/// RED-BEFORE-GREEN: before this unit these keys parsed silently (they were live `ObservabilityCfg` /
+/// `MetricsCfg` fields), so `detect_legacy_markers` returned NO marker for them — this assertion fails
+/// on the pre-retirement tree.
+#[test]
+fn detect_retired_observability_export_keys_loud_fail() {
+    let raw = r#"
+observability:
+  request_log_webhook_url: "https://logs.example.com/busbar"
+  max_inflight_webhook_deliveries: 32
+metrics:
+  buffer_seconds: 60
+providers: {}
+models: {}
+pools: {}
+"#;
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let markers = detect_legacy_markers(&doc);
+    let joined = markers.join("\n");
+    assert!(
+        joined.contains("request_log_webhook_url"),
+        "the retired webhook key must loud-fail with a named marker; got: {joined}"
+    );
+    assert!(
+        joined.contains("metrics"),
+        "the retired top-level metrics block must loud-fail; got: {joined}"
+    );
+    // Each marker names its new home under the export exporters so the operator knows where it went.
+    assert!(
+        joined.contains("export.request-log-webhook") && joined.contains("export.prometheus"),
+        "markers must name the new export home; got: {joined}"
+    );
+}
+
+/// `--migrate-config` mechanically REWRITES the retired observability keys into the new `export:`
+/// surface (built-in exporters, so a full rewrite — not a printed TODO). The webhook URL + limits land
+/// under `export.request-log-webhook.settings`, the metrics block under `export.prometheus.settings`,
+/// and the old keys are gone from `observability:` / the top level. Idempotent.
+///
+/// RED-BEFORE-GREEN: `migrate_observability_export` did not exist before this unit, so the migrated
+/// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
+#[test]
+fn migrate_observability_export_rewrites_old_to_new() {
+    let raw = r#"
+observability:
+  otlp_url: "https://otel.example.com/v1/traces"
+  request_log_webhook_url: "https://logs.example.com/busbar"
+  max_inflight_webhook_deliveries: 32
+  webhook_delivery_timeout_secs: 5
+metrics:
+  buffer_seconds: 90
+  key_gauge_limit: 1500
+providers: {}
+models: {}
+pools: {}
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // request-log-webhook exporter.
+    assert_eq!(
+        dig(&doc, &["export", "request-log-webhook", "settings", "url"]).and_then(|v| v.as_str()),
+        Some("https://logs.example.com/busbar"),
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &[
+                "export",
+                "request-log-webhook",
+                "settings",
+                "max_inflight_deliveries"
+            ]
+        )
+        .and_then(|v| v.as_u64()),
+        Some(32),
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &[
+                "export",
+                "request-log-webhook",
+                "settings",
+                "delivery_timeout_secs"
+            ]
+        )
+        .and_then(|v| v.as_u64()),
+        Some(5),
+    );
+    // prometheus exporter.
+    assert_eq!(
+        dig(
+            &doc,
+            &["export", "prometheus", "settings", "buffer_seconds"]
+        )
+        .and_then(|v| v.as_u64()),
+        Some(90),
+    );
+    assert_eq!(
+        dig(
+            &doc,
+            &["export", "prometheus", "settings", "key_gauge_limit"]
+        )
+        .and_then(|v| v.as_u64()),
+        Some(1500),
+    );
+    // otlp_url stays on observability (tracing is still core); the retired keys are gone.
+    assert_eq!(
+        dig(&doc, &["observability", "otlp_url"]).and_then(|v| v.as_str()),
+        Some("https://otel.example.com/v1/traces"),
+    );
+    assert!(
+        dig(&doc, &["observability", "request_log_webhook_url"]).is_none(),
+        "the retired webhook key must be removed from observability"
+    );
+    assert!(
+        dig(&doc, &["metrics"]).is_none(),
+        "the retired top-level metrics block must be removed"
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("request-log-webhook"))
+            && out.changes.iter().any(|c| c.contains("export.prometheus")),
+        "the change ledger names both rewrites; got {:?}",
+        out.changes
+    );
+
+    // Idempotent: re-migrating the already-new document moves nothing more.
+    let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
+    let (out2, _doc2) = migrate_to_value(&migrated_yaml);
+    assert!(
+        !out2
+            .changes
+            .iter()
+            .any(|c| c.contains("request-log-webhook") || c.contains("export.prometheus")),
+        "a second migrate is a no-op for the export rewrite; got {:?}",
+        out2.changes
+    );
+}

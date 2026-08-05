@@ -1384,26 +1384,26 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     }
     if limits.webhook_delivery_timeout_secs < 1 {
         errors.push(
-            "observability.webhook_delivery_timeout_secs must be >= 1 (0 would abort every webhook \
-             delivery)"
+            "export.request-log-webhook.settings.delivery_timeout_secs must be >= 1 (0 would abort \
+             every webhook delivery)"
                 .to_string(),
         );
     }
     if limits.max_inflight_webhook_deliveries < 1 {
         errors.push(
-            "observability.max_inflight_webhook_deliveries must be >= 1 (a 0-permit semaphore admits \
-             nothing, silently dropping every webhook delivery)"
+            "export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit \
+             semaphore admits nothing, silently dropping every webhook delivery)"
                 .to_string(),
         );
     }
-    // `observability.rs` seeds a `Semaphore::new(max_inflight_webhook_deliveries())` with no other
+    // The webhook exporter seeds a `Semaphore::new(max_inflight_webhook_deliveries())` with no other
     // upper bound — see `MAX_SEMAPHORE_PERMITS`'s doc comment for why this is the panic
     // precondition, not a policy opinion.
     if limits.max_inflight_webhook_deliveries > MAX_SEMAPHORE_PERMITS {
         errors.push(format!(
-            "observability.max_inflight_webhook_deliveries must be <= {MAX_SEMAPHORE_PERMITS} \
-             (tokio::sync::Semaphore's hard permit ceiling — a value above it panics at build time \
-             instead of failing validation)"
+            "export.request-log-webhook.settings.max_inflight_deliveries must be <= \
+             {MAX_SEMAPHORE_PERMITS} (tokio::sync::Semaphore's hard permit ceiling — a value above \
+             it panics at build time instead of failing validation)"
         ));
     }
     // The honored-Retry-After ceiling and hard-down cooldown must be >= 1s to be meaningful.

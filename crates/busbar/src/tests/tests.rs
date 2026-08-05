@@ -847,6 +847,7 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         None,
         &Default::default(),
         &plugins_cfg(&dir, false),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
@@ -857,6 +858,7 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         None,
         &Default::default(),
         &crate::config::PluginsCfg::default(),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "absent block: {err}");
@@ -872,8 +874,14 @@ fn disabled_plugins_are_inert_even_when_present() {
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
     // Even an INVALID tarball must not matter while disabled.
     std::fs::write(dir.join("junk.tar.gz"), b"not a tarball").unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, false))
-        .expect("inert");
+    let reg = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &plugins_cfg(&dir, false),
+        &Default::default(),
+    )
+    .expect("inert");
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -897,6 +905,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         None,
         &Default::default(),
         &plugins_cfg(&dir, true),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(
@@ -916,6 +925,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         None,
         &Default::default(),
         &cfg,
+        &Default::default(),
     )
     .expect("allow_unsigned permits the unsigned store plugin at boot");
     assert!(reg.resolve("sqlite").is_some(), "alias resolves");
@@ -928,6 +938,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         None,
         &Default::default(),
         &cfg,
+        &Default::default(),
     )
     .expect("the canonical name is equally valid as governance.store");
     assert!(reg2.resolve("busbar-store-sqlite").is_some());
@@ -948,6 +959,7 @@ fn unknown_store_name_is_a_clear_boot_error() {
         None,
         &Default::default(),
         &cfg,
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("'dynamo'"), "names the missing store: {err}");
@@ -965,8 +977,14 @@ fn unknown_store_name_is_a_clear_boot_error() {
 fn invalid_manifest_in_enabled_dir_fails_boot() {
     let dir = tmp_plugin_dir("invalid-any");
     std::fs::write(dir.join("junk.tar.gz"), b"not a tarball at all").unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, true))
-        .unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &plugins_cfg(&dir, true),
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("junk.tar.gz"), "names the file: {err}");
     assert!(err.contains("plugin validation failed"), "got {err}");
 
@@ -976,8 +994,14 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     m.sha256 = busbar_plugin_sign::sha256_hex(b"OTHER bytes");
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, true))
-        .unwrap_err();
+    let err = crate::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &plugins_cfg(&dir, true),
+        &Default::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("integrity"), "names the sha mismatch: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -996,7 +1020,8 @@ fn alias_conflict_fails_boot_naming_both() {
     let b = unsigned_tarball(plugin_manifest("acme-store-redis", "redis", "acme"), b"b");
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap_err();
+    let err = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
+        .unwrap_err();
     assert!(
         err.contains("busbar-store-redis") && err.contains("acme-store-redis"),
         "names both plugins: {err}"
@@ -1027,7 +1052,7 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
     std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg)
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
         .expect("allow_unsigned permits the unsigned secret plugin");
     (dir, reg)
 }
@@ -1088,7 +1113,8 @@ fn secrets_block_rejects_non_secret_kind() {
     // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
+        .unwrap();
     let err = validate_secret_module(&reg, "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
@@ -1140,6 +1166,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
         allow_metadata_hosts: Vec::new(),
         allow_all_metadata: false,
         limits: crate::config::LimitsResolved::default(),
+        export: Default::default(),
     }
 }
 
@@ -1218,7 +1245,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg, &Default::default())
+        .unwrap();
     let root = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "x".to_string(),
         settings: serde_json::Map::new(),

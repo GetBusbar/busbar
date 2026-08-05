@@ -64,7 +64,7 @@ fn base_deploy() -> DeployCfg {
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
-        metrics: None,
+        export: None,
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
     }
@@ -311,6 +311,38 @@ fn test_observability_otlp_url_rename() {
     assert!(
         msg.contains("unknown field") && msg.contains("otlp_endpoint"),
         "{msg}"
+    );
+}
+
+/// 1.5.3 observability→export lift-out: the retired `observability.request_log_webhook_url` and the
+/// top-level `metrics:` block are rejected at parse (`deny_unknown_fields`), and `augment_config_error`
+/// turns the bare serde error into an actionable hint naming the new export home + the migrator — the
+/// same shared-table discipline as the HookStage rename.
+///
+/// RED-BEFORE-GREEN: before this unit these keys were live config fields that parsed silently, so the
+/// parse SUCCEEDED (no error to augment) — this test does not pass on the pre-retirement tree.
+#[test]
+fn test_retired_observability_export_keys_loud_fail_with_hint() {
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("the retired webhook key must be rejected");
+    let hint = crate::config::augment_config_error(err);
+    assert!(
+        hint.contains("request_log_webhook_url")
+            && hint.contains("export.request-log-webhook")
+            && hint.contains("--migrate-config"),
+        "the retired-key error must name the new export home + the migrator; got: {hint}"
+    );
+
+    let err = serde_yaml::from_str::<DeployCfg>(
+        "metrics:\n  buffer_seconds: 60\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("the retired metrics block must be rejected");
+    let hint = crate::config::augment_config_error(err);
+    assert!(
+        hint.contains("export.prometheus") && hint.contains("--migrate-config"),
+        "the retired metrics block must point at export.prometheus + the migrator; got: {hint}"
     );
 }
 
@@ -1713,7 +1745,7 @@ models:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        deploy.metrics.as_ref(),
+        &deploy.export.clone().unwrap_or_default(),
         &deploy.health,
         &deploy.routing,
     );
@@ -1780,7 +1812,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
         &LimitsCfg::default(),
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        None,
+        &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );
@@ -1814,9 +1846,11 @@ limits:
   max_inbound_concurrent: 256
   request_body_max_bytes: 1048576
   pool_idle_timeout_secs: 77
-metrics:
-  buffer_seconds: 30
-  key_gauge_limit: 9
+export:
+  prometheus:
+    settings:
+      buffer_seconds: 30
+      key_gauge_limit: 9
 advanced:
   rate_sweep_interval: 64
   usage_flush_interval_ms: 5
@@ -1830,7 +1864,7 @@ routing:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        deploy.metrics.as_ref(),
+        &deploy.export.clone().unwrap_or_default(),
         &deploy.health,
         &deploy.routing,
     );
@@ -1876,7 +1910,7 @@ limits:
         &deploy.limits,
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        None,
+        &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );

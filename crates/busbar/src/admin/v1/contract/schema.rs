@@ -214,19 +214,19 @@ pub(crate) struct SigningKeyRotateView {
 /// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
 /// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
 /// (no overlay); `note` names the affected fields instead. Everything else
-/// (`rate_card`/`per_request_fee`/`security`/`metrics`/`health`/`routing`) is LIVE on the swap;
+/// (`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;
 /// `limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):
 /// `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
 /// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 /// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
 /// only `Arc<App>`, never the router) — two independent freezing mechanisms. `observability` is live
-/// EXCEPT two boot-scoped fields: `request_log_webhook_url` (seeds a process-global `OnceLock` that
-/// no-ops after the first `main()` call) and `otlp_url` (feeds a one-shot `tracing_subscriber` init).
+/// EXCEPT `otlp_url` (feeds a one-shot `tracing_subscriber` init, boot-frozen). (1.5.3: the
+/// request-log webhook + Prometheus metrics retired out of the single-value settings surface into the
+/// built-in `export:` exporters, edited in `config.yaml` + applied via plugin reload.)
 /// `advanced` is live EXCEPT `response_headers` (task #139): `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
-/// process-global `OnceLock` (same mechanism as `request_log_webhook_url`) — neither rebuilt by an
-/// apply.
+/// process-global `OnceLock` — neither rebuilt by an apply.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
