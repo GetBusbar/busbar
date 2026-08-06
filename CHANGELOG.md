@@ -8,9 +8,45 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.5.3], 2026-08-05
 
-This release changes the config file. Run `busbar --migrate-config <config.yaml>` before upgrading. Busbar
-refuses to start on the old spellings rather than starting with a config that means something different.
-See [the 1.5 migration guide](docs/migration-1.5.md).
+This release reshapes the config file, so give yourself a few minutes for the upgrade.
+`busbar --migrate-config <config.yaml>` does most of it for you and tells you what it changed. Busbar will
+not start on the old spellings, which is deliberate: a config that quietly means something different is
+worse than one that stops and says so.
+
+Every breaking change below is a config change. If you would rather see the finished shape than a list of
+edits, [config at a glance](https://getbusbar.com/docs/config-at-a-glance/) is one annotated file with
+every section on a single page, and [the 1.5 migration guide](docs/migration-1.5.md) walks the path from
+1.4.
+
+### Breaking changes
+
+- **The Redis-protocol store plugin is now Valkey.** Change `store.module: redis` to `valkey` and
+  install the `busbar-store-valkey` artifact. Your connection URL does not change. Re-pin any plugin
+  version pin under the new name, and delete the old plugin file from your plugin directory.
+- **Hooks are defined once by name and attached by name.** Inline hook definitions and
+  `global_hooks:` no longer load: define each hook under the top-level `hooks:` block and list its name
+  under `pools.hooks:` (every pool) or under one pool. Stage names are now `request`, `candidate`,
+  `routing` and `response`; the old `route`, `attempt` and `completion` fail at startup. A pool may not be
+  named `hooks`. A hand-written hook with no stage list now fires at all four stages rather than once per
+  request; set `phase: [request]` for the old behaviour. See [the hooks guide](docs/hooks.md).
+- **Identity providers are defined once by name and referenced by name.** Define each under the
+  top-level `identity-providers:` block; `auth.chain:` and `auth.admin_auth:` are lists of those names. The
+  `auth.methods:` block is gone and its contents belong on the provider, `auth.role_bindings:` is keyed by
+  provider name, and an unstated admin trust ceiling is now the most restrictive one. A ceiling can only be
+  raised in the config file, never through the admin API.
+- **Export sinks are named, and `observability:` is gone.** Write `export:` as
+  `<your-name>: {module, settings}` rather than keyed by type, which lets you run two sinks of one kind,
+  for example one request log to your own store and one to a SIEM. `generic-webhook` is now part of
+  `request-log-webhook`. Move `observability.otlp_url` to an export sink using the `otlp` module. See
+  [the observability guide](docs/observability.md).
+- **Response headers are off by default.** Everything Busbar used to add to a response, timing
+  and route headers included, must be enabled under `advanced.response_headers`.
+  `observability.emit_server_timing` no longer exists. Enable what your dashboards and clients read.
+- **`admin_insecure` is now `admin_require_mtls`, with the meaning reversed** and safe by
+  default. A network-exposed admin listener with no client CA still refuses to start; the waiver is now
+  `admin_require_mtls: false`.
+- **Upstream credentials are configured per pool.** `auth.upstream_credentials` moves to
+  `pools.upstream_credentials`, and any pool can override it.
 
 ### Added
 
@@ -22,33 +58,6 @@ See [the 1.5 migration guide](docs/migration-1.5.md).
 
 ### Changed
 
-- **BREAKING: the Redis-protocol store plugin is now Valkey.** Change `store.module: redis` to `valkey` and
-  install the `busbar-store-valkey` artifact. Your connection URL does not change. Re-pin any plugin
-  version pin under the new name, and delete the old plugin file from your plugin directory.
-- **BREAKING: hooks are defined once by name and attached by name.** Inline hook definitions and
-  `global_hooks:` no longer load: define each hook under the top-level `hooks:` block and list its name
-  under `pools.hooks:` (every pool) or under one pool. Stage names are now `request`, `candidate`,
-  `routing` and `response`; the old `route`, `attempt` and `completion` fail at startup. A pool may not be
-  named `hooks`. A hand-written hook with no stage list now fires at all four stages rather than once per
-  request; set `phase: [request]` for the old behaviour. See [the hooks guide](docs/hooks.md).
-- **BREAKING: identity providers are defined once by name and referenced by name.** Define each under the
-  top-level `identity-providers:` block; `auth.chain:` and `auth.admin_auth:` are lists of those names. The
-  `auth.methods:` block is gone and its contents belong on the provider, `auth.role_bindings:` is keyed by
-  provider name, and an unstated admin trust ceiling is now the most restrictive one. A ceiling can only be
-  raised in the config file, never through the admin API.
-- **BREAKING: export sinks are named, and `observability:` is gone.** Write `export:` as
-  `<your-name>: {module, settings}` rather than keyed by type, which lets you run two sinks of one kind,
-  for example one request log to your own store and one to a SIEM. `generic-webhook` is now part of
-  `request-log-webhook`. Move `observability.otlp_url` to an export sink using the `otlp` module. See
-  [the observability guide](docs/observability.md).
-- **BREAKING: response headers are off by default.** Everything Busbar used to add to a response, timing
-  and route headers included, must be enabled under `advanced.response_headers`.
-  `observability.emit_server_timing` no longer exists. Enable what your dashboards and clients read.
-- **BREAKING: `admin_insecure` is now `admin_require_mtls`, with the meaning reversed** and safe by
-  default. A network-exposed admin listener with no client CA still refuses to start; the waiver is now
-  `admin_require_mtls: false`.
-- **BREAKING: upstream credentials are configured per pool.** `auth.upstream_credentials` moves to
-  `pools.upstream_credentials`, and any pool can override it.
 - Operational settings that were environment variables are now config keys: `BUSBAR_PROVIDERS`,
   `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and
   `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Each still works for one more release, and the config key wins if
@@ -84,16 +93,27 @@ See [the 1.5 migration guide](docs/migration-1.5.md).
 
 ## [1.5.2], 2026-08-02
 
-### Changed
+### Breaking changes
 
-- **BREAKING: `auth.chain: [keys]` with no way to mint an admin token now refuses to start.** It previously
+- **`auth.chain: [keys]` with no way to mint an admin token now refuses to start.** It previously
   booted as a silent open relay admitting anonymous requests. Give `auth.admin_auth` an `admin-tokens`
   entry with a `token:`, or an admin module granting `mint` or `full`, or set an explicit `admin_auth: []`
   for development. See [the 1.5 migration guide](docs/migration-1.5.md).
+
+### Changed
+
 - Setting an admin token no longer forces data-plane requests to carry a virtual key, so `chain: []` plus
   an admin token is now an open relay with a protected admin API.
 
 ## [1.5.1], 2026-08-02
+
+### Breaking changes
+
+- **Busbar no longer generates a signing key at boot.** If `auth.chain` names the built-in `keys`
+  verifier, `auth.signing_key` is required and startup fails without it. Generate one with
+  `busbar --generate-signing-key` and point `auth.signing_key` at a file or environment variable. It is
+  fleet-shared, so generate once and distribute to every node; rotating it revokes every outstanding key.
+  1.5.0 wrote this file itself beside your config, which boot-looped on a read-only mount.
 
 ### Added
 
@@ -105,11 +125,6 @@ See [the 1.5 migration guide](docs/migration-1.5.md).
 
 ### Changed
 
-- **BREAKING: Busbar no longer generates a signing key at boot.** If `auth.chain` names the built-in `keys`
-  verifier, `auth.signing_key` is required and startup fails without it. Generate one with
-  `busbar --generate-signing-key` and point `auth.signing_key` at a file or environment variable. It is
-  fleet-shared, so generate once and distribute to every node; rotating it revokes every outstanding key.
-  1.5.0 wrote this file itself beside your config, which boot-looped on a read-only mount.
 - A pool whose members are all at `max_concurrent` now spills or sheds per `on_exhausted` instead of
   queueing to the failover deadline, so a burst against a small pool with a cloud overflow pool spills
   immediately rather than serializing.
@@ -128,6 +143,37 @@ See [the 1.5 migration guide](docs/migration-1.5.md).
 The config, identity and cost release. The config file changed shape and every 1.4.x virtual key stops
 working, so plan the migration and the key rotation together. The data-plane HTTP surface is unaffected: an
 application posting to `/v1/chat/completions` gets a byte-identical response after the upgrade.
+
+### Breaking changes
+
+- **The config file changed shape and a 1.x config refuses to start.** Run
+  `busbar --migrate-config <old.yaml> > config.yaml`, review every WARNING and TODO it prints, then run
+  `busbar --validate`. Read every `allowed_pools: []` carefully: its meaning flipped from all pools to no
+  pools.
+- **Every 1.4.x virtual key stops working and must be re-minted** through
+  `POST /api/v1/admin/keys`, with the new tokens rolled out to callers. Keys are now signed tokens that
+  expire (90 days by default) and can be revoked fleet-wide, where a 1.x key was a bearer secret that never
+  expired.
+- **A durable store is dropped and recreated on first open.** Usage history resets with it.
+- **Limits moved off keys and onto groups.** `rpm_limit`, `tpm_limit`, `max_budget_cents` and
+  `budget_period` are gone from minting, from `PATCH /keys/{id}` and from key metadata; a key resolves to a
+  group and the group carries the limits. The per-key `busbar_key_budget_remaining_cents` gauge is gone
+  with them, so use the bucket gauges.
+- **The `governance:` block is gone.** `store`, `rate_card`, `per_request_fee`, `groups` and
+  `advanced` are top-level, and the admin token is a secret reference on the `admin-tokens` module.
+  `governance.enabled` and `governance.budget_on_store_error` no longer exist. Handled by
+  `--migrate-config`.
+- **Static token auth is gone.** The `tokens` module and `auth.client_tokens` are removed;
+  data-plane auth is the built-in `keys` verifier or an identity provider.
+- **The top-level `hooks:` registry is gone,** with the hook `global:` and `default:` flags. A
+  hook instance is referenced inline in a pool's `hooks:` list or in `global_hooks:`. (Reversed in 1.5.3,
+  which restores a named `hooks:` definition map.)
+- **`cost_per_mtok` on pool members and `governance.price_per_1k_tokens_cents` are gone.**
+  `rate_card:` is the only cost source; `--migrate-config` synthesizes entries and flags them for review.
+- **Config aliases are gone, one canonical name each.** `window_s` becomes `window_secs`, `n`
+  becomes `consecutive_n`, `deadline_secs` becomes `timeout_secs`, `cap` becomes `max_hops`,
+  `otlp_endpoint` becomes `otlp_url`, a member's `target` becomes `model`, `api_key_env` becomes
+  `api_key: { env: ... }`, and `auth.mode` becomes `auth.chain` plus `auth.upstream_credentials`.
 
 ### Added
 
@@ -173,34 +219,6 @@ application posting to `/v1/chat/completions` gets a byte-identical response aft
 
 ### Changed
 
-- **BREAKING: the config file changed shape and a 1.x config refuses to start.** Run
-  `busbar --migrate-config <old.yaml> > config.yaml`, review every WARNING and TODO it prints, then run
-  `busbar --validate`. Read every `allowed_pools: []` carefully: its meaning flipped from all pools to no
-  pools.
-- **BREAKING: every 1.4.x virtual key stops working and must be re-minted** through
-  `POST /api/v1/admin/keys`, with the new tokens rolled out to callers. Keys are now signed tokens that
-  expire (90 days by default) and can be revoked fleet-wide, where a 1.x key was a bearer secret that never
-  expired.
-- **BREAKING: a durable store is dropped and recreated on first open.** Usage history resets with it.
-- **BREAKING: limits moved off keys and onto groups.** `rpm_limit`, `tpm_limit`, `max_budget_cents` and
-  `budget_period` are gone from minting, from `PATCH /keys/{id}` and from key metadata; a key resolves to a
-  group and the group carries the limits. The per-key `busbar_key_budget_remaining_cents` gauge is gone
-  with them, so use the bucket gauges.
-- **BREAKING: the `governance:` block is gone.** `store`, `rate_card`, `per_request_fee`, `groups` and
-  `advanced` are top-level, and the admin token is a secret reference on the `admin-tokens` module.
-  `governance.enabled` and `governance.budget_on_store_error` no longer exist. Handled by
-  `--migrate-config`.
-- **BREAKING: static token auth is gone.** The `tokens` module and `auth.client_tokens` are removed;
-  data-plane auth is the built-in `keys` verifier or an identity provider.
-- **BREAKING: the top-level `hooks:` registry is gone,** with the hook `global:` and `default:` flags. A
-  hook instance is referenced inline in a pool's `hooks:` list or in `global_hooks:`. (Reversed in 1.5.3,
-  which restores a named `hooks:` definition map.)
-- **BREAKING: `cost_per_mtok` on pool members and `governance.price_per_1k_tokens_cents` are gone.**
-  `rate_card:` is the only cost source; `--migrate-config` synthesizes entries and flags them for review.
-- **BREAKING: config aliases are gone, one canonical name each.** `window_s` becomes `window_secs`, `n`
-  becomes `consecutive_n`, `deadline_secs` becomes `timeout_secs`, `cap` becomes `max_hops`,
-  `otlp_endpoint` becomes `otlp_url`, a member's `target` becomes `model`, `api_key_env` becomes
-  `api_key: { env: ... }`, and `auth.mode` becomes `auth.chain` plus `auth.upstream_credentials`.
 - The SemVer contract is now stated explicitly: the frozen surface is the data-plane HTTP surface and the
   wire protocols. `config.yaml` is an operator artifact outside that freeze and may change between
   releases, always with a migration path and a loud failure on an outdated config. The admin API carries
@@ -323,6 +341,19 @@ an authenticated, audited API. Hooks and policies are configured differently, so
 one-time update**: see the [1.2.x to 1.3 migration guide](docs/migration-1.3.md). An old-form key reports a
 startup error naming exactly what to write instead.
 
+### Breaking changes
+
+- **The management API moved under `/api/v1/admin/`.** The key endpoints at `/admin/keys*` are
+  now `/api/v1/admin/keys*`; scripts calling the old paths need a one-line URL update.
+- **A network-exposed admin listener refuses to start without client-certificate mTLS.** Set
+  `admin_tls.client_ca_file`, keep admin on loopback, or waive it with `admin_insecure: true` if a mesh
+  terminates mTLS for you.
+- **The inline `policy:` block and transport-named `route:` values.** A pool's `route:` now takes
+  a hook name or a built-in policy name (`weighted`, `cheapest`, `fastest`, `least_busy`, `usage`). Each
+  removed key reports a startup error with its exact replacement.
+- **The embedded Rhai script routing policy (`route: script`),** deprecated in 1.2.1, is gone.
+  A compiled hook over a socket or an HTTP webhook does the same job with real process isolation.
+
 ### Added
 
 - **The admin API is a full config plane:** read the running config, apply a validated change atomically,
@@ -359,19 +390,7 @@ startup error naming exactly what to write instead.
 
 ### Changed
 
-- **BREAKING: the management API moved under `/api/v1/admin/`.** The key endpoints at `/admin/keys*` are
-  now `/api/v1/admin/keys*`; scripts calling the old paths need a one-line URL update.
-- **BREAKING: a network-exposed admin listener refuses to start without client-certificate mTLS.** Set
-  `admin_tls.client_ca_file`, keep admin on loopback, or waive it with `admin_insecure: true` if a mesh
-  terminates mTLS for you.
-
 ### Removed
-
-- **BREAKING: the inline `policy:` block and transport-named `route:` values.** A pool's `route:` now takes
-  a hook name or a built-in policy name (`weighted`, `cheapest`, `fastest`, `least_busy`, `usage`). Each
-  removed key reports a startup error with its exact replacement.
-- **BREAKING: the embedded Rhai script routing policy (`route: script`),** deprecated in 1.2.1, is gone.
-  A compiled hook over a socket or an HTTP webhook does the same job with real process isolation.
 
 ## [1.2.1], 2026-07-11
 
@@ -492,6 +511,11 @@ Semantic Versioning from here: no breaking change without a major version bump.
 Every request now takes one code path with billing metered from it, and the config surface is cleaned up to
 freeze a 1.0 contract. Same-protocol traffic stays byte-exact and just as fast.
 
+### Breaking changes
+
+- **`auth.token` is removed,** and `auth:`, `governance:` and `security:` reject unknown keys, so
+  a stale or typo'd security key is a loud startup error rather than a silent default.
+
 ### Added
 
 - **A `limits:` block puts every operational limit under operator control** rather than hardcoding it:
@@ -516,9 +540,6 @@ freeze a 1.0 contract. Same-protocol traffic stays byte-exact and just as fast.
   same-protocol request byte for byte, where the old path re-serialized and reordered JSON keys.
 
 ### Removed
-
-- **BREAKING: `auth.token` is removed,** and `auth:`, `governance:` and `security:` reject unknown keys, so
-  a stale or typo'd security key is a loud startup error rather than a silent default.
 
 ### Fixed
 
@@ -600,6 +621,12 @@ freeze a 1.0 contract. Same-protocol traffic stays byte-exact and just as fast.
 
 ## [1.0.0-rc.3], 2026-06-10
 
+### Breaking changes
+
+- **`/metrics` is no longer unconditionally open.** It goes through the same authentication check
+  as `/stats`, because the exposition discloses your lane and pool topology and error rates. Only
+  `/healthz` stays open. Update any Prometheus scrape config that assumed otherwise.
+
 ### Added
 
 - **Every wire protocol is now first-class ingress.** Previously clients could speak only Anthropic or
@@ -607,10 +634,6 @@ freeze a 1.0 contract. Same-protocol traffic stays byte-exact and just as fast.
   unmodified, with errors in the caller's native shape. See [the protocols guide](docs/protocols.md).
 
 ### Changed
-
-- **BREAKING: `/metrics` is no longer unconditionally open.** It goes through the same authentication check
-  as `/stats`, because the exposition discloses your lane and pool topology and error rates. Only
-  `/healthz` stays open. Update any Prometheus scrape config that assumed otherwise.
 
 ### Fixed
 
