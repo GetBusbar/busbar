@@ -221,6 +221,39 @@ jobs:
           CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: scripts/config-stability-gate.sh --check
 
+  # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
+  # generated openapi.json are all public. A customer who finds internal audit ids, a developer's
+  # home directory, TDD narration or an authorship trailer in a shipped file does not conclude
+  # "untidy" — they conclude the product was assembled by a process they were not shown. That is a
+  # commercial fact about the product, so it gets a control rather than a sweep.
+  #
+  # Three manual sweeps found, in one day: a developer home directory in two public workflows,
+  # internal issue ids (E-007, C6, "self-service D2") served inside operator-facing API docs, an
+  # internal design report published as a README, and a shipped comment in which the author described
+  # their own working constraints. Every one of those is a TEXT class; a sweep removes the instances,
+  # this removes the class.
+  #
+  # Twelve rules, each derived from text really found in this repo's history, each carrying its own
+  # RED fixture AND a GREEN twin. The false-positive controls are as load-bearing as the rules — the
+  # vendor names this gateway routes to (Anthropic, OpenAI, Claude, Gemini), a genuine human
+  # `Co-authored-by:` trailer, technical invariants like `fail closed`, and identifiers that merely
+  # contain a flagged word are all explicit GREEN controls — because a gate that cries wolf gets
+  # switched off, and then it protects nothing.
+  #
+  # No toolchain and no build: it is pure stdlib python over the file list `git ls-files` reports,
+  # which is the exact definition of "what the public gets". Self-test FIRST, and a scan that
+  # discovers ZERO files is a HARD FAILURE, so neither a broken rule table nor a mistyped path can
+  # read as "clean". The same script runs over every PLUGIN repo via the plugin-ci reusable workflow.
+  public-hygiene:
+    name: public-hygiene gate (nothing public may describe how it was built)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
+        run: python3 scripts/public-hygiene-lint.py --selftest
+      - name: Public-hygiene gate
+        run: python3 scripts/public-hygiene-lint.py --root .
+
   # EXECUTABLE-CONFIG gate. Every config-grammar guard that existed before this one was scoped to
   # DOCS — `crates/busbar/tests/docs_examples.rs` reads `docs/**`, marketing's check-config-blocks.mjs
   # reads what it PUBLISHES. Nothing ever looked at the configs a MACHINE runs: the `cat > config.yaml

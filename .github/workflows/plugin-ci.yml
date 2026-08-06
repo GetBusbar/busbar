@@ -151,6 +151,24 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
 
+      - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
+        # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
+        # leakage this guards against (internal audit ids, a developer's home directory, TDD
+        # narration, an authorship trailer) was found across the public fleet at once, and per-repo
+        # adoption of a new lint does not happen. Living in the reusable workflow, every caller gets
+        # it with zero per-repo work and no way to drift.
+        #
+        # It scans the PLUGIN checkout only (`--root plugin`) — busbarAI/ has its own run of the same
+        # script in core's ci.yml. File discovery is `git ls-files` inside that checkout, which is
+        # exactly what the plugin repo publishes. Self-test first, and a scan that discovers zero
+        # files EXITS 2 rather than passing, so a layout change here cannot turn the gate into a
+        # no-op that reports green. Runs before the build because it needs no toolchain at all:
+        # stdlib python, a second or two, and it fails fast on the cheapest possible signal.
+        run: |
+          set -euo pipefail
+          python3 busbarAI/scripts/public-hygiene-lint.py --selftest
+          python3 busbarAI/scripts/public-hygiene-lint.py --root plugin
+
       - name: cargo fmt --check
         working-directory: plugin
         run: cargo fmt --all -- --check
