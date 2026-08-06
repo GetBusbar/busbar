@@ -191,7 +191,7 @@ impl Cond {
             Cond::MalformedIfMatch => "malformed `If-Match` header",
             Cond::UnknownResource => "unknown resource",
             Cond::MalformedBody => "malformed body / unknown field",
-            Cond::InvalidTree => "invalid tree — dangling/cyclic parent or depth",
+            Cond::InvalidTree => "invalid tree: dangling/cyclic parent or depth",
             Cond::BaseDefined => "base-defined (edit config.yaml)",
             Cond::GrantChange => "grant change on an existing definition",
             Cond::BoundKeys => "one or more keys are still bound (rebind/delete them first)",
@@ -204,7 +204,7 @@ impl Cond {
             Cond::KeyExpiryFields => "bad `expires_in` / `expires_at`",
             Cond::RebindTargetMissing => "the rebind target group does not exist",
             Cond::HookNoAck => "the hook did not acknowledge; nothing committed",
-            Cond::SettingsPush => "a config change landed during the settings push — retry",
+            Cond::SettingsPush => "a config change landed during the settings push; retry",
             Cond::MalformedCursor => "malformed or foreign pagination `cursor`",
             Cond::MissingRequiredQuery => "missing or unknown required query parameter",
             Cond::InvalidQueryValue => "invalid query-parameter value",
@@ -218,7 +218,7 @@ impl Cond {
             Cond::UntrustedUpload => "the upload is untrusted and not opted-in",
             Cond::InvalidFilename => "invalid plugin filename",
             Cond::NotLoadable => {
-                "the artifact is not loadable — bad archive/manifest, or it fails structure/trust \
+                "the artifact is not loadable: bad archive/manifest, or it fails structure/trust \
                  validation"
             }
             Cond::Overlong => "an id or name exceeds its length cap",
@@ -234,11 +234,11 @@ impl Cond {
                 "unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`)"
             }
             Cond::InvalidLabels => {
-                "invalid mint-time `labels` — a reserved or non-Prometheus label name, or too \
+                "invalid mint-time `labels`: a reserved or non-Prometheus label name, or too \
                  many/too long"
             }
             Cond::TrustCeilingRaise => {
-                "raising `max_admin_scope` is refused over the admin API — the trust ceiling is \
+                "raising `max_admin_scope` is refused over the admin API; the trust ceiling is \
                  operator file policy; lower it here, raise it in config.yaml"
             }
             Cond::StillReferenced => {

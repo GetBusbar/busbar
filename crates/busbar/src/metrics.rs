@@ -1510,7 +1510,7 @@ mod tests {
         );
     }
 
-    /// R9 in `/metrics`: a breaker-Open lane reports `busbar_lane_available=0` with a breaker-derived
+    /// In `/metrics`: a breaker-Open lane reports `busbar_lane_available=0` with a breaker-derived
     /// `busbar_lane_recovery_hint_ms`, while the INDEPENDENT `busbar_lane_state` breaker gauge reads
     /// tripped and `busbar_lane_available_permits` still exposes the capacity axis — the two are never
     /// collapsed into a single signal.

@@ -149,7 +149,7 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 /// only until the observability phase renders it.
 const SHED_RETRY_FLOOR_MS: u64 = 1000;
 
-/// At-capacity recovery FLOOR in milliseconds. R5: a busy concurrency slot has no scheduled recovery
+/// At-capacity recovery FLOOR in milliseconds. A busy concurrency slot has no scheduled recovery
 /// the way a breaker `until` does, so absent a per-lane drain estimate this floor is the honest "back
 /// off ~2s" answer (never the deceptive `1`). This is the NEUTRAL store-side source of truth for the
 /// 2s floor: the store must not depend on `proxy`, so the proxy `Retry-After` path
@@ -197,7 +197,7 @@ impl Unavailable {
                 Some(until.saturating_sub(now).saturating_mul(1000))
             }
             Unavailable::ProbeInFlight => Some(PROBE_RETRY_FLOOR_MS), // ~one request
-            // Honest floor when there is no drain estimate — R5 forbids regressing this below 2s.
+            // Honest floor when there is no drain estimate — never regress this below 2s.
             Unavailable::AtCapacity { drain_hint_ms } => {
                 Some(drain_hint_ms.unwrap_or(AT_CAPACITY_RECOVERY_FLOOR_MS))
             }
@@ -433,7 +433,7 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     /// transition + single-flight probe CAS exactly once. Returns false if the probe was already
     /// taken (lost the race) so the caller can pick another lane.
     ///
-    /// R1: `pick_among` now admits via `try_admit`, so `acquire_for_dispatch_in` has no non-test
+    /// `pick_among` now admits via `try_admit`, so `acquire_for_dispatch_in` has no non-test
     /// caller left — but it is deliberately RETAINED (not deleted) as the tested breaker-acquisition
     /// primitive the ~15 probe-race/epoch regression tests drive directly. `try_admit` performs the
     /// equivalent breaker CAS via `cell_acquire_breaker` internally.
@@ -459,7 +459,7 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable>;
 
     /// The concurrency semaphore of a BOUNDED lane, for the `on_exhausted: queue` wait to acquire a
-    /// freed permit DIRECTLY on the lane's OWN FIFO semaphore. This is the R2 wait primitive: the
+    /// freed permit DIRECTLY on the lane's OWN FIFO semaphore. This is the wait primitive: the
     /// semaphore STORES released permits (no lost wakeup — a permit freed in the window between a
     /// waiter's re-poll and its next await is not dropped) and hands one permit to one waiter (no
     /// thundering herd, FIFO fairness). `None` for an UNBOUNDED lane (`max_concurrent` omitted —

@@ -1197,7 +1197,7 @@ impl TestApp {
                 crate::state::seed_request_id_counter(),
             )),
             // Mirror production: `/metrics` is served via the built-in `prometheus` exporter's plugin
-            // route (design §7.1). The test harness has no `export:` config, so synthesize the
+            // route. The test harness has no `export:` config, so synthesize the
             // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
             // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.

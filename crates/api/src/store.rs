@@ -66,7 +66,7 @@ mod allowed_scopes_wire {
 }
 
 /// A virtual key issued by busbar (distinct from upstream provider keys) - a PURE AUTH binding
-/// (1.5.0, S1): identity + pool grants + at most one `groups:` binding. Keys carry NO inline
+/// (1.5.0): identity + pool grants + at most one `groups:` binding. Keys carry NO inline
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
 /// so policy is mutable in config/store without re-issuing the credential.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -120,7 +120,7 @@ pub struct VirtualKey {
 impl VirtualKey {
     /// Whether this key may target the scope `(kind, value)`.
     ///
-    /// - `allowed_scopes` OMITTED (`None`) = ALL scopes of EVERY kind (C6).
+    /// - `allowed_scopes` OMITTED (`None`) = ALL scopes of EVERY kind.
     /// - an explicit list is EXHAUSTIVE ACROSS ALL KINDS — **not** "exhaustive per kind".
     /// - an explicit EMPTY list is NO scopes at all (never "all").
     ///

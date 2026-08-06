@@ -68,7 +68,7 @@ use crate::governance::{NewKeySpec, VirtualKey};
 /// to serialize would be worse than proceeding.
 static EXISTENCE_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `POST /keys` body (1.5.0 signed-token keys, S1): PURE AUTH + a signed expiring token. A minted
+/// `POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted
 /// key is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all
 /// enforcement flows through the bound `group`. `#[serde(deny_unknown_fields)]` so the removed
 /// 1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.
@@ -79,20 +79,20 @@ pub(crate) struct CreateKeyReq {
     name: String,
     /// The `groups:` bucket this key binds to (at most one). A key with NO group is authed +
     /// unlimited (access only). If the named group EXISTS, the key binds to it. If it does NOT
-    /// exist, the mint 400s UNLESS `parent` is given — then it is AUTO-PROVISIONED as a leaf under
-    /// `parent` (self-service D2; see `parent`).
+    /// exist, the mint 400s UNLESS `parent` is given, in which case it is AUTO-PROVISIONED as a leaf under
+    /// `parent` (self-service; see `parent`).
     #[serde(default)]
     group: Option<String>,
     /// AUTO-PROVISION target: the EXISTING parent group under which to create
-    /// `group` as a leaf when `group` does not yet exist — the first-self-mint materialization of a
+    /// `group` as a leaf when `group` does not yet exist: the first-self-mint materialization of a
     /// `user:<sub>` personal budget bucket. The new leaf's limits come from the nearest-ancestor
     /// `child_default` template (inherit-only when none up the chain), created through the same
     /// validate-at-the-door path as `POST /groups`. If `group` ALREADY exists, `parent` must equal
-    /// its actual parent (else 409) — a mint never re-homes an existing group. Ignored when `group`
+    /// its actual parent (else 409); a mint never re-homes an existing group. Ignored when `group`
     /// is absent (a key with no group has nothing to provision).
     #[serde(default)]
     parent: Option<String>,
-    /// Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools (C6).
+    /// Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools.
     #[serde(default)]
     allowed_pools: Option<Vec<String>>,
     /// Optional mint-time labels echoed onto this key's metric series; never interpreted by
@@ -472,7 +472,7 @@ fn key_meta(k: &VirtualKey) -> Value {
     })
 }
 
-/// E-007: `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
+/// `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
 /// of the two PERMANENT states (`revoke`, `delete`) — all three land on `enabled == false`. This
 /// derives the disambiguating value from the same internal state the engine already tracks, in
 /// tombstone-first priority (a tombstoned row is also denylisted, by `revoke`-then-delete, so the
@@ -929,7 +929,7 @@ pub(crate) async fn create_key(
     }
     let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
-        // MINT-TIME group resolution (self-service D2): a bound `group` must exist NOW — a dangling
+        // MINT-TIME group resolution (self-service): a bound `group` must exist NOW — a dangling
         // binding would make every request on the new key fail closed at admission. When it does not
         // exist AND `parent` is given, AUTO-PROVISION it as a leaf under `parent` (materializing the
         // `user:<sub>` personal budget bucket on first self-mint) through the SAME
@@ -1089,7 +1089,7 @@ pub(crate) async fn create_key(
         &actor,
     );
     let mut body = key_meta(&key);
-    // E-007: a freshly minted key is deterministically "active" — `mint_signed`/
+    // A freshly minted key is deterministically "active" — `mint_signed`/
     // `mint_signed_with_aws` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
     // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
     // needed (and `gov` is not in scope here — moved into the mint closure above).
@@ -1097,7 +1097,7 @@ pub(crate) async fn create_key(
     // The busbar-SIGNED token IS the key credential (S1), shown exactly once.
     body["token"] = json!(token);
     body["expires_at"] = json!(exp);
-    // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service D2), so a
+    // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service), so a
     // portal can distinguish "bound to an existing bucket" from "created your personal bucket + bound".
     body["group_provisioned"] = json!(provisioned_group);
     if let Some((access_key_id, secret_access_key)) = aws {
@@ -1118,7 +1118,7 @@ pub(crate) async fn create_key(
     json_response(StatusCode::CREATED, body)
 }
 
-/// Partial update to an existing key. Keys are PURE AUTH (1.5.0, S1), so the mutable surface is
+/// Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is
 /// auth-shaped only. Every field is optional; only the present ones change. The credential, name,
 /// allowed-pools, and labels are immutable here (rotate/recreate for those).
 ///
@@ -1221,7 +1221,7 @@ pub(crate) async fn update_key(
     // write run TOGETHER under the gate, so the record the ETag was checked against is the same
     // record that gets updated.
     enum UpdateOutcome {
-        /// The updated row plus its E-007 `state`, computed INSIDE the gated closure below (where
+        /// The updated row plus its `state`, computed INSIDE the gated closure below (where
         /// `gov` — and therefore `gov.is_revoked`, needed to tell a disabled key from a revoked one —
         /// is in scope; the outer `match` below is outside the transaction closure and has no `gov`).
         Updated(Box<crate::governance::VirtualKey>, &'static str),
@@ -1426,7 +1426,7 @@ pub(crate) async fn list_keys(
         },
         None => 0,
     };
-    // E-007 (secondary point): a tombstoned key otherwise vanishes from this list with no marker —
+    // Secondary point: a tombstoned key otherwise vanishes from this list with no marker —
     // "it is gone" and "it never existed" looked the same. `?include=tombstoned` opts in to seeing
     // them (each row's now-additive `state` reads `"tombstoned"`); default behaviour (their
     // continued silent omission from a plain `GET /keys`) is unchanged, so this is purely additive.
@@ -1447,7 +1447,7 @@ pub(crate) async fn list_keys(
     let gov = gov.clone();
     let res = tokio::task::spawn_blocking(move || {
         let keys = gov.all_keys()?;
-        // `state` (E-007) is derived HERE, on the blocking pool, where `gov` — and therefore
+        // `state` is derived HERE, on the blocking pool, where `gov` — and therefore
         // `gov.is_revoked` — is in scope; the outer match below is past the `.await` and has no
         // `gov` of its own (it was moved into this closure).
         Ok::<_, crate::governance::StoreError>(
@@ -1468,7 +1468,7 @@ pub(crate) async fn list_keys(
                 // unfiltered (billing/audit attribution needs tombstoned rows to keep resolving by
                 // id) — the admin LISTING is the caller responsible for filtering live-only by
                 // default, same as every other "does this key exist" surface on this handler set.
-                // `?include=tombstoned` opts back in (E-007).
+                // `?include=tombstoned` opts back in.
                 .filter(|(k, _)| include_tombstoned || k.deleted_at.is_none())
                 .filter(|(k, _)| enabled.is_none_or(|e| k.enabled == e))
                 .filter(|(k, _)| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
@@ -1593,7 +1593,7 @@ pub(crate) async fn rotate_key(
     }
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        // E-007: `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
+        // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
         // than after the `.await` below — a rotated key can still be `disabled` or `revoked` (rotate
         // does not touch `enabled` or the denylist, only tombstoned keys refuse to rotate at all, see
         // `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed, not just `enabled`.
@@ -1777,7 +1777,7 @@ pub(crate) async fn get_key(
     let id2 = id.clone();
     // The synchronous store read runs on the blocking pool (the SQLite backend is sync). O(1) row
     // lookup via `Store::get_key`, not a full-table `all_keys()` scan filtered by id.
-    // E-007: `state` is derived HERE too, alongside the read — `gov.is_revoked` needs `gov`, which is
+    // `state` is derived HERE too, alongside the read — `gov.is_revoked` needs `gov`, which is
     // moved into this closure and unavailable after the `.await` below.
     let res = tokio::task::spawn_blocking(move || {
         gov.store()

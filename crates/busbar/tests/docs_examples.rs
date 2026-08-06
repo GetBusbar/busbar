@@ -152,8 +152,8 @@ fn extract_marked_configs() -> Vec<MarkedConfig> {
 
 /// Every `<!-- doc-check: config -->`-marked example is a COMPLETE config.yaml: validate it
 /// against the real, shipped `providers.yaml` catalog through the actual `busbar --validate`
-/// pipeline. This is what would have caught 1b's `"ca"` vs `"client_ca"` class of bug had that
-/// example been a full config rather than a `PUT /config/settings` body fragment — any doc author
+/// pipeline. This catches the `"ca"` vs `"client_ca"` class of bug, which slips past an example
+/// that is only a `PUT /config/settings` body fragment rather than a full config — any doc author
 /// who introduces a misspelled top-level key or field in a marked example now gets a local test
 /// failure instead of a 400 an operator hits under time pressure.
 #[test]

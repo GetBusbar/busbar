@@ -587,7 +587,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
 /// `lane_usable_any_cell` must NOT short-circuit on the
 /// lane-default (`""`) cell when the lane has per-pool cells. The default cell IS the `LaneState`,
 /// starts `ST_CLOSED`/`cooldown=0`, and is written ONLY by direct/ad-hoc routes — pool-routed
-/// traffic NEVER touches it, so in production it stays "ready" forever. The R19 fix iterated all
+/// traffic NEVER touches it, so in production it stays "ready" forever. An earlier fix iterated all
 /// cells but still checked the default cell FIRST and returned early on it, so `/healthz` and
 /// `/stats usable` STILL over-reported ready when every per-pool cell was Open. Here every per-pool
 /// cell is tripped Open while the default cell is left UNTOUCHED (its real production state). The
@@ -3562,8 +3562,8 @@ fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// Lane-availability taxonomy (design §1/§2, R3/R5/R9): `breaker_verdict` (the single decoder),
-// `classify` (read-only), and `try_admit` (mutating composition). See DESIGN-lane-availability.md.
+// Lane-availability taxonomy: `breaker_verdict` (the single decoder),
+// `classify` (read-only), and `try_admit` (mutating composition).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// A bounded (`limited`) lane with a finite lifetime budget, for the `BudgetExhausted` cases.
@@ -3575,7 +3575,7 @@ fn make_limited_lane(id: usize, max_permits: usize, budget: i64) -> LaneData {
     }
 }
 
-/// R3: `breaker_verdict` is the SINGLE decoder. Assert it maps each cell FSM state to the right
+/// `breaker_verdict` is the SINGLE decoder. Assert it maps each cell FSM state to the right
 /// `BreakerVerdict` — Closed-elapsed → Ready, unexpired Open → Open, expired Open → ProbeWinnable,
 /// HalfOpen (a won probe) → HalfOpen.
 #[test]
@@ -3638,7 +3638,7 @@ fn test_cell_ready_breaker_matches_verdict() {
     assert!(store.ready_in("p", 0, now));
 }
 
-/// R3: `classify` is read-only and reads dead/budget SEPARATELY, so it distinguishes `Dead` from
+/// `classify` is read-only and reads dead/budget SEPARATELY, so it distinguishes `Dead` from
 /// `BudgetExhausted`, and maps the breaker via the same decoder. Assert every variant.
 #[test]
 fn test_classify_emits_each_reason() {
@@ -3760,7 +3760,7 @@ fn test_classify_lane_emits_each_reason() {
     ));
 }
 
-/// R9 (the core reason the axes are kept separate): a lane that is BOTH breaker-Open AND at
+/// The core reason the axes are kept separate: a lane that is BOTH breaker-Open AND at
 /// capacity must surface each fact independently. `classify_lane` is breaker-first (BreakerOpen), but
 /// `lane_breaker_state` reads Open AND the snapshot's `at_capacity` reads true — so the operator can
 /// see the Open lane is also saturated (its recovery probe needs a dispatch it can never win).
@@ -3854,7 +3854,7 @@ fn test_try_admit_error_variants() {
     ));
 }
 
-/// THE probe-leak proof (design §10 Q1, R9): a lane that is BOTH expired-Open (so `try_admit` wins
+/// THE probe-leak proof: a lane that is BOTH expired-Open (so `try_admit` wins
 /// its single-flight probe) AND at capacity (so no permit can be acquired) must:
 ///   1. return `Err(AtCapacity)`, and
 ///   2. NOT leave the cell wedged HalfOpen — the won-but-undispatched probe is released EXACTLY
@@ -3901,7 +3901,7 @@ fn test_try_admit_at_capacity_does_not_leak_probe() {
     );
 }
 
-/// R9 fix: a `ProbeWinnable` (expired-Open) cell that is ALSO at capacity returns `AtCapacity` WITHOUT
+/// A `ProbeWinnable` (expired-Open) cell that is ALSO at capacity returns `AtCapacity` WITHOUT
 /// EVER TOUCHING the single-flight recovery probe — the permit is peeked BEFORE the breaker CAS, so a
 /// tripped+saturated lane no longer burns-and-reverts its probe on every attempt. The distinguishing
 /// witness (vs. the sibling "does not leak" test, which only proves the end state) is the probe EPOCH:
@@ -3954,7 +3954,7 @@ fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
     store.record_success_in("p", 0);
     assert!(
         matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
-        "a success on the recovery probe closes the breaker — the R9 wedge is gone"
+        "a success on the recovery probe closes the breaker — the wedge is gone"
     );
     drop(admit);
 }
@@ -4008,7 +4008,7 @@ fn test_try_admit_closed_at_capacity_leaves_breaker_closed() {
     );
 }
 
-/// `recovery_hint_ms` is the single recovery-timing definition. R5: the at-capacity floor must be
+/// `recovery_hint_ms` is the single recovery-timing definition. The at-capacity floor must be
 /// ≥ the neutral store-side 2s `AT_CAPACITY_RECOVERY_FLOOR_MS` (2000ms) — never regressed to 1000ms
 /// — which the proxy `Retry-After` path now derives from. Also covers the `Shedding` variant (its
 /// only constructor is here in this phase).
@@ -4023,7 +4023,7 @@ fn test_recovery_hint_ms() {
         Unavailable::BreakerOpen { until: now + 5 }.recovery_hint_ms(now),
         Some(5000)
     );
-    // At-capacity with no drain estimate floors at ≥ 2000ms (R5), never 1000ms.
+    // At-capacity with no drain estimate floors at ≥ 2000ms, never 1000ms.
     let floor = Unavailable::AtCapacity {
         drain_hint_ms: None,
     }
@@ -4031,7 +4031,7 @@ fn test_recovery_hint_ms() {
     .expect("at-capacity has an honest floor");
     assert!(
         floor >= 2000,
-        "R5: at-capacity floor must be >= the shipped 2s, got {floor}ms"
+        "at-capacity floor must be >= the shipped 2s, got {floor}ms"
     );
     // A concrete drain estimate is used verbatim.
     assert_eq!(

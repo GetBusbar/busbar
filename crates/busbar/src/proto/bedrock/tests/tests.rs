@@ -1480,7 +1480,7 @@ fn test_read_request_collects_unmodeled_fields_into_extra() {
 
     // `toolConfig` IS now captured verbatim into `extra` (it is only partially modeled — only
     // `tools` is typed into `ir.tools`; `toolChoice` and future sub-fields are unmodeled — so the
-    // raw object preserves them for passthrough; R15 toolChoice fix).
+    // raw object preserves them for passthrough; toolChoice fix).
     assert_eq!(
         ir.extra.get("toolConfig"),
         Some(&serde_json::json!({"tools": []})),
@@ -4262,8 +4262,8 @@ fn test_stream_huge_content_block_index_is_clamped() {
 }
 
 /// The `#[cfg(test)]` `classify`
-/// helper must recognize EVERY context-length phrasing the production `extract_error` does. R21
-/// #17 added a third pattern (`exceeds the maximum` + token/context) to `extract_error` but not
+/// helper must recognize EVERY context-length phrasing the production `extract_error` does. A
+/// third pattern (`exceeds the maximum` + token/context) was added to `extract_error` but not
 /// to `classify`, so the two drifted. The classifier must now map that third phrasing to
 /// `StatusClass::ContextLength`, identically to `extract_error`.
 #[test]
@@ -4552,7 +4552,7 @@ fn test_response_reasoning_content_round_trips() {
 /// STREAMING extended-thinking (`reasoningContent` deltas on the
 /// ConverseStream wire) was SILENTLY DROPPED — `read_response_events` had no reasoning arm and
 /// `write_response_event` returned `None` for ThinkingDelta/SignatureDelta — even though the
-/// BUFFERED path (R25) preserved it. The streaming path must now mirror the buffered logic: the
+/// BUFFERED path preserved it. The streaming path must now mirror the buffered logic: the
 /// reader lazily opens a Thinking block on the first `reasoningContent` delta and emits
 /// ThinkingDelta/SignatureDelta; the writer re-emits them as `reasoningContent` frames. This test
 /// drives a full plaintext-reasoning ConverseStream through read->IR->write and asserts each IR

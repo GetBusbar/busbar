@@ -2347,7 +2347,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     server.shutdown().await;
 }
 
-/// Regression for R23 LOW #23: `MockServerState` is LIFO (`next_response` pops the stack),
+/// Regression: `MockServerState` is LIFO (`next_response` pops the stack),
 /// so when multiple responses are queued up-front the LAST pushed is consumed FIRST. The old
 /// `test_section6_...` carried an inverted comment claiming the first push is "consumed first",
 /// which leaked one response and let scenario A accidentally consume scenario B's slot. This
@@ -3276,7 +3276,7 @@ mod disposition_matrix_tests {
         // auth-rejection body (busbar's own credential context). It returns a normalized
         // envelope shaped to the INGRESS protocol's native error shape (here Anthropic, the
         // `forward` default) via `ingress_error` — not a hard-coded OpenAI-flavored shape, which
-        // a native Anthropic/Bedrock/Gemini SDK could not decode (R2 conformance fix).
+        // a native Anthropic/Bedrock/Gemini SDK could not decode (conformance fix).
         assert_eq!(response.status().as_u16(), 401);
         use http_body_util::BodyExt as _;
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -3292,7 +3292,7 @@ mod disposition_matrix_tests {
         // The wire message is the VENDOR-PLAUSIBLE auth-failure copy for the ingress protocol
         // (here Anthropic → "invalid x-api-key"), NOT busbar-internal vocabulary. The previous
         // "upstream rejected the lane credential" leaked the internal "lane" concept — a word no
-        // real vendor uses — which was a deterministic proxy tell (R7 indistinguishability fix).
+        // real vendor uses — which was a deterministic proxy tell (indistinguishability fix).
         let msg = v["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             msg,
@@ -4449,7 +4449,7 @@ async fn test_sticky_session_while_healthy() {
 
 /// Test 2: Sticky member tripped → yields to healthy member.
 ///
-/// REGRESSION GUARD (R20 MED #19): this test must actually exercise the
+/// REGRESSION GUARD: this test must actually exercise the
 /// "sticky member's breaker is Open" branch of `pick_among`'s affinity fast
 /// path — i.e. the `usable_in(pool, sticky, t)` guard returning false and the
 /// pick falling through to SWRR over the healthy remainder. That requires TWO

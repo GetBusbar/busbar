@@ -137,10 +137,10 @@ pub(crate) async fn list_plugins(
 }
 
 /// The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
-/// bytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a
+/// bytes ride as base64 (`tarball_b64`): a plugin artifact is opaque binary, so base64 keeps it a
 /// clean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the
 /// running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
-/// filename to store it under (storage only — identity comes from the signed manifest inside).
+/// filename to store it under (storage only; identity comes from the signed manifest inside).
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InstallPluginReq {
@@ -217,7 +217,7 @@ pub(crate) async fn install_plugin(
     }
 }
 
-/// `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] — `file`
+/// `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`]; `file`
 /// is accepted for shape parity with the install flow a UI composes around the same upload, but is
 /// otherwise UNUSED here: inspect never writes anything to disk, so there is no filename to bind
 /// an install would need.
@@ -619,7 +619,7 @@ pub(crate) async fn get_config(State(handle): State<Arc<AppHandle>>) -> Response
 }
 
 /// The `POST /api/v1/admin/hooks` request body: the hook name + its definition. Optimistic concurrency
-/// rides the `If-Match` header (H3) — never a body field.
+/// rides the `If-Match` header — never a body field.
 #[derive(serde::Deserialize)]
 pub(crate) struct RegisterHookReq {
     name: String,
@@ -915,7 +915,7 @@ pub(crate) async fn delete_hook(
                  cannot silently shadow operator file config)"
             )));
         }
-        // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane
+        // Optimistic concurrency: DELETE honors `If-Match` like every other config-plane
         // mutation (it previously had NO guard — the one mutation verb missing it).
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1934,7 +1934,7 @@ pub(crate) struct FlushCacheReq {
     module: Option<String>,
 }
 
-/// The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).
+/// The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match`.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct RollbackReq {
@@ -2440,7 +2440,7 @@ pub(crate) async fn restart(
 }
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
-/// Optimistic concurrency rides `If-Match` (H3).
+/// Optimistic concurrency rides `If-Match`.
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape).
@@ -3102,7 +3102,7 @@ pub(crate) async fn put_config_settings(
     }
 }
 
-/// The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).
+/// The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match`.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
@@ -3512,7 +3512,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
         PATH_GROUPS,
-        "Group registry — the limit tree (parent chain, limits, child_default budget template)",
+        "Group registry: the limit tree (parent chain, limits, child_default budget template)",
     ),
     (
         "/plugins",
@@ -3528,7 +3528,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     ),
     (
         "/usage",
-        "Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros",
+        "Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros",
     ),
     (
         "/config",
@@ -3536,7 +3536,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     ),
     (
         "/audit",
-        "Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}",
+        "Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}",
     ),
     (
         "/config/versions",
@@ -3589,11 +3589,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         obj.insert(
             "post".to_string(),
             json!({
-                "summary": "Register (or replace) a hook at runtime — live immediately",
+                "summary": "Register (or replace) a hook at runtime, live immediately",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "201": {"description": "Registered — the name is NEW (body is the hook definition)"},
-                    "200": {"description": "Replaced — the name existed (same-grant re-register; body is the hook definition)"},
+                    "201": {"description": "Registered: the name is NEW (body is the hook definition)"},
+                    "200": {"description": "Replaced: the name existed (same-grant re-register; body is the hook definition)"},
                 }
             }),
         );
@@ -3606,11 +3606,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         obj.insert(
             "post".to_string(),
             json!({
-                "summary": "Create (or replace) a group at runtime — live immediately (upsert)",
+                "summary": "Create (or replace) a group at runtime, live immediately (upsert)",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "201": {"description": "Created — the name is NEW (body is the group definition)"},
-                    "200": {"description": "Replaced — the name existed (body is the group definition)"},
+                    "201": {"description": "Created: the name is NEW (body is the group definition)"},
+                    "200": {"description": "Replaced: the name existed (body is the group definition)"},
                 }
             }),
         );
@@ -3626,7 +3626,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "201": {"description": "Installed — `{file, name, interface_version, trust, version?, publisher?, note}`"},
+                    "201": {"description": "Installed: `{file, name, interface_version, trust, version?, publisher?, note}`"},
                 }
             }),
         );
@@ -3639,7 +3639,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{plugins, note}` — the current dynamic-library inventory"}
+                    "200": {"description": "`{plugins, note}`: the current dynamic-library inventory"}
                 }
             }
         }),
@@ -3648,10 +3648,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/rollback"),
         json!({
             "post": {
-                "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
+                "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{plugin, version, config_version, plugins}` — rolled back and hot-swapped"},
+                    "200": {"description": "`{plugin, version, config_version, plugins}`: rolled back and hot-swapped"},
                 }
             }
         }),
@@ -3676,14 +3676,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
+                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
                 "responses": {
-                    "200": {"description": "`{name, schema, schema_error, trust, source}` — `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"},
+                    "200": {"description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"},
                 }
             }
         }),
@@ -3704,7 +3704,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "put": {
-                "summary": "Replace an overlay hook definition — live immediately (grants immutable)",
+                "summary": "Replace an overlay hook definition, live immediately (grants immutable)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3715,7 +3715,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "delete": {
-                "summary": "Remove a hook at runtime — live immediately",
+                "summary": "Remove a hook at runtime, live immediately",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3742,7 +3742,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "put": {
-                "summary": "Replace an overlay group definition — live immediately (limits rebuilt)",
+                "summary": "Replace an overlay group definition, live immediately (limits rebuilt)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3753,7 +3753,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "patch": {
-                "summary": "Partial update — change only the fields present (e.g. raise a budget, freeze a group)",
+                "summary": "Partial update: change only the fields present (e.g. raise a budget, freeze a group)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3764,7 +3764,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "delete": {
-                "summary": "Remove an overlay group at runtime — live immediately",
+                "summary": "Remove an overlay group at runtime, live immediately",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3796,7 +3796,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/groups/{name}/usage"),
         json!({
             "get": {
-                "summary": "The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)",
+                "summary": "The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
@@ -3935,7 +3935,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "202": {"description": "`{restarting, supervisor_detected, note}` — draining; in-flight requests finish first"},
+                    "202": {"description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first"},
                 }
             }
         }),
@@ -3944,7 +3944,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/config/settings"),
         json!({
             "get": {
-                "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest",
+                "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest",
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
@@ -3961,7 +3961,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
     if let Some(auth_path) = paths.get_mut(&ap(PATH_ADMIN_AUTH)) {
         auth_path["put"] = json!({
-            "summary": "Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
+            "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
             "security": [{"adminToken": []}],
             "responses": {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
@@ -3972,10 +3972,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/auth/cache/flush"),
         json!({
             "post": {
-                "summary": "Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
+                "summary": "Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{flushed}` — entries dropped"},
+                    "200": {"description": "`{flushed}`: entries dropped"},
                 }
             }
         }),
@@ -3996,11 +3996,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
                 "responses": {
-                    "200": {"description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"},
+                    "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
                 }
             }
         }),
@@ -4021,10 +4021,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap(PATH_PLUGINS_INSPECT),
         json!({
             "post": {
-                "summary": "Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
+                "summary": "Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}` — the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"},
+                    "200": {"description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}`: the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"},
                 }
             }
         }),
@@ -4037,10 +4037,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/keys"),
         json!({
             "get": {
-                "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
+                "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{items, next_cursor}` — the cursor page envelope (next_cursor null at end)"},
+                    "200": {"description": "`{items, next_cursor}`: the cursor page envelope (next_cursor null at end)"},
                 }
             },
             "post": {
@@ -4072,11 +4072,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "delete": {
-                "summary": "Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)",
+                "summary": "Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
-                    "204": {"description": "Revoked — No Content"},
+                    "204": {"description": "Revoked: No Content"},
                 }
             }
         }),
@@ -4111,11 +4111,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/keys/{id}/revoke"),
         json!({
             "post": {
-                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
+                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
-                    "200": {"description": "`{revoked}` — the id, now denylisted"},
+                    "200": {"description": "`{revoked}`: the id, now denylisted"},
                 }
             }
         }),
@@ -4124,10 +4124,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/signing-key/rotate"),
         json!({
             "post": {
-                "summary": "ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
+                "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
                 "security": [{"adminToken": []}],
                 "responses": {
-                    "200": {"description": "`{current_kid, revoke_all, message}` — the rotation intent + revoke-all warning"},
+                    "200": {"description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning"},
                 }
             }
         }),
@@ -4242,7 +4242,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 ),
                 (
                     "include",
-                    "E-007: set to `tombstoned` to include hard-deleted keys, which are otherwise \
+                    "Set to `tombstoned` to include hard-deleted keys, which are otherwise \
                      omitted (each row's `state` reads `\"tombstoned\"`)",
                     false,
                 ),
@@ -4292,7 +4292,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "/usage",
             &[(
                 "window",
-                "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate — bill from the raw token split, never store spend_micros as a ledger charge",
+                "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
                 false,
             )],
         ),
@@ -4715,9 +4715,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
              config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in \
              memory only\" outcome. The optional top-level boolean `persist` is accepted for \
              back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its \
-             value has NO effect — persistence is unconditional on a mutable config and refusal is \
+             value has NO effect: persistence is unconditional on a mutable config and refusal is \
              unconditional on a locked one. Every other top-level key must be a known settings \
-             section — an unknown key is a 400."
+             section; an unknown key is a 400."
         )
     );
     body_raw!(
@@ -4838,7 +4838,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
-    // E-004 (busbar-ui/docs/ENGINE-BUGS.md, item 1): stamp a deterministic `operationId` on every
+    // Stamp a deterministic `operationId` on every
     // operation. Third-party OpenAPI generators (Go/TS) synthesize method names from the path when
     // `operationId` is absent, so those names churn whenever a path is touched; a stable id fixes
     // the downstream SDK's method name across engine releases. Same METHOD+path -> PascalCase
@@ -4880,8 +4880,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 }
 
 /// `METHOD + path -> PascalCase operationId`, e.g. `post` + `/api/v1/admin/keys/{id}/rotate` ->
-/// `PostKeysIdRotate`. Mirrors busbar-ui's `scripts/openapi-prep.py::op_id` byte-for-byte (E-004
-/// item 1) so a spec generated here and one synthesized client-side agree.
+/// `PostKeysIdRotate`. Mirrors busbar-ui's `scripts/openapi-prep.py::op_id` byte-for-byte (see
+/// so a spec generated here and one synthesized client-side agree.
 #[cfg(feature = "openapi-schema")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn openapi_operation_id(method: &str, path: &str) -> String {

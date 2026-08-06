@@ -164,7 +164,7 @@ fn openapi_paths_annotate_required_scope() {
     assert!(checked > 0, "no operations were checked");
 }
 
-/// E-004 item 1 (busbar-ui/docs/ENGINE-BUGS.md): every operation carries a stable `operationId`,
+/// Every operation carries a stable `operationId`,
 /// PascalCase METHOD+path (`GetKeysId`, `PostKeysIdRotate`, …), so third-party generators (Go/TS)
 /// get a method name that does not churn when a path is touched. Locks presence, uniqueness, and
 /// the exact naming scheme busbar-ui's own `scripts/openapi-prep.py::op_id` synthesizes — so a spec
@@ -214,7 +214,7 @@ fn openapi_operations_carry_stable_operation_ids() {
     );
 }
 
-/// E-004 (busbar-ui/docs/ENGINE-BUGS.md): the document must never contain a boolean `items`
+/// The document must never contain a boolean `items`
 /// sub-schema (`"items": true`/`"items": false`) — `kin-openapi` (the parser under `oapi-codegen`,
 /// which every published SDK generates through) cannot represent a JSON-Schema-2020-12 boolean
 /// sub-schema at all and aborts the parse. `HookStatusView.metrics` was the one offender

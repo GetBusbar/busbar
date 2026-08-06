@@ -6383,7 +6383,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     handle.abort();
 }
 
-/// E-003 (busbar-ui/docs/ENGINE-BUGS.md): `GET /plugins` list rows carry `file` (the artifact
+/// `GET /plugins` list rows carry `file` (the artifact
 /// filename — the exact string `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` key off)
 /// and `has_schema` (mirrors `schema_url.is_some()`, so a catalog can flag configurable rows
 /// without a fetch per row). Covers a dynamic-library row WITH a schema, a dynamic-library row
@@ -8145,7 +8145,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     handle.abort();
 }
 
-/// E-007: `PATCH {enabled:false}` (reversible pause), `POST /keys/{id}/revoke` (permanent denylist),
+/// `PATCH {enabled:false}` (reversible pause), `POST /keys/{id}/revoke` (permanent denylist),
 /// and `DELETE /keys/{id}` (permanent denylist + tombstone) used to all collapse to the SAME
 /// `GET /keys/{id}` response, `{..., "enabled": false}` — byte-identical, with no field anywhere
 /// distinguishing them. This proves the fix: three keys, one put through each verb, each subsequent
@@ -8224,7 +8224,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
 
     // The three cases used to be byte-identical on GET (`{..., "enabled": false}` all round). Now
     // each `state` is distinct, and the OLD collapsed field (`enabled`) is still false on all three
-    // — this is exactly the wire shape E-007 filed against.
+    // — this is exactly the wire shape this state field was added for.
     let get_state = |id: String| {
         let client = client.clone();
         let url = url.clone();
@@ -8263,7 +8263,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     handle.abort();
 }
 
-/// E-007 secondary point: a tombstoned key is silently omitted from a plain `GET /keys` — "it is
+/// Secondary point: a tombstoned key is silently omitted from a plain `GET /keys` — "it is
 /// gone" and "it never existed" looked the same. `?include=tombstoned` opts back in, additively;
 /// the default (omitted) list is unaffected.
 #[tokio::test]

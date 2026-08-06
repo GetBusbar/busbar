@@ -4812,7 +4812,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
 /// A non-streaming
 /// Responses body with `status:"failed"` and `output:null` is an upstream provider failure, NOT
 /// a parse error. The reader must surface it as an IrError carrying the upstream `error.code`,
-/// never misclassify it as an internal `ir_parse` ClientError. As of R26 the IrError `class` is
+/// never misclassify it as an internal `ir_parse` ClientError. The IrError `class` is
 /// derived from the captured signal via `class_for_response_failed` (mirroring the streaming
 /// `response.failed` arms and the HTTP classifier) rather than hardcoded ServerError: a
 /// `rate_limit_exceeded` failed body must classify as RateLimit, not a generic ServerError.

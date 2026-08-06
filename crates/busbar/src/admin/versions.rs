@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// One recorded config version: the metadata the versions LIST shows, plus the full hook-surface
-/// snapshot rollback restores. Never contains a secret (hook definitions are operator config —
+/// snapshot rollback restores. Never contains a secret (hook definitions are operator config:
 /// transports, grants, deadlines).
 #[derive(Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]

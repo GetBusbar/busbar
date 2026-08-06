@@ -670,7 +670,7 @@ fn test_bedrock_to_bedrock_stream_roundtrips_stop_and_metadata() {
     );
 }
 
-/// Change A (was R7): on a BEDROCK-ingress cross-protocol stream the translator's OUTPUT is binary
+/// On a BEDROCK-ingress cross-protocol stream the translator's OUTPUT is binary
 /// eventstream framing, so the deleted JSON byte-scanner would have mis-parsed the
 /// length-prefixes/CRC32s and zeroed token accounting. Billing now reads `translate.usage()` — the
 /// IR A-tap accumulated from the structured IR events BEFORE the binary writer runs — so the usage

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for plugin HTTP endpoint registration (design §5): collision detection, namespace
+//! Tests for plugin HTTP endpoint registration: collision detection, namespace
 //! confinement, end-to-end dispatch to `handle_http`, scrape-time (live-snapshot) resolution, and the
 //! auth:admin route's confinement to the admin listener.
 
@@ -57,7 +57,7 @@ fn decl(
     }
 }
 
-// ── Collision detection (§5.3, §5.5): deterministic first-to-claim, LOUD failure ────────────────────
+// ── Collision detection: deterministic first-to-claim, LOUD failure ──────────────────────────────
 
 /// Two plugins claiming the SAME {path, method} is a LOUD collision naming the OWNING (first) plugin,
 /// never last-writer-wins — with the exact message shape the design specifies. Deterministic scan
@@ -93,7 +93,7 @@ fn collision_is_a_loud_failure_naming_the_owner() {
         "plugin \"datadog\" cannot register GET /metrics — already registered by \"prometheus\""
     );
 
-    // The manifest-only preflight (§5.5) uses the IDENTICAL logic + message, so `--validate` and boot
+    // The manifest-only preflight uses the IDENTICAL logic + message, so `--validate` and boot
     // catch the same collision the live table would.
     let preflight = preflight_route_collisions(&[
         (
@@ -146,7 +146,7 @@ fn same_path_different_method_is_not_a_collision() {
     assert!(build_route_table(decls).is_ok());
 }
 
-// ── Namespace confinement (§5.2) ─────────────────────────────────────────────────────────────────
+// ── Namespace confinement ────────────────────────────────────────────────────────────────────────
 
 /// A hook's routes are confined under `/hooks/<name>/*`; anything outside — a bid to shadow the admin
 /// surface, the well-known `/metrics`, or a bare top-level path — is REJECTED by the registrar (the
@@ -247,7 +247,7 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
     .contains("/exports/datadog/*"));
 }
 
-// ── End-to-end dispatch + scrape-time (live-snapshot) resolution (§5.4, §7.1) ────────────────────────
+// ── End-to-end dispatch + scrape-time (live-snapshot) resolution ─────────────────────────────────
 
 fn app_with_table(table: Arc<PluginRouteTable>) -> Arc<crate::state::App> {
     use crate::test_support::{LaneSpec, TestApp};
@@ -281,7 +281,7 @@ async fn get(router: Router, path: &str) -> (u16, String) {
 
 /// END-TO-END: a registered `none`-auth data-plane route dispatches to the plugin's `handle_http` and
 /// relays its response verbatim; and after a hot-swap of the App snapshot to a DIFFERENT owner of the
-/// SAME path, the SAME server resolves the NEW plugin (scrape-time resolution, §7.1 — no stale handle
+/// SAME path, the SAME server resolves the NEW plugin (scrape-time resolution, no stale handle
 /// baked into the route closure).
 #[tokio::test]
 async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
@@ -342,7 +342,7 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
     );
 }
 
-// ── auth:admin confinement to the admin listener (§5.4) ──────────────────────────────────────────
+// ── auth:admin confinement to the admin listener ─────────────────────────────────────────────────
 
 /// Plane classification (feature-independent): an `auth: admin` plugin route is mounted ONLY on the
 /// admin plane, never the data plane — the mount-level half of "confined to the admin listener".
