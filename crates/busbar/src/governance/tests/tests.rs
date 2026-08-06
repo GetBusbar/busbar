@@ -4215,3 +4215,69 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
         "the admin's deletion must still stand: {tombstone:?}"
     );
 }
+
+/// One subject must never end up with TWO enabled self-serve bindings.
+///
+/// `issue_self`'s changed-pools branch used to re-DERIVE the binding id by parsing an epoch back out
+/// of `generation_hash`, reasoning that the same epoch gives the same deterministic id and therefore
+/// still one row. That holds only while the generation IS an epoch counter -- and `rotate_key` writes
+/// a random hex generation instead. The parse then fell to `unwrap_or(0)`, epoch 0 derived a
+/// different id from the live binding's, and a SECOND enabled row was written: two valid self-serve
+/// tokens for one subject, each with its own group and budget accounting, breaking the at-most-one
+/// invariant `current_self_binding` relies on.
+///
+/// The sequence below is ordinary operator behaviour, not a contrived race: rotate a user's key, then
+/// have them log in after their group's pools changed.
+#[test]
+fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:zed";
+    let now = 1_700_000_000u64;
+
+    gov.issue_self(sub, None, now + 3600, now).unwrap();
+    for _ in 0..3 {
+        gov.refresh_self(sub, None, now + 3600, now).unwrap();
+    }
+    let live = self_binding_for(&gov, sub).expect("one live binding");
+
+    // The admin rotates it. This replaces the epoch-shaped generation with a random one -- which is
+    // the state the old id-derivation could not survive.
+    gov.rotate_key(&live.id, now + 3600).unwrap().unwrap();
+
+    // The user logs in and their pools have changed since the binding was made.
+    let (issued, token) = gov
+        .issue_self(sub, Some(vec!["poolA".to_string()]), now + 3600, now)
+        .unwrap();
+
+    // The SAME row is updated, not a second one written.
+    assert_eq!(
+        issued.id, live.id,
+        "a pools change must update the existing binding, never mint a parallel one"
+    );
+    assert!(
+        gov.verify_token(&token, now).is_some(),
+        "the token issued over the updated binding must verify"
+    );
+
+    let group = format!("{SELF_KEY_GROUP_PREFIX}{sub}");
+    let enabled: Vec<VirtualKey> = gov
+        .all_keys()
+        .unwrap()
+        .into_iter()
+        .filter(|k| {
+            k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
+        })
+        .collect();
+    assert_eq!(
+        enabled.len(),
+        1,
+        "at most one enabled binding per subject: {enabled:?}"
+    );
+    // And the pools change actually took effect, so this is not passing by doing nothing.
+    assert_eq!(
+        enabled[0].allowed_scopes,
+        Some(vec![busbar_api::ScopeRef::pool("poolA".to_string())]),
+        "the changed pools must be persisted on the surviving binding"
+    );
+}

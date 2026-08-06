@@ -525,13 +525,30 @@ impl GovState {
                         .collect::<Vec<_>>()
                 });
                 if new_scopes != existing.allowed_scopes {
-                    // allowed_pools CHANGED since the binding was created (admin narrowed/widened the
-                    // group) — re-persist the binding at the SAME epoch (same deterministic id, so
-                    // still ONE row) with the fresh pools, so the permission change takes effect.
-                    let epoch = binding_generation(&existing.generation_hash)
-                        .and_then(|g| g.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    self.write_self_binding(&material, user_sub, allowed_pools, epoch, exp, now)
+                    // allowed_pools CHANGED since the binding was created (an admin narrowed or
+                    // widened the group) — update THE EXISTING ROW in place with the fresh pools,
+                    // keeping its id and generation, and re-issue a token over them.
+                    //
+                    // It used to re-DERIVE the id by parsing an epoch back out of
+                    // `generation_hash`, on the reasoning that the same epoch yields the same
+                    // deterministic id and therefore still one row. That reasoning fails the moment
+                    // the generation is not a u64 — and `rotate_key` writes exactly that, a random
+                    // hex generation rather than an epoch counter. The parse then fell to
+                    // `unwrap_or(0)`, epoch 0 derived a DIFFERENT id from the live binding's, and
+                    // this wrote a SECOND enabled row: two valid self-serve tokens for one subject,
+                    // each with its own group and budget accounting, breaking the at-most-one
+                    // invariant `current_self_binding` depends on.
+                    //
+                    // Updating in place cannot reintroduce that, because it never derives an id at
+                    // all: whatever the generation looks like, there is exactly one row and it stays
+                    // the row that already existed.
+                    let mut updated = (*existing).clone();
+                    updated.allowed_scopes = new_scopes;
+                    self.store.put_key(&updated)?;
+                    self.refresh()?;
+                    let generation = binding_generation(&updated.generation_hash);
+                    let token = material.signer.mint(&updated.id, exp, generation);
+                    Ok((updated, token))
                 } else {
                     // Idempotent re-show: reuse the one binding, re-issue a fresh-exp token over the
                     // SAME id + generation. No new row, so the anti-sprawl cap can never trip.
