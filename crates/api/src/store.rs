@@ -602,6 +602,28 @@ impl From<&str> for StoreError {
 /// DEFAULTED so a backend with no credential support (or a lightweight test double) need not
 /// implement them — see each method's own doc for its specific default behavior and why it's safe.
 pub trait Store: Send + Sync + 'static {
+    /// UPSERT `key` by `key.id` — the mint path and every in-place update (rename, enable/disable,
+    /// regroup, rotate) go through here.
+    ///
+    /// ONE precondition, and it is not negotiable: **a `put_key` whose `key.deleted_at` is `None`
+    /// MUST NOT overwrite a stored row whose `deleted_at` is `Some(_)`.** Return an error instead.
+    /// [`VirtualKey::deleted_at`] says the id is never reissued and [`Store::delete_key`] says the
+    /// tombstone is permanent, so silently clearing one resurrects a key an operator revoked — the
+    /// exact outcome [`Store::delete_key`] exists to prevent, reached through the other door.
+    ///
+    /// Writing a key that CARRIES a tombstone (`key.deleted_at.is_some()`) is unaffected: hydration
+    /// and test fixtures legitimately write tombstoned rows, and neither clears anything.
+    ///
+    /// This has to be enforced in the store, not by the caller. Core's callers do check
+    /// `deleted_at` before writing, but that check is a read-then-write: a `delete_key` committing
+    /// between the `get_key` and the `put_key` slips straight through it. Only the backend can make
+    /// the test and the write atomic, so only the backend can actually close it.
+    ///
+    /// `put_key` is otherwise an ABSOLUTE SET, not a compare-and-set: it takes no expected
+    /// `revision`, so two concurrent writers are last-writer-wins on the whole row. That is a known
+    /// and accepted limitation of this signature (adding a precondition parameter is a breaking
+    /// trait change); it is recorded here so no caller mistakes the tombstone guard above for
+    /// general optimistic concurrency, which it is not.
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()>;
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>>;
     /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
@@ -623,6 +645,13 @@ pub trait Store: Send + Sync + 'static {
     /// make `usage_metering`-shaped durable ledgers (in a real backend) either orphan their
     /// `key_id` or require a CASCADE that destroys billing evidence — tombstoning avoids both by
     /// construction. Idempotent: deleting an already-tombstoned key is a no-op, not an error.
+    ///
+    /// An id that names NO ROW AT ALL is a loud error, and that is a DIFFERENT case from the
+    /// idempotent one above. "Already tombstoned" means the operator's intent is satisfied and the
+    /// evidence is on disk. "No such id" means it is not, and the likeliest cause is a typo or a
+    /// stale id — where returning `Ok(())` tells an operator a key was revoked when nothing was
+    /// touched. Same reasoning [`Store::revoke_credential`] gives for its own default; the two are
+    /// deliberately settled the same way.
     ///
     /// PII erasure (nulling `name`/`labels`) is a SEPARATE, explicit operation — see
     /// [`Store::scrub_key`] — so "this key is gone" and "this key's personal data is gone" stay
@@ -784,6 +813,12 @@ pub trait Store: Send + Sync + 'static {
     /// [`CredentialMeta::revoked_at`]). Idempotent. DEFAULTED to a loud error, matching
     /// [`Store::add_denylist`]'s reasoning: a silent no-op here would let an operator believe a
     /// leaked SigV4 secret was killed when it was not.
+    ///
+    /// To spell out what "idempotent" does and does not cover, because backends have read it both
+    /// ways: revoking an ALREADY-REVOKED id is `Ok(())`, and an id that names NO ROW is an ERROR.
+    /// A backend must therefore read the row count its UPDATE actually affected, or check for the
+    /// row explicitly — a statement that matched nothing looks identical to one that matched, and
+    /// this is precisely the case where those two must not be confused.
     fn revoke_credential(&self, _id: &str, _reason: &str) -> StoreResult<()> {
         Err(StoreError(
             "this Store does not support credential revocation".to_string(),
@@ -816,6 +851,19 @@ pub trait Store: Send + Sync + 'static {
     /// the hot in-memory hash-chained ring for reads and write-THROUGHs each appended entry here, so a
     /// hard crash loses ~0 entries and the ring's size bound stops pruning HISTORY (the store keeps it
     /// all). Append-only, ordered by `seq`; a store never rewrites or recomputes the digest.
+    ///
+    /// A record arriving on a `seq` that ALREADY HAS ONE is settled by comparing the two:
+    /// - byte-identical to the stored record → `Ok(())`. This is the write-through retrying after a
+    ///   timeout or a reconnect, and it is the common case; failing it would make a healthy engine
+    ///   look broken.
+    /// - DIFFERENT from the stored record → error. Two different records claiming one chain
+    ///   position is a forked or tampered log, and it is the single most important thing an audit
+    ///   store can tell an operator.
+    ///
+    /// Overwriting is never correct: it is how the second case gets destroyed instead of reported,
+    /// and it contradicts "a store never rewrites the digest" directly. Silently keeping the first
+    /// is not correct either — it collapses both cases into one and drops a genuinely different
+    /// record on the floor, which is the same silent-loss shape, just quieter.
     ///
     /// DEFAULTED to `Ok(())` (a no-op) so this is BACKWARD-COMPATIBLE: every existing store plugin —
     /// including already-signed dynamic-library artifacts that predate this method — keeps working

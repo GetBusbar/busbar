@@ -436,6 +436,9 @@ dependencies = [
 [[package]]
 name = "busbar-plugin-testkit"
 version = "1.5.0"
+dependencies = [
+ "busbar-api",
+]
 
 [[package]]
 name = "busbar-secret-example-plugin"
@@ -471,6 +474,7 @@ name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]

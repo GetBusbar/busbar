@@ -102,8 +102,24 @@ impl MemoryStore {
 impl Store for MemoryStore {
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
         let mut key = key.clone();
-        key.revision = self.next_revision();
         let mut keys = self.keys();
+        // The tombstone precondition, tested and applied under ONE guard acquisition so it is
+        // atomic — see the trait doc. A live-shaped write over a tombstoned row would resurrect a
+        // key an operator revoked, and core's caller-side `deleted_at` checks cannot close that:
+        // they are read-then-write, and a `delete_key` committing in the gap goes straight through.
+        // A write that CARRIES a tombstone clears nothing and stays allowed.
+        if key.deleted_at.is_none() {
+            if let Some(existing) = keys.get(&key.id) {
+                if existing.deleted_at.is_some() {
+                    return Err(StoreError(format!(
+                        "put_key: '{}' is tombstoned and its id is never reissued; refusing to \
+                         clear the tombstone",
+                        key.id
+                    )));
+                }
+            }
+        }
+        key.revision = self.next_revision();
         keys.insert(key.id.clone(), key);
 
         // Amortized bounded eviction of stale TOMBSTONES, mirroring `add_usage`/`add_metering`
@@ -155,7 +171,10 @@ impl Store for MemoryStore {
         let mut usage = self.usage();
         let mut creds = self.creds();
         let Some(key) = keys.get_mut(id) else {
-            return Ok(()); // idempotent: deleting an unknown id is a no-op, not an error
+            // NOT the idempotent case. "Already tombstoned" (below) means the operator's intent is
+            // satisfied and the evidence is on disk; "no such id" means nothing was touched, and
+            // `Ok(())` here tells an operator who typo'd an id that a key was revoked when none was.
+            return Err(StoreError(format!("delete_key: unknown id '{id}'")));
         };
         if key.deleted_at.is_some() {
             return Ok(()); // idempotent: already tombstoned
@@ -1040,5 +1059,33 @@ mod tests {
                 .is_some(),
             "a credential revoked within the retention window must survive"
         );
+    }
+}
+
+/// The shared [`busbar_api::Store`] contract conformance suite (`busbar-plugin-testkit`). Core's own
+/// reference backend runs it alongside every plugin backend on purpose: these checks exist because
+/// the fleet had silently disagreed with itself about all four behaviours, and a suite the reference
+/// implementation is exempt from is a suite nobody has to agree with.
+///
+/// `append_audit` is not covered here — `MemoryStore` deliberately takes the trait's defaulted no-op
+/// (memory = ephemeral audit, see the trait doc), so there is no durable behaviour to conform to.
+#[cfg(test)]
+mod conformance {
+    use super::MemoryStore;
+    use busbar_plugin_testkit::store_conformance as conf;
+
+    #[test]
+    fn put_key_does_not_resurrect_a_tombstone() {
+        conf::assert_put_key_does_not_resurrect_a_tombstone(&MemoryStore::new());
+    }
+
+    #[test]
+    fn delete_key_unknown_id_is_an_error() {
+        conf::assert_delete_key_unknown_id_is_an_error(&MemoryStore::new());
+    }
+
+    #[test]
+    fn revoke_credential_unknown_id_is_an_error() {
+        conf::assert_revoke_credential_unknown_id_is_an_error(&MemoryStore::new());
     }
 }
