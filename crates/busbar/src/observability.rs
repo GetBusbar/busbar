@@ -16,7 +16,7 @@ use crate::net_guard::{
     is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6, is_unique_local_v6,
 };
 
-// 1.5.3 LIFT-OUT (design §7.2): the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
+// 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
 // `AdmissionGate` machinery, `configure_webhook`, `fire_request_log`, `build_request_log`) moved OUT
 // of this module into the built-in `request-log-webhook` EXPORTER (`crate::export::webhook`). The
 // SSRF VALIDATOR ([`validate_webhook_url`] / [`host_is_internal`]) + the userinfo masker
@@ -372,10 +372,10 @@ fn host_is_internal(url: &reqwest::Url) -> bool {
 /// successfully — see `init_logging`.
 static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
 
-/// THE TRACING SEAM (task #140) — the one-spot level policy for every per-request span/event.
+/// THE TRACING SEAM — the one-spot level policy for every per-request span/event.
 ///
-/// `every TRACE(x) must be bound by a Level. Can't have a rogue trace not have a level, and level
-/// must be set in 1 spot.` This constant is that one spot: every hot-path `#[tracing::instrument]`
+/// Every per-request span or event MUST be bound to a level, and that level MUST be set in exactly
+/// one place. This constant is that one place: every hot-path `#[tracing::instrument]`
 /// and every per-request `tracing::debug!`/`trace!` call references `HOTPATH_LEVEL` (or the literal
 /// it is set to) rather than picking its own level ad hoc, so raising or lowering the hot-path
 /// verbosity for the WHOLE request path is a one-line change here, and `scripts/tracing-lint.sh`

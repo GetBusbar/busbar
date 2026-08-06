@@ -114,10 +114,11 @@ pub struct ConfigureBody {
 /// - `ConfigureAck { settings_version }` → `{"ConfigureAck":{"settings_version":N}}`.
 /// - `Reply(v)` → `{"Reply": v}`.
 ///
-/// Pinned by `hook_reply_json_encoding_is_pinned` in this module's tests. Do NOT add a
-/// `#[serde(...)]` attribute here to "fix" the asymmetry with `HookRequest` — this is JSON over the
-/// frozen C-ABI transport (`plugin-loader`'s `transport_call::<HookRequest, HookReply>`), so any
-/// tagging change is a wire-breaking change, not a cosmetic one.
+/// Pinned by `hook_reply_json_encoding_is_pinned` in this module's tests. Adding a `#[serde(...)]`
+/// attribute here to "fix" the asymmetry with `HookRequest` would change all three encodings: this
+/// is JSON over the frozen C-ABI transport (`plugin-loader`'s
+/// `transport_call::<HookRequest, HookReply>`), so a tagging change is a wire-breaking change, not
+/// a cosmetic one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HookReply {
     /// A per-request or management reply object, parsed by the engine's `hooks::wire` normalizers.
@@ -208,14 +209,12 @@ mod tests {
         }
     }
 
-    /// class-13/14 F2: `HookReply` has NO `#[serde(...)]` attribute (unlike the `op`-tagged
-    /// `HookRequest`), so it uses serde's default externally-tagged enum representation verbatim —
-    /// and that shape was never written down anywhere. Pin the three literal JSON forms a plugin
-    /// author in any language must match on the fire-and-forget `notify` / `configure` reply path,
-    /// where a shape mismatch fails silently (nothing errors). This is a REGRESSION PROOF, not a RED
-    /// test — the encoding is not changing here, only becoming load-bearing: a future `#[serde(...)]`
-    /// addition (e.g. to match `HookRequest`'s tagging) would change these values and this test would
-    /// catch it, which is the whole point — do NOT add one; see `HookReply`'s doc comment.
+    /// `HookReply` has NO `#[serde(...)]` attribute (unlike the `op`-tagged `HookRequest`), so it
+    /// uses serde's default externally-tagged enum representation verbatim. Pin the three literal
+    /// JSON forms a plugin author in any language must match on the fire-and-forget `notify` /
+    /// `configure` reply path, where a shape mismatch fails silently (nothing errors). A future
+    /// `#[serde(...)]` addition (e.g. to match `HookRequest`'s tagging) would change these values,
+    /// and this test catches it — see `HookReply`'s doc comment.
     #[test]
     fn hook_reply_json_encoding_is_pinned() {
         assert_eq!(

@@ -6,7 +6,7 @@ use crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY;
 use crate::proto::StatusClass;
 use serde_json::{json, Value};
 
-/// HIGH (proxy engine gemini JSON-array path, + the SSE/eventstream + pre-first-byte twins):
+/// The gemini JSON-array path (and its SSE/eventstream + pre-first-byte twins):
 /// the client-facing mid-stream transport-error detail MUST be a static, vendor-neutral string —
 /// NEVER the raw `reqwest::Error` Display, which embeds hyper/reqwest internals and the egress
 /// backend URL (a protocol tell + infrastructure leak). All three call sites pass the single
@@ -88,7 +88,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
     );
 }
 
-/// HIGH (proxy engine / 372-380): a mid-stream upstream failure on a BEDROCK-ingress stream
+/// A mid-stream upstream failure on a BEDROCK-ingress stream
 /// (the client decodes binary `application/vnd.amazon.eventstream`) MUST be emitted as a valid
 /// binary exception frame — never an SSE `event: error` text frame, which would inject ASCII into
 /// a binary body and produce an undecodable prelude/CRC for the AWS SDK's eventstream decoder.
@@ -133,7 +133,7 @@ fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
     assert_eq!(v["message"], "connection reset by peer");
 }
 
-/// HIGH/conformance (proxy engine): the SSE mid-stream error frame must be the ingress
+/// The SSE mid-stream error frame must be the ingress
 /// writer's OWN STREAMING error event (`write_response_event(&Error)`), framed exactly as the
 /// happy path — NOT the non-stream `write_error()` HTTP envelope. Bare-`data:` protocols
 /// (openai/cohere/gemini, whose native streams emit `data:`-only frames) get NO `event:` line;
@@ -193,7 +193,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
 
     // responses: terminal error event is `response.failed`, and the payload MUST be the STREAM
     // shape `{"response":{...,"error":{...}}}` (the SDK reads `event.response`), NOT the
-    // non-stream `{"error":{...}}` HTTP envelope. This is the core of the finding.
+    // non-stream `{"error":{...}}` HTTP envelope.
     let bytes = mid_stream_error_bytes("responses", false, "boom");
     let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
     assert!(
@@ -271,7 +271,7 @@ fn test_is_streaming_content_type() {
 }
 
 /// `strip_router_shim_keys` removes the NEVER-NATIVE shim keys on every branch: the gemini
-/// JSON-array key for ALL egress, and `stream` for path-model gemini/bedrock EGRESS (R9 HIGH: gated
+/// JSON-array key for ALL egress, and `stream` for path-model gemini/bedrock EGRESS (gated
 /// on egress, not ingress, so the writer-authored `stream` survives for a body-model backend). It
 /// does NOT remove `model` (that is `strip_same_protocol_model_shim`'s job, on the same-protocol
 /// branch only) so a cross-protocol hop keeps the authoritative model `rewrite_model` installs.
@@ -333,13 +333,13 @@ fn test_strip_same_protocol_model_shim() {
 /// the authoritative egress `model`. The bug: `rewrite_model` ran, then an UNCONDITIONAL strip
 /// removed `model`, so the cross-protocol body hit the backend with no `model` (a guaranteed 400).
 /// This exercises the exact strip→rewrite ordering on a value, asserting the cross-protocol body
-/// keeps `model` and (R9 HIGH) keeps the writer-authored `stream` for a BODY-MODEL egress, while
+/// keeps `model` and keeps the writer-authored `stream` for a BODY-MODEL egress, while
 /// the array key is gone; and the same-protocol path drops `model` and (path-model egress) `stream`.
 #[test]
 fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     // Cross-protocol gemini→openai: strip (never-native keys, gated on EGRESS) → rewrite_model
     // installs the lane model → NO same-protocol model strip. Body must carry the egress model AND
-    // keep the writer-authored `stream` (R9 HIGH: openai is a body-model egress, so the backend
+    // keep the writer-authored `stream` (openai is a body-model egress, so the backend
     // reads `stream` from the body — stripping it made it answer non-streaming).
     let mut v =
         json!({"model": "router-placeholder", "stream": true, GEMINI_JSON_ARRAY_SHIM_KEY: true});
@@ -358,7 +358,7 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
     );
     assert_eq!(
         v["stream"], true,
-        "R9 HIGH: writer-authored `stream` MUST survive for a body-model egress (gated on egress)"
+        "writer-authored `stream` MUST survive for a body-model egress (gated on egress)"
     );
     assert!(
         v.get(GEMINI_JSON_ARRAY_SHIM_KEY).is_none(),

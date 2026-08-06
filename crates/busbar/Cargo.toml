@@ -229,17 +229,17 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # test. NOT in `default` — a normal or `--release` build never pulls schemars, and the runtime
 # `GET /openapi.json` handler serves the committed static file regardless of this feature.
 openapi-schema = ["dep:schemars"]
-# §5.5: compile + run the targeted loom model of the config-mutation swap ordering. Not in
+# Compile + run the targeted loom model of the config-mutation swap ordering. Not in
 # `default`; `scripts/loom.sh` is the front door. Loom explores interleavings exhaustively, so this
 # is minutes of CPU and stays out of `cargo test --workspace`.
 loom-model = ["dep:loom"]
-# §5.3.4: compile the NEGATIVE compile-fence module (`admin/v1/json/tests/txn_fence.rs`), which must
+# Compile the NEGATIVE compile-fence module (`admin/v1/json/tests/txn_fence.rs`), which must
 # FAIL to type-check. `scripts/txn-fence.sh` enables this and asserts the build is rejected — a
 # successful build under this feature is the test failing. Never in `default`.
 txn-fence-red = []
 
 [dev-dependencies]
-# The durable-audit (#17) tests exercise busbar-store-memory's append_audit/list_audit over a
+# The durable-audit tests exercise busbar-store-memory's append_audit/list_audit over a
 # simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
 # restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency
 # above (the built-in default store), so no separate dev-only entry is needed here.
@@ -255,9 +255,9 @@ bytes = "1"
 # Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = "0.14"
-# Property-based testing for the lane-availability invariant (design §6, R4): generates a world
+# Property-based testing for the lane-availability invariant: generates a world
 # (topology × policy × cause) and asserts the STRENGTHENED disposition-matches-policy invariant + the
-# failover budget bound (§5, R6) over the REAL selection + on_exhausted dispatch. Test-only; never in
+# failover budget bound over the REAL selection + on_exhausted dispatch. Test-only; never in
 # the shipped binary. Config (cases/timeout) is set inline via `proptest!` `ProptestConfig`.
 proptest = "1"
 

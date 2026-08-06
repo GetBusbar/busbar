@@ -140,7 +140,7 @@ fn every_reader_canonicalizes_to_typed_ir() {
     assert!(rf.json && rf.name.as_deref() == Some("out") && rf.schema.is_some());
 }
 
-// ── class-6 6b2/6b4: tool_choice-without-tools guard + stop-sequence vendor-cap clamp ──────────────
+// ── tool_choice-without-tools guard + stop-sequence vendor-cap clamp ──────────────────────────────
 // Six-writer REQUEST matrix (unlike `stop_reason_matrix_tests.rs`, which is response/`write_response`
 // only — `write_request` never appears there).
 
@@ -302,7 +302,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 }
 
-/// class-6 6c1 egress: an OpenAI/Anthropic caller who DID set `parallel_tool_calls` and routes to
+/// Egress: an OpenAI/Anthropic caller who DID set `parallel_tool_calls` and routes to
 /// Gemini/Cohere/Bedrock (none of which model any parallelism control) must get a WARN naming the
 /// drop — the flag silently vanishing was the exact class-9-adjacent bug this fix removes. The
 /// `is_some()` gate is what discriminates from noise: a request that never carried the flag must

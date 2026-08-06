@@ -5,7 +5,7 @@
 //! Bedrock (NO Anthropic — it ships no embeddings API). Split request/response per;
 //! token-metered → `Billing::Tokens`.
 //!
-//! Losslessness crux (from the provider-doc review): a single response can carry MULTIPLE typed
+//! Losslessness crux: a single response can carry MULTIPLE typed
 //! vectors AT ONCE (Cohere/Titan return float AND int8/binary), so vectors are keyed BY ENCODING in
 //! [`EmbeddingItem::vectors`] — a flat `Vec<f32>` would silently drop the others.
 

@@ -193,7 +193,7 @@ pub(crate) fn build_rewrite_request<'a>(
         prompt: with_prompt.then(|| build_prompt_projection(v, ingress_protocol)),
         identity: None,
         // The rewrite (transform) pass is a content seam, not a decide seam — it has no candidate
-        // set to read Feature-2 candidate-phase signals from, and no request-phase compute fn is
+        // set to read candidate-phase catalog signals from, and no request-phase compute fn is
         // wired to this builder in this pass. Empty (never allocated).
         signals: Default::default(),
     }
@@ -208,9 +208,9 @@ pub(crate) fn build_rewrite_request<'a>(
 /// Returns `Ok(applied)` — whether ANY rewrite actually committed to the body (the caller must
 /// then invalidate every retained copy of the ORIGINAL bytes: the same-protocol pristine
 /// short-circuit and the failover re-parse both read them, or the rewrite silently vanishes on
-/// those paths) — or `Err((status, message))` when a hook REJECTED the request (audit W-H1:
+/// those paths) — or `Err((status, message))` when a hook REJECTED the request:
 /// reject > rewrite > abstain on the transform path too; a rw gate that also screens must be able
-/// to stop the request — dropping its reject was fail-OPEN from the author's view).
+/// to stop the request — dropping its reject would be fail-OPEN from the hook author's view.
 pub(crate) async fn apply_global_rewrites(
     rewrite_hooks: &[(
         std::time::Duration,
@@ -379,7 +379,7 @@ pub(crate) enum BlockText<'a> {
 /// `Thinking` block), and the Responses reader admits a `reasoning` item on `!text.is_empty() ||
 /// signature.is_some()` — EITHER a real text part OR a non-empty `encrypted_content` blob is
 /// sufficient on its own (`proto/openai_responses/reader.rs`, both the input-item and
-/// output-item arms). A later audit found the `encrypted_content`-only half of that OR was itself
+/// output-item arms). The `encrypted_content`-only half of that OR was itself
 /// a fourth bypass: this fn's Responses arm called only `read_reasoning_text` and returned `None`
 /// (not `Redacted`) when it came back empty, so an item admitted purely on its opaque blob was
 /// invisible to a hook exactly like the other two. Fixed alongside the caller-dispatch gap that
@@ -788,7 +788,7 @@ pub(crate) fn build_prompt_projection<'a>(
                     // `prompt: rw` hook sees the SAME canonical-IR vocabulary on every dialect (the
                     // hook contract promises normalized IR). Without this a hook that echoes the role
                     // it received emitted `model`, which the gemini write-back then mapped to `user`,
-                    // silently corrupting assistant turns. Mirrors the responses arm below. (c1r14.)
+                    // silently corrupting assistant turns. Mirrors the responses arm below.
                     Some("model") if ingress_protocol == PROTO_GEMINI => Cow::Borrowed("assistant"),
                     Some(r) => Cow::Borrowed(r),
                     // Top-level typed item without a `role`: infer from its `type`, enumerated
@@ -983,7 +983,7 @@ pub(crate) async fn decide_policy_order(
         signals: Default::default(),
     };
 
-    // Feature-2 "decision observability" (task #141): the config generation's declared-signal
+    // "Decision observability": the config generation's declared-signal
     // bitmask, resolved ONCE at config apply (`hooks::requested_signals`) and read here with a
     // single `u64` comparison — never recomputed per request. `is_empty()` short-circuits the
     // WHOLE candidate-signal loop below on the zero-cost default (no hook anywhere declared a
@@ -1001,7 +1001,7 @@ pub(crate) async fn decide_policy_order(
                 // Both are PURE projections of state the breaker FSM already maintains on every
                 // request/outcome regardless of declaration (see `LaneRuntime::
                 // breaker_state_snapshot_in`/`error_rate_in`'s doc comments) — the gate below is
-                // the compute-the-sliver check (846e4931 shape): the read runs ONLY when
+                // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
                 if requested.wants(crate::hooks::Signal::CandidateBreakerState) {
                     let label = match app.store.breaker_state_snapshot_in(pool_name, wl.idx) {
@@ -1345,7 +1345,7 @@ pub(crate) fn fire_stage_taps(
             system: None,
             messages: None,
             user: None,
-            // Stage taps (candidate/routing/response) project no Feature-2 catalog signals in this
+            // Stage taps (candidate/routing/response) project no catalog signals in this
             // pass (the response-phase outcome seam those signals need is a separate,
             // not-yet-built increment — see `Signal::ResponseTokensOut`'s doc comment). Empty
             // (never allocated), so the wire is byte-identical to before this change.

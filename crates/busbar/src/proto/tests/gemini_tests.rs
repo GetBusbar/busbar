@@ -452,7 +452,7 @@ fn openai_sse_chunks(bytes: &[u8]) -> Vec<serde_json::Value> {
     chunks
 }
 
-/// Finding (OpenAI per-chunk identity): the real OpenAI API repeats the top-level
+/// OpenAI per-chunk identity: the real OpenAI API repeats the top-level
 /// `id`/`created`/`model` on EVERY `chat.completion.chunk`, not just the opening role chunk. An
 /// Anthropic egress stream translated to an OpenAI ingress must therefore carry the SAME
 /// `id`/`created`/`model` on every emitted chunk — a single stream identity, never a fresh id per
@@ -523,7 +523,7 @@ fn test_openai_ingress_per_chunk_identity_repeated() {
     );
 }
 
-/// MEDIUM/test-coverage: the OpenAI ingress chunk-identity replay (now behind the `StreamFraming`
+/// The OpenAI ingress chunk-identity replay (behind the `StreamFraming`
 /// vtable, in `proto/openai_chat.rs`) skips any
 /// frame that is not a `chat.completion.chunk` (no `object` field). The in-band ERROR envelope the
 /// OpenAI writer emits mid-stream (`{"error":{...}}`, no `object`) must therefore pass through
@@ -587,7 +587,7 @@ fn test_openai_ingress_mid_stream_error_envelope_unchanged_by_identity() {
     );
 }
 
-/// Finding (bedrock messageStop+metadata fan-out, real latencyMs): a bedrock->bedrock stream must
+/// Bedrock messageStop+metadata fan-out (real latencyMs): a bedrock->bedrock stream must
 /// round-trip — the egress reader collapses the native two-frame stop/usage split into ONE
 /// combined IR MessageDelta, and the ingress writer fan-out RE-SPLITS it back into the native
 /// `messageStop` + `metadata` frame pair (metadata carrying the real usage AND a real
@@ -716,7 +716,7 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
     );
 }
 
-/// class-6 6c2: a Gemini `cachedContent` reference is dropped on the cross-protocol seam (no
+/// A Gemini `cachedContent` reference is dropped on the cross-protocol seam (no
 /// protocol can project a server-side Google context cache into its own request shape) — but
 /// SILENTLY, unlike the two sibling clears in the same function (prompt-cache breakpoints, hosted
 /// tools) which both warn. The consequences are invisible in the response (truncated history +
@@ -778,7 +778,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
     );
 }
 
-/// class-6 6e1 site 3: Google's `CitationSource.startIndex`/`endIndex` are documented measured in
+/// Google's `CitationSource.startIndex`/`endIndex` are documented measured in
 /// BYTES; the IR's `IrCitation::start_index`/`end_index` contract is CHARACTERS. The reader must
 /// convert byte->char on the way in (non-stream path, which has the full response text to convert
 /// against).
@@ -825,11 +825,11 @@ fn gemini_citation_byte_indices_convert_to_characters() {
     );
 }
 
-/// class-6 6e1 site 3 (writer inverse, corrected per review 10a): `write_gemini_citation`
+/// Writer inverse: `write_gemini_citation`
 /// short-circuits to the verbatim `raw` object whenever the citation carries a Gemini-shaped `raw`
 /// (uri/startIndex/endIndex present) — so a Gemini->Gemini round trip NEVER reaches the neutral
-/// build path this inverse conversion lives in (that half of the original T15 design was a false
-/// green). The inverse is only exercised by a FOREIGN citation (no Gemini-shaped `raw`, e.g.
+/// build path this inverse conversion lives in. The inverse is only exercised by a FOREIGN citation
+/// (no Gemini-shaped `raw`, e.g.
 /// translated from Anthropic) reaching a Gemini egress — build one with `raw: None` directly.
 #[test]
 fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {

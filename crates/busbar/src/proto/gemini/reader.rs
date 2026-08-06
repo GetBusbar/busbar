@@ -558,7 +558,7 @@ impl ProtocolReader for GeminiReader {
             });
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
         // Promote Gemini's native `toolConfig.functionCallingConfig` into the IR `tool_choice` union
-        // (PF-H1) so a forced / targeted directive survives the cross-protocol seam instead of
+        // so a forced / targeted directive survives the cross-protocol seam instead of
         // degrading to `auto`. The raw `toolConfig` is ALSO preserved in `extra` (it is not in
         // `modeled_keys`, like `generationConfig`), so a same-protocol Gemini→Gemini passthrough stays
         // byte-identical; the writer overlays a fresh `functionCallingConfig` from this typed field.

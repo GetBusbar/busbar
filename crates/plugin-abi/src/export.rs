@@ -42,7 +42,7 @@ pub const EXPORT_ABI_VERSION: u32 = 2;
 /// matches on a stable token, never the Rust variant name. [`ExportStream::as_token`] is the SAME
 /// spelling rendered without serde, so config parsing and the wire cannot drift apart.
 ///
-/// FREEZE RULES (design `export-projection-grammar.md`):
+/// FREEZE RULES:
 /// - ADDING a stream is ADDITIVE and allowed — an existing config keeps its meaning and an existing
 ///   sink receives nothing new (it did not subscribe, and `fields:` is an exhaustive override).
 /// - RENAMING or SPLITTING a stream is a BREAK for every export plugin and every operator config.

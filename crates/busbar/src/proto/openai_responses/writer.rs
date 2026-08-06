@@ -40,7 +40,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // FIRST (and only when it actually has content), with the tool items appended
                     // after it in order — matching the conversation order the assistant produced.
                     let mut tool_items: Vec<serde_json::Value> = Vec::new();
-                    // Fix #6: prior-turn reasoning re-emitted as top-level `reasoning` input items,
+                    // Prior-turn reasoning is re-emitted as top-level `reasoning` input items,
                     // placed BEFORE the message they precede (matching how the model produced them).
                     let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
                     for block in &msg.content {
@@ -142,7 +142,7 @@ impl ProtocolWriter for ResponsesWriter {
                                     "output": output_text
                                 }));
                             }
-                            // Fix #6: a prior-turn Thinking block re-emits as a top-level Responses
+                            // A prior-turn Thinking block re-emits as a top-level Responses
                             // `reasoning` INPUT item (a sibling of the message, NOT a content block),
                             // so a Responses->Responses round-trip preserves reasoning and a
                             // reasoning block decoded from another protocol survives onto Responses
@@ -281,7 +281,7 @@ impl ProtocolWriter for ResponsesWriter {
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
-                // HOSTED-TOOL PASSTHROUGH (Finding 5). A hosted/built-in Responses tool
+                // HOSTED-TOOL PASSTHROUGH. A hosted/built-in Responses tool
                 // (`web_search`/`file_search`/`code_interpreter`/`computer_use_preview`/`mcp`/...) is a
                 // complete tool spec discriminated by its top-level `type`; it carries no
                 // `name`/`parameters` and has no function-tool equivalent. The reader stored its raw
@@ -312,7 +312,7 @@ impl ProtocolWriter for ResponsesWriter {
             out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
         }
 
-        // Emit `tool_choice` (PF-H1) in the Responses native shape when present so a forced/targeted
+        // Emit `tool_choice` in the Responses native shape when present so a forced/targeted
         // directive translated from another protocol does not silently degrade to `auto`.
         // `/v1/responses` rejects it tool-less identically to Chat Completions — the reachable case
         // is a cross-protocol request whose hosted tools `prepare_for_egress` stripped
@@ -328,7 +328,7 @@ impl ProtocolWriter for ResponsesWriter {
                 out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
             }
         }
-        // `parallel_tool_calls` (class-6 6c1 egress): `/v1/responses` documents it the same way as
+        // `parallel_tool_calls`: `/v1/responses` documents it the same way as
         // Chat — meaningless (and, empirically, rejected) with no tools. The `is_some()` gate means
         // this can only fire on a request that actually carried the flag, so it never fires as
         // per-request noise on the common tool-less case.
@@ -374,7 +374,7 @@ impl ProtocolWriter for ResponsesWriter {
             );
         }
 
-        // SAMPLING (Phase 0): the Responses create API does NOT model `frequency_penalty`,
+        // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
         // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
         // `ResponseCreateParamsBase`: only `temperature`/`top_p`/`top_logprobs`/`text` are present).
         // They are lossy-by-target on this surface, so they are intentionally NOT emitted — emitting an
@@ -866,7 +866,7 @@ impl ProtocolWriter for ResponsesWriter {
                     );
                 }
 
-                // Build the SDK-required Responses `usage` object (Finding 6): the streaming terminal
+                // Build the SDK-required Responses `usage` object: the streaming terminal
                 // event's inner `response.usage` must carry the SAME complete shape as the non-stream
                 // body — `total_tokens` plus the required `input_tokens_details`/`output_tokens_details`
                 // objects — so the shared builder produces it (as 0 where nothing to report).
@@ -1110,7 +1110,7 @@ impl ProtocolWriter for ResponsesWriter {
             }
         }
 
-        // Build the SDK-required Responses `usage` object (Finding 6): `total_tokens` plus the
+        // Build the SDK-required Responses `usage` object: `total_tokens` plus the
         // `input_tokens_details`/`output_tokens_details` objects are REQUIRED by the official SDKs, so
         // the shared builder always emits them (as 0 when nothing to report) and reconstructs the
         // cache-inclusive `input_tokens` TOTAL from the normalized IR.

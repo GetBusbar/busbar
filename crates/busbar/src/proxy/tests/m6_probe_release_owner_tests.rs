@@ -1,10 +1,10 @@
-//! M6: the four post-`.await` single-flight-probe release sites in `engine/mod.rs`
+//! The four post-`.await` single-flight-probe release sites in `engine/mod.rs`
 //! (the ClientFault disposition and the three passthrough/context-length abandon arms) must use the
 //! OWNER-CHECKED `release_probe_owned_in`, not the unowned `release_probe_in` — a stalled request
 //! that finally reaches its release AFTER a successor has already won a NEWER probe on the same
 //! cell must not revert that newer probe back to Open.
 //!
-//! This is the real, call-site-level RED proof: it drives ONE genuine request all the way through
+//! A call-site-level proof: it drives ONE genuine request all the way through
 //! `forward_with_pool` (dispatch → 400 ClientFault → the release site), gated deterministically
 //! mid-body-read via `MockResponse::Gated` (a `Notify`, not a `sleep` — a real-clock delay is a race
 //! by construction). While that request is parked, a SECOND probe is won on the same cell via
@@ -18,10 +18,10 @@ use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, T
 use serde_json::json;
 use std::sync::Arc;
 
-/// RED at HEAD (before the M6 fix): the stalled request's unowned `release_probe_in` reverts the
-/// SECOND request's freshly-won probe back to Open, losing the single-flight invariant.
-/// GREEN after: the owned release, keyed on the epoch captured before dispatch, is a no-op against
-/// the superseded probe and the second probe's HalfOpen cell survives untouched.
+/// An unowned `release_probe_in` here would revert the SECOND request's freshly-won probe back to
+/// Open, losing the single-flight invariant. The owned release, keyed on the epoch captured before
+/// dispatch, is instead a no-op against the superseded probe, and the second probe's HalfOpen cell
+/// survives untouched.
 #[tokio::test]
 async fn a_stale_resume_does_not_revert_a_newer_probe() {
     crate::metrics::init();

@@ -34,9 +34,9 @@ fn multipart_model(body: &[u8]) -> Option<String> {
 /// passthrough or the cross-protocol IR bridge). Model resolution: `model_hint` for path-model dialects (gemini/bedrock —
 /// their route handler parsed it from the URL), else the JSON body `model` (openai/cohere) or the
 /// multipart form (openai transcription).
-// 8 args: the (proto, operation, model_hint) triple collapses into the unified catch-all dispatch
-// (Router → RequestHandler decides operation+model) in the step-2 refactor; grouping them into a
-// one-shot struct now would be churn the collapse immediately deletes.
+// 8 args: the (proto, operation, model_hint) triple is destined to collapse into the unified
+// catch-all dispatch (Router → RequestHandler decides operation+model); grouping them into a
+// one-shot struct now would be churn that collapse immediately deletes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn operation_ingress(
     app: &Arc<App>,

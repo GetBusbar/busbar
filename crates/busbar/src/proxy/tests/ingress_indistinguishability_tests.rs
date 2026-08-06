@@ -293,7 +293,7 @@ async fn test_ingress_error_emits_native_envelope_with_status() {
     );
 }
 
-/// MEDIUM/conformance (proxy engine): the anthropic-ingress error `request-id` HEADER equals
+/// The anthropic-ingress error `request-id` HEADER equals
 /// the body `request_id`, and non-anthropic ingress carries no such header.
 #[tokio::test]
 async fn test_anthropic_ingress_error_request_id_header_matches_body() {
@@ -688,7 +688,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     // An OpenAI chat.completion 2xx with 600 input + 400 output = 1000 tokens, with `usage` at the
     // TAIL (real wire order). Split the wire bytes into two chunks at a point BEFORE `"usage"`, so
     // neither chunk contains a complete top-level object — the exact cross-frame split that proves
-    // billing reassembles the whole body before running the IR reader (Change A path #4). The
+    // billing reassembles the whole body before running the IR reader. The
     // client still receives the bytes verbatim; only a bounded copy is retained for the IR read.
     let body = r#"{"id":"chatcmpl-split","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400}}"#;
     let split = body.find(r#""usage""#).expect("usage marker present");
@@ -763,7 +763,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     );
 }
 
-/// MEDIUM/correctness (M8): the non-stream usage-tap reassembly decision at
+/// The non-stream usage-tap reassembly decision at
 /// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
 /// = max_translated_body_bytes() - ... }` reads the live-reloadable
 /// `crate::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
@@ -788,7 +788,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 /// not scoped). Hammering it from a background thread — required to have any chance of landing the
 /// TOCTOU window — corrupted a concurrently-running sibling
 /// (`test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged`) under the default parallel
-/// `cargo test` runner. Run explicitly and alone to reproduce the RED/GREEN proof:
+/// `cargo test` runner. Run it explicitly and alone:
 /// `cargo test -p busbar --bin busbar -- --ignored --test-threads=1 nonstream_tap_cap_is_read_once_per_decision`.
 #[test]
 #[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
@@ -922,8 +922,8 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
 /// cross-protocol STREAM even when the egress reports usage in a SEPARATE trailing chunk (the OpenAI
 /// `include_usage` convention). This drives the REAL `FirstByteBody` translate → finish → json-array
 /// framer path for a gemini-ingress / openai-egress stream — the level the isolated translator tests
-/// never reached. It is the test that was MISSING: it goes red both for the zero-usage bug (the
-/// trailing usage chunk is dropped) AND for any "fix" that emits the terminal frame from a discarded
+/// never reached. It fails both for the zero-usage bug (the
+/// trailing usage chunk is dropped) AND for any repair that emits the terminal frame from a discarded
 /// `finish()` (the gemini json-array close throws finish() away). The client's gemini json-array body
 /// must carry `usageMetadata.promptTokenCount == 600` (the real value), not 0/absent.
 #[tokio::test]
@@ -996,7 +996,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
 }
 
 /// CHARACTERIZATION, plain-SSE sibling: the terminal-usage fold must also deliver on the
-/// PLAIN SSE path (no json-array framer), not just gemini json-array — find-1-solve-6 across the two
+/// PLAIN SSE path (no json-array framer), not just gemini json-array — the same defect class across the two
 /// delivery paths. anthropic ingress / openai egress with include_usage: the client's terminal
 /// `message_delta` must carry the real `usage.output_tokens` (400), not 0.
 #[tokio::test]
@@ -1066,7 +1066,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     );
 }
 
-/// audit M3: an upstream TRANSPORT error mid-stream must NOT token-bill the partial usage accumulated
+/// An upstream TRANSPORT error mid-stream must NOT token-bill the partial usage accumulated
 /// before the cut — symmetric with the terminal-error / translate-abort no-bill gates (every other
 /// failure path suppresses or refunds). Drives the real FirstByteBody: an anthropic egress stream that
 /// sets usage (100 input on message_start + 50 output on message_delta = 150 billable), then a real
@@ -1203,7 +1203,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
 
     // Passthrough mode + a MISCONFIGURED lane that DOES carry an operator key. Lane speaks OpenAI
     // (Bearer auth), ingress same-protocol openai.
-    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section (audit §4), so the
+    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
         .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
@@ -1249,9 +1249,9 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
         .get_last_auth_header()
         .expect("mock recorded an Authorization header");
     assert_ne!(
-            recorded_auth, "Bearer sk-operator-secret",
-            "passthrough with no caller credential must NOT borrow the operator's lane api_key (LOW #15)"
-        );
+        recorded_auth, "Bearer sk-operator-secret",
+        "passthrough with no caller credential must NOT borrow the operator's lane api_key"
+    );
     assert!(
             !recorded_auth.contains("sk-operator-secret"),
             "operator key must never leak upstream for an unauthenticated passthrough caller; got {recorded_auth:?}"
@@ -1267,7 +1267,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     server.shutdown().await;
 }
 
-/// CLASS regression (proxy engine cross-protocol seam): a Bedrock backend returns an
+/// Regression on the cross-protocol seam: a Bedrock backend returns an
 /// identity-EMPTY non-stream IR (`read_response` yields `id`/`created`/`model` all `None`, since
 /// a Converse body carries no body-level identity). On a Bedrock→Gemini hop the Gemini writer
 /// gates `usageMetadata.totalTokenCount` and a synthesized `responseId` on the cross-protocol
@@ -1359,7 +1359,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
     server.shutdown().await;
 }
 
-/// HIGH/conformance (the cross-protocol 2xx request-id attach): a Bedrock-INGRESS 2xx (non-stream, cross-protocol) must
+/// The cross-protocol 2xx request-id attach: a Bedrock-INGRESS 2xx (non-stream, cross-protocol) must
 /// carry `x-amzn-RequestId` — a real Converse response always does (the AWS SDK reads it via
 /// `request_id()`); the error path already synthesizes it, this closes the SUCCESS gap.
 #[tokio::test]
@@ -1436,7 +1436,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     server.shutdown().await;
 }
 
-/// MEDIUM/conformance (proxy engine, relay paths): an anthropic-INGRESS 2xx must carry a
+/// On the relay paths, an anthropic-INGRESS 2xx must carry a
 /// `request-id` RESPONSE HEADER — a real Anthropic response always does (the SDK reads it into
 /// `Message._request_id`). On this CROSS-protocol hop (OpenAI backend → Anthropic client) there is
 /// no upstream anthropic id to forward, so busbar must SYNTHESIZE a shape-correct `req_…` one.
@@ -1508,7 +1508,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
     server.shutdown().await;
 }
 
-/// MEDIUM/test-coverage (proxy engine, STREAMING branch at proxy engine): an anthropic-
+/// On the engine's STREAMING branch: an anthropic-
 /// INGRESS STREAMING 2xx must ALSO carry the `request-id` response header. The non-streaming test
 /// above exercises only the buffered builder; the streaming builder is a separate code path, so a
 /// regression on the stream branch alone would otherwise pass CI. The official SDK reads
@@ -1581,7 +1581,7 @@ data: {"type":"message_stop"}"#
     server.shutdown().await;
 }
 
-/// HIGH (proxy engine): a cross-protocol CLIENT-fault 4xx must be RESHAPED into the ingress
+/// A cross-protocol CLIENT-fault 4xx must be RESHAPED into the ingress
 /// protocol's native error envelope, not relayed with the EGRESS protocol's foreign error body.
 /// An OpenAI backend returning a 400 with an OpenAI-shaped error must reach an Anthropic client as
 /// the Anthropic error shape (`{"type":"error","error":{...}}`), with no OpenAI fields leaking.
@@ -1702,7 +1702,7 @@ async fn test_forward_error_path_returns_native_envelope() {
     );
 }
 
-/// HEADLINE R9 (the unification): the DEGRADED `forward_once` path (LeastBad/FallbackPool) must
+/// The DEGRADED `forward_once` path (LeastBad/FallbackPool) must
 /// NOT leak source-protocol-only passthrough keys onto a foreign backend. Both forward paths now
 /// route request shaping through the single `translate_request_cross_protocol` seam (which clears
 /// `ir.extra` before the egress writer), so the clear cannot be missing on one path. This drives
@@ -2087,7 +2087,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
     let server = MockServer::new(state.clone()).await;
 
     // Passthrough auth mode + anthropic lane, same-protocol anthropic ingress.
-    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section (audit §4), so the
+    // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
         .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
@@ -2144,7 +2144,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
     server.shutdown().await;
 }
 
-/// HIGH/conformance (R9, proxy engine error sites): no forward-layer error body returned to a client
+/// At every engine error site: no forward-layer error body returned to a client
 /// may begin with the wire-visible internal `router:` prefix — a deterministic proxy tell no native
 /// endpoint emits. The route-layer regression test never reaches the forward layer; this drives the
 /// most-exercised forward-layer error surfaces (overload 503 via empty-pool exhaustion, and the
@@ -2189,7 +2189,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
     }
 }
 
-/// HIGH/test-coverage (R9, proxy engine area): a native AWS SDK ConverseStream request answered
+/// A native AWS SDK ConverseStream request answered
 /// by a buffered (non-SSE) `application/json` 2xx from a CROSS-protocol OpenAI lane must be emitted
 /// at the HTTP boundary as `application/vnd.amazon.eventstream`, decode into the native frame
 /// sequence, AND carry a UUID `x-amzn-RequestId`. The existing coverage tests only the synthesis
@@ -2277,7 +2277,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage (cargo-mutants gap, proxy engine `forward_with_pool_parsed_inner`):
+/// In `forward_with_pool_parsed_inner`:
 /// `client_include_usage` (`wants_stream && <client body opted into stream_options.include_usage>`)
 /// gates whether Busbar force-injects `stream_options.include_usage:true` onto the OUTGOING OpenAI
 /// egress request (`&& !client_include_usage` at the injection site) — cargo-mutants: `&&` -> `||`.
@@ -2351,7 +2351,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage (proxy engine gemini JSON-array buffered-synthesis branch in
+/// The gemini JSON-array buffered-synthesis branch in
 /// `forward_with_pool`): a native Gemini `:streamGenerateContent` WITHOUT `?alt=sse` routed
 /// cross-protocol to an OpenAI lane that answers with a BUFFERED (non-SSE) 2xx must emit a
 /// one-element JSON ARRAY (`[{...}]`) of native `GenerateContentResponse` under
@@ -2440,7 +2440,7 @@ async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array(
     server.shutdown().await;
 }
 
-/// MEDIUM/test-coverage (proxy engine gemini JSON-array buffered-synthesis branch in `forward_once`,
+/// The gemini JSON-array buffered-synthesis branch in `forward_once`,
 /// the FallbackPool/exhaustion path): the SECOND copy of the branch must match the primary path.
 /// Drive a gemini `:streamGenerateContent` (no alt=sse) through the degraded `forward_once` route
 /// (lane parked in long cooldown + LeastBad on_exhausted, as in
@@ -2532,7 +2532,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
     server.shutdown().await;
 }
 
-/// MEDIUM/correctness (proxy engine `record_nonstream_usage` vs `ReadEnd::Truncated` guard):
+/// `record_nonstream_usage` vs the `ReadEnd::Truncated` guard:
 /// CHOSEN SEMANTICS — a cross-protocol non-stream success body that exceeds OUR translation cap
 /// (`MAX_TRANSLATED_BODY_BYTES`, 32 MiB) is UNTRANSLATABLE: the client receives HTTP 500 with NO
 /// completion, so token usage is NOT charged (the `record_nonstream_usage` call now lives AFTER
@@ -2605,11 +2605,11 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     server.shutdown().await;
 }
 
-/// REGRESSION (passes before and after the `BudgetSpendGuard` change, not a RED test): the
+/// REGRESSION guard: the
 /// `ReadEnd::Truncated` arm is a DELIBERATE no-refund policy — the upstream genuinely succeeded, so
 /// the lane DID serve a request and the budget unit must NOT be returned even though the client
 /// gets a 500. Pins that the guard's `disarm()` before this branch's `return` preserves that policy
-/// (a refund-by-default guard would invert it, exactly the mistake ruled out for this class).
+/// (a refund-by-default guard would invert it).
 #[tokio::test]
 async fn test_truncated_body_does_not_refund_budget() {
     crate::metrics::init();
@@ -2776,9 +2776,9 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
 /// On the STREAMING (`is_sse`) path the 2xx headers
 /// already spent one `max_requests` budget unit, but a PRE-FIRST-BYTE upstream body transport
 /// failure delivers no usable response. The buffered `ReadEnd::TransportError` paths refund that
-/// unit (#21); the streaming path previously refunded NOTHING — every streaming transport failure
-/// permanently drained one serving-capacity unit. `FirstByteBody`'s pre-first-byte error arm must
-/// now refund symmetrically (guarded by `budget_spent`).
+/// unit; a streaming path that refunds NOTHING permanently drains one serving-capacity unit on
+/// every streaming transport failure. `FirstByteBody`'s pre-first-byte error arm must refund
+/// symmetrically (guarded by `budget_spent`).
 #[tokio::test]
 async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     use super::FirstByteBody;
@@ -2823,7 +2823,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         Err::<Bytes, reqwest::Error>(reqwest_err)
     }));
     // The 2xx headers recorded an optimistic breaker SUCCESS; simulate that so the pre-first-byte
-    // failure below has something to reverse (P2 #2). A consecutive n:1 trip config makes one
+    // failure below has something to reverse. A consecutive n:1 trip config makes one
     // recorded transient observable as Closed→Open.
     app.store.record_success_in("p", 0);
     let breaker_cfg = std::sync::Arc::new(BreakerCfg {
@@ -2867,10 +2867,10 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     // the fix the budget stays at 0 and this spend returns false.
     assert!(
         app.store.spend_budget(0),
-        "streaming pre-first-byte transport failure must refund the spent budget unit (MED #3)"
+        "streaming pre-first-byte transport failure must refund the spent budget unit"
     );
 
-    // P2 #2: the pre-first-byte transport failure must ALSO record a breaker transient, reversing
+    // The pre-first-byte transport failure must ALSO record a breaker transient, reversing
     // the optimistic 2xx success and tripping the cell Closed→Open. Before the fix the transient
     // was gated on `had_first` and this stayed Closed - a lane that always fails before the first
     // byte would never trip.
@@ -2879,7 +2879,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
             app.store.breaker_state_in("p", 0),
             BreakerState::Open { .. }
         ),
-        "pre-first-byte transport failure must record a breaker transient (P2 #2)"
+        "pre-first-byte transport failure must record a breaker transient"
     );
 }
 
@@ -2959,8 +2959,11 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
             );
         } else {
             assert!(
-                matches!(app.store.breaker_state_in("p", 0), BreakerState::Open { .. }),
-                "the 3rd consecutive pre-first-byte failure must trip the breaker Closed→Open (P2 #2)"
+                matches!(
+                    app.store.breaker_state_in("p", 0),
+                    BreakerState::Open { .. }
+                ),
+                "the 3rd consecutive pre-first-byte failure must trip the breaker Closed→Open"
             );
         }
     }
@@ -3064,7 +3067,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
             BreakerState::Open { .. }
         ),
         "non-SSE mid-body transport failure must record a transient (cell trips Open), \
-             not stand as the optimistic success (R25 MED #1)"
+             not stand as the optimistic success"
     );
 
     // The budget-refund block is unchanged: the spent unit is still refunded on this failed
@@ -3078,9 +3081,9 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 /// A CROSS-PROTOCOL
 /// stream whose `StreamTranslate` ABORTS after the first byte — its reassembly buffer overran
 /// `MAX_BUF` (>16MiB without a frame terminator) or it hit a malformed egress prelude — sets NO
-/// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). R25 made the
-/// `Poll::Ready(None)` arm reverse the optimistic 2xx breaker success ONLY on `terminal_error`;
-/// it missed the translate-abort SIBLING. Before this fix the arm therefore (a) recorded the
+/// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). A
+/// `Poll::Ready(None)` arm that reverses the optimistic 2xx breaker success ONLY on `terminal_error`
+/// misses the translate-abort SIBLING, and therefore (a) records the
 /// optimistic success un-reversed (cell stays Closed) AND (b) billed the partial captured tokens
 /// via `record_tokens`. After the fix BOTH gates treat `terminal_error.is_some() ||
 /// translate.aborted()` as failed: the cell trips Closed→Open AND no token fee is charged.
@@ -3204,7 +3207,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
             BreakerState::Open { .. }
         ),
         "a StreamTranslate abort after first byte must record a breaker transient \
-             (cell Closed→Open), not stand as the optimistic 2xx success (R26 MED #1)"
+             (cell Closed→Open), not stand as the optimistic 2xx success"
     );
 
     // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. The old
@@ -3218,7 +3221,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     assert_eq!(
         ledgered, 0,
         "an aborted cross-protocol stream must NOT charge a token fee \
-             (record_usage must not be called) - R26 LOW #7"
+             (record_usage must not be called)"
     );
 }
 
@@ -3431,9 +3434,9 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
 
 /// Cancellation must refund the headers-time `spend_budget` unit. Unlike
 /// `test_streaming_pre_first_byte_transport_error_refunds_budget` (a TERMINAL error arm, which
-/// already refunds at :396 and sets `ended`), this drops the body mid-stream WITHOUT ever reaching
-/// a terminal poll arm — the shape a client disconnect or LB reset produces. Before the fix, `Drop`
-/// never read `budget_spent`, so the unit was gone forever.
+/// refunds in the poll arm and sets `ended`), this drops the body mid-stream WITHOUT ever reaching
+/// a terminal poll arm — the shape a client disconnect or LB reset produces. A `Drop` that does not
+/// read `budget_spent` loses the unit forever.
 #[tokio::test]
 async fn test_cancel_drop_mid_stream_refunds_budget() {
     use super::FirstByteBody;
@@ -3494,7 +3497,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
     );
 }
 
-/// HIGH/test-coverage (cargo-mutants gap, proxy engine `translate_response_cross_protocol`): the
+/// In `translate_response_cross_protocol`: the
 /// gemini JSON-array wrap (`if gemini_json_array && wants_stream`) is gated on BOTH conditions,
 /// not just `wants_stream` alone (cargo-mutants: `&&` -> `||`). `test_gemini_json_array_buffered_
 /// cross_protocol_emits_one_element_array` above proves the TRUE&&TRUE case (gemini ingress,

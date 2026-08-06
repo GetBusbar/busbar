@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A **hermetic trivial `kind: store` plugin** — a `cdylib` exporting the store C ABI, wrapping the
-//! in-tree `MemoryStore`. Before this crate existed, `kind: store` was the only plugin kind with zero
-//! in-tree ABI-crossing test coverage (compare `busbar-secret-example-plugin`, which exists for
-//! exactly this reason on the secret seam — `grep -rn export_store_plugin crates/` returned only the
-//! macro's own definition). It does no real persistence beyond `MemoryStore`'s own in-process map; its
+//! in-tree `MemoryStore`. It is the in-tree ABI-crossing coverage for the `kind: store` seam (the
+//! store-seam analogue of `busbar-secret-example-plugin`). It does no real persistence beyond
+//! `MemoryStore`'s own in-process map; its
 //! job is to be a real, loadable, signable store plugin for the ABI to round-trip through, both in
 //! this crate's own boundary tests and as the fixture `plugin-ci.yml`'s install-and-serve CI step
 //! packs and installs against a real running busbar.

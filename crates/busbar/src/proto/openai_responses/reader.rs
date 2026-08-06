@@ -277,7 +277,7 @@ impl ProtocolReader for ResponsesReader {
                             }
                         }
                         Some(ITEM_TYPE_REASONING) => {
-                            // Fix #6: a prior-turn `reasoning` INPUT item carries assistant
+                            // A prior-turn `reasoning` INPUT item carries assistant
                             // reasoning (text under `content`/`summary`, opaque blob under
                             // `encrypted_content`). Dropping it lost that reasoning entirely on egress
                             // to a protocol that models reasoning (Anthropic/Bedrock Thinking). Decode
@@ -360,7 +360,7 @@ impl ProtocolReader for ResponsesReader {
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
-                // HOSTED-TOOL PASSTHROUGH (Finding 5). The Responses `tools` array mixes CUSTOM
+                // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
                 // function tools (`type:"function"` with a flat `name`/`parameters`) with provider-
                 // HOSTED tools (`type:"web_search"`/`"file_search"`/`"code_interpreter"`/
                 // `"computer_use_preview"`/`"mcp"`/...) that carry NO `name`/`parameters`. Parsing a
@@ -426,7 +426,7 @@ impl ProtocolReader for ResponsesReader {
         let top_p = obj.get("top_p").and_then(|v| v.as_f64());
         // The Responses API carries `stream` in the request body — read it (don't drop the intent).
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
-        // `tool_choice` (PF-H1): promote to the IR union so a forced/targeted directive survives the
+        // `tool_choice`: promote to the IR union so a forced/targeted directive survives the
         // cross-protocol seam instead of degrading to `auto`. "tool_choice" is added to the modeled
         // keys below so it does not also linger in `extra`.
         let tool_choice = read_responses_tool_choice(obj.get("tool_choice"));
@@ -437,7 +437,7 @@ impl ProtocolReader for ResponsesReader {
         // OpenAI reader stores), so a Responses structured-output request reaches an OpenAI/Anthropic
         // backend faithfully and a same-protocol round-trip is lossless. `text` is added to the modeled
         // keys below so it does not also linger in `extra` (which would double-emit it on write).
-        // SAMPLING (Phase 0): the Responses create API does NOT model `frequency_penalty`,
+        // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
         // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
         // `ResponseCreateParamsBase` — only `temperature`/`top_p`/`top_logprobs`/`text` are present),
         // so none are promoted here (they stay None) and none are added to the modeled-keys exclusion.
@@ -495,7 +495,7 @@ impl ProtocolReader for ResponsesReader {
             .map(crate::ir::IrReasoningAsk::Effort);
 
         // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
-        // Completions (class-6 6c1 ingress). Previously hardcoded `None`, which — unlike
+        // Completions. Previously hardcoded `None`, which — unlike
         // Bedrock/Gemini/Cohere (whose native dialects genuinely have no such parameter, so `None`
         // there is the accurate "caller never said") — is total ingress loss for Responses callers
         // who explicitly set it.

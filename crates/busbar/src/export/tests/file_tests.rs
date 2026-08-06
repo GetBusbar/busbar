@@ -6,9 +6,9 @@
 use super::*;
 use crate::export::test_logs_projection;
 
-/// AUDIT MED-4 — THE FILE SINK IS ADMISSION-BOUNDED. `deliver()` spawns one `spawn_blocking` append
+/// THE FILE SINK IS ADMISSION-BOUNDED. `deliver()` spawns one `spawn_blocking` append
 /// per request per sink, each holding an owned `String`; on a slow or stalled filesystem those
-/// accumulated with no cap, unlike every sibling fan-out in this delta. Each sink now takes a slot
+/// accumulated with no cap, unlike every sibling fan-out in this release. Each sink now takes a slot
 /// from its OWN [`AdmissionGate`] and SHEDS (counted) when saturated.
 ///
 /// The stall is simulated the way the code itself serializes appends: the test HOLDS the sink's

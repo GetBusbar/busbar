@@ -43,7 +43,7 @@ pub(crate) fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
 /// `config::EnvSubst::Lenient`), so a URL field that env-templates an unset variable resolves to a
 /// scheme-less placeholder and would false-positive the https / SSRF checks. Such a value is validated
 /// for real at boot (where an unset var is a hard error), so `--validate` skips the URL-format checks
-/// for it here. (found: 1.4.0 audit, config-reload.)
+/// for it here.
 pub(crate) fn validate_with_unset(
     cfg: &RootCfg,
     unset_env_vars: &[String],
@@ -52,7 +52,7 @@ pub(crate) fn validate_with_unset(
     // Lenient load (unset `${VAR}` is spliced in as the bare name, which has NO url scheme). Require the
     // value to LACK a `://` scheme before treating a var-name substring match as a placeholder, so a REAL
     // URL that merely contains an unset var name as a substring is still fully https/SSRF-checked and never
-    // over-suppressed (tightened per 1.4.0 audit; boot/reload use Strict subst, so this affects --validate
+    // over-suppressed (boot/reload use Strict subst, so this affects --validate
     // only). Empty list (the boot / default `validate` path) ⇒ this is always false.
     let is_env_placeholder = |v: &str| {
         !v.contains("://")
@@ -456,10 +456,9 @@ pub(crate) fn validate_with_unset(
                 // token_url carries the client secret in the POST body, so it gets the SAME two guards
                 // as base_url — not a lone scheme check: (1) case-INSENSITIVE https requirement (http
                 // permitted only for a private/loopback token endpoint; a raw `starts_with("http://")`
-                // let `HTTPS://`/scheme-less/`FTP://` bypass it, the exact base_url bug from audit c2r5),
+                // let `HTTPS://`/scheme-less/`FTP://` bypass it, the exact base_url bug this mirrors),
                 // and (2) the SSRF/metadata denylist — an operator typo/template pointing token_url at
-                // IMDS or metadata.google.internal would POST the client secret straight to it. (found:
-                // full audit.)
+                // IMDS or metadata.google.internal would POST the client secret straight to it.
                 let host_private = extract_normalized_host(tu)
                     .as_deref()
                     .map(host_is_private_or_loopback)
@@ -506,7 +505,7 @@ pub(crate) fn validate_with_unset(
             // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
-            // resolves (an unset var can't be validated — caught at boot). (found: 1.4.0 audit, egress-auth.)
+            // resolves (an unset var can't be validated — caught at boot).
             let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
@@ -524,7 +523,7 @@ pub(crate) fn validate_with_unset(
         // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
         // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
         // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
-        // be validated — it is checked at boot, where unset is a hard error). (found: 1.4.0 audit.)
+        // be validated — it is checked at boot, where unset is a hard error).
         if matches!(
             provider_cfg.auth,
             Some(crate::config::ProviderAuth::JwtBearer)
@@ -533,7 +532,7 @@ pub(crate) fn validate_with_unset(
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
-                // so the token_uri SSRF check is identical at validate and apply time (1.4.0 audit).
+                // so the token_uri SSRF check is identical at validate and apply time.
                 let ssrf = crate::egress_auth::MetadataSsrfPolicy {
                     allow_overrides: &allow_overrides,
                     allow_all: cfg.allow_all_metadata,
@@ -1291,7 +1290,7 @@ pub(crate) fn validate_with_unset(
         // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
         // caller's own credential (or an empty one) goes upstream. WARN (not hard-reject): a legit
         // Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key.
-        // 1.5.3: the mode moved off `auth:` onto the `pools:` section (audit §4) — the all-pools
+        // 1.5.3: the mode moved off `auth:` onto the `pools:` section — the all-pools
         // default plus any per-pool override. The warning fires if ANY of them is `passthrough`.
         let any_passthrough = cfg.upstream_credentials == crate::auth::UpstreamCreds::Passthrough
             || cfg
@@ -1806,7 +1805,7 @@ fn percent_decode_host(host: &str) -> String {
 /// `url`'s scheme equals `scheme`, compared CASE-INSENSITIVELY per RFC 3986 §3.1 — the same guard
 /// `observability::scheme_is` uses for webhook URLs. A raw `starts_with("https://")` rejects the
 /// valid uppercase spelling `HTTPS://host/` that reqwest's `Url::parse` lowercases and accepts, so
-/// the provider base_url scheme check must match the webhook guard's case-insensitivity. (audit c2r5.)
+/// the provider base_url scheme check must match the webhook guard's case-insensitivity.
 /// Validate the top-level `public_url:` — busbar's public origin. Rules (see call site): absolute
 /// http/https; a PUBLIC host must use https (loopback/private http is allowed for local dev); the
 /// value must be a BARE ORIGIN (`scheme://host[:port]`, optional trailing `/`) with no path, query,

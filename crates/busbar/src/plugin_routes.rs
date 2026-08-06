@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Plugin HTTP endpoint registration (design §5): the general primitive behind both `/metrics` (a
+//! Plugin HTTP endpoint registration: the general primitive behind both `/metrics` (a
 //! pull exporter's exposition) and a routing hook's inbound `/feedback`.
 //!
 //! A plugin DECLARES its routes at load (an export sink via its `routes` op, a hook via the same). The
@@ -10,9 +10,9 @@
 //! already-owned pair is a LOUD failure naming the owner, never last-writer-wins. The surviving table
 //! ([`PluginRouteTable`]) is carried on the live [`crate::state::App`] snapshot; the mounted axum
 //! handler ([`plugin_route_dispatch`]) resolves the owning plugin from the CURRENT snapshot on EVERY
-//! request (design §7.1 scrape-time resolution), so a hot-swapped plugin never leaves a stale route.
+//! request (scrape-time resolution), so a hot-swapped plugin never leaves a stale route.
 //!
-//! ## Confinement (§5.2)
+//! ## Confinement
 //!
 //! - A `hook` plugin's routes are confined under `/hooks/<name>/*` (`<name>` = its config name), so two
 //!   hook instances can never collide and a hook can never shadow a core route.
@@ -22,7 +22,7 @@
 //!   `/v1/models`, `/v1beta/models`, or the auth-exchange path — and all plugin routes are reserved
 //!   BEFORE the data-plane catch-all fallback (mounted in [`crate::base_data_router`]).
 //!
-//! ## Auth (§5.4)
+//! ## Auth
 //!
 //! The declared [`RouteAuth`] is enforced by the EXISTING auth middleware chain (`auth::auth_middleware`
 //! consults [`PluginRouteTable::declared_auth`]): `none` bypasses like `/healthz`, `key` takes the
@@ -46,7 +46,7 @@ use std::sync::Arc;
 const MAX_RELAY_RESPONSE_HEADERS: usize = 64;
 
 /// The core paths a plugin route may NEVER claim (exact match), independent of kind. `/metrics` is
-/// deliberately ABSENT — it is the one well-known path a metrics `export` plugin MAY claim (§5.2); a
+/// deliberately ABSENT — it is the one well-known path a metrics `export` plugin MAY claim; a
 /// `hook` still cannot, because the hook branch of [`confine`] requires `/hooks/<name>/*`.
 fn reserved_exact_paths() -> [&'static str; 6] {
     [
@@ -77,7 +77,7 @@ pub(crate) trait PluginHttpDispatch: Send + Sync {
     fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse;
 
     /// The app-aware serve arm: BUILT-IN export/hook dispatchers that need the LIVE `App` snapshot
-    /// (the built-in `prometheus` exporter's scrape-time gauge refresh, design §7.1) override this; a
+    /// (the built-in `prometheus` exporter's scrape-time gauge refresh) override this; a
     /// loaded out-of-tree plugin (which cannot receive the app across the ABI) uses the default, which
     /// ignores the app and calls [`PluginHttpDispatch::handle_http`]. Called on a blocking thread (see
     /// [`plugin_route_dispatch`]), so a synchronous read (SQLite) inside an override cannot stall the
@@ -207,7 +207,7 @@ impl PluginRouteTable {
     }
 }
 
-/// Namespace-confine one declared `path` for a plugin of `kind` named `owner` (§5.2). `Ok(())` iff the
+/// Namespace-confine one declared `path` for a plugin of `kind` named `owner`. `Ok(())` iff the
 /// path is inside the plugin's allowed namespace and collides with no reserved core route.
 fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
     // Never under the admin API surface — the whole `/api/*` root is reserved (the admin auth chain
@@ -254,7 +254,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
 }
 
 /// Confinement-check the {path, method} tuples of a set of declarations WITHOUT their dispatchers — the
-/// MANIFEST-LEVEL preflight (design §5.5): nothing is dlopened, deterministic scan order is the input
+/// MANIFEST-LEVEL preflight: nothing is dlopened, deterministic scan order is the input
 /// order, first-to-claim owns, and a second claim of the same `{path, method}` fails LOUD naming the
 /// owning plugin. The SAME logic backs [`build_route_table`] (which additionally carries the live
 /// dispatchers), so `--validate` and boot cannot diverge from what actually mounts.
@@ -310,7 +310,7 @@ pub(crate) fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTabl
     Ok(PluginRouteTable { by_path_method })
 }
 
-/// THE RESTART-TO-APPLY SIGNAL for plugin routes (audit finding E1): the paths a just-applied config
+/// THE RESTART-TO-APPLY SIGNAL for plugin routes: the paths a just-applied config
 /// declares that this process CANNOT serve, because they were never registered on the axum router.
 ///
 /// Each declared path is registered ONCE, at boot ([`mount_plugin_routes`], `on(filter,
@@ -398,7 +398,7 @@ pub(crate) fn mount_plugin_routes(
 }
 
 /// The ONE axum handler every mounted plugin route shares. It resolves the owning plugin from the
-/// CURRENT App snapshot ([`CurrentApp`]) on every request (scrape-time resolution, §7.1 — no handle is
+/// CURRENT App snapshot ([`CurrentApp`]) on every request (scrape-time resolution, no handle is
 /// baked into the route closure), forwards a bounded projection of the request via `handle_http`, and
 /// relays the plugin's response subject to the header-count cap. The auth middleware already enforced
 /// the route's declared bar before this runs.

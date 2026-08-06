@@ -40,7 +40,7 @@ fn anthropic_sse_round_trip_byte_exact() {
 #[test]
 fn openai_bare_data_round_trip_byte_exact() {
     // OpenAI bare `data:` frames + `include_usage` trailing usage chunk + [DONE]. This fidelity test
-    // pins the VERBATIM re-emit for a client that OPTED IN to streaming usage (R3-A-b): the trailing
+    // pins the VERBATIM re-emit for a client that OPTED IN to streaming usage: the trailing
     // usage-only chunk is exactly what that client asked for, so it must pass through byte-for-byte.
     // (The opted-OUT case, where that same chunk is STRIPPED, is covered by
     // `stream_translate_tests::same_proto_openai_opted_out_strips_trailing_usage_chunk`.)

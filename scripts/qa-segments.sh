@@ -2,60 +2,47 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# qa-segments.sh — the qa-gate SEGMENTATION umbrella (busbar 1.5.3, unit G; design §6 + catalog
-# qa-gate-test-catalog-1.5.3.md §1/§3).
+# qa-segments.sh — the qa-gate SEGMENTATION umbrella.
 #
 # qa-gate is a REGISTRY-DRIVEN umbrella that fans out one independent, independently-reported job per
 # `active` segment, holding every not-yet-shipped capability as a `reserved` slot that is INERT and
 # EXCLUDED FROM THE GREEN CLAIM. The MANIFEST (qa/segments.toml) is the source of truth: adding a
 # segment is a manifest entry, never new plumbing — the exact analogue of plugin-registry-check.sh
-# --list driving qa-gate.yml's per-plugin sibling checkout loop.
+# --list driving qa-gate.yml's per-plugin checkout loop.
 #
-# ── WHAT CHANGED IN THIS REVISION, AND WHY (the honesty fix) ──────────────────────────────────────
-# This runner used to have a `PASS(pending)` outcome: an `active` segment whose `cargo test --test
-# <target>` did not exist reported GREEN with a "scaffolded green" marker. Measured against the live
-# tree, TWO of the three active fast segments were in exactly that state — `export` named
-# `qa_export` and `hook-bindings` named `qa_hook_bindings`, NEITHER of which has ever existed in
-# crates/busbar/tests/. The umbrella completed in ten seconds and reported GREEN having executed
-# almost nothing.
+# ── THE HONESTY RULES ─────────────────────────────────────────────────────────────────────────────
+# A segment reporting GREEN having run nothing is indistinguishable from one that passed, so:
 #
-# A segment reporting GREEN having run nothing is indistinguishable from one that passed. That is the
-# reports-success-while-doing-nothing defect class this release exists to kill, and it was living
-# inside the gate meant to catch it. So:
-#
-#   * PASS(pending) IS DELETED. There is no longer any outcome by which an `active` segment can be
-#     green without executing its command. An active segment whose run target does not exist is a
-#     HARD FAIL naming the segment and the missing target (see missing_test_target).
-#   * `export` and `hook-bindings` now point at coverage that GENUINELY EXISTS in this tree (in-crate
-#     unit tests under `--bin busbar`, since `busbar` is a binary-only package). Nothing was
-#     manufactured to satisfy the manifest; the manifest was corrected to match the tree.
+#   * THERE IS NO "PENDING" OUTCOME. An `active` segment can never be green without executing its
+#     command. An active segment whose run target does not exist is a HARD FAIL naming the segment
+#     and the missing target (see missing_test_target).
 #   * THE GREEN CLAIM CARRIES ITS SCOPE. `--run`'s final block NAMES every reserved segment it did
 #     not cover, every segment a --tier filter excluded, and whether the per-plugin fan-out was live.
 #     "GREEN" with no scope is how a partial gate reads as a full one.
 #   * EVERY ACTIVE SEGMENT IS FAIL-INJECTED by --selftest: its failure is injected and the umbrella
 #     is asserted to exit non-zero and name it. A segment never observed red is not known to work.
 #
-# ── RECOMMENDED TO scripts/release-check.sh (NOT edited here — a sibling owns that file) ──────────
+# ── THE PER-PLUGIN FAN-OUT CONTRACT ──────────────────────────────────────────────────────────────
 # The per-plugin fan-out below is what turns the serial fleet soak into a parallel matrix. It needs
-# two additive things from release-check.sh:
+# two things from release-check.sh:
 #
-#   1. `--list-segments`: print, one per line, the segment tokens this script accepts, and exit 0.
+#   1. `--list-segments`: print, one per line, the segment tokens that script accepts, and exit 0.
 #      Emit the literal token `plugin-*` to advertise that per-plugin segments are supported. This is
 #      the CAPABILITY PROBE this runner uses; it must be cheap and side-effect-free (no docker, no
 #      build), like the existing arg-validation path.
 #   2. `--segment plugin-<repo>`: run only that one plugin's phases (boot its `service` container,
 #      run its gate) rather than the full fleet.
 #
-# This runner does NOT depend on either landing. It probes; if `plugin-*` is not advertised it falls
-# back to the aggregate `plugins` segment (today's preserved coverage) and SAYS SO in the scope line.
-# Coverage is identical either way; only the wall clock differs.
+# This runner does not require either to be present. It probes; if `plugin-*` is not advertised it
+# falls back to the aggregate `plugins` segment and SAYS SO in the scope line. Coverage is identical
+# either way; only the wall clock differs.
 #
 # SUBCOMMANDS
 #   --list                 emit the manifest as a TSV feed (id  status  tier  run) — the CI fan-out
 #                          reads this to build its matrix (registry-driven, no hand-written legs).
 #                          CONTRACT: four tab-separated columns in that order. Per-plugin segments
 #                          appear as ordinary rows. The workflow depends on this shape.
-#   --selftest             the SEGMENTATION SELF-TEST (catalog §3): the manifest parses; lists both
+#   --selftest             the SEGMENTATION SELF-TEST: the manifest parses; lists both
 #                          active AND reserved entries; the preserved coverage is present; every
 #                          active segment has a run command; reserved segments are INERT (proven by
 #                          observation); the per-plugin expansion matches the registry EXACTLY; the
@@ -68,8 +55,8 @@
 # GREEN-ON-COMPLETION: each active segment runs + reports independently; the umbrella is green iff
 # every active segment is green. No cross-segment masking. Reserved segments make no claim at all.
 #
-# No external deps beyond python3 (stdlib tomllib on 3.11+, with a tiny fallback parser) — same bare
-# runner posture as the sibling lints.
+# No external deps beyond python3 (stdlib tomllib on 3.11+, with a tiny fallback parser) — the same
+# bare-runner posture as the other lint scripts.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "qa-segments: cannot cd to repo root" >&2; exit 2; }
@@ -157,10 +144,10 @@ registry_feed() {
 }
 
 # ── CAPABILITY PROBE: does release-check.sh support per-plugin segments? ──────────────────────────
-# Declarative, not a grep of that script's source: we ask it what segments it accepts. Today it does
-# not implement --list-segments (unknown arg -> exit 2, no output, no side effects), so this is false
+# Declarative, not a grep of that script's source: we ask it what segments it accepts. When
+# --list-segments is unimplemented (unknown arg -> exit 2, no output, no side effects) this is false
 # and the aggregate `plugins` fallback carries plugin coverage. It flips to true, with no change
-# here, the moment the sibling change advertises `plugin-*`. Overridable for the self-test only.
+# here, the moment release-check.sh advertises `plugin-*`. Overridable for the self-test only.
 PLUGIN_FANOUT_CACHE=""
 plugin_fanout_available() {
   if [ -n "${QA_SEGMENTS_FORCE_FANOUT:-}" ]; then
@@ -185,7 +172,7 @@ plugin_fanout_available() {
 # successfully. A registry failure must not leave a PARTIAL feed on stdout — that feed would be a
 # perfectly well-formed segment list with the plugin legs silently missing, and a consumer that built
 # its matrix from it (ignoring the exit code) would run a smaller gate and report green. Same defect
-# class as PASS(pending), one layer down. On any failure this prints NOTHING and returns non-zero.
+# class as a segment that quietly runs nothing. On any failure this prints NOTHING and returns non-zero.
 feed() {
   local raw fanout=no out="" reg=""
   raw="$(raw_feed)" || return 1
@@ -242,8 +229,7 @@ feed() {
 # ── THE HONESTY CHECK ─────────────────────────────────────────────────────────────────────────────
 # If a run command names `cargo test --test <target>`, that integration target must EXIST. Prints the
 # missing target name and returns 0 when it is absent; returns 1 when there is nothing missing.
-# This is what replaced PASS(pending): the same condition that used to print "scaffolded green" now
-# makes the segment RED.
+# A segment whose named target is absent cannot run anything, so it is RED rather than green.
 missing_test_target() {
   local run="$1" name
   # bash `=~` (portable across bash 3.2 on macOS and 4+ on Linux) — avoids BSD-vs-GNU sed `\+` drift.
@@ -318,7 +304,7 @@ run_all() {
     if run_one "$id"; then
       if [ "$status" != "reserved" ]; then
         # COVERED means: active, executed, AND passed. A segment that failed is listed separately —
-        # calling it "covered" would be the same category error as the old PASS(pending).
+        # calling it "covered" would be a category error.
         covered="${covered:+$covered, }$id"
         case "$id" in plugins|plugin-*) plugins_covered=yes ;; esac
       fi
@@ -362,7 +348,7 @@ run_all() {
   return "$rc"
 }
 
-# ── SELF-TEST (segmentation self-test, catalog §3) ────────────────────────────────────────────────
+# ── SELF-TEST (the segmentation self-test) ───────────────────────────────────────────────────────
 # Hermetic: no network, no docker, no cargo. Every assertion that matters is proven by OBSERVATION
 # against a throwaway fixture manifest, not by trusting a status string in the real one.
 selftest() {
@@ -461,7 +447,7 @@ selftest() {
       fails=$((fails+1))
     fi
   fi
-  # …and prove the expansion itself works, here, without depending on the sibling's flags landing:
+  # …and prove the expansion itself works here, without depending on release-check.sh's flags:
   # force the probe true against a fixture and check the set matches the registry.
   local fo_ids fo_expect
   fo_ids="$(QA_SEGMENTS_FORCE_FANOUT=1 "$0" --list | cut -f1 | sed -n 's/^plugin-//p' | sort)"
@@ -513,9 +499,8 @@ TOML
   rm -rf "$ftmp"
 
   # (i) THE MISSING-TARGET HARD FAIL CAN ACTUALLY FAIL (and does not fire on a target that exists).
-  # This is the replacement for PASS(pending) proven red. crates/busbar/tests/cli_validate.rs exists
-  # on this branch and is the control; qa_export is the exact target that used to print
-  # "scaffolded green" and must now be RED.
+  # crates/busbar/tests/cli_validate.rs exists and is the control; `qa_export` names a target that
+  # does not exist and must therefore be RED.
   local mtmp
   mtmp="$(mktemp -d)"
   cat >"$mtmp/segments.toml" <<'TOML'
@@ -529,7 +514,7 @@ TOML
     red "  FAIL  an active segment naming the non-existent 'qa_export' target reported GREEN"
     fails=$((fails+1))
   elif grep -q 'DOES NOT EXIST' "$mtmp/out" && grep -q 'qa_export' "$mtmp/out"; then
-    note "PASS  missing run target is a HARD FAIL naming the segment and the target (PASS(pending) is gone)"
+    note "PASS  missing run target is a HARD FAIL naming the segment and the target"
   else
     red "  FAIL  missing-target run failed but did not name the segment/target"; fails=$((fails+1))
   fi

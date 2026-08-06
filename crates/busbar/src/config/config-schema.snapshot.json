@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (config-stability gate, design §5).",
+    "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (enforced by the config-stability gate).",
     "frozen_at": "1.5.3",
     "generator": "scripts/config-schema.py gen",
     "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd) + the named-definition-map type aliases under crates/busbar/src/config"

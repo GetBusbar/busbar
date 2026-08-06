@@ -43,7 +43,7 @@ impl HealthState {
 
     /// READ-ONLY lane-GLOBAL classification over the shared [`Unavailable`] taxonomy — the `/stats`
     /// (per-lane, pool-agnostic) analogue of the per-(pool, lane) [`classify`](LaneRuntime::classify).
-    /// Same lane-global gates read SEPARATELY (R3: `Dead` vs `BudgetExhausted`), the SAME
+    /// Same lane-global gates read SEPARATELY (`Dead` vs `BudgetExhausted`), the SAME
     /// `breaker_verdict` decoder aggregated across routed cells via
     /// [`lane_breaker_verdict`](Self::lane_breaker_verdict), then the SAME lane-global permit peek —
     /// so the `/stats` availability can never drift from the routing verdict. Side-effect-free.
@@ -230,7 +230,7 @@ impl LaneRuntime for HealthState {
         if ls.limited && ls.budget.load(Ordering::Relaxed) <= 0 {
             return Err(Unavailable::BudgetExhausted);
         }
-        // Breaker peek via the SAME decoder `try_admit` uses (R3) — read-only, no probe CAS.
+        // Breaker peek via the SAME decoder `try_admit` uses — read-only, no probe CAS.
         match breaker_verdict(self.cell(pool, lane).as_ref(), now) {
             BreakerVerdict::Open { until } => Err(Unavailable::BreakerOpen { until }),
             BreakerVerdict::HalfOpen => Err(Unavailable::ProbeInFlight),
@@ -250,7 +250,7 @@ impl LaneRuntime for HealthState {
     }
 
     fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable> {
-        // Same lane-global gates as `classify`, same SEPARATE reads (R3).
+        // Same lane-global gates as `classify`, same SEPARATE reads.
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
             return Err(Unavailable::Dead);
@@ -324,7 +324,7 @@ impl LaneRuntime for HealthState {
             return Err(Unavailable::BudgetExhausted);
         }
         let cell = self.cell(pool, lane);
-        // Consume the SINGLE `breaker_verdict` decoder (R3) — the breaker may have TRIPPED Open (or a
+        // Consume the SINGLE `breaker_verdict` decoder — the breaker may have TRIPPED Open (or a
         // peer may have taken the probe) while the caller was queued, so this re-check is load-bearing:
         // it is what prevents the queue from ever dispatching onto a now-Open lane.
         match breaker_verdict(cell.as_ref(), now) {
@@ -362,7 +362,7 @@ impl LaneRuntime for HealthState {
     fn breaker_state_snapshot_in(&self, pool: &str, lane: usize) -> BreakerState {
         // Same PURE-projection core the `#[cfg(test)]` `breaker_state`/`breaker_state_in` methods
         // use (`breaker_state_for`) — no probe CAS, no Open→HalfOpen transition — just released
-        // for production reads (the Feature-2 `CandidateBreakerState` catalog entry).
+        // for production reads (the `CandidateBreakerState` catalog entry).
         self.breaker_state_for(pool, lane)
     }
 
@@ -438,8 +438,7 @@ impl LaneRuntime for HealthState {
         // push. If this push then wins the HalfOpen→Closed CAS, `cell_closed_locked` zeroed the cell's
         // SWRR `current_weight` under the transition lock, so the matching `reset_swrr_for` MUST run to
         // hold the pool's `Σ current_weight == 0` invariant — gate it on the recovered-bool exactly
-        // like `record_success_for` and `recover_lane` do. Dropping the bool here was
-        // the LOW #19 defect.
+        // like `record_success_for` and `recover_lane` do.
         if Self::cell_record_success(ls.as_ref(), now) {
             // Default cell belongs to the no-pool ("") set; reset runs after the transition lock is
             // released (it is a leaf within `cell_record_success`), so the shard lock is un-nested.
@@ -458,9 +457,9 @@ impl LaneRuntime for HealthState {
                 self.reset_swrr_for(pool_name, cell.as_ref());
             }
         }
-        // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell). This is the
-        // R24 fix: the prior per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a
-        // lane in N pools. Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
+        // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell): the prior
+        // per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a lane in N pools.
+        // Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
         ls.ok.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -589,7 +588,7 @@ impl LaneRuntime for HealthState {
         // It returns the cooldown value it OBSERVED (`Some(observed)`) so the under-lock close can
         // re-validate against it. This pre-read is ONLY a fast path AND the snapshot — the
         // authoritative decision happens under the transition lock in `cell_closed_if_recoverable`,
-        // which closes the TOCTOU (#16): a concurrent hard-down can park a cell Open with a fresh
+        // which closes the TOCTOU: a concurrent hard-down can park a cell Open with a fresh
         // sticky cooldown between this read and the close, and an unconditional close would clobber
         // that just-armed cooldown.
         let observe = |c: &dyn BreakerCellAccess| -> Option<u64> {
@@ -758,9 +757,9 @@ impl LaneRuntime for HealthState {
                 Some(ls.sem.available_permits())
             },
             at_capacity: ls.max < Semaphore::MAX_PERMITS && ls.sem.available_permits() == 0,
-            // Phase 2: render availability from the SAME taxonomy routing dispatches on (design §8),
+            // Render availability from the SAME taxonomy routing dispatches on,
             // aggregated lane-globally, so `/stats` cannot silently drift from behaviour. The breaker
-            // axis is surfaced separately (R9) via `lane_breaker_state`. BOTH axes derive from ONE
+            // axis is surfaced separately via `lane_breaker_state`. BOTH axes derive from ONE
             // `lane_breaker_verdict` fold (RwLock read + per-cell scan) computed here, rather than each
             // helper re-folding it independently — halving snapshot()'s breaker-cell scan cost.
             availability: self.classify_lane_from_verdict(lane, breaker_verdict),
@@ -836,7 +835,7 @@ impl LaneRuntime for HealthState {
                                     .map(|(pool, cell)| {
                                         // Same consistent-pair read as the default cell above - the
                                         // per-pool cell's (state, cooldown) is written together under its
-                                        // own transition lock, so snapshot both under one hold (P2 #5).
+                                        // own transition lock, so snapshot both under one hold.
                                         let (breaker_state, cooldown_until) = {
                                             let _tx = lock_recover(&cell.transition_lock);
                                             (

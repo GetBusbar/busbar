@@ -276,8 +276,7 @@ fn test_validate_rejects_zero_default_max_tokens() {
     );
 }
 
-/// FIX E [P1] REGRESSION: `limits.request_body_read_timeout_secs` (added in the round-1 security
-/// fix) had NO zero-guard, unlike its siblings `tls_handshake_timeout_secs` /
+/// REGRESSION: `limits.request_body_read_timeout_secs` had NO zero-guard, unlike its siblings `tls_handshake_timeout_secs` /
 /// `webhook_delivery_timeout_secs`. A value of 0 makes the inter-frame body timer
 /// (`Duration::from_secs(0)`) fire immediately, tearing down EVERY request whose body is not
 /// instantly buffered. `validate()` must reject it; a positive value must validate.
@@ -454,7 +453,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
 #[test]
 fn test_validate_conflicting_context_max_across_pools() {
     // A model maps to one lane, so a DIFFERING context_max across pools must be a validate() error —
-    // not only a boot-time `die`. Else a clean --validate would still crash at real boot. (audit M7.)
+    // not only a boot-time `die`. Else a clean --validate would still crash at real boot.
     let build = |ca: Option<usize>, cb: Option<usize>| -> Vec<String> {
         let mut providers = HashMap::new();
         providers.insert(
@@ -621,8 +620,8 @@ fn test_validate_model_without_provider_error() {
 /// An `AuthCfg` with the given DATA-PLANE chain provider names (bare built-in entries).
 /// The 1.4.x `make_auth(mode, client_tokens)` helper is gone with `client_tokens`/`modules`;
 /// chain semantics replace the mode string: `[keys]` = signed-key auth, `[]` = open front door.
-/// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section, audit
-/// §4) — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
+/// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section)
+/// — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
 /// dozens of call sites still read as "this chain, that egress posture".
 fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
     let mut auth = config::AuthCfg::default_none();
@@ -769,7 +768,7 @@ fn test_validate_rejects_zero_max_concurrent() {
     );
 }
 
-/// round-8 (panics lens): an operator-supplied `max_concurrent` above `Semaphore::MAX_PERMITS` must
+/// An operator-supplied `max_concurrent` above `Semaphore::MAX_PERMITS` must
 /// be REJECTED as a normal `400 invalid_request` validation error — not accepted and left to panic
 /// later inside `Semaphore::new` (`permits <= Semaphore::MAX_PERMITS`) in `build_app_from_config`.
 /// The bound is the exact panic precondition (`usize::MAX >> 3`), not an invented policy cap: this
@@ -816,7 +815,7 @@ fn test_validate_rejects_oversized_max_concurrent() {
     );
 }
 
-/// round-8 (panics lens): the exact same `Semaphore::new` panic precondition, on the two sibling
+/// The exact same `Semaphore::new` panic precondition, on the two sibling
 /// operator-config values that feed a `Semaphore::new` with no bound of their own —
 /// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs) and
 /// `observability.max_inflight_webhook_deliveries` (observability.rs). Same class, same fix, one
@@ -1954,7 +1953,7 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
-    // 1.5.3 (audit §4): the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
     // resolved onto `RootCfg` — not a field of `auth:`.
     cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
@@ -2008,7 +2007,7 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
-    // 1.5.3 (audit §4): the credential MODE is the reserved `pools.upstream_credentials:` key now,
+    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
     // resolved onto `RootCfg` — not a field of `auth:`.
     cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
@@ -4469,8 +4468,8 @@ advanced:
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
 /// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes the
-/// round-3 regression where `validate` hard-rejected every plugin-backed secret module.
+/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes a
+/// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {
     let yaml = r#"
@@ -4809,7 +4808,7 @@ fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
 // cross-check: a two-rung {read-only, full} chain can never be incomparable, so the former
 // `test_admin_scope_incomparability_check_is_the_lattice_not_inequality` was deleted with it.)
 
-// ─── 1.5.2 token-exchange Step 1: public_url + browser_login + key_ttl validation ───
+// ─── 1.5.2 token exchange: public_url + browser_login + key_ttl validation ───
 
 /// Parse an `auth:` block + its `identity-providers:` definitions from ONE YAML document (the two
 /// are siblings at the config root in 1.5.3) and resolve them into the runtime `AuthCfg`.

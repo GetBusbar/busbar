@@ -52,7 +52,7 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_sign
     m
 }
 
-/// 1.5.2 Step 6 CAPABILITY GATE: a `browser_login` login method backed by a PRE-v2 auth plugin must
+/// 1.5.2 CAPABILITY GATE: a `browser_login` login method backed by a PRE-v2 auth plugin must
 /// be a HARD `LoginMethods::build` error (config/boot-time), NOT a 500 at request time. We stamp a
 /// v1 auth manifest (still admitted by the scan — the auth ABI floor is 1) and attach `browser_login`
 /// to it; the build refuses, naming the abi_version.
@@ -76,7 +76,7 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
 
     let mut cfg = AuthCfg::default_none();
     let mut method = crate::config::AuthMethodCfg {
-        // 1.5.3/A7: the resolved method carries the PROVIDER's `module:` — the plugin it opens —
+        // 1.5.3: the resolved method carries the PROVIDER's `module:` — the plugin it opens —
         // separately from the map key, which is the provider NAME.
         module: "acme-auth-static".into(),
         browser_login: Some(crate::config::BrowserLoginCfg {
@@ -148,8 +148,7 @@ fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
 }
 
 /// A `kind: auth` manifest carrying a `settings_schema` that marks `field` as `x-busbar-secret:
-/// true` at the schema's ROOT `properties` (plugin-settings-schema-SPEC.md's contract test,
-/// checklist item 7 / consumer question #1). `resolve_settings()` itself never reads this schema —
+/// true` at the schema's ROOT `properties`. `resolve_settings()` itself never reads this schema —
 /// resolution fires on VALUE SHAPE alone, not on what the manifest declares — but the whole point of
 /// `x-busbar-secret` being "mechanically true, not a convention" is that the two agree: what the
 /// schema marks as a secret IS what the engine actually resolves before the plugin sees it. This
@@ -286,8 +285,8 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE CONTRACT TEST for consumer question #1's guarantee, via the PLUGIN-SETTINGS path
-/// specifically (plugin-settings-schema-SPEC.md checklist item 7): a manifest that declares an
+/// THE CONTRACT TEST for the `x-busbar-secret` guarantee, via the PLUGIN-SETTINGS path
+/// specifically: a manifest that declares an
 /// ARBITRARY root-level field (`token` — not the well-known `licenseKey` convention the OTHER
 /// contract test above already covers) as `x-busbar-secret: true`, set to `{ env: VAR }`, boots for
 /// REAL through the full engine pipeline (`plugins_preflight` → `AuthMiddleware::new`, the exact
@@ -414,7 +413,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
-            // 1.5.3 (audit §2): the verdict reports the IDENTITY-PROVIDER NAME — the
+            // 1.5.3: the verdict reports the IDENTITY-PROVIDER NAME — the
             // `identity-providers:` key the chain referenced — NOT the plugin's own self-reported
             // name. That is what makes two NAMED providers backed by one module independently
             // bindable (`role_bindings.<name>`) instead of silently collapsing onto one identity.
@@ -514,7 +513,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 /// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
 /// plugin, keyed by config name, `has_plugin: true`; `admin-tokens` (an engine arm) is NOT in the
 /// map. Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
-/// the reload path can never leave `admin_modules` stale/empty (RISK 10).
+/// the reload path can never leave `admin_modules` stale/empty.
 #[test]
 fn admin_modules_rebuilt_on_reload() {
     use crate::auth::AdminAuthChain;
@@ -652,7 +651,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         err.contains("no plugin matching") && err.contains("is installed in"),
         "explains it is unresolved: {err}"
     );
-    // Step 7: the two-part diagnosis — subsystem enabled? / tarball in the folder? + the fetch/drop
+    // The two-part diagnosis — subsystem enabled? / tarball in the folder? + the fetch/drop
     // remediation.
     assert!(
         err.contains("enabled") && err.contains("plugins.fetch"),
@@ -761,10 +760,9 @@ impl busbar_api::AuthModule for BlockingModule {
     }
 }
 
-/// RED (chain called inline from `auth_middleware`): the probe below is never scheduled, because
-/// the single worker is inside the plugin.
-/// GREEN (chain offloaded to the blocking pool): the worker is free and the probe completes while
-/// the plugin is still blocking.
+/// Called INLINE from `auth_middleware`, the probe below is never scheduled, because the single
+/// worker is inside the plugin. OFFLOADED to the blocking pool, the worker is free and the probe
+/// completes while the plugin is still blocking.
 ///
 /// A one-worker runtime is not a contrived shape — busbar sizes its runtime from
 /// `available_parallelism()` and the docs recommend 1-2 workers for sidecar deployments. It is
@@ -844,7 +842,7 @@ fn an_in_process_chain_is_not_offloaded() {
     );
 }
 
-// ── PASS ADMISSION IS CHAIN-OUTCOME-CONDITIONED (F1) ─────────────────────────────
+// ── PASS ADMISSION IS CHAIN-OUTCOME-CONDITIONED ──────────────────────────────────
 //
 // `TestGroupsModule` (used above) leaves `cacheable()` at the trait default `false`
 // (`api/src/auth.rs:67-69`), so it cannot exercise the cache. These two purpose-built modules are
@@ -903,9 +901,9 @@ impl busbar_api::AuthModule for CacheableIdentify {
     }
 }
 
-/// RED: an unauthenticated caller (a chain that never identifies) must leave NO trace in the
-/// cache. Today `run_chain_cached` (`auth/mod.rs:293`) `put`s a fresh `Pass` immediately, so
-/// `flush_all()` observes 1 — that `Pass` is exactly the entry the finding shows displacing a real
+/// An unauthenticated caller (a chain that never identifies) must leave NO trace in the
+/// cache. A `run_chain_cached` that `put`s a fresh `Pass` immediately leaves `flush_all()`
+/// observing 1 — and that `Pass` is what displaces a real
 /// `Identify` under the oldest-inserted eviction rule (`auth_cache.rs:111-114`).
 #[test]
 fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
@@ -928,7 +926,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     );
 }
 
-/// RED: a chain that `Pass`es through a leading module and is then `Reject`ed must also admit
+/// A chain that `Pass`es through a leading module and is then `Reject`ed must also admit
 /// nothing — the leading `Pass` must not be committed before the `Reject` short-circuits the
 /// chain. This is the case the old `MAX_PASS_ENTRIES` partition design never addressed at all: it
 /// still admitted this leading `Pass`.
@@ -959,10 +957,10 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     );
 }
 
-/// RED: the finding's own end-to-end scenario. A real `Identify` is cached first (the entry the
+/// The end-to-end scenario. A real `Identify` is cached first (the entry the
 /// eviction rule must protect); then an unauthenticated caller runs the chain `MAX_ENTRIES` times
 /// with distinct junk credentials at the SAME `now`, so `retain`'s expiry sweep reclaims nothing
-/// and every `put` must fall through to `min_by_key(inserted_seq)`. Today's unconditional-`Pass`-put
+/// and every `put` must fall through to `min_by_key(inserted_seq)`. An unconditional-`Pass`-put
 /// admits each of those, and because the `Identify` was inserted first it has the lowest
 /// `inserted_seq` and is evicted FIRST (`auth_cache.rs:111-114`).
 #[test]

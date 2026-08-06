@@ -179,7 +179,7 @@ fn native_metadata_wins_over_promoted_user() {
     );
 }
 
-/// class-6 6c1: `/v1/responses` DOES model top-level `parallel_tool_calls`, identically to Chat
+/// `/v1/responses` DOES model top-level `parallel_tool_calls`, identically to Chat
 /// Completions — the reader previously hardcoded `None` (total ingress loss for a Responses caller
 /// who explicitly set it), unlike Bedrock/Gemini/Cohere where `None` is the ACCURATE "this dialect
 /// has no such parameter". Round-trips ingress read AND egress re-emit.

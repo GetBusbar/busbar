@@ -3,8 +3,8 @@
 
 //! A **hermetic trivial `kind: export` plugin** — a `cdylib` exporting the export C ABI. It declares
 //! it carries the single [`ExportStream::Metrics`] stream and drops every delivered batch (the default
-//! no-op `deliver`). Before this crate existed, `kind: export` had zero in-tree ABI-crossing coverage;
-//! it is the export-seam analogue of `busbar-secret-example-plugin` (secret) and
+//! no-op `deliver`). It is the in-tree ABI-crossing coverage for the `kind: export` seam, the
+//! export-seam analogue of `busbar-secret-example-plugin` (secret) and
 //! `busbar-hook-test-plugin` (hook) — a real, loadable, signable export plugin for the `DynExport`
 //! dlopen seam to round-trip through.
 //!

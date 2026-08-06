@@ -6,7 +6,7 @@
 //! A coarse TAG only: a metrics label and the `paths:` config key. It carries NO capability booleans
 //! — whether a given (protocol, operation, model) streams or reports usage is an OperationHandler fact and lives on
 //! the `OperationHandler`, not here. Variant names are 1:1 with the forthcoming
-//! `enum Ir` (design C2), so the egress-`write` dispatch is a trivial same-name match.
+//! `enum Ir`, so the egress-`write` dispatch is a trivial same-name match.
 //!
 //! Semantic, endpoint-count-agnostic: `translation` is `Transcription` with a `target_language`;
 //! image edit/variation are `Image` with an `op` discriminant — NOT separate operations.

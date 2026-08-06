@@ -417,7 +417,7 @@ impl ProtocolReader for CohereReader {
             .and_then(|v| u32::try_from(v).ok());
         let stop = crate::ir::read_stop_sequences(obj.get("stop_sequences"));
         // Cohere v2 `tool_choice` is a top-level enum string (REQUIRED/NONE). Promote it to the IR
-        // union so a forced directive survives the cross-protocol seam (PF-H1).
+        // union so a forced directive survives the cross-protocol seam.
         let tool_choice = read_cohere_tool_choice(obj.get("tool_choice"));
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -540,7 +540,7 @@ impl ProtocolReader for CohereReader {
             // Guard on `!text_block_closed`: once the text block has been closed (content-end or a
             // leading tool-plan's tool-call-start), a later text frame must NOT reopen it. A failed
             // guard falls through to the `other` no-op arm and is dropped, keeping the egress balanced
-            // (no second content_block_start / delta into a stopped index). (1.4.0 audit, translation.)
+            // (no second content_block_start / delta into a stopped index).
             ET_CONTENT_START if !state.text_block_closed => {
                 // The text content block claims a DYNAMIC IR index by order of first appearance
                 // (`cohere_text_ir_index`), NOT a hardcoded 0: a `tool-call-start` that arrived
@@ -688,7 +688,7 @@ impl ProtocolReader for CohereReader {
                 // upstream) would leave a dangling `content_block_start` with no matching stop on an
                 // Anthropic egress (an unbalanced stream / proxy-signature tell). Force-close it here,
                 // before the terminal frames, at the index it CLAIMED — so the egress stream is always
-                // balanced regardless of upstream truncation. (1.4.0 audit, translation.)
+                // balanced regardless of upstream truncation.
                 if state.text_block_open {
                     state.text_block_open = false;
                     state.text_block_closed = true;

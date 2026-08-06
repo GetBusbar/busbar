@@ -31,8 +31,8 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// of overhead per block, nowhere near doubling it), so a genuine tarball containing only a
 /// manifest + a library under the existing per-member caps is always comfortably under this sum -
 /// anything larger is rejected before the read, not after.
-// `pub`, not `pub(crate)`: `POST /plugins/inspect` (plugin-settings-schema-SPEC.md checklist item
-// 4) needs this SAME ceiling to size its own request-body cap on the base64-encoded upload,
+// `pub`, not `pub(crate)`: `POST /plugins/inspect` needs this SAME ceiling to size its own
+// request-body cap on the base64-encoded upload,
 // checked BEFORE the decoder ever runs — one source of truth for "how big can a plugin tarball
 // legitimately be", not a second guessed constant that could silently drift from this one.
 pub const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
@@ -86,7 +86,7 @@ pub fn package(manifest: &Manifest, lib_name: &str, lib_bytes: &[u8]) -> Result<
 /// rejection below is a DIFFERENT, unrelated check that stays exactly as-is: refusing a
 /// declared-oversize member before reading is a cheap, fail-closed refusal and is fine to keep
 /// keying off the declared size — the bug this constant fixes is trusting declared size for
-/// ALLOCATION, not for rejection. Do not fold the two together.
+/// ALLOCATION, not for rejection. The two checks stay separate.
 const MEMBER_RESERVE_CEILING: u64 = 64 * 1024;
 
 /// Read one tar entry fully, bounded at `cap` decompressed bytes. An entry whose DECLARED size

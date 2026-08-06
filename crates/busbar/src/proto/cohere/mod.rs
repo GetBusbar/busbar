@@ -98,8 +98,8 @@ fn clamp_frame_index(data: &serde_json::Value) -> usize {
 }
 
 /// Normalize Cohere v2's native `tool_choice` (a top-level enum STRING) into the IR's tool-choice
-/// union so a forced directive survives the cross-protocol seam instead of degrading to `auto`
-/// (PF-H1). Cohere v2 models only `REQUIRED` (must call some tool) and `NONE` (no tool); it has no
+/// union so a forced directive survives the cross-protocol seam instead of degrading to `auto`.
+/// Cohere v2 models only `REQUIRED` (must call some tool) and `NONE` (no tool); it has no
 /// `auto` literal (auto is the default when omitted) and no way to pin ONE specific tool. So an
 /// unrecognized/absent value yields `None` (omitted), and the targeted-tool case is handled lossily
 /// on the WRITE side (degraded to `REQUIRED`). The reader can only ever observe `REQUIRED`/`NONE`.
@@ -112,7 +112,7 @@ fn read_cohere_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir:
 }
 
 /// Clamp a temperature to Cohere v2's native `[0.0, 1.0]` range, returning `(clamped, was_clamped)`
-/// where `was_clamped` is `true` iff the clamp ACTUALLY changed the value (PF-M1 clamp + non-silent
+/// where `was_clamped` is `true` iff the clamp ACTUALLY changed the value (clamp + non-silent
 /// signal, mirroring `anthropic::clamp_temperature_for_anthropic` /
 /// `bedrock::clamp_temperature_for_bedrock`). OpenAI / Responses accept temperature up to 2.0, so a
 /// cross-protocol request can carry a value Cohere's API rejects with a hard 400 ValidationException;
@@ -239,7 +239,7 @@ fn cohere_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
             "k",
             "stop_sequences",
             "stream",
-            // Phase 0 sampling/output controls now modeled into the IR (so they translate the
+            // Sampling/output controls modeled into the IR (so they translate the
             // cross-protocol seam) — must be excluded from `extra` or a same-protocol passthrough
             // would double-emit them (once from the modeled writer path, once echoed via extra).
             "frequency_penalty",

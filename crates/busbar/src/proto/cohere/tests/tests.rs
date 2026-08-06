@@ -11,7 +11,7 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
         S::Safety
     );
     // `ERROR_TOXIC` is a v1 Generate-API token, not a member of v2 `/v2/chat`'s finish_reason enum
-    // (class-6 6d) — the reader still accepts it as forward-compat, but the writer must never emit
+    // — the reader still accepts it as forward-compat, but the writer must never emit
     // it. `S::Safety` maps to the same `ERROR` as `S::Error`: v2 genuinely cannot distinguish them.
     assert_eq!(write_cohere_stop_reason(S::Safety), "ERROR"); // golden wire-contract literal (kept bare on purpose)
                                                               // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
@@ -1074,7 +1074,7 @@ fn test_auth_headers_control_byte_key_omits_header() {
     );
 }
 
-/// class-6 6d: `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
+/// `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
 /// `/v2/chat` `finish_reason` enum. The writer must emit the v2-legal `ERROR` for `IrStopReason::
 /// Safety` (the reader keeps accepting `ERROR_TOXIC` on the way IN, as v1-dialect forward-compat —
 /// that asymmetry is intentional). Covers both the non-streaming `write_response` and the
@@ -1396,7 +1396,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
     // Round-trips through the reader back to IR `error` (the generic infra-failure passthrough).
     // The reader maps ONLY `ERROR_TOXIC` to `safety`; a generic `ERROR` must NOT be folded into
-    // the moderation bucket (MED #8) — it falls through to the lowercase passthrough -> `error`.
+    // the moderation bucket — it falls through to the lowercase passthrough -> `error`.
     let mut state = crate::ir::StreamDecodeState::default();
     let decoded = CohereReader.read_response_events("", &frame, &mut state);
     assert!(
@@ -2655,7 +2655,7 @@ fn test_read_request_tool_content_object_array_preserved() {
     );
 }
 
-/// Fix #5 (fidelity): the Cohere reader must concatenate tool-content text blocks with NO
+/// Fidelity: the Cohere reader must concatenate tool-content text blocks with NO
 /// separator. The OpenAI/Anthropic writers concatenate text with `""`, so a space inserted here
 /// would corrupt content split across blocks on a Cohere->OpenAI->Cohere round-trip (a phantom
 /// space appears at each former block boundary). Two adjacent text blocks `"foo"` + `"bar"` must
@@ -2733,7 +2733,7 @@ fn test_read_request_tool_content_string_array_still_works() {
         Some(crate::ir::IrBlock::Text { text, .. }) => text.clone(),
         other => panic!("expected text block in tool result, got {other:?}"),
     };
-    // Fix #5: concatenate with NO separator (the OpenAI/Anthropic writers concat text blocks
+    // Concatenate with NO separator (the OpenAI/Anthropic writers concat text blocks
     // with `""`); a space here corrupts content split across blocks on a round-trip.
     assert_eq!(text, "alphabeta");
 }
@@ -3484,7 +3484,7 @@ fn test_open_tools_growth_is_capped() {
     );
 }
 
-/// Round-9 codeaudit, performance lens: `cohere_lookup_tool_ir_index`/`cohere_assign_tool_ir_index`
+/// Performance: `cohere_lookup_tool_ir_index`/`cohere_assign_tool_ir_index`
 /// used to do a full O(n) linear scan over `state.open_tools` on EVERY tool-call-start/delta frame
 /// (the set is never shrunk), making a stream with many sequential tool calls cost O(n²) instead of
 /// O(n) overall. The fix replaces the scan with an O(log n) `state.tool_ir_index` `BTreeMap` lookup
@@ -3715,7 +3715,7 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
 }
 
 /// A tool index is consumed on close: a second `BlockStop` at the same index (an over-eager or
-/// duplicate close) must NOT re-report `tool-call-end`. After the open-text-tracking fix (MED #4)
+/// duplicate close) must NOT re-report `tool-call-end`. With open-text tracking in place,
 /// an index that is tracked by NEITHER the open-tool set NOR the open-text set emits no frame at
 /// all, rather than falling through to an orphan `content-end` with no matching `content-start`.
 #[test]
@@ -4159,8 +4159,8 @@ fn test_text_block_emits_balanced_content_start_and_end() {
     );
 }
 
-/// Minimal IR request carrying a single tool and an explicit `tool_choice`, for the PF-H1
-/// round-trip tests below.
+/// Minimal IR request carrying a single tool and an explicit `tool_choice`, for the
+/// tool-choice round-trip tests below.
 fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest {
     crate::ir::IrRequest {
         reasoning: None,
@@ -4204,8 +4204,8 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
 
 #[test]
 fn test_cohere_tool_choice_required_roundtrips() {
-    // REQUIRED reads into the IR union and re-emits as the native enum string (PF-H1). `tools` is
-    // required alongside `tool_choice` (class-6 6b2) — omitting it here would be testing the
+    // REQUIRED reads into the IR union and re-emits as the native enum string. `tools` is
+    // required alongside `tool_choice` — omitting it here would be testing the
     // guaranteed-400 shape the guard exists to prevent.
     let body = serde_json::json!({
         "model": "command-r",
@@ -4229,7 +4229,7 @@ fn test_cohere_tool_choice_required_roundtrips() {
 #[test]
 fn test_cohere_tool_choice_none() {
     // NONE round-trips to the IR `None` variant (forbid tools), distinct from omission. `tools` is
-    // required alongside `tool_choice` (class-6 6b2).
+    // required alongside `tool_choice`.
     let body = serde_json::json!({
         "model": "command-r",
         "messages": [{"role": "user", "content": "hi"}],
@@ -4253,7 +4253,7 @@ fn test_cohere_tool_choice_none() {
 fn test_cohere_tool_choice_specific_degrades_to_required() {
     // Cohere cannot pin ONE tool; a targeted IrToolChoice::Tool (e.g. translated from an OpenAI
     // `tool_choice:{type:function,...}`) must degrade to REQUIRED — force *some* tool — NOT
-    // silently drop to auto. This is the load-bearing PF-H1 behavior on a lossy-by-target hop.
+    // silently drop to auto. This is the load-bearing tool-choice behavior on a lossy-by-target hop.
     let ir = ir_with_tool_choice(Some(crate::ir::IrToolChoice::Tool {
         name: "get_weather".to_string(),
     }));
@@ -4517,7 +4517,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
                     citations: Vec::new(),
                 }],
             }],
-            // `tools` is required alongside `tool_choice` (class-6 6b2) — omitting it would test
+            // `tools` is required alongside `tool_choice` — omitting it would test
             // the guaranteed-400 shape the guard exists to prevent.
             tools: vec![crate::ir::IrTool {
                 name: "f".to_string(),
@@ -4842,7 +4842,7 @@ fn test_stream_tool_plan_to_anthropic_writer_is_balanced() {
     );
 }
 
-/// FINDING 1 [P0] REGRESSION: Anthropic and Gemini carry `tool_result` blocks on a USER-role
+/// REGRESSION: Anthropic and Gemini carry `tool_result` blocks on a USER-role
 /// message in the IR (Anthropic's Messages API puts `tool_result` content parts inside a
 /// `role:"user"` message). The Cohere v2 `/chat` API represents every tool result as its own
 /// `role:"tool"` message with a `tool_call_id`; a Cohere user message cannot carry tool results.
@@ -4903,8 +4903,8 @@ fn test_anthropic_user_tool_result_survives_to_cohere() {
     );
 }
 
-/// FIX D [P1] REGRESSION: an Anthropic USER-role message can bundle a `tool_result` block TOGETHER
-/// WITH genuine new user text (e.g. `[{tool_result...}, {text:"and now also do X"}]`). The round-1
+/// REGRESSION: an Anthropic USER-role message can bundle a `tool_result` block TOGETHER
+/// WITH genuine new user text (e.g. `[{tool_result...}, {text:"and now also do X"}]`). An earlier
 /// fix widened tool-result emission to fire on ANY message carrying a ToolResult block, but it then
 /// FOLDED that follow-up user text into the tool-result `content` string AND dropped the user turn:
 /// mislabeling user speech as tool output and losing it. Cohere v2 `/chat` models a tool result as

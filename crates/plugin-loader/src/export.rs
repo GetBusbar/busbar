@@ -8,7 +8,7 @@
 //!
 //! Mirrors the store/secret load seams: same trust/staging/wire-up pipeline, only the KIND (and the
 //! consuming engine seam) differs. The ACTUAL wiring of a delivery to the engine's
-//! metrics/audit/logs pipelines is a later unit — this seam just proves an export plugin LOADS and
+//! metrics/audit/logs pipelines lands separately — this seam just proves an export plugin LOADS and
 //! reports the streams it carries.
 
 use crate::{stage, wire_up_raw, RawPlugin};

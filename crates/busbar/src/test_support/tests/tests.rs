@@ -2244,7 +2244,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
             .api_key("busbar-key"),
         )
         .pool("default", &[(0, 1)])
-        // 1.5.3 (audit §4): the passthrough EGRESS posture is the `pools:`-level
+        // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
         .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .build();
@@ -2413,7 +2413,7 @@ async fn test_passthrough_forwards_caller_token() {
             .api_key("busbar-central-key"),
         )
         .pool("default", &[(0, 1)])
-        // 1.5.3 (audit §4): the passthrough EGRESS posture is the `pools:`-level
+        // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
         .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
         .build();

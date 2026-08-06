@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `GET /auth/token` — the HOSTED BROWSER LOGIN page (1.5.2, Step 6).
+//! `GET /auth/token` — the HOSTED BROWSER LOGIN page (1.5.2).
 //!
 //! One param-less path, three sub-states read off the query string:
 //! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login` block,
@@ -230,7 +230,7 @@ impl LoginMethods {
             }
             let cfg_json = serde_json::Value::Object(resolved).to_string();
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
-            // provider NAME (the instance). 1.5.3/A7: `auth.methods:` folded into
+            // provider NAME (the instance). 1.5.3: `auth.methods:` folded into
             // `identity-providers:`, so the two are no longer the same string — two named providers
             // may legitimately share one login plugin with different issuers/clients.
             let (module, abi_version) =

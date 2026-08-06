@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Class-level RED/GREEN harness for the plugin export boundary (redesign B).
+//! Class-level harness for the plugin export boundary.
 //!
 //! One harness parameterized over the boundary WRAPPER (`open_boundary`/`call_boundary`/
 //! `close_boundary`/`free_boundary` — the exact helpers `export_plugin!` emits), not per-symbol. A new
@@ -15,10 +15,10 @@
 //! | real error           | STATUS_ERR with the message in the buffer                          |
 //! | panicking Drop       | close returns normally (no unwind), allocation reclaimed (net-zero) |
 //!
-//! RED-before/GREEN-after: on `main` (pre-B) `write_buf` leaked on null out, a panic mapped to
-//! STATUS_PROTOCOL (indistinguishable from unsupported), and `*_close_impl` had no `catch_unwind` so a
-//! panicking Drop unwound out — the null-leak, the STATUS_PANIC, and the panicking-Drop assertions all
-//! fail there. After the choke point lands they all pass.
+//! Each condition is a distinct failure mode a hand-rolled export gets wrong: leaking the response
+//! buffer on a null out-slot, mapping a caught panic to the same status as an undecodable request,
+//! and letting a panicking `Drop` unwind out of `close`. Routing every symbol through the choke
+//! point makes all three unrepresentable, and these assertions pin that.
 
 use busbar_plugin_abi::{STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use busbar_plugin_sdk::boundary::{
@@ -160,8 +160,8 @@ unsafe fn call(handle: *mut c_void, req: &[u8], out: &mut *mut u8, out_len: &mut
 /// Condition 1 — null out-pointer never leaks. A `call` whose `dispatch` produces a real OK payload
 /// (a `Vec` that WOULD have been boxed) with a NULL `out` must DROP that buffer, not leak it: the net
 /// live-allocation delta across the call is zero, and the untouched `out_len` sentinel is preserved.
-/// RED before: `write_buf` did `Box::into_raw` before the null-check → the boxed slice leaked (nonzero
-/// delta). GREEN after: `OutBuf::commit` allocates strictly inside the non-null branch.
+/// A `Box::into_raw` before the null-check would leak the boxed slice (nonzero delta);
+/// `OutBuf::commit` allocates strictly inside the non-null branch.
 #[test]
 fn null_out_pointer_never_leaks() {
     unsafe {
@@ -192,8 +192,9 @@ fn null_out_pointer_never_leaks() {
 }
 
 /// Condition 2 — a panic inside the impl is STATUS_PANIC, not UNSUPPORTED, not PROTOCOL, and never
-/// unwinds past the export. RED before: a caught panic returned STATUS_PROTOCOL, indistinguishable
-/// from an undecodable variant (the D4 root). The call is wrapped in the test's own `catch_unwind`
+/// unwinds past the export. Mapping a caught panic to STATUS_PROTOCOL would make it indistinguishable
+/// from an undecodable variant, which is what opens the loader's safe-default fallback to a plugin
+/// crash. The call is wrapped in the test's own `catch_unwind`
 /// that MUST observe `Ok` — an unwind past the boundary would surface as `Err` here.
 #[test]
 fn panic_inside_impl_is_status_panic() {
@@ -294,8 +295,8 @@ fn real_error_is_status_err() {
 /// Condition 5 — a panicking Drop does not unwind past `close` and frees the allocation. The handle's
 /// `Drop` allocates then panics; `close_boundary` owns the box BEFORE the catch, so the allocation is
 /// reclaimed (net-zero delta across open+close) and the panic dies inside the export (the test's
-/// `catch_unwind` observes `Ok`). RED before: `*_close_impl` had no catch → the panic unwound out and
-/// the engine-side guard leaked the handle.
+/// `catch_unwind` observes `Ok`). Without the catch, the panic unwinds out and the engine-side guard
+/// leaks the handle.
 #[test]
 fn panicking_drop_does_not_unwind_and_frees() {
     unsafe {

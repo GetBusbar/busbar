@@ -455,7 +455,7 @@ impl ProtocolWriter for BedrockWriter {
             inference_config.insert("maxTokens".to_string(), serde_json::json!(max_tokens));
         }
         if let Some(temperature) = req.temperature {
-            // Clamp to Bedrock's native [0.0, 1.0] (PF-M1). OpenAI / Responses accept temperature up
+            // Clamp to Bedrock's native [0.0, 1.0]. OpenAI / Responses accept temperature up
             // to 2.0, so a cross-protocol request can carry a value Bedrock's API rejects with a hard
             // 400 ValidationException; clamping forwards the closest valid value instead. NON-SILENT
             // (mirrors the Anthropic writer): warn ONLY when the clamp actually changed the value, so
@@ -474,7 +474,7 @@ impl ProtocolWriter for BedrockWriter {
         // Promoted sampling controls overlaid in Bedrock's inferenceConfig shape (typed IR wins over
         // the raw captured value, so same-protocol round-trips re-emit the identical value and
         // cross-protocol egress emits the value carried in the IR). `top_k` has no inferenceConfig
-        // home — it is emitted below via `additionalModelRequestFields` (PF-H1 fidelity fix).
+        // home — it is emitted below via `additionalModelRequestFields` (fidelity fix).
         if let Some(top_p) = req.top_p {
             inference_config.insert("topP".to_string(), serde_json::json!(top_p));
         }
@@ -559,7 +559,7 @@ impl ProtocolWriter for BedrockWriter {
 
             tool_config.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
         }
-        // Emit `toolChoice` from the typed IR union (PF-H1). The reader promoted a native `toolChoice`
+        // Emit `toolChoice` from the typed IR union. The reader promoted a native `toolChoice`
         // into `req.tool_choice`, but the RAW `toolConfig` cloned from `extra` (same-protocol Bedrock
         // passthrough) still carries the original `toolChoice` key — drop it first so the typed value
         // is the single source of truth and there is no stale duplicate. `IrToolChoice::None` has no
@@ -604,7 +604,7 @@ impl ProtocolWriter for BedrockWriter {
                 serde_json::Value::Object(tool_config),
             );
         }
-        // class-6 6c1 egress: Bedrock Converse models no parallelism control. `is_some()` gates this
+        // Egress: Bedrock Converse models no parallelism control. `is_some()` gates this
         // to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
             tracing::warn!(
@@ -613,7 +613,7 @@ impl ProtocolWriter for BedrockWriter {
             );
         }
 
-        // Emit `top_k` (PF-H1 fidelity fix). Bedrock's Converse API has no `inferenceConfig` slot for
+        // Emit `top_k` (fidelity fix). Bedrock's Converse API has no `inferenceConfig` slot for
         // top_k; it rides in the model-specific `additionalModelRequestFields` escape hatch. OVERLAY
         // the typed IR `top_k` (as `top_k`) onto the RAW `additionalModelRequestFields` the reader
         // captured into `extra` — same pattern as `inferenceConfig`/`toolConfig`. This re-emits a
@@ -794,7 +794,7 @@ impl ProtocolWriter for BedrockWriter {
             },
 
             // An untracked index is a block whose start had no Bedrock projection (Image); closing
-            // it would orphan a `contentBlockStop` a real client never saw a start for (finding 7.2).
+            // it would orphan a `contentBlockStop` a real client never saw a start for.
             IrStreamEvent::BlockStop { index } => {
                 if self.take_block_open(*index) {
                     Some((

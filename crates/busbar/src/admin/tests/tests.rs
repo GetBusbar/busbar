@@ -343,13 +343,13 @@ async fn test_admin_v1_pool_detail_live_status() {
     assert!(m["inflight"].is_number());
     assert!(m["ok"].is_number());
     assert!(m["dead"].is_boolean());
-    // Trip observability (audit #5): a MONOTONIC trip counter + last-trip epoch, so a poller
+    // Trip observability: a MONOTONIC trip counter + last-trip epoch, so a poller
     // detects transient breaker episodes it can never catch live. Fresh lane: 0 / null.
     assert_eq!(m["trip_count"], 0);
     assert!(m["last_trip_at"].is_null());
 
     // ?detail=true on the COLLECTION returns the same row shape for every pool in ONE call
-    // (audit #7 — no more M+1 dashboard fan-out).
+    // (no more M+1 dashboard fan-out).
     let detailed: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/pools?detail=true"))
         .header("x-admin-token", "admintok")
@@ -643,8 +643,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         .json()
         .await
         .unwrap();
-    // Window/freshness header (the audit's #2/#3 findings). F1: the usage response carries a
-    // `currency` field sourced from the single USAGE_CURRENCY const (emitted only on this endpoint).
+    // Window/freshness header. F1: the usage response carries a `currency` field sourced from
+    // the single USAGE_CURRENCY const (emitted only on this endpoint).
     assert_eq!(
         body.get("currency").and_then(|c| c.as_str()),
         Some("USD"),
@@ -794,13 +794,12 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     serve.abort();
 }
 
-/// `GET /plugins/{name}/schema`'s describe→manifest fallback (question #3's "arm 3", round-8
-/// finding against `b843992`): a loaded hook whose live `describe` answers `schema: null` is NOT
-/// evidence the plugin has no real settings shape — the handler must fall back to the manifest
-/// baseline SERVER-SIDE and return it with `source: "manifest"`, not just report `source:
-/// "describe"` with a bare null. Uses the real dlopen'd `busbar-hook-test-plugin` (its
-/// `empty_management: true` setting makes `describe()` return `{}`, the real "unsupported" reply)
-/// with a manifest stamped with a real `settings_schema`, over the live admin router.
+/// `GET /plugins/{name}/schema`'s describe→manifest fallback: a loaded hook whose live `describe`
+/// answers `schema: null` is NOT evidence the plugin has no real settings shape — the handler must
+/// fall back to the manifest baseline SERVER-SIDE and return it with `source: "manifest"`, not just
+/// report `source: "describe"` with a bare null. Uses the real dlopen'd `busbar-hook-test-plugin`
+/// (its `empty_management: true` setting makes `describe()` return `{}`, the real "unsupported"
+/// reply) with a manifest stamped with a real `settings_schema`, over the live admin router.
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
@@ -1661,8 +1660,8 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 /// admin call is refused" on a locked deployment. Without the guard this endpoint went straight to a
 /// live swap, silently diverging the live auth posture from config.yaml until restart.
 ///
-/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `put_auth`, a valid chain applies
-/// (`200`) on a locked config; the guard makes it a `400`.
+/// Without the `overlay_path.is_none()` refusal in `put_auth`, a valid chain applies (`200`) on a
+/// locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_put_auth_refused_on_locked_config() {
     crate::metrics::init();
@@ -1704,8 +1703,8 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
 /// full-config apply with `400`. This is the widest config-plane mutation, so a locked/GitOps
 /// deployment must refuse it rather than swap an alternate config live until restart.
 ///
-/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `apply_config`, a valid body swaps
-/// live (`200`) on a locked config; the guard makes it a `400`.
+/// Without the `overlay_path.is_none()` refusal in `apply_config`, a valid body swaps live (`200`)
+/// on a locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_config_apply_refused_on_locked_config() {
     crate::metrics::init();
@@ -2015,7 +2014,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
     // A short client-side timeout (100ms) vs. the store's 500ms write — a 5x margin, both real
-    // sleeps (per the design's timing caution).
+    // sleeps.
     let short_timeout_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(100))
         .build()
@@ -2689,7 +2688,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 
     // A RESERVED name (an on_error terminal / built-in) rejects on the register path too —
     // previously only boot validation checked this, so a runtime hook named `reject` could
-    // shadow the terminal and make every consumer's on_error parse ambiguous (audit #8).
+    // shadow the terminal and make every consumer's on_error parse ambiguous.
     for reserved in ["reject", "weighted", "nothing", "cheapest", "admin-tokens"] {
         let shadow = client
             .post(format!("http://{addr}/api/v1/admin/hooks"))
@@ -4144,7 +4143,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         let path = format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
         // No token → 401, in the FROZEN v1 envelope (code `unauthorized`) — the most frequent
         // error a tooling consumer hits must branch on the same code seam as every other
-        // (3rd-party audit #9; previously a protocol-shaped body).
+        // (previously a protocol-shaped body).
         let none = client
             .get(format!("http://{addr}{path}"))
             .send()
@@ -4374,7 +4373,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
     handle.abort();
 }
 
-/// M6/F2 (scrape break): mint-time labels are echoed VERBATIM as Prometheus label names on this
+/// SCRAPE BREAK: mint-time labels are echoed VERBATIM as Prometheus label names on this
 /// key's metric series. A RESERVED label name (key/bucket/model/tier), a non-conforming label name,
 /// an oversized map (> 16), or an over-long name/value must be rejected with 400 (never minted) so
 /// the whole /metrics exposition can't be broken by one key. A well-formed label set still mints.
@@ -4529,7 +4528,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
     handle.abort();
 }
 
-/// MED (no-raw-parse-error / secret-leak): a malformed admin create/update body must produce a
+/// No raw parse errors, no secret leak: a malformed admin create/update body must produce a
 /// GENERIC 400 whose body contains NEITHER serde error prose NOR any fragment of the offending
 /// input. The create-key body carries SECRETS (an AWS secret_access_key, the bearer being minted),
 /// so axum's stock `Json<T>` rejection — which echoes the raw serde `Display` — must NOT be used.
@@ -4644,7 +4643,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
 
 #[tokio::test]
 async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
-    // #28: PATCH /admin/keys/:id can disable a key (without DELETE destroying its history) and
+    // PATCH /admin/keys/:id can disable a key (without DELETE destroying its history) and
     // adjust caps; it is admin-gated and rejects the same invalid values create() does.
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -5927,7 +5926,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     handle.abort();
 }
 
-// ── plugin admin endpoints (#13), end-to-end over the live router ─────────────────────────────────
+// ── plugin admin endpoints, end-to-end over the live router ───────────────────────────────────────
 
 /// Serve a router whose App points its plugin surface at `dir` (allow_unsigned posture, no
 /// publishers), with a known admin token — for the install/list/remove/reload plugin endpoints.
@@ -6150,8 +6149,8 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     handle.abort();
 }
 
-/// As `admin_test_tarball_versioned`, but for an arbitrary plugin `kind` (checklist item 5's
-/// `type=secret` support / richer `auth` rows need a non-`store` fixture to test against).
+/// As `admin_test_tarball_versioned`, but for an arbitrary plugin `kind` (the `type=secret`
+/// support / richer `auth` rows need a non-`store` fixture to test against).
 fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
     let lib = lib.as_slice();
@@ -6178,11 +6177,11 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// `GET /plugins?type=secret` (checklist item 5) lists `kind: secret` plugins ONLY — a `kind: store`
+/// `GET /plugins?type=secret` lists `kind: secret` plugins ONLY — a `kind: store`
 /// tarball dropped in the same directory does not leak into it, and vice versa (the pre-existing
 /// scan used to be unfiltered by kind at all, so this also proves the fix rather than just the
 /// addition). `type=secret` previously did not exist as an accepted value (400 `invalid_request`
-/// before this change; question #9's round-4 correction).
+/// before this change).
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     use base64::Engine as _;
@@ -6276,8 +6275,8 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     handle.abort();
 }
 
-/// `GET /plugins` list rows carry `schema_url` (checklist item 6, questions #10/#11): non-null,
-/// admin-prefixed RELATIVE path whenever the manifest declared `settings_schema` at all — and
+/// `GET /plugins` list rows carry `schema_url`: a non-null, admin-prefixed RELATIVE path
+/// whenever the manifest declared `settings_schema` at all — and
 /// following it returns the SAME schema `GET /plugins/{name}/schema` would. A plugin with no
 /// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
 #[tokio::test]
@@ -6555,7 +6554,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     handle.abort();
 }
 
-// ── POST /plugins/inspect (checklist item 4, question #7) ──────────────────────────────────────
+// ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────────
 
 /// Over the wire: a candidate tarball previews cleanly, NEVER lands on disk, and never appears in
 /// `GET /plugins?type=store` afterward — inspect is genuinely stateless, not "install with extra
@@ -6660,7 +6659,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     handle.abort();
 }
 
-/// The manifest-embedded `settings_schema` (plugin-settings-schema-SPEC.md) round-trips over the
+/// The manifest-embedded `settings_schema` round-trips over the
 /// wire: install a tarball whose SIGNED manifest carries a JSON Schema document, then `GET
 /// /plugins/{file}/schema` returns it as real parsed JSON (not a JSON string containing JSON). A
 /// plugin installed WITHOUT a `settings_schema` reports `"schema": null` rather than 404/erroring —
@@ -6739,7 +6738,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     assert_eq!(got["schema_error"], serde_json::Value::Null);
     assert_eq!(got["source"], "manifest");
     // Unsigned tarball under an `allow_unsigned` posture (no publisher allowlist) → "unverified",
-    // the real catalog vocabulary (never "verified" — plugin-settings-schema-SPEC.md question #8).
+    // the real catalog vocabulary (never "verified").
     assert_eq!(got["trust"], "unverified");
 
     handle.abort();
@@ -6785,7 +6784,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     handle2.abort();
 
     // A manifest that SET settings_schema but to unparseable text reports `schema_error`,
-    // distinct from a manifest that never set the field at all (round-4 correction — both used to
+    // distinct from a manifest that never set the field at all (both used to
     // collapse to `schema: null` via `.ok()`, silently hiding a real authoring bug).
     let bad_lib = b"junk library bytes for acme-store-badschema (never dlopened)".to_vec();
     let bad_m = busbar_plugin_sign::Manifest {
@@ -9134,7 +9133,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 /// file the serving App persists mutations to — a divergence between the two would be invisible to a
 /// test that hand-feeds `overlay_doc` from a path it chose itself.
 ///
-/// RED-before-GREEN: if `load_config_from_disk`'s default-overlay resolution and the App's serving
+/// If `load_config_from_disk`'s default-overlay resolution and the App's serving
 /// overlay path ever diverge (or resolution regresses to `None`/RAM-only), the freshly-loaded
 /// `overlay_doc` is absent and the `per_request_fee` assertion fails.
 #[tokio::test]
@@ -9253,7 +9252,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// class-13/14 T2: `main.rs`'s `UpstreamClients` is REUSED across a config apply (warm connection
+/// `main.rs`'s `UpstreamClients` is REUSED across a config apply (warm connection
 /// pools are deliberately kept) — its `else` builder arm is the ONLY place
 /// `pool_max_idle_per_host` / `pool_idle_timeout_secs` / `upstream_request_timeout_secs` are read, so
 /// changing them via `PUT /config/settings` is silently boot-scoped. `reload_to_apply_fields` did not
@@ -9341,9 +9340,8 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The `observability` section is live EXCEPT two fields the gap-sweep for
-/// `max_inbound_concurrent` also turned up: the `advanced.response_headers` block (task #139;
-/// formerly `observability.emit_server_timing`) is boot-frozen the same way — baked into router
+/// The `observability` section is live EXCEPT two fields: the `advanced.response_headers` block
+/// (formerly `observability.emit_server_timing`) is boot-frozen the same way — baked into router
 /// middleware composition and a process-global `OnceLock`, neither rebuilt by a config apply — so it
 /// must be flagged reload-to-apply (dotted, same reasoning as `limits.*`).
 #[tokio::test]
@@ -9378,7 +9376,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         "router-baked middleware state / OnceLock-seeded response-header toggles must be flagged \
          reload-to-apply: {flagged:?}"
     );
-    // 1.5.3 (audit §3): the whole `observability:` block is DELETED — the request-log webhook and
+    // 1.5.3: the whole `observability:` block is DELETED — the request-log webhook and
     // the OTLP trace sink are both named `export:` instances now, edited in config.yaml and applied
     // via plugin reload, so neither is part of the single-value settings surface at all. Assert the
     // section is REJECTED rather than silently accepted-and-ignored.
@@ -9668,8 +9666,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// round-8 (error-handling lens): `PUT /config/settings` re-resolves `auth.admin_auth`'s admin-token
-/// secret ref on every apply (HIGH-7) and, when it changed, swaps the new digest into the shared,
+/// `PUT /config/settings` re-resolves `auth.admin_auth`'s admin-token
+/// secret ref on every apply and, when it changed, swaps the new digest into the shared,
 /// process-lifetime `GovState` — the SAME `GovState` the OLD (still-serving) `App` snapshot also
 /// points at. If the transaction's PERSIST step (writing the merged settings to the overlay) fails
 /// AFTER that swap, the handler reports "nothing was changed (the running engine is unaffected)" —
@@ -9748,7 +9746,7 @@ auth:
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
     // THE ROTATION INPUT: the secret behind the ref changes BEFORE the apply that will re-resolve
-    // it — exactly the operational sequence HIGH-7 exists to support (rotate the file, then apply).
+    // it — exactly the operational sequence this supports (rotate the file, then apply).
     std::fs::write(&token_path, "admintok-v2").unwrap();
 
     let client = reqwest::Client::new();
@@ -9928,8 +9926,8 @@ async fn settings_test_app_no_overlay(
 /// a locked config REFUSES the mutation (400). The silent non-durable-mutation outcome this test used
 /// to assert is exactly what the release removes, so the test is inverted: it now proves the refusal.
 ///
-/// RED-before-GREEN: on the pre-1.5.3 code this asserted a 200 with an "IN MEMORY ONLY" note; the new
-/// assertion (400 refusal) FAILS there, and passes only once the locked/durable model is in place.
+/// On the pre-1.5.3 code this asserted a 200 with an "IN MEMORY ONLY" note; the new
+/// assertion (400 refusal) fails there, and passes only once the locked/durable model is in place.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let (dir, addr, handle) = settings_test_app_no_overlay("truthful").await;
@@ -10045,7 +10043,7 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
 
 /// REGRESSION PROOF (passes before AND after): stripping `persist` before the typed parse must NOT
 /// weaken `deny_unknown_fields` — a TYPO of the control key is still a loud 400, which is the whole
-/// justification (§3.3.2) for choosing a body field over a query param (the in-tree
+/// justification for choosing a body field over a query param (the in-tree
 /// `Query<HashMap<String,String>>` idiom drops unknown keys silently).
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo() {
@@ -10072,13 +10070,12 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `persist_root(None, ..)` (the default-deployment no-op) must log — the last piece of owner
-/// 1.5.3 (was `test_persist_root_without_an_overlay_logs`): `persist_root(None, ..)` used to return a
-/// silent `Ok` with a warning — the exact lie ("saved" for a change that vanishes on restart) this
-/// release removes. It now returns `Err`, so a locked config's mutation is refused rather than
+/// `persist_root(None, ..)` (the default-deployment no-op) must log. It used to return a
+/// silent `Ok` with a warning — the exact lie ("saved" for a change that vanishes on restart) 1.5.3
+/// removes. It now returns `Err`, so a locked config's mutation is refused rather than
 /// falsely reported durable.
 ///
-/// RED-before-GREEN: the pre-1.5.3 code returned `Ok` here, so this `is_err()` assertion FAILS there;
+/// The pre-1.5.3 code returned `Ok` here, so this `is_err()` assertion fails there;
 /// it passes only once the lying no-op branch is gone.
 #[test]
 fn test_persist_root_without_an_overlay_errs() {
@@ -10128,7 +10125,7 @@ fn test_config_settings_scope_matrix() {
 //
 // The keys handlers historically spoke their OWN error vocabulary (`error_response` + `ERR_TYPE_*`,
 // re-mapped onto the frozen `code` enum in a second place) while every other v1 handler spoke
-// `AdminError` + `err_json`. Design D route 2 collapses that second vocabulary onto the one
+// `AdminError` + `err_json`. That second vocabulary is collapsed onto the one
 // taxonomy. The collapse must be INVISIBLE on the wire: this test pins the EXACT status,
 // content-type and body BYTES of every keys error path, so the refactor is provably a no-op for
 // clients and any future divergence between the two surfaces is a red test, not a support ticket.
@@ -10221,7 +10218,7 @@ async fn serve_keys_fixture(
     (addr, handle, live)
 }
 
-/// BYTE-PARITY LOCK (design D route 2): every keys error response — status, content-type and body
+/// BYTE-PARITY LOCK: every keys error response — status, content-type and body
 /// BYTES — is pinned. The keys surface is frozen v1; collapsing its private error vocabulary onto
 /// `AdminError` + `err_json` may change how the bytes are PRODUCED, never what they ARE.
 #[tokio::test]
@@ -10643,7 +10640,7 @@ const fn c(
     }
 }
 
-// ── DESIGN D: WITNESS DRIVER FOR THE DECLARED ERROR SET ───────────────────────────────────────────
+// ── WITNESS DRIVER FOR THE DECLARED ERROR SET ─────────────────────────────────────────────────────
 //
 // `contract::taxonomy::declared_errors` is what `openapi.json` documents. Under-claim (a handler
 // emits a kind the declaration omits) is already fatal on the spot — the v1 router's recording layer
@@ -11489,7 +11486,7 @@ async fn drive_admin_error_surface() {
     }
 }
 
-/// WITNESS (design D): the two `POST /plugins/rollback` errors that need a real plugins directory —
+/// WITNESS: the two `POST /plugins/rollback` errors that need a real plugins directory —
 /// a target file that is not there (404 `not_found`) and one that IS there but does not pass the
 /// running trust posture even with the anti-downgrade floor lowered to its own version (409
 /// `conflict`; a rollback authenticates the OPERATOR, never the bytes).
@@ -11832,7 +11829,7 @@ const COND_WITNESS_DEBT: &[(
 /// several, only a `err_json_cond`-tagged emission distinguishes them, and the declarations not yet
 /// tagged are ledgered in `COND_WITNESS_DEBT`, which only shrinks.
 ///
-/// Consequence: the per-endpoint audit that used to find "another missing 4xx" every round is now a
+/// Consequence: what used to be a per-endpoint hunt for "another missing 4xx" is now a
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
 async fn declared_error_set_is_exactly_what_the_handlers_emit() {
@@ -12255,7 +12252,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     handle.abort();
 }
 
-// ── THE GENERIC NAMED-DEFINITION MAP CRUD (1.5.3 unit D) ─────────────────────────────────────────
+// ── THE GENERIC NAMED-DEFINITION MAP CRUD ────────────────────────────────────────────────────────
 //
 // `/identity-providers` and `/export` are served by ONE parameterized handler set
 // (`admin::v1::json::named_map`), so these tests deliberately drive BOTH sections through the same
@@ -12544,7 +12541,7 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// SECRET CONTAINMENT ON THE NAMED-MAP READS (audit HIGH-1). The `settings:` bag is where an
+/// SECRET CONTAINMENT ON THE NAMED-MAP READS. The `settings:` bag is where an
 /// operator legitimately puts a credential VALUE — an OIDC `client_secret`, a `generic-webhook`
 /// `auth_header.value` — and `GET <section>[/{name}]` is served at READ-ONLY admin scope. So the
 /// read projects the settings KEY NAMES (`settings_keys`) and NEVER the values: a read-only admin
@@ -12921,7 +12918,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AUDIT FINDING E1 — A MUTATION THAT ADDS A ROUTE SAYS "RESTART REQUIRED", instead of reporting
+/// A MUTATION THAT ADDS A ROUTE SAYS "RESTART REQUIRED", instead of reporting
 /// plain success for a route this process will never serve.
 ///
 /// Each declared plugin-route PATH is registered on the axum router ONCE, at boot; a config apply
@@ -12970,7 +12967,7 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "a sink that declares no route needs no restart: {body}"
     );
 
-    // (2) THE FINDING: adding a `prometheus` instance introduces `GET /metrics`, which this process's
+    // (2) THE DEFECT: adding a `prometheus` instance introduces `GET /metrics`, which this process's
     // router does not have. Accepted (it is stored, and correct after a restart) but NOT reported as
     // simply applied.
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/prom")))
@@ -13631,7 +13628,7 @@ async fn named_map_error_surface_answers_its_declared_taxonomy() {
     drive_named_map_errors().await;
 }
 
-/// HIGH-1 (CONFIG-STABILITY): THE ADMIN API AND THE FILE PARSER MUST SHARE ONE GRAMMAR. A PUT body
+/// CONFIG STABILITY: THE ADMIN API AND THE FILE PARSER MUST SHARE ONE GRAMMAR. A PUT body
 /// carrying a field the section's `deny_unknown_fields` config struct rejects is exactly what
 /// `config.yaml` would refuse at boot — so the API must refuse it too, loudly and BEFORE persisting.
 ///
@@ -13718,7 +13715,7 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// MED-2/LOW-1 (DISCOVERABILITY): an overlay-stored definition this binary cannot parse is DROPPED
+/// DISCOVERABILITY: an overlay-stored definition this binary cannot parse is DROPPED
 /// at every rebuild. It used to be announced exactly once, at boot, in a log line — and the API read
 /// surface answered 404 for the name, which is indistinguishable from "you never wrote it". An
 /// operator who does not tail boot logs could not discover their own stored-but-inert config.

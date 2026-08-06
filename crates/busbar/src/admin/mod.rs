@@ -50,8 +50,8 @@ use crate::governance::{NewKeySpec, VirtualKey};
 ///
 /// The proper store-layer fix is an UPDATE-ONLY `put`/`update` (`UPDATE … WHERE id=?` that affects 0
 /// rows when absent, never an upsert) used by `update_key`, which would need no lock at all — but that
-/// method lives in `governance.rs`, outside this unit's owned files. This gate is the admin-side guard
-/// that closes the resurrection race with the surface we own. Both ops are admin-only and rare, so a
+/// method lives in `governance.rs` and does not exist yet. This gate is the admin-side guard that
+/// closes the resurrection race from the admin surface. Both ops are admin-only and rare, so a
 /// single global lock has no meaningful cost.
 ///
 /// CANCELLATION SAFETY: this is a `std::sync::Mutex`, NOT a `tokio::sync::Mutex`, and the guard
@@ -186,7 +186,7 @@ pub(crate) const ERR_TYPE_INVALID_REQUEST: &str =
 const MAX_KEY_NAME_LEN: usize = 256;
 const MAX_KEY_ID_LEN: usize = 64;
 
-// M6/F2 (scrape break): mint-time `labels` are echoed VERBATIM as Prometheus label names on every
+// SCRAPE BREAK: mint-time `labels` are echoed VERBATIM as Prometheus label names on every
 // key metric series (metrics.rs `base_labels`). An unvalidated map is a scrape-integrity hole:
 // - a label named `key`/`bucket`/`model`/`tier` (the RESERVED names busbar itself attaches)
 // duplicates a label on the series, which breaks the WHOLE /metrics exposition (a duplicate
@@ -293,10 +293,10 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 /// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
 /// invisible to the OpenAPI projection and let the two banks drift; naming a `Cond`
 /// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
-/// WHO IS REFUSING, so the ONE error door can also be the ONE audit door.
+/// This enum names WHO IS REFUSING, so the ONE error door can also be the ONE audit door.
 ///
 /// `POST /keys` wrote `key.create`/`applied` on success and NOTHING on any refusal
-/// — including the anti-sprawl cap 409 the two prior rounds added — while `key.patch`/`key.delete`/
+/// — the anti-sprawl cap 409 included — while `key.patch`/`key.delete`/
 /// `key.rotate`/`key.revoke` each wrote `rejected` by hand at the arms someone remembered. A refused
 /// mint is precisely the event a reviewer needs (someone tried to issue a credential and was
 /// stopped), and it was the one event with no row.
@@ -665,13 +665,13 @@ const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 /// mover twice; `None` on the mint path (nothing to exclude). Returns `Some((bucket_label, n))`
 /// when the bucket is at or over `cap`. `cap == 0` = unlimited (the default) and short-circuits.
 ///
-/// Two round-5 defects die here rather than at N call sites:
+/// Two defect classes die here rather than at N call sites:
 ///
-/// * #18 — the count is of LIVE keys only: a disabled or revoked key holds no usable credential,
+/// * The count is of LIVE keys only: a disabled or revoked key holds no usable credential,
 ///   so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
 ///   could never mint again, and the documented remedy "revoke or delete an existing key" was
 ///   simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
-/// * #19 — the UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
+/// * The UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
 ///   exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
 fn check_key_cap(
     gov: &crate::governance::GovState,
@@ -802,7 +802,7 @@ pub(crate) async fn create_key(
             Cond::Overlong,
         );
     }
-    // M6/F2: labels are echoed verbatim as Prometheus label NAMES on this key's metric series; an
+    // Labels are echoed verbatim as Prometheus label NAMES on this key's metric series; an
     // unsafe name (reserved, or not a valid label name) or an oversized map breaks the WHOLE scrape.
     // Reject at the mint ingress (see `validate_mint_labels`).
     if let Err(msg) = validate_mint_labels(&req.labels) {
@@ -1274,8 +1274,8 @@ pub(crate) async fn update_key(
                         return Ok(UpdateOutcome::EtagStale);
                     }
                 }
-                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET
-                // HIGH-9, tightened round-6). `max_keys_per_principal` was enforced only at MINT,
+                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET.
+                // `max_keys_per_principal` was enforced only at MINT,
                 // so a PATCH could walk a principal past its own ceiling one rebind at a time —
                 // mint N keys under an empty group, then rebind them all onto the capped one.
                 //
@@ -1361,7 +1361,7 @@ pub(crate) async fn update_key(
 
 /// GET /api/v1/admin/keys — list key metadata (no secrets/hashes). Optional filters:
 /// `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
-/// `?group=<name>` (keys bound to that group —: a `user:<sub>` leaf's keys are one person's
+/// `?group=<name>` (keys bound to that group: a `user:<sub>` leaf's keys are one person's
 /// keys; a team group's are the team's; the customer's self-service tool re-scopes from here).
 pub(crate) async fn list_keys(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
@@ -1928,7 +1928,7 @@ pub(crate) async fn delete_key(
     // TOCTOU: `GovState`/store expose no rows-affected signal, so a *bare* check-then-act would let
     // two concurrent DELETEs of the same id both observe `Some` and both return 200 (the second SQL
     // delete no-ops) — a misleading audit trail implying two revocations of one row. The store-layer
-    // `changes()` fix is out of this unit's owned files, so we close the race here instead: serialize
+    // `changes()` signal does not exist, so the race is closed here instead: serialize
     // every delete's lookup→delete critical section behind the process-wide `EXISTENCE_GATE`. The same
     // gate also serializes `update_key`'s lookup→put, so a PATCH cannot resurrect a key this DELETE
     // removes (see `EXISTENCE_GATE`). The loser of a delete race observes `Ok(None)` and correctly
@@ -2046,7 +2046,7 @@ mod key_cap_tests {
         assert_eq!(hit, ("team".to_string(), 5));
     }
 
-    /// #18: the cap counts LIVE keys only. A revoked or disabled key holds no usable credential, so
+    /// The cap counts LIVE keys only. A revoked or disabled key holds no usable credential, so
     /// counting it forever made the ceiling a ONE-WAY RATCHET — and made the rejection's own advice
     /// ("revoke or delete an existing key") false for `revoke`.
     #[test]
@@ -2081,7 +2081,7 @@ mod key_cap_tests {
         );
     }
 
-    /// #19: the UNBOUND bucket is capped too. A groupless key escapes the limit tree entirely, so
+    /// The UNBOUND bucket is capped too. A groupless key escapes the limit tree entirely, so
     /// exempting it from the key-count ceiling made the ceiling evadable by omitting one field.
     #[test]
     fn the_unbound_bucket_is_counted_too() {
@@ -2101,7 +2101,7 @@ mod key_cap_tests {
         );
     }
 
-    /// HIGH-9: the REBIND path excludes the key being MOVED, so re-PATCHing a key onto the group it
+    /// The REBIND path excludes the key being MOVED, so re-PATCHing a key onto the group it
     /// is already bound to is not spuriously refused — while a genuine move into a full bucket is.
     #[test]
     fn rebind_excludes_the_mover_but_still_refuses_a_full_target() {

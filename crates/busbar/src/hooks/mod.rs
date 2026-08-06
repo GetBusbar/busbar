@@ -52,7 +52,7 @@ pub(crate) use busbar_api::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
-// The Feature-2 "decision observability" signal catalog (task #141) — `Signal`/`SignalValue`/
+// The "decision observability" signal catalog — `Signal`/`SignalValue`/
 // `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
 // internal paths reference them as `crate::hooks::Signal` etc.
 #[allow(unused_imports)]
@@ -69,8 +69,7 @@ pub(crate) use busbar_api::{Signal, SignalBag, SignalValue};
 /// signal-declaring hooks still consults the same (possibly non-zero) global mask, so it may
 /// compute a signal only some OTHER pool's hook actually reads — strictly cheaper than a
 /// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
-/// which the companion design document flags as an accepted trade-off (§9.2, "recommended: accept
-/// the coarser…granularity"). A per-pool mask is a natural, purely-internal follow-up; the WIRE
+/// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
 /// contract here does not change either way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RequestedSignals(u64);
@@ -102,7 +101,7 @@ impl RequestedSignals {
 /// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
 /// declaration surface). Called ONCE per config apply (alongside `hook_registry: cfg.hooks.clone()`
 /// in `main.rs`'s `App` construction) — never per request. A config with no hook declaring any
-/// `signals:` (the overwhelming default, and every config that predates task #141) yields the
+/// `signals:` (the overwhelming default, and every config that predates the catalog) yields the
 /// all-zero mask, so every `requested.wants(_)` check downstream is `false` for that generation.
 pub(crate) fn requested_signals(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -422,7 +421,7 @@ pub(crate) fn resolve_pool_gates(
     // Sorted HERE, at config-resolve time, exactly as `resolve_gate_hooks` sorts the globals —
     // STABLE, so config order still breaks priority ties. The phase-2 seam then merges two
     // already-sorted runs per request instead of re-collecting and re-sorting the whole chain on
-    // every request that reaches it (audit MED-6). Same resulting order, no hot-path allocation.
+    // every request that reaches it. Same resulting order, no hot-path allocation.
     ranked.sort_by_key(|(p, _)| *p);
     ranked
 }

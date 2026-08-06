@@ -436,7 +436,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 
     /// Render a router/forward/auth-layer error as this protocol's NATIVE error envelope, so a
     /// client on the vendor's official SDK gets the typed exception it expects instead of a
-    /// plain-text body it cannot decode (the / Unit I transparency gap). `status` is the HTTP
+    /// plain-text body it cannot decode. `status` is the HTTP
     /// status to be sent (informational; the envelope body may also embed it, e.g. Gemini's
     /// `error.code`); `kind` is a protocol-appropriate error type/category string (e.g.
     /// `"invalid_request_error"`, `"not_found"`); `message` is the human-readable detail.
@@ -964,21 +964,21 @@ pub(crate) trait StreamFraming: Send {
         true
     }
 
-    /// CLIENT-INTENT seam (OpenAI ingress, Findings 2+3). Records whether the ORIGINAL client request
+    /// CLIENT-INTENT seam (OpenAI ingress). Records whether the ORIGINAL client request
     /// carried `stream_options.include_usage == true`. Busbar always injects `include_usage` on the
-    /// UPSTREAM request so it can bill streaming calls (Finding 3), which makes the upstream emit a
+    /// UPSTREAM request so it can bill streaming calls, which makes the upstream emit a
     /// trailing usage chunk; but a native OpenAI stream only emits that usage-bearing trailing chunk
     /// when the CLIENT opted in. A client that did NOT opt in and receives an unsolicited
     /// `{choices:[], usage}` chunk hits `choices[0]` IndexError. So when this is `false`, the OpenAI
-    /// framing STRIPS the folded usage entirely (no trailing chunk) rather than un-folding it (Finding
-    /// 2); when `true` it un-folds to the native separate trailing chunk. Billing is unaffected either
+    /// framing STRIPS the folded usage entirely (no trailing chunk) rather than un-folding it;
+    /// when `true` it un-folds to the native separate trailing chunk. Billing is unaffected either
     /// way — it reads the IR-side `last_usage` A-tap, not the client-facing chunk.
     ///
     /// Default ([`PassthroughFraming`] and every non-OpenAI ingress): no-op — the flag is meaningless
     /// for protocols without the `include_usage` convention.
     fn set_client_include_usage(&mut self, _include: bool) {}
 
-    /// SAME-PROTOCOL VERBATIM-STRIP seam (OpenAI ingress, round-3 regression fix R3-A-b). On the
+    /// SAME-PROTOCOL VERBATIM-STRIP seam (OpenAI ingress). On the
     /// same-protocol universal-translate path the translator re-emits each upstream frame BYTE-FOR-BYTE
     /// and NEVER routes it through [`on_egress_chunk`], so the `include_usage` strip that protects an
     /// opted-out client from the unsolicited trailing usage chunk never fires. Busbar forces

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# config-stability-gate.sh — the 1.5.3 CONFIG-STABILITY CI GATE (design 1.5.3-design.md §5).
+# config-stability-gate.sh — the CONFIG-STABILITY CI GATE.
 #
 # 1.5.3 is the LAST config-breaking release. After it, the config grammar is FROZEN and every future
 # feature may add only NEW OPTIONAL keys/sections/enum-variants. This gate ENFORCES that, per-PR, the
@@ -14,15 +14,14 @@
 #
 #   1. DRIFT GUARD  — the committed `config-schema.snapshot.json` must byte-equal a fresh render of
 #                     the config surface. A config-type change that forgets to regenerate the snapshot
-#                     fails LOUD with the exact `UPDATE_CONFIG_SCHEMA=1` regen command (design §5.1 pt2,
-#                     catalog CFG-12) — identical ergonomics to `UPDATE_OPENAPI=1`.
+#                     fails LOUD with the exact `UPDATE_CONFIG_SCHEMA=1` regen command — identical
+#                     ergonomics to `UPDATE_OPENAPI=1`.
 #
 #   2. ADDITIVE-ONLY — the committed BASELINE (read from a git ref, NEVER the working tree) vs the
 #                     fresh render, classified node-by-node: new optional field / new section / enum
 #                     append = GREEN; field removed/retyped, newly-required, enum-variant dropped =
-#                     RED (catalog CFG-05..CFG-11). Because the baseline is a git ref, refreshing the
-#                     snapshot file CANNOT launder a break through a snapshot rewrite (design §5.2
-#                     anti-silent-drift, catalog CFG-13).
+#                     RED. Because the baseline is a git ref, refreshing the snapshot file CANNOT
+#                     launder a break through a snapshot rewrite.
 #
 # SELF-TEST (`--selftest`, run FIRST in CI like every other scripts/*-lint.sh): drives the classifier
 # against fixture snapshot pairs whose verdict is known, proving the gate RED-flags a removal / retype
@@ -121,7 +120,7 @@ PY
   run_case "breaking: kind change (struct->enum) is RED"  3 'd["types"]["Root"]={"kind":"enum","variants":["a"]}'
 
   # The named-definition-map aliases ARE the `hooks:`/`export:`/`identity-providers:` grammar shape
-  # (audit §0). Retargeting a map alias to a list breaks every config using the map form.
+  # Retargeting a map alias to a list breaks every config using the map form.
   run_case "breaking: def-map alias RETARGET is RED"      3 'd["types"]["type HookDefs"]["target"]="Vec<HookDefCfg>"'
   run_case "additive: NEW def-map alias is GREEN"         0 'd["types"]["type ExportDefs"]={"kind":"alias","target":"indexmap::IndexMap<String, ExportDefCfg>"}'
 

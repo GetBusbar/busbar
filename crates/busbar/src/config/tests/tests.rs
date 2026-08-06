@@ -70,7 +70,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
     }
 }
 
-// 1.4.0 audit (config-compat): a 1.3.0 config using the removed `auth.mode:` key must fail with an
+// 1.4.0 config compatibility: a 1.3.0 config using the removed `auth.mode:` key must fail with an
 // actionable migration hint, not just serde's bare "unknown field `mode`". Verify the hint is
 // appended for the mode error and that unrelated errors pass through verbatim; plus an end-to-end
 // parse.
@@ -192,8 +192,8 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
         ("token: \"sk-bb-legacy\"", "token"),
         ("client_tokens: [\"sk-bb-legacy\"]", "client_tokens"),
         ("modules:\n  sso:\n    allowed_groups: [eng]", "modules"),
-        // 1.5.3 removals: the credential mode moved to `pools.upstream_credentials` (audit §4) and
-        // the hosted-login block folded into the `identity-providers:` definition (freeze blocker A7).
+        // 1.5.3 removals: the credential mode moved to `pools.upstream_credentials` and
+        // the hosted-login block folded into the `identity-providers:` definition.
         ("upstream_credentials: passthrough", "upstream_credentials"),
         ("methods:\n  oidc:\n    issuer: https://idp", "methods"),
     ] {
@@ -298,12 +298,12 @@ fn test_removed_key_aliases_are_rejected() {
     assert_eq!(new.max_hops, 5);
 }
 
-/// 1.5.3 §3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
+/// 1.5.3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
 /// 1.4.x `otlp_endpoint`) is now the `settings.url` of an `export:` instance with `module: otlp`.
 /// The new spelling resolves; the 1.4.x key inside the settings bag is rejected (`OtlpSettings` is
 /// `deny_unknown_fields`), so the retirement is loud rather than a silently-dropped trace sink.
 ///
-/// RED-BEFORE-GREEN: before this unit `otlp_url` was an `ObservabilityCfg` field and there was no
+/// RED-BEFORE-GREEN: before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
 /// `otlp` export module at all, so neither half of this compiled.
 #[test]
 fn test_otlp_folds_into_an_export_instance() {
@@ -336,7 +336,7 @@ fn test_otlp_folds_into_an_export_instance() {
 /// turns the bare serde error into an actionable hint naming the new export home + the migrator — the
 /// same shared-table discipline as the HookStage rename.
 ///
-/// RED-BEFORE-GREEN: before this unit these keys were live config fields that parsed silently, so the
+/// RED-BEFORE-GREEN: before 1.5.3 these keys were live config fields that parsed silently, so the
 /// parse SUCCEEDED (no error to augment) — this test does not pass on the pre-retirement tree.
 #[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
@@ -363,9 +363,9 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
     );
 }
 
-/// task #139: `observability.emit_server_timing` MOVED to
+/// `observability.emit_server_timing` MOVED to
 /// `advanced.response_headers.server_timing`. 1.5.3 went further and DELETED the whole
-/// `observability:` block (audit §3), so the old location is now an unknown TOP-LEVEL field — LOUD
+/// `observability:` block, so the old location is now an unknown TOP-LEVEL field — LOUD
 /// and fail-closed; `busbar --migrate-config` moves it (see `migrate_tests.rs`).
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
@@ -527,13 +527,13 @@ fn admin_plane_boot_guard() {
     assert!(build("0.0.0.0:8081", None, false).is_ok());
 }
 
-/// FREEZE (audit §5): 1.5.3 INVERTED the exposed-admin boot guard (`admin_insecure: true` →
+/// FREEZE: 1.5.3 INVERTED the exposed-admin boot guard (`admin_insecure: true` →
 /// `admin_require_mtls: false`) so the SAFE posture is what an OMITTED key gives you — the single
 /// most consequential default in the config. An omitted key must resolve to the guard being ON, and
 /// the RETIRED key must LOUD-FAIL at parse rather than being silently ignored (which would leave an
 /// operator believing a waiver still applied).
 ///
-/// RED-BEFORE-GREEN: before this unit `admin_insecure` was a live field (so it parsed clean) and
+/// RED-BEFORE-GREEN: before 1.5.3 `admin_insecure` was a live field (so it parsed clean) and
 /// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
@@ -1272,7 +1272,7 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
 /// documented "why this is safe" test (not because it's a live vector). `PluginsCfg` carries
 /// `#[serde(deny_unknown_fields)]` on every field and `dir` is its only interpolatable String, so
 /// injecting a sibling `trust: { allow_unsigned: true }` key requires also injecting a redirect to
-/// consume the template's own dangling closing quote — every redirect this audit tried fails:
+/// consume the template's own dangling closing quote — every redirect tried fails:
 /// an unrecognized field name (e.g. `ignore:`) is rejected by `deny_unknown_fields`, and reusing
 /// `dir` again to consume the quote hits DUPLICATE-KEY rejection at the `serde_yaml` `Value`
 /// layer, before `PluginsCfg` is ever constructed. `allow_unsigned` stays `false` through the full
@@ -1720,7 +1720,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
     // The `admin-tokens` operator credential now lives on its `identity-providers:` DEFINITION
-    // (audit §2), not inline on a chain entry — so the Debug dump must stay clean there too.
+    // (not inline on a chain entry), so the Debug dump must stay clean there too.
     deploy.identity_providers.insert(
         ADMIN_TOKENS_MODULE.to_string(),
         crate::config::IdentityProviderCfg {
@@ -2076,14 +2076,14 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
 }
 
-// ── identity providers + auth chain references (audit §2, S4) ────────────────────────────────────
+// ── identity providers + auth chain references ───────────────────────────────────────────────────
 
-/// 1.5.3 (audit §2): an IdP is DEFINED ONCE in the top-level `identity-providers:` map and
+/// 1.5.3: an IdP is DEFINED ONCE in the top-level `identity-providers:` map and
 /// REFERENCED BY BARE NAME from `auth.chain:` AND `auth.admin_auth:`. This covers the definition's
 /// shape (every typed field parses) plus the property the whole redesign exists for: ONE definition
 /// serving BOTH planes, so its settings cannot drift between them.
 ///
-/// RED-BEFORE-GREEN: before this unit `identity-providers:` did not exist and a chain entry was an
+/// RED-BEFORE-GREEN: before 1.5.3 `identity-providers:` did not exist and a chain entry was an
 /// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
@@ -2131,7 +2131,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     );
 }
 
-/// FREEZE (audit §2): an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
+/// FREEZE: an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
 /// (`read-only`) for every provider — EXCEPT the built-in `admin-tokens` operator credential, which
 /// is full-by-definition and stays exempt. This preserves the pre-1.5.3 semantics EXACTLY while
 /// moving the field off the chain entry onto the definition, so upgrading cannot silently widen or
@@ -2184,7 +2184,7 @@ fn test_dangling_identity_provider_reference_is_an_error() {
     );
 }
 
-/// The INLINE chain entry is GONE (audit §2): a chain is a list of bare NAMES, so the retired
+/// The INLINE chain entry is GONE: a chain is a list of bare NAMES, so the retired
 /// single-key-map form is a parse error rather than a second, silently-accepted grammar.
 #[test]
 fn test_inline_auth_chain_entry_is_rejected() {
@@ -2333,7 +2333,7 @@ role_bindings:
     let auth: crate::config::AuthDeployCfg =
         serde_yaml::from_str(yaml).expect("role_bindings parse");
     // 1.5.3: a chain is a list of bare PROVIDER NAMES; `max_admin_scope` moved onto the
-    // `identity-providers:` definition (audit §2), so it is not on the chain entry any more.
+    // `identity-providers:` definition, so it is not on the chain entry any more.
     assert_eq!(auth.chain, ["keys", "ad"]);
 
     // `role_bindings:` stays nested by the SAME string the chain references — the provider NAME.
@@ -2926,12 +2926,12 @@ fn to_policy_honors_runtime_first_party_floor_override() {
     );
 }
 
-/// class-12 D2 REGRESSION PROOF: a malformed `min_versions` floor does NOT fail `to_policy` — the
+/// REGRESSION PROOF: a malformed `min_versions` floor does NOT fail `to_policy` — the
 /// comparator (`version_at_least`), not config validation, is where a malformed floor is refused
-/// (§3.2 v3: fail closed at the comparator, don't refuse the boot). Passes before AND after; it is
-/// the anti-regression guard against reaching for the superseded v2 design (`to_policy` returning
-/// `Err` for this case), which this design deliberately does NOT do. If this test goes red, the
-/// builder implemented the superseded design.
+/// (fail closed at the comparator, don't refuse the boot). Passes before AND after; it is
+/// the anti-regression guard against the superseded design (`to_policy` returning
+/// `Err` for this case), which the current design deliberately does NOT do. If this test goes red,
+/// the superseded design has been reintroduced.
 #[test]
 fn to_policy_still_returns_ok_for_a_malformed_floor() {
     let mut cfg = PluginsCfg {
@@ -2946,7 +2946,7 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
     );
 }
 
-// ─── 1.5.2 token-exchange Step 1: config surface (public_url / auth.methods / plugins.fetch) ───
+// ─── 1.5.2 token exchange: config surface (public_url / auth.methods / plugins.fetch) ───
 
 #[test]
 fn test_public_url_parses_top_level() {
@@ -2976,7 +2976,7 @@ models: {}
 /// The resolved hosted-login method is now a PROJECTION of the definition, keyed by PROVIDER NAME
 /// and carrying the definition's `module:` separately (two named providers may share one plugin).
 ///
-/// RED-BEFORE-GREEN: before this unit `auth.methods:` was a live config block that parsed, so this
+/// RED-BEFORE-GREEN: before 1.5.3 `auth.methods:` was a live config block that parsed, so this
 /// resolution path did not exist.
 #[test]
 fn test_auth_method_browser_login_parses() {
@@ -3077,7 +3077,7 @@ fetch:
     );
 }
 
-// ─── 1.5.2 Step 3: plugins.fetch → FetchSpec resolution ───
+// ─── 1.5.2: plugins.fetch → FetchSpec resolution ───
 
 #[test]
 fn test_fetch_specs_maps_github_and_url() {
@@ -3197,7 +3197,7 @@ advanced:
     assert_eq!(d3.advanced.worker_threads, None);
 }
 
-// ── 1.5.3 FREEZE PINS (fwd-compat triage §A) ─────────────────────────────────────────────────────
+// ── 1.5.3 FREEZE PINS (forward-compatibility) ────────────────────────────────────────────────────
 //
 // Each test below pins a semantic that 1.5.3 SHIPS and later releases must REUSE. They exist because
 // 1.5.3 is the break-once release: after it the grammar is additive-only forever, so anything a
@@ -3324,12 +3324,12 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Routing));
 }
 
-/// AUDIT MED-2 — THE `phase:` FIELD DOC MUST NOT CONTRADICT THE A3 FREEZE. The field doc said an
+/// THE `phase:` FIELD DOC MUST NOT CONTRADICT THE A3 FREEZE. The field doc said an
 /// omitted `phase:`/`at:` falls back to `request`, while `fires_at_stage` (and the A3 doc on
 /// `CORE_HOOK_PHASES`, and the test above) say it fires at ALL FOUR core stages. A3 is the frozen
 /// semantic, so the DOC was the defect. Read as a source assertion because a doc comment is exactly
-/// the thing no runtime assertion can reach — and a wrong doc on a FROZEN semantic is what an
-/// operator (and the next reader of this file) actually acts on.
+/// the thing no runtime assertion can reach, and a wrong doc on a FROZEN semantic is what an
+/// operator actually acts on.
 ///
 /// RED-BEFORE-GREEN: the pre-fix file contains the contradicting sentence this test rejects.
 #[test]
@@ -3355,13 +3355,13 @@ fn the_phase_field_doc_agrees_with_the_a3_freeze() {
 /// FREEZE BLOCKER A4 — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
 /// pool's own `hooks:` fires ONCE, at its FIRST (section-level) position.
 ///
-/// The locked combine rule (audit §4) says section-level LISTS are ADDITIVE but never said what
+/// The locked combine rule says section-level LISTS are ADDITIVE but never said what
 /// happens on an overlap. Both answers were defensible, so 1.5.3 pins one: attaching a hook to all
 /// pools and then ALSO naming it on one pool is how an operator writes "…and definitely on this
 /// one", and reading that as "fire twice" would double-charge a gate's latency budget and
 /// double-count a tap's audit record.
 ///
-/// RED-BEFORE-GREEN: before this unit the two lists were lowered independently, so an overlapping
+/// RED-BEFORE-GREEN: before 1.5.3 the two lists were lowered independently, so an overlapping
 /// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
@@ -3419,7 +3419,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 /// therefore frozen, and every FUTURE all-scope knob must land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`) — one word paid once, additive forever.
 ///
-/// RED-BEFORE-GREEN: before this unit only `hooks` was reserved (so a pool named
+/// RED-BEFORE-GREEN: before 1.5.3 only `hooks` was reserved (so a pool named
 /// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
@@ -3445,7 +3445,7 @@ fn pools_reserved_section_keys_are_frozen() {
     }
 }
 
-/// FREEZE BLOCKER A5 (the other half) + audit §4: `pools.upstream_credentials:` is the ALL-POOLS
+/// FREEZE BLOCKER A5 (the other half): `pools.upstream_credentials:` is the ALL-POOLS
 /// SCALAR default and a pool's own value OVERRIDES it (replaces — scalars never union). Pinned
 /// end-to-end because "scalar overrides, list is additive" is the rule every future inherited
 /// setting will be read against.
@@ -3509,7 +3509,7 @@ fn secrets_block_stays_module_keyed_by_design() {
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// Audit §3: `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
+/// `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
 /// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
 /// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, `otlp` installs the
 /// one tracer subscriber) reject a second instance LOUDLY rather than silently ignoring it.
@@ -3574,7 +3574,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
     );
 }
 
-/// LOW-3 (DOC/CODE DRIFT). `RootSettings`' doc enumerates the `DeployCfg` blocks the `root` overlay
+/// DOC/CODE DRIFT. `RootSettings`' doc enumerates the `DeployCfg` blocks the `root` overlay
 /// section covers. That list is the operator-facing description of an API surface, so a name in it
 /// that the struct has no field for is a documented capability that does not exist — it listed
 /// `metrics`, retired in 1.5.3.

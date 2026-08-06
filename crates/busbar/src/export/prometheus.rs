@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The built-in **prometheus** exporter (PULL) — design §2.1, §7.1.
+//! The built-in **prometheus** exporter (PULL).
 //!
 //! COLLECTION stays core: the recorder + emit sites + scrape-time gauge derivation live in
 //! [`crate::metrics`]. This module is the DISTRIBUTION half — it serves the well-known `/metrics`
 //! route through the plugin HTTP endpoint registration ([`crate::plugin_routes`]): when
 //! `export.prometheus` is configured, [`route_decl`] hands a `GET /metrics` (auth `key` — the data-plane bar, preserving today's auth-gated /metrics)
 //! registration to the route table, and every scrape is dispatched to [`PrometheusExport::handle_http_with_app`],
-//! which refreshes the scrape-time gauges from the LIVE `App` snapshot (design §7.1 — resolved at
+//! which refreshes the scrape-time gauges from the LIVE `App` snapshot (resolved at
 //! scrape time, never a baked-in handle, so a hot-swap never leaves `/metrics` stale) and renders the
 //! recorder registry.
 

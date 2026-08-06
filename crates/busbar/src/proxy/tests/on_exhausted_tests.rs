@@ -39,7 +39,7 @@ fn test_config_parsing_queue() {
 
 #[test]
 fn test_config_parsing_both_fallback_and_queue_conflicts() {
-    // R7: a mapping carrying BOTH keys is an explicit "exactly one of" error, never a force-fit.
+    // A mapping carrying BOTH keys is an explicit "exactly one of" error, never a force-fit.
     let result: Result<config::OnExhaustedCfg, _> =
         serde_yaml::from_str("{ fallback_pool: cold, queue: { max_ms: 250 } }");
     let err = format!(
@@ -260,7 +260,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
     server_soon.shutdown().await;
 }
 
-/// Regression fence for the naive fix. Filtering `least_bad` on `request_ctx.excluded` looks
+/// Regression fence for a tempting wrong fix. Filtering `least_bad` on `request_ctx.excluded` looks
 /// equivalent but is not: that set also accumulates every lane the request already TRIED, so in the
 /// dominant exhaustion case it holds every member and `least_bad` silently degenerates to `reject`.
 #[tokio::test]
@@ -387,7 +387,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
     server_blocked.shutdown().await;
 }
 
-// ── AT-CAPACITY exhaustion (Bug 1) ─────────────────────────────────────────────────────────────
+// ── AT-CAPACITY exhaustion ─────────────────────────────────────────────────────────────────────
 //
 // The documented contract: "When all candidates are unavailable, tripped, excluded, or at-capacity,
 // the pool is exhausted." Before the fix, a member at its `max_concurrent` limit was NOT treated as
@@ -399,17 +399,16 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
 // 1-permit semaphore whose ONE permit the test already holds ([`saturated`]) — so the lane's
 // `try_acquire` fails for the whole test with no in-flight upstream request to time. Each request is
 // then wrapped in a SHORT test-side `timeout` ([`SHED_BUDGET`]) while the pool's failover deadline is
-// set LONG ([`long_failover`], 300s). On the UNFIXED code the request parks ~300s on the saturated
-// semaphore, so the 4s wrapper fires and the `.expect` panics — this is the RED signal, and it is
-// exactly what makes every at-capacity test below fail if the one-line `select.rs` fix is reverted
-// (the tautology-check the task requires). On the FIXED code the request sheds/spills immediately,
-// completing far inside the wrapper, and the assertion on the OBSERVABLE outcome (503 + Retry-After,
-// or which member served) holds.
+// set LONG ([`long_failover`], 300s). A regression that parks runs ~300s on the saturated
+// semaphore, so the 4s wrapper fires and the `.expect` panics — that panic is the failure signal,
+// and it is what makes every at-capacity test below fail if the `select.rs` guard regresses.
+// Correct behaviour sheds/spills immediately, completing far inside the wrapper, and the assertion
+// on the OBSERVABLE outcome (503 + Retry-After, or which member served) holds.
 
 use std::time::Duration;
 
-/// A failover budget long enough that, on the unfixed code, an at-capacity park cannot masquerade as
-/// a fast shed: the buggy park runs to this deadline (300s), well past [`SHED_BUDGET`].
+/// A failover budget long enough that an at-capacity park cannot masquerade as a fast shed: a park
+/// runs to this deadline (300s), well past [`SHED_BUDGET`].
 fn long_failover() -> crate::config::FailoverCfg {
     crate::config::FailoverCfg {
         timeout_secs: 300,
@@ -460,9 +459,9 @@ fn retry_after(resp: &axum::response::Response) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Drive one request through `forward_with_pool` under the shed budget. On the fixed code this
-/// returns immediately; on the unfixed code the inner future parks to the failover deadline and this
-/// `.expect` panics (RED) — the shed-not-queued assertion.
+/// Drive one request through `forward_with_pool` under the shed budget. A correct shed returns
+/// immediately; a queue-instead-of-shed regression parks the inner future to the failover deadline
+/// and this `.expect` panics — the shed-not-queued assertion.
 async fn drive_shed(
     app: std::sync::Arc<crate::state::App>,
     cands: Vec<WeightedLane>,
@@ -485,12 +484,12 @@ async fn drive_shed(
     .await
     .expect(
         "at-capacity request must shed/spill immediately — it queued to the failover deadline \
-         instead (Bug 1: the select.rs at-capacity park). This fails if the one-line fix is reverted.",
+         instead (the select.rs at-capacity park).",
     )
 }
 
-/// D — `on_exhausted: reject` (Status503) on a saturated pool must SHED with 503 + `Retry-After`,
-/// not queue behind the busy member to the deadline. RED before the fix (parks to 300s).
+/// `on_exhausted: reject` (Status503) on a saturated pool must SHED with 503 + `Retry-After`,
+/// not queue behind the busy member to the deadline (which would park to 300s).
 #[tokio::test]
 async fn at_capacity_reject_sheds_503_not_queued() {
     crate::metrics::init();
@@ -515,8 +514,8 @@ async fn at_capacity_reject_sheds_503_not_queued() {
     );
 }
 
-/// D/default — a pool with NO `on_exhausted` config defaults to reject semantics (Status503): a
-/// saturated pool sheds 503 + Retry-After, not queue. RED before the fix.
+/// A pool with NO `on_exhausted` config defaults to reject semantics (Status503): a
+/// saturated pool sheds 503 + Retry-After, not queue.
 #[tokio::test]
 async fn at_capacity_default_no_on_exhausted_sheds_503() {
     crate::metrics::init();
@@ -541,9 +540,9 @@ async fn at_capacity_default_no_on_exhausted_sheds_503() {
     );
 }
 
-/// A — saturation with `fallback_pool` must SPILL to the fallback pool's fast member, NOT serialize
+/// Saturation with `fallback_pool` must SPILL to the fallback pool's fast member, NOT serialize
 /// on the saturated primary. The primary member must serve ZERO requests (it never dispatches while
-/// at-capacity). RED before the fix (the request parks on the primary and never reaches the spill).
+/// at-capacity); parking on the primary would never reach the spill.
 #[tokio::test]
 async fn at_capacity_fallback_spills_to_fast_member() {
     crate::metrics::init();
@@ -590,7 +589,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
 
 /// The `least_bad` last-resort path, when the ONLY member is at-capacity (breaker-healthy but its
 /// permit is held), must SHED with 503 rather than queue: `least_bad` overrides the breaker, not a
-/// concurrency limit. RED before the fix (parks in `pick_among` before ever reaching `least_bad`).
+/// concurrency limit; parking in `pick_among` would never reach `least_bad`.
 #[tokio::test]
 async fn at_capacity_least_bad_sheds_when_saturated() {
     crate::metrics::init();
@@ -612,10 +611,10 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
     assert!(retry_after(&resp).is_some());
 }
 
-/// E / F — a bounded pool under a concurrent BURST must not serialize: with the single primary member
+/// A bounded pool under a concurrent BURST must not serialize: with the single primary member
 /// at capacity, N concurrent requests all SPILL to the fast overflow pool in parallel (the fast pool
 /// serves all N; the saturated primary serves none). This is the "queue appears unbounded" report
-/// scenario turned into a permanent guard. RED before the fix (all N park behind the one busy slot).
+/// scenario turned into a permanent guard; otherwise all N park behind the one busy slot.
 #[tokio::test]
 async fn at_capacity_bounded_burst_all_spill_not_serialized() {
     crate::metrics::init();
@@ -665,9 +664,9 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
     fast.shutdown().await;
 }
 
-/// F (localization) — a pool with TWO members BOTH at `max_concurrent: 1` and BOTH busy: the request
+/// A pool with TWO members BOTH at `max_concurrent: 1` and BOTH busy: the request
 /// that arrives when EVERY member is at capacity must exhaust → spill, not queue. This pins the
-/// defect to the pool-exhaustion check (not per-member capacity accounting). RED before the fix.
+/// defect to the pool-exhaustion check, not per-member capacity accounting.
 #[tokio::test]
 async fn at_capacity_all_members_busy_two_member_pool_spills() {
     crate::metrics::init();
@@ -708,7 +707,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
 }
 
 /// Combination — one member at-capacity + one member breaker-Open (tripped). Every candidate is
-/// unavailable, so the pool is exhausted → reject/503. RED before the fix (parks on the at-capacity
+/// unavailable, so the pool is exhausted → reject/503 (parking on the at-capacity
 /// member). Also proves the fix composes with the existing breaker-Open exclusion path.
 #[tokio::test]
 async fn at_capacity_plus_tripped_member_rejects_503() {
@@ -743,8 +742,8 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
 }
 
 /// A fallback CHAIN A→B→C: primary A at-capacity spills to B, B at-capacity spills to C, C (fast)
-/// serves. Proves the at-capacity exhaustion signal propagates through multi-level chains. RED
-/// before the fix (parks on A).
+/// serves. Proves the at-capacity exhaustion signal propagates through multi-level chains rather
+/// than parking on A.
 #[tokio::test]
 async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     crate::metrics::init();
@@ -779,7 +778,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
 }
 
 /// A self-referential fallback (a pool whose `on_exhausted` names itself) on an at-capacity pool must
-/// terminate at the visited-pool loop guard with 503 — never recurse or park. RED before the fix.
+/// terminate at the visited-pool loop guard with 503 — never recurse or park.
 #[tokio::test]
 async fn at_capacity_self_referential_fallback_stays_503() {
     crate::metrics::init();
@@ -805,7 +804,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
 }
 
 /// A fallback pool that is ITSELF at-capacity (no further `on_exhausted`) cascades to 503 — the spill
-/// target being exhausted too must still terminate in a shed, not a queue. RED before the fix.
+/// target being exhausted too must still terminate in a shed, not a queue.
 #[tokio::test]
 async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     crate::metrics::init();
@@ -834,12 +833,12 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     assert!(retry_after(&resp).is_some());
 }
 
-// ── Green regression guards (pass BOTH before and after the fix) ────────────────────────────────
+// ── Regression guards that hold in every configuration ──────────────────────────────────────────
 
-/// C-analogue regression guard: a NON-at-capacity exhaustion (a member with its breaker forced Open)
-/// still falls back correctly. This is the control the bug report used to isolate the defect to the
-/// at-capacity condition; it must stay green across the fix, proving the fix did not disturb the
-/// already-working tripped/unreachable exhaustion → fallback path. (Passes on unfixed code too.)
+/// Regression guard: a NON-at-capacity exhaustion (a member with its breaker forced Open)
+/// still falls back correctly. This is the control that isolates the defect to the at-capacity
+/// condition: it must stay green either way, proving the at-capacity guard did not disturb the
+/// already-working tripped/unreachable exhaustion → fallback path.
 #[tokio::test]
 async fn tripped_member_still_falls_back_to_overflow() {
     crate::metrics::init();
@@ -884,13 +883,13 @@ async fn tripped_member_still_falls_back_to_overflow() {
     fast.shutdown().await;
 }
 
-// ── least_bad must skip a SATURATED soonest member (Finding 2) ──────────────────────────────────
+// ── least_bad must skip a SATURATED soonest member ──────────────────────────────────────────────
 
 /// `least_bad` ranks Open members by soonest cooldown and dispatches to the "least bad" one. If that
 /// soonest member is AT-CAPACITY (no free permit) but a slightly-worse sibling has a free permit,
 /// `least_bad` must degrade onto the SIBLING — not return a hard 503. It exists to provide a degraded
 /// response when everything is tripped; refusing because the single best member happens to be busy
-/// defeats its purpose. Before the Finding-2 fix, `handle_least_bad` did one `try_acquire` on the
+/// defeats its purpose. A `handle_least_bad` that does one `try_acquire` on the
 /// soonest member and 503'd on failure, so this returned 503; after, it falls to the free sibling.
 #[tokio::test]
 async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
@@ -938,7 +937,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
     sibling.shutdown().await;
 }
 
-// ── Retry-After reflects the real backpressure axis (Finding 3) ─────────────────────────────────
+// ── Retry-After reflects the real backpressure axis ─────────────────────────────────────────────
 
 /// Parse the numeric `Retry-After` seconds off a response.
 fn retry_after_secs(resp: &axum::response::Response) -> u64 {
@@ -1007,10 +1006,10 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
     );
 }
 
-/// Finding (correctness): an EMPTY/unknown candidate set — reachable via a fallback loop A→B→A or an
+/// An EMPTY/unknown candidate set — reachable via a fallback loop A→B→A or an
 /// unconfigured `fallback_pool` target, both of which call `handle_status_503` with `&[]` — must
 /// advertise the honest ≥2s floor (`AT_CAPACITY_RETRY_AFTER_SECS`), never the deceptive bare `1`
-/// ("retry immediately, just re-collide"). RED before the `None => 1` → `None => floor` fix.
+/// ("retry immediately, just re-collide"), which is why the `None` arm floors instead of returning 1.
 #[test]
 fn retry_after_empty_candidate_set_uses_floor_not_one() {
     crate::metrics::init();
@@ -1036,8 +1035,8 @@ fn retry_after_empty_candidate_set_uses_floor_not_one() {
     );
 }
 
-// ── on_exhausted: queue{max_ms} (Phase 3) ───────────────────────────────────────────────────────
-// The queue waits BOUNDED on the AtCapacity candidates' OWN FIFO semaphores (R2) — a permit freed on
+// ── on_exhausted: queue{max_ms} ─────────────────────────────────────────────────────────────────
+// The queue waits BOUNDED on the AtCapacity candidates' OWN FIFO semaphores — a permit freed on
 // a busy lane wakes exactly one waiter with the stored permit (no lost wakeup, no thundering herd) —
 // then re-checks the breaker on the won lane before dispatch. Every test saturates a REAL semaphore.
 
@@ -1086,8 +1085,8 @@ async fn wait_until_queued(app: &std::sync::Arc<crate::state::App>, pool: &str, 
 
 /// queue DISPATCHES when a permit frees before the deadline: the request parks on the saturated
 /// lane's semaphore, and once the held permit is released the queued waiter acquires it, passes the
-/// (Closed) breaker, and is served by THAT freed lane (200). RED before Phase 3 (no queue arm →
-/// immediate 503).
+/// (Closed) breaker, and is served by THAT freed lane (200). Without the queue arm this would be an
+/// immediate 503.
 #[tokio::test]
 async fn queue_dispatches_when_permit_frees_before_deadline() {
     crate::metrics::init();
@@ -1133,11 +1132,11 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
     svc.shutdown().await;
 }
 
-/// Finding (concurrency HIGH): a queued dispatch that WON a single-flight recovery probe, then has its
+/// A queued dispatch that WON a single-flight recovery probe, then has its
 /// future DROPPED mid-upstream-await (client disconnect), must RELEASE the probe via the RAII
 /// `ProbeGuard` — the cell must not be left wedged HalfOpen (which would bench the lane until the
 /// out-of-band prober rescues it). Deterministic via `MockResponse::Gated` (a `Notify`, not a sleep).
-/// RED before the forward_once ProbeGuard: the explicit `release_probe_in` sites are code AFTER the
+/// Without the forward_once ProbeGuard: the explicit `release_probe_in` sites are code AFTER the
 /// dropped await, so none run on drop and the cell stays HalfOpen.
 #[tokio::test]
 async fn queue_dropped_dispatch_future_releases_probe() {
@@ -1208,20 +1207,19 @@ async fn queue_dropped_dispatch_future_releases_probe() {
     server.shutdown().await;
 }
 
-/// Concurrency HIGH (peer-probe revert): `handle_least_bad` OWNS NO PROBE — it dispatches via
+/// Peer-probe revert: `handle_least_bad` OWNS NO PROBE — it dispatches via
 /// `try_acquire` and wins nothing. So if a least_bad dispatch's `forward_once` future is DROPPED
 /// mid-upstream-await (client disconnect), it must NEVER revert a single-flight probe a CONCURRENT PEER
-/// legitimately won on the SAME cell. Round-1 passed the cell's CURRENT epoch to an ARMED `ProbeGuard`
+/// legitimately won on the SAME cell. Passing the cell's CURRENT epoch to an ARMED `ProbeGuard`
 /// on this path; because `release_probe_owned_in` matches by epoch EQUALITY (not "did THIS dispatch win
 /// it"), a HalfOpen cell whose live probe belongs to peer A would be REVERTED (HalfOpen→Open, probe
 /// cleared) on B's drop — letting a THIRD request win a SECOND concurrent probe, breaking single-flight.
 /// The fix makes `forward_once`'s `probe_epoch` an `Option<u64>` and has least_bad pass `None`, so NO
 /// guard is built on this path and a dropped least_bad future can revert nothing.
 ///
-/// RED-before-GREEN: flip the least_bad `forward_once` arg from `None` back to
-/// `Some(app.store.probe_epoch_in(pool, soonest_idx))` (an armed guard capturing peer A's live epoch)
-/// and B's drop reverts A's probe → the cell goes Open + a fresh `try_admit` wins a NEW probe → every
-/// assertion below fails. With `None` the cell is untouched and all pass.
+/// The least_bad `forward_once` arg must stay `None`: `Some(app.store.probe_epoch_in(pool,
+/// soonest_idx))` would arm a guard capturing peer A's live epoch, so B's drop reverts A's probe —
+/// the cell goes Open and a fresh `try_admit` wins a NEW probe. With `None` the cell is untouched.
 #[tokio::test]
 async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     crate::metrics::init();
@@ -1410,7 +1408,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
 
 /// queue TIMES OUT → 503 + Retry-After when no permit ever frees within `max_ms`. The wait is bounded
 /// by `max_ms` (300ms), NOT the long failover budget — it must actually wait ~max_ms (not shed
-/// immediately) and shed well before the budget. RED before Phase 3 (immediate 503, no wait at all).
+/// immediately) and shed well before the budget, rather than shedding immediately with no wait.
 #[tokio::test]
 async fn queue_times_out_to_503_when_capacity_never_frees() {
     crate::metrics::init();
@@ -1467,7 +1465,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
 
 /// queue SKIPS the wait and rejects IMMEDIATELY when NO candidate is `AtCapacity` (all breaker-Open /
 /// dead): queuing cannot free a permit on a pool that is DOWN, not busy, so waiting `max_ms` would be
-/// pointless. Proven by the reject completing far inside `max_ms`. RED before Phase 3.
+/// pointless. Proven by the reject completing far inside `max_ms`.
 #[tokio::test]
 async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
     crate::metrics::init();
@@ -1560,7 +1558,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
 
 /// Won-permit-but-breaker-now-Open: the waiter acquires a freed permit but the lane's breaker TRIPPED
 /// Open while it was queued. The breaker re-check on the won lane must REFUSE — the request must never
-/// dispatch onto the Open lane, and (single candidate) falls through to 503. Proves the R2 breaker
+/// dispatch onto the Open lane, and (single candidate) falls through to 503. Proves the breaker
 /// composition on the won lane.
 #[tokio::test]
 async fn queue_won_permit_but_breaker_now_open_never_dispatches() {

@@ -294,16 +294,12 @@ mod tests {
     /// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a
     /// ROOT build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>`
     /// compiler output (refreshed on every build that recompiles the lib). A SCOPED `cargo test -p
-    /// busbar-plugin-loader` (what dev-gate.yml's final step runs — DIFFERENT from the
-    /// `crates/busbar/src/hooks/tests/tests.rs::hook_cdylib()` fix, a same-named-in-spirit but
-    /// separate function in a separate crate that was fixed earlier and did NOT cover this one)
-    /// does not uplift the cdylib to the top-level profile dir, only to `target/deps` — checking
-    /// only `profile_dir` silently found nothing even though the cdylib really was built, and
-    /// because this function only hard-panics when `CI` is set (not under a bare local `cargo
-    /// test`), every gated test here quietly "passed" via its own early return with zero real
-    /// coverage locally, only surfacing as a hard CI failure. Same fix already applied to this
-    /// crate's `store_fixture_plugin_path`/`secret_example_plugin_path` and to sibling repos'
-    /// equivalent helpers.
+    /// busbar-plugin-loader` does not uplift the cdylib to the top-level profile dir, only to
+    /// `target/deps`, so checking only `profile_dir` finds nothing even though the cdylib really
+    /// was built — and because this function only hard-panics when `CI` is set (not under a bare
+    /// local `cargo test`), every gated test here would quietly "pass" via its own early return
+    /// with zero real coverage locally. Mirrors this crate's
+    /// `store_fixture_plugin_path`/`secret_example_plugin_path`.
     fn hook_plugin_path() -> Option<std::path::PathBuf> {
         let candidate = (|| {
             let exe = std::env::current_exe().ok()?;

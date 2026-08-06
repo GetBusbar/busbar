@@ -252,7 +252,7 @@ fn ceiling_refusal_rows() -> usize {
         .count()
 }
 
-/// #20: auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
+/// Auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
 /// could grow the limit tree without bound — every leaf is a new enforcement bucket, version-log
 /// entry and persisted overlay row. `limits.max_auto_provisioned_groups` caps it; explicitly
 /// configured groups and mints that bind to an EXISTING group are unaffected.

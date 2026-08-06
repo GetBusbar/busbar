@@ -275,7 +275,7 @@ impl ProtocolWriter for OpenAiWriter {
             );
         }
 
-        // Phase 0 first-class sampling/output controls. Emitted in OpenAI's native top-level shape and
+        // First-class sampling/output controls. Emitted in OpenAI's native top-level shape and
         // omitted entirely when None. `response_format` is written back verbatim (the raw Value read in).
         if let Some(frequency_penalty) = req.frequency_penalty {
             out.insert(
@@ -472,7 +472,7 @@ impl ProtocolWriter for OpenAiWriter {
                     // remaps each distinct raw index to its 0-based ordinal on egress — keyed on the
                     // value emitted here. The writer stays 1:1 and stateless; the per-stream ordinal
                     // assignment lives in the framing, which is the only seam that sees the whole
-                    // stream. (Finding 1.)
+                    // stream.
                     let delta_obj = serde_json::json!({
                         "tool_calls": [{
                             "index": index,
@@ -509,7 +509,7 @@ impl ProtocolWriter for OpenAiWriter {
                 crate::ir::IrDelta::InputJsonDelta(json) => {
                     // Mirror the CANONICAL raw index emitted by the matching BlockStart so argument
                     // fragments route to the correct parallel tool call; the framing seam remaps this
-                    // to the same 0-based ordinal it assigned the BlockStart (Finding 1).
+                    // to the same 0-based ordinal it assigned the BlockStart.
                     let delta_obj = serde_json::json!({
                         "tool_calls": [{
                             "index": index,
@@ -853,7 +853,7 @@ impl ProtocolWriter for OpenAiWriter {
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
                 // `end_index`, `ir/mod.rs`) is characters. `text.len()` is a byte length — every
                 // citation in block 2+ would be shifted by that block's byte-vs-char delta on any
-                // non-ASCII text (class-6 6e1, site 1).
+                // non-ASCII text.
                 base += text.chars().count();
             }
         }

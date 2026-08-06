@@ -50,8 +50,8 @@ pub(crate) struct AuditEntry {
     /// Every site that FILLS the ring asserts this itself: `record_by` sets it true, `from_record`
     /// (the store-seeding path) sets it false. `#[serde(skip)]` gives the right default (false) on the
     /// encoded paths, but `load` is ALSO reachable in-process from `export()`, where no encoding
-    /// happens — so `load` clears it explicitly and the attribute is only belt-and-braces. Do not
-    /// delete the clear in `load` on the grounds that serde already handles it.
+    /// happens — so `load` clears it explicitly and the attribute is only belt-and-braces: serde
+    /// alone does not cover every path that fills the ring.
     #[serde(skip)]
     pub(crate) recorded_here: bool,
 }
@@ -95,8 +95,8 @@ pub(crate) const MAX_AUDIT_ENTRIES: usize = 1000;
 /// than yielding) once tripped, that population is bounded by the number of Tokio worker OS threads,
 /// not by concurrent admin-request count (the admin surface itself has no concurrency cap — see
 /// `main.rs`'s `MAX_WORKER_THREADS` clamp, the actual enforced bound this reserve depends on).
-/// busbar is single-operator (PIPELINE-BRIEF: no multi-tenant trust boundary, no per-caller
-/// concurrency limit on the admin surface), so there is no adversarial population that could scale
+/// busbar is single-operator (no multi-tenant trust boundary, no per-caller concurrency limit on
+/// the admin surface), so there is no adversarial population that could scale
 /// concurrent `record_by` callers toward this reserve — a single operator's console/CLI/automation
 /// realistically tops out at low tens of concurrent admin mutations, and the worker-thread clamp
 /// below keeps the hard ceiling at 128, well under 250.
@@ -288,8 +288,8 @@ impl AuditLog {
 
     /// Record one mutation attempt. Never fails (a poisoned lock is recovered — losing the audit log
     /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap
-    /// (the durable sink, when present, keeps the pruned tail). WITH principal attribution (:
-    /// every mutation, success AND failure, attributed to WHO attempted it).
+    /// (the durable sink, when present, keeps the pruned tail). WITH principal attribution: every
+    /// mutation, success AND failure, is attributed to WHO attempted it.
     pub(crate) fn record_by(
         &self,
         action: &str,
@@ -784,7 +784,7 @@ mod tests {
         assert!(!log.verify(), "a tampered entry breaks the chain");
     }
 
-    // ── durable audit through the configured Store (#17) ─────────────────────────────────────────
+    // ── durable audit through the configured Store ───────────────────────────────────────────────
 
     use busbar_api::Store;
     use std::sync::Arc;
@@ -973,9 +973,8 @@ mod tests {
         // the existing durable entry.
         log2.record_by("hook.register", "hook:c", OUTCOME_APPLIED, "admin");
         let persisted = store.list_audit().unwrap();
-        // The count/seq/untouched-entry assertions below are REGRESSION PROOFS (they already pass at
-        // HEAD via the seq floor at :200-201, unrelated to change B) — kept to show B does not
-        // disturb them.
+        // The count/seq/untouched-entry assertions below cover the seq floor; the linkage assertion
+        // that follows them covers the re-anchoring.
         assert_eq!(persisted.len(), 4, "durable history grew; nothing replaced");
         assert_eq!(
             persisted.last().unwrap().seq,
@@ -986,11 +985,11 @@ mod tests {
             persisted[2].action, "hook.delete",
             "the pre-existing seq-3 entry is untouched"
         );
-        // THE RED ASSERTION (change B): the new entry's `prev_hash` must join the STORE's durable
-        // tail, not whatever stale link the seeded ring happened to carry. At HEAD the verify-fail
-        // path never engages the seal, so the recovery branch never runs and the entry chains onto
-        // the stale snapshot's seq-1 hash instead of the store's seq-3 hash — a silent linkage break
-        // reported as tamper on the NEXT boot, not this one.
+        // The new entry's `prev_hash` must join the STORE's durable tail, not whatever stale link
+        // the seeded ring happened to carry. Without the seal engaging on the verify-fail path, the
+        // recovery branch never runs and the entry chains onto the stale snapshot's seq-1 hash
+        // instead of the store's seq-3 hash — a silent linkage break reported as tamper on the NEXT
+        // boot, not this one.
         assert_eq!(
             persisted[3].prev_hash, persisted[2].hash,
             "the post-restart entry must re-anchor to the durable tail's actual hash, not the stale \
@@ -998,11 +997,11 @@ mod tests {
         );
     }
 
-    /// The verify-fail linkage break, with NO snapshot at all — the branch v2 missed entirely. At
-    /// HEAD the ring is empty at record time (nothing was `load`ed), so `record_by`'s `q.back()` is
-    /// `None` and the first post-restart entry's `prev_hash` is `""`, not the durable tail's hash — a
-    /// silent break identical in kind to the with-snapshot case above, just with a different stale
-    /// link (empty instead of the snapshot's).
+    /// The verify-fail linkage break, with NO snapshot at all. The ring is empty at record time
+    /// (nothing was `load`ed), so an unsealed `record_by` takes `q.back() == None` and the first
+    /// post-restart entry's `prev_hash` is `""`, not the durable tail's hash — a silent break
+    /// identical in kind to the with-snapshot case above, just with a different stale link (empty
+    /// instead of the snapshot's).
     #[test]
     fn verify_failure_without_a_snapshot_still_anchors_to_the_durable_tail() {
         let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
@@ -1043,8 +1042,8 @@ mod tests {
     }
 
     /// The RAM ring is bounded to `MAX_AUDIT_ENTRIES`, but a durable store keeps the FULL history — so
-    /// recording more than the cap prunes the RAM ring WITHOUT losing durable history (the #17 fix:
-    /// the size bound bounds RAM, not history). Restoring seeds the ring with the recent tail while the
+    /// recording more than the cap prunes the RAM ring WITHOUT losing durable history (the size
+    /// bound bounds RAM, not history). Restoring seeds the ring with the recent tail while the
     /// store retains everything.
     #[test]
     fn durable_store_keeps_history_beyond_the_ram_cap() {
@@ -1106,12 +1105,12 @@ mod tests {
     //
     // The durable write-through is keyed on `seq`, so the ONE thing boot must never do is resume
     // with a counter below the durable max. Three ways that used to happen, one class:
-    // HIGH-10  a transient `list_audit_tail` failure returned EARLY, before the floor was applied,
-    // and the caller fell back to a snapshot that floors only to its own (lower) max;
-    // #15      the file-snapshot `load` never seeded `durable_high` at all;
-    // #24      the backfill always started at `durable_high + 1`, so a restored ring whose oldest
-    // seq is higher hit the unrepairable-gap branch on the first iteration and left the
-    // durable log permanently stuck.
+    // - a transient `list_audit_tail` failure returned EARLY, before the floor was applied, and the
+    //   caller fell back to a snapshot that floors only to its own (lower) max;
+    // - the file-snapshot `load` never seeded `durable_high` at all;
+    // - the backfill always started at `durable_high + 1`, so a restored ring whose oldest seq is
+    //   higher hit the unrepairable-gap branch on the first iteration and left the durable log
+    //   permanently stuck.
 
     /// A store whose AUDIT READS can be made to fail on demand (a transient backend blip), while
     /// writes and everything else delegate to a real in-memory store.
@@ -1183,7 +1182,7 @@ mod tests {
         }
     }
 
-    /// HIGH-10: a TRANSIENT read failure at boot must not let the sequence rewind into durable
+    /// A TRANSIENT read failure at boot must not let the sequence rewind into durable
     /// history. While the floor is unknown the write-through is SEALED (nothing is written, and
     /// certainly nothing is overwritten); once the store answers again the floor is recovered and
     /// appends resume ABOVE the durable max.
@@ -1277,7 +1276,7 @@ mod tests {
         assert_eq!(restored, 6, "and restores every entry");
     }
 
-    /// THE REPORTED DUPLICATION, via the IN-PROCESS seeding path. `rebase_nondurable_suffix` used to
+    /// ENTRY DUPLICATION via the IN-PROCESS seeding path. `rebase_nondurable_suffix` used to
     /// pick its suffix by `seq <= durable_max`, which matches index 0 whenever the ring's SEEDED
     /// prefix (loaded from a file snapshot / `export()`) sits at seqs the store already holds — so it
     /// renumbers the SEEDED entries instead of the live one behind them, and the backfill re-persists
@@ -1360,7 +1359,7 @@ mod tests {
         );
     }
 
-    /// #15 + #24: after a FILE-SNAPSHOT restore (the durable restore did not supply the ring), the
+    /// After a FILE-SNAPSHOT restore (the durable restore did not supply the ring), the
     /// next mutation must still reach the durable sink. Before the fix `durable_high` stayed 0, so
     /// the backfill aimed at seq 1 — a seq the restored (pruned) ring cannot supply — hit the
     /// unrepairable-gap branch immediately, and durable audit was dead for the life of the process.
@@ -1409,11 +1408,10 @@ mod tests {
         );
     }
 
-    /// REGRESSION PROOF for change C (`max(durable_max + 1, head.seq)`), NOT a RED test against HEAD:
-    /// this is GREEN at HEAD by accident (`position(|e| e.seq <= 0)` is `None` there, so the rebase is
-    /// a no-op whenever the durable tail is empty). Its RED proof is the INTERMEDIATE build — change A
-    /// alone, with a bare `next_seq = durable_max + 1` instead of the `max` — which renumbers a live
-    /// entry BELOW a still-present seeded one and violates the ring's seq-sorted invariant.
+    /// The rebase's `max(durable_max + 1, head.seq)` floor. A bare `next_seq = durable_max + 1`
+    /// renumbers a live entry BELOW a still-present seeded one whenever the durable tail is empty or
+    /// lagging, violating the ring's seq-sorted invariant (and making the backfill's
+    /// `find(|e| e.seq == seq)` ambiguous).
     #[test]
     fn live_entry_is_never_renumbered_below_a_seeded_one() {
         let inner = DurableTestStore::new();
@@ -1906,8 +1904,8 @@ mod tests {
         }
     }
 
-    /// THE RED PROOF FOR FINDING #5 ITSELF: today's `record_by` does the durable write-through
-    /// INLINE and SYNCHRONOUSLY, so a slow store round-trip parks whatever thread called it — a
+    /// An INLINE, SYNCHRONOUS durable write-through in `record_by` parks whatever thread called
+    /// it for the length of a slow store round-trip — a
     /// Tokio worker for the ~30 `async fn` admin handler sites. `current_thread` flavor is
     /// LOAD-BEARING: on the default multi-thread runtime a second worker would pick up the second
     /// task and this test would false-green. This is a REAL thread sleep (not paused time — a
@@ -1942,12 +1940,12 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR THE VALVE'S `block_in_place` HANDOFF: unlike its sibling above (which never
+    /// THE VALVE'S `block_in_place` HANDOFF: unlike its sibling above (which never
     /// trips the valve — headroom is untouched, so the write-behind flusher owns the write), this
     /// test drives `unpersisted` past `WRITE_THROUGH_HEADROOM` so `record_by` itself performs the
     /// slow, synchronous store round-trip. Flavor choice is deliberately DIFFERENT from the sibling:
-    /// the sibling uses `current_thread` so there is provably only one worker to park (proving the
-    /// defect). Here `worker_threads = 1` gives the same "exactly one worker" property while still
+    /// the sibling uses `current_thread` so there is provably only one worker to park.
+    /// Here `worker_threads = 1` gives the same "exactly one worker" property while still
     /// being `RuntimeFlavor::MultiThread`, which is what `block_in_place` requires to hand its core
     /// off — on `current_thread` the fix cannot engage (there is no second thread to promote) and
     /// this test would never go green under that flavor.
@@ -2005,10 +2003,9 @@ mod tests {
         }
     }
 
-    /// Regression proof (passes before and after the valve exists): `flush_durable` drains the
-    /// WHOLE pending range in one call, including entries recorded with NO runtime present (which
-    /// always go inline, per the `no_flusher` check) and entries recorded under a runtime but below
-    /// `WRITE_THROUGH_HEADROOM` (which the flusher owns).
+    /// `flush_durable` drains the WHOLE pending range in one call, including entries recorded with
+    /// NO runtime present (which always go inline, per the `no_flusher` check) and entries recorded
+    /// under a runtime but below `WRITE_THROUGH_HEADROOM` (which the flusher owns).
     #[tokio::test]
     async fn flush_durable_drains_the_whole_pending_range() {
         let store = std::sync::Arc::new(DurableTestStore::new());
@@ -2043,11 +2040,9 @@ mod tests {
         assert_eq!(seqs, vec![1, 2, 3], "contiguous, no seq skipped");
     }
 
-    /// Regression proof (passes before and after — labeled per the design doc as
-    /// RED-against-the-alternative, not RED-against-HEAD, since today's unconditional inline write
-    /// already keeps this invariant): a burst that outruns one slow store round-trip must never
-    /// prune an unpersisted seq. Demonstrates the pressure valve's safety property directly rather
-    /// than by building-then-discarding the REFUTED bare-admission-gate design.
+    /// The pressure valve's safety property: a burst that outruns one slow store round-trip must
+    /// never prune an unpersisted seq, so the durable chain stays contiguous no matter how far the
+    /// recorders run ahead of the store.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_burst_outrunning_store_latency_never_prunes_an_unpersisted_seq() {
         let store = std::sync::Arc::new(SlowAuditStore {

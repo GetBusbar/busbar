@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `POST /auth/token` — the DATA-PLANE token exchange (1.5.2, Step 4).
+//! `POST /auth/token` — the DATA-PLANE token exchange (1.5.2).
 //!
 //! A caller presents a VERIFIED IdP identity (an id_token / bearer the configured auth chain
 //! authenticates) and receives THEIR OWN busbar key, scoped to their budget. The identity is taken
@@ -28,7 +28,7 @@ use super::self_keys::{
 use super::AuthMiddleware;
 
 /// The exact path the exchange is mounted at. The auth middleware bypasses this path so the handler
-/// can run the chain itself; Step 6 mounts the GET browser flow at the same path.
+/// can run the chain itself; the GET browser flow is mounted at the same path.
 pub(crate) const AUTH_TOKEN_PATH: &str = "/auth/token";
 
 /// `POST /auth/token`: exchange a verified IdP identity for a self-serve busbar key.

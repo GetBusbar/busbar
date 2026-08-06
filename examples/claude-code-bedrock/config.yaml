@@ -16,7 +16,7 @@ auth:
   signing_key: { env: BUSBAR_SIGNING_KEY }
   admin_auth: [admin-tokens]
 
-# Response headers busbar injects are opt-in and default OFF (task #139); see
+# Response headers busbar injects are opt-in and default OFF; see
 # docs/observability.md#response-headers. This demo opts into the latency probe.
 advanced:
   response_headers:

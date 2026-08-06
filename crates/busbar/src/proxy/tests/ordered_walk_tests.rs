@@ -1,4 +1,4 @@
-//! Tests for the routing-policy ORDERED WALK in `pick_among` (the audit-sensitive seam). The walk
+//! Tests for the routing-policy ORDERED WALK in `pick_among`. The walk
 //! must dispatch in the policy's ranked order while honoring EXACTLY the same health filter SWRR
 //! honors (a tripped / dead / at-capacity preferred lane is skipped to the next), and fall through
 //! to SWRR when no ranked lane qualifies — never stranding an unranked-but-healthy lane.
@@ -54,8 +54,7 @@ fn cands() -> Vec<WeightedLane> {
 /// fast-path — mirroring SWRR (`select_weighted_for`) and the routing-policy walk, which both
 /// already exclude weight 0. Before the fix the sticky path consulted only dead/budget/breaker
 /// (never weight), so a session whose hash landed on a drained-but-breaker-healthy member kept
-/// pinning to it on the NORMAL path, silently defeating the operator's drain. Missed initially
-/// because no prior test paired a non-None affinity key with a weight-0 candidate.
+/// pinning to it on the NORMAL path, silently defeating the operator's drain.
 #[tokio::test]
 async fn sticky_affinity_never_selects_zero_weight_drained_member() {
     let app = three_lane_app();
@@ -227,7 +226,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     }
 }
 
-/// Finding (panic): `RequestCtx::new` must not panic on an operator-controlled, extremely large
+/// `RequestCtx::new` must not panic on an operator-controlled, extremely large
 /// `failover.timeout_secs`. The `deadline_wall` `Instant` math is overflow-safe (`checked_add` + a
 /// far-future fallback), so even `u64::MAX` seconds constructs cleanly and `remaining_ms()` reads back
 /// without the `Instant + Duration` overflow panic the plain `+` operator would raise.
@@ -244,7 +243,7 @@ fn request_ctx_new_huge_deadline_does_not_panic() {
     }
 }
 
-/// C2 (weight:0 drain): a policy that ranks a DRAINED (weight 0) lane #1 must NOT dispatch to it.
+/// Weight-0 drain: a policy that ranks a DRAINED (weight 0) lane #1 must NOT dispatch to it.
 /// SWRR skips weight-0; the ordered walk now mirrors that, so the walk skips the drained #1 lane
 /// to the next healthy ranked lane.
 #[tokio::test]
@@ -287,7 +286,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
     );
 }
 
-/// C2 corollary: when EVERY ranked candidate is drained (weight 0), the walk dispatches nothing
+/// Drain corollary: when EVERY ranked candidate is drained (weight 0), the walk dispatches nothing
 /// (it falls through to SWRR, which also skips weight-0, and SWRR finds none) — a fully-drained
 /// set must not serve traffic.
 #[tokio::test]
@@ -360,7 +359,7 @@ async fn excluded_reasons_records_at_capacity() {
     );
 }
 
-/// R6: the sticky-affinity fast path uses `try_admit` and records its `Unavailable` reason on
+/// The sticky-affinity fast path uses `try_admit` and records its `Unavailable` reason on
 /// fall-through instead of silently dropping it. A sticky-keyed request onto an at-capacity lane
 /// records `AtCapacity` (rather than falling through with no trace).
 #[tokio::test]

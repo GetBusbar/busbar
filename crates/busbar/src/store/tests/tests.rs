@@ -536,7 +536,7 @@ fn test_spend_refund_budget_contract() {
         store.get_lane(0).budget.load(Ordering::Relaxed),
         1,
         "an UNGUARDED refund over-raises the budget above its effective ceiling — this is why the \
-             forward path must refund ONLY when `budget_spent` is true (#21)"
+             forward path must refund ONLY when `budget_spent` is true"
     );
 
     // Unlimited lane: spend reports `true` (no-op success), refund is a no-op — so the forward
@@ -718,7 +718,7 @@ fn test_recover_close_ignores_expired_past_cooldown_on_closed_cell() {
     let closed = store.recover_close_if_recoverable("", 0, now, past_cooldown);
     assert!(
             !closed,
-            "an already-expired (past) cooldown on a Closed cell is NOT a suppression → no spurious close (A4)"
+            "an already-expired (past) cooldown on a Closed cell is NOT a suppression → no spurious close"
         );
 }
 
@@ -1198,8 +1198,7 @@ fn test_streak_reset_on_success() {
     );
 }
 
-/// MEDIUM/correctness (store.rs `cell_record_success` streak reset before the HalfOpen→Closed
-/// CAS): a success recorded against a cell still in ST_OPEN — reachable via the bare
+/// `cell_record_success` resets the streak before the HalfOpen→Closed CAS: a success recorded against a cell still in ST_OPEN — reachable via the bare
 /// `record_success(lane)` on the degraded-forward path — must NOT zero the streak. In Consecutive
 /// mode the streak drives the escalating backoff cooldown; wiping it on a still-Open cell resets
 /// the per-cell failure memory and lets a persistently-failing upstream be re-probed more
@@ -1443,7 +1442,7 @@ fn test_half_open_success_recovers_to_closed() {
     );
 }
 
-/// Concurrency regression for the non-CAS Open→HalfOpen transition (Round 11 HIGH). Two threads
+/// Concurrency regression for the non-CAS Open→HalfOpen transition. Two threads
 /// racing an expired-Open cell must yield EXACTLY ONE probe winner, and the `probe_in_flight`
 /// flag must never end up wedged `true` on a cell that did not retain the probe. The old code
 /// did `store(ST_HALF_OPEN)` unconditionally then a separate `probe_in_flight` CAS, so a delayed
@@ -1574,7 +1573,7 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
     }
 }
 
-/// HIGH (store.rs `cell_record_success` TOCTOU): a half-open probe SUCCESS racing a concurrent
+/// `cell_record_success` TOCTOU: a half-open probe SUCCESS racing a concurrent
 /// `record_hard_down_all_cells` (billing exhaustion / invalid credential) must NEVER silently
 /// recover the lane and drop the hard-down's sticky 30-minute cooldown. Before the fix the success
 /// recorder did a plain `load(HalfOpen)` then an UNCONDITIONAL `store(ST_CLOSED)` (clearing the
@@ -1705,7 +1704,7 @@ fn test_pool_breaker_isolation() {
     assert!(store.usable_in("A", 0, 8000), "pool A recovered");
 }
 
-/// HIGH/correctness (store.rs): a failure recorded against a NAMED pool must increment the
+/// A failure recorded against a NAMED pool must increment the
 /// lane-global `err` counter the `/stats` snapshot reports — previously only the pool=`""` path
 /// bumped it, so production (named-pool) traffic reported a permanently-zero error count.
 #[test]
@@ -1748,7 +1747,7 @@ fn test_default_cell_failure_counts_lane_global_err_once() {
     );
 }
 
-/// LOW #12 (store.rs:cell_closed_locked): a default-cell recovery must NOT zero the lane-global
+/// In `cell_closed_locked`: a default-cell recovery must NOT zero the lane-global
 /// `err` counter the `/stats` snapshot reports. `c.err()` for the default cell IS `LaneState.err`,
 /// a PUBLIC lifetime counter that must stay monotonic (like `LaneState.ok`). The breaker FSM never
 /// reads `err()` (`should_trip` keys off `outcome_window` + `streak`), so the old
@@ -1786,7 +1785,7 @@ fn test_default_cell_recovery_does_not_zero_lane_err() {
         !store.lane_needs_probe(0, cooled),
         "recover_lane must clear the tripped default cell"
     );
-    // …but the PUBLIC lifetime err counter must remain monotonic — NOT zeroed by recovery (LOW #12).
+    // …but the PUBLIC lifetime err counter must remain monotonic — NOT zeroed by recovery.
     assert_eq!(
         store.snapshot(0, cooled).err,
         failures,
@@ -1794,7 +1793,7 @@ fn test_default_cell_recovery_does_not_zero_lane_err() {
     );
 }
 
-/// HIGH (proxy engine pick_among): a single-flight recovery probe WON via
+/// In the proxy engine's `pick_among`: a single-flight recovery probe WON via
 /// `acquire_for_dispatch_in` but then NOT dispatched (permit-wait timeout / shutdown) must be
 /// RELEASED via `release_probe_in`, otherwise the cell stays HalfOpen with `probe_in_flight ==
 /// true` and `usable_in` benches the lane forever. After release the lane must be re-probeable.
@@ -1833,7 +1832,7 @@ fn test_release_probe_reverts_undispatched_probe_winner() {
     );
 }
 
-/// HIGH (proxy engine pick_among SESSION-AFFINITY fast path): `usable_in` is the sticky-path
+/// In `pick_among`'s SESSION-AFFINITY fast path: `usable_in` is the sticky-path
 /// admission call, and — like `acquire_for_dispatch_in` — it WINS the single-flight probe as a
 /// SIDE EFFECT (Open→HalfOpen + probe CAS) for an expired-Open lane. If the sticky path then fails
 /// to get a concurrency permit and falls through WITHOUT `release_probe_in`, the cell is wedged
@@ -1874,7 +1873,7 @@ fn test_usable_in_wins_probe_and_must_be_released_on_sticky_path() {
     );
 }
 
-/// MEDIUM/correctness (proxy engine ClientFault arm probe leak): a HalfOpen lane that wins the
+/// ClientFault-arm probe leak: a HalfOpen lane that wins the
 /// single-flight recovery probe and then serves a request the upstream answers with a 4xx
 /// (`Disposition::ClientFault`) must NOT be left wedged. The forward path's ClientFault arm calls
 /// `record_client_fault` — which by design bumps ONLY an observability counter and does NOT clear
@@ -1919,7 +1918,7 @@ fn test_client_fault_on_halfopen_lane_releases_probe() {
     );
 }
 
-/// MEDIUM/correctness (proxy engine ContextLength arm probe leak): a HalfOpen lane that wins the
+/// ContextLength-arm probe leak: a HalfOpen lane that wins the
 /// recovery probe and then serves a request the upstream rejects as too large for its context
 /// window (`Disposition::ContextLength`) must NOT be left wedged. ContextLength is a client-fault
 /// variant — no breaker penalty — so the arm `continue`s to failover without recording any outcome
@@ -1960,7 +1959,7 @@ fn test_context_length_on_halfopen_lane_releases_probe() {
     );
 }
 
-/// MEDIUM/correctness (store.rs lock sites): `lock_recover` must recover the inner data from a
+/// At the store's lock sites, `lock_recover` must recover the inner data from a
 /// POISONED mutex instead of panicking. A `.lock().unwrap()` on the request path would panic on a
 /// poisoned mutex, cascading into a total DoS (every later request touching it also panics). The
 /// data is still valid after a poison, so we recover it.
@@ -1986,7 +1985,7 @@ fn test_lock_recover_recovers_from_poison() {
     );
 }
 
-/// MEDIUM/correctness (store.rs cell() inheritance): a lazily-created per-pool cell must NOT
+/// Cell inheritance: a lazily-created per-pool cell must NOT
 /// inherit a sibling's HalfOpen state. HalfOpen means "some OTHER cell owns the in-flight probe";
 /// a freshly-created cell is born `probe_in_flight == false`, so an inherited HalfOpen wedges it
 /// (both ready/acquire return false for HalfOpen, and no probe outcome ever runs against it) until
@@ -2018,7 +2017,7 @@ fn test_new_pool_cell_does_not_inherit_wedged_halfopen() {
     );
 }
 
-/// HIGH/security (store.rs + 562): a hostile upstream `Retry-After` near `u64::MAX` must
+/// A hostile upstream `Retry-After` near `u64::MAX` must
 /// NOT overflow `now + duration` (which would wrap `cooldown_until` into the past and instantly
 /// re-ready a tripped lane — a breaker bypass). The honored value is clamped to an absolute
 /// ceiling, and the add is saturating, so the lane stays tripped.
@@ -2047,7 +2046,7 @@ fn test_hostile_retry_after_does_not_bypass_breaker() {
     );
 }
 
-/// LOW/correctness (store.rs): a healthy member with `weight: 0` (operator drain) must
+/// A healthy member with `weight: 0` (operator drain) must
 /// never be selected. Without the filter an all-zero-weight set collapses to always picking the
 /// first candidate.
 #[test]
@@ -2073,7 +2072,7 @@ fn test_zero_weight_member_is_never_selected() {
 /// ZERO-COST-DEFAULT PERF GATE (routing-policy feature). An in-crate, deterministic micro-bench
 /// of the default selection seam (`select_weighted_in`) — the hot path a `route: weighted`
 /// (default) pool takes. Captured as a BASELINE before the routing-policy seam refactor and
-/// re-run after Phase E to prove the default path shows no regression. `#[ignore]` so it never
+/// re-run afterwards to prove the default path shows no regression. `#[ignore]` so it never
 /// runs in the normal suite (timing is environment-sensitive); invoke explicitly with
 /// `cargo test --release bench_select_weighted_in_seam -- --ignored --nocapture`. (criterion
 /// would require restructuring this binary-only crate into a lib+bin to reach `pub(crate)`
@@ -2144,7 +2143,7 @@ fn test_lane_latency_ewma_records_and_reads() {
     );
 }
 
-/// MEDIUM/performance (store.rs swrr shards): the SWRR lock is now per-pool (sharded), not a
+/// The SWRR lock is per-pool (sharded), not a
 /// single global lock. Correctness must be unchanged — each pool's weighted distribution stays
 /// proportional and pool-local (disjoint pools share no `current_weight` state). Drive two
 /// disjoint pools and assert each independently honors its own weights.
@@ -2229,7 +2228,7 @@ fn test_budget_is_lane_global_across_pools() {
     );
 }
 
-/// MEDIUM/correctness (proxy engine): a body transfer that fails AFTER the 2xx headers
+/// In the proxy engine: a body transfer that fails AFTER the 2xx headers
 /// (which optimistically spent one budget unit) must REFUND that unit — no usable response was
 /// delivered, so a failed transfer must not permanently drain the lane's lifetime `max_requests`
 /// budget. `refund_budget` is the inverse of one `spend_budget`.
@@ -2271,7 +2270,7 @@ fn test_refund_budget_unlimited_is_noop() {
     );
 }
 
-/// HIGH/correctness (proxy engine): a hard-down trips the lane in EVERY cell — the default
+/// In the proxy engine: a hard-down trips the lane in EVERY cell — the default
 /// ("") cell AND every existing per-pool cell — mirroring `recover_lane`'s all-cells reach. The
 /// organic forward path previously tripped only the routing pool's cell, leaving the same dead
 /// upstream Closed in the default cell (read by `named`/`adhoc`/direct routes) and other pools.
@@ -2344,7 +2343,7 @@ fn hard_down_all_cells_records_a_logical_trip() {
     );
 }
 
-/// MEDIUM/correctness (store.rs spend_budget): under a concurrent burst, the `max_requests`
+/// In `spend_budget`: under a concurrent burst, the `max_requests`
 /// lifetime cap must be a HARD ceiling — the CAS gate may never drive the budget negative. The
 /// pre-fix unconditional `fetch_sub` let up to `max_concurrent` extra requests over-spend.
 #[test]
@@ -2805,7 +2804,7 @@ fn test_retry_after_absent_fallback_to_computed() {
     store.open_state_with_retry_after(0, 60000, &cfg, None);
 
     // Should use computed backoff without any server override (streak=0 -> base 15s, now jittered
-    // ~±10% per the A3 fix, so assert the band around base rather than an exact value).
+    // ~±10%, so assert the band around base rather than an exact value).
     let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
     assert!(
             (60013..=60017).contains(&until),
@@ -2871,7 +2870,7 @@ fn test_retry_after_not_honored_ignores_server_value() {
     // NOT the (shorter) server value.
     store.open_state_with_retry_after(0, 80000, &cfg, Some(1));
     let until = store.get_lane(0).cooldown_until.load(Ordering::Relaxed);
-    // A3 fix: the streak==0 base cooldown is now jittered (deterministic per-cell, ~±10% of the
+    // The streak==0 base cooldown is jittered (deterministic per-cell, ~±10% of the
     // 15s base), so assert the computed-backoff band around base — and crucially NOT the (shorter)
     // 1s server Retry-After value, which the `honor_retry_after=false` path must ignore.
     assert!(
@@ -3150,7 +3149,7 @@ fn test_swrr_rebalance_on_trip() {
     );
 }
 
-/// LOW #26 (concurrency): the SWRR `current_weight` reset on breaker recovery must happen UNDER
+/// Concurrency: the SWRR `current_weight` reset on breaker recovery must happen UNDER
 /// the per-pool SWRR shard lock that serializes selection — NOT as a bare store inside the
 /// cell-level close. The old code zeroed `current_weight` inside `cell_closed_locked` with a plain
 /// `store(0)`, not holding the shard lock, so a recovery racing a selection could land its zero
@@ -3236,7 +3235,7 @@ fn test_swrr_reset_on_recovery_happens_under_shard_lock() {
     );
 }
 
-/// LOW #19 (bug): `record_probe_success_all_cells` must gate the SWRR reset on the
+/// `record_probe_success_all_cells` must gate the SWRR reset on the
 /// `cell_record_success` recovered-bool — for the default cell AND every per-pool cell — exactly
 /// like its siblings `record_success_for` and `recover_lane`. The probe-success caller normally
 /// runs `recover_lane` first, but only when `lane_needs_probe` is true and not against a peer that
@@ -3279,13 +3278,13 @@ fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
         store.cell_current_weight("", 0),
         0,
         "default cell's stale SWRR accumulator must be reset to 0 on the HalfOpen→Closed close \
-             (LOW #19: the reset was skipped because the recovered-bool was discarded)"
+             (the reset was skipped because the recovered-bool was discarded)"
     );
     assert_eq!(
         store.cell_current_weight("pool-a", 0),
         0,
         "per-pool cell's stale SWRR accumulator must be reset to 0 on the HalfOpen→Closed close \
-             (LOW #19: the per-cell reset was skipped because the recovered-bool was discarded)"
+             (the per-cell reset was skipped because the recovered-bool was discarded)"
     );
 }
 
@@ -3403,7 +3402,7 @@ fn test_open_cell_probe_failures_do_not_inflate_streak() {
     assert_eq!(
         lane.streak().load(Ordering::Relaxed),
         0,
-        "failures recorded against an already-Open cell must NOT advance the streak (A2)"
+        "failures recorded against an already-Open cell must NOT advance the streak"
     );
 
     // Now drive the cell HalfOpen (the probe winner) and fail the probe: this is the ST_HALF_OPEN
@@ -3471,7 +3470,7 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
     // land on the same value.
     assert!(
             cooldowns.iter().any(|d| *d != cooldowns[0]),
-            "8 streak==0 cells with the same base must not all get the SAME cooldown; jitter/desync (A3) is not applying: {cooldowns:?}"
+            "8 streak==0 cells with the same base must not all get the SAME cooldown; jitter/desync is not applying: {cooldowns:?}"
         );
     for d in &cooldowns {
         assert!(
@@ -3481,7 +3480,7 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
     }
 }
 
-/// P2 #5: `export_health` must read each cell's (breaker_state, cooldown_until) as a CONSISTENT
+/// `export_health` must read each cell's (breaker_state, cooldown_until) as a CONSISTENT
 /// PAIR. A transition writes both atomics together under the cell's transition lock; the export now
 /// reads both under the SAME lock, so the snapshot never straddles a transition and observes e.g.
 /// Open with a cleared cooldown (which, once persisted and restored, would revive a hard-down lane
@@ -3701,7 +3700,7 @@ fn test_classify_emits_each_reason() {
     );
 }
 
-/// Phase 2: the lane-GLOBAL `classify_lane` (the `/stats` renderer source) speaks the SAME taxonomy
+/// The lane-GLOBAL `classify_lane` (the `/stats` renderer source) speaks the SAME taxonomy
 /// as the per-(pool, lane) `classify`, aggregated across the routed cells, and `lane_breaker_state`
 /// exposes the breaker axis independently.
 #[test]
@@ -3761,7 +3760,7 @@ fn test_classify_lane_emits_each_reason() {
     ));
 }
 
-/// R9 (the core reason Phase 2 keeps the axes separate): a lane that is BOTH breaker-Open AND at
+/// R9 (the core reason the axes are kept separate): a lane that is BOTH breaker-Open AND at
 /// capacity must surface each fact independently. `classify_lane` is breaker-first (BreakerOpen), but
 /// `lane_breaker_state` reads Open AND the snapshot's `at_capacity` reads true — so the operator can
 /// see the Open lane is also saturated (its recovery probe needs a dispatch it can never win).

@@ -1149,7 +1149,7 @@ enum AnthropicCredScheme {
     /// BOTH headers — preserving the passthrough Bearer round-trip for an opaque caller token
     /// while still presenting `x-api-key` for a non-canonical static key. Real Anthropic
     /// credentials always match `ApiKey`/`OAuth`, so the dual-header fallback never fires for
-    /// genuine API-key or OAuth traffic — the path the distinguishability finding is about.
+    /// genuine API-key or OAuth traffic — the path distinguishability is measured on.
     Ambiguous,
 }
 

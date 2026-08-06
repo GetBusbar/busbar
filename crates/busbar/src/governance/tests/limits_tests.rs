@@ -471,7 +471,7 @@ fn chain_and_parent_blocks_child_and_charges_nothing() {
     assert_eq!(child.requests, 2);
 }
 
-/// PHASE 1 runtime-mutation bridge (task #100): a per-user leaf ADDED at runtime via
+/// The runtime-mutation bridge: a per-user leaf ADDED at runtime via
 /// `CostModel::with_groups` — the exact rebuild `build_with_group` performs on a `POST /groups` —
 /// enforces exactly like a boot-resolved tree. The team ceiling ANDs ABOVE the leaf, so a generous
 /// personal budget can never let the user spend past the team cap (the over-allocation SAFETY

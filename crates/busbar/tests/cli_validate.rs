@@ -213,7 +213,7 @@ fn validate_fails_on_unresolvable_auth_chain_plugin() {
     write_configs(
         &dir,
         &format!(
-            // 1.5.3: the provider is DEFINED once and referenced by bare name (audit §2).
+            // 1.5.3: the provider is DEFINED once and referenced by bare name.
             "identity-providers:\n  oidc:\n    module: oidc\n    settings: {{}}\n\
              auth:\n  chain: [oidc]\n{}",
             plugins_block(&dir, true, true)

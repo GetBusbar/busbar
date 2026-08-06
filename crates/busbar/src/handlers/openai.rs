@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! OpenAI `RequestHandler` and its OperationHandlers. Per the design these live under
-//! `handlers/request/openai/operations/`; the flat `cells/openai.rs` layout is a deferred cosmetic
-//! move. OperationHandlers are pure codecs — wire ↔ IR, both directions, nothing else.
-//!
-//! First cell: moderation (openai-only, K=1). More openai cells (embeddings/images/audio/chat) are
-//! added here as they're built.
+//! OpenAI `RequestHandler` and its OperationHandlers. OperationHandlers are pure codecs — wire ↔ IR,
+//! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
@@ -233,7 +229,7 @@ fn parse_multipart_segment(seg: &[u8]) -> Option<MultipartField<'_>> {
 /// forwarded CROSS-PROTOCOL (e.g. to Gemini) is not tagged with `target_language` and transcribes
 /// verbatim instead of translating. Same-protocol OpenAI→OpenAI is unaffected (the path is
 /// preserved to the upstream). Fixing it cross-protocol requires threading the ingress path/sub-op
-/// into the operation codec (a trait-signature change), deferred out of this hardening release.
+/// into the operation codec, which is a trait-signature change.
 struct OpenAiTranscription;
 
 impl OperationHandler for OpenAiTranscription {
@@ -651,7 +647,7 @@ impl OperationHandler for OpenAiImage {
         // distinguished by BODY SHAPE, not the route: an `image` reference names an edit
         // (`mask` present) or variation sub-op. No 1.5.0 egress writer emits anything but
         // `/v1/images/generations` (`upstream_path`, below), so every edit/variation request is
-        // unsupported today — the m3 second 404 site, not a missing route.
+        // unsupported today — the second 404 site, not a missing route.
         if wire.get("image").is_some() {
             return Err(IngressReject::UnsupportedSubOp {
                 op: Operation::Image,
@@ -1408,7 +1404,7 @@ mod tests {
         // `/v1/images/edits` and `/v1/images/generations` both resolve to `Operation::Image`
         // (handlers/openai.rs:79); read_request sees only body+content-type, so the edit/variation
         // sub-op is distinguished by the body naming an `image` to edit, not by the path. No 1.5.0
-        // egress writer emits anything but generations, so this must be the m3 second 404, not a
+        // egress writer emits anything but generations, so this must be the second 404, not a
         // silent fall-through to Generate.
         let body = br#"{"model":"dall-e-2","image":"data:image/png;base64,AA==","mask":"data:image/png;base64,BB==","prompt":"add a hat"}"#;
         let err = OpenAiImage

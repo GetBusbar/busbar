@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `SecretRef` — the SECRET REFERENCE type (busbarAI-private/design/plugin-settings-schema-SPEC.md,
-//! consumer question #2), extracted out of `busbar`'s private `crates/busbar/src/config/secret.rs`
-//! into its own tiny crate.
+//! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
+//! `crates/busbar/src/config/secret.rs` into its own tiny crate.
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in
@@ -29,8 +28,7 @@
 //! collides with a reference shape) is **not** part of `SecretRef` and never was — it is handled one
 //! layer above `SecretRef` parsing, inside busbar's `resolve_settings()`, as a wrapper around the
 //! field. A full, faithful derivation from this type therefore already excludes `literal` correctly,
-//! with no special-casing required or wanted (round-4 correction to the spec's "what the schema
-//! carries" section — see the doc comment on [`oneof_schema`]).
+//! with no special-casing required or wanted — see the doc comment on [`oneof_schema`].
 //!
 //! `SecretRef` holds no secret material — only the module name and its opaque settings — so it is
 //! safe to derive `Debug`/`Clone`/`PartialEq` on it and on every struct embedding it.
@@ -248,8 +246,8 @@ impl<'de> Deserialize<'de> for SecretRef {
 
 /// Derive the `x-busbar-secret` field's `oneOf` JSON Schema (2020-12) fragment DIRECTLY from
 /// [`SecretRef`]'s own accepted shapes — the canonical `{ module, settings }` form plus the `{ env }`
-/// / `{ file }` sugar. This is the schema busbar-ui composes a secret reference against (never a bare
-/// string — see the spec's "what the schema carries" section).
+/// / `{ file }` sugar. This is the schema busbar-ui composes a secret reference against — never a
+/// bare string.
 ///
 /// Because this is generated from the SAME three shapes [`SecretRef`]'s `Deserialize` impl accepts —
 /// not a hand-maintained parallel copy — `{ "literal": <value> }` is excluded correctly with NO
@@ -257,8 +255,7 @@ impl<'de> Deserialize<'de> for SecretRef {
 /// handled one layer above `SecretRef` parsing, inside busbar's `resolve_settings()`, as an escape
 /// hatch for a plugin whose own config happens to collide with a reference shape). A full, faithful
 /// derivation from the real type is exactly what keeps `literal` out; there is no future "just derive
-/// it fully" refactor that could reintroduce it (plugin-settings-schema-SPEC.md, question #2's
-/// round-4 correction).
+/// it fully" refactor that could reintroduce it.
 pub fn oneof_schema() -> serde_json::Value {
     serde_json::json!({
         "oneOf": [

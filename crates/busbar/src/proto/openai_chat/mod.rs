@@ -376,7 +376,7 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "stop",
             "stream",
             "tool_choice",
-            // Phase 0: these are now promoted to first-class IR fields, so they must be excluded
+            // These are promoted to first-class IR fields, so they must be excluded
             // from `extra` — otherwise the writer would emit BOTH the promoted field AND a verbatim
             // copy from `extra`, and the cross-protocol seam would clear the `extra` copy.
             "frequency_penalty",
@@ -584,7 +584,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // url>`, which the Anthropic writer then emitted as a base64 source whose data was a
             // URL — an invalid Anthropic request. For a `data:<mime>;base64,<payload>` URI we now
             // split out the real MIME type and payload so the cross-protocol image is valid.
-            // class-6 6c4: `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
+            // `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
             // vendor models — `IrBlock::Image` has no field for it (owner decision: an IR field is
             // added only when at least TWO protocols model a knob; `detail` is OpenAI-family-only),
             // and it is nested inside `"messages"`, a MODELED key, so it cannot ride `extra` either
@@ -726,7 +726,7 @@ struct OpenAiStreamFraming {
     /// The stream-start identity, latched from the first `chat.completion.chunk` that carries an `id`
     /// (the opening role chunk) and replayed onto every later chunk. `None` until that first chunk.
     chunk_identity: Option<OpenAiChunkIdentity>,
-    /// Raw IR-block-index → 0-based tool-call ordinal map (Finding 1). The writer stamps the CANONICAL
+    /// Raw IR-block-index → 0-based tool-call ordinal map. The writer stamps the CANONICAL
     /// IR block index onto `tool_calls[].index`, but a source stream can open a tool_use at a non-zero
     /// block index (e.g. an Anthropic stream with text at block 0 and the first tool_use at block 1).
     /// OpenAI's streaming contract requires `tool_calls[].index` to ENUMERATE the tool calls starting
@@ -737,7 +737,7 @@ struct OpenAiStreamFraming {
     /// PARALLEL tool calls distinct (each raw index → its own ordinal) while guaranteeing the first
     /// call is index 0. Populated lazily; empty on a tool-less stream.
     tool_call_index: std::collections::BTreeMap<u64, u64>,
-    /// Did the ORIGINAL client request carry `stream_options.include_usage == true`? (Findings 2+3.)
+    /// Did the ORIGINAL client request carry `stream_options.include_usage == true`?
     /// Busbar always injects `include_usage` UPSTREAM so it can bill streaming calls, which makes the
     /// upstream emit token usage; but a native OpenAI stream only surfaces a trailing usage-only chunk
     /// to the CLIENT when the client opted in. When this is `false`, `on_egress_chunk` STRIPS the
@@ -764,7 +764,7 @@ impl super::StreamFraming for OpenAiStreamFraming {
             // Client did NOT opt in: STRIP the folded usage entirely so the finish chunk stays
             // usage-free and NO trailing usage-only chunk is emitted — matching a native OpenAI stream
             // without include_usage. Billing is unaffected (it reads the IR-side `last_usage` A-tap,
-            // captured before this seam). This closes Finding 2: an opted-out client never receives the
+            // captured before this seam). An opted-out client therefore never receives the
             // unsolicited `{choices:[], usage}` chunk that trips `choices[0]`.
             strip_folded_usage(chunk);
             None
@@ -781,7 +781,7 @@ impl super::StreamFraming for OpenAiStreamFraming {
         self.client_include_usage = include;
     }
 
-    /// SAME-PROTOCOL verbatim strip (R3-A-b). On OpenAI->OpenAI the translator re-emits upstream
+    /// SAME-PROTOCOL verbatim strip. On OpenAI->OpenAI the translator re-emits upstream
     /// frames byte-for-byte and never calls `on_egress_chunk`, so the opted-out `include_usage` strip
     /// above cannot fire. Busbar forces `include_usage` UPSTREAM (to bill), so the OpenAI upstream
     /// emits a NATIVE trailing usage-only chunk - `object == "chat.completion.chunk"`, a real top-level
@@ -846,7 +846,7 @@ impl super::StreamFraming for OpenAiStreamFraming {
 
 impl OpenAiStreamFraming {
     /// Remap every `choices[].delta.tool_calls[].index` on a `chat.completion.chunk` from the writer's
-    /// CANONICAL raw IR-block index to a 0-based per-tool-call ordinal (Finding 1). The FIRST distinct
+    /// CANONICAL raw IR-block index to a 0-based per-tool-call ordinal. The FIRST distinct
     /// raw index seen becomes ordinal 0, the next distinct raw index becomes 1, and so on; a raw index
     /// seen again (the tool call's argument-fragment chunks) replays its assigned ordinal. This makes
     /// the first tool call arrive at `index: 0` even when the source stream opened it at a non-zero
@@ -984,7 +984,7 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
 }
 
 /// Remove a folded top-level `usage` object from a `chat.completion.chunk` in place, WITHOUT emitting
-/// any replacement trailing chunk (Finding 2). This is the opt-OUT twin of `split_openai_trailing_usage`:
+/// any replacement trailing chunk. This is the opt-OUT twin of `split_openai_trailing_usage`:
 /// a client that did not send `stream_options.include_usage` must see a stream that carries NO usage at
 /// all, exactly like a native OpenAI stream without include_usage. Only strips when both a folded `usage`
 /// and a terminal `finish_reason` are present (the shape the writer folds onto), so a non-finish chunk is

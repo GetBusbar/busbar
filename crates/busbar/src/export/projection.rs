@@ -22,13 +22,12 @@
 //!
 //! Override means the operator's list is EXHAUSTIVE: a field added in a later release can never leak
 //! into a sink someone configured a year ago. **Hooks compose BEHAVIOUR, so additive is right there.
-//! Projections bound DISCLOSURE, so override is right here.** (Recorded next to the combine rule in
-//! `design/audit-decisions-1.5.3.md`.)
+//! Projections bound DISCLOSURE, so override is right here.**
 //!
 //! ## The three things this module refuses to do quietly
 //!
-//! Every audit round in this release surfaced the same defect class — *reports success while quietly
-//! not taking effect*. A config surface that validates and then delivers nothing would be a fresh
+//! One defect class recurs across this release — *reports success while quietly not taking
+//! effect*. A config surface that validates and then delivers nothing would be a fresh
 //! instance of it, hand-built. So all three of these are LOUD errors at `--validate`/boot:
 //!
 //! 1. a stream this release has **no producer** for ([`stream_produced`]);

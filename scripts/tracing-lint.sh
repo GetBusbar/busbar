@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
-# Tracing-seam enforcement lint (task #140) — the can't-forget guarantee behind the tracing seam.
+# Tracing-seam enforcement lint — the can't-forget guarantee behind the tracing seam.
 #
-# THE RULE (verbatim intent): "every TRACE(x) must be bound by a Level. Can't have a rogue trace
-# not have a level, and level must be set in 1 spot." The "1 spot" half is `observability.rs`'s
-# `HOTPATH_LEVEL` constant (see its doc comment) plus `log_levels()`'s stderr/OTLP filter split —
-# both already reviewed by hand as part of this task. This script is the MECHANICAL, durable half:
-# it fails CI if a FUTURE `#[tracing::instrument]` (or the `tracing`-prelude-imported `#[instrument]`
-# form) omits an explicit `level = ...` argument, so a span can never again silently default to INFO
+# THE RULE: every tracing span must be bound to an explicit Level, and that level is set in ONE
+# spot. The "one spot" half is `observability.rs`'s `HOTPATH_LEVEL` constant (see its doc comment)
+# plus `log_levels()`'s stderr/OTLP filter split. This script is the MECHANICAL, durable half:
+# it fails CI if a `#[tracing::instrument]` (or the `tracing`-prelude-imported `#[instrument]`
+# form) omits an explicit `level = ...` argument, so a span can never silently default to INFO
 # (== always on, on the hot path) the way `proxy/engine/mod.rs`'s `forward` span and
-# `proxy/engine/walk.rs`'s `forward_once` span both did before this task.
+# `proxy/engine/walk.rs`'s `forward_once` span once did.
 #
 # SCOPE, DELIBERATELY NARROW: this lint enforces rule (a) only — "every `#[instrument]` has an
 # explicit level" — because it is the mechanical, unambiguous half of the tracing-seam contract. A
 # companion rule flagging "a per-request-happy-path `info!`/`warn!` event macro" was evaluated and
 # REJECTED: distinguishing a happy-path event from an error/rare/degraded/boot-condition one requires
-# reading the surrounding branch, which is not reliably mechanical (see the task's own triage, done
-# by hand, in the tracing-seam PR description) — a lint that guesses wrong on that axis produces
-# false positives that erode trust in the whole gate. A precise lint that only catches rule (a) is
-# far better than a fuzzy one that also tries rule (b); see `docs/observability.md` for the
-# documented convention that covers rule (b) instead (event macros: use `HOTPATH_LEVEL`-mapped
-# `debug!`/`trace!` on the per-request happy path, leave `info!`/`warn!`/`error!` for
-# error/rare/degraded/boot conditions — reviewed by hand, not lint-enforced).
+# reading the surrounding branch, which is not reliably mechanical — a lint that guesses wrong on
+# that axis produces false positives that erode trust in the whole gate. A precise lint that only
+# catches rule (a) is far better than a fuzzy one that also tries rule (b); see
+# `docs/observability.md` for the documented convention that covers rule (b) instead (event macros:
+# use `HOTPATH_LEVEL`-mapped `debug!`/`trace!` on the per-request happy path, leave
+# `info!`/`warn!`/`error!` for error/rare/degraded/boot conditions — a review rule, not lint-enforced).
 #
 # WHAT COUNTS AS "explicit level": the attribute's token stream (which may span multiple lines, e.g.
 # a multi-line `fields(...)` list) contains a `level` key anywhere before its closing `)]`. This is a
@@ -143,7 +141,7 @@ GREEN
 
 if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 
-hdr "tracing seam (task #140): every #[instrument] carries an explicit level="
+hdr "tracing seam: every #[instrument] carries an explicit level="
 # Candidate set: every crate .rs file EXCEPT integration-test trees (`*/tests/*`, name-navigated and
 # exempt the same way structure-lint.sh / response-header-lint.sh treat them — a test helper span's
 # level is not an operator-visible hot-path concern).

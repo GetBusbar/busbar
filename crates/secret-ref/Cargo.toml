@@ -4,7 +4,7 @@ version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The SecretRef reference type (plugin-settings-schema-SPEC.md): { module, settings } plus the { env } / { file } sugar spellings. Extracted out of the busbar binary crate's private config::secret module so busbar-plugin-pack and any future schema-generation tooling can derive the x-busbar-secret oneOf shape from the SAME type the engine deserializes, rather than a hand-written parallel copy that can drift."
+description = "The SecretRef reference type: { module, settings } plus the { env } / { file } sugar spellings. Extracted out of the busbar binary crate's private config::secret module so busbar-plugin-pack and any future schema-generation tooling can derive the x-busbar-secret oneOf shape from the SAME type the engine deserializes, rather than a hand-written parallel copy that can drift."
 license = "Apache-2.0"
 
 [dependencies]

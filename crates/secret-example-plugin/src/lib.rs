@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A **hermetic trivial `kind: secret` plugin** — a `cdylib` exporting the secret C ABI. Before this
-//! crate existed, `kind: secret` was the ONLY plugin kind with zero in-tree ABI-crossing test
-//! coverage (compare `busbar-hook-test-plugin`, which exists for exactly this reason on the hook
-//! seam) — `grep -rn export_secret_plugin crates/` returned only the macro's own definition. It also
-//! doubles as the reference implementation `docs/plugins.md`'s secret-plugin example is written
-//! against, so that example cannot silently drift from the real [`busbar_api::SecretModule`] trait
-//! shape (`resolve(&self, settings: &Map<String, Value>) -> SecretResult<Vec<u8>>`) the way it did
-//! before — the doc named a `busbar_api::Secret` trait with a `resolve(key)` signature that never
-//! existed anywhere in the workspace.
+//! A **hermetic trivial `kind: secret` plugin** — a `cdylib` exporting the secret C ABI. It is the
+//! in-tree ABI-crossing coverage for the `kind: secret` seam (the secret-seam analogue of
+//! `busbar-hook-test-plugin`). It also doubles as the reference implementation `docs/plugins.md`'s
+//! secret-plugin example is written against, so that example cannot silently drift from the real
+//! [`busbar_api::SecretModule`] trait shape (`resolve(&self, settings: &Map<String, Value>) ->
+//! SecretResult<Vec<u8>>`).
 //!
 //! It does NO network and NO real secret-store work: it resolves against a fixed in-memory map baked
 //! in at `open` time from its config JSON, keyed by `settings.key`. Config JSON (the secret module's

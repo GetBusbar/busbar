@@ -1,11 +1,11 @@
 use super::*;
 
-/// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the IR
-/// (Change A). The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered
+/// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the
+/// IR. The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered
 /// (non-streaming) cross-protocol responses already decode the egress body egress→IR→ingress, so the
 /// terminal `IrUsage` is available WITHOUT a separate byte-scan — bill straight from `ir.usage`.
 ///
-/// Billed tokens = the normalized billable total (A2): `uncached_input + cache_read +
+/// Billed tokens = the normalized billable total: `uncached_input + cache_read +
 /// cache_creation + output` (see [`crate::ir::IrUsage::billable_tokens`]). Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so this sum is correct
 /// provider-agnostically. This matches the streaming billing arm.
@@ -121,7 +121,7 @@ pub(crate) fn record_ir_usage(
     }
 }
 
-/// The bounded `pool` LABEL for an UPSTREAM/breaker metric (LOW #25).
+/// The bounded `pool` LABEL for an UPSTREAM/breaker metric.
 ///
 /// The breaker-CELL key (`pool_name`) is `""` for the lane-default cell shared by every
 /// direct/ad-hoc (single-model) route — that empty string is the correct CELL key and must NOT be
@@ -144,7 +144,7 @@ pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: us
 /// the organic forward path's failure-record sites whenever `record_transient_in`/`record_rate_limit_in`
 /// reports a fresh trip, mirroring the HardDown arm so threshold-based trips are counted too (#29). The
 /// `pool` label is the bounded, operator-controlled canonical pool name, or the routed model name for
-/// the default (`""`) cell (LOW #25; see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
+/// the default (`""`) cell (see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
 pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
     crate::telemetry::breaker_trip(app, metric_pool_label(app, pool_name, i), i);
     tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, "lane breaker tripped (Closed→Open)");

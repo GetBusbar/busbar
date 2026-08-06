@@ -768,7 +768,7 @@ async fn attempt_tap_carries_attempt_story() {
     let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "routing");
     assert_eq!(payload["stage"]["attempt_number"], 1);
-    // Renamed target -> model (wire audit L10: one name for one concept — the same string
+    // Renamed target -> model (one name for one concept — the same string
     // candidates[].model carries).
     assert_eq!(payload["stage"]["model"], "m0");
     assert!(
@@ -1011,13 +1011,13 @@ async fn on_error_chain_exhausted_applies_terminal() {
     );
 }
 
-/// ON_ERROR TERMINAL REJECT MUST ACTUALLY SHORT-CIRCUIT (cargo-mutants gap, proxy engine
+/// ON_ERROR TERMINAL REJECT MUST ACTUALLY SHORT-CIRCUIT (proxy engine
 /// `forward_with_pool_parsed_inner`'s `PolicyOutcome::Reject` match arm): the test above
 /// (`on_error_chain_exhausted_applies_terminal`) uses a dead lane (`127.0.0.1:1`), so its 503 is
 /// ambiguous — a deleted `PolicyOutcome::Reject` arm would silently fall through to `_ => {}` and
 /// let the request proceed to dispatch, which would ALSO 503 there (dead lane), for an unrelated
-/// reason, masking the mutation entirely (confirmed by hand: deleting that match arm did not fail
-/// that test). This test uses a LIVE lane that actually serves 200, so a fail-open bug is
+/// reason, masking the regression entirely. This test uses a LIVE lane that actually serves 200, so
+/// a fail-open bug is
 /// unambiguously a 200 where a 503 is required.
 #[tokio::test]
 async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatches() {
@@ -1049,7 +1049,7 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
     );
 }
 
-/// GLOBAL REQUEST-STAGE TAP FIRES (cargo-mutants gap, proxy engine `fire_global_taps`): every
+/// GLOBAL REQUEST-STAGE TAP FIRES (proxy engine `fire_global_taps`): every
 /// other `app.tap_hooks_*` category (candidate/routing/response) has its own firing test in this
 /// file, but the base `app.tap_hooks` (`at: request`, fired by `fire_global_taps` — see its call
 /// site's own "GLOBAL TAP (observe) FIRE" comment in engine/mod.rs) had none. A mutant replacing
@@ -1608,7 +1608,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     assert_eq!(key_name.as_deref(), Some("eng-oncall"));
 }
 
-/// class-11 D3 (correctness, not a work reduction): auth's admission decision is authoritative.
+/// Auth's admission decision is authoritative.
 /// `auth/mod.rs` installs `GovCtx.key` from a legacy hashed-secret `lookup` only under
 /// `Some(key) if key.enabled`; a DISABLED key is rejected there and auth falls through to a
 /// SYNTHESIZED principal key instead (carried here as `resolved_gov_key`). `decide_policy_order`'s
@@ -1709,7 +1709,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
 }
 
 /// The named / ad-hoc anthropic routes go through `forward_with_pool`,
-/// which carries NO resolved key — so the c1r10 fallback never fired there and a group principal
+/// which carries NO resolved key — so the fallback never fired there and a group principal
 /// on `/{pool}/v1/messages` was still routing-signal-blind. `forward_with_pool_keyed` threads
 /// `GovCtx.key` down; this exercises that path end-to-end via a pool's `send_user` policy.
 #[tokio::test]

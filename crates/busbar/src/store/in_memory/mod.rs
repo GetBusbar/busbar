@@ -194,8 +194,8 @@ pub(crate) struct LaneState {
     // MONOTONIC count of genuine Closed→Open breaker trips on this lane (any cell) + the epoch of
     // the most recent one (0 = never). Breaker open→close is transient — a poll-only consumer can
     // miss the whole episode between two polls; a monotonic count + last-trip timestamp let it
-    // detect "a trip happened since I last looked" without catching the live edge (3rd-party audit
-    // #5). Lane-global (like ok/err): a trip in ANY pool cell counts. Carried across config apply /
+    // detect "a trip happened since I last looked" without catching the live edge.
+    // Lane-global (like ok/err): a trip in ANY pool cell counts. Carried across config apply /
     // restart with the rest of the learned health.
     pub(crate) trips: AtomicU64,
     pub(crate) last_trip_at: AtomicU64,
@@ -599,7 +599,7 @@ pub(crate) struct TripConfig {
     pub(crate) consecutive_n: u32, // For consecutive mode
 }
 
-/// The window (seconds) the Feature-2 `Signal::CandidateErrorRate` catalog entry reads the
+/// The window (seconds) the `Signal::CandidateErrorRate` catalog entry reads the
 /// breaker's existing outcome window over — matches [`TripConfig::default`]'s own `window_s` so
 /// the projected error rate reads over the same horizon the default breaker trip mode does.
 pub(crate) const DEFAULT_ERROR_RATE_WINDOW_S: u64 = 30;
@@ -777,7 +777,7 @@ impl HealthState {
             self.get_lane(lane).err.fetch_add(1, Ordering::Relaxed);
         }
         // Genuine Closed→Open trip: bump the lane's MONOTONIC trip counter + stamp the epoch, at
-        // the same seam that mints BREAKER_TRIPS_TOTAL — one logical trip, counted once (audit #5).
+        // the same seam that mints BREAKER_TRIPS_TOTAL — one logical trip, counted once.
         if tripped {
             let ls = self.get_lane(lane);
             ls.trips.fetch_add(1, Ordering::Relaxed);
@@ -945,7 +945,7 @@ impl HealthState {
     }
 
     /// Drive the recovery-close gate (`cell_closed_if_recoverable`) directly against a named cell with
-    /// an EXPLICIT `observed_cooldown`. This lets a regression test reproduce the #16 TOCTOU
+    /// an EXPLICIT `observed_cooldown`. This lets a regression test reproduce the TOCTOU
     /// deterministically: pass the (smaller) cooldown a probe would have observed, after a concurrent
     /// hard-down has already re-armed the live cell to a stricter cooldown — exactly the interleaving
     /// where the old unconditional close clobbered the hard-down. Returns whether the cell was closed.
@@ -968,7 +968,7 @@ impl HealthState {
 
     /// Park a named cell HalfOpen with the single-flight probe acquired and a STALE SWRR accumulator —
     /// the precondition under which a recorded success drives a HalfOpen→Closed recovery whose reset
-    /// the caller is responsible for. Test-only setup for the LOW #19 regression.
+    /// the caller is responsible for. Test-only setup for the SWRR-reset regression.
     pub(crate) fn arm_half_open_stale_swrr(
         &self,
         pool: &str,
@@ -983,7 +983,7 @@ impl HealthState {
         c.probe_in_flight().store(true, Ordering::Relaxed);
     }
 
-    /// Read a cell's raw SWRR `current_weight`, for the LOW #19 invariant assertion.
+    /// Read a cell's raw SWRR `current_weight`, for the SWRR invariant assertion.
     pub(crate) fn cell_current_weight(&self, pool: &str, lane: usize) -> i64 {
         self.cell(pool, lane)
             .current_weight()

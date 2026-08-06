@@ -440,7 +440,7 @@ fn test_stream_two_tools_distinct_indices() {
     }
 }
 
-/// Regression for MED #6: a tool-only streaming response must produce content block indices
+/// Regression: a tool-only streaming response must produce content block indices
 /// contiguous from 0. Previously the first tool index was `1 + open_tools.len()`, which reserved
 /// index 0 for a text block that never opened — leaving IR index 0 permanently empty and content
 /// indices non-contiguous (0 hole, then 1..n). Now the base is keyed on whether a text block
@@ -500,7 +500,7 @@ fn test_stream_tool_only_indices_contiguous_from_zero() {
     }
 }
 
-/// Regression for MED #6 (interleaving): when a text block DOES open, the reserved index 0
+/// Interleaving regression: when a text block DOES open, the reserved index 0
 /// must still hold, and tool blocks follow at 1..n — the fix must not regress text+tool order.
 #[test]
 fn test_stream_text_then_tool_keeps_text_at_zero() {
@@ -2234,7 +2234,7 @@ fn test_stream_message_start_model_only_emits_model_version() {
     );
 }
 
-// --- Round 3 fix 1: functionCall ToolUse blocks must carry a non-empty, stable id ---
+// --- functionCall ToolUse blocks must carry a non-empty, stable id ---
 
 /// Regression: a Gemini `functionCall` in `read_request` must produce a NON-EMPTY tool-use id
 /// (Gemini carries none). Previously `id: String::new()` made cross-protocol Anthropic/OpenAI
@@ -2433,7 +2433,7 @@ fn test_stream_prompt_block_emits_terminal_sequence() {
     );
 }
 
-/// audit LOW: a prompt-level RECITATION block must classify as `safety` (matching the candidate-level
+/// A prompt-level RECITATION block must classify as `safety` (matching the candidate-level
 /// mapping and RECITATION's own doc), not `Other`. Same terminal shape as the SAFETY case above.
 #[test]
 fn test_stream_prompt_block_recitation_maps_to_safety() {
@@ -2638,15 +2638,12 @@ fn test_stream_tool_blockstart_id_is_nonempty() {
     );
 }
 
-// --- Round 3 fix 2: `stream` round-trip semantics + accurate comment ---
+// --- `stream` round-trip semantics ---
 
-/// Regression / documentation guard for the corrected `stream` comment. A source `stream` is
-/// captured into the typed `IrRequest.stream` (used only by path selection) AND preserved in
-/// `extra` for byte-identical round-trip (exactly like `model`), so the writer echoes it back.
-/// This is the behavior `src/proto/mod.rs::test_gemini_roundtrip_identity` (a non-owned test)
-/// enforces. The Round-3 finding's prescribed "drop stream from extra" would break that
-/// byte-identity invariant; the real defect (a FALSE comment claiming stream was excluded from
-/// extra) is fixed by making the comment accurate instead.
+/// A source `stream` is captured into the typed `IrRequest.stream` (used only by path selection)
+/// AND preserved in `extra` for byte-identical round-trip (exactly like `model`), so the writer
+/// echoes it back. This is the behavior `src/proto/mod.rs::test_gemini_roundtrip_identity`
+/// enforces: dropping `stream` from `extra` would break that byte-identity invariant.
 #[test]
 fn test_read_request_source_stream_round_trips_via_extra() {
     let reader = GeminiReader;
@@ -2726,7 +2723,7 @@ fn test_read_request_max_output_tokens_overflow_drops_to_none() {
     );
 }
 
-// --- Round 3 fix 3: bogus snake_case `tool_config` removed; native `toolConfig` round-trips ---
+// --- bogus snake_case `tool_config` removed; native `toolConfig` round-trips ---
 
 /// Regression: native Gemini `toolConfig` (camelCase) is NOT in `modeled_keys`, so it
 /// round-trips through `extra` and back onto the wire unchanged. The old bogus snake_case
@@ -2879,7 +2876,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
     );
 }
 
-// --- Round 3 fix 4: streamed and whole-body usageMetadata include totalTokenCount ---
+// --- streamed and whole-body usageMetadata include totalTokenCount ---
 
 /// Regression: the streamed `MessageDelta` usage frame must include `totalTokenCount`
 /// (= prompt + candidates), matching the native final-chunk shape.
@@ -3050,13 +3047,13 @@ fn test_write_response_total_token_count_saturates() {
     );
 }
 
-// --- Round 9 fix (conformance): totalTokenCount also emits when the boundary signal is `model`
+// --- totalTokenCount also emits when the boundary signal is `model`
 //     (not just `created`), so Anthropic/Cohere backends — whose readers return `created: None`
-//     but DO populate `model` — no longer drop the total for a Gemini client. ---
+//     but DO populate `model` — do not drop the total for a Gemini client. ---
 
 /// A cross-protocol response from a backend whose reader sets `created: None`
 /// but `model: Some(..)` (the Anthropic and Cohere shape) MUST still carry
-/// `usageMetadata.totalTokenCount`. Before R9 the gate keyed on `created` alone, so these three-
+/// `usageMetadata.totalTokenCount`. A gate keyed on `created` alone left these three-
 /// of-five backends produced a usageMetadata block lacking the total, leaving the google-genai
 /// SDK's `total_token_count` at None and breaking client-side billing.
 #[test]
@@ -3130,7 +3127,7 @@ fn test_write_response_model_only_total_token_count_saturates() {
     );
 }
 
-// --- Round 9 fix (performance): modeled_keys is hoisted to a process-global OnceLock. ---
+// --- modeled_keys is hoisted to a process-global OnceLock. ---
 
 /// The modeled-key set is a stable process-global — repeated calls return the
 /// SAME backing allocation (proving it is built once, not per request) and the set's membership
@@ -3191,7 +3188,7 @@ fn test_read_request_unmodeled_key_still_flows_to_extra_after_hoist() {
     );
 }
 
-// --- Round 5 fix: tool_use stop reason maps to STOP (Gemini has no TOOL_USE enum member) ---
+// --- tool_use stop reason maps to STOP (Gemini has no TOOL_USE enum member) ---
 
 /// Regression: a buffered `write_response` with stop_reason=tool_use (the canonical value every
 /// other protocol's reader emits for a tool-call turn) must emit finishReason "STOP", NOT the
@@ -3258,7 +3255,7 @@ fn test_stream_message_delta_tool_use_maps_to_stop() {
     );
 }
 
-// --- Round 5 fix: image_url sentinel emitted as native fileData URI, not corrupt base64 ---
+// --- image_url sentinel emitted as native fileData URI, not corrupt base64 ---
 
 /// Regression: an IR Image carrying the `"image_url"` media_type SENTINEL (a remote https URL
 /// stored verbatim by the OpenAI/Responses readers) must be emitted as Gemini `fileData{fileUri}`
@@ -3396,7 +3393,7 @@ fn test_file_data_image_round_trips_via_url() {
     );
 }
 
-// --- Round 14 fix: synth_response_id is an opaque CSPRNG token of native Gemini shape ---
+// --- synth_response_id is an opaque CSPRNG token of native Gemini shape ---
 
 /// A synthesized `responseId` must be a native-shaped opaque
 /// token — mixed-case alphanumeric base62 of native length, with NO hyphen separator and NO
@@ -3605,7 +3602,7 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
     assert_eq!(headers[0].1.to_str().ok(), Some("AIzaSyValidKey123"));
 }
 
-/// MEDIUM/security regression: a credential whose bytes are invalid for an HTTP header value
+/// Security regression: a credential whose bytes are invalid for an HTTP header value
 /// (here an embedded newline) must NOT be silently swallowed into an empty `x-goog-api-key`
 /// value. The writer omits the header entirely (empty vec) and never panics on the request path.
 /// The accompanying `tracing::warn!` (not asserted here) gives the operator the diagnostic the
@@ -4157,7 +4154,7 @@ fn test_read_response_stop_with_function_call_is_tool_use() {
     );
 }
 
-/// Companion guard (MED #2): a plain STOP with NO tool block must stay `end_turn`. The promotion
+/// Companion guard: a plain STOP with NO tool block must stay `end_turn`. The promotion
 /// must be gated on a ToolUse block being present, not applied to every STOP.
 #[test]
 fn test_read_response_plain_stop_stays_end_turn() {
@@ -4202,7 +4199,7 @@ fn test_stream_stop_with_function_call_terminal_is_tool_use() {
     );
 }
 
-/// Companion guard (MED #2, streaming): a plain STOP stream with no tool block must terminate
+/// Companion guard (streaming): a plain STOP stream with no tool block must terminate
 /// with `end_turn` (no spurious promotion when `state.open_tools` is empty).
 #[test]
 fn test_stream_plain_stop_terminal_stays_end_turn() {
@@ -4313,7 +4310,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
     );
 }
 
-/// Companion guard (LOW #10): an OBJECT `ToolUse.input` must pass through byte-identical so the
+/// Companion guard: an OBJECT `ToolUse.input` must pass through byte-identical so the
 /// same-protocol Gemini→Gemini round-trip stays lossless (no `{"args": ...}` wrapping).
 #[test]
 fn test_tool_use_object_input_passes_through_unchanged() {
@@ -4352,7 +4349,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
     );
 }
 
-// ---- PF-H1: Gemini tool_choice (functionCallingConfig) round-trips ----
+// ---- Gemini tool_choice (functionCallingConfig) round-trips ----
 
 fn gemini_read(body: serde_json::Value) -> crate::ir::IrRequest {
     GeminiReader
@@ -4396,7 +4393,7 @@ fn tool_choice_specific_tool_roundtrips() {
     );
 }
 
-/// Fix #10 (fidelity): `ANY` + `allowedFunctionNames` with N>1 names cannot be expressed by the
+/// Fidelity: `ANY` + `allowedFunctionNames` with N>1 names cannot be expressed by the
 /// IR's single-tool `Tool` variant. Rather than fabricating `Tool{name: first}` (inventing a
 /// stricter constraint the request never made), it must degrade to `Required` (call SOME tool) —
 /// a true superset of the allow-list. A SINGLE name still maps to `Tool{name}` (unchanged).
@@ -4477,7 +4474,7 @@ fn tool_choice_no_duplicate_function_calling_config() {
     );
 }
 
-/// RED (round7 minor #2): the raw `toolConfig` the reader preserves in `req.extra` (for
+/// The raw `toolConfig` the reader preserves in `req.extra` (for
 /// same-protocol byte-identity) must NOT clobber the freshly-overlaid `functionCallingConfig` the
 /// writer builds from the TYPED `req.tool_choice`. `generationConfig` gets this treatment
 /// explicitly (skipped in the final `req.extra` merge loop, with a comment explaining why); before
@@ -4517,7 +4514,7 @@ fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
     );
 }
 
-/// RED (round7 minor #3): `synth_tool_call_id` (used by `read_response`, one call per Gemini
+/// `synth_tool_call_id` (used by `read_response`, one call per Gemini
 /// response/turn) hashes only `(call_index, function_name)`. Both are RESPONSE-LOCAL — `call_index`
 /// restarts at 0 on every `read_response` call, and `DefaultHasher::new()` seeds from FIXED
 /// constants (not per-process random) — so two DIFFERENT LLM turns in the SAME growing conversation
@@ -5426,7 +5423,7 @@ fn test_stream_thinking_and_signature_deltas_emit_thought_parts() {
     );
 }
 
-/// L2: a Gemini response carrying `candidates[].citationMetadata.citationSources[]` must read
+/// A Gemini response carrying `candidates[].citationMetadata.citationSources[]` must read
 /// into IrCitation(s) on the answer's Text block (url/title/indices preserved), and a CROSS-
 /// protocol Anthropic egress must re-emit them as `web_search_result_location` citations carrying
 /// the url/title — closing the grounding-citation gap that previously dropped them entirely.
@@ -5496,7 +5493,7 @@ fn gemini_citation_metadata_reads_and_projects_to_anthropic() {
     );
 }
 
-/// L2: same-protocol Gemini→IR→Gemini citation round-trip re-emits candidate-level
+/// Same-protocol Gemini→IR→Gemini citation round-trip re-emits candidate-level
 /// citationMetadata (verbatim source via `raw`), and a response WITHOUT citations stays free of a
 /// `citationMetadata` key.
 #[test]
@@ -5547,7 +5544,7 @@ fn gemini_citations_roundtrip_and_absent_unaffected() {
     );
 }
 
-/// RED (round7 minor #1): a Gemini candidate whose content splits its output across MULTIPLE text
+/// A Gemini candidate whose content splits its output across MULTIPLE text
 /// parts. Google's `citationSources[].startIndex/endIndex` are candidate-relative byte offsets into
 /// the FULL concatenation of the candidate's text parts, not offsets into any single part. The
 /// reader must (a) convert the byte offset against the FULL concatenated text, not just the first

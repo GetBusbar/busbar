@@ -63,7 +63,7 @@ pub(crate) fn ingress_relayed_response_header_names(
 /// the `x-busbar-*` header convention (e.g. the bedrock/anthropic request-id headers above):
 /// `x-busbar-route-policy: <policy name>` and `x-busbar-route-target: <chosen lane model>`. Emitted
 /// ONLY when BOTH gates pass:
-///   1. OUTER (task #139): the operator opted in via `advanced.response_headers.route_policy`
+///   1. OUTER: the operator opted in via `advanced.response_headers.route_policy`
 ///      (default `false`) — [`crate::proxy::route_policy_headers_enabled`]. Before this gate existed
 ///      the header fired unconditionally whenever a non-default policy chose the lane, with no config
 ///      toggle at all; it is a fingerprintable observable (same class as `Server-Timing: busbar`), so
@@ -114,7 +114,7 @@ fn maybe_attach_route_policy_gated(
 /// The CANONICAL per-protocol error-response builder. Every forward-layer error returned to the
 /// caller goes through here so the body is the INGRESS protocol's native error envelope
 /// (`application/json`) rather than `text/plain`, which an official SDK cannot decode (it raises a
-/// generic JSON-decode error — a deterministic proxy tell, design). The status code is
+/// generic JSON-decode error — a deterministic proxy tell). The status code is
 /// preserved exactly; only the body shape changes. `kind` is the protocol-agnostic error category
 /// (e.g. `"invalid_request_error"`, `"overloaded"`, `"authentication_error"`); `msg` is the
 /// human-readable detail. When `ingress` does not resolve to a known protocol, falls back to the
@@ -159,7 +159,7 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
 /// Project an [`crate::handlers::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
 /// `read_request`/`read_request_value` call sites (the opaque-body branch and the JSON branch)
-/// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the m3 second
+/// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the second
 /// 404 (`ImageIr.op` unsupported for `model`), distinct from the no-handler 404 and naming both the
 /// operation and the model so the caller knows what to stop asking for.
 pub(crate) fn ingress_reject_response(
@@ -319,8 +319,8 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 /// The SINGLE source of truth for shaping an ingress request body into the bytes sent to one egress
 /// lane. Both the hot path ([`forward_with_pool`], per failover hop) and the degraded last-resort
 /// path ([`forward_once`], FallbackPool/LeastBad) call THIS function so the two cannot drift apart on
-/// any translation step — historically they did (R8 added `ir.extra.clear()` to the hot path only;
-/// R9 found `forward_once` lacked it, leaking OpenAI `logprobs`/`top_logprobs`/`n` onto an Anthropic
+/// any translation step — historically they did (`ir.extra.clear()` was added to the hot path only,
+/// and `forward_once` lacked it, leaking OpenAI `logprobs`/`top_logprobs`/`n` onto an Anthropic
 /// or Gemini backend). Unifying the seam makes that whole class of "one path is missing a step"
 /// regressions structurally impossible: there is now exactly one step list.
 ///
@@ -354,8 +354,8 @@ pub(crate) fn translate_request_cross_protocol(
     // reasoning ask at `prepare_for_egress`; see `ModelCfg::reasoning`.
     reasoning_allowed: bool,
     // The PRISTINE source bytes `body` was parsed from THIS hop (the retained original). On a
-    // same-protocol passthrough where no same-proto-reachable mutation fired (the request short-
-    // circuit, Change B step 1), these exact bytes are re-emitted verbatim instead of re-serializing
+    // same-protocol passthrough where no same-proto-reachable mutation fired (the request
+    // short-circuit), these exact bytes are re-emitted verbatim instead of re-serializing
     // the `Value` — keeping the upstream payload byte-identical and skipping the serialize hot spot.
     // `&Bytes` (not `&[u8]`) so the short-circuit re-emit is a REFCOUNT BUMP (`Bytes::clone`), never
     // an O(body) `to_vec` memcpy — the return type is `Bytes` for the same reason.
@@ -413,10 +413,10 @@ pub(crate) fn translate_request_cross_protocol(
         // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
         return Ok(hop_bytes.clone());
     };
-    // Request short-circuit pristine-tracking (Change B). Starts true; flips false the moment ANY
+    // Request short-circuit pristine-tracking. Starts true; flips false the moment ANY
     // same-protocol-reachable mutation actually changes the body. The cross-protocol branch below
     // always rebuilds the body from the IR (read_request → write_request), so it is never pristine.
-    // The invalidation contract is EXACTLY entries #1-#4 of the design table — strip_router_shim_keys
+    // The invalidation contract is EXACTLY entries #1-#4 of the invalidation set — strip_router_shim_keys
     // (#1,#2), rewrite_model_if_needed (#3), strip_same_protocol_model_shim (#4) — each of which now
     // reports whether it truly changed the body.
     let mut pristine = true;
@@ -542,7 +542,7 @@ pub(crate) fn translate_request_cross_protocol(
         pristine &= !strip_same_protocol_model_shim(&mut body, ingress_protocol);
         // invalidator #4
     }
-    // Request SHORT-CIRCUIT (Change B step 1): a same-protocol passthrough that triggered none of the
+    // Request SHORT-CIRCUIT: a same-protocol passthrough that triggered none of the
     // invalidators #1-#4 left `body` byte-for-byte equivalent to the retained `hop_bytes`, so re-emit
     // those exact bytes verbatim — byte-identical to the old re-serialize path, minus the serialize
     // cost (and minus any key-ordering / float-formatting drift a round-trip could introduce). Cross-
@@ -843,10 +843,9 @@ mod tests {
         (get(HDR_ROUTE_POLICY), get(HDR_ROUTE_TARGET))
     }
 
-    /// task #139, RED-then-GREEN for the OUTER gate: before this gate existed,
-    /// `maybe_attach_route_policy` fired the headers unconditionally whenever a non-default policy
-    /// chose the lane (`policy_name == Some`) — no config toggle at all. This is that red case,
-    /// pinned green: even with a policy name present, `enabled == false` must suppress BOTH headers.
+    /// The OUTER gate: without it, `maybe_attach_route_policy` fires the headers unconditionally
+    /// whenever a non-default policy chose the lane (`policy_name == Some`) — no config toggle at
+    /// all. Even with a policy name present, `enabled == false` must suppress BOTH headers.
     #[test]
     fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name() {
         let rb = axum::http::Response::builder();
@@ -866,7 +865,7 @@ mod tests {
         );
     }
 
-    /// The INNER gate is unchanged by task #139: even with the outer gate ON, a default
+    /// The INNER gate is independent of the outer one: even with the outer gate ON, a default
     /// (`policy_name == None`) routing decision attaches nothing — the zero-cost SWRR path stays
     /// header-free regardless of the operator's opt-in.
     #[test]
@@ -884,7 +883,7 @@ mod tests {
         );
     }
 
-    /// GREEN: BOTH gates open (opted in + a non-default policy fired) is the only combination that
+    /// BOTH gates open (opted in + a non-default policy fired) is the only combination that
     /// emits the pair, and it carries the exact policy name / target model passed in.
     #[test]
     fn route_policy_headers_present_only_when_both_gates_open() {

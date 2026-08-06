@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2, Step 6). `token_tests` is a
+//! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2). `token_tests` is a
 //! submodule of `auth::token`, so it can drive the private sub-state handlers (`chooser`/`begin`/
 //! `callback`), the render fns, and the cookie/PKCE/hop helpers directly.
 
@@ -115,7 +115,7 @@ fn chooser_renders_0_1_n_buttons() {
 }
 
 /// A gui-off (no browser_login) method still works HEADLESS via POST /auth/token — the chooser
-/// exclusion does not disable the method. (The POST path is unaffected by Step 6; asserting the
+/// exclusion does not disable the method. (The POST path is unaffected; asserting the
 /// route still serves POST is the observable proof here.)
 #[tokio::test]
 async fn gui_off_method_still_works_via_post() {
@@ -265,8 +265,8 @@ fn assert_branded_error_page(body: &str, heading: &str) {
     );
 }
 
-/// RED→GREEN: a browser-flow failure (here a callback `state` mismatch) renders the BRANDED, styled
-/// HTML error page — not bare plain text — with the correct status. RED before this change: the
+/// A browser-flow failure (here a callback `state` mismatch) renders the BRANDED, styled
+/// HTML error page — not bare plain text — with the correct status. Before this change: the
 /// callback returned `(400, "state mismatch")` plain text (no `<!doctype`, no error card).
 #[tokio::test]
 async fn browser_callback_failure_renders_branded_html() {
@@ -443,7 +443,7 @@ async fn client_secret_is_core_injected_only() {
     assert!(!page.contains("REAL-SECRET-XYZ"));
 }
 
-// ── credential flow: Prompt form, POST submit, Refresh rotation (Unit 5) ──────────────────────────
+// ── credential flow: Prompt form, POST submit, Refresh rotation ──────────────────────────────────
 
 /// A CREDENTIAL-kind login module (the LDAP shape): begin returns a `Prompt` form; complete verifies
 /// the submitted username/password ITSELF and `Identify`s (no hop, no client_secret).
@@ -658,7 +658,7 @@ async fn credential_submit_state_mismatch_400() {
 }
 
 /// The WIRED Refresh action ROTATES: a refresh-marked submit yields a DIFFERENT key, and the prior
-/// token STOPS verifying. RED before the wiring: Refresh re-hit `issue_self` (idempotent) → same key,
+/// token STOPS verifying. Before the wiring: Refresh re-hit `issue_self` (idempotent) → same key,
 /// old token still valid.
 #[tokio::test]
 async fn refresh_rotates_key_and_revokes_the_old_one() {
@@ -695,7 +695,7 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
     );
 }
 
-// ── config: client_secret required/absent per login_kind (Unit 4) ────────────────────────────────
+// ── config: client_secret required/absent per login_kind ─────────────────────────────────────────
 
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
@@ -714,7 +714,7 @@ fn browser_login_secret_required_for_redirect_absent_for_credential() {
     );
 }
 
-// ── hop security: URL allowlist, header sanitize, no-redirect, timeout, hop cap (Unit 3) ─────────
+// ── hop security: URL allowlist, header sanitize, no-redirect, timeout, hop cap ──────────────────
 
 /// The operator-derived allowlist for a single mock host (mirrors the core-side rule).
 fn allowed_hosts_for(url: &str) -> std::collections::HashSet<String> {
@@ -722,7 +722,7 @@ fn allowed_hosts_for(url: &str) -> std::collections::HashSet<String> {
 }
 
 /// SSRF / client_secret-exfil guard: a hop to a host NOT in the method's operator-derived allowlist
-/// is REFUSED before the request is built, so the injected secret is never sent. RED before the fix:
+/// is REFUSED before the request is built, so the injected secret is never sent. Before the fix:
 /// `execute_hop` sent to any plugin-chosen URL and returned Ok, exfiltrating the secret.
 #[tokio::test]
 async fn execute_hop_refuses_non_allowlisted_host() {
@@ -744,7 +744,7 @@ async fn execute_hop_refuses_non_allowlisted_host() {
 }
 
 /// Header sanitize: CR/LF/NUL (request-splitting) and the hop-control headers are rejected; a
-/// legitimate `Authorization` bearer is allowed. RED before the fix: no header path existed / no
+/// legitimate `Authorization` bearer is allowed. Before the fix: no header path existed / no
 /// sanitization.
 #[test]
 fn sanitize_hop_header_rejects_crlf_and_hop_control() {
@@ -806,7 +806,7 @@ fn vet_hop_url_enforces_https_allowlist_and_blocks_metadata() {
 }
 
 /// No-redirect: the hop client does NOT follow a 302, so the client_secret can never be re-POSTed to
-/// a redirect target. RED before the fix: `reqwest::Client::new()` follows redirects, so a 302 from
+/// a redirect target. Before the fix: `reqwest::Client::new()` follows redirects, so a 302 from
 /// the allowlisted endpoint to an attacker host re-sends the secret (status would be the target's).
 #[tokio::test]
 async fn execute_hop_does_not_follow_redirect() {
@@ -830,7 +830,7 @@ async fn execute_hop_does_not_follow_redirect() {
 }
 
 /// Timeout: `execute_hop` honors the client's request timeout, so a hanging token endpoint cannot
-/// hold the callback open. RED before the fix: `Client::new()` has no timeout and the call hangs.
+/// hold the callback open. Before the fix: `Client::new()` has no timeout and the call hangs.
 #[tokio::test]
 async fn execute_hop_times_out_on_a_hanging_endpoint() {
     let (url, mock) = mock_hang_endpoint().await;
@@ -861,7 +861,7 @@ async fn execute_hop_times_out_on_a_hanging_endpoint() {
 }
 
 /// The callback hop loop runs at most `MAX_HOPS` times (not `MAX_HOPS + 1`). A module that only ever
-/// `Exchange`s is fail-closed after exactly `MAX_HOPS` core-executed hops. RED before the fix: the
+/// `Exchange`s is fail-closed after exactly `MAX_HOPS` core-executed hops. Before the fix: the
 /// `0..=MAX_HOPS` loop ran `MAX_HOPS + 1` times.
 #[tokio::test]
 async fn hop_loop_runs_at_most_max_hops_times() {
@@ -960,7 +960,7 @@ fn key_page_injects_base_url_verbatim() {
 
 /// The success page carries ONE-CLICK COPY: a `.copy` button beside the key and a `.copymini` button
 /// for the BYOK block, each wired to the inline `bbCopy` handler with the exact value to copy in
-/// `data-copy`. RED before this change: the key/BYOK block rendered with no copy button at all.
+/// `data-copy`. Before this change: the key/BYOK block rendered with no copy button at all.
 #[test]
 fn key_page_has_copy_buttons_wired_to_clipboard() {
     let page = render_key_issued(
@@ -1013,7 +1013,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
 
 /// The `?logout=1` "Sign out" action renders the branded "Signed out" page, EXPIRES the login cookie
 /// (defensive — the flow is stateless post-issuance), and offers a clean "Sign in again" re-entry. It
-/// does not revoke the key or the IdP session (honest copy). RED before this change: `?logout=1` was
+/// does not revoke the key or the IdP session (honest copy). Before this change: `?logout=1` was
 /// an unknown param that fell through to the chooser (no signed-out page, no cookie clear).
 #[tokio::test]
 async fn logout_renders_signed_out_and_clears_cookie() {

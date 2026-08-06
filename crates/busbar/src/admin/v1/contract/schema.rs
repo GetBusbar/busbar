@@ -235,7 +235,7 @@ pub(crate) struct SigningKeyRotateView {
 /// yet unreachable with every built-in module, because each stream they carry has a pinned field
 /// that has no producer yet, so any `fields:` on them is rejected. Omit it and receive the stream's
 /// produced default set.
-/// `advanced` is live EXCEPT `response_headers` (task #139): `response_headers.server_timing` is
+/// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
 /// process-global `OnceLock` — neither rebuilt by an apply.
@@ -287,8 +287,8 @@ pub(crate) struct HookSchemaView {
     pub(crate) schema: Option<serde_json::Value>,
 }
 
-/// `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]
-/// (plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of
+/// `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`].
+/// Carries `trust`/`source`/`schema_error` on top of
 /// `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
 /// precedence rule from context — the server always picks exactly one source and reports which.
 #[derive(Serialize, JsonSchema)]
@@ -306,17 +306,16 @@ pub(crate) struct PluginSchemaView {
     pub(crate) schema: Option<serde_json::Value>,
     /// Set only when the manifest's `settings_schema` was present but failed to parse as JSON —
     /// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
-    /// `schema: null` (question #3, round-4 correction): a present-but-corrupt schema is a real
+    /// `schema: null`: a present-but-corrupt schema is a real
     /// authoring/packaging bug, not "this plugin simply has none."
     pub(crate) schema_error: Option<String>,
     /// `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
-    /// uses (never `"verified"`; question #8, round-4 correction).
+    /// uses (never `"verified"`).
     pub(crate) trust: String,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
     /// message (the existing describe-proxy behavior, unchanged); `"manifest"` otherwise. Lets
     /// busbar-ui explain "why does this form look different from what I expected" without
-    /// implementing the describe/manifest precedence rule itself (question #3, round-4
-    /// correction).
+    /// implementing the describe/manifest precedence rule itself.
     pub(crate) source: String,
     /// The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`
     /// and `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a

@@ -526,7 +526,7 @@ async fn head_dispatches_to_the_declared_get_route() {
     );
 }
 
-// ── The RESTART-TO-APPLY signal (audit finding E1) ──────────────────────────────────────────────────
+// ── The RESTART-TO-APPLY signal ──────────────────────────────────────────────────────────────────
 
 /// [`paths_awaiting_restart`] names exactly the paths a config apply cannot make servable, in every
 /// direction the `export:` admin surface can move.

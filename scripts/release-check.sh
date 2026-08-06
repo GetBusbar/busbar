@@ -94,7 +94,7 @@
 #                                             # phase set (no hole, no overlap); exit 1 on either
 #   scripts/release-check.sh --segment <id>  # run ONLY that segment's phases (see SEGMENTATION)
 #
-# SEGMENTATION (1.5.3 unit G, made real)
+# SEGMENTATION
 #   The gate is a set of independently-runnable PHASES. `--list-phases` emits their ids; the ids
 #   mirror the script's own numbering (phase-0a2-…, phase-0c-…, phase-1-…, phase-2-suite-<repo>,
 #   phase-5-smoke-<name>, …). The `phase-2-suite-*` ids are DERIVED FROM plugins.yaml, so adding a
@@ -135,7 +135,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 
 SKIP_DOCKER=0
-# SEGMENT (1.5.3, unit G qa-gate segmentation): names WHICH qa-gate segment this invocation runs.
+# SEGMENT: names WHICH qa-gate segment this invocation runs.
 # It now GENUINELY PARTITIONS THE PHASES — `--segment core-data-plane` runs only the core-data-plane
 # phases, `--segment plugin-store-postgres` runs only that plugin's suite phase. An unknown segment
 # is a loud error, never a silent full run.

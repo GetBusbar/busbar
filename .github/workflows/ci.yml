@@ -47,7 +47,7 @@ jobs:
         run: scripts/release-script-lint.sh --selftest
       - name: Release-script lint
         run: scripts/release-script-lint.sh
-      # RESPONSE-HEADER lint (task #139): every busbar-INJECTED response header
+      # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
       # `advanced.response_headers` opt-in. Self-test runs FIRST (never trust the lint's verdict before
@@ -56,7 +56,7 @@ jobs:
         run: scripts/response-header-lint.sh --selftest
       - name: Response-header lint
         run: scripts/response-header-lint.sh
-      # TRACING-SEAM lint (task #140): every `#[tracing::instrument]` must carry an explicit
+      # TRACING-SEAM lint: every `#[tracing::instrument]` must carry an explicit
       # `level =` so a hot-path span can never again silently default to INFO (always-on). Self-test
       # runs FIRST (never trust the lint's verdict before proving the scanner still catches a real
       # bypass), then it scans crates/**/*.rs.
@@ -96,7 +96,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/plugin-registry-check.sh
-      # QA-GATE SEGMENTATION self-test (1.5.3 unit G). qa/segments.toml is the umbrella's single
+      # QA-GATE SEGMENTATION self-test. qa/segments.toml is the umbrella's single
       # source of truth (registry-driven fan-out, mirroring plugins.yaml). This self-test proves the
       # manifest's SHAPE before any segment is trusted to run: it lists both active and reserved
       # entries, the preserved core-data-plane/plugins coverage is present (union ⊇ today's gate),
@@ -192,7 +192,7 @@ jobs:
       - name: OpenAPI tests (drift guard + coverage lock)
         run: cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture
 
-  # CONFIG-STABILITY gate (1.5.3 unit F, design §5). 1.5.3 is the LAST config-breaking release; after
+  # CONFIG-STABILITY gate. 1.5.3 is the LAST config-breaking release; after
   # it the config grammar is FROZEN and every future feature may add only NEW OPTIONAL keys/sections/
   # enum-variants. This job ENFORCES that per-PR, exactly like the openapi drift guard above but with
   # the mechanic that guard lacks: an ADDITIVE-ONLY classifier. The self-test runs FIRST (never trust
@@ -264,9 +264,8 @@ jobs:
   # SCOPE, STATED HONESTLY: this job proves the featureless binary COMPILES, LINTS, and passes the
   # unit tests that remain compiled into it. It does NOT boot the binary and does NOT serve a request,
   # so it cannot see a core path that compiles fine and then fails at runtime because the module it
-  # reaches for is absent. (This comment used to claim "what remains proves the featureless binary
-  # works" — it does not; that is a strictly larger claim than what runs here.) Proving the featureless
-  # binary WORKS is the `no-plugins-gate` job below, which boots it and drives real HTTP through it.
+  # reaches for is absent. Proving the featureless binary WORKS is the `no-plugins-gate` job below,
+  # which boots it and drives real HTTP through it.
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: ubuntu-latest

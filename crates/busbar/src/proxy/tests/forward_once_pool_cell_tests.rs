@@ -49,7 +49,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
 
     // Drive the "fb" pool cell for lane 1 into expired-Open (cooldown_until in the PAST), so the
     // FallbackPool dispatch's `acquire_for_dispatch_in` transitions it Open→HalfOpen and CAS-wins
-    // the recovery probe — the precise state H1 wedges.
+    // the recovery probe — the precise state a leaked probe wedges.
     app.store.force_open_in("fb", 1, t0.saturating_sub(10));
     assert!(
         matches!(
@@ -88,7 +88,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     // recorded on the "" cell, so the pool cell stayed HalfOpen forever.
     assert!(
         matches!(app.store.breaker_state_in("fb", 1), BreakerState::Closed),
-        "fb POOL cell must close on a 2xx served via forward_once (H1); got {:?}",
+        "fb POOL cell must close on a 2xx served via forward_once; got {:?}",
         app.store.breaker_state_in("fb", 1)
     );
     // And the recording must NOT have touched the default "" cell (it was never tripped here).
@@ -161,7 +161,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
             app.store.breaker_state_in("fb", 1),
             BreakerState::Open { .. }
         ),
-        "fb POOL cell must reopen on a transport error via forward_once (H1); got {:?}",
+        "fb POOL cell must reopen on a transport error via forward_once; got {:?}",
         app.store.breaker_state_in("fb", 1)
     );
     // The default "" cell must be untouched (still Closed) — the recording targeted the pool cell.
@@ -249,7 +249,7 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
     // The probe must have been RELEASED: the pool cell is Open again (not wedged HalfOpen).
     assert!(
         !matches!(app.store.breaker_state_in("fb", 1), BreakerState::HalfOpen),
-        "fb POOL cell must NOT be wedged HalfOpen after a non-2xx (HIGH #1 probe leak); got {:?}",
+        "fb POOL cell must NOT be wedged HalfOpen after a non-2xx (probe leak); got {:?}",
         app.store.breaker_state_in("fb", 1)
     );
     // Cooldown-backoff fix: a non-2xx on a HalfOpen probe now RECORDS a transient failure (before
@@ -476,7 +476,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
             app.store.breaker_state_in("fb", 1),
             BreakerState::Open { .. }
         ),
-        "an untranslatable 2xx via forward_once must reopen the fb POOL cell (H1 breaker parity \
+        "an untranslatable 2xx via forward_once must reopen the fb POOL cell (breaker parity \
              with the transport-error arm); got {:?}",
         app.store.breaker_state_in("fb", 1)
     );

@@ -123,9 +123,7 @@ touch the wire ABI or the manifest signature format — those stay frozen.
   (delivered via a `SecretRef` in the e2e test) and validates it itself,
   proving the whole path end-to-end.
 
-## Docs cross-link
+## See also
 
-`docs/plugins.md` should carry a one-line pointer to this ADR from its plugin
-settings / secrets section (the operator-facing "how do I license a plugin"
-answer). That pointer is intentionally *not* added here to avoid a merge
-conflict with the parallel `plugins.md` rewrite — wire it at merge time.
+- [docs/plugins.md § Licensing a plugin](../plugins.md#licensing-a-plugin) — the
+  operator-facing view.

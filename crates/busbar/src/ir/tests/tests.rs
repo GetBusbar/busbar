@@ -169,7 +169,7 @@ fn test_ir_delta_variants_distinct() {
     );
 }
 
-// PF-L5: `IrToolChoice` is the protocol-neutral pivot for every reader/writer's tool_choice
+// `IrToolChoice` is the protocol-neutral pivot for every reader/writer's tool_choice
 // mapping, so its variant identity must be precise — distinct variants are never equal, a
 // targeted `Tool` is keyed on its name, and clone preserves the variant.
 #[test]

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `ingress_reject_response` — the one place `IngressReject` becomes a caller-dialect HTTP response.
-//! `BadRequest` must keep today's exact 400; `UnsupportedSubOp` (the m3 second 404 site) must become
+//! `BadRequest` must keep today's exact 400; `UnsupportedSubOp` (the second 404 site) must become
 //! a 404 naming both the operation and the model, not collapse into the generic 400 the two
 //! `proxy/wire.rs` `Err(_)` call sites used to produce for every `IngressReject` alike.
 

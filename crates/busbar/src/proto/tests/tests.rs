@@ -80,9 +80,9 @@ fn test_find_frame_terminator_crlf_frame_split_is_clean() {
     );
 }
 
-/// The default `ProtocolWriter::write_error` (the only impl in this wave — no per-protocol
+/// The default `ProtocolWriter::write_error` (the only impl — no per-protocol
 /// overrides yet) must produce valid JSON carrying the message and the `kind` as `error.type`,
-/// so the / Unit I plumbing exists before per-protocol envelopes land. (Content-type is a
+/// so error bodies stay decodable before per-protocol envelopes land. (Content-type is a
 /// caller concern; the doc contract says `application/json` for all protocols.)
 #[test]
 fn test_write_error_default_envelope_is_valid_json() {
@@ -100,7 +100,7 @@ fn test_write_error_default_envelope_is_valid_json() {
     assert_eq!(reparsed["error"]["type"], serde_json::json!("not_found"));
 }
 
-/// MEDIUM/conformance (proto_for_path:75-86): a `GET /v1/models/<id>` whose id legitimately
+/// Conformance (`proto_for_path`): a `GET /v1/models/<id>` whose id legitimately
 /// CONTAINS a colon (OpenAI fine-tuned `ft:...`, deployment-style `gpt-4o:deployment`) must
 /// classify as OpenAI — NOT Gemini — so `model.retrieve` gets an OpenAI-decodable error envelope.
 /// Only the known Gemini ACTION suffixes (`:generateContent`, …) are Gemini.
@@ -136,7 +136,7 @@ fn test_proto_for_path_colon_model_id_is_openai_not_gemini() {
     );
 }
 
-/// MEDIUM/conformance (synth_anthropic_request_id): the synthesized `request-id` header value must
+/// Conformance (`synth_anthropic_request_id`): the synthesized `request-id` header value must
 /// carry the native Anthropic shape (`req_01` prefix + non-empty token) so the official SDK reads
 /// a well-formed `Message._request_id` / `APIError.request_id`.
 #[test]
@@ -171,7 +171,7 @@ fn test_synth_anthropic_request_id_is_well_formed() {
     assert_ne!(id, id2, "successive ids must differ");
 }
 
-/// MEDIUM/correctness (synth_anthropic_request_id): the two 9-byte (72-bit) draws folded to 12
+/// Correctness (`synth_anthropic_request_id`): the two 9-byte (72-bit) draws folded to 12
 /// base62 digits via repeated `% 62` / `/= 62` are NOT uniform — `62^12 ≈ 3.226e21 < 2^72 ≈
 /// 4.722e21`, so the map cannot be injective. The bias concentrates in the MOST-SIGNIFICANT digit
 /// of each half (`token[0]` and `token[12]`, since the fill loop writes `.rev()`): after eleven
@@ -208,7 +208,7 @@ fn synth_anthropic_request_id_msd_is_uniform() {
     );
 }
 
-/// MEDIUM/conformance (GeminiJsonArrayFramer::finish_with_error): the truncation error element must
+/// Conformance (`GeminiJsonArrayFramer::finish_with_error`): the truncation error element must
 /// carry NO busbar-internal vocabulary ("upstream"). A real Gemini API never emits that word, so it
 /// is a fingerprintable tell. The message must read like Gemini's own canonical 500 body.
 #[test]
@@ -641,7 +641,7 @@ fn test_extra_passthrough() {
     assert!(roundtrip.as_object().unwrap().contains_key("top_p"));
 }
 
-// Finding 2 (native control fields dropped on cross-protocol hops). The universally-modeled
+// Native control fields must not drop on cross-protocol hops. The universally-modeled
 // sampling controls (top_p, top_k, stop) are now first-class IR fields, so they survive the
 // cross-protocol seam (which CLEARS `ir.extra` to stop source-only key leakage). Each test reads
 // a native request, CLEARS `extra` to simulate the seam (proxy engine `ir.extra.clear()`), then
@@ -1340,9 +1340,9 @@ fn cohere_read_response_surfaces_tool_plan_as_leading_text() {
     );
 }
 
-/// audit LOW (find-1-solve-6): an unparseable/streaming-partial tool arg is stored as
+/// An unparseable/streaming-partial tool arg is stored as
 /// `Value::String(raw)`; EVERY string-args writer (OpenAI Chat, Responses, Cohere) must emit it
-/// VERBATIM, not JSON-encode it a second time. Covers Responses AND Cohere (the found sibling);
+/// VERBATIM, not JSON-encode it a second time. Covers Responses AND Cohere;
 /// OpenAI Chat already routed through the helper.
 #[test]
 fn string_args_writers_emit_raw_tool_args_verbatim() {
@@ -1460,8 +1460,8 @@ fn clamp_stop_warn_reports_the_dropped_count_not_the_total() {
     );
 }
 
-/// CHARACTERIZATION (not a RED test — this passes before and after `write_sse_frame` by
-/// construction, since it is pinning byte-for-byte output rather than a behavior change). The
+/// CHARACTERIZATION: this passes before and after `write_sse_frame` by construction, since it
+/// pins byte-for-byte output rather than a behavior change. The
 /// real guard for the `reframe_sse` → `write_sse_frame` refactor (String-per-frame allocation →
 /// append-in-place) is the byte-parity golden wall
 /// (`proto/tests/translate_parity_golden_tests.rs`), which must stay green across this change.

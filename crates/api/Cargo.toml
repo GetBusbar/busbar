@@ -14,7 +14,7 @@ async-trait = "0.1"
 sha2 = "0.11.0"
 hex = "0.4.3"
 zeroize = "1"
-# The Feature-2 decision-observability signal catalog's per-projection signal bag
+# The decision-observability signal catalog's per-projection signal bag
 # (`SignalBag`): inline capacity for the common 0-4-declared-signals case so the default
 # (nothing declared) path never touches the heap. Already a transitive dependency of the
 # workspace (pulled in via tokio et al.), so this adds no new crate to the tree.

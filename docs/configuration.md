@@ -1390,12 +1390,6 @@ models:
 
 This example requires: `BUSBAR_ADMIN_TOKEN`, `ANTHROPIC_KEY`, `OPENAI_KEY`, `GEMINI_KEY`.
 
-<!--
-  Not `doc-check: config`-marked: this example's `store.module: sqlite` and `plugins.enabled: true`
-  make it un-validatable without a signed plugin-tarball fixture (the design doc's "fixture cost"
-  tradeoff, same reasoning applied there to live-curl execution). The "Minimal working example"
-  below IS marked and covers the same top-level shape without the plugin dependency.
--->
 ```yaml
 listen: "0.0.0.0:8080"
 admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own listener
@@ -1658,7 +1652,7 @@ advanced:
   worker_threads: 4                 # tokio worker pool size (1.5.3 ← BUSBAR_WORKER_THREADS); omit ⇒ one per core
   upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (1.5.3 ← BUSBAR_UPSTREAM_HTTP1_ONLY)
   upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (1.5.3 ← BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE)
-  response_headers:                 # every busbar-injected response header, opt-in, default OFF (task #139)
+  response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` — formerly observability.emit_server_timing
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
 ```

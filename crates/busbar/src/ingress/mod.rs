@@ -154,8 +154,8 @@ fn pool_scope_suffix(pool: &Option<String>) -> String {
     }
 }
 
-/// Run the atomic group-limit ADMISSION for a request that is about to be forwarded (the P4
-/// generic limit engine). `Ok(Some(grant))` = admitted AND charged (the flat per-request fee + one
+/// Run the atomic group-limit ADMISSION for a request that is about to be forwarded, through the
+/// generic limit engine. `Ok(Some(grant))` = admitted AND charged (the flat per-request fee + one
 /// request landed on every chain bucket; a non-2xx must refund, and the grant holds the
 /// `concurrent` in-flight gauges until the response completes). `Ok(None)` = admitted WITHOUT a
 /// charge (governance off / no key) - a non-2xx must NOT refund, because `refund_request` is a
@@ -430,7 +430,7 @@ fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 /// admission by `budget_check` → `try_charge_request_within_budget`. Outcome is derived from the
 /// final status; duration is wall-clock.
 /// Post-ADMISSION finish: the request passed `governance_guard`, so the flat per-request fee was
-/// already charged ATOMICALLY at admission (fix 2a, in `budget_check`). This emits metrics + the
+/// already charged ATOMICALLY at admission (in `budget_check`). This emits metrics + the
 /// request-log webhook and, on a NON-2xx outcome (router 503, upstream 4xx/5xx, post-admit 404),
 /// REFUNDS that flat fee — preserving the "bill 2xx only" flat-fee policy now that the hard-cap
 /// charge bills every admitted request up front. Token fees are charged post-response only on success
@@ -563,7 +563,7 @@ fn finish_inner(
         });
     }
 
-    // The flat per-request fee was charged ATOMICALLY at admission (fix 2a). REFUND it for a request
+    // The flat per-request fee was charged ATOMICALLY at admission. REFUND it for a request
     // that produced no usable upstream result (non-2xx: router 503 exhaustion, upstream 5xx, 4xx
     // upstream errors, post-admission 404) so a key is never billed the flat fee for a failure
     // outside its control — preserving the prior "bill 2xx only" policy. (Token fees are likewise
@@ -580,8 +580,8 @@ fn finish_inner(
     resp
 }
 
-/// Render a router-side error as the ingress protocol's NATIVE error envelope (design /
-/// Unit I — total indistinguishability). A client on a vendor's official SDK gets the typed
+/// Render a router-side error as the ingress protocol's NATIVE error envelope (total
+/// indistinguishability). A client on a vendor's official SDK gets the typed
 /// exception it expects (JSON envelope) instead of a plain-text body it cannot decode. `proto`
 /// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
 /// protocol-appropriate error category; `message` is the human-readable detail.

@@ -102,7 +102,7 @@ fn admin_scope_resolution() {
     );
 }
 
-// (1.5.2 scope collapse deleted the four sibling/incomparable admin-scope tests — R1..R4:
+// (1.5.2 scope collapse deleted the four sibling/incomparable admin-scope tests:
 // `sibling_roles_union_keeps_both_grants`, `sibling_roles_union_is_not_full`,
 // `mint_capped_by_hooks_register_grants_only_read`, `hooks_register_capped_by_mint_grants_only_read`.
 // With only {read-only, full}, roles can no longer hold incomparable grants and a ceiling can never
@@ -699,7 +699,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     );
 
     // Gemini stable-v1 alias (`/v1/models/<m>:generateContent`) must shape IDENTICALLY to the
-    // v1beta surface — the bug this round fixed mis-shaped it as an OpenAI 401.
+    // v1beta surface — an earlier bug mis-shaped it as an OpenAI 401.
     let resp = unauthorized_response("/v1/models/gemini-pro:generateContent");
     assert_eq!(
         resp.status(),
@@ -902,7 +902,7 @@ fn test_vendor_auth_failure_message_is_plausible_per_proto() {
 
 #[test]
 fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
-    // Coupling guard (finding: router route table ↔ proto_for_path ↔ protocol_for). Each real
+    // Coupling guard (router route table ↔ proto_for_path ↔ protocol_for). Each real
     // ingress path the router registers must resolve to a SPECIFIC proto, not the unknown-path
     // `openai` fallback applied via the final `else`. If a future route is added without
     // updating proto_for_path, callers on that protocol would silently get an OpenAI-shaped 401
@@ -1628,7 +1628,7 @@ async fn test_admin_blank_header_token_rejected() {
     handle.abort();
 }
 
-/// The `admin.forbidden` audit (class-10a) is bounded by the SAME per-(principal, window) counter
+/// The `admin.forbidden` audit is bounded by the SAME per-(principal, window) counter
 /// the mutation rate limiter already uses, not written unconditionally. Drives 50 forbidden GETs
 /// (an UNBOUND role, so `admin_scope_for` returns `Grants::default()` and even a read is 403) from
 /// ONE principal and asserts the durable-write-through only fired once or twice, not 50 times.
@@ -1690,7 +1690,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     handle.abort();
 }
 
-/// Regression for the admin-token carrier-level timing oracle (MEDIUM/security): the two admin
+/// Regression for the admin-token carrier-level timing oracle: the two admin
 /// carriers (Authorization: Bearer and x-admin-token) are combined with a bitwise-OR fold, NOT a
 /// short-circuiting `||`. Behaviorally this means EITHER carrier alone authorizes, AND a request
 /// presenting BOTH carriers is authorized whenever EITHER matches — regardless of which one. We
@@ -1787,7 +1787,7 @@ impl crate::auth::AuthModule for SleepingAdminModule {
 }
 
 /// A test-only external admin module that identifies a ROLELESS principal carrying the reserved
-/// operator id `"admin"` — the privilege-escalation probe (RISK 7): an external module returning the
+/// operator id `"admin"` — the privilege-escalation probe: an external module returning the
 /// operator id must NOT reach `Grants::of(Full)`.
 struct RolelessAdminModule;
 impl crate::auth::AuthModule for RolelessAdminModule {
@@ -1939,7 +1939,7 @@ async fn admin_max_admin_scope_caps_binding() {
     handle.abort();
 }
 
-/// RISK 7: an external admin module returning the reserved operator id `"admin"` ROLELESS must fall
+/// An external admin module returning the reserved operator id `"admin"` ROLELESS must fall
 /// to `Grants::default()` — denied even on a GET (never `Grants::of(Full)`, which is gated on the
 /// compiled `ADMIN_TOKENS_PRINCIPAL_ID`, not the string id). Driven through the offloaded plugin
 /// dispatch path.
@@ -1967,7 +1967,7 @@ async fn roleless_external_admin_principal_denied() {
     handle.abort();
 }
 
-/// RISK 4: a wedged (sleeping) external admin module must NOT stall the reactor — it is OFFLOADED to
+/// A wedged (sleeping) external admin module must NOT stall the reactor — it is OFFLOADED to
 /// the blocking pool, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
 #[tokio::test]
 async fn admin_offload_does_not_stall_healthz() {
@@ -2025,7 +2025,7 @@ async fn admin_offload_does_not_stall_healthz() {
     handle.abort();
 }
 
-/// Regression for the admin-surface carrier-separation invariant (HIGH/authz-boundary) promised
+/// Regression for the admin-surface carrier-separation invariant promised
 /// by the comment at the top of the `is_admin` branch: the `/admin` operator surface is guarded
 /// ONLY by `Authorization: Bearer` and `x-admin-token` — NOT by the vendor-SDK client-token
 /// carriers (`x-api-key` / `x-goog-api-key`) that `extract_client_token` also reads. A future
@@ -2255,11 +2255,11 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     server.shutdown().await;
 }
 
-/// Regression for the empty-token governance bypass (finding auth.rs): the governance branch
+/// Regression for the empty-token governance bypass: the governance branch
 /// must reject a request that presents NO credential BEFORE calling `gov.lookup`, rather than
 /// looking up `sha256("")`. We deliberately seed a virtual key whose `generation_hash == sha256("")` —
-/// the exact pathological state (reachable via direct DB writes / a future seeding path that
-/// bypasses `generate_secret`) the finding warns about — and confirm an unauthenticated request
+/// the pathological state (reachable via direct DB writes / a future seeding path that
+/// bypasses `generate_secret`) — and confirm an unauthenticated request
 /// is STILL rejected 401 instead of resolving to that key. Before the fix, the no-token request
 /// would call `gov.lookup("")`, match this enabled key, and be admitted unauthenticated.
 #[tokio::test]
@@ -2460,7 +2460,7 @@ fn test_auth_middleware_debug_redacts_tokens() {
     // any credential material. There are no static client tokens anymore; the invariant is that ONLY
     // the whitelisted shape fields appear, so a future field holding a secret cannot leak through a
     // derived Debug. (1.5.3: the upstream-credential MODE is no longer on the middleware at all — it
-    // moved to the `pools:` section, audit §4 — so it is no longer part of this shape.)
+    // moved to the `pools:` section — so it is no longer part of this shape.)
     let cfg = chain_cfg(&["keys", "test-groups-module"]);
     let mw = AuthMiddleware::new_builtin(&cfg);
     let dbg = format!("{mw:?}");
@@ -3575,7 +3575,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
 }
 
-/// The structural SigV4 gate (class-4b) rejects a malformed `AWS4-HMAC-SHA256` Authorization header
+/// The structural SigV4 gate rejects a malformed `AWS4-HMAC-SHA256` Authorization header
 /// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
 /// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
 /// (pre-fix) code buffers the body first (`axum::body::to_bytes`), the server blocks waiting for
@@ -3660,7 +3660,7 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 1.5.2 DATA-PLANE / ADMIN-TOKEN DECOUPLING — RED-before-GREEN suite (spec "RED-before-GREEN tests").
+// 1.5.2 DATA-PLANE / ADMIN-TOKEN DECOUPLING.
 // The admin token no longer gates the data plane; admission is decided SOLELY by the chain shape.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -3717,8 +3717,8 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
     state
 }
 
-/// #1 — `chain:[]` + admin token + NO credential → 200 ANONYMOUS (the previously-impossible
-/// "protected admin API, open relay" posture). RED on pre-1.5.2 code: the admin token forced a vkey
+/// `chain:[]` + admin token + NO credential → 200 ANONYMOUS (the previously-impossible
+/// "protected admin API, open relay" posture). Before 1.5.2 the admin token forced a vkey
 /// on every data-plane request, so a no-credential request was 401.
 #[tokio::test]
 async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
@@ -3752,9 +3752,9 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     server.shutdown().await;
 }
 
-/// #11 — a `chain:[]` request carries a DEFAULT `GovCtx` (never a 500 MissingExtension). Same wire
-/// path as #1: a 200 (rather than a 500) through the real router proves the downstream
-/// `Extension<GovCtx>` extraction found the default GovCtx the Open arm inserts.
+/// A `chain:[]` request carries a DEFAULT `GovCtx` (never a 500 MissingExtension). Same wire path
+/// as the anonymous-admit case above: a 200 (rather than a 500) through the real router proves the
+/// downstream `Extension<GovCtx>` extraction found the default GovCtx the Open arm inserts.
 #[tokio::test]
 async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
@@ -3787,8 +3787,8 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     server.shutdown().await;
 }
 
-/// #2 — `chain:[]` + admin token + a VALID vkey voluntarily presented → 200, and the key is NOT
-/// metered (pure anonymous: an empty chain resolves NOTHING). RED on pre-1.5.2 code: the vkey path
+/// `chain:[]` + admin token + a VALID vkey voluntarily presented → 200, and the key is NOT
+/// metered (pure anonymous: an empty chain resolves NOTHING). Before 1.5.2 the vkey path
 /// resolved and metered it.
 #[tokio::test]
 async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
@@ -3834,7 +3834,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     server.shutdown().await;
 }
 
-/// #3 — `chain:[keys]` + admin token + a VALID enabled vkey → 200 (admitted + governed, unchanged).
+/// `chain:[keys]` + admin token + a VALID enabled vkey → 200 (admitted + governed, unchanged).
 #[tokio::test]
 async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
@@ -3868,7 +3868,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     server.shutdown().await;
 }
 
-/// #4 — `chain:[keys]` + a DISABLED vkey → 401 (disabled ⇒ Reject, never a synth re-admit).
+/// `chain:[keys]` + a DISABLED vkey → 401 (disabled ⇒ Reject, never a synth re-admit).
 #[tokio::test]
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
@@ -3904,7 +3904,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     server.shutdown().await;
 }
 
-/// #7 — an IdP-style principal (the `test-groups-module` stand-in) whose role BINDS a group is
+/// An IdP-style principal (the `test-groups-module` stand-in) whose role BINDS a group is
 /// admitted with a SYNTHESIZED governance key: pool ACL applies (granted pool serves, ungranted 403).
 #[tokio::test]
 async fn test_1_5_2_role_bound_principal_synthesized() {
@@ -3951,7 +3951,7 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
     server.shutdown().await;
 }
 
-/// #8 — the ADMIN path still bypasses governance (empty GovCtx) and mint still works: the admin
+/// The ADMIN path still bypasses governance (empty GovCtx) and mint still works: the admin
 /// token authenticates `/api/v1/admin/*` and returns above the data-plane gate, unchanged.
 /// (Gated on `auth-admin-tokens`: the operator admin-token module is compiled out under
 /// `--no-default-features`, so there is no admin-token authenticator to exercise there.)
@@ -3994,9 +3994,9 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     handle.abort();
 }
 
-/// #10 — the `keys` ENGINE ARM is CACHE-EXEMPT: running a keys chain WITH a credential cache
+/// The `keys` ENGINE ARM is CACHE-EXEMPT: running a keys chain WITH a credential cache
 /// resolves the vkey (Identified{resolved:Some}) but writes NOTHING to the cache (revocation stays
-/// per-request). RED on pre-1.5.2 code: no keys engine arm / no `resolved` field existed at all.
+/// per-request). Before 1.5.2 no keys engine arm / no `resolved` field existed at all.
 #[test]
 fn test_1_5_2_keys_arm_is_cache_exempt() {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
@@ -4040,7 +4040,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     );
 }
 
-/// #9 — a correctly-signed Bedrock SigV4 ingress request under `chain:[keys]` is VERIFIED by the
+/// A correctly-signed Bedrock SigV4 ingress request under `chain:[keys]` is VERIFIED by the
 /// pre-step and admitted (GovCtx attached, routes to upstream). The SigV4 pre-step now runs because
 /// the chain names `keys`, NOT because an admin token is set.
 #[tokio::test]

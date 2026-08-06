@@ -646,7 +646,7 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBl
     None
 }
 
-/// Normalize Bedrock Converse's native `toolConfig.toolChoice` into the IR union (PF-H1).
+/// Normalize Bedrock Converse's native `toolConfig.toolChoice` into the IR union.
 ///
 /// Bedrock shape: `{"auto":{}}` → `Auto`, `{"any":{}}` → `Required` (must call some tool),
 /// `{"tool":{"name":"X"}}` → the targeted `Tool{name:"X"}`. Bedrock has NO native "none". An
@@ -672,7 +672,7 @@ fn read_bedrock_tool_choice(
     }
 }
 
-/// Emit the IR tool-choice union in Bedrock's native `toolChoice` shape (PF-H1).
+/// Emit the IR tool-choice union in Bedrock's native `toolChoice` shape.
 ///
 /// Returns `None` for `IrToolChoice::None`: Bedrock Converse has no native "don't call a tool"
 /// directive, so the closest faithful behavior is to omit `toolChoice` entirely (the backend then
@@ -896,7 +896,7 @@ impl super::StreamFraming for BedrockStreamFraming {
         // output_tokens == 0` yet non-zero `cache_read_input_tokens` / `cache_creation_input_tokens`.
         // Omitting the cache fields deferred the metadata frame and later flushed a ZERO-usage
         // `metadata` frame, so the Bedrock client SDK's stream-metadata callback under-reported the
-        // cache tokens on the wire. Include them so the real usage is emitted inline. (audit c2r4.)
+        // cache tokens on the wire. Include them so the real usage is emitted inline.
         let has_usage = usage.input_tokens != 0
             || usage.output_tokens != 0
             || usage.cache_read_input_tokens.unwrap_or(0) != 0
@@ -963,7 +963,7 @@ impl super::StreamFraming for BedrockStreamFraming {
 /// `BlockStart` arm maps to `None`). The `BlockStop` arm carries only the integer index, no block
 /// kind, so without this it cannot tell an untracked index (whose start was suppressed) from a
 /// tracked one, and previously closed EVERY index unconditionally — emitting an orphan
-/// `contentBlockStop` for a block a real ConverseStream client never saw opened (finding 7.2).
+/// `contentBlockStop` for a block a real ConverseStream client never saw opened.
 /// `Mutex` keeps the writer `Sync` as `ProtocolWriter` requires; a stream is single-threaded at any
 /// instant, so lock contention never happens in practice. Lock poisoning degrades to a no-op /
 /// `false` rather than panicking on the request path — mirrors `CohereWriter`'s identical guard

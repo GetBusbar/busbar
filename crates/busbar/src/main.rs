@@ -704,7 +704,7 @@ fn main() {
     // `TOKIO_WORKER_THREADS`; 1.4.0 builds the runtime explicitly and would otherwise fall through to
     // all-cores on a `0`/garbage value — a silent footprint surprise. An UNSET var is not warned (it is
     // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
-    // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
+    // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
     // 1.5.3: `advanced.worker_threads` in config.yaml is the home for this knob. `BUSBAR_WORKER_THREADS`
@@ -784,9 +784,9 @@ async fn run() {
     }
 
     // The OTLP trace sink — 1.5.3: no longer an `observability:` block, but the `module: otlp`
-    // instance of the `export:` NAMED map (audit §3). Grabbed before `deploy` is borrowed by resolve.
+    // instance of the `export:` NAMED map. Grabbed before `deploy` is borrowed by resolve.
     let otlp_cfg = config::resolve_export(&deploy.export, &mut Vec::new()).otlp;
-    // task #139: the `advanced.response_headers:` toggles (BOTH default false), read here — same
+    // The `advanced.response_headers:` toggles (BOTH default false), read here — same
     // BOOT-ONCE spot as `otlp_cfg` above, for the same reason: `server_timing` is baked into
     // router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
@@ -1362,7 +1362,7 @@ fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
 }
 
 /// Always-installed OUTERMOST-ISH middleware: bumps the jemalloc idle-purge activity ticker (see
-/// `spawn_jemalloc_idle_purge_fallback`) on every request. Split out of `server_timing` (task #139)
+/// `spawn_jemalloc_idle_purge_fallback`) on every request. Split out of `server_timing`
 /// so the ticker keeps incrementing regardless of whether `advanced.response_headers.server_timing`
 /// is enabled — the `server_timing` layer itself is now COMPOSED OUT of the stack entirely when
 /// disabled (see `apply_common_layers`), so this is the one piece of its old unconditional behavior
@@ -2071,7 +2071,7 @@ pub(crate) fn plugins_preflight(
         }
     }
 
-    // 7. PLUGIN HTTP ROUTE COLLISION CHECK (design §5.5) — MANIFEST-LEVEL, nothing dlopened. Walk every
+    // 7. PLUGIN HTTP ROUTE COLLISION CHECK — MANIFEST-LEVEL, nothing dlopened. Walk every
     // loadable export/hook plugin's DECLARED routes in the SAME deterministic scan order the registry
     // produced, namespace-confine each, and fail LOUD naming the owning plugin on the first
     // {path, method} collision — e.g. `plugin "datadog" cannot register GET /metrics — already
@@ -2281,7 +2281,7 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
 /// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
 /// take no module-level config), when no loadable plugin is named or aliased by it, or when the
 /// resolved plugin is not `kind: secret`. Shared by `build_secret_resolver` (boot) and the
-/// `--validate` pre-flight so both apply the identical policy (audit MEDIUM: a mistyped/aliased
+/// `--validate` pre-flight so both apply the identical policy (a mistyped/aliased
 /// `secrets:` key must never silently open a plugin with `{}`).
 fn validate_secret_module(
     registry: &busbar_plugin_loader::PluginRegistry,
@@ -2450,7 +2450,7 @@ fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
 ) -> Result<config::secret::SecretResolver, String> {
-    // MODULE-LEVEL config delivery for `kind: secret` plugins (audit MEDIUM): resolve each configured
+    // MODULE-LEVEL config delivery for `kind: secret` plugins: resolve each configured
     // `secrets.<module>.settings` ONCE at boot and hand it to the plugin's `open()`, exactly as
     // `store.settings` configures the store plugin. Without this a secret plugin's `open()` always
     // received `{}`, so a Vault-style plugin's address/namespace/token/CA had to be repeated in EVERY
@@ -2462,8 +2462,8 @@ fn build_secret_resolver(
     // that would be a bootstrap cycle — so `{ token: { env: VAULT_TOKEN } }` resolves but
     // `{ token: { module: some-other-secret-plugin } }` is a fail-closed error.
     let builtins = config::secret::SecretResolver::builtins_only();
-    // Key the open-config map by the plugin's CANONICAL name, not by the literal `secrets:` block key
-    // (audit MEDIUM): a `SecretRef` may name the plugin by EITHER its canonical name or its alias, and
+    // Key the open-config map by the plugin's CANONICAL name, not by the literal `secrets:` block
+    // key: a `SecretRef` may name the plugin by EITHER its canonical name or its alias, and
     // the registry resolves both — but a bare string-equality lookup on the block key would MISS the
     // other spelling and silently open the plugin with `{}` (dropping the operator's configured
     // address/token/CA). Canonicalize the block key through the SAME by_name/by_alias resolution the
@@ -2881,8 +2881,8 @@ pub(crate) fn build_app_from_config(
         // identically: the allow-override set is the SAME union config_validate builds (this provider's
         // `allow_metadata_hosts` ∪ the global `security.allow_metadata_hosts`), plus the nuclear
         // `allow_all_metadata` and the operator's extra `blocked_metadata_hosts`. Threading it into
-        // jwt-bearer too (1.4.0 audit) means a global `blocked_metadata_hosts` deny is enforced on a jwt
-        // `token_uri`, and `allow_all_metadata` uniformly disables the guard for both. (1.4.0 audit.)
+        // jwt-bearer too means a global `blocked_metadata_hosts` deny is enforced on a jwt
+        // `token_uri`, and `allow_all_metadata` uniformly disables the guard for both.
         let allow_overrides: Vec<String> = provider_cfg
             .allow_metadata_hosts
             .iter()
@@ -3024,7 +3024,7 @@ pub(crate) fn build_app_from_config(
         crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
             .map_err(|e| format!("admin auth chain construction failed: {e}"))?,
     );
-    // HOSTED-LOGIN methods (1.5.2 Step 6): resolve every `auth.methods:` entry as a login-capable
+    // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
     // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
     // — aborts the build rather than surfacing a 500 at request time.
@@ -3235,7 +3235,7 @@ pub(crate) fn build_app_from_config(
             pool_name.clone(),
             state::PoolRuntime {
                 failover: pool_cfg.failover.clone(),
-                // 1.5.3 (audit §4): the pool's own `upstream_credentials:` OVERRIDES the all-pools
+                // 1.5.3: the pool's own `upstream_credentials:` OVERRIDES the all-pools
                 // `pools.upstream_credentials:` default; `None` inherits it.
                 upstream_credentials: pool_cfg.upstream_credentials,
                 affinity: pool_cfg.affinity.clone(),
@@ -3511,8 +3511,7 @@ pub(crate) fn build_app_from_config(
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
-    // ready to run. It is NOT invoked here, though (HIGH-7 fixed this build's own build-vs-mutate
-    // ordering; round-8 fixes a second, OUTER one): `GovState` is a process-lifetime `Arc` shared
+    // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
     // with the OLD `App` that is still serving, so invoking it now would mutate the live engine's
     // credentials even though the candidate `App` returned below is only a CANDIDATE — the admin
     // transaction wrapping this call (`txn.rs`) still has a fallible PERSIST step to run, and on a
@@ -3549,7 +3548,7 @@ pub(crate) fn build_app_from_config(
         _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
     };
 
-    // Plugin HTTP routes (design §5): the BUILT-IN exporters (`crate::export`) declare their routes
+    // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
     // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
     // configured. Rebuilt on every config apply. A collision (a future loaded export/hook plugin
     // claiming a built-in's path) is a LOUD build failure naming the owner, never last-writer-wins.
@@ -3558,7 +3557,7 @@ pub(crate) fn build_app_from_config(
     // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING `export.prometheus`
     // takes effect immediately (`plugin_route_dispatch` resolves the owner from the current snapshot
     // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
-    // paths the router actually has, so a config mutation can SAY so (audit finding E1) instead of
+    // paths the router actually has, so a config mutation can SAY so instead of
     // reporting success for a route that will keep 404ing.
     let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
         crate::export::route_decls(&cfg_export),
@@ -3573,7 +3572,7 @@ pub(crate) fn build_app_from_config(
     );
 
     let app = App {
-        // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`, audit §4).
+        // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
@@ -3656,7 +3655,7 @@ pub(crate) fn build_app_from_config(
             let b = cfg.limits.reasoning_effort_budgets;
             [b.minimal, b.low, b.medium, b.high]
         },
-        // Where `auth.key_ttl` (Step 1) is finally READ: the self-serve mint's token lifetime.
+        // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg
             .auth
@@ -3751,7 +3750,7 @@ fn base_data_router(
     // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
     // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
     // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
-    // stale (design §7.1). The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
+    // stale. The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
     // when the recorder is installed (`metrics::enabled()`), reserved against plugin claims.
     let router = if metrics::enabled() {
         // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
@@ -3777,7 +3776,7 @@ fn base_data_router(
         .route("/v1beta/models", get(endpoints::list_models_v1beta))
         .route("/{name}/v1/messages", post(ingress::named))
         .route("/{provider}/{model}/v1/messages", post(ingress::adhoc));
-    // PLUGIN HTTP ROUTES (design §5): the collision-checked, namespace-confined `none`/`key`-auth
+    // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
     // route wired after it would never match. The admin-auth routes are mounted on the admin listener
@@ -3825,7 +3824,7 @@ fn apply_common_layers(
     // Always installed (cheap: one relaxed atomic add, no allocation) — the jemalloc idle-purge
     // activity ticker must keep incrementing whether or not `server_timing` below is installed.
     let router = router.layer(axum::middleware::from_fn(request_activity_tick));
-    // Outermost, and COMPOSED IN ONLY WHEN ENABLED (task #139's speed fix): the pre-#139 version
+    // Outermost, and COMPOSED IN ONLY WHEN ENABLED, for speed: an earlier version
     // installed this layer UNCONDITIONALLY and gated only the response header with a runtime `if`
     // inside `server_timing`, so every request paid an `Arc<AtomicU64>` allocation, an
     // `Instant::now()`, and a task-local `.scope()` even with the header suppressed. Gated on

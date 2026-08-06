@@ -29,7 +29,7 @@ pub(crate) struct StreamTranslate {
     /// (Bedrock has no `[DONE]`), so `finish()` stays empty. See `docs/architecture.md`.
     pub(super) ingress_eventstream: bool,
     /// Wall-clock instant the first byte was fed, used to report a real `metrics.latencyMs` on a
-    /// Bedrock-INGRESS `metadata` frame (finding: a native ConverseStream reports actual latency; a
+    /// Bedrock-INGRESS `metadata` frame (a native ConverseStream reports actual latency; a
     /// hard-coded `0` was a detectable tell). Set lazily on the first `feed`. `None` until then (and
     /// for non-Bedrock ingress, where it is never read).
     started_at: Option<std::time::Instant>,
@@ -187,7 +187,7 @@ impl StreamTranslate {
     }
 
     /// Record whether the ORIGINAL client request opted into streaming usage
-    /// (`stream_options.include_usage == true`), forwarding it to the ingress framing (Findings 2+3).
+    /// (`stream_options.include_usage == true`), forwarding it to the ingress framing.
     /// Only the OpenAI-ingress framing acts on it (its `include_usage` un-fold/strip); every other
     /// ingress framing ignores it. Called by the engine after it captures the client's intent from the
     /// request body and before the first frame is fed.
@@ -381,7 +381,7 @@ impl StreamTranslate {
                             // message_delta): keep the FIRST terminal's captured usage and merge any this
                             // one carries (non-zero fields only), instead of overwriting the whole tuple —
                             // a duplicate with empty usage would otherwise drop the real, client-visible
-                            // terminal usage. (found: 1.4.0 audit, streaming-billing.)
+                            // terminal usage. (found: 1.4.0, streaming-billing.)
                             Some((_, _, acc)) => merge_trailing_usage(acc, usage),
                             None => {
                                 self.pending_terminal =
@@ -719,7 +719,7 @@ impl StreamTranslate {
         // skip (avoid rescanning the already-searched prefix of a frame split across many feeds) apply
         // only ABOVE that floor, so `feed()` stays linear without looping.
         let mut consumed = 0usize;
-        // SAME-PROTOCOL verbatim re-emit cursor (R3-A-b): the start of the not-yet-flushed verbatim
+        // SAME-PROTOCOL verbatim re-emit cursor: the start of the not-yet-flushed verbatim
         // region. It splits on a SUPPRESSED frame (the OpenAI opted-out trailing usage chunk) and
         // also on a STRIPPED frame — and for an opted-out OpenAI same-proto stream the strip fires
         // on EVERY content frame carrying `usage` (a real OpenAI upstream stamps `"usage":null` on
@@ -784,7 +784,7 @@ impl StreamTranslate {
                         // `[DONE]`, and the exact `event:`/`data:` line shape and terminator) reaches
                         // the client byte-for-byte unchanged, and the writer/reframe work is skipped.
                         self.extract_usage_only(&event_type, &data);
-                        // R3-A-b: on the verbatim path `on_egress_chunk` never runs, so an opted-out
+                        // On the verbatim path `on_egress_chunk` never runs, so an opted-out
                         // OpenAI client would still receive the unsolicited trailing usage chunk busbar
                         // forced upstream. The framing decides per-frame whether to DROP it - flush the
                         // verbatim run up to this frame's start, then skip the frame (its usage was
@@ -1088,7 +1088,7 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
 mod rewrite_frame_strip_usage_tests {
     use super::rewrite_frame_strip_usage;
 
-    /// FIX 2 (byte-stripper fallback indistinguishability): when the fast byte-splice path declines and
+    /// Byte-stripper fallback indistinguishability: when the fast byte-splice path declines and
     /// the fallback is taken (here forced by a `data_str` that is NOT a verbatim substring of the raw
     /// frame, mirroring a multi-`data:`-line frame), the reframed frame must NOT introduce a wire-shape
     /// tell: JSON key ORDER is preserved and the ORIGINAL CRLF terminator is preserved. Only the
@@ -1177,7 +1177,7 @@ mod merge_trailing_usage_tests {
         }
     }
 
-    // 1.4.0 audit (streaming-billing): the terminal-usage fold merges a trailing usage-only chunk into
+    // 1.4.0 (streaming-billing): the terminal-usage fold merges a trailing usage-only chunk into
     // the deferred terminal delta. A non-zero/Some trailing field OVERRIDES; a zero/None trailing field
     // LEAVES the accumulator intact so a protocol that already carried usage on its terminal delta is
     // never clobbered by an absent trailing chunk. (Billing reads the merged accumulator.)

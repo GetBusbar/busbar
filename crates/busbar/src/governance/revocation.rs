@@ -318,7 +318,7 @@ mod tests {
         }
     }
 
-    /// THE CLASS TEST.
+    /// THE PROPERTY UNDER TEST.
     ///
     /// The property is not "the denylist is eventually correct" — that held on the broken version
     /// too. The property is **the async runtime keeps running while the store does not answer**.
@@ -327,9 +327,9 @@ mod tests {
     /// else in the process can be scheduled — not another request, not `/healthz` (which is exempt
     /// from the auth chain but still needs a worker to be polled at all), not the admin plane.
     ///
-    /// RED (inline `self.store.list_denylist()` on the auth path): the probe task below is never
-    /// scheduled and the `timeout` elapses.
-    /// GREEN (read scheduled onto the blocking pool): the worker is free and the probe completes.
+    /// With the read performed inline (`self.store.list_denylist()` on the auth path) the probe
+    /// task below is never scheduled and the `timeout` elapses; with the read scheduled onto the
+    /// blocking pool the worker stays free and the probe completes.
     #[test]
     fn a_hung_store_does_not_park_the_reactor() {
         let (tx, entered) = mpsc::channel();
@@ -404,9 +404,9 @@ mod tests {
     /// read, so a store that never once succeeded still looked freshly synced every window: the
     /// denylist could stay stale for the life of the process while every window "succeeded".
     ///
-    /// RED (single stamp advanced before the read): `synced_at` jumps to the attempt time.
-    /// GREEN: `synced_at` is untouched by failure, and the failure is still rate-limited to one
-    /// attempt per window.
+    /// With a single stamp advanced before the read, `synced_at` jumps to the attempt time; here
+    /// `synced_at` is untouched by failure, and the failure is still rate-limited to one attempt
+    /// per window.
     #[test]
     fn a_failed_read_does_not_close_the_staleness_window() {
         let calls = Arc::new(AtomicUsize::new(0));

@@ -155,14 +155,13 @@ mod tests {
         assert!(open(r#"{ "token": "t", "id": "a" }"#).is_ok());
     }
 
-    /// class-13/14 F11: `authenticate` must compare the caller's credential to configured secret
-    /// material under a DIGEST (`busbar_api::sha256_hex`), never raw-vs-raw — mirroring
-    /// `auth-admin-tokens`, the template this plugin is meant to copy correctly. This is a
-    /// REGRESSION PROOF OF STRUCTURE, not a RED test for a timing leak (a timing leak cannot be
-    /// asserted in a unit test): it constructs the module directly (same-module private-field access)
-    /// and asserts its stored comparison material is `sha256_hex("sekret")` exactly, a 64-hex-char
-    /// digest — which fails while the field holds the raw string `"sekret"` and passes once `open`
-    /// hashes it. Behaviorally, matching and non-matching credentials of any length still resolve to
+    /// `authenticate` must compare the caller's credential to configured secret material under a
+    /// DIGEST (`busbar_api::sha256_hex`), never raw-vs-raw — mirroring `auth-admin-tokens`, the
+    /// template this plugin follows. A timing leak cannot be asserted directly in a unit test, so
+    /// this is a STRUCTURAL guard: it constructs the module directly (same-module private-field
+    /// access) and asserts its stored comparison material is `sha256_hex("sekret")` exactly, a
+    /// 64-hex-char digest, which a raw-string field could never satisfy.
+    /// Behaviorally, matching and non-matching credentials of any length still resolve to
     /// `Identify`/`Pass` exactly as before — hashing changes nothing observable about the auth
     /// outcome, only removes the raw comparison's length oracle.
     #[test]

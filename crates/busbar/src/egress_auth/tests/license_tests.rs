@@ -1,8 +1,8 @@
 use std::path::Path;
 
-/// M2: every first-party `.rs` file that declares an SPDX license MUST declare `Apache-2.0`.
-/// cargo-deny only checks crate-level `Cargo.toml`, so a stray file header (the three new OAuth
-/// files shipped as `AGPL-3.0-or-later`) would go undetected — this meta-test catches it. Files
+/// Every first-party `.rs` file that declares an SPDX license MUST declare `Apache-2.0`.
+/// cargo-deny only checks crate-level `Cargo.toml`, so a stray file header would go undetected —
+/// this meta-test catches it. Files
 /// with no SPDX line are ignored (headers are not mandatory); a WRONG one is a hard fail.
 fn scan(dir: &Path, offenders: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

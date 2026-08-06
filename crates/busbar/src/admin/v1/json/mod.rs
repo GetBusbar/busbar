@@ -76,7 +76,7 @@ impl AdminTransport for JsonV1 {
             // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
             // the admin surface mirrors the config grammar and a future section is additive.
             .merge(named_map::routes())
-            // Groups — the `groups:` limit-tree CRUD (Phase 1, task #100): runtime-mutable groups
+            // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))
             .route(
@@ -385,7 +385,7 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
 fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {
     match expected {
         // RETRYABLE: re-read the resource (fresh ETag) and retry — its own frozen code, split
-        // from terminal `conflict` (external review R3).
+        // from terminal `conflict` (R3).
         Some(v) if v != current => Some(AdminError::VersionConflict(format!(
             "If-Match version {v} is stale (current is {current})"
         ))),

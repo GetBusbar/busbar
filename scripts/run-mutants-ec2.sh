@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Run cargo-mutants for busbarAI core on ONE big EC2 box and bring the report home. Mirrors
-# ~/Developer/busbarAI/benchmarking/run-mutants-ec2.sh (same rationale: mutation testing is
-# embarrassingly parallel and stateless, so a big short-lived box beats pinning a laptop hard
-# enough to reboot it) but targets THIS repo (GetBusbar/busbar) instead of benchmarking/engine.
+# Run cargo-mutants for busbar core on ONE big EC2 box and bring the report home. Mutation testing
+# is embarrassingly parallel and stateless, so a big short-lived box beats pinning a laptop hard
+# enough to reboot it.
 #
-# Matthew runs several of these concurrently for different repos/crates — the instance Name tag
-# below is deliberately specific (not a generic "mutants" name) so `aws ec2 describe-instances`
-# stays legible with multiple boxes up at once. Pass MUTANT_LABEL to make it even more specific
-# (e.g. "round8-11-fixes").
+# The instance Name tag below is deliberately specific (not a generic "mutants" name) so
+# `aws ec2 describe-instances` stays legible when several boxes are up at once. Pass MUTANT_LABEL
+# to make it more specific still.
 #
 # The box is terminated on every exit path, including failure and Ctrl-C.
 set -uo pipefail
@@ -28,9 +26,9 @@ NAME_TAG="mutants-busbarai-core-${LABEL}"
 SSM="/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
 SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -i $KEYFILE"
 OUT="$HERE/mutants-report/${LABEL}"
-# Scope: a glob/path list passed to `cargo mutants --file`. Whole-workspace is not viable (the
-# sibling benchmarking run clocked 2,318 mutants x ~60s at 38h serial for a SMALLER crate) —
-# always scope to the files a fix round actually touched. Space-separated globs, e.g.:
+# Scope: a glob/path list passed to `cargo mutants --file`. Whole-workspace is not viable (a smaller
+# crate alone clocked 2,318 mutants x ~60s, 38h serial) — always scope to the files the change
+# actually touched. Space-separated globs, e.g.:
 #   MUTANT_FILES="crates/busbar/src/admin/v1/service.rs crates/busbar/src/governance/*.rs" ./scripts/run-mutants-ec2.sh
 FILES="${MUTANT_FILES:-}"
 SKIP_TESTS="${MUTANT_SKIP_TESTS:-declared_error_set_is_exactly_what_the_handlers_emit}"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Response-header lint (task #139) — durable CI guard for the busbar response-header consolidation.
+# Response-header lint — durable CI guard for the busbar response-header consolidation.
 #
 # WHAT THIS GUARDS AGAINST:
 #   Every response header BUSBAR ITSELF INJECTS (as opposed to one it relays/translates from an
@@ -20,9 +20,9 @@
 #   shipping unconditionally-on (or, worse, ungated and unconditionally on).
 #
 # WHAT IT SCANS: every literal Rust source pattern that WRITES one of these headers onto a response —
-# the response-header equivalent of structure-lint.sh's choke-point registry, but standalone (per the
-# task's ask for a dedicated `scripts/response-header-lint.sh`, mirroring how `release-script-lint.sh`
-# is its own small, single-purpose sibling next to the bigger `structure-lint.sh`).
+# the response-header equivalent of structure-lint.sh's choke-point registry, but standalone,
+# mirroring how `release-script-lint.sh` is its own small, single-purpose sibling next to the bigger
+# `structure-lint.sh`.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches a real bypass before its verdict on
@@ -244,7 +244,7 @@ GREEN
 
 if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 
-hdr "response-header consolidation (task #139): every busbar-injected header has ONE gated site"
+hdr "response-header consolidation: every busbar-injected header has ONE gated site"
 run_checks
 
 hdr "result"

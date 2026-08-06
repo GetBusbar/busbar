@@ -7,7 +7,7 @@ pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
 
 /// `GET /api/v1/admin/pools` — pool topology read. `?detail=true` inlines each member's LIVE status
 /// (same row shape as `GET /pools/{name}`) so a dashboard reads the whole topology-with-health in
-/// ONE call instead of an M+1 fan-out (audit #7).
+/// ONE call instead of an M+1 fan-out.
 pub(crate) async fn list_pools(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -217,10 +217,10 @@ pub(crate) async fn install_plugin(
     }
 }
 
-/// `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question
-/// #7 — "same request body shape as `POST /plugins`") — `file` is accepted for shape parity with
-/// the install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect
-/// never writes anything to disk, so there is no filename to bind an install would need.
+/// `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] — `file`
+/// is accepted for shape parity with the install flow a UI composes around the same upload, but is
+/// otherwise UNUSED here: inspect never writes anything to disk, so there is no filename to bind
+/// an install would need.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InspectPluginReq {
@@ -230,7 +230,7 @@ pub(crate) struct InspectPluginReq {
 }
 
 /// `POST /api/v1/admin/plugins/inspect` — a STATELESS, `read-only`-scope PREVIEW of a candidate
-/// plugin tarball (plugin-settings-schema-SPEC.md checklist item 4, question #7): verifies the
+/// plugin tarball: verifies the
 /// tarball's signature, parses its manifest, and returns the SAME response shape `GET
 /// /plugins/{name}/schema` carries. NEVER installs (no write to `plugins.dir`), NEVER
 /// conflict-checks against the installed set. See [`AdminService::inspect_plugin`] for the
@@ -336,7 +336,7 @@ pub(crate) async fn reload_plugins(
             // A projection hiccup is reported but never rolls the swap back, exactly as before.
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
             // LIVE-only (no-op persist): the swap itself is the commit. `commit_then` defers the
-            // rotation firing to AFTER `commit_and_swap` returns `Ok` — round-8, see
+            // rotation firing to AFTER `commit_and_swap` returns `Ok` — see
             // `build_app_from_config`'s doc comment — even though today that's immediate (persist
             // never fails here), routing every site through the SAME mechanism means a future
             // persist step added to this handler can't silently reintroduce the bug.
@@ -519,7 +519,7 @@ pub(crate) async fn rollback_plugin(
             let installed = Arc::new(next);
             // The pin is already durable (persisted above, before the rebuild), so the commit step
             // carries a no-op persist — the swap is the only thing left. `commit_then` still defers
-            // the rotation to AFTER `commit_and_swap` returns `Ok` (round-8, see
+            // the rotation to AFTER `commit_and_swap` returns `Ok` (see
             // `build_app_from_config`'s doc comment) — the SAME mechanism every rotation-possible
             // site uses, not a hand-rolled "already persisted so it's fine" special case.
             Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
@@ -1122,8 +1122,7 @@ pub(crate) fn persist_provisioned_group(
 /// changes nothing. `201` when the name is NEW, `200` on replace (upsert). `409` for a base-config
 /// group (edit config.yaml; the API cannot silently shadow file config) or a stale `If-Match`.
 /// Live immediately (limits rebuilt into the cost model, swapped in); persisted to the overlay so it
-/// survives restart. Full scope (the `/groups` mutation fallthrough); the narrow delegated
-/// `group-admin` scope for the self-service tool lands in Phase 2.
+/// survives restart. Full scope (the `/groups` mutation fallthrough).
 pub(crate) async fn register_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -1645,7 +1644,7 @@ pub(crate) async fn reset_overlay_section(
             let version = installed.config_version;
             // `commit_then` (not `commit`): the credential rotation (if any) must fire only once
             // `commit_and_swap` has returned `Ok` — persist AND swap both done — not merely once the
-            // persist closure below has returned `Ok`. round-8: see `build_app_from_config`'s doc
+            // persist closure below has returned `Ok`. See `build_app_from_config`'s doc
             // comment. Same mechanism every rotation-possible site uses (`reload_config`,
             // `reload_plugins`, `plugin/rollback`, here, and `put_config_settings`), so a future
             // change to any one site's persist step cannot silently reintroduce the bug.
@@ -1739,8 +1738,8 @@ fn merge_group_patch(
 
 /// Record a config-version entry for a GROUP mutation. The `VersionLog` snapshot payload is the
 /// hook surface (its rollback scope today); a group change still bumps `config_version` and lands an
-/// audited, timestamped version row (so `GET /config/versions` shows the event honestly). Extending
-/// the snapshot + `config/rollback` to restore groups is a tracked follow-up (task #100).
+/// audited, timestamped version row (so `GET /config/versions` shows the event honestly). The
+/// snapshot does not yet carry groups, so `config/rollback` cannot restore them.
 fn record_group_version(installed: &Arc<crate::state::App>, actor: &str, summary: &str) {
     installed.versions.record(
         installed.config_version,
@@ -2237,8 +2236,8 @@ pub(crate) async fn flush_credential_cache(
 /// limiters, health by stable identity). The shared core of `config/reload` AND `plugins/reload`: both
 /// re-run the exact fail-closed boot pipeline (which re-scans the plugins dir into a NEW registry and
 /// re-opens every hook transport), differing only in what they report. Returns the built `App` (the
-/// caller wraps it in `Arc` and swaps) plus any UNAPPLIED governance-credential rotation (round-8:
-/// the caller must fire it only once its own transaction has actually committed — see
+/// caller wraps it in `Arc` and swaps) plus any UNAPPLIED governance-credential rotation (the
+/// caller must fire it only once its own transaction has actually committed — see
 /// `build_app_from_config`'s doc comment), or a human-readable error (any failure changes nothing —
 /// fail-closed, the old snapshot keeps serving). Requires disk config paths (ephemeral mode has no
 /// disk truth to read).
@@ -2276,7 +2275,7 @@ pub(crate) fn rebuild_app_from_disk(
     if let Some(doc) = loaded.overlay_doc {
         crate::config::overlay::merge_into(&mut cfg, doc);
     }
-    // `build_app_from_config` hands back any governance-credential rotation UNAPPLIED (round-8: it
+    // `build_app_from_config` hands back any governance-credential rotation UNAPPLIED (it
     // must not mutate the shared, process-lifetime `GovState` until the caller's own transaction is
     // known to have SUCCEEDED — see its doc comment). This wrapper does NOT fire it: it hands the
     // closure straight through to ITS OWN caller, which is the ONE place — `config_transaction`'s
@@ -2310,8 +2309,8 @@ pub(crate) async fn reload_config(
                 rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
-            // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — round-8,
-            // see `build_app_from_config`'s doc comment. Same mechanism as every other site with a
+            // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — see
+            // `build_app_from_config`'s doc comment. Same mechanism as every other site with a
             // possible rotation, not a hand-rolled "safe because persist is a no-op" special case.
             Ok(Outcome::commit_then(
                 installed.clone(),
@@ -2545,7 +2544,7 @@ pub(crate) async fn apply_config(
             let installed = Arc::new(next);
             // LIVE-only (the response `note` says so): an applied config is not written to disk.
             // `commit_then` still defers the rotation to AFTER `commit_and_swap` returns `Ok` —
-            // round-8, see `build_app_from_config`'s doc comment — the SAME mechanism every
+            // see `build_app_from_config`'s doc comment — the SAME mechanism every
             // rotation-possible site uses, not a hand-rolled "safe because persist is a no-op"
             // special case that a future added persist step could silently defeat.
             Ok(Outcome::commit_then(
@@ -2742,11 +2741,11 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             "limits.max_inbound_concurrent",
         );
     }
-    // 1.5.3: the `observability:` block IS DELETED (audit §3), so there is nothing to flag for it
+    // 1.5.3: the `observability:` block IS DELETED, so there is nothing to flag for it
     // here. Its last field (`otlp_url`) is now the `module: otlp` `export:` instance, and the whole
     // `export:` block is outside the single-value settings overlay — edited in config.yaml and
     // applied via plugin reload, like every other exporter.
-    // `advanced.response_headers` (task #139) is boot-frozen — moved out of `observability` (it used
+    // `advanced.response_headers` is boot-frozen — moved out of `observability` (it used
     // to be `observability.emit_server_timing`, one of the three fields flagged just above) into its
     // own block alongside the brand-new `route_policy` toggle, which shares the SAME "captured once
     // at boot" freezing as `observability.otlp_url` did: `response_headers.server_timing` is baked into
@@ -3021,7 +3020,7 @@ pub(crate) async fn put_config_settings(
             let to_persist = merged.clone();
             // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
             // fully returned `Ok` (persist AND swap), keeping "nothing was changed" on a persist
-            // failure true for the shared, process-lifetime `GovState` too — round-8, see
+            // failure true for the shared, process-lifetime `GovState` too — see
             // `build_app_from_config`'s doc comment. Same mechanism as every other rotation-possible
             // site.
             Ok(Outcome::commit_then(
@@ -3257,8 +3256,7 @@ pub(crate) async fn patch_hook_settings(
 /// manifest via `hook_env.registry` — no `dlopen`, no instance, works even for a plugin that has
 /// never been loaded. `{"schema": null}` when the resolved manifest carries no schema (an older
 /// plugin packed before this field existed) or the plugin/hook can't be resolved at all is instead
-/// a `404` (distinct from "resolved but schema-less"). See
-/// `busbarAI-private/design/plugin-settings-schema-SPEC.md`.
+/// a `404` (distinct from "resolved but schema-less").
 pub(crate) async fn plugin_schema(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -3266,7 +3264,7 @@ pub(crate) async fn plugin_schema(
     let current = handle.load();
     // Hooks keep the live describe-proxy behavior unchanged when `describe` actually answers
     // (source: "describe") — but a loaded hook that answers `schema: null` is NOT evidence the
-    // plugin has no real settings shape (question #3's "arm 3"): the handler falls back to the
+    // plugin has no real settings shape: the handler falls back to the
     // manifest baseline server-side and reports `source: "manifest"` in that case, so busbar-ui
     // never has to implement the describe/manifest precedence rule itself. `source` reports which
     // path the response ACTUALLY came from, not merely which branch (loaded vs. not) was checked
@@ -3287,10 +3285,10 @@ pub(crate) async fn plugin_schema(
         let trust = loadable
             .map(|p| verdict_trust(&p.verdict))
             .unwrap_or("unverified");
-        // `kind`/`restart_required_default` (plugin-settings-schema-SPEC.md question #14): the
-        // kind-derived restart-scoping default, so busbar-ui does not have to hardcode the
-        // kind->default table itself. `None` when the plugin cannot even be resolved to a
-        // manifest — same posture `trust: "unverified"` already takes for the identical case.
+        // `kind`/`restart_required_default`: the kind-derived restart-scoping default, so
+        // busbar-ui does not have to hardcode the kind->default table itself. `None` when the
+        // plugin cannot even be resolved to a manifest — same posture `trust: "unverified"`
+        // already takes for the identical case.
         let kind = loadable.map(|p| p.manifest.kind.clone());
         let restart_required_default = kind
             .as_deref()
@@ -3480,7 +3478,7 @@ pub(crate) async fn hook_status(
             // the list is empty rather than absent.
             "drift_keys": [],
             // `metrics` is INVARIANTLY an array — `[]` here (not `{}`) so a strict consumer decoding
-            // it as an array never has to special-case the no-status branch (busbar-ui review R5).
+            // it as an array never has to special-case the no-status branch (R5).
             "metrics": [],
             "as_of": as_of,
             "source": "live",
@@ -4470,8 +4468,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     /// type's `Default` — `POST /restart` (see its doc comment: "Absent is the same as `{}`"). Every
     /// OTHER body-taking endpoint's handler requires the body, so `body!`/`body_raw!` stay
     /// `"required": true`; this macro exists so a future genuinely-optional body has somewhere to go
-    /// without re-auditing every other call site's handler (an out-of-scope pass — see the class-13/14
-    /// design's open question).
+    /// without re-checking every other call site's handler.
     macro_rules! body_optional {
         ($rel:expr, $method:literal, $t:ty) => {{
             let schema = req_gen.subschema_for::<$t>();

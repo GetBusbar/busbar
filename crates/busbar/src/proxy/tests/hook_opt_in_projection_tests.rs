@@ -114,7 +114,7 @@ fn prompt_projection_reads_gemini_contents() {
         vec![
             ("user".into(), "hello".into()),
             // Gemini-native `model` is CANONICALIZED to `assistant` for the hook's IR view
-            // (audit c1r14) — the hook sees the same vocabulary on every dialect.
+            // The hook sees the same vocabulary on every dialect.
             ("assistant".into(), "part one\npart two".into()),
         ] as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
     );
@@ -377,7 +377,7 @@ fn prompt_projection_marks_bedrock_redacted_content() {
     assert!(!p.messages[0].1.contains("OPAQUE_CIPHERTEXT_BYTES"));
 }
 
-/// Follow-up bypass (Bug A): a Responses `reasoning` item admitted by the reader on its opaque
+/// Follow-up bypass: a Responses `reasoning` item admitted by the reader on its opaque
 /// `encrypted_content` blob ALONE (no `content`/`summary` text at all — no `content` key present)
 /// must project the redacted marker, not silently read as "nothing here". Before the fix,
 /// `read_reasoning_text` returned `""` for this shape and `block_text`'s Responses arm collapsed
@@ -398,14 +398,14 @@ fn prompt_projection_marks_responses_encrypted_content_only_reasoning() {
     assert!(!p.messages[0].1.contains("OPAQUE_BLOB_XYZ"));
 }
 
-/// THE MOST IMPORTANT regression test (Bug B): the SAME encrypted-content-only reasoning item, but
+/// The load-bearing regression test: the SAME encrypted-content-only reasoning item, but
 /// with `"content": []` explicitly PRESENT (an empty array, not absent). Before the fix, both
 /// `total_text_chars` and `build_prompt_projection` dispatched on `m.get("content")`'s SHAPE
 /// first — `Some(Value::Array([]))` took the array-walk branch (zero blocks, contributes nothing)
 /// and never called `block_text` on the item root at all, so the item was invisible to BOTH
 /// callers even after `block_text`'s reasoning arm itself learned to recognize
-/// `encrypted_content` (Bug A). This exercises the CALLER dispatch, not `block_text` in isolation,
-/// which is exactly the level Bug B lived at.
+/// `encrypted_content`. This exercises the CALLER dispatch, not `block_text` in isolation, which is
+/// exactly the level the bypass lived at.
 #[test]
 fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content_array() {
     let v: Value = serde_json::json!({
@@ -552,7 +552,7 @@ fn prompt_projection_mixed_text_and_thinking_turn_joins_both() {
     assert_eq!(p.messages[0].1.as_ref(), "visible answer\nSMUGGLED");
 }
 
-/// Regression guard, NOT a RED test (passes before and after this fix): Gemini's thought part
+/// Regression guard (holds both before and after the fix): Gemini's thought part
 /// already carries a real `text` field (`{text, thought:true, thoughtSignature}`), so the
 /// dialect-dispatch reordering in `block_text` must not break it.
 #[test]
@@ -747,8 +747,7 @@ fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
     }
 }
 
-/// REQUIRED (not optional — the `prompt: rw` behavior change this fix carries needs a test, not
-/// just a CHANGELOG line): `apply_rewrite_to_body` is NOT index-aligned, so a `prompt: rw` hook
+/// `apply_rewrite_to_body` is NOT index-aligned, so a `prompt: rw` hook
 /// that ECHOES the projection it received writes reasoning text — or, for a redacted turn, the
 /// non-content marker — into a REAL, visible content block that ships upstream. This is a
 /// pre-existing, out-of-scope-to-fix hazard (documented on `apply_rewrite_to_body` and on

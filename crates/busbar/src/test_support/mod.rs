@@ -729,7 +729,7 @@ pub(crate) struct TestApp {
     /// empty chain (admin-tokens-only, runs inline). A test that needs the OFFLOAD path populates
     /// this with a boxed test module and `has_plugin: true`.
     admin_modules: Option<crate::auth::AdminAuthChain>,
-    /// Resolved hosted-login methods (1.5.2 Step 6). `None` = empty (no hosted login). A test that
+    /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
@@ -804,7 +804,7 @@ impl TestApp {
     }
 
     /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.
-    /// The fixture for the restart-to-apply signal (audit finding E1) — a config apply that ADDS a
+    /// The fixture for the restart-to-apply signal — a config apply that ADDS a
     /// path the router never registered at boot.
     pub(crate) fn no_plugin_routes(mut self) -> Self {
         self.no_plugin_routes = true;
@@ -964,7 +964,7 @@ impl TestApp {
         self
     }
 
-    /// Inject a hosted-login method (1.5.2 Step 6) keyed by `name`. `module` is a login-capable auth
+    /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
     /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
     /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
     pub(crate) fn login_method(

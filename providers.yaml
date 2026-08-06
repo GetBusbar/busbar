@@ -406,7 +406,7 @@ nearai:
   error_map: {}
 
 
-# --- Added 2026-07-09 (wave 2): docs-verified against each provider's own API documentation --
+# --- Added 2026-07-09: verified against each provider's own API documentation ---
 
 # Evidence: doc-en.302.ai documents POST https://api.302.ai/v1/chat/completions, Bearer auth.
 302ai:

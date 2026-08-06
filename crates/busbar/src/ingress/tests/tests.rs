@@ -219,7 +219,7 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
         .unwrap_or(0)
 }
 
-/// fix 2a: the flat fee is charged ATOMICALLY at admission, and `finish` REFUNDS it on a non-2xx
+/// The flat fee is charged ATOMICALLY at admission, and `finish` REFUNDS it on a non-2xx
 /// outcome (so the net effect remains "bill 2xx only"). A 2xx `finish` keeps the charge; each
 /// non-2xx `finish` (503 / 5xx / 4xx) refunds exactly one flat fee. `finish_rejected` (governance
 /// rejection, never charged) refunds nothing.
@@ -291,7 +291,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     );
 }
 
-/// Regression for the R3 pre-routing spurious-refund bug: a request that fails BEFORE the
+/// Regression for the pre-routing spurious-refund bug: a request that fails BEFORE the
 /// admission charge (here a malformed JSON body) must route through `finish_rejected`, NOT
 /// `finish`. With the bug it went through `finish` (refund-on-non-2xx), and `refund_request`'s
 /// blind `UPDATE` decremented the spend/requests of a PRIOR, legitimately-charged request in the
@@ -364,7 +364,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
     );
 }
 
-// Regression for #29 (flat-fee side), updated for fix 2a: both the ATOMIC admission charge AND
+// Regression for #29 (flat-fee side): both the ATOMIC admission charge AND
 // the `finish` REFUND must use the window implied by the pinned `charged_at` (header-arrival)
 // epoch, NOT a fresh `store::now()`. With a `daily` key and a `charged_at` on a past day, the
 // charge lands in that day; a non-2xx finish refunds in that SAME day (net 0 there), and nothing
@@ -558,14 +558,11 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
     );
 }
 
-// REMOVED: `test_budget_store_error_respects_fail_mode_knob` (and its `ErrChargeStore` double).
-// The admission path (`try_charge_request_within_budget` → `charge_budget_mem`) is now an
-// infallible IN-MEMORY hard-cap check-and-charge: budget enforcement no longer round-trips the
-// store, so there is no admission-time store error for a fail-mode to consult. The whole
-// `budget_on_store_error` knob was therefore REMOVED (config field + enum + GovState plumbing) — its
-// guarantee ("hard cap even if the store errors") is now unconditional by construction, so the
-// behavior this test verified no longer exists. The write-behind flusher's own store-error handling
-// (re-mark dirty + retry) is covered by the governance flush tests.
+// There is no budget store-error fail-mode to test: the admission path
+// (`try_charge_request_within_budget` → `charge_budget_mem`) is an infallible IN-MEMORY hard-cap
+// check-and-charge, so budget enforcement never round-trips the store and the "hard cap even if the
+// store errors" guarantee holds by construction. The write-behind flusher's own store-error
+// handling (re-mark dirty + retry) is covered by the governance flush tests.
 
 // ---- universal-ingress routing tests (cohere/responses/gemini/bedrock) ----
 //
@@ -774,7 +771,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
         upstream.get("messages").is_some(),
         "non-stream gemini request reached the openai backend; got {upstream}"
     );
-    // MEDIUM/test-coverage: the CLIENT-facing response must be the native Gemini
+    // The CLIENT-facing response must be the native Gemini
     // `GenerateContentResponse` shape (a top-level `candidates` array), NOT the raw OpenAI
     // `choices[]` body the backend returned. A regression that skipped the IR→Gemini write step
     // (returning the upstream OpenAI body verbatim) would still be a 200 but a protocol
@@ -895,7 +892,7 @@ async fn test_bedrock_converse_routes_and_returns_json() {
         ct.starts_with("application/json"), // golden wire-contract literal (kept bare on purpose)
         "non-stream bedrock returns JSON; got {ct}"
     );
-    // HIGH/test-coverage: a real AWS Bedrock Converse (non-stream) result ALWAYS exposes a
+    // A real AWS Bedrock Converse (non-stream) result ALWAYS exposes a
     // request id via `*Output::request_id()`, which the AWS SDK reads from the `x-amzn-RequestId`
     // response header. busbar synthesizes one on the success path (maybe_attach_response_request_id);
     // an absent or malformed header makes the SDK's `request_id()` return None — an impossibility
@@ -942,7 +939,7 @@ fn openai_stream_events() -> Vec<String> {
         ]
 }
 
-/// HIGH/test-coverage: the `/model/:modelId/converse-stream` route (stream=true) must (a) resolve
+/// The `/model/:modelId/converse-stream` route (stream=true) must (a) resolve
 /// with stream intent, (b) return `Content-Type: application/vnd.amazon.eventstream`, and (c)
 /// produce a body that is a sequence of binary AWS event-stream frames `eventstream::drain_frames`
 /// can cleanly decode (buffer empties, frames carry the ConverseStream event names). Routes
@@ -996,7 +993,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
         "streaming bedrock ingress is binary eventstream; got {ct}"
     );
 
-    // HIGH/test-coverage (proxy engine streaming-success header emission): a real AWS Bedrock
+    // Proxy engine streaming-success header emission: a real AWS Bedrock
     // ConverseStream response ALWAYS carries `x-amzn-RequestId` (the only request-id surface the
     // AWS SDK exposes via `*Output::request_id()`); an absent header makes that return None,
     // which a native endpoint never does, and is a proxy tell on the most security-sensitive new
@@ -1051,7 +1048,7 @@ async fn test_bedrock_converse_stream_returns_binary_eventstream() {
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage: SAME-PROTOCOL bedrock streaming passthrough (bedrock client → bedrock
+/// SAME-PROTOCOL bedrock streaming passthrough (bedrock client → bedrock
 /// backend). The headline indistinguishability case: a native AWS SDK talks ConverseStream and the
 /// upstream IS a Bedrock backend, so the binary `application/vnd.amazon.eventstream` body must be
 /// relayed VERBATIM (no SSE→binary re-encode, no buffering) and the upstream's REAL
@@ -1170,7 +1167,7 @@ async fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage: SAME-PROTOCOL bedrock NON-STREAM passthrough (native AWS SDK speaking
+/// SAME-PROTOCOL bedrock NON-STREAM passthrough (native AWS SDK speaking
 /// `Converse` → a Bedrock backend). This is the most common Bedrock call pattern, and it takes a
 /// COMPLETELY DIFFERENT code branch from the streaming case asserted by
 /// `test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id`: a non-stream
@@ -1294,7 +1291,7 @@ async fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_reques
     upstream_handle.abort();
 }
 
-/// CORE-deferred cross-file test: a TRUE mid-stream TRANSPORT failure on a SAME-PROTOCOL
+/// Cross-file test: a TRUE mid-stream TRANSPORT failure on a SAME-PROTOCOL
 /// bedrock→bedrock streaming passthrough. The companion
 /// `test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception` drives the
 /// CROSS-protocol (openai-backend, SSE→binary reframe) path; this one drives the same-protocol
@@ -1389,7 +1386,7 @@ async fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_bi
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage (proxy engine): a TRUE mid-stream transport failure on a
+/// Proxy engine: a TRUE mid-stream transport failure on a
 /// bedrock-ingress cross-protocol stream must terminate the body with a CRC-valid BINARY
 /// `:message-type: exception` frame appended AFTER the real frames — never SSE `event:`/`data:`
 /// ASCII (which yields an undecodable prelude/CRC for the AWS SDK). `SseTransportError` drops the
@@ -1452,7 +1449,7 @@ async fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exceptio
     server.shutdown().await;
 }
 
-/// HIGH/test-coverage twin (proxy engine): the SSE-ingress (openai) mid-stream transport-failure
+/// Twin proxy engine: the SSE-ingress (openai) mid-stream transport-failure
 /// path must append a BARE `data:` error frame (NO `event:` line — openai native streams never
 /// emit one mid-stream) whose `data:` is the native OpenAI error envelope.
 #[tokio::test]
@@ -1509,7 +1506,7 @@ async fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
     server.shutdown().await;
 }
 
-/// HIGH/conformance regression: a SAME-PROTOCOL bedrock-ingress → bedrock-backend passthrough must
+/// Conformance regression: a SAME-PROTOCOL bedrock-ingress → bedrock-backend passthrough must
 /// NOT leak the router shim keys (`model`/`stream`) that `ingress_path_model` injects into the
 /// body. `forward_with_pool` skips IR translation on same-protocol, so without the strip the
 /// injected keys would reach the backend (a native Bedrock Converse body carries neither, and the
@@ -1581,7 +1578,7 @@ async fn test_bedrock_same_protocol_passthrough_strips_shim_keys() {
     server.shutdown().await;
 }
 
-/// HIGH/conformance regression: same as above for gemini-ingress → gemini-backend. The Gemini
+/// Conformance regression: same as above for gemini-ingress → gemini-backend. The Gemini
 /// writer's `rewrite_model` REINSERTS `model`, so the shim strip is the only thing keeping a
 /// top-level `model`/`stream` off the native generateContent body the backend receives.
 #[tokio::test]
@@ -1646,7 +1643,7 @@ async fn test_gemini_same_protocol_passthrough_strips_shim_keys() {
     server.shutdown().await;
 }
 
-/// MEDIUM/test-coverage: the `streamGenerateContent` action injects `stream:true` and routes to a
+/// The `streamGenerateContent` action injects `stream:true` and routes to a
 /// streaming backend. WITH `?alt=sse` the gemini ingress contract is SSE (text/event-stream).
 /// Routes gemini→openai (cross-protocol) so the request reaches the backend and is reframed.
 #[tokio::test]
@@ -1697,7 +1694,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         ct.starts_with("text/event-stream"), // golden wire-contract literal (kept bare on purpose)
         "gemini streaming ingress WITH ?alt=sse is SSE-framed; got {ct}"
     );
-    // MEDIUM/test-coverage: text/event-stream alone does not prove the SSE FRAMES carry the
+    // Text/event-stream alone does not prove the SSE FRAMES carry the
     // native Gemini `GenerateContentResponse` vocabulary. A regression that relayed the raw
     // OpenAI `chat.completion.chunk` objects verbatim would still be `text/event-stream` and
     // pass a header-only assertion — a protocol-indistinguishability break. Parse each SSE
@@ -1937,8 +1934,8 @@ async fn test_body_model_parse_error_is_observable() {
 /// (`inputText` / `textToImageParams` / the Cohere `{query,documents}` pair) — a pre-routing
 /// reject that, like the JSON-parse case above, must still flow through `finish_rejected` so it
 /// is counted. This asserts the SAME strict-increase discriminator as
-/// `test_body_model_parse_error_is_observable`, on the sibling early-return the class-9 audit
-/// found unrouted.
+/// `test_body_model_parse_error_is_observable`, on the sibling early-return that was left
+/// unrouted.
 #[tokio::test]
 async fn test_bedrock_invoke_unresolvable_body_is_observable() {
     crate::metrics::init();
@@ -2055,7 +2052,7 @@ async fn test_served_request_increments_hot_path_metrics() {
 
 /// THE GOVERNANCE RE-KEY end-to-end: with governance ON and an external data-plane
 /// module in the chain, a role-bound principal gets a SYNTHESIZED key - its binding's pool ACL
-/// admits/denies (403), an omitted `allowed_pools` grants ALL pools (C6), an explicit `[]`
+/// admits/denies (403), an omitted `allowed_pools` grants ALL pools, an explicit `[]`
 /// grants nothing, and an unbound role is rejected outright (fail closed) - all keyed by the
 /// principal id through the same machinery a virtual key uses. (Rate/budget caps no longer ride
 /// the synthesized key: limits live on `groups:`, keys are pure auth.)
@@ -2105,7 +2102,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
                 ..Default::default()
             },
         );
-        // OMITTED allowed_pools = ALL pools (C6).
+        // OMITTED allowed_pools = ALL pools.
         table.insert(
             "batch".to_string(),
             crate::config::RoleBindingCfg::default(),
@@ -2142,7 +2139,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let r = send("grp:llm-users", "gpool-b").await.unwrap();
     assert_eq!(r.status().as_u16(), 403, "ungranted pool is denied");
 
-    // OMITTED allowed_pools grants every pool (C6).
+    // OMITTED allowed_pools grants every pool.
     let r = send("grp:batch", "gpool-a").await.unwrap();
     assert_eq!(r.status().as_u16(), 200, "omitted allowed_pools grants all");
     let r = send("grp:batch", "gpool-b").await.unwrap();
@@ -2396,7 +2393,7 @@ fn test_pool_label_bounds_cardinality() {
     assert_eq!(pool_label(&app, ""), "unresolved"); // golden wire-contract literal (kept bare on purpose)
 }
 
-/// HIGH/conformance: a native gemini `:streamGenerateContent` request WITHOUT `?alt=sse` must
+/// Conformance: a native gemini `:streamGenerateContent` request WITHOUT `?alt=sse` must
 /// receive the JSON-ARRAY streaming format (`Content-Type: application/json`, a `[{...},{...}]`
 /// body), NOT SSE. Routes gemini→openai (cross-protocol) so the upstream SSE is reframed to
 /// gemini SSE by `StreamTranslate` and then to a JSON array by the framer; the body must parse
@@ -2537,7 +2534,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
 /// key (the bug: the gemini reader swept it into IR `extra` and the egress writer re-emitted the
 /// router fingerprint onto the foreign backend).
 ///
-/// R9 HIGH (proxy engine) correction: the egress `stream` field is NOT a router fingerprint
+/// The egress `stream` field is NOT a router fingerprint
 /// for a BODY-MODEL backend — the OpenAI writer AUTHORS `"stream": ir.stream` and the backend
 /// reads it to decide whether to stream. The client called `:streamGenerateContent`, so it
 /// genuinely wants streaming; `stream: true` MUST reach the OpenAI backend, otherwise the backend
@@ -2584,7 +2581,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
         upstream_v.get("__busbar_gemini_json_array").is_none(),
         "router shim key must not leak to a foreign backend; got {upstream_v}"
     );
-    // R9 HIGH (proxy engine): the writer-authored `stream` MUST reach a body-model (OpenAI)
+    // The writer-authored `stream` MUST reach a body-model (OpenAI)
     // backend so it actually streams — the client called `:streamGenerateContent`. Stripping it
     // here was the bug that made the backend answer non-streaming.
     assert_eq!(
@@ -2719,7 +2716,7 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
     server.shutdown().await;
 }
 
-/// MEDIUM/test-coverage: a Gemini path with NO colon (`/v1beta/models/gemini-flash`) hits the
+/// A Gemini path with NO colon (`/v1beta/models/gemini-flash`) hits the
 /// malformed-path branch and must return a Gemini-shaped 404 (not a 200, not a panic).
 #[tokio::test]
 async fn test_gemini_malformed_path_no_colon_is_404() {
@@ -2751,7 +2748,7 @@ async fn test_gemini_malformed_path_no_colon_is_404() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage: an EMPTY model (`/v1beta/models/:generateContent`) is malformed (the
+/// An EMPTY model (`/v1beta/models/:generateContent`) is malformed (the
 /// pre-colon segment is empty) and must return a Gemini-shaped 404, not misroute.
 #[tokio::test]
 async fn test_gemini_empty_model_is_404() {
@@ -2773,7 +2770,7 @@ async fn test_gemini_empty_model_is_404() {
     handle.abort();
 }
 
-/// MEDIUM/conformance regression: a request on the STABLE `/v1/models/...` Gemini surface that
+/// Conformance regression: a request on the STABLE `/v1/models/...` Gemini surface that
 /// hits an unsupported action (e.g. `countTokens`) must echo "v1" in the native NOT_FOUND
 /// message — NOT the hardcoded "v1beta". The real Gemini v1 API says "v1" for this path; leaking
 /// "v1beta" is a distinguishability tell against a google-generativeai SDK pinned to v1.
@@ -2808,7 +2805,7 @@ async fn test_gemini_v1_surface_error_echoes_v1_not_v1beta() {
     );
 
     // No-colon branch on the v1 surface: a colon-less `/v1/models/{id}` is the OpenAI
-    // `model.retrieve` shape on this AMBIGUOUS stable prefix, so the MEDIUM/conformance fix
+    // `model.retrieve` shape on this AMBIGUOUS stable prefix, so this surface
     // returns the canonical OpenAI `not_found_error` envelope here (matching `proto_for_path`
     // and the method fallback), NOT a Gemini-shaped NOT_FOUND. (The Gemini-shaped no-colon 404
     // is reserved for the unambiguous `/v1beta/...` surface — see
@@ -2864,7 +2861,7 @@ async fn test_gemini_v1beta_surface_error_still_echoes_v1beta() {
     handle.abort();
 }
 
-/// MEDIUM/conformance regression: the AMBIGUOUS stable `/v1/models/{id}` prefix is SHARED between
+/// Conformance regression: the AMBIGUOUS stable `/v1/models/{id}` prefix is SHARED between
 /// the Gemini `:<action>` surface and the OpenAI `model.retrieve` (`/v1/models/{id}`) surface.
 /// A colon-less `/v1/models/{id}` (or a `/v1/models/{id}` whose colons are NOT a Gemini action
 /// suffix, e.g. an OpenAI fine-tune id `ft:gpt:org::abc`) must therefore return the canonical
@@ -3047,7 +3044,7 @@ fn test_gemini_api_version_prefix_mapping() {
     );
 }
 
-/// MEDIUM/test-coverage: a model id that itself CONTAINS a colon must split on the LAST colon, so
+/// A model id that itself CONTAINS a colon must split on the LAST colon, so
 /// `tunedModels/abc:1:generateContent` resolves model `tunedModels/abc:1` (not the action). The
 /// lane is named with the colon-bearing id so a correct LAST-colon split is the only way it
 /// resolves and 2xx round-trips.
@@ -3097,7 +3094,7 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
     server.shutdown().await;
 }
 
-// ---- percent_decode unit tests (MEDIUM/test-coverage) ----
+// ---- percent_decode unit tests ---------------------------
 
 /// `%3A` decodes to a literal colon.
 #[test]
@@ -3135,7 +3132,7 @@ fn test_percent_decode_trailing_percent_is_safe() {
     assert_eq!(percent_decode("abc%3"), "abc%3");
 }
 
-/// LOW/conformance regression: a 404 from `forward_resolved` (unknown model) carries the
+/// Conformance regression: a 404 from `forward_resolved` (unknown model) carries the
 /// canonical `not_found_error` type for an OpenAI-ingress client, not the old non-canonical
 /// `not_found`. Drives the real router so the body-model ingress → resolution-miss path runs.
 #[tokio::test]
@@ -3162,7 +3159,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
     handle.abort();
 }
 
-// ---- MEDIUM/correctness: governance-rejection requests must still be `finish`ed ----
+// ---- Correctness: governance-rejection requests must still be `finish`ed -----------
 
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
@@ -3192,7 +3189,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
 
 /// A pool-authorization rejection (403) must flow through `finish`, so it is counted in
 /// `REQUESTS_TOTAL` (as `outcome=client_error`) and the duration histogram — not silently
-/// early-returned. Regression for the Round-3 finding that governance rejections bypassed
+/// early-returned. Regression for a defect where governance rejections bypassed
 /// `finish` and were invisible to Prometheus / the request-log webhook.
 #[tokio::test]
 async fn test_governance_rejection_is_counted_via_finish() {
@@ -3313,7 +3310,7 @@ async fn body_string(resp: Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// MEDIUM/security regression: the three governance rejection bodies (403 pool-not-allowed, 429
+/// Security regression: the three governance rejection bodies (403 pool-not-allowed, 429
 /// over-budget (400 for Bedrock), 429 rate-limited) must carry ONLY vendor-plausible copy — never the internal
 /// `virtual key` vocabulary, never the key id, never the pool name. A native vendor SDK parses
 /// these envelopes; leaking the key id / pool topology is both a proxy tell and an info leak.
@@ -3488,11 +3485,11 @@ fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
     (app, key)
 }
 
-// ---- MEDIUM/conformance: bedrock ingress errors carry the x-amzn-* native headers ----
+// ---- Conformance: bedrock ingress errors carry the x-amzn-* native headers -----------
 
 /// `ingress_error("bedrock", ...)` must attach `x-amzn-RequestId` (a UUID-shaped value) and
 /// `x-amzn-errortype` (equal to the body `__type`), matching what a real AWS Bedrock runtime
-/// error response always carries. Regression for the finding that busbar-synthesized Bedrock
+/// error response always carries. Regression for busbar-synthesized Bedrock
 /// errors had no `x-amzn-*` headers and left the SDK's request id empty.
 #[test]
 fn test_bedrock_ingress_error_has_amzn_headers() {
@@ -3589,7 +3586,7 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
     );
 }
 
-// ---- MEDIUM/test-coverage: 400 native error envelopes on the new ingress routes ----
+// ---- 400 native error envelopes on the new ingress routes --------------------------
 
 /// Bad JSON on a Cohere `/v2/chat` request ⇒ 400 with the Cohere-native error envelope
 /// (`{"message": ...}`), served as application/json — not a plain-text 400 or a foreign shape.
@@ -3673,7 +3670,7 @@ async fn test_openai_missing_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage: an EMPTY `"model"` string (`""`) is a distinct branch from a MISSING
+/// An EMPTY `"model"` string (`""`) is a distinct branch from a MISSING
 /// model in `ingress_body_model`'s guard (`Some(m) if !m.is_empty()`), and must produce the SAME
 /// native 400 `invalid_request_error` for every body-model protocol — NOT fall through to
 /// resolution (which would surface a 404 a native SDK reads differently). If the `!m.is_empty()`
@@ -3703,7 +3700,7 @@ async fn test_openai_empty_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage twin: Cohere `/v2/chat` with `"model": ""` ⇒ native Cohere 400 envelope
+/// Twin: Cohere `/v2/chat` with `"model": ""` ⇒ native Cohere 400 envelope
 /// (a BARE top-level `message`, NO `error`/`type` wrapper).
 #[tokio::test]
 async fn test_cohere_empty_model_is_400_native_envelope() {
@@ -3730,7 +3727,7 @@ async fn test_cohere_empty_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage twin: Responses `/v1/responses` with `"model": ""` ⇒ native Responses 400
+/// Twin: Responses `/v1/responses` with `"model": ""` ⇒ native Responses 400
 /// envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_empty_model_is_400_native_envelope() {
@@ -3756,7 +3753,7 @@ async fn test_responses_empty_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage: a syntactically valid JSON body whose `"model"` is NOT a string (a
+/// A syntactically valid JSON body whose `"model"` is NOT a string (a
 /// number / bool / null) is a distinct branch from MISSING and EMPTY in `ingress_body_model`'s
 /// guard. `v.get("model").and_then(|m| m.as_str())` returns `None` for any non-string value, so
 /// it MUST fall into the same native 400 `invalid_request_error` branch — never be coerced
@@ -3794,7 +3791,7 @@ async fn test_openai_numeric_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage twin: Cohere `/v2/chat` with a non-string `"model"` (here `null`) ⇒
+/// Twin: Cohere `/v2/chat` with a non-string `"model"` (here `null`) ⇒
 /// native Cohere 400 envelope (a BARE top-level `message`, NO `error`/`type` wrapper). A `null`
 /// model is the exact case a guard weakened to `.is_some()` would mishandle (it IS present but
 /// not a string), so it must still 400 rather than fall through to a 404.
@@ -3827,7 +3824,7 @@ async fn test_cohere_numeric_model_is_400_native_envelope() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage twin: Responses `/v1/responses` with a non-string `"model"` (here a
+/// Twin: Responses `/v1/responses` with a non-string `"model"` (here a
 /// bool) ⇒ native Responses 400 envelope (`{"error":{"type":"invalid_request_error"}}`).
 #[tokio::test]
 async fn test_responses_numeric_model_is_400_native_envelope() {
@@ -3928,7 +3925,7 @@ async fn test_bedrock_non_object_body_is_400() {
     handle.abort();
 }
 
-// ---- MEDIUM/test-coverage: unknown-model 404 native envelope per protocol ----
+// ---- Unknown-model 404 native envelope per protocol --------------------------
 
 /// Gemini unknown-model 404 must carry the Gemini-native NOT_FOUND envelope
 /// (`error.status == "NOT_FOUND"`), produced by `forward_resolved`'s resolution-miss path.
@@ -4037,7 +4034,7 @@ async fn test_responses_unknown_model_404_native_shape() {
     handle.abort();
 }
 
-// ---- HIGH/test-coverage: streaming integration for Cohere and Responses ingress ----
+// ---- Streaming integration for Cohere and Responses ingress ------------------------
 
 /// Collect the `data:` payloads of an SSE body into a Vec of `(event_name, data_json_text)`,
 /// where `event_name` is the value of the frame's `event:` line (empty string for an
@@ -4344,7 +4341,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
     server.shutdown().await;
 }
 
-// ---- MEDIUM/test-coverage: percent-encoded Bedrock model id end-to-end ----
+// ---- Percent-encoded Bedrock model id end-to-end --------------------------
 
 /// A percent-encoded Bedrock model id (`anthropic.claude-3%3Ahaiku` → `anthropic.claude-3:haiku`)
 /// must be decoded by axum, resolved, and the converse-stream response re-encoded as a binary
@@ -4409,7 +4406,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     server.shutdown().await;
 }
 
-// ---- HIGH/test-coverage: mid-stream transport-error E2E for Cohere and Responses ingress ----
+// ---- Mid-stream transport-error E2E for Cohere and Responses ingress ------------------------
 //
 // `test_sse_ingress_mid_stream_error_uses_native_framing` (proxy engine) tests the byte shape of
 // `mid_stream_error_bytes` in isolation; these two drive a TRUE `SseTransportError` through the
@@ -4421,7 +4418,7 @@ async fn test_bedrock_percent_encoded_model_id_converse_stream() {
 /// NATIVE Cohere SSE error frame — a BARE `data:` frame (Cohere's native stream never emits an
 /// `event:` line mid-stream) whose JSON carries the Cohere-native flat shape (a `message`, or a
 /// `type`+`message`) — and must NOT regress to an OpenAI `{"error":{...}}` envelope NESTED under
-/// `error` only (the leak the finding guards against would be an `event:` line or a foreign shape).
+/// `error` only (the leak guarded against here would be an `event:` line or a foreign shape).
 #[tokio::test]
 async fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
     crate::metrics::init();
@@ -4556,7 +4553,7 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     server.shutdown().await;
 }
 
-// ---- HIGH/test-coverage: real end-to-end failover through the ACTUAL retry loop -----------------
+// ---- Real end-to-end failover through the ACTUAL retry loop -------------------------------------
 //
 // Every prior breaker/failover-adjacent test either pre-trips a pool cell via `force_open_in(...)`
 // before dispatch (so the failing lane is never actually selected/attempted by
@@ -4773,9 +4770,9 @@ async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
     good_server.shutdown().await;
 }
 
-// ---- HIGH/conformance: no client-facing error message carries the wire-visible `router:` tell --
+// ---- Conformance: no client-facing error message carries the wire-visible `router:` tell --
 
-/// CLASS regression for the `router:` prefix leak. Drives the REAL router on EVERY ingress
+/// Regression for the `router:` prefix leak. Drives the REAL router on EVERY ingress
 /// protocol and asserts that NONE of the synthesized client-facing error bodies (bad JSON,
 /// missing/unknown model, malformed gemini path, unsupported gemini action, non-object body,
 /// provider mismatch) contains the substring `router:` anywhere — including inside the
@@ -4866,7 +4863,7 @@ async fn test_no_client_error_message_carries_router_prefix() {
     handle.abort();
 }
 
-// ---- HIGH/test-coverage: governance pool-ACL 403 native envelope on the new ingress routes ----
+// ---- Governance pool-ACL 403 native envelope on the new ingress routes ------------------------
 //
 // `test_governance_vkey_auth_and_pool_acl` (test_support.rs) and
 // `test_governance_rejection_is_counted_via_finish` (above) only exercise the Anthropic ingress
@@ -5125,7 +5122,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
     handle.abort();
 }
 
-// ---- SECURITY MED #3: the allowed_pools ACL must also gate the FALLBACK pool ----
+// ---- Security: the allowed_pools ACL must also gate the FALLBACK pool -----------
 //
 // A virtual key's `allowed_pools` was enforced only on the INITIAL pool. A pool configured with
 // `on_exhausted = fallback_pool:B` would, on exhaustion, route the request to pool B inside
@@ -5307,7 +5304,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     server.shutdown().await;
 }
 
-// ---- MEDIUM/test-coverage: adhoc `/{provider}/{model}/v1/messages` E2E through the router ----
+// ---- Adhoc `/{provider}/{model}/v1/messages` E2E through the router --------------------------
 //
 // `test_adhoc_rejects_unconfigured_provider_model` (test_support.rs) calls the handler directly,
 // bypassing the router, axum `Path` extraction, the auth middleware + CallerToken extension
@@ -5483,7 +5480,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
     handle.abort();
 }
 
-/// MEDIUM/conformance regression: `not_found_message` shapes the model-not-found copy per the
+/// Conformance regression: `not_found_message` shapes the model-not-found copy per the
 /// INGRESS protocol. A gemini api_version yields the NATIVE Gemini string (versioned, no OpenAI
 /// "The model '…'" phrasing); every other protocol (api_version `None`) keeps the canonical
 /// OpenAI-style copy the OpenAI/Responses/Cohere/Anthropic SDKs expect. Guards against a future
@@ -5515,7 +5512,7 @@ fn test_not_found_message_is_protocol_native() {
     );
 }
 
-/// MEDIUM/conformance: a model-not-found 404 on the gemini ingress returns the NATIVE Gemini
+/// Conformance: a model-not-found 404 on the gemini ingress returns the NATIVE Gemini
 /// message ("models/{model} is not found for API version {api_version}, …"), with the version
 /// token matching the request path — `v1beta` on the v1beta surface, `v1` on the stable v1
 /// surface. NO OpenAI "The model '…' does not exist" copy may leak (a tell for SDKs matching on
@@ -5564,7 +5561,7 @@ async fn test_gemini_model_not_found_uses_native_message() {
     handle.abort();
 }
 
-/// MEDIUM/test-coverage: the STABLE v1 gemini surface (`/v1/models/*rest`) is a separately
+/// The STABLE v1 gemini surface (`/v1/models/*rest`) is a separately
 /// registered route (main.rs) that funnels through the same `gemini_ingress` handler as v1beta.
 /// This exercises a happy-path STREAMING request via the stable v1 prefix WITH `?alt=sse`, so a
 /// routing regression on the v1 alias (e.g. a wildcard conflict) is caught. Mirrors
@@ -5643,7 +5640,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
     server.shutdown().await;
 }
 
-/// MEDIUM/test-coverage: the STABLE v1 gemini surface (`/v1/models/*rest`), streaming WITHOUT
+/// The STABLE v1 gemini surface (`/v1/models/*rest`), streaming WITHOUT
 /// `?alt=sse`, must return the JSON-ARRAY framing (`application/json`, a `[{...}]` body) exactly
 /// like the v1beta surface. Mirrors `test_gemini_stream_generate_content_no_alt_sse_is_json_array`
 /// on the v1 path so a regression isolating the stable-v1 alias is caught.
@@ -5715,7 +5712,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
     server.shutdown().await;
 }
 
-// ---- MEDIUM/test-coverage: governance 429 (rate) and over-budget paths on the new ingress ----
+// ---- Governance 429 (rate) and over-budget paths on the new ingress --------------------------
 //
 // The ingress governance suite above (`test_governance_pool_acl_403_*`) only exercises the
 // pool-ACL 403 guard end-to-end. The OTHER two `governance_guard` rejections — `rate_check`
@@ -5927,7 +5924,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
     }
 }
 
-// ---- MEDIUM/test-coverage: the `named` handler's `by_model` fallback branch ----
+// ---- The `named` handler's `by_model` fallback branch --------------------------
 //
 // `named` (`POST /<name>/v1/messages`) resolves `name` against `app.pools` first, then falls
 // back to `app.by_model` (the by_model arm). The pool path is covered by
@@ -6007,9 +6004,9 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 //
 // This drives the trip THRESHOLD worth of upstream 5xx through the universal (openai) by_model
 // ingress, then asserts the `""` op_handler tripped Open while the model-keyed op_handler stayed Closed —
-// the exact inverse of the pre-fix behavior, so it fails against the old code.
+// the exact inverse of the defect this guards against.
 
-/// LOW #4: a by_model lane reached via the universal (openai) ingress must record breaker state
+/// A by_model lane reached via the universal (openai) ingress must record breaker state
 /// on the lane-default `""` OperationHandler — the SAME op_handler the `named`/`adhoc` single-model routes use —
 /// not on a model-keyed OperationHandler, so a lane reached by-name and by-pool shares one breaker view.
 ///

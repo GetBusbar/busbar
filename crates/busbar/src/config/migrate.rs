@@ -156,7 +156,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                 .into(),
         );
     }
-    // 1.5.3 observability→export lift-out (§2.1, §7): the top-level `metrics:` block and the
+    // 1.5.3 observability→export lift-out: the top-level `metrics:` block and the
     // `observability.request_log_webhook_url` / `max_inflight_webhook_deliveries` /
     // `webhook_delivery_timeout_secs` keys are RETIRED into the built-in exporters. An un-migrated
     // config carrying any of them LOUD-FAILS here (before the typed parse) with the migrate
@@ -178,7 +178,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    // ── the 1.5.3 GRAMMAR-LOCK retirements (audit §2/§3/§4/§5) ──────────────────────────────────
+    // ── the 1.5.3 GRAMMAR-LOCK retirements ───────────────────────────────────────────────────────
     // Every one of these would otherwise reach the typed parse as a bare `deny_unknown_fields`
     // rejection with no upgrade breadcrumb (or, for `observability:`, as a whole block whose
     // deletion would silently drop a trace sink). Detected HERE, before the typed parse, so the
@@ -191,7 +191,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             .find(|(old, _)| *old == key)
             .map_or("its 1.5.3 replacement", |(_, new)| new)
     };
-    // §3: the `observability:` BLOCK is DELETED outright. Its last field folded into `export:`.
+    // The `observability:` BLOCK is DELETED outright. Its last field folded into `export:`.
     if get(root, "observability").is_some() {
         markers.push(format!(
             "top-level `observability:` block (DELETED 1.5.3 → {}); all telemetry egress is now the \
@@ -199,7 +199,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             retired_home("otlp_url")
         ));
     }
-    // §5: the boot-guard flag inverted.
+    // The boot-guard flag inverted.
     if get(root, "admin_insecure").is_some() {
         markers.push(format!(
             "top-level `admin_insecure:` (retired 1.5.3 → {})",
@@ -207,21 +207,21 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         ));
     }
     if let Some(auth) = get(root, "auth").and_then(|v| v.as_mapping().cloned()) {
-        // §4: the credential mode moved to the `pools:` section.
+        // The credential mode moved to the `pools:` section.
         if get(&auth, "upstream_credentials").is_some() {
             markers.push(format!(
                 "`auth.upstream_credentials:` (retired 1.5.3 → {})",
                 retired_home("upstream_credentials")
             ));
         }
-        // §2 / freeze blocker A7: the 1.5.2 hosted-login block folded into the provider definition.
+        // The 1.5.2 hosted-login block folded into the provider definition.
         if get(&auth, "methods").is_some() {
             markers.push(format!(
                 "`auth.methods:` (retired 1.5.3 → {})",
                 retired_home("methods")
             ));
         }
-        // §2: an INLINE chain entry (`- ad: { settings: … }`) is gone — a chain is now a list of
+        // An INLINE chain entry (`- ad: { settings: … }`) is gone — a chain is now a list of
         // bare NAMES referencing `identity-providers:`. A map-shaped entry in either chain is the
         // tell; a list of plain strings is already in the new shape (idempotent).
         for plane in ["chain", "admin_auth"] {
@@ -236,7 +236,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    // §3: the TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
+    // The TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
     // map (`export: { metrics: { module: prometheus, settings: … } }`). Distinguished by SHAPE, not
     // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
     if let Some(Value::Mapping(export)) = get(root, "export") {
@@ -251,7 +251,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             );
         }
     }
-    // §C: the first-party Valkey store plugin was RENAMED to Valkey — repo, crate, artifact,
+    // The first-party Valkey store plugin was RENAMED to Valkey — repo, crate, artifact,
     // manifest `name` AND config `alias`. A retired spelling in `store.module:` is not a "wrong
     // backend": nothing in the renamed artifact's manifest matches it, so the store the operator
     // asked for simply does not exist and boot dies on the loader's generic "does not match any
@@ -365,7 +365,7 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
     // metrics keys, and rewrites them into the new `export:` surface in place.
     migrate_observability_export(&mut root, &mut changes);
-    // ── the 1.5.3 GRAMMAR-LOCK migrations (audit §2/§3/§4/§5) ───────────────────────────────────
+    // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
     // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
     // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
     // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
@@ -378,7 +378,7 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_admin_require_mtls(&mut root, &mut changes);
     migrate_pools_upstream_credentials(&mut root, &mut changes);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
-    // 1.5.3 §C: the first-party Valkey store plugin's rename to Valkey. Independent of every
+    // 1.5.3: the first-party Valkey store plugin's rename to Valkey. Independent of every
     // migration above (it touches only `store.module`), so its position in this list is free; it runs
     // last so `migrate_governance`'s `governance.store:` -> `store:` lift has already produced the
     // 1.5.x `store:` block a 1.4.x config's Valkey backend would land in.
@@ -840,7 +840,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         // N cents per 1k tokens = 10*N micro-units per token, on every tier of every model.
         let n = p1k.as_f64().unwrap_or(0.0);
         let per_tier = n * 10.0;
-        // NEVER SILENTLY DROP (audit HIGH-2's class): `root.remove` takes the key whatever its shape,
+        // NEVER SILENTLY DROP: `root.remove` takes the key whatever its shape,
         // so a `rate_card:` that is not a mapping is put BACK verbatim and the synthesis is SKIPPED —
         // replacing an operator's malformed-but-present card with a generated one would destroy the
         // prices they wrote. `None` (no card at all) is the normal path and synthesizes from scratch.
@@ -1793,7 +1793,7 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// 1.5.3 observability→export lift-out (§2.1, §7): mechanically rewrite the retired
+/// 1.5.3 observability→export lift-out: mechanically rewrite the retired
 /// `observability.request_log_webhook_url` (+ `max_inflight_webhook_deliveries` /
 /// `webhook_delivery_timeout_secs`) → `export.request-log-webhook.settings.*`, and the top-level
 /// `metrics:` block → `export.prometheus.settings.*`. Because the exporters are BUILT-IN (not
@@ -1863,7 +1863,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         export_mut(root).insert("prometheus".into(), Value::Mapping(body));
         changes.push("metrics: block -> export.prometheus.settings (built-in exporter)".into());
     } else if let Some(other) = removed_metrics {
-        // Same class as the `observability:` arm above (audit MED-1): the key IS retired, so a
+        // Same class as the `observability:` arm above: the key IS retired, so a
         // malformed block is still deleted — but `root.remove` already took it, so the deletion must
         // be RECORDED or it happened invisibly.
         changes.push(format!(
@@ -1874,7 +1874,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing` (task #139: every
+/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing` (every
 /// busbar-injected response header unified under one opt-in `advanced.response_headers:` block).
 /// Unlike `migrate_observability`'s same-section rename, this one CROSSES top-level sections, so it
 /// removes the key from `observability` (if present) and inserts it under `advanced.response_headers`,
@@ -1963,7 +1963,7 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// 1.5.3 §5: `admin_insecure: <bool>` -> `admin_require_mtls: <!bool>` (the flag INVERTED so the safe
+/// 1.5.3: `admin_insecure: <bool>` -> `admin_require_mtls: <!bool>` (the flag INVERTED so the safe
 /// posture is the default). IDEMPOTENT: no `admin_insecure` key ⇒ nothing to do; a config that
 /// already carries `admin_require_mtls` keeps it (the retired key cannot coexist — it is a boot
 /// marker — so there is no precedence question to answer).
@@ -1982,7 +1982,7 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
     ));
 }
 
-/// 1.5.3 §4: `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
+/// 1.5.3: `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
 /// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
 /// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
 /// recent statement of intent) and the retired key is dropped with a named change entry.
@@ -2017,7 +2017,7 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
     }
 }
 
-/// 1.5.3 §C: rewrite a retired `store.module:` spelling of the first-party Valkey store plugin to
+/// 1.5.3: rewrite a retired `store.module:` spelling of the first-party Valkey store plugin to
 /// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
 /// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
 /// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
@@ -2079,7 +2079,7 @@ fn split_suffix(site: &str) -> &str {
     }
 }
 
-/// 1.5.3 §2 + freeze blocker A7: lift every INLINE `auth.chain:` / `auth.admin_auth:` entry and every
+/// 1.5.3: lift every INLINE `auth.chain:` / `auth.admin_auth:` entry and every
 /// `auth.methods:` entry into the top-level `identity-providers:` NAMED-DEFINITION map, replacing the
 /// chain entries with bare NAME references.
 ///
@@ -2091,7 +2091,7 @@ fn split_suffix(site: &str) -> &str {
 /// SHAPE-CONVERGENT and IDEMPOTENT: a bare-string chain entry is already a name reference and passes
 /// straight through, so a second run finds nothing to lift.
 ///
-/// NEVER SILENTLY DROPS (audit HIGH-2 — the rule `migrate_auth` already states): `root.remove` takes
+/// NEVER SILENTLY DROPS (the rule `migrate_auth` already states): `root.remove` takes
 /// the key unconditionally, so every early return below RESTORES the value it took, unchanged, and
 /// names it in the ledger. A malformed `auth: null` / `auth: []` / `auth: <scalar>` (real
 /// hand-edited shapes) therefore survives the migration verbatim for the operator to fix, instead of
@@ -2151,7 +2151,7 @@ fn migrate_identity_providers(
     // now reference. `site` names where the entry came from (`chain` / `admin_auth` / `methods`) and
     // is used only to name a SPLIT definition deterministically.
     //
-    // THE SETTINGS RULE (audit HIGH-3). The dedupe folds one module written on both planes into ONE
+    // THE SETTINGS RULE. The dedupe folds one module written on both planes into ONE
     // definition — but only when there is nothing to lose by folding:
     //   * this site carries NO `settings:` ⇒ reuse (nothing to lose);
     //   * an existing definition for this module has the IDENTICAL `settings:` ⇒ reuse (the win);

@@ -249,17 +249,17 @@ const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cent
 /// matches the proxy engine counter sites so the gauge and counters can be PromQL-joined on `lane`).
 const LANE_STATE: &str = "busbar_lane_state";
 
-/// Per-(pool, lane-model) availability gauge (Phase 2 — the UNIFIED capacity+breaker signal). `1` =
+/// Per-(pool, lane-model) availability gauge — the UNIFIED capacity+breaker signal. `1` =
 /// the lane's per-(pool, lane) `classify` returns `Ok` (it would admit a request right now); `0` = it
 /// returns `Err(_)` for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). This
 /// is rendered from the SAME `classify` taxonomy routing dispatches on, so the gauge cannot drift from
-/// behaviour. The ORTHOGONAL axes stay separately legible (R9): `busbar_lane_state` exposes the
+/// behaviour. The ORTHOGONAL axes stay separately legible: `busbar_lane_state` exposes the
 /// breaker and `busbar_lane_available_permits` exposes capacity, so an Open+at-capacity lane is not
 /// hidden behind this one collapsed bool. Replaces the ad-hoc `busbar_lane_at_capacity`. Same
 /// `pool`/`lane` label convention as `busbar_lane_state`.
 const LANE_AVAILABLE: &str = "busbar_lane_available";
 
-/// Per-(pool, lane-model) recovery hint in milliseconds (Phase 2), rendered from the SAME
+/// Per-(pool, lane-model) recovery hint in milliseconds, rendered from the SAME
 /// `Unavailable::recovery_hint_ms` that feeds `Retry-After`/least_bad. `0` when the lane is available
 /// or the reason has no self-recovery basis (dead/budget); otherwise the honest lower bound on when
 /// the lane could next serve (breaker `until`, the at-capacity floor, etc.). Same label convention.
@@ -271,13 +271,13 @@ const LANE_INFLIGHT: &str = "busbar_lane_inflight";
 
 /// Per-(pool, lane-model) available concurrency permits, for BOUNDED lanes only (an unbounded lane
 /// counts nothing, so it emits no sample here). The capacity depth signal (`0` = saturated), kept
-/// INDEPENDENT of `busbar_lane_available` so the capacity axis stays legible (R9). Same label
+/// INDEPENDENT of `busbar_lane_available` so the capacity axis stays legible. Same label
 /// convention as the gauges above.
 const LANE_AVAILABLE_PERMITS: &str = "busbar_lane_available_permits";
 
-/// Per-pool count of requests currently PARKED in the `on_exhausted: queue` bounded wait. Phase 2
-/// DEFINES and wires this gauge (rendered at scrape time, reading 0 for every pool) so Phase 3's queue
-/// implementation only has to increment/decrement a counter — it need not touch `metrics.rs`. Label
+/// Per-pool count of requests currently PARKED in the `on_exhausted: queue` bounded wait. Rendered
+/// at scrape time from the live `state::QueuedDepth` source, so the queue implementation only
+/// increments/decrements a counter and never touches `metrics.rs`. Label
 /// `pool` = configured pool name (bounded), the same convention as the lane gauges.
 const POOL_QUEUED: &str = "busbar_pool_queued";
 
@@ -544,7 +544,7 @@ fn describe() {
     describe_gauge!(
         POOL_QUEUED,
         Unit::Count,
-        "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time; 0 until Phase 3 wires the queue)"
+        "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time)"
     );
 }
 
@@ -882,7 +882,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
     let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
         std::collections::HashMap::new();
     for (pool_name, weighted_lanes) in &app.pools {
-        // Phase 3: render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
+        // Render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
         // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
         // (see `walk.rs` `handle_queue` + `state::QueuedDepth`); a pool that never queues reads 0.
         metrics::gauge!(POOL_QUEUED, "pool" => pool_name.clone())
@@ -913,7 +913,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
                 "lane" => lane_label.clone()
             )
             .set(state_val);
-            // Phase 2: render the lane's availability from the SAME per-(pool, lane) `classify`
+            // Render the lane's availability from the SAME per-(pool, lane) `classify`
             // routing dispatches on — this IS the pool cell the pool routes through.
             let avail = app.store.classify(pool_name, lane_idx, now);
             emit_lane_gauges(pool_name, &lane_label, snap, &avail, now);
@@ -955,13 +955,13 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
     }
 }
 
-/// Emit the per-(pool, lane) availability + depth gauges (Phase 2). `avail` is the SAME
+/// Emit the per-(pool, lane) availability + depth gauges. `avail` is the SAME
 /// `classify(pool, lane, now)` verdict routing dispatches on, so `busbar_lane_available` (1=Ok/0=Err)
 /// and `busbar_lane_recovery_hint_ms` (from `Unavailable::recovery_hint_ms`, 0 when available or no
 /// self-recovery basis) can never drift from behaviour. `busbar_lane_inflight` is always emitted;
 /// `busbar_lane_available_permits` only for BOUNDED lanes (an unbounded lane has no meaningful permit
 /// count, so it emits no sample rather than a misleading infinite one). The breaker (`LANE_STATE`) and
-/// capacity (`available_permits`) axes stay INDEPENDENT of the collapsed `LANE_AVAILABLE` bool (R9).
+/// capacity (`available_permits`) axes stay INDEPENDENT of the collapsed `LANE_AVAILABLE` bool.
 /// Shared by the pool loop and the by_model loop so the two label conventions (`pool`=pool name /
 /// `pool`=model name) stay identical to `LANE_STATE`.
 fn emit_lane_gauges(
@@ -1000,7 +1000,7 @@ fn emit_lane_gauges(
 // ([`crate::export::prometheus`]), which serves it via the plugin HTTP endpoint registration
 // (`handle_http`) and renders the SAME registry through [`render`] after refreshing the scrape-time
 // gauges via [`refresh_scrape_gauges`]. COLLECTION (this recorder + the emit sites + the gauge
-// derivation) stays core (design §9).
+// derivation) stays core.
 
 #[cfg(test)]
 mod tests {
@@ -1400,9 +1400,8 @@ mod tests {
             .and_then(|v| v.trim().parse::<f64>().ok())
     }
 
-    /// Phase 2 (was `test_scrape_gauges_lane_at_capacity_flips_on_saturation`): `/metrics` renders
-    /// per-lane availability from the UNIFIED `classify` taxonomy. On saturation, `busbar_lane_available`
-    /// flips 1→0 (the renamed, inverted successor to the ad-hoc `busbar_lane_at_capacity`),
+    /// `/metrics` renders per-lane availability from the UNIFIED `classify` taxonomy. On saturation,
+    /// `busbar_lane_available` flips 1→0 (the inverted successor to the ad-hoc `busbar_lane_at_capacity`),
     /// `busbar_lane_available_permits` drops 1→0, `busbar_lane_inflight` rises 0→1, and
     /// `busbar_lane_recovery_hint_ms` reports the honest at-capacity floor (2000ms).
     #[test]
@@ -1553,8 +1552,8 @@ mod tests {
         );
     }
 
-    /// Phase 2 defines `busbar_pool_queued{pool}` so Phase 3's queue never touches metrics.rs. It must
-    /// appear (reading 0) for every configured pool on the very first scrape.
+    /// `busbar_pool_queued{pool}` is defined for every configured pool, not only for pools that have
+    /// queued: it must appear (reading 0) for every configured pool on the very first scrape.
     #[test]
     fn test_scrape_gauges_pool_queued_defined_reads_zero() {
         init();
@@ -1575,9 +1574,9 @@ mod tests {
         );
     }
 
-    /// Phase 3 wiring: `busbar_pool_queued` now renders the LIVE `queued_depth` source. Park a request
+    /// `busbar_pool_queued` renders the LIVE `queued_depth` source. Park a request
     /// (via the same RAII `QueuedDepth::park` guard `handle_queue` holds while waiting) and the gauge
-    /// must read the real depth, not the literal 0 Phase 2 defined.
+    /// must read the real depth, not a literal 0.
     #[test]
     fn test_scrape_gauges_pool_queued_reads_live_depth() {
         init();
@@ -1671,7 +1670,7 @@ mod tests {
         }
     }
 
-    /// Regression (codeaudit round-8, correctness + error-handling lenses, independently):
+    /// Regression:
     /// `refresh_scrape_gauges` must keep refreshing `busbar_lane_state` (and the group-bucket
     /// gauges, which don't depend on `all_keys()` either) even when the governance store's
     /// `all_keys()` call fails during the scrape. The old code did a bare `return` on that error,

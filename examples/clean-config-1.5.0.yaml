@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# The 1.5.0 CLEAN CONFIG example: the full redesigned surface in one file, adapted from the
-# design contract (scratch/CLEAN-CONFIG-1.5.0.md) so that `busbar --validate` passes against the
-# shipped providers.yaml with no plugins installed and no secrets present:
+# The 1.5.0 CLEAN CONFIG example: the full redesigned surface in one file, shaped so that
+# `busbar --validate` passes against the shipped providers.yaml with no plugins installed and
+# no secrets present:
 #   - the store uses the compiled-in `memory` module (a durable store is a plugin tarball),
 #   - the auth chain is the built-in `keys` verifier (an IdP module is a `kind: auth` plugin),
 #   - hook instances are the bare built-ins (an out-of-process hook is an inline module ref),
@@ -149,6 +149,6 @@ limits:        { upstream_request_timeout_secs: 300, request_body_max_bytes: 335
 advanced:
   rate_sweep_interval: 256
   usage_flush_interval_ms: 100
-  # Every busbar-injected response header is opt-in and defaults OFF (task #139); see
+  # Every busbar-injected response header is opt-in and defaults OFF; see
   # docs/observability.md#response-headers. Uncomment to opt in:
   # response_headers: { server_timing: false, route_policy: false }

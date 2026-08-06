@@ -214,7 +214,7 @@ fn now_unix_secs() -> u64 {
 }
 
 /// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
-/// official SDKs require (Finding 6). `openai-python`'s `ResponseUsage` and `openai-node`'s
+/// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
 /// `ResponseUsage` type `total_tokens`, `input_tokens_details` (with `cached_tokens`), and
 /// `output_tokens_details` (with `reasoning_tokens`) as REQUIRED, non-nullable fields - a strict
 /// Pydantic/Zod decoder RAISES when any is omitted, and a real Responses body always carries them (as
@@ -222,10 +222,10 @@ fn now_unix_secs() -> u64 {
 /// and an `input_tokens_details` gated on a cache hit, so a client on the official SDK got a
 /// `ValidationError` and the missing-detail-objects shape was a distinguishability tell.
 ///
-/// SCHEMA FIDELITY (round-3 fix R3-C): the REAL Responses usage schema defines EXACTLY
+/// SCHEMA FIDELITY: the REAL Responses usage schema defines EXACTLY
 /// `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens` - there is NO
 /// `cache_write_tokens` field (unlike the Chat Completions `prompt_tokens_details`, the Responses
-/// detail objects carry only `cached_tokens`). The round-1 fix fabricated a non-native
+/// detail objects carry only `cached_tokens`). An earlier revision fabricated a non-native
 /// `cache_write_tokens` inside `input_tokens_details`, an EXTRA key a native Responses body never
 /// emits - itself a distinguishability tell and a decode surprise for a strict `extra="forbid"`
 /// model. It is removed here; cache-creation tokens still fold into the `input_tokens` TOTAL below.
@@ -328,7 +328,7 @@ fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<cra
     }
 }
 
-/// Normalize the Responses API `tool_choice` into the IR union (PF-H1).
+/// Normalize the Responses API `tool_choice` into the IR union.
 ///
 /// The Responses surface shares Chat Completions' string forms (`"auto"`/`"none"`/`"required"`) but
 /// FLATTENS the targeted object: `{"type":"function","name":"X"}` carries `name` at the top level
@@ -364,7 +364,7 @@ fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::
     }
 }
 
-/// Emit the IR tool-choice union in the Responses API's native shape (PF-H1) — string forms for
+/// Emit the IR tool-choice union in the Responses API's native shape — string forms for
 /// auto/none/required, the FLAT `{"type":"function","name":...}` object for a targeted tool.
 fn write_responses_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
     match tc {
