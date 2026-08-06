@@ -314,11 +314,11 @@ fn test_openai_read_fanout_cached_tokens() {
         usage.cache_creation_input_tokens, None,
         "OpenAI has no cache-creation split"
     );
-    // A2 normalization: input_tokens is UNCACHED (prompt_tokens 100 - cached 7 = 93).
+    // Normalization: input_tokens is UNCACHED (prompt_tokens 100 - cached 7 = 93).
     assert_eq!(usage.input_tokens, 93);
     assert_eq!(usage.output_tokens, 50);
     // Billing is unchanged for OpenAI-family: billable = uncached(93) + cache_read(7) + out(50)
-    // = 150 = the pre-A2 prompt_total(100) + output(50). No double-count, no regression.
+    // = 150 = the prior prompt_total(100) + output(50). No double-count, no regression.
     assert_eq!(usage.billable_tokens(), 150);
 }
 

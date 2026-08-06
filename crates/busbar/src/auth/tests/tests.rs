@@ -108,7 +108,7 @@ fn admin_scope_resolution() {
 // With only {read-only, full}, roles can no longer hold incomparable grants and a ceiling can never
 // collapse a binding to a surprising sibling meet.)
 
-/// S4 module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
+/// Module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
 /// ride module B's binding. A binding that lives only under "other-module" grants nothing to a
 /// principal identified by the test-groups-module.
 #[test]
@@ -295,7 +295,7 @@ fn test_open_door_regardless_of_upstream_creds() {
 }
 
 /// `chain: [keys]` sets the `keys_in_chain` flag rather than installing a boxed module: virtual
-/// keys authenticate on the governance path (P1), so the entry records operator intent for
+/// keys authenticate on the governance path, so the entry records operator intent for
 /// validation/reporting and the boxed chain stays empty.
 #[test]
 fn test_keys_in_chain_sets_flag_not_module() {
@@ -365,9 +365,9 @@ fn test_synth_key_omitted_pools_grants_all_pools() {
     assert!(key.group.is_none());
 }
 
-/// REGRESSION for the C6 flip: an explicit `allowed_pools: []` is the EMPTY SET (no pools), no
-/// longer an "all pools" alias. When EVERY granting binding says `[]`, the union is empty and NO
-/// key is synthesized at all (fail closed - no data-plane access).
+/// REGRESSION for the `allowed_pools` flip: an explicit `allowed_pools: []` is the EMPTY SET
+/// (no pools), no longer an "all pools" alias. When EVERY granting binding says `[]`, the union
+/// is empty and NO key is synthesized at all (fail closed - no data-plane access).
 #[test]
 fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
     let table = role_table(&[("dev", binding(Some(&[]), None, None))]);

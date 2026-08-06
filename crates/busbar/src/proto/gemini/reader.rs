@@ -49,7 +49,7 @@ impl ProtocolReader for GeminiReader {
         // message heuristic. Scan the lowercased raw body so the match is independent of which
         // structured field carried the text. The substring set mirrors `classify()` above.
         let provider_code = {
-            // C4: STATUS-GATE the context-length override (mirroring `AnthropicReader::extract_error`,
+            // STATUS-GATE the context-length override (mirroring `AnthropicReader::extract_error`,
             // which gates on 400/413). Gemini signals context-length-exceeded ONLY as a 400
             // `INVALID_ARGUMENT` (or, for some deployments, a 413). A 429 (rate limit) or 5xx whose
             // body happens to contain token-overflow phrasing — e.g. a retry-after message that quotes
@@ -272,7 +272,7 @@ impl ProtocolReader for GeminiReader {
                     std::collections::HashSet::new();
                 if let Some(parts_arr) = content_val.get("parts").and_then(|p| p.as_array()) {
                     for part in parts_arr {
-                        // Thinking part (H2): a `thought: true` part carries reasoning text + an
+                        // Thinking part: a `thought: true` part carries reasoning text + an
                         // opaque `thoughtSignature`; read it as IrBlock::Thinking (not plain Text) so
                         // a prior-turn reasoning block in the request survives with its signature.
                         // Checked first because a thought part also carries a `text` field.
@@ -520,7 +520,7 @@ impl ProtocolReader for GeminiReader {
             .and_then(|gc| gc.get("candidateCount"))
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
-        // response_format (M1): Gemini expresses structured output as
+        // response_format: Gemini expresses structured output as
         // `generationConfig.responseMimeType` (+ optional `responseSchema`). There is no single
         // native key, so the IR carries a NORMALIZED object `{responseMimeType, responseSchema?}`
         // preserving each present sub-field verbatim. This is best-effort and INTENTIONALLY lossy in
@@ -789,7 +789,7 @@ impl ProtocolReader for GeminiReader {
                         // a single response.
                         for part in parts_arr {
                             // A `thought: true` part is streamed REASONING, not answer text (the
-                            // same D4 rule the buffered reader applies). Route it to a Thinking
+                            // same rule the buffered reader applies). Route it to a Thinking
                             // block at index 0 ahead of the answer, mirroring the OpenAI reader's
                             // reasoning handling — without this arm a Gemini backend's thinking
                             // LEAKED INTO THE ANSWER TEXT on every cross-protocol stream (caught by
@@ -965,7 +965,7 @@ impl ProtocolReader for GeminiReader {
                 }
             }
 
-            // 2b. L2-5 STREAMING citations. Gemini delivers grounding/web-search citations at the
+            // 2b. STREAMING citations. Gemini delivers grounding/web-search citations at the
             // CANDIDATE level (`candidates[].citationMetadata.citationSources[]`), typically on a
             // late chunk (often the same chunk that carries `finishReason`), not per content-part.
             // Reuse `read_gemini_citations` so each source's neutral fields + byte-exact `raw` are
@@ -1200,7 +1200,7 @@ impl ProtocolReader for GeminiReader {
             .and_then(|p| p.as_array())
         {
             for part in parts_arr {
-                // Thinking part (H2) → IrBlock::Thinking. Gemini DOES surface reasoning: a content
+                // Thinking part → IrBlock::Thinking. Gemini DOES surface reasoning: a content
                 // part flagged `thought: true` carries the model's chain-of-thought `text` plus an
                 // opaque `thoughtSignature` (the resumable-reasoning token the google-genai SDK
                 // exposes as `Part.thought_signature`). Read it into the IR Thinking block (with its

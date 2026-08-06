@@ -762,7 +762,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 /// appended (the buffer stops growing, it is not aborted and no in-band error frame is emitted), so
 /// the resulting buffer is guaranteed-malformed JSON and degrades to the SAME pre-existing
 /// `args: {}` fallback `BlockStop` already applies to any unparseable accumulation. Unfixed, this
-/// test fails because the buffer instead grows past the cap (this is the red-before-green proof for
+/// test fails because the buffer instead grows past the cap (the guard for
 /// the unbounded-buffer defect).
 #[test]
 fn test_writer_tool_call_args_capped_at_max_len() {
@@ -1701,7 +1701,7 @@ fn test_extract_error_expired_api_key_prose_is_auth() {
 
 /// A thinking-only assistant turn must NOT vanish from
 /// `contents` — dropping it would collapse user/model alternation (two user turns adjacent) and
-/// 400 the real Gemini API. Post-H2 the Thinking block is now emitted as a native `thought:true`
+/// 400 the real Gemini API. The Thinking block is now emitted as a native `thought:true`
 /// part (reasoning is no longer dropped), so the model turn survives by carrying that thought part
 /// rather than the old empty-text placeholder. The alternation invariant (3 surviving turns) is
 /// what this guards.
@@ -1784,7 +1784,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
         1,
         "thinking-only turn carries exactly one part: {model_turn}"
     );
-    // Post-H2: the Thinking block emits a native thought part (not dropped → not a placeholder).
+    // The Thinking block emits a native thought part (not dropped → not a placeholder).
     assert_eq!(
         parts[0].get("text").and_then(|v| v.as_str()),
         Some("internal reasoning"),
@@ -4585,7 +4585,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
     );
 }
 
-// ---- PF-M2: Gemini finishReason mapping ----
+// ---- Gemini finishReason mapping ----
 
 #[test]
 fn finish_reason_maps_gemini_only_reasons_to_canonical() {
@@ -4671,7 +4671,7 @@ fn finish_reason_malformed_function_call_stream_is_error() {
     );
 }
 
-// ---- C4: context-length override is status-gated ----
+// ---- context-length override is status-gated ----
 
 #[test]
 fn context_length_override_only_fires_on_400_or_413() {
@@ -4683,7 +4683,7 @@ fn context_length_override_only_fires_on_400_or_413() {
     assert_ne!(
         err.provider_code.as_deref(),
         Some("context_length_exceeded"),
-        "a 429 with token-phrased body must NOT be mis-dispositioned as ContextLength (C4)"
+        "a 429 with token-phrased body must NOT be mis-dispositioned as ContextLength"
     );
     // The same body on a real 400 IS the canonical context-length signal.
     let body_400 =
@@ -4817,7 +4817,7 @@ fn test_read_request_sampling_controls_promote_and_round_trip() {
     assert_eq!(gc.get("candidateCount"), Some(&serde_json::json!(2)));
 }
 
-// --- Gap 2 (M1): response_format ↔ responseSchema/responseMimeType ---
+// --- response_format ↔ responseSchema/responseMimeType ---
 
 /// Gemini→IR→Gemini: native responseMimeType + responseSchema read into the normalized IR
 /// response_format object and round-trip back into generationConfig.
@@ -4893,7 +4893,7 @@ fn test_response_format_maps_to_gemini_and_sanitizes_schema() {
     );
 }
 
-// --- Gap 3 (H2): reasoning thought parts ↔ IrBlock::Thinking ---
+// --- reasoning thought parts ↔ IrBlock::Thinking ---
 
 /// A Gemini response `thought:true` part with a `thoughtSignature` reads into IrBlock::Thinking
 /// (text + signature), and write_response re-emits it as a `{text, thought:true,
@@ -4975,7 +4975,7 @@ fn test_thinking_block_round_trips_in_write_request() {
     );
 }
 
-// --- Gap 4 (H6): cachedContentTokenCount → cache_read_input_tokens ---
+// --- cachedContentTokenCount → cache_read_input_tokens ---
 
 /// Gemini usageMetadata.cachedContentTokenCount maps into the IR cache_read_input_tokens field
 /// (the same field Bedrock/Anthropic cache-read map to), surviving the cross-protocol seam.
@@ -5009,7 +5009,7 @@ fn test_cached_content_token_count_reads_into_cache_read() {
     assert_eq!(resp2.usage.cache_read_input_tokens, None);
 }
 
-// --- Gap 5 (L1): fileData reads into the typed Url source ---
+// --- fileData reads into the typed Url source ---
 
 /// A Gemini `fileData` part (with or without a mimeType) is a remote URL reference → reads into
 /// the typed `Url` source and re-emits as `fileData{fileUri}`. The optional `mimeType` hint is not
@@ -5073,7 +5073,7 @@ fn test_file_data_without_mime_type_uses_sentinel() {
     );
 }
 
-// --- Gap 6 (L3): tool input_schema strips Gemini-rejected JSON-Schema keywords ---
+// --- tool input_schema strips Gemini-rejected JSON-Schema keywords ---
 
 /// A cross-protocol tool def carrying JSON-Schema keywords Gemini 400-rejects ($schema,
 /// additionalProperties, $ref, …) must be stripped on write so the tool def survives instead of
@@ -5368,7 +5368,7 @@ fn test_gemini_usage_counts_thinking_tokens_as_output() {
     assert_eq!(u.output_tokens, 523);
 }
 
-/// D4: the Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
+/// The Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
 /// (`{text, thought:true}`) and carry the signature for a `SignatureDelta`
 /// (`{thought:true, thoughtSignature}`), mirroring the non-stream `write_response` thinking shape.
 /// Previously both returned None, silently dropping a cross-protocol reasoning stream.
@@ -5623,7 +5623,7 @@ fn gemini_citation_offsets_correct_across_multiple_text_parts() {
     assert_eq!(&text_blocks[1].0[0..5], "Paris");
 }
 
-/// L2-5 STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
+/// STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
 /// `citationMetadata.citationSources[]` must read into an `IrDelta::CitationsDelta` on the answer
 /// text block, and a cross-protocol Anthropic egress must re-emit it as a native
 /// `content_block_delta`/`citations_delta` event carrying the url/title — closing the streaming
@@ -5726,7 +5726,7 @@ fn stream_gemini_citation_metadata_projects_to_anthropic_citations_delta() {
     );
 }
 
-/// L2-5 STREAMING citations, reverse direction: an `IrDelta::CitationsDelta` (as an Anthropic
+/// STREAMING citations, reverse direction: an `IrDelta::CitationsDelta` (as an Anthropic
 /// stream reader would produce) must project onto a native Gemini `citationMetadata.citationSources`
 /// chunk when written by the Gemini writer — and the shape-gate must REBUILD the Gemini source from
 /// the neutral fields rather than leak the foreign Anthropic `raw` through.
@@ -5778,7 +5778,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
     );
 }
 
-/// L2-5: a Gemini stream with NO citations must be unaffected — no `CitationsDelta` is produced,
+/// A Gemini stream with NO citations must be unaffected — no `CitationsDelta` is produced,
 /// and the block balance is unchanged.
 #[test]
 fn stream_gemini_no_citations_unaffected() {

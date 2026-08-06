@@ -5,7 +5,7 @@
 //!
 //! A default-included, compile-removable module for the `admin_auth:` chain (the parallel chain
 //! gating `/admin/v1/*`): the single operator admin token, presented as `Authorization: Bearer` or
-//! `X-Admin-Token`. Architecturally a peer of any external admin module (AD/OIDC — private repo);
+//! `X-Admin-Token`. Architecturally a peer of any external admin module (AD/OIDC);
 //! this one is credential-compare only, so it takes the pre-computed token hash and the extracted
 //! carriers rather than the `AuthModule` single-candidate shape (an admin credential legitimately
 //! arrives on two carriers, and the constant-time both-carriers fold must live INSIDE the module —

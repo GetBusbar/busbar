@@ -261,7 +261,7 @@ impl GovState {
             // pre-rotation token is rejected by every node reading the same store.
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
-            // C6 intent carried intact from the mint body: None = all pools; Some([]) = none.
+            // Intent carried intact from the mint body: None = all pools; Some([]) = none.
             allowed_scopes: spec
                 .allowed_pools
                 .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
@@ -409,7 +409,7 @@ impl GovState {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
             name: format!("self-serve key ({user_sub})"),
-            // C6 intent carried intact: None = all pools; Some([]) = none.
+            // Intent carried intact: None = all pools; Some([]) = none.
             allowed_scopes: allowed_pools
                 .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
             enabled: true,
@@ -511,7 +511,7 @@ impl GovState {
             if old != out.0.id {
                 // Tombstone the prior epoch's binding — its token now fails verify (disabled).
                 if let Err(delete_err) = self.store.delete_key(&old) {
-                    // H2: the NEW binding is already live (written above) but the OLD one could not
+                    // The NEW binding is already live (written above) but the OLD one could not
                     // be tombstoned. Returning Err here as-is would leave BOTH bindings enabled — two
                     // valid tokens for one subject, and the caller-visible 500 would suggest nothing
                     // happened. ROLL BACK the just-written new binding (delete it + refresh the
@@ -556,7 +556,7 @@ impl GovState {
                     // the cache holding BOTH the old (still `enabled`) and the new binding — the
                     // old token would keep verifying against a store that no longer agrees.
                     //
-                    // Mirror the H2 rollback discipline above: don't leave that inconsistency
+                    // Mirror the rollback discipline above: don't leave that inconsistency
                     // silent. A full `refresh()` needs store I/O and just failed, but evicting ONE
                     // known-stale id from the two cache indices needs none — it's a local map
                     // mutation under `caches_write` (whose lock is poison-recovering, so this
@@ -1220,7 +1220,7 @@ impl GovState {
         Ok(Some(RotatedCredential { key, token, exp }))
     }
 
-    /// Apply a partial update to an existing key. Keys are PURE AUTH (S1), so the mutable surface
+    /// Apply a partial update to an existing key. Keys are PURE AUTH, so the mutable surface
     /// is auth-shaped only: `enabled` (freeze/unfreeze the binding) and `group` (rebind the limit
     /// chain; three-state: absent = unchanged, `null` = unbind to unlimited, a value = rebind -
     /// the caller validates the named group exists). `generation_hash`/`name`/`allowed_pools`/
@@ -1500,7 +1500,7 @@ impl GovState {
     }
 
     /// ATOMIC chain ADMISSION for the request path - the generic limit engine's hard-cap
-    /// primitive (P4). Resolves the key's enforcement chain ([key attribution bucket] -> the bound
+    /// primitive. Resolves the key's enforcement chain ([key attribution bucket] -> the bound
     /// group's window buckets -> parent's -> ... root) and admits ONLY if EVERY limit of EVERY
     /// group in the chain admits (AND / most-restrictive). Keys carry NO limits of their own; a
     /// key with no group is authed + unlimited (its 1-bucket chain has no caps).
@@ -1555,7 +1555,7 @@ impl GovState {
             chain.iter().filter(|b| b.applies_to_pool(pool)).collect();
         let groups = cost.groups();
 
-        // 1. FREEZE check: any `enabled: false` group in the chain rejects (C10) - checked before
+        // 1. FREEZE check: any `enabled: false` group in the chain rejects - checked before
         // any gauge or charge so a frozen chain mutates nothing.
         for &gi in chain.group_indices() {
             if !groups[gi].enabled {

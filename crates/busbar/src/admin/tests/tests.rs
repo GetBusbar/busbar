@@ -643,12 +643,12 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         .json()
         .await
         .unwrap();
-    // Window/freshness header. F1: the usage response carries a `currency` field sourced from
+    // Window/freshness header. The usage response carries a `currency` field sourced from
     // the single USAGE_CURRENCY const (emitted only on this endpoint).
     assert_eq!(
         body.get("currency").and_then(|c| c.as_str()),
         Some("USD"),
-        "usage response carries currency:USD (F1)"
+        "usage response carries currency:USD"
     );
     assert!(body["as_of"].as_u64().unwrap() >= now);
     let (start, end) = (
@@ -704,11 +704,11 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 /// END-TO-END config apply: `POST /api/v1/admin/hooks` registers a hook at runtime (201), and a
 /// subsequent `GET /api/v1/admin/hooks` SEES it — proving the AppHandle swap took effect AND the
 /// per-request service reads the CURRENT snapshot. Invalid definitions reject with invalid_request.
-/// D2 e2e (unix): PATCH settings pushes `configure` to the running hook and commits ON ACK
+/// E2e (unix): PATCH settings pushes `configure` to the running hook and commits ON ACK
 /// (the registry shows the new settings); a NACKing hook commits nothing; GET schema proxies
 /// the hook's describe reply.
 #[cfg(unix)]
-/// D2 control plane over the DLOPEN hook seam: registering a hook loads its `kind: hook` plugin; a
+/// Control plane over the DLOPEN hook seam: registering a hook loads its `kind: hook` plugin; a
 /// settings PATCH pushes `configure` and COMMITS on the plugin's exact-version ack (the test-hook
 /// plugin acks by default); `GET .../schema` proxies the plugin's `describe` self-description
 /// envelope, extracting the `schema` member (single nest). The retired socket/webhook mock is gone —
@@ -943,7 +943,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     assert_eq!(m0["usable"], false, "carried trip: {m0}");
     assert_eq!(ma["usable"], true, "fresh lane: {ma}");
 
-    // Stale If-Match: 409, nothing applied (H3: concurrency rides the header, never the body).
+    // Stale If-Match: 409, nothing applied (concurrency rides the header, never the body).
     let stale = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .header("if-match", "\"0\"")
         .body(
@@ -1183,7 +1183,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 /// The scope CHAIN end-to-end (1.5.2 two-rung collapse) with group-mapped principals (via the
 /// test-only external module): a `read-only` role reads but cannot mutate (403, audited); a `full`
 /// role mutates; an unmapped group gets nothing at all (403 even on reads); a role bound only under
-/// a DIFFERENT module earns nothing here (S4); the operator token stays full.
+/// a DIFFERENT module earns nothing here; the operator token stays full.
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     crate::metrics::init();
@@ -1212,7 +1212,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         inner
             .role_bindings
             .insert("test-scope-module".to_string(), table);
-        // S4 trust boundary: `sneaky` is bound full ONLY under a DIFFERENT module - a role
+        // Trust boundary: `sneaky` is bound full ONLY under a DIFFERENT module - a role
         // asserted by test-scope-module never rides another module's binding table.
         let mut other = std::collections::BTreeMap::new();
         other.insert(
@@ -1311,7 +1311,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     .unwrap();
     assert_eq!(r.status().as_u16(), 403, "unmapped groups grant nothing");
 
-    // S4 NESTED-BY-MODULE: `sneaky` is bound full under `other-module` only - asserted through
+    // NESTED-BY-MODULE: `sneaky` is bound full under `other-module` only - asserted through
     // test-scope-module it earns nothing (a role never rides another module's binding table).
     let r = with(
         "grp:sneaky",
@@ -1505,7 +1505,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     handle.abort();
 }
 
-/// `PUT /api/v1/admin/admin-auth` end-to-end with the D4 dry-run guard: a chain that would lock the
+/// `PUT /api/v1/admin/admin-auth` end-to-end with the dry-run guard: a chain that would lock the
 /// CALLER out is a 409 and nothing changes; a chain the caller survives applies atomically
 /// (the old credential stops working on the very next request, the surviving one carries on);
 /// unknown modules and a stale If-Match reject.
@@ -1559,7 +1559,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "unknown module is invalid_request"
     );
 
-    // Stale If-Match: 409 (H3: concurrency rides the header; a body-level twin no longer parses
+    // Stale If-Match: 409 (concurrency rides the header; a body-level twin no longer parses
     // — deny_unknown_fields makes a leftover `expected_version` field a loud 400, not a no-op).
     let r = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
@@ -1572,7 +1572,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 409, "stale If-Match conflicts");
 
-    // THE D4 GUARD: the operator token would NOT survive a chain of only the external module
+    // THE GUARD: the operator token would NOT survive a chain of only the external module
     // (its credential has no grp: shape — all-Pass denies). 409, and the operator still works.
     let r = put(
         "admintok",
@@ -1633,7 +1633,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
 
-    // READ-AFTER-WRITE (L3): GET /api/v1/admin/admin-auth reflects exactly what the PUT installed —
+    // READ-AFTER-WRITE: GET /api/v1/admin/admin-auth reflects exactly what the PUT installed —
     // the write and read now name the SAME resource (previously PUT lived on /auth and GET
     // admin-auth reported a hard-coded module, so they could never agree).
     let body: serde_json::Value = client
@@ -1815,7 +1815,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         .send()
         .await
         .unwrap();
-    // ETag is header-only now (H4) — strip the surrounding quotes to feed back as If-Match.
+    // ETag is header-only now — strip the surrounding quotes to feed back as If-Match.
     let etag = got
         .headers()
         .get(axum::http::header::ETAG)
@@ -2446,7 +2446,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .unwrap();
     assert_eq!(escalate.status().as_u16(), 409, "grants are immutable");
 
-    // Stale If-Match is a 409 conflict (H3: concurrency rides the header).
+    // Stale If-Match is a 409 conflict (concurrency rides the header).
     let stale = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/rep")))
         .header("if-match", "\"0\"")
         .body(
@@ -2576,7 +2576,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         "the rolled-back hook is live again"
     );
 
-    // Guard rails: unknown target = 404; stale If-Match = 409 (H3).
+    // Guard rails: unknown target = 404; stale If-Match = 409.
     let missing = admin(client.post(format!("http://{addr}/api/v1/admin/config/rollback")))
         .header("content-type", "application/json")
         .body(serde_json::json!({"version": 999}).to_string())
@@ -4321,7 +4321,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_budget_period_field() {
-    // 1.5.0 (S1): keys are PURE AUTH - `budget_period` is GONE from the mint body, and the mint
+    // 1.5.0: keys are PURE AUTH - `budget_period` is GONE from the mint body, and the mint
     // struct is `#[serde(deny_unknown_fields)]`, so a body carrying the removed field is a loud 400
     // (invalid_request), never silently accepted. The premise of the old test (a typo'd period
     // degrading to `total`) no longer exists: there is no period on a key at all.
@@ -4350,7 +4350,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(
             body["error"]["code"],
-            "invalid_request", // frozen v1 envelope: keys speak the SAME code enum (H1)
+            "invalid_request", // frozen v1 envelope: keys speak the SAME code enum
             "400 error code must be invalid_request: {body}"
         );
     }
@@ -4582,7 +4582,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         );
         assert_eq!(
             body["error"]["code"],
-            "invalid_request", // frozen v1 envelope: keys speak the SAME code enum (H1)
+            "invalid_request", // frozen v1 envelope: keys speak the SAME code enum
             "the 400 error code must be invalid_request; got {text}"
         );
     }
@@ -4592,7 +4592,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_max_budget_cents_field() {
-    // 1.5.0 (S1): keys carry NO inline caps - `max_budget_cents` is REMOVED from the mint body, and
+    // 1.5.0: keys carry NO inline caps - `max_budget_cents` is REMOVED from the mint body, and
     // the mint struct is `#[serde(deny_unknown_fields)]`. The old test's premise (a negative cap
     // slipping past serde into a silent over-budget DoS) is gone: the field no longer exists on the
     // key surface, so ANY body carrying it - negative, zero, or positive - is a loud 400.
@@ -4718,7 +4718,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
 
 #[tokio::test]
 async fn test_create_key_rejects_removed_rate_limit_fields() {
-    // 1.5.0 (S1): `rpm_limit`/`tpm_limit` are REMOVED from the mint body (keys carry no inline caps;
+    // 1.5.0: `rpm_limit`/`tpm_limit` are REMOVED from the mint body (keys carry no inline caps;
     // enforcement flows through the bound group), and the mint struct is
     // `#[serde(deny_unknown_fields)]`. The old test's premise (a `0` limit slipping past serde into
     // a permanently-dead key) is gone: ANY body naming these fields is a loud 400.
@@ -5049,7 +5049,7 @@ async fn test_delete_existing_key_returns_200() {
     assert_eq!(
         resp.status().as_u16(),
         204,
-        "existing key deletes with 204 No Content (H4)"
+        "existing key deletes with 204 No Content"
     );
     handle.abort();
 }
@@ -5075,7 +5075,7 @@ async fn test_delete_missing_key_returns_404() {
     );
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["message"], "key not found");
-    assert_eq!(body["error"]["code"], "not_found"); // frozen v1 envelope: keys speak the SAME code enum (H1)
+    assert_eq!(body["error"]["code"], "not_found"); // frozen v1 envelope: keys speak the SAME code enum
     handle.abort();
 }
 
@@ -5993,7 +5993,7 @@ fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
 }
 
 /// As `admin_test_tarball`, with an explicit version so a test can build two SAME-NAME tarballs that
-/// differ only in version (and thus filename) - the H2 same-name-different-file case.
+/// differ only in version (and thus filename) - the same-name-different-file case.
 fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
     let lib = lib.as_slice();
@@ -6743,7 +6743,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 
     handle.abort();
 
-    // A schemaless plugin (the H1 fixture) reports `"schema": null`, not an error — dropped in and
+    // A schemaless plugin reports `"schema": null`, not an error — dropped in and
     // rebooted the same way, since (as above) ephemeral test apps only pick up the plugins dir at
     // initial load.
     let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
@@ -6853,7 +6853,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     bad_handle.abort();
 }
 
-/// H2 (bricks next boot): installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
+/// Bricks next boot: installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
 /// bump `-1.1.0.tar.gz` over an installed `-1.0.0.tar.gz`) must be a 409, NOT admitted. Two files
 /// claiming the same plugin name are a hard conflict at boot (registry::conflicts()) - admitting the
 /// second bricks the next restart. A same-name upgrade must REUSE the existing filename. The old gate
@@ -6917,7 +6917,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     handle.abort();
 }
 
-/// M7 (fail-open): a CORRUPT tarball already sitting in the plugins dir makes scan_and_validate Err.
+/// Fail-open: a CORRUPT tarball already sitting in the plugins dir makes scan_and_validate Err.
 /// The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Now a new
 /// install returns an error (never 201) until the offending tarball is fixed/removed.
 #[tokio::test]
@@ -7158,7 +7158,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     handle.abort();
 }
 
-// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/) ────
+// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal ────────────
 
 /// A `budget` limit for a group tree (helper to keep the test trees readable).
 fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
@@ -7172,7 +7172,7 @@ fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
     }
 }
 
-/// AUTO-PROVISION ON MINT (D2): minting into a NONEXISTENT `user:<sub>` leaf under a team carrying a
+/// AUTO-PROVISION ON MINT: minting into a NONEXISTENT `user:<sub>` leaf under a team carrying a
 /// `child_default` creates the leaf with the TEMPLATE limits, binds the key, and the new leaf is
 /// live in the enforcement chain (its resolved limits carry the template budget). Nearest-ancestor
 /// wins, so the leaf gets the team's per-head default. Also: `group_provisioned: true` is echoed.
@@ -7886,7 +7886,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     handle.abort();
 }
 
-// ── 1.5.0 signed-token key coverage (P3) ─────────────────────────────────────────────────────────
+// ── 1.5.0 signed-token key coverage ──────────────────────────────────────────────────────────────
 
 /// The MINT returns a busbar-SIGNED `token` (prefix `bbk_`) + an `expires_at`, and that token is
 /// NEVER stored: a subsequent `GET /keys/{id}` returns the binding metadata but no `token`, and the
@@ -13800,7 +13800,7 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A2 — SECRET CONTAINMENT ON THE HOOK-REGISTRY READS. Same class as the named-map reads above, and
+/// SECRET CONTAINMENT ON THE HOOK-REGISTRY READS. Same class as the named-map reads above, and
 /// the same fix: `GET /hooks` and `GET /hooks/{name}` are READ-ONLY admin scope, and a hook's
 /// `settings:` bag is a `SecretRef` carrier by design (busbar resolves it before every configure
 /// push) — so a literal credential written there is fully supported and must never be projected.
@@ -13868,7 +13868,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
     handle.abort();
 }
 
-/// A3 — SECRET CONTAINMENT ON `GET /api/v1/admin/config/settings`. This read serializes the WHOLE
+/// SECRET CONTAINMENT ON `GET /api/v1/admin/config/settings`. This read serializes the WHOLE
 /// `RootSettings`, which carries `store: Option<StoreCfg>` and therefore `store.settings` — the bag
 /// busbar's own docs spell with a credential (`url: rediss://:password@…`), and whose `url`
 /// `plugin-pack` marks `x-busbar-secret`. `PUT /config/settings` requires FULL scope; this GET

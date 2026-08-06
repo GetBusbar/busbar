@@ -134,8 +134,8 @@ fn validate_ok_on_valid_config_without_plugins() {
 }
 
 /// `--validate`'s "N env var(s) referenced but unset" note must appear exactly when a `${VAR}`
-/// interpolation in config/providers resolves to an unset variable, and must name it. Closes a
-/// mutation-testing gap: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
+/// interpolation in config/providers resolves to an unset variable, and must name it. Closes an
+/// uncovered branch: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
 /// coverage of either branch (the baseline test above never referenced `${VAR}` syntax at all, so
 /// it exercised neither "note present" nor a confirmed "note absent").
 #[test]

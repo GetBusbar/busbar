@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
+//! Tests for the 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 
 use super::*;
 
@@ -151,7 +151,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["rate_card", "claude", "input_utok"]).as_f64(),
         Some(3.0)
     );
-    // budget_groups -> groups with C8 window nouns (daily -> day, monthly -> month).
+    // budget_groups -> groups with window nouns (daily -> day, monthly -> month).
     let growth_limits = get(&["groups", "growth", "limits"]);
     let growth_limit = &growth_limits.as_sequence().unwrap()[0];
     assert_eq!(
@@ -530,9 +530,9 @@ global_hooks: [audit-tap]
     );
 }
 
-/// The detector must NAME every real 1.4.x marker so boot/`--validate` refuse the old format loudly
-/// (P9): the top-level group_map / admin_auth, per-module `auth.modules`, an `auth.chain: [tokens]`,
-/// and a pool `on_exhausted.action`.
+/// The detector must NAME every real 1.4.x marker so boot/`--validate` refuse the old format
+/// loudly: the top-level group_map / admin_auth, per-module `auth.modules`, an
+/// `auth.chain: [tokens]`, and a pool `on_exhausted.action`.
 #[test]
 fn detect_real_14x_top_level_and_on_exhausted_markers() {
     let raw = r#"
@@ -1069,7 +1069,7 @@ fn migrate_emit_server_timing_absent_is_a_no_op() {
 /// or a top-level `metrics:` block LOUD-FAILS at boot/`--validate` — `detect_legacy_markers` names
 /// each retired key with the migrate breadcrumb.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 these keys parsed silently (they were live `ObservabilityCfg` /
+/// Before 1.5.3 these keys parsed silently (they were live `ObservabilityCfg` /
 /// `MetricsCfg` fields), so `detect_legacy_markers` returned NO marker for them — this assertion fails
 /// on the pre-retirement tree.
 #[test]
@@ -1107,7 +1107,7 @@ pools: {}
 /// under `export.request-log-webhook.settings`, the metrics block under `export.prometheus.settings`,
 /// and the old keys are gone from `observability:` / the top level. Idempotent.
 ///
-/// RED-BEFORE-GREEN: `migrate_observability_export` did not exist before 1.5.3, so the migrated
+/// `migrate_observability_export` did not exist before 1.5.3, so the migrated
 /// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
@@ -1334,7 +1334,7 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
 /// GOLDEN — `admin_insecure: true` -> `admin_require_mtls: false` (the flag INVERTED so the safe
 /// posture is the default).
 ///
-/// RED-BEFORE-GREEN: `admin_require_mtls` did not exist before 1.5.3, and `admin_insecure` was a
+/// `admin_require_mtls` did not exist before 1.5.3, and `admin_insecure` was a
 /// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
@@ -1369,7 +1369,7 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
 /// GOLDEN — `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
 /// default (whose credential reaches the upstream is a ROUTING property, not an inbound-auth one).
 ///
-/// RED-BEFORE-GREEN: `pools.upstream_credentials` did not exist before 1.5.3 and
+/// `pools.upstream_credentials` did not exist before 1.5.3 and
 /// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
@@ -1399,7 +1399,7 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
 /// GOLDEN — the `observability:` BLOCK is DELETED and its last field folds into a `module: otlp`
 /// `export:` instance, so `export:` is the single telemetry-egress surface.
 ///
-/// RED-BEFORE-GREEN: there was no `otlp` export module before 1.5.3, so `otlp_url` had nowhere
+/// There was no `otlp` export module before 1.5.3, so `otlp_url` had nowhere
 /// to go and the block could not be deleted without losing the trace sink.
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
@@ -1441,7 +1441,7 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 /// GOLDEN — the TYPE-KEYED `export:` block becomes the NAMED map (`<name>: { module, settings }`),
 /// which is what makes two instances of one module expressible at all.
 ///
-/// RED-BEFORE-GREEN: the type-keyed shape was the live grammar before 1.5.3, so there was
+/// The type-keyed shape was the live grammar before 1.5.3, so there was
 /// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
@@ -1495,7 +1495,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 /// carrying the union of what the three sites contributed. Under the retired grammar the operator
 /// wrote those settings three times and nothing stopped the copies from drifting.
 ///
-/// RED-BEFORE-GREEN: `identity-providers:` did not exist before 1.5.3, so there was no map to
+/// `identity-providers:` did not exist before 1.5.3, so there was no map to
 /// converge onto and the inline form was the live grammar.
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
@@ -1537,7 +1537,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     );
     assert!(
         dig(&doc, &["auth", "methods"]).is_none(),
-        "the parallel methods map is gone (A7)"
+        "the parallel methods map is gone"
     );
 
     // THE DEDUPE: exactly ONE `oidc` definition, carrying the union of all three source sites.
@@ -1570,7 +1570,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         )
         .and_then(|v| v.as_str()),
         Some("busbar"),
-        "the settings written on the METHODS entry merge in too (A7)"
+        "the settings written on the METHODS entry merge in too"
     );
     assert_eq!(
         dig(
@@ -1579,7 +1579,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         )
         .and_then(|v| v.as_str()),
         Some("busbar-web"),
-        "browser_login is PER-PROVIDER in 1.5.3 (A7)"
+        "browser_login is PER-PROVIDER in 1.5.3"
     );
     // The operator credential rides onto the admin-tokens definition, not the chain entry.
     assert_eq!(
@@ -1618,7 +1618,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 /// four — a behavior change smuggled in by a config migration. A migration must be
 /// semantics-preserving, so the old default is written out explicitly.
 ///
-/// RED-BEFORE-GREEN: `hook_entry_to_def` only emitted `phase:` when `at:` was PRESENT, so a bare tap
+/// `hook_entry_to_def` only emitted `phase:` when `at:` was PRESENT, so a bare tap
 /// migrated with no `phase:` at all and silently widened to four stages.
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
@@ -1667,7 +1667,7 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 /// hand-edited shapes) hit the `let … else` and returned, leaving the migrated document with NO
 /// `auth:` key and NO ledger entry at all. The block must survive VERBATIM and be named in the todos.
 ///
-/// RED-BEFORE-GREEN: on the pre-fix tree the migrated document has no `auth:` key for any of these
+/// On the pre-fix tree the migrated document has no `auth:` key for any of these
 /// three shapes and `out.todos` never mentions `auth:`.
 #[test]
 fn migrate_never_drops_a_malformed_auth_block() {
@@ -1705,7 +1705,7 @@ fn migrate_never_drops_a_malformed_auth_block() {
 /// verbatim (together with the `auth:` block already removed by then) and flagged, rather than being
 /// replaced by synthesized definitions.
 ///
-/// RED-BEFORE-GREEN: pre-fix, `identity-providers: 7` vanished from the output entirely (the `match`
+/// Pre-fix, `identity-providers: 7` vanished from the output entirely (the `match`
 /// fell through to `Mapping::new()`), taking the operator's line with it.
 #[test]
 fn migrate_never_drops_a_malformed_identity_providers_block() {
@@ -1736,7 +1736,7 @@ fn migrate_never_drops_a_malformed_identity_providers_block() {
 /// malformed one legitimately disappears; what must not happen is it disappearing with NO record. The
 /// deletion is recorded in `changes` so an operator diffing the ledger sees it.
 ///
-/// RED-BEFORE-GREEN: pre-fix, `observability: null` / `metrics: null` were removed by `root.remove()`
+/// Pre-fix, `observability: null` / `metrics: null` were removed by `root.remove()`
 /// and the `let … else` returned — `out.changes` mentions neither.
 #[test]
 fn migrate_records_the_deletion_of_a_malformed_retired_block() {
@@ -1769,7 +1769,7 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
 /// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
 /// outcome: `<module>-admin` carries the admin plane's settings and `auth.admin_auth` references it.
 ///
-/// RED-BEFORE-GREEN: pre-fix the migrated doc has ONE `oidc` definition whose `settings.issuer` is
+/// Pre-fix the migrated doc has ONE `oidc` definition whose `settings.issuer` is
 /// `data.example.com`, `auth.admin_auth` is `[oidc]`, and `admin.example.com` appears nowhere.
 #[test]
 fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
@@ -1843,7 +1843,7 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     );
 }
 
-/// B2: a 1.4.x `budget_period` the migrator cannot express EXACTLY must never collapse silently
+/// A 1.4.x `budget_period` the migrator cannot express EXACTLY must never collapse silently
 /// onto the ALL-TIME window.
 ///
 /// `weekly` and `hourly` are both real 1.4.x periods (the tree's own admin tests name `weekly`), and
@@ -2012,7 +2012,7 @@ pools: {}
     );
 }
 
-/// B1: the migrator NEVER takes a key off the document and then discards the value because it was
+/// The migrator NEVER takes a key off the document and then discards the value because it was
 /// not the shape the migration expected.
 ///
 /// Three sites did exactly that, with no `changes`, no `todos` and no warning: the top-level
@@ -2086,7 +2086,7 @@ pools:
 ///   (b) `--migrate-config` mechanically rewrites the value, records a `changes` entry, and is
 ///       idempotent (a config already saying `valkey` is untouched and un-flagged).
 ///
-/// RED-BEFORE-GREEN: before `migrate_store_module` existed the migrated document still said
+/// Before `migrate_store_module` existed the migrated document still said
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
 fn migrate_store_module_redis_to_valkey() {
@@ -2157,7 +2157,7 @@ fn migrate_store_module_redis_to_valkey() {
     );
 }
 
-/// B1 (see `a_wrong_shaped_key_is_never_taken_and_discarded`) for the 1.5.3 store rename: a `store:`
+/// See `a_wrong_shaped_key_is_never_taken_and_discarded`, for the 1.5.3 store rename: a `store:`
 /// block written in a shape the rename cannot read is LEFT EXACTLY AS WRITTEN, in place, and named
 /// in `todos` — never lifted out of the document and dropped. An absent `store:` is the legal
 /// `memory` default, so a silent drop here would turn a durable deployment ephemeral and still pass

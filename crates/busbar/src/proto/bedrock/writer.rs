@@ -489,7 +489,7 @@ impl ProtocolWriter for BedrockWriter {
             );
         }
 
-        // response_format (D3): Bedrock Converse has NO native top-level `response_format` /
+        // response_format: Bedrock Converse has NO native top-level `response_format` /
         // structured-output field (structured output is model-specific and rides in
         // `additionalModelRequestFields`, which we do not synthesize here). The reader never sets
         // `response_format` on the same-protocol (Bedrock→Bedrock) path — same-protocol relays the raw
@@ -785,7 +785,7 @@ impl ProtocolWriter for BedrockWriter {
                         "delta": { "reasoningContent": { "redactedContent": redacted } }
                     }),
                 )),
-                // L2-5: Bedrock ConverseStream has no streaming-citation delta shape; suppress
+                // Bedrock ConverseStream has no streaming-citation delta shape; suppress
                 // rather than emit a non-native frame (the citation is preserved in the IR and
                 // re-emitted by any protocol that does model streaming citations).
                 crate::ir::IrDelta::CitationsDelta(_) => None,

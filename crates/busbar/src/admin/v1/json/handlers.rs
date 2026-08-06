@@ -974,8 +974,8 @@ pub(crate) async fn delete_hook(
     }
 }
 
-/// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service
-/// D2). The mint-time group contract, one place, shared by the key handler:
+/// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service).
+/// The mint-time group contract, one place, shared by the key handler:
 ///
 /// - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
 /// - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
@@ -1486,7 +1486,7 @@ pub(crate) async fn delete_group(
 
 /// `DELETE /api/v1/admin/overlay/{section}` — DISCARD every overlay mutation for one section and revert
 /// it to what base `config.yaml` declares. `section` ∈ {`groups`, `hooks`, `root`}; an unknown name is
-/// a `400` `invalid_request`. This is the audited revert-to-config front door (D3: per-section, NOT
+/// a `400` `invalid_request`. This is the audited revert-to-config front door (per-section, NOT
 /// whole-overlay): it clears that section's overlay entries + tombstones, then rebuilds a complete
 /// `App` from base config (disk truth re-read + resolved, the OTHER sections' overlay still merged) and
 /// swaps it in — so a `groups` reset restores base group limits (cost model rebuilt), a `hooks` reset
@@ -1990,7 +1990,7 @@ pub(crate) async fn rollback_config(
             // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args
             // `None`); the reconciliation inside `persist` drops any tombstone for a restored name
             // so the rollback survives a restart. Routed through the txn's commit so config.rollback
-            // shares the same durability discipline as plugin.rollback (C4 ≡ C5).
+            // shares the same durability discipline as plugin.rollback.
             let p = installed.clone();
             Ok(Outcome::commit(
                 installed.clone(),
@@ -2055,7 +2055,7 @@ pub(crate) async fn rollback_config(
 /// `{"admin_auth": ["module", ...]}`. Guarded three ways:
 /// - every name must be a compiled-in admin module (a typo can never silently drop auth);
 /// - optimistic concurrency via `If-Match` (409 `version_conflict` when stale — re-read and retry);
-/// - **the D4 DRY-RUN GUARD**: the CALLING request's own credentials are re-evaluated against the
+/// - **the DRY-RUN GUARD**: the CALLING request's own credentials are re-evaluated against the
 ///   CANDIDATE chain, and unless they would still hold FULL scope under it the change is rejected
 ///   with 409 — you cannot lock yourself out with this endpoint. (A chain broken some other way
 ///   is fix-config + restart: sub-second, health persists.)
@@ -2117,7 +2117,7 @@ pub(crate) async fn put_auth(
         let mut next = (**current).clone();
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
-        // D4 DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
+        // DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
         let bearer = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -2229,7 +2229,7 @@ pub(crate) async fn flush_credential_cache(
 /// build a complete new `App` reusing process-lifetime state (client pool, governance DB, version
 /// history, rate windows) with every surviving lane's health RESTORED BY STABLE IDENTITY, and
 /// atomically swap it in. A NORMAL admin call under the NORMAL admin auth chain — no second
-/// credential path exists (D3). Invalid disk config = `invalid_request`, nothing changes. The
+/// credential path exists. Invalid disk config = `invalid_request`, nothing changes. The
 /// GitOps primitive: push config, call reload, no restart, no health amnesia.
 /// Rebuild a fresh `App` snapshot from DISK TRUTH (base `config.yaml` + `providers.yaml`) merged with
 /// the persisted OVERLAY, reusing `current`'s process-lifetime state (governance/store, version log,
@@ -2453,8 +2453,8 @@ pub(crate) struct ApplyConfigReq {
 
 /// `POST /api/v1/admin/config/apply` — apply a FULL config carried in the request body, atomically:
 /// resolve + validate (an invalid config is a 400 that changes nothing), build a complete new
-/// `App` reusing process-lifetime state, carry every surviving lane's health BY STABLE IDENTITY
-/// (D1), swap. The body-carried twin of `config/reload` (disk) — Terraform/CI push the config they
+/// `App` reusing process-lifetime state, carry every surviving lane's health BY STABLE IDENTITY,
+/// swap. The body-carried twin of `config/reload` (disk) — Terraform/CI push the config they
 /// hold instead of writing files. NOTE: an applied config is LIVE but not written to disk — the
 /// next reload/restart returns to disk truth (+overlay); the response says so.
 pub(crate) async fn apply_config(
@@ -3112,7 +3112,7 @@ pub(crate) struct PatchSettingsReq {
 }
 
 /// `PATCH /api/v1/admin/hooks/{name}/settings` — push an opaque settings map to the RUNNING hook and
-/// COMMIT ON ACK (D2): busbar sends the `configure` message over the hook's transport, waits for
+/// COMMIT ON ACK: busbar sends the `configure` message over the hook's transport, waits for
 /// the versioned ack (5s deadline), and only then swaps in the registry update (grants untouched —
 /// immutability holds by construction) + persists + audits + versions. A nack/timeout/error
 /// commits NOTHING (`invalid_request` names the reason). Base-defined hooks are 409 (edit the
@@ -3478,7 +3478,7 @@ pub(crate) async fn hook_status(
             // the list is empty rather than absent.
             "drift_keys": [],
             // `metrics` is INVARIANTLY an array — `[]` here (not `{}`) so a strict consumer decoding
-            // it as an array never has to special-case the no-status branch (R5).
+            // it as an array never has to special-case the no-status branch.
             "metrics": [],
             "as_of": as_of,
             "source": "live",
@@ -4327,7 +4327,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
-    // Stamp the `If-Match` header parameter onto every version-guarded mutation (H3: the ONE
+    // Stamp the `If-Match` header parameter onto every version-guarded mutation (the ONE
     // optimistic-concurrency mechanism across the surface). Driven by an explicit op list — NOT
     // "every mutation" — because the unguarded ops (validate: stateless dry-run; reload: returns to
     // disk truth unconditionally; cache/flush, key create/rotate: no versioned resource) must not

@@ -1489,7 +1489,7 @@ pub(crate) struct LoadedConfig {
 /// boot-time environment — a live reload cannot see edited env files; documented), capture the
 /// BASE hook names, then merge the persisted overlay (opt-in, fail-soft). Shared verbatim by boot
 /// and `POST /api/v1/admin/config/reload`, so a reload IS a boot-equivalent read of disk truth.
-/// `--migrate-config <old.yaml>`: mechanically convert a 1.4.x config to the 1.5.0 shape (P9.2).
+/// `--migrate-config <old.yaml>`: mechanically convert a 1.4.x config to the 1.5.0 shape.
 /// Prints the migrated YAML (with a TODO/WARNING comment header) to STDOUT and the change summary
 /// to STDERR - zero side effects, nothing is written, no env interpolation (a `${VAR}` reference
 /// passes through verbatim so the output stays a template). Exit 0 on success (even with TODOs -
@@ -1590,7 +1590,7 @@ pub(crate) fn load_config_from_disk(
     let interpolated_config =
         config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
             .map_err(|e| format!("config.yaml: {e}"))?;
-    // LOUD FAIL-CLOSED on a 1.x config (P9.3): detect the 1.x structural markers BEFORE the
+    // LOUD FAIL-CLOSED on a 1.x config: detect the 1.x structural markers BEFORE the
     // typed parse, so an outdated config gets the NAMED "run --migrate-config" error instead of
     // a pile of unknown-field messages - and, critically, so nothing from 1.x can half-parse
     // into 1.5.0 semantics (the `allowed_pools: []` all->none flip, vanished budgets).
@@ -1662,7 +1662,7 @@ pub(crate) fn load_config_from_disk(
     let config_locked = resolution.locked;
 
     if safe_mode {
-        // `--safe-mode` (D3): boot on the operator-owned base config ALONE — the persisted overlay
+        // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
         // (API-registered hooks) is quarantined, not deleted. The escape hatch for "an applied
         // hook is harming traffic and re-applies itself every boot".
         tracing::warn!(
@@ -1719,7 +1719,7 @@ pub(crate) fn load_config_from_disk(
 /// (`prior = None`) and the config plane's apply/reload (`prior = Some(current)`). On apply,
 /// process-lifetime state is REUSED from the prior snapshot (HTTP client pool, governance key DB,
 /// version history, mutation-rate windows) and the health store is rebuilt with every surviving
-/// lane's learned state RESTORED BY STABLE IDENTITY (D1) — so a lane-set change never
+/// lane's learned state RESTORED BY STABLE IDENTITY — so a lane-set change never
 /// misattributes or discards breaker/latency knowledge. Errors are returned (never process-exit):
 /// boot maps them to `die`, the apply endpoints to `invalid_request` — an invalid apply changes
 /// nothing.
@@ -2185,7 +2185,7 @@ fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
     )
 }
 
-/// Resolve the KEY-SIGNING key (S2). `auth.signing_key` is a reference to an EXISTING secret
+/// Resolve the KEY-SIGNING key. `auth.signing_key` is a reference to an EXISTING secret
 /// (env/file/plugin) resolving to the ed25519 secret material (32 raw bytes, or 64 hex chars) busbar
 /// mints + verifies virtual-key tokens with. Fleet-shared: every node resolves the SAME secret so
 /// they verify each other's tokens.
@@ -2400,7 +2400,7 @@ fn validate_secret_modules(
 }
 
 /// Validate every SECRET REFERENCE's module against the plugin registry — the deferred half of the
-/// C2 secret-reference check `config_validate` cannot do (it runs before the registry exists). The
+/// secret-reference check `config_validate` cannot do (it runs before the registry exists). The
 /// built-in `env`/`file` modules always pass; ANY OTHER module name is a `kind: secret` PLUGIN
 /// reference (the 1.5.0 "secrets are plugins" feature: `api_key: { module: acme-vault, … }`, TLS
 /// cert/key, `auth.signing_key`, the admin token) and must resolve to a LOADED, TRUSTED, `kind:
@@ -2645,7 +2645,7 @@ pub(crate) fn build_app_from_config(
     // changes nothing" holds for process-wide limits the same way it holds for everything else.
     let limits_guard = limits::InstallGuard::install(&cfg.limits);
     // The config version this App will carry — computed ONCE up front because hook-transport
-    // resolution stamps it into every socket configure preamble (W-M4: the preamble's
+    // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
     let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
     // Semantic validation — the same gate boot has always had, now on the ONE construction path
@@ -2716,13 +2716,13 @@ pub(crate) fn build_app_from_config(
     )?);
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
-    // `kind: secret` plugin — the deferred half of the C2 check `config_validate::validate` cannot do
+    // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
     // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
     // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
     // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
     validate_secret_refs(&plugin_registry, &cfg)?;
 
-    // The SECRET RESOLVER (P2): built-in env/file resolve inline; any other module delegates to a
+    // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
     let secret_resolver = Arc::new(build_secret_resolver(
@@ -3034,7 +3034,7 @@ pub(crate) fn build_app_from_config(
     );
     // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
     // (both default to their historical const at the config layer).
-    // D1 carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
+    // Carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
     // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
     let store: Arc<dyn crate::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(
@@ -3192,7 +3192,7 @@ pub(crate) fn build_app_from_config(
     // onto `App` (for the control-plane reads + scrape).
     let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
 
-    // B1 FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
+    // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
     // (`AuthMiddleware::new`). Without this, a gate whose SecretRef fails to resolve would be
     // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
@@ -3217,7 +3217,7 @@ pub(crate) fn build_app_from_config(
         }
     }
 
-    // B1 (open-time variant) FAIL-CLOSED: actually OPEN every referenced decision/rewrite gate up
+    // FAIL-CLOSED (open-time variant): actually OPEN every referenced decision/rewrite gate up
     // front so an `open()`-time failure of a PRESENT plugin aborts boot/reload here — matching the
     // store (`open_store`) and auth (`AuthMiddleware::new`) paths. Without this, a gate whose plugin
     // fails to `open()` (constructor rejecting cfg_json, staging/mmap failure, ABI/kind mismatch
@@ -3252,7 +3252,7 @@ pub(crate) fn build_app_from_config(
                                 idx,
                                 state::MemberMeta {
                                     tier: m.tier.clone(),
-                                    // S5: the routing cost scalar derives from the member's
+                                    // The routing cost scalar derives from the member's
                                     // MODEL's rate_card entry - cost lives on no pool member.
                                     cost_per_mtok: cfg
                                         .rate_card
@@ -3400,7 +3400,7 @@ pub(crate) fn build_app_from_config(
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<busbar_api::Redacted<String>> =
             resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
-        // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
+        // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
         // provide it (shared) so every node verifies the same tokens.
@@ -3415,7 +3415,7 @@ pub(crate) fn build_app_from_config(
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
-                // M9 (fail-open): a store error here is FATAL - resuming with empty (reset) budget
+                // Fail-open: a store error here is FATAL - resuming with empty (reset) budget
                 // cells would let a maxed-out key spend its whole cap again. Fail boot loudly.
                 if let Err(e) = gs.hydrate_budgets(&cost, crate::store::now()) {
                     return Err(format!(

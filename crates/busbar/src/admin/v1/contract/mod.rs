@@ -278,7 +278,7 @@ pub(crate) enum AdminError {
     /// invalid_request`.
     Validation(String),
     /// Optimistic-concurrency mismatch: the caller's `If-Match` is STALE — re-read the resource
-    /// and retry. `code = version_conflict`. Split from `conflict` (R3): a client must distinguish
+    /// and retry. `code = version_conflict`. Split from `conflict`: a client must distinguish
     /// RETRYABLE (this) from TERMINAL state conflicts without string-matching the human message.
     VersionConflict(String),
     /// A TERMINAL state conflict: the request contradicts server state in a way a retry cannot fix
@@ -1069,7 +1069,7 @@ pub(crate) struct EffectiveConfigView {
 /// is busbar's DERIVED estimate from the operator's configured global prices, computed at read time
 /// (raw counts are what's stored — a price change re-prices history consistently).
 ///
-/// Time base — THE PINNED SHAPE RULING (R3): a usage response is ALWAYS exactly
+/// Time base — THE PINNED SHAPE RULING: a usage response is ALWAYS exactly
 /// ONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST
 /// bucket (default: the current one); a multi-window series is the CLIENT fetching N buckets — or
 /// a future additive `?from=&to=` returning an ARRAY OF THIS SAME PER-BUCKET SHAPE, never a

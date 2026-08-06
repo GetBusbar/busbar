@@ -3038,7 +3038,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 }
 
-/// response_format (M1): a cross-protocol IR carrying `response_format` reaching the Anthropic
+/// response_format: a cross-protocol IR carrying `response_format` reaching the Anthropic
 /// writer must NOT silently lose it — Anthropic has no native `response_format` and tool-forcing
 /// is not implemented this pass, so the writer DROPS the directive but emits a `warn!` naming
 /// response_format so the divergence is observable. Asserts (a) the warn fires and (b) no
@@ -3259,7 +3259,7 @@ fn thinking_block_with_signature_survives_response_egress() {
     );
 }
 
-/// D2: a Responses `file_id` image (the FILE_ID_IMAGE_SENTINEL media_type) reaching the Anthropic
+/// A Responses `file_id` image (the FILE_ID_IMAGE_SENTINEL media_type) reaching the Anthropic
 /// egress is an unresolvable cross-vendor reference. It must be SKIPPED — NOT emitted as a corrupt
 /// base64 `source` with `media_type:"file_id"` (which Anthropic rejects). The user message's
 /// content must carry no image block; the text block still survives.
@@ -3558,7 +3558,7 @@ fn anthropic_empty_citations_text_block_unaffected() {
     );
 }
 
-/// L2-5 STREAMING citations, Anthropic same-protocol byte-exactness: a native streaming
+/// STREAMING citations, Anthropic same-protocol byte-exactness: a native streaming
 /// `content_block_delta`/`citations_delta` must read into `IrDelta::CitationsDelta` (via
 /// `read_citation`, which stashes the source object in `raw`) and the Anthropic writer must
 /// re-emit the citation object VERBATIM through the `raw` escape hatch — so an Anthropic-shaped

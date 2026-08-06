@@ -83,7 +83,7 @@ pub struct VirtualKey {
     pub name: String,
     /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind
     /// (the grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO
-    /// scopes (C6: an empty list is the empty set, never "all"). Today every entry is `kind:
+    /// scopes (an empty list is the empty set, never "all"). Today every entry is `kind:
     /// "pool"` (the only registered kind); on the WIRE this still serializes/deserializes as the
     /// pre-generalization `allowed_pools: Option<Vec<String>>` — see `allowed_scopes_wire`.
     #[serde(default, rename = "allowed_pools", with = "allowed_scopes_wire")]
@@ -913,7 +913,7 @@ mod tests {
         }
     }
 
-    /// C6 pool-grant semantics on the runtime encoding: omitted (`None`) = ALL pools; an explicit
+    /// Pool-grant semantics on the runtime encoding: omitted (`None`) = ALL pools; an explicit
     /// list is exhaustive; an explicit EMPTY list is NO pools (never "all"). Exercised through
     /// `scope_allowed("pool", ...)`, the generalized replacement for the old `pool_allowed` - this
     /// is the "zero behavior change for pool-only configs" property the generalization promises.
@@ -957,7 +957,7 @@ mod tests {
             assert!(!k.scope_allowed(future_kind, "anything-else"));
         }
 
-        // The ONLY wildcard is an omitted list, and it spans every kind (C6, unchanged).
+        // The ONLY wildcard is an omitted list, and it spans every kind (unchanged).
         k.allowed_scopes = None;
         assert!(k.scope_allowed("pool", "fast"));
         assert!(k.scope_allowed("mcp_server", "filesystem"));
@@ -1020,7 +1020,7 @@ mod tests {
             Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")])
         );
 
-        // Round-trip: serialize → deserialize → identical scopes (and the C6 None/empty cases,
+        // Round-trip: serialize → deserialize → identical scopes (and the None/empty cases,
         // which must ALSO stay wire-identical).
         let round: VirtualKey = serde_json::from_str(&json).unwrap();
         assert_eq!(round.allowed_scopes, k.allowed_scopes);

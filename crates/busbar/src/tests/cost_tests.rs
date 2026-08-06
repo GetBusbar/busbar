@@ -3,7 +3,7 @@
 
 //! Tests for the cost + limit model: rate-card derivation (tokens are the ledger, dollars derive)
 //! and the resolved `groups:` limit topology (per-(group, window) enforcement buckets, the chain
-//! walk, C6 key encoding).
+//! walk, key encoding).
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
@@ -183,7 +183,7 @@ fn derive_spend_cents_saturates_never_wraps_free() {
     );
 }
 
-/// S5: rate_card is the ONLY cost source - pool members carry no cost, and the routing
+/// rate_card is the ONLY cost source - pool members carry no cost, and the routing
 /// scalar (`cheapest` / hook Candidate.cost_per_mtok) derives from a model's card entry as
 /// the blended (input + output) / 2 in units/mtok.
 #[test]

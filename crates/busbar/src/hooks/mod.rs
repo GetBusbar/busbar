@@ -167,7 +167,7 @@ impl HookEnv {
         crate::config::secret::resolve_settings(settings, &self.secret_resolver)
     }
 
-    /// PRE-BUILD FAIL-CLOSED PASS (B1): resolve every configured hook's SecretRef settings ONCE, up
+    /// PRE-BUILD FAIL-CLOSED PASS: resolve every configured hook's SecretRef settings ONCE, up
     /// front, so that an unresolvable secret aborts boot/reload the SAME way the store path
     /// (`build_app_from_config`) and the auth chain (`AuthMiddleware::new`) do. Without this pass a
     /// gate whose SecretRef fails to resolve would be silently `filter_map`-dropped from the routing
@@ -190,7 +190,7 @@ impl HookEnv {
         Ok(())
     }
 
-    /// PRE-BUILD FAIL-CLOSED PASS for gate/rewrite OPEN() failures (the open-time variant of B1):
+    /// PRE-BUILD FAIL-CLOSED PASS for gate/rewrite OPEN() failures (the open-time variant):
     /// actually `open()` every referenced DECISION or REWRITE gate up front so an `open()`-time
     /// failure (the plugin constructor rejecting its cfg_json, a staging/mmap failure, an
     /// ABI/transport-version or exported-kind mismatch observable only on load) ABORTS boot/reload —
@@ -690,7 +690,7 @@ type ResolvedSettings = serde_json::Map<String, serde_json::Value>;
 /// per-request gate deadline — configure may do real work (reload a model, open files).
 const CONFIGURE_TIMEOUT_MS: u64 = 5000;
 
-/// PUSH a settings map to a hook over its transport and wait for the ack (D2, the
+/// PUSH a settings map to a hook over its transport and wait for the ack (the
 /// `PATCH /api/v1/admin/hooks/{name}/settings` core). `Ok` = acked (commit); `Err` = NOT committed.
 pub(crate) async fn push_configure(
     hook: &crate::config::HookCfg,
@@ -878,8 +878,8 @@ pub(crate) fn settings_drift_keys(
     keys
 }
 
-/// Fetch a hook's self-described settings schema over its transport (D2,
-/// `GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
+/// Fetch a hook's self-described settings schema over its transport
+/// (`GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
 pub(crate) async fn fetch_schema(
     name: &str,
     hook: &crate::config::HookCfg,

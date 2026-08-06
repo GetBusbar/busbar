@@ -85,7 +85,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
     // Whole-config mutations (apply/reload/rollback) — `/config/validate` is a stateless dry-run
     // carved out below, before this prefix ever matches it.
     PathRule::Prefix("/config/"),
-    // The admin auth chain itself — `PUT /admin-auth` (the L3 remount moved it off `/auth`).
+    // The admin auth chain itself — `PUT /admin-auth` (the remount moved it off `/auth`).
     PathRule::Exact(crate::admin::v1::contract::PATH_ADMIN_AUTH),
     // A per-section overlay reset discards a whole section back to base config — a blast-radius
     // revert (rebuilds the App).

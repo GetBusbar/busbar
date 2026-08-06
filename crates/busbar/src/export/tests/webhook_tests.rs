@@ -23,7 +23,7 @@ const TEST_MAX_INFLIGHT: usize = 4;
 /// [`crate::observability::validate_webhook_url`], and carries a generic-webhook auth header onto the
 /// built target.
 ///
-/// RED-BEFORE-GREEN: `crate::export::webhook` (and `push_target`/`Target`) did not exist before
+/// `crate::export::webhook` (and `push_target`/`Target`) did not exist before
 /// 1.5.3 — the request-log webhook lived entirely in `observability`.
 #[test]
 fn push_target_validates_and_carries_auth_header() {
@@ -215,7 +215,7 @@ async fn deliver_logs_is_noop_when_unconfigured() {
 /// budgets: a stalled SIEM must not consume the permits an operator capped low on the fast sink, and
 /// the low cap must actually be enforced on the instance that declares it.
 ///
-/// RED-BEFORE-GREEN: pre-fix there was ONE process-global `webhook_inflight()` gate, sized (via
+/// Pre-fix there was ONE process-global `webhook_inflight()` gate, sized (via
 /// `LimitsResolved`) to the MAXIMUM `max_inflight_deliveries` across instances — so `Target` had no
 /// `gate` for this test to reach at all, and the cap-1 sink below was in fact admitting 3.
 #[tokio::test]

@@ -108,11 +108,11 @@ pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
     let z = days + 719_468;
     // The `z < 0` branch is UNREACHABLE for any real `u64 epoch_secs`: `days` (u64::MAX /
     // SECS_PER_DAY, cast to i64) tops out around 2.1e14, far short of i64::MAX (~9.2e18), so `days`
-    // can never overflow negative on the cast and `z = days + 719_468` is always positive. A
-    // cargo-mutants mutation of the `z - 146_096` expression in this branch (`+`/`/` instead of
-    // `-`) is a genuine equivalent mutant here — dead code no `u64`-typed test input can reach —
-    // unlike `governance::civil_from_days`, which takes a general `i64` and DOES exercise this
-    // branch for pre-1970 dates (see that function's own test table).
+    // can never overflow negative on the cast and `z = days + 719_468` is always positive. Any
+    // variation of the `z - 146_096` expression in this branch (`+`/`/` instead of `-`) is
+    // therefore unobservable — dead code no `u64`-typed test input can reach — unlike
+    // `governance::civil_from_days`, which takes a general `i64` and DOES exercise this branch for
+    // pre-1970 dates (see that function's own test table).
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
@@ -510,7 +510,7 @@ mod tests {
     /// era/doe/yoe/doy/day/month derivation changes the computed date, so a handful of known
     /// epoch<->date pairs spanning the epoch itself, a leap-century Feb 29 (2000, divisible by
     /// 400), a non-leap-century Jan 1 (2100, divisible by 100 but not 400), and end-of-day/
-    /// end-of-year boundaries kills every arithmetic mutant in the block. Expected values are
+    /// end-of-year boundaries pins every arithmetic step in the block. Expected values are
     /// cross-checked against `date -u -r <epoch>`, not hand-derived, to avoid trusting the same
     /// arithmetic the test is meant to catch bugs in.
     #[test]
@@ -529,7 +529,7 @@ mod tests {
             // (chosen mostly from that exact window) coincide under the mutation and miss it. This
             // one doesn't: 1970-03-01 falls before the window, `doe / 36_524 == 0` there too but
             // the correction still isn't degenerate at this boundary (verified by brute-forcing
-            // all cargo-mutants-shaped single-operator mutations of the block against this table
+            // every single-operator variation of the block against this table
             // and confirming this is the unique remaining killer). A March date one full year
             // after the epoch was deliberately avoided as "obviously distinguishing" — this is the
             // FIRST date after 1970-01-01 whose month/day computation actually exercises the
@@ -1100,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch() {
-        // H4 (dummy-secret guard): a request signed with a REAL secret, verified against the canonical
+        // Dummy-secret guard: a request signed with a REAL secret, verified against the canonical
         // DUMMY secret (the path taken for an unknown AccessKeyId), must fail with the SAME ordinary
         // `SignatureMismatch` a wrong-secret attempt produces — NOT a distinct "key not found" variant.
         // This pins the FUNCTIONAL contract: an unknown AccessKeyId is verified against the canonical
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_signed_headers_claim_stripped_rejected() {
-        // M4/M8: an attacker who removes a header NAME from the SignedHeaders CLAIM (without re-signing)
+        // An attacker who removes a header NAME from the SignedHeaders CLAIM (without re-signing)
         // must be rejected — the reconstructed SignedHeaders string no longer matches what was signed.
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";
@@ -1187,7 +1187,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_signed_headers_wrong_sort_rejected() {
-        // M4/M8: SignedHeaders MUST be sorted (the signer sorts). A claim listing the same names in a
+        // SignedHeaders MUST be sorted (the signer sorts). A claim listing the same names in a
         // non-sorted order diverges from the reconstruction and must be rejected.
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";

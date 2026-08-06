@@ -297,9 +297,9 @@ pub(crate) struct LaneSnapshot {
 /// LaneRuntime trait - the seam for lane state access.
 /// Operations, NOT field access. `lane: usize` identifies a member.
 /// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (model + provider) instead of
-/// its array position (D1). This is the carrier that lets learned reliability state survive the
+/// its array position. This is the carrier that lets learned reliability state survive the
 /// two events that invalidate positional indexing: a config APPLY that changes the lane set (the
-/// new store is built with the surviving lanes' snapshots restored), and — via serde, for the D3
+/// new store is built with the surviving lanes' snapshots restored), and — via serde, for the
 /// persistence follow-up — a RESTART. Ephemeral state is deliberately NOT carried: semaphores /
 /// in-flight counts (empty by definition in a fresh store), the single-flight probe flag (reset —
 /// an in-flight probe records into the OLD store snapshot it was dispatched under), SWRR fairness
@@ -508,20 +508,20 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     // The bare lane-default breaker mutators below are exercised by the unit tests; in release,
     // ALL dispatch (including the degraded `forward_once` fallback/least-bad path) now routes through
     // the `_in(pool, …)` variants against the ROUTING POOL cell — recording on the default `""` cell
-    // left the pool cell wedged HalfOpen forever (H1) — so the bare forms are release-dead. NOTE:
+    // left the pool cell wedged HalfOpen forever — so the bare forms are release-dead. NOTE:
     // `is_ready`, `breaker_state`, `usable`, `record_success`, `record_rate_limit`, `record_hard_down`
     // are all `#[cfg(test)]`-gated out of the release binary entirely rather than merely silenced with
     // a dead-code allow.
     #[cfg(test)]
     fn breaker_state(&self, lane: usize) -> BreakerState;
     /// Per-(pool, lane) breaker FSM state — test-only, so regressions can assert the POOL cell (not
-    /// just the default `""` cell) transitions correctly on the degraded forward path (H1).
+    /// just the default `""` cell) transitions correctly on the degraded forward path.
     #[cfg(test)]
     fn breaker_state_in(&self, pool: &str, lane: usize) -> BreakerState;
     /// Force a (pool, lane) breaker cell into Open with the given `cooldown_until` — test-only. Set
     /// `cooldown_until` in the PAST for an expired-Open cell, which `acquire_for_dispatch_in`
     /// transitions to HalfOpen (the single-flight recovery probe) on the next dispatch — the exact
-    /// state the degraded-forward H1 regression requires on the ROUTING POOL cell.
+    /// state the degraded-forward regression requires on the ROUTING POOL cell.
     #[cfg(test)]
     fn force_open_in(&self, pool: &str, lane: usize, cooldown_until: u64);
     // `snapshot()` now reports the lane-GLOBAL (worst-across-all-pool-cells) cooldown via
@@ -538,7 +538,7 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
 
     // ── Outcome recording (the breaker's write path) ─────────────────────────────────────────────
     // `record_success` is now release-dead: the degraded `forward_once` path records against the
-    // ROUTING POOL cell via `record_success_in` (H1), so this bare default-cell form is test-only and
+    // ROUTING POOL cell via `record_success_in`, so this bare default-cell form is test-only and
     // `#[cfg(test)]`-gated out of the release binary.
     #[cfg(test)]
     fn record_success(&self, lane: usize);
@@ -683,7 +683,7 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     // stats snapshot for /stats
     fn snapshot(&self, lane: usize, now: u64) -> LaneSnapshot;
 
-    /// Export every lane's PORTABLE health state, keyed by stable identity (D1) — the input to a
+    /// Export every lane's PORTABLE health state, keyed by stable identity — the input to a
     /// state-carrying store rebuild on config apply (RAM→RAM, by identity; `new_with_limits_restored`
     /// consumes it via `restore_health_impl`). Reliability state is NEVER persisted to disk (store-or-
     /// RAM rule): a process restart re-learns it from live traffic, so there is no boot-restore path.

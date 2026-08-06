@@ -54,7 +54,7 @@ pub enum AuthOutcome {
 
 /// One authentication module — a swappable implementation of the fixed `auth` engine stage. The
 /// built-in `tokens` module implements it (the `auth/tokens/` crate); SAML/AD/OIDC modules
-/// implement the same trait in the private repo. Extraction of the credential carriers (Bearer /
+/// implement the same trait. Extraction of the credential carriers (Bearer /
 /// x-api-key / x-goog-api-key) stays in the engine's middleware, so a module never re-parses
 /// headers — it receives the already-extracted candidate and returns a verdict.
 pub trait AuthModule: Send + Sync {

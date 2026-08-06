@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The top-level `groups:` block - THE one limit tree (CLEAN-CONFIG S3). A group is a named
+//! The top-level `groups:` block - THE one limit tree. A group is a named
 //! enforcement bucket: an ordered list of generic LIMITS plus an optional `parent` forming an
-//! acyclic chain (validated). Enforcement (P4) walks the chain and ANDs every bucket;
+//! acyclic chain (validated). Enforcement walks the chain and ANDs every bucket;
 //! `enabled: false` freezes a group (history kept). Keys are PURE AUTH and carry no limits - a key
 //! binds to at most one group (`group:` at mint), and a key with no group is authed + unlimited.
 //!
@@ -16,7 +16,7 @@
 //!   - { concurrent: 5 }              # instantaneous - no `per`
 //! ```
 //!
-//! metrics: `requests` | `tokens` | `budget` | `concurrent`. windows (C8, nouns):
+//! metrics: `requests` | `tokens` | `budget` | `concurrent`. windows (nouns):
 //! `minute` | `hour` | `day` | `month` | `total`. `concurrent` is an in-flight gauge and takes NO
 //! `per`; the three windowed metrics REQUIRE one (a windowless cap is ambiguous - fail loudly).
 //!
@@ -45,10 +45,10 @@ pub(crate) struct GroupCfg {
     #[serde(default)]
     pub(crate) parent: Option<String>,
     /// `false` FREEZES the group: every request charging through it is rejected while its history
-    /// is kept (C10). Default `true`.
+    /// is kept. Default `true`.
     #[serde(default = "default_true")]
     pub(crate) enabled: bool,
-    /// The group's limits, enforced together (AND). Order preserved (C9: ordered list).
+    /// The group's limits, enforced together (AND). Order preserved (ordered list).
     #[serde(default)]
     pub(crate) limits: Vec<LimitCfg>,
     /// Template limits stamped onto any CHILD group auto-provisioned under this one (e.g. a
@@ -113,7 +113,7 @@ impl LimitMetric {
     }
 }
 
-/// A limit's accounting window (C8: nouns only).
+/// A limit's accounting window (nouns only).
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LimitWindow {
@@ -160,8 +160,8 @@ pub(crate) struct LimitCfg {
     pub(crate) per: Option<LimitWindow>,
     /// `Some(scope)` scopes the limit to traffic dispatched through that scope - accounting
     /// becomes per `(group, scope)`. `None` = group-wide (every request charges it). ALWAYS
-    /// `None` for `concurrent`. On the WIRE this is still the `pool: <name>` YAML key (gap #2 of
-    /// the generic-admission-topology generalization: a future scope kind gets its own YAML key,
+    /// `None` for `concurrent`. On the WIRE this is still the `pool: <name>` YAML key (under the
+    /// generic-admission-topology generalization: a future scope kind gets its own YAML key,
     /// e.g. `mcp_server: <name>`, never a generic `scope: {kind, value}` object) and always
     /// decodes to `kind: "pool"`. The pool's existence is validated against the config's `pools:`
     /// at the door - generalized discipline: "validated against the config's registered universe
@@ -378,7 +378,7 @@ impl Serialize for LimitCfg {
         if let Some(window) = self.per {
             map.serialize_entry("per", window.as_str())?;
         }
-        // Wire-compat (gap #2): a `kind: "pool"` scope still serializes under the bare `pool:`
+        // Wire-compat: a `kind: "pool"` scope still serializes under the bare `pool:`
         // YAML key. There is no second kind yet, so every `scope` reaching here IS `kind: "pool"`
         // by construction (the deserializer above only ever produces `ScopeRef::pool`).
         if let Some(scope) = &self.scope {
@@ -606,7 +606,7 @@ child_default:
         assert_eq!(budget, back);
     }
 
-    /// THE `LimitCfg` wire-compat contract test (spec gap #2): `pool: <name>` / `downgrade_to:
+    /// THE `LimitCfg` wire-compat contract test: `pool: <name>` / `downgrade_to:
     /// <name>` in YAML — the entire existing config surface — decodes to `scope`/`downgrade_to:
     /// Some(ScopeRef { kind: "pool", value: <name> })` in memory, and serializes back out as the
     /// EXACT SAME bare `pool: <name>` / `downgrade_to: <name>` YAML keys, byte-for-byte — no

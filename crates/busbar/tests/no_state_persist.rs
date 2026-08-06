@@ -3,7 +3,7 @@
 
 //! STORE-OR-RAM (1.5.3) end-to-end proof: a real busbar process writes NO side-car state file.
 //!
-//! RED-before-GREEN. Before the state-file removal, the periodic snapshotter's first tick (which
+//! Before the state-file removal, the periodic snapshotter's first tick (which
 //! fires immediately after boot) AND the graceful-shutdown write both wrote `busbar-state.json`
 //! (or `$BUSBAR_STATE_FILE`), which the next boot restored — that is exactly what carried learned
 //! reliability state (breakers, cooldowns, latency EWMAs, hard-down latches) across a restart. This

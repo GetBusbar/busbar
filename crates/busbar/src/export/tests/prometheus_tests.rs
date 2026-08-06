@@ -22,7 +22,7 @@ fn cfg_with_prometheus() -> ExportCfg {
 /// presence-is-the-switch contract. The declared route is the well-known `GET /metrics`,
 /// auth `none`, owned by `prometheus`.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 `/metrics` was a hard-wired core route gated on a config
+/// Before 1.5.3 `/metrics` was a hard-wired core route gated on a config
 /// boolean and there was no `export::prometheus::route_decl` at all — this test does not compile
 /// against the pre-lift-out tree.
 #[test]

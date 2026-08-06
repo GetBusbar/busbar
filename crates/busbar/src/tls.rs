@@ -1014,7 +1014,7 @@ mod tests {
         assert!(err.contains("cert"), "error must reference the cert: {err}");
     }
 
-    /// TEST 5 - REGRESSION (P1 slow-loris BODY): the inbound body-read timeout trips on a stalled
+    /// TEST 5 - REGRESSION (slow-loris BODY): the inbound body-read timeout trips on a stalled
     /// request body. Before the fix, only the header-read phase was bounded; a client that finished
     /// its headers then dribbled (here: never sent) the promised body would pin the connection task,
     /// its FD, and one of the finite inbound-concurrency permits INDEFINITELY. This drives the plain

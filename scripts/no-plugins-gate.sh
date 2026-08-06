@@ -214,7 +214,7 @@ EOF
 }
 
 # ── The probe set: every request the axes compare, as "<label> <code>" lines ──────────────────────
-# Ordered and stable, so two axes' outputs diff cleanly (A7).
+# Ordered and stable, so two axes' outputs diff cleanly.
 ADMIN_READS="info keys hooks config audit groups auth admin-auth export config/versions openapi.json"
 
 # ── run_axis <label> <busbar-bin> <plugins-dir> <outdir> ──────────────────────────────────────────
@@ -344,7 +344,7 @@ except Exception: print("")')"
   done
 
   # The self-report of what IS compiled in — deliberately EXCLUDED from the diffed probe vector and
-  # asserted separately (A7).
+  # asserted separately.
   curl -s "${A}/info" | python3 -c 'import sys,json
 d = json.load(sys.stdin).get("build", {})
 print(json.dumps(d, sort_keys=True))' >"${out}/build.txt"

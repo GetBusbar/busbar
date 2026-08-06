@@ -112,7 +112,7 @@ pub(crate) struct StreamTranslate {
     /// its OWN projection and no wire shape is named here.
     open_blocks: std::collections::BTreeSet<usize>,
     /// Test-only instrumentation: counts frames that reached the `crate::json::parse_str` DOM parse
-    /// in the SSE loop. Proves the D1' same-proto Anthropic event-type gate actually elides the parse
+    /// in the SSE loop. Proves the same-proto Anthropic event-type gate actually elides the parse
     /// for non-usage-bearing frames, rather than asserting a tautology about the diff. Compiled out
     /// entirely in non-test builds — zero production cost.
     #[cfg(test)]
@@ -368,7 +368,7 @@ impl StreamTranslate {
             // any trailing usage, and flush at `finish()` (which the response body now feeds through the
             // json-array framer too, so it reaches the client on every ingress). OpenAI/Bedrock opt out
             // (folds_terminal_usage == false) — they re-emit/fold usage via their own framing seams
-            // above. Mutually exclusive with the Bedrock combined-stop path (which `continue`d). (H3.)
+            // above. Mutually exclusive with the Bedrock combined-stop path (which `continue`d).
             if self.framing.folds_terminal_usage() {
                 match &ev {
                     crate::ir::IrStreamEvent::MessageDelta {
@@ -760,7 +760,7 @@ impl StreamTranslate {
                             "message_start" | "message_delta" | "error"
                         )
                     {
-                        // D1' (class-11): the Anthropic same-proto reader is stateless
+                        // The Anthropic same-proto reader is stateless
                         // (`AnthropicReader::read_response_events` takes an unused `_state`) and
                         // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
                         // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing

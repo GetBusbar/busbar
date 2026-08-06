@@ -458,7 +458,7 @@ impl ProtocolReader for AnthropicReader {
                             .map(String::from)?;
                         IrDelta::SignatureDelta(signature)
                     }
-                    // L2-5 STREAMING citation: a native Anthropic `content_block_delta` whose
+                    // STREAMING citation: a native Anthropic `content_block_delta` whose
                     // `delta.type == "citations_delta"` carries a single `citation` object (one of
                     // the four citation variants). Reuse `read_citation` so the neutral fields AND
                     // the byte-exact `raw` escape hatch are filled (same as the non-stream path),

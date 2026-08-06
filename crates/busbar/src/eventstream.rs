@@ -1267,7 +1267,7 @@ mod tests {
     /// A ratio test (not an absolute wall-clock threshold) so it stays machine-independent: quadratic
     /// predicts ~16× for a 4× frame-count increase; linear predicts ~4×.
     ///
-    /// WEAKEST TEST IN THIS FILE, labeled as such per the design doc: if `t(1000)` is too fast to be
+    /// WEAKEST TEST IN THIS FILE: if `t(1000)` is too fast to be
     /// above timer-granularity noise, the ratio is meaningless. The assertion checks that floor first
     /// and panics with a clear message rather than silently passing on noise.
     ///
@@ -1317,8 +1317,8 @@ mod tests {
         assert!(
             t1m >= std::time::Duration::from_millis(1),
             "min-of-{TRIALS} t(1M) = {t1m:?} is too fast to be above timer-granularity noise; \
-             the ratio below would be meaningless — WITHDRAWN rather than tuned, per the design \
-             doc's own guidance"
+             the ratio below would be meaningless, so this assertion is WITHDRAWN rather than \
+             tuned"
         );
         let t4m = bench(4_000_000);
         // < 8x: the log-scale midpoint of linear's ~4x and quadratic's ~16x — equal headroom to

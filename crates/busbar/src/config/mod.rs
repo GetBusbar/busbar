@@ -8,15 +8,15 @@ use serde::{Deserialize, Serialize};
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
 pub(crate) mod overlay;
 
-/// The top-level `groups:` limit tree (S3): GroupCfg + the generic limit shape.
+/// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub(crate) mod groups;
-/// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
+/// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub(crate) mod migrate;
 pub(crate) mod migrate_export;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub(crate) mod named_map;
-/// The secret-reference type (C2): `{ module, settings }` + the `{env}`/`{file}` sugar.
+/// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub(crate) mod patch;
 pub(crate) mod secret;
 
@@ -413,9 +413,9 @@ pub(crate) struct RootCfg {
     /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
     /// warning).
     pub(crate) admin_auth: Vec<String>,
-    /// The top-level `groups:` limit tree (S3).
+    /// The top-level `groups:` limit tree.
     pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
-    /// The top-level `rate_card:` - the ONLY cost source (S5). See `DeployCfg::rate_card`.
+    /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`.
     pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub(crate) per_request_fee: i64,
@@ -470,10 +470,10 @@ pub(crate) struct RootCfg {
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
 /// Busbar serves plain HTTP exactly as before. Present ⇒ Busbar terminates TLS itself; if
 /// `client_ca` is also set, it additionally requires and verifies a client certificate (mTLS).
-/// All three values are SECRET REFERENCES (C2: `{ file: … }` / `{ env: … }` / a secret module)
+/// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
 /// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
 /// (`die`). Key bytes are never logged.
-// deny_unknown_fields (M8): a typo under `tls:` - e.g. `client_c:` for `client_ca:` - would
+// deny_unknown_fields: a typo under `tls:` - e.g. `client_c:` for `client_ca:` - would
 // otherwise be SILENTLY IGNORED, leaving mTLS DISABLED while the operator believes it is on
 // (a security downgrade with no diagnostic). Reject any unknown key here so the typo fails boot.
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -542,7 +542,7 @@ pub(crate) struct IdentityProviderCfg {
     /// (a secret reference). Meaningless on any other module (validated).
     #[serde(default)]
     pub(crate) token: Option<SecretRef>,
-    /// HOSTED-LOGIN parameters (freeze blocker A7). The 1.5.2 `auth.methods:` block FOLDED into this
+    /// HOSTED-LOGIN parameters (freeze blocker). The 1.5.2 `auth.methods:` block FOLDED into this
     /// definition: `browser_login` is inherently per-provider (a client id/secret belongs to ONE
     /// IdP registration), so a separate parallel map was duplicate structure whose two halves could
     /// disagree. PRESENCE of this block is what puts a button on the hosted login page; a provider
@@ -600,13 +600,13 @@ impl AuthChainEntry {
 }
 
 /// One `auth.role_bindings.<module>.<role>` entry - the operator-owned PURE-AUTH policy granted to
-/// a ROLE asserted by that specific module (S4: bindings are NESTED BY MODULE, so `ad.platform`
+/// a ROLE asserted by that specific module (bindings are NESTED BY MODULE, so `ad.platform`
 /// and `oidc.platform` are distinct grants and a module can never ride another module's binding).
 /// An unbound role grants NOTHING (fail closed). Limits live on the bound `group`, never here.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RoleBindingCfg {
-    /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools (C6);
+    /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools;
     /// an explicit `[]` = NO pools (empty list is the empty set).
     #[serde(default)]
     pub(crate) allowed_pools: Option<Vec<String>>,
@@ -646,7 +646,7 @@ pub(crate) struct BrowserLoginCfg {
 }
 
 /// One RESOLVED hosted-login method — the projection of an `identity-providers:` definition that
-/// carries a `browser_login:` block (freeze blocker A7). Built by [`resolve_auth`], never
+/// carries a `browser_login:` block (freeze blocker). Built by [`resolve_auth`], never
 /// deserialized: the config-facing shape is the provider definition itself, and this is just the
 /// slice of it the login machinery reads.
 #[derive(Debug, Clone, PartialEq)]
@@ -712,7 +712,7 @@ impl Default for AuthDeployCfg {
 /// `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub(crate) struct AuthCfg {
-    /// The key-signing key (S2): a SECRET REFERENCE resolving to the ed25519 signing key busbar
+    /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
     /// resolves the same key). REQUIRED when the data-plane chain names the built-in `keys` verifier
     /// (signed-token auth); `config_validate` fails closed if it is missing there. 1.5.1 BREAKING:
@@ -729,7 +729,7 @@ pub(crate) struct AuthCfg {
     /// Role -> policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
     pub(crate) role_bindings: RoleBindings,
     /// The resolved hosted-login methods — every `identity-providers:` entry, keyed by provider name
-    /// (see [`AuthMethods`], freeze blocker A7). Empty when no providers are defined.
+    /// (see [`AuthMethods`], freeze blocker). Empty when no providers are defined.
     pub(crate) methods: AuthMethods,
     /// Admin-set default lifetime for self-service / minted keys (`auth.key_ttl:`), a duration string
     /// (`"90d"`, `"24h"`, …) parsed by `parse_duration_secs`. Absent ⇒ the built-in
@@ -896,7 +896,7 @@ pub(crate) fn resolve_auth(
         .map(|n| resolve_one("admin_auth", n))
         .collect::<Vec<_>>();
 
-    // FREEZE BLOCKER A7 — every `identity-providers:` entry is a potential hosted-login method; the
+    // FREEZE BLOCKER — every `identity-providers:` entry is a potential hosted-login method; the
     // `browser_login:` block on it is what puts a BUTTON on the login page. (A provider that is not
     // in either chain still resolves here: headless `POST /auth/token` against a defined provider is
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
@@ -1065,12 +1065,12 @@ pub(crate) const STORE_MODULE_VALKEY_NAME: &str = "busbar-store-valkey-plugin";
 pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)] // M8: a typo'd provider key must fail boot, not be silently ignored.
+#[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub(crate) struct ProviderCfg {
     #[serde(default = "default_protocol")]
     pub(crate) protocol: String,
     pub(crate) base_url: String,
-    /// The provider credential as a SECRET REFERENCE (C2) - `{ env: VAR }`, `{ file: … }`, or a
+    /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
     pub(crate) api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
@@ -1295,7 +1295,7 @@ pub(crate) struct HookDefCfg {
 /// all-pools `pools.hooks:` list or a per-pool `hooks:` list).
 pub(crate) type HookDefs = indexmap::IndexMap<String, HookDefCfg>;
 
-/// A structured `on_error:` value (C1): a reserved keyword stays BARE
+/// A structured `on_error:` value: a reserved keyword stays BARE
 /// (`nothing` | `weighted` | `reject` | `first`); a fallback-hook reference is `{ hook: <name> }`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum OnErrorCfg {
@@ -1493,7 +1493,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
     }
 }
 
-/// The FROZEN reserved key set of the `pools:` SECTION (freeze blocker A5, 1.5.3). These two names
+/// The FROZEN reserved key set of the `pools:` SECTION (freeze blocker, 1.5.3). These two names
 /// are section-level knobs, NOT pool names:
 ///
 /// ```yaml
@@ -1548,7 +1548,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
             indexmap::IndexMap::deserialize(deserializer)?;
         // A RESERVED key whose value is a MAPPING is an attempt to define a POOL by that name
-        // (freeze blocker A5). Caught here, BEFORE the typed lifts below, so the operator gets
+        // (freeze blocker). Caught here, BEFORE the typed lifts below, so the operator gets
         // "that name is reserved" instead of a confusing "expected a sequence" type error.
         for reserved in RESERVED_POOLS_SECTION_KEYS {
             if raw
@@ -1581,7 +1581,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         };
         let mut pools = HashMap::new();
         for (name, value) in raw {
-            // A pool named by a RESERVED section key is rejected (freeze blocker A5): those names are
+            // A pool named by a RESERVED section key is rejected (freeze blocker): those names are
             // section-level knobs, not pools. (Lifting them out above already consumed the well-typed
             // forms; this guard catches the map-valued "I meant a pool" spelling with a precise
             // message instead of a confusing type error.)
@@ -1628,8 +1628,8 @@ pub(crate) fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<St
     out
 }
 
-/// The RUNTIME projection of the A4 rule (see [`combine_hook_refs`]). busbar fires the section list
-/// and the entity list through two SEPARATE resolved chains (`App::global_gates` then
+/// The RUNTIME projection of the additive-list rule (see [`combine_hook_refs`]). busbar fires the
+/// section list and the entity list through two SEPARATE resolved chains (`App::global_gates` then
 /// `PoolRuntime::gates`), so the dedupe has to be applied to the ENTITY half: this returns the
 /// entity's own references with (a) intra-list duplicates and (b) anything already named at the
 /// section level removed. Concatenating `section` with this result reproduces
@@ -1740,7 +1740,7 @@ pub(crate) enum HookStage {
     Response,
 }
 
-/// # FREEZE BLOCKER A3: THE FROZEN MEANING OF AN OMITTED `phase:`
+/// # FREEZE BLOCKER: THE FROZEN MEANING OF AN OMITTED `phase:`
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
 /// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
@@ -1831,7 +1831,7 @@ pub(crate) fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 ///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
 ///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
 ///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
-/// # FREEZE BLOCKER A1: THE HOOK-NAME NAMESPACE IS CLOSED AS OF 1.5.3
+/// # FREEZE BLOCKER: THE HOOK-NAME NAMESPACE IS CLOSED AS OF 1.5.3
 ///
 /// `RESERVED_HOOK_NAMES` and the pool `hooks:` strategy keywords share ONE word space: a bare word in
 /// a pool's `hooks:` list is EITHER a built-in ordering strategy OR a reference to a hook the operator
@@ -1867,7 +1867,7 @@ pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     "admin-tokens",
 ];
 
-/// The FROZEN 1.5.3 hook-name word space (freeze blocker A1) — the UNION of [`RESERVED_HOOK_NAMES`]
+/// The FROZEN 1.5.3 hook-name word space (freeze blocker) — the UNION of [`RESERVED_HOOK_NAMES`]
 /// and the pool-`hooks:` strategy keywords accepted bare by [`is_strategy_name`]. This is the exact
 /// set of words an operator may NOT use as a hook name, and it is closed forever (see
 /// [`RESERVED_HOOK_NAMES`] for why, and for the structured escape hatch every future terminal uses).
@@ -1922,7 +1922,7 @@ pub(crate) struct HookCfg {
     /// `socket`/`webhook` out-of-process transports: a hook now runs in-process behind the frozen
     /// plugin ABI. Required and non-empty.
     ///
-    /// FREEZE BLOCKER A8: the WIRE name is `module`, matching the locked grammar's one word for "which
+    /// FREEZE BLOCKER: the WIRE name is `module`, matching the locked grammar's one word for "which
     /// plugin backs this instance" everywhere (`hooks.<n>.module`, `identity-providers.<n>.module`,
     /// `export.<n>.module`, `store.module`). The Rust field keeps the older `plugin` spelling only
     /// because it is referenced at ~100 internal sites; nothing user-facing says `plugin:` any more.
@@ -1972,7 +1972,7 @@ pub(crate) struct HookCfg {
     /// reconcile.
     #[serde(default)]
     pub(crate) on_empty: Option<PolicyOnError>,
-    /// OPAQUE settings map pushed to the hook via the `configure` op (D2): sent to the plugin at
+    /// OPAQUE settings map pushed to the hook via the `configure` op: sent to the plugin at
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
     #[serde(default)]
@@ -2018,7 +2018,7 @@ pub(crate) struct HookCfg {
     /// tap `at:` to a list. EMPTY (the default) falls back to `at:`, which pins exactly one stage and
     /// so preserves today's single-stage behavior byte-for-byte; with BOTH omitted the hook fires at
     /// THE FOUR CORE STAGES and only those — the frozen meaning of an omitted `phase:`, see FREEZE
-    /// BLOCKER A3 on [`CORE_HOOK_PHASES`]. (`--migrate-config` therefore writes an EXPLICIT
+    /// BLOCKER on [`CORE_HOOK_PHASES`]. (`--migrate-config` therefore writes an EXPLICIT
     /// `phase: [request]` onto a legacy tap that carried neither, so migrating never widens one.)
     /// Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
     #[serde(default)]
@@ -2026,7 +2026,7 @@ pub(crate) struct HookCfg {
 }
 
 impl HookCfg {
-    /// Whether this hook observes at `stage` (freeze blocker A3 — see [`CORE_HOOK_PHASES`]).
+    /// Whether this hook observes at `stage` (freeze blocker — see [`CORE_HOOK_PHASES`]).
     ///
     /// Precedence, frozen:
     /// 1. a non-empty `phase:` LIST is authoritative — the hook fires at exactly those stages;
@@ -2087,9 +2087,9 @@ fn default_policy_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)] // M8: a typo'd pool-member key must fail boot, not be silently ignored.
+#[serde(deny_unknown_fields)] // a typo'd pool-member key must fail boot, not be silently ignored.
 pub(crate) struct PoolMember {
-    /// The member's MODEL (a `models:` key). C4: reference fields name the referenced thing
+    /// The member's MODEL (a `models:` key). Reference fields name the referenced thing
     /// (renamed from the 1.4.x `target:`).
     pub(crate) model: String,
     #[serde(default = "default_weight")]
@@ -2113,7 +2113,7 @@ pub(crate) struct PoolMember {
     /// Free-form operator tags (e.g. `["opus"]`) a policy can match on. Projected into the routing
     /// `Candidate` and read by hook plugin policies.
     ///
-    /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED (S5): `rate_card` is the ONLY cost
+    /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED: `rate_card` is the ONLY cost
     /// source, and routing (`cheapest`) derives its scalar from the member's model's rate entry.
     #[serde(default)]
     pub(crate) tags: Vec<String>,
@@ -2145,7 +2145,7 @@ pub(crate) enum BreakerTripMode {
 pub(crate) struct BreakerTripConfig {
     #[serde(default = "default_trip_mode")]
     pub(crate) mode: BreakerTripMode,
-    /// Sliding-window length in seconds (C3: one canonical name; the pre-1.0 `window_s` alias is
+    /// Sliding-window length in seconds (one canonical name; the pre-1.0 `window_s` alias is
     /// GONE - an unknown key fails boot).
     #[serde(default = "default_window_secs")]
     pub(crate) window_secs: u64,
@@ -2153,7 +2153,7 @@ pub(crate) struct BreakerTripConfig {
     pub(crate) threshold: f64,
     #[serde(default = "default_min_requests")]
     pub(crate) min_requests: usize,
-    /// Consecutive-failure threshold for `BreakerTripMode::Consecutive` (C3: one canonical name;
+    /// Consecutive-failure threshold for `BreakerTripMode::Consecutive` (one canonical name;
     /// the pre-1.0 `n` alias is GONE).
     #[serde(default = "default_consecutive_n")]
     pub(crate) consecutive_n: u32,
@@ -2234,7 +2234,7 @@ fn default_max_cooldown() -> u64 {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FailoverCfg {
-    /// Failover wall-clock budget in seconds (C3: one canonical name; the pre-1.0 `deadline_secs`
+    /// Failover wall-clock budget in seconds (one canonical name; the pre-1.0 `deadline_secs`
     /// alias is GONE).
     #[serde(default = "default_failover_timeout")]
     pub(crate) timeout_secs: u64,
@@ -2242,7 +2242,7 @@ pub(crate) struct FailoverCfg {
     /// failover). A per-pool blocklist for temporarily benching a member without editing `members`.
     #[serde(default)]
     pub(crate) exclusions: Option<Vec<String>>,
-    /// Maximum failover hops per request (C3: one canonical name; the pre-1.0 `cap` alias is GONE).
+    /// Maximum failover hops per request (one canonical name; the pre-1.0 `cap` alias is GONE).
     #[serde(default = "default_max_hops")]
     pub(crate) max_hops: usize,
 }
@@ -2266,7 +2266,7 @@ fn default_max_hops() -> usize {
     DEFAULT_FAILOVER_CAP
 }
 
-/// A pool's STRUCTURED `on_exhausted:` (C1: a keyword stays bare, a reference is structured):
+/// A pool's STRUCTURED `on_exhausted:` (a keyword stays bare, a reference is structured):
 ///
 /// ```yaml
 /// on_exhausted: reject                       # 503 + Retry-After (the default)
@@ -2518,7 +2518,7 @@ pub(crate) struct ProviderDef {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderDeploy {
-    /// The provider credential as a SECRET REFERENCE (C2). Replaces the removed `api_key_env:`
+    /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
     /// (`api_key_env: VAR` becomes `api_key: { env: VAR }`).
     pub(crate) api_key: SecretRef,
     #[serde(default)]
@@ -2629,10 +2629,10 @@ pub(crate) struct DeployCfg {
     /// all-pools `pools.hooks:` list or a per-pool `hooks:` list. Absent ⇒ no hooks.
     #[serde(default)]
     pub(crate) hooks: HookDefs,
-    /// The top-level `groups:` block - THE one limit tree (S3). Optional; absent = no groups.
+    /// The top-level `groups:` block - THE one limit tree. Optional; absent = no groups.
     #[serde(default)]
     pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
-    /// The top-level `rate_card:` - the ONLY cost source (S5). Per-model entry; ALL-OR-NOTHING:
+    /// The top-level `rate_card:` - the ONLY cost source. Per-model entry; ALL-OR-NOTHING:
     /// absent => token pricing is 0 for every model; present => AUTHORITATIVE and COMPLETE (every
     /// configured model must have an entry or boot/`--validate` FAIL naming the missing models).
     /// The numbers are ABSTRACT cost units (no currency, no FX).
@@ -2641,7 +2641,7 @@ pub(crate) struct DeployCfg {
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub(crate) per_request_fee: i64,
-    /// The durable store as `{ module, settings }` (S6). Absent = the ephemeral RAM store.
+    /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub(crate) store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
@@ -2734,12 +2734,12 @@ pub(crate) struct PluginsCfg {
     #[serde(default)]
     pub(crate) min_versions: std::collections::BTreeMap<String, String>,
     /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): PER-PLUGIN FIRST-PARTY anti-downgrade floor
-    /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0; M1). Empty (the default, and the ONLY value the
+    /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0). Empty (the default, and the ONLY value the
     /// automatic boot/reload path ever sees) = every first-party plugin uses the running binary's own
     /// version — the full automatic floor. An explicit, audited `POST /plugins/rollback` of a
     /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
     /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
-    /// floor — the M1 fix, replacing the earlier single global floor). Derived from the persisted
+    /// floor — replacing the earlier single global floor). Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
     /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged.
     #[serde(skip)]
@@ -2940,7 +2940,7 @@ impl PluginsCfg {
         // the persisted `plugin_versions` pins), in which case the operator's pinned floor stands.
         // `first_party_floors` is EMPTY on every path except a rebuild carrying persisted rollback
         // pins, so the automatic guarantee is unchanged by default. Each entry lowers the floor for
-        // ONE named first-party plugin only (M1); every other first-party plugin still faces the
+        // ONE named first-party plugin only; every other first-party plugin still faces the
         // running binary's version.
         self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
     }
@@ -3018,8 +3018,8 @@ impl PluginsCfg {
 /// The compiled-in store name (`store.module: memory`) - the only store that is not a plugin.
 pub(crate) const GOVERNANCE_STORE_MEMORY: &str = "memory";
 
-/// The top-level `store:` block (S6): the durable store as `{ module, settings }` - the same
-/// module/settings shape as every other plugin instance (C5). `settings` is the store module's OWN
+/// The top-level `store:` block: the durable store as `{ module, settings }` - the same
+/// module/settings shape as every other plugin instance. `settings` is the store module's OWN
 /// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
 /// `busy_timeout_ms`; postgres/valkey read `url`). Absent block = the compiled-in ephemeral RAM
 /// store (keys/usage reset on restart).
@@ -3067,7 +3067,7 @@ fn default_governance_store() -> String {
 /// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
 /// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
 ///
-/// # FREEZE BLOCKER A6: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
+/// # FREEZE BLOCKER: `secrets:` IS A DELIBERATE EXEMPTION FROM THE NAMED-INSTANCE PATTERN
 ///
 /// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
 /// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
@@ -3758,7 +3758,7 @@ fn default_probe_timeout_secs() -> u64 {
 /// The `limits:` block — global operational caps. Each field defaults to its historical hardcoded
 /// value, so an absent field (or an absent block) is today's behavior.
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)] // M8: a typo'd limits key must fail boot, not be silently ignored.
+#[serde(deny_unknown_fields)] // a typo'd limits key must fail boot, not be silently ignored.
 pub(crate) struct LimitsCfg {
     #[serde(default = "default_upstream_request_timeout_secs")]
     pub(crate) upstream_request_timeout_secs: u64,
@@ -3905,7 +3905,7 @@ impl Default for HealthDefaultsCfg {
 /// The `routing:` block — the global default policy timeout (per-policy `policy.timeout_ms` still
 /// overrides).
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)] // M8: a typo'd routing key must fail boot, not be silently ignored.
+#[serde(deny_unknown_fields)] // a typo'd routing key must fail boot, not be silently ignored.
 pub(crate) struct RoutingCfg {
     #[serde(default = "default_policy_timeout_ms")]
     pub(crate) default_policy_timeout_ms: u64,
@@ -4176,7 +4176,7 @@ pub(crate) fn resolve(
     // `module:` is a FAIL-CLOSED plugin-preflight error (like a store/auth ref).
     let mut hooks_registry: HashMap<String, HookCfg> = HashMap::new();
     let mut pools = deploy.pools.pools.clone();
-    // FREEZE BLOCKER A4 — additive-list DEDUPE. A hook named in BOTH `pools.hooks:` and a pool's own
+    // FREEZE BLOCKER — additive-list DEDUPE. A hook named in BOTH `pools.hooks:` and a pool's own
     // `hooks:` fires ONCE, at its FIRST (section-level) position. The section list is fired through
     // `App::global_gates` and the pool's own through `PoolRuntime::gates`, so the dedupe is applied
     // to the POOL half here, at the single lowering point — see [`entity_only_hook_refs`].

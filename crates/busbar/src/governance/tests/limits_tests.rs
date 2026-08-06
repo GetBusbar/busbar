@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the P4 GENERIC LIMIT ENGINE: `GovState::try_admit` over the resolved group chain.
+//! Tests for the GENERIC LIMIT ENGINE: `GovState::try_admit` over the resolved group chain.
 //! Every metric (requests / tokens / budget / concurrent), each in its own window; the chain AND
 //! across levels; the `enabled: false` freeze; the key-with-no-group unlimited posture; the RAII
 //! in-flight grant; refunds; hydrate/accrual across the per-(group, window) buckets.

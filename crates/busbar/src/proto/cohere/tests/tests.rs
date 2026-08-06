@@ -1111,7 +1111,7 @@ fn test_safety_finish_reason_writes_error_non_stream() {
     );
 
     // Reading it back lands on `Error`, not `Safety` — the distinction is genuinely lost on the v2
-    // wire (S7's documented, accepted collision). This is NOT a round-trip.
+    // wire (a documented, accepted collision). This is NOT a round-trip.
     let back = CohereReader
         .read_response(&body)
         .expect("read self-written body");

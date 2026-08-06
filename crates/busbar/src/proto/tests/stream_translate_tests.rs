@@ -478,13 +478,13 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
 }
 
 // ===================================================================================
-// A2: cache-token billing-correctness — normalize IrUsage to ONE additive convention.
+// Cache-token billing-correctness — normalize IrUsage to ONE additive convention.
 //
 // Readers normalize `input_tokens` to UNCACHED input and keep the cache fields ADDITIVE;
 // writers reconstruct the faithful native WIRE shape; billing sums `billable_tokens()`.
 // Two safety nets below: (A) ROUND-TRIP FIDELITY — native usage read→IR→write re-emits the
 // exact native usage shape (same field names/nesting/presence), proving reader/writer
-// normalization is symmetric; (B) BILLING PARITY — OpenAI-family billable UNCHANGED vs pre-A2,
+// normalization is symmetric; (B) BILLING PARITY — OpenAI-family billable UNCHANGED vs before,
 // Anthropic/Bedrock INCREASED by exactly the additive cache tokens (the fix).
 // ===================================================================================
 
@@ -758,7 +758,7 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
     }
 }
 
-/// (B) BILLING PARITY + FIX. OpenAI/Gemini/Responses/Cohere: billable UNCHANGED vs pre-A2
+/// (B) BILLING PARITY + FIX. OpenAI/Gemini/Responses/Cohere: billable UNCHANGED vs before
 /// (prompt_total + output). Anthropic/Bedrock: INCREASED by exactly cache_read + cache_creation.
 #[test]
 fn a2_billing_parity_and_fix() {
@@ -771,7 +771,7 @@ fn a2_billing_parity_and_fix() {
             json!({"prompt_tokens": 100, "completion_tokens": 10, "prompt_tokens_details": {"cached_tokens": 5}}),
         );
         let ir = p.reader().read_response(&native).unwrap();
-        // pre-A2: prompt_tokens(100) + completion(10) = 110. Must stay 110.
+        // prompt_tokens(100) + completion(10) = 110. Must stay 110.
         assert_eq!(
             ir.usage.billable_tokens(),
             110,
@@ -805,7 +805,7 @@ fn a2_billing_parity_and_fix() {
         );
     }
     // Anthropic: the explicit fix example. input=100, cache_read=5000, cache_creation=2000,
-    // output=50 → billable 7150 (pre-A2 was 150).
+    // output=50 → billable 7150 (previously 150).
     {
         let p = protocol_for("anthropic").unwrap();
         let native = native_response_with_usage(
@@ -4308,7 +4308,7 @@ fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
     );
 }
 
-/// class-11 D1': on the Anthropic same-proto verbatim path, only the two usage-bearing event types
+/// On the Anthropic same-proto verbatim path, only the two usage-bearing event types
 /// (`message_start`, `message_delta`) plus `error` may reach the `crate::json::parse_str` DOM parse —
 /// every other frame (here, five `content_block_delta`s and a `content_block_start`/`_stop` pair) must
 /// skip it entirely, because the Anthropic reader is stateless and the framing seams it would feed are

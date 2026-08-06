@@ -1041,7 +1041,7 @@ fn security_check_failed() -> Response {
 
 // ── rendering (the login HTML template, scaffolds stripped) ──────────────────────────────────────
 
-/// The shared `<title>` + `<style>` head, copied from the design mockup (`.note`/`.screen-label`
+/// The shared `<title>` + `<style>` head (`.note`/`.screen-label`
 /// review scaffolds stripped). `include_str!` so the visual is the reviewed asset, not hand-retyped.
 const HEAD: &str = include_str!("busbar-login.html");
 

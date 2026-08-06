@@ -401,7 +401,7 @@ mod internal_error_tests {
 // across versions and transports. Releasing v2 is a LAYER copy of `v1/`, not a rewrite; v1 never
 // breaks. The keys handlers below are mounted ONLY at the canonical `/api/v1/admin/keys*` routes
 // (via the JsonV1 router — the pre-release `/admin/keys` alias is gone), and speak the ONE frozen
-// v1 contract: the `{error:{code,message}}` envelope with the stable code enum (contract H1). Keys
+// v1 contract: the `{error:{code,message}}` envelope with the stable code enum. Keys
 // are a first-class v1 resource served by these handlers until they migrate into the versioned
 // service module.
 pub(crate) mod audit;
@@ -457,7 +457,7 @@ fn parse_key_if_match(
 
 fn key_meta(k: &VirtualKey) -> Value {
     // 1.5.0 keys are PURE AUTH bindings: id / name / allowed_pools / group / labels. Keys carry no
-    // limits (all enforcement flows through the bound group). `allowed_pools` keeps the C6 intent:
+    // limits (all enforcement flows through the bound group). `allowed_pools` keeps the intent:
     // JSON `null` = all pools; `[]` = no pools.
     json!({
         "id": k.id,
@@ -808,7 +808,7 @@ pub(crate) async fn create_key(
     if let Err(msg) = validate_mint_labels(&req.labels) {
         return key_err(who, &AdminError::Validation(msg), Cond::InvalidLabels);
     }
-    // SIGNED-TOKEN keys require a signing key (S2). Without one, mint cannot issue a token - fail
+    // SIGNED-TOKEN keys require a signing key. Without one, mint cannot issue a token - fail
     // loud rather than persist a binding no token can be issued for.
     if !gov.signing_enabled() {
         return key_err(
@@ -850,7 +850,7 @@ pub(crate) async fn create_key(
         }
         (None, None) => now.saturating_add(DEFAULT_KEY_TTL_SECS),
     };
-    // `allowed_pools` (C6, intent carried INTACT into the binding): OMITTED = all pools (`None`);
+    // `allowed_pools` (intent carried INTACT into the binding): OMITTED = all pools (`None`);
     // an explicit `[]` = NO pools; a list scopes it. NON-FATAL typo diagnostic on each named pool.
     let allowed_pools = req.allowed_pools;
     for pool in allowed_pools.iter().flatten() {
@@ -909,7 +909,7 @@ pub(crate) async fn create_key(
         Aws(Box<(crate::governance::VirtualKey, String, String, String)>),
         AtCap { group: String, n: usize, cap: usize },
     }
-    // Keys carry NO inline limits (S1); enforcement flows through the bound group.
+    // Keys carry NO inline limits; enforcement flows through the bound group.
     let spec = NewKeySpec {
         name: req.name,
         allowed_pools,
@@ -1094,7 +1094,7 @@ pub(crate) async fn create_key(
     // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
     // needed (and `gov` is not in scope here — moved into the mint closure above).
     body["state"] = json!("active");
-    // The busbar-SIGNED token IS the key credential (S1), shown exactly once.
+    // The busbar-SIGNED token IS the key credential, shown exactly once.
     body["token"] = json!(token);
     body["expires_at"] = json!(exp);
     // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service), so a
@@ -1703,7 +1703,7 @@ pub(crate) async fn revoke_key(
     }
 }
 
-/// POST /api/v1/admin/signing-key/rotate - ROTATE the busbar key-signing key (S2). Rotation is
+/// POST /api/v1/admin/signing-key/rotate - ROTATE the busbar key-signing key. Rotation is
 /// REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops
 /// verifying (its `kid`/signature no longer matches), so every outstanding key must be re-minted.
 /// 1.5.0 is single-key, so this reports the intent and the current kid; the actual key swap is an
@@ -1790,7 +1790,7 @@ pub(crate) async fn get_key(
             let etag = key_etag(&k);
             // ETag lives ONLY in the HTTP `ETag` header (RFC 7232), not duplicated into the JSON
             // body — one authoritative surface, matching how config/hooks/auth expose their
-            // concurrency token. (contract H4.)
+            // concurrency token.
             let mut meta = key_meta(&k);
             meta["state"] = json!(state);
             let mut resp = json_response(StatusCode::OK, meta);
@@ -1909,7 +1909,7 @@ pub(crate) async fn delete_key(
     if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
-    // Optimistic concurrency (optional `If-Match`, H3 — every mutation verb on the surface honors
+    // Optimistic concurrency (optional `If-Match` — every mutation verb on the surface honors
     // it): the caller's ETag is compared against the CURRENT record inside the gated critical
     // section below, so the delete only lands on the exact record state the caller last read.
     let if_match = match parse_key_if_match(who, &headers) {

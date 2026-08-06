@@ -748,7 +748,7 @@ pub(crate) fn read_state(path: &Path) -> OverlayReadState {
 /// Atomically + durably write the overlay via the crate's ONE durable-write choke point
 /// ([`crate::durable::write_with`]): serialize to a sibling temp, fsync its CONTENTS, rename over
 /// `path`, then fsync the parent DIRECTORY — so a reader (or a crash) never observes a half-written
-/// file AND a power loss cannot surface a torn/zero-length overlay after the rename (L3). This is the
+/// file AND a power loss cannot surface a torn/zero-length overlay after the rename. This is the
 /// former reference implementation of the dance; it is now SUBSUMED (behavior identical: same temp-in-
 /// same-dir, same fsync order, same empty-parent→"." resolution, same tmp cleanup on error) so a
 /// future facet fix lands once, in the primitive, for every durable write.
@@ -810,7 +810,7 @@ pub(crate) fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
 /// floored simply adds a (low) floor entry — harmless, since a floor at/below the artifact's version
 /// is a no-op.
 ///
-/// M1 FIX: the FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
+/// The FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
 /// BOTH a `min_versions` entry (the third-party floor path) AND a `first_party_floors[name]` entry (the
 /// first-party floor path in `busbar_plugin_sign::evaluate`). `evaluate` applies the per-name
 /// first-party floor ONLY to a plugin whose manifest is actually first-party, so pinning a third-party
@@ -824,7 +824,7 @@ pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &Over
             .plugins
             .min_versions
             .insert(name.clone(), pinned.clone());
-        // Scope the first-party floor override to THIS name alone (M1). Harmless for a third-party
+        // Scope the first-party floor override to THIS name alone. Harmless for a third-party
         // pin: `evaluate` only consults `first_party_floors` for a verified first-party manifest.
         deploy
             .plugins
@@ -1014,7 +1014,7 @@ mod config_consolidation_tests {
     /// `BUSBAR_CONFIG_OVERLAY` env var, a mutable config resolves to a writable overlay next to
     /// config.yaml, and an admin mutation persisted there SURVIVES a simulated restart (a fresh read).
     ///
-    /// RED-before-GREEN: pre-1.5.3 an unset `BUSBAR_CONFIG_OVERLAY` meant RAM-only — there was no
+    /// Pre-1.5.3 an unset `BUSBAR_CONFIG_OVERLAY` meant RAM-only — there was no
     /// default backend, so this durable round-trip had nowhere to land and `read` would find nothing.
     #[test]
     fn a_mutable_default_persists_across_a_simulated_restart_with_no_env_var() {
@@ -1044,7 +1044,7 @@ mod config_consolidation_tests {
 
     /// (b) LOCKED ⇒ no overlay backend, so a persist against it is REFUSED (never a silent success).
     ///
-    /// RED-before-GREEN: pre-1.5.3 there was no `locked` concept and `persist_root(None, ..)` returned
+    /// Pre-1.5.3 there was no `locked` concept and `persist_root(None, ..)` returned
     /// a silent `Ok`, so neither of these assertions could hold.
     #[test]
     fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
@@ -1068,7 +1068,7 @@ mod config_consolidation_tests {
     /// backend). Also the read-only-config-dir edge case (unix): the default path is unwritable, so a
     /// mutable config refuses with an actionable message.
     ///
-    /// RED-before-GREEN: pre-1.5.3 nothing enforced "mutable XOR writable overlay" — a mutable config
+    /// Pre-1.5.3 nothing enforced "mutable XOR writable overlay" — a mutable config
     /// with no backend booted fine and mutated in RAM only.
     #[test]
     fn c_mutable_without_a_writable_backend_refuses() {
@@ -1110,7 +1110,7 @@ mod config_consolidation_tests {
     /// else the deprecated `BUSBAR_CONFIG_OVERLAY` env override is honored; else the default next to
     /// config.yaml. Both the new config key AND the deprecated env fallback work.
     ///
-    /// RED-before-GREEN: pre-1.5.3 the ONLY source was the env var; `config.overlay` did not exist, so
+    /// Pre-1.5.3 the ONLY source was the env var; `config.overlay` did not exist, so
     /// the "config wins" and "default next to config" cases had no code path.
     #[test]
     fn d_overlay_precedence_config_over_env_over_default() {
@@ -1154,7 +1154,7 @@ mod config_consolidation_tests {
     /// — so a `BUSBAR_CONFIG=config.yaml` deployment run from inside its config dir (overlay resolves to
     /// a bare `busbar-overlay.json`) BOOTS instead of being refused.
     ///
-    /// RED-before-GREEN: the pre-fix `is_backend_writable` no-parent branch probed the not-yet-existing
+    /// The pre-fix `is_backend_writable` no-parent branch probed the not-yet-existing
     /// bare path via `OpenOptions::open` WITHOUT `.create(true)` → `NotFound` → `false` → boot refused,
     /// even though the cwd is perfectly writable.
     #[test]
@@ -1182,7 +1182,7 @@ mod config_consolidation_tests {
     /// (f) The `None` (LOCKED) overlay path is REFUSED by EVERY persist/reset entry point — not just
     /// `persist_root`. Guards against reverting any one of them to the pre-1.5.3 silent `Ok(())`.
     ///
-    /// RED-before-GREEN: `clear_section(None, ..)` and `try_persist_plugin_versions(None, ..)` returned
+    /// `clear_section(None, ..)` and `try_persist_plugin_versions(None, ..)` returned
     /// a silent `Ok(())` until this fix; reverting either to `return Ok(())` fails this test.
     #[test]
     fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
@@ -1977,7 +1977,7 @@ mod tests {
 
     /// PLUGIN VERSION PINS (1.5.0 rollback-friendly versioning): a `plugin_versions` pin lowers BOTH
     /// the per-name `min_versions` floor (third-party path) AND a PER-NAME `first_party_floors` entry
-    /// (first-party path) when applied to a base `DeployCfg` (M1). Each pin scopes its first-party
+    /// (first-party path) when applied to a base `DeployCfg`. Each pin scopes its first-party
     /// override to its own name — there is no single global floor lowered for every first-party plugin.
     #[test]
     fn plugin_versions_pins_lower_the_floors() {
@@ -2011,7 +2011,7 @@ mod tests {
             "the third-party floor is LOWERED to the pinned version"
         );
         // PER-NAME first-party floor overrides: each pinned name gets exactly its pinned version;
-        // there is no global floor, so an unpinned first-party plugin is unaffected (M1).
+        // there is no global floor, so an unpinned first-party plugin is unaffected.
         assert_eq!(
             deploy
                 .plugins

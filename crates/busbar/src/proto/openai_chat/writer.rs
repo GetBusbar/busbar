@@ -536,7 +536,7 @@ impl ProtocolWriter for OpenAiWriter {
                     None
                 }
                 crate::ir::IrDelta::CitationsDelta(_) => {
-                    // L2-5: OpenAI chat-completions streaming has no citation delta shape; suppress
+                    // OpenAI chat-completions streaming has no citation delta shape; suppress
                     // rather than emit a non-native frame. The citation is preserved in the IR and
                     // re-emitted by any protocol that models streaming citations.
                     None

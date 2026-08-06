@@ -398,7 +398,7 @@ pub(crate) struct App {
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub(crate) auth_scope_caps: std::collections::HashMap<String, String>,
-    /// `auth.role_bindings:` - module -> role -> operator policy (S4: nested by module). Read by
+    /// `auth.role_bindings:` - module -> role -> operator policy (nested by module). Read by
     /// the admin authorization resolution and the governance re-key; an unbound role grants
     /// nothing (fail closed).
     pub(crate) role_bindings: crate::config::RoleBindings,
@@ -444,7 +444,7 @@ pub(crate) struct App {
     pub(crate) queued_depth: Arc<QueuedDepth>,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub(crate) governance: Option<std::sync::Arc<crate::governance::GovState>>,
-    /// The SECRET RESOLVER seam (P2): resolves a config [`crate::config::SecretRef`] to bytes via
+    /// The SECRET RESOLVER seam: resolves a config [`crate::config::SecretRef`] to bytes via
     /// the built-in `env`/`file` modules or a loaded `kind: secret` plugin. Held so the TLS listener
     /// (built after `build_app` returns) resolves cert/key/CA references through the same seam that
     /// resolved provider keys and the admin token at build time.

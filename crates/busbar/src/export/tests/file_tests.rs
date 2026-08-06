@@ -22,7 +22,7 @@ use crate::export::test_logs_projection;
 /// neighbours can observe — that is the shared-process-global fixture trap, and it bit exactly this
 /// way before this rewrite (5 `ingress::tests::*` failures).
 ///
-/// RED-BEFORE-GREEN: without the gate, every offered line is spawned and — once the mutex is
+/// Without the gate, every offered line is spawned and — once the mutex is
 /// released — written, so the count below is the full offered count instead of the cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_sink_sheds_appends_beyond_its_inflight_cap() {

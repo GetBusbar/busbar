@@ -5478,7 +5478,7 @@ fn empty_ir_request() -> crate::ir::IrRequest {
     }
 }
 
-// H1 REASONING: a non-stream Responses `reasoning` output item must read into an IR Thinking block
+// REASONING: a non-stream Responses `reasoning` output item must read into an IR Thinking block
 // (text from `content[].reasoning_text`, signature from `encrypted_content`) AND write back as a
 // `reasoning` item — a full round-trip, so reasoning survives both directions of the seam.
 #[test]
@@ -5682,7 +5682,7 @@ fn test_cached_tokens_mapping() {
     );
 }
 
-// M5 STOP: the Responses create API models no `stop` param, so the writer must NOT emit one even
+// STOP: the Responses create API models no `stop` param, so the writer must NOT emit one even
 // when the IR carries stop sequences (they are warned-and-dropped, not silently leaked).
 #[test]
 fn test_stop_not_emitted_on_responses() {
@@ -5735,7 +5735,7 @@ fn test_unsupported_sampling_params_omitted() {
     }
 }
 
-// M1 response_format <-> text.format. A Responses `text.format` json_schema (FLAT) must read into
+// response_format <-> text.format. A Responses `text.format` json_schema (FLAT) must read into
 // the canonical nested IR shape, and the writer must re-flatten it back under `text.format`.
 #[test]
 fn test_response_format_text_format_round_trip() {
@@ -5846,7 +5846,7 @@ fn test_input_image_file_id_round_trip() {
     );
 }
 
-// H1 REASONING (stream): a reasoning output-item lifecycle (added/delta/done) must read into a
+// REASONING (stream): a reasoning output-item lifecycle (added/delta/done) must read into a
 // Thinking BlockStart + ThinkingDelta + BlockStop, and the writer must re-emit native reasoning
 // stream events from those IR events (`output_item.added`/`reasoning_text.delta`/`.done`).
 #[test]
@@ -5921,7 +5921,7 @@ fn test_streaming_reasoning_round_trip() {
     assert_eq!(payload3["item"]["content"][0]["text"], "pondering");
 }
 
-// H6 (stream): a streamed terminal `response.completed` carrying
+// Stream: a streamed terminal `response.completed` carrying
 // usage.input_tokens_details.cached_tokens must surface it on the IR MessageDelta usage, and the
 // writer's MessageDelta must re-emit it on the terminal event.
 #[test]

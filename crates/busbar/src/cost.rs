@@ -18,7 +18,7 @@
 //!   per-request fee counts); present => authoritative + complete (validated at boot).
 //! - INTEGER MATH ONLY on the hot path: config floats convert ONCE here to nano-units per token;
 //!   derivation is a few u128 multiply-adds over the models a bucket actually used.
-//! - GROUPS are the ONE limit tree (S3): a group's generic limits (requests / tokens / budget per
+//! - GROUPS are the ONE limit tree: a group's generic limits (requests / tokens / budget per
 //!   window, plus the instantaneous `concurrent` gauge) resolve here into per-(group, window)
 //!   ENFORCEMENT BUCKETS; keys are pure auth and contribute no caps of their own.
 //!
@@ -47,7 +47,7 @@ const NANOS_PER_MICRO: u128 = 1_000;
 /// `#<kind>:<value>`: `group:<name>@<window>#pool:<name>` - its own ledger row, accounting only
 /// the traffic dispatched through that scope. (Generic-admission-topology generalization: the
 /// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
-/// since no store persists this literal string durably yet — see the spec's gap #3.)
+/// since no store persists this literal string durably yet.)
 pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
 
 /// Whether `bucket_id` is a bucket of the group named `group` — an EXACT structural match against
@@ -160,7 +160,7 @@ pub(crate) struct GroupBucket {
 pub(crate) struct GroupRuntime {
     pub(crate) name: String,
     /// `false` FREEZES the group: every request charging through it (its own keys AND every
-    /// descendant's) is rejected while history is kept (C10).
+    /// descendant's) is rejected while history is kept.
     pub(crate) enabled: bool,
     /// The instantaneous in-flight cap (`{ concurrent: N }` - no window), if any.
     pub(crate) concurrent_cap: Option<u64>,
@@ -236,7 +236,7 @@ impl<'a> Chain<'a> {
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
 pub(crate) struct CostModel {
     /// `None` = `rate_card` absent = token pricing 0 for every model. `Some` = the AUTHORITATIVE
-    /// effective table, straight from the top-level `rate_card:` (S5: the ONLY cost source).
+    /// effective table, straight from the top-level `rate_card:` (the ONLY cost source).
     rates: Option<HashMap<String, RateNanos>>,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
@@ -257,7 +257,7 @@ impl CostModel {
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
-        // S5: rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
+        // rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
         // GONE (cost lives on no pool member; routing derives its scalar from the card).
         let rates = rate_card.map(|card| {
             card.iter()
