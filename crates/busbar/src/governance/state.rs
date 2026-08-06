@@ -395,19 +395,35 @@ impl GovState {
     /// See [`GovState::write_self_binding`] for why a tombstoned epoch must be skipped rather than
     /// written over.
     ///
-    /// Bounded: a live row (the ordinary idempotent-upsert case) stops the scan on the first
-    /// iteration, and only a run of consecutively tombstoned epochs advances it at all, which takes
-    /// one admin deletion or one rolled-back refresh each. The cap keeps a corrupted store from
-    /// turning a login into an unbounded scan; reaching it is a real fault and says so.
+    /// The stride GROWS (0, +1, +2, +4, +8, …) rather than stepping one at a time, and that is
+    /// load-bearing rather than an optimization.
+    ///
+    /// Every successful [`GovState::refresh_self`] tombstones its predecessor, so after N refreshes
+    /// epochs `0..N-1` are a CONTIGUOUS run of tombstones with the single live binding at N. The
+    /// no-live-binding paths ([`GovState::issue_self`]'s `None` branch, and `refresh_self`'s) both
+    /// start from 0 — they have nothing else to start from, since the cache that would know the
+    /// highest epoch filters tombstoned rows out at load. So the moment that live binding is
+    /// deleted, the next login rescans the whole run from 0. A one-at-a-time scan under a fixed cap
+    /// therefore fails on ordinary use: 64 refreshes plus one admin deletion and the subject can
+    /// never mint again, in either door, permanently — a per-user 500 on `POST /auth/token` that
+    /// only manual store surgery clears. `refresh` is client-selected per call, so 64 is not an
+    /// exotic number for a long-lived account.
+    ///
+    /// Doubling turns that into ~log2(N) probes, and it is sound because ANY free epoch will do:
+    /// the epoch's only jobs are to derive a unique id and to seed the next refresh's `cur + 1`, so
+    /// nothing requires the LOWEST free one. The probe cap is now on the number of probes, not the
+    /// distance covered, and 64 doublings reach past 2^63 epochs — unreachable by anything short of
+    /// a corrupt store, which is the only thing the cap is still there to stop.
     fn first_free_self_epoch(
         &self,
         seed: &[u8; 32],
         user_sub: &str,
         from: u64,
     ) -> StoreResult<(String, u64)> {
-        const MAX_SKIPPED_EPOCHS: u64 = 64;
-        for step in 0..MAX_SKIPPED_EPOCHS {
-            let epoch = from.saturating_add(step);
+        const MAX_PROBES: u32 = 64;
+        let mut stride = 0u64;
+        for _ in 0..MAX_PROBES {
+            let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
             let tombstoned = self
                 .store
@@ -416,10 +432,15 @@ impl GovState {
             if !tombstoned {
                 return Ok((id, epoch));
             }
+            stride = if stride == 0 {
+                1
+            } else {
+                stride.saturating_mul(2)
+            };
         }
         Err(StoreError(format!(
-            "self-serve binding: {MAX_SKIPPED_EPOCHS} consecutive epochs from {from} are all \
-             tombstoned; refusing to reissue a deleted key id"
+            "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on tombstoned \
+             rows; refusing to reissue a deleted key id"
         )))
     }
 

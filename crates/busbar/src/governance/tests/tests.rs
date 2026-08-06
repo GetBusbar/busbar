@@ -4160,3 +4160,58 @@ fn a_rolled_back_refresh_can_still_be_retried() {
         "the retry must leave exactly one enabled binding: {enabled:?}"
     );
 }
+
+/// A long-lived account must not be permanently locked out by its own refresh history.
+///
+/// Every successful `refresh_self` tombstones its predecessor, so after N refreshes epochs `0..N-1`
+/// are a CONTIGUOUS tombstone run with the one live binding at N. Both no-live-binding paths start
+/// their epoch search at 0 (nothing else is available — the cache that would know the highest epoch
+/// filters tombstoned rows out at load), so the moment that live binding is deleted the next login
+/// rescans the entire run. A fixed-cap one-at-a-time scan fails there on ORDINARY use: enough
+/// refreshes plus one admin deletion and the subject can never mint again through either door, and
+/// only manual store surgery clears it.
+///
+/// 70 refreshes, deliberately past the 64-probe cap, so a linear scan cannot pass this.
+#[test]
+fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:erin";
+    let now = 1_700_000_000u64;
+
+    gov.issue_self(sub, None, now + 3600, now).unwrap();
+    for _ in 0..70 {
+        gov.refresh_self(sub, None, now + 3600, now)
+            .expect("each refresh rotates and tombstones its predecessor");
+    }
+    let live = self_binding_for(&gov, sub).expect("one live binding after the refresh run");
+
+    // The admin door: exactly what `DELETE /api/v1/admin/keys/{id}` does.
+    gov.delete_key(&live.id).unwrap();
+
+    // Both doors must still work. Before the fix each returned StoreError -> MintFailed -> HTTP 500,
+    // for this subject, forever.
+    let (issued, issued_token) = gov
+        .issue_self(sub, None, now + 3600, now)
+        .expect("a login after a long refresh history plus a deletion must still mint");
+    assert!(
+        gov.verify_token(&issued_token, now).is_some(),
+        "the freshly issued token must verify"
+    );
+    assert_ne!(
+        issued.id, live.id,
+        "the new binding must not reuse the deleted id"
+    );
+
+    let (_refreshed, refreshed_token) = gov
+        .refresh_self(sub, None, now + 3600, now)
+        .expect("refresh must work too, not just issue");
+    assert!(gov.verify_token(&refreshed_token, now).is_some());
+
+    // The deleted binding stays deleted through all of it.
+    let tombstone = gov.store().get_key(&live.id).unwrap().unwrap();
+    assert!(
+        tombstone.deleted_at.is_some(),
+        "the admin's deletion must still stand: {tombstone:?}"
+    );
+}
