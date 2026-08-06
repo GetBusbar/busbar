@@ -14,7 +14,7 @@ not start on the old spellings, which is deliberate: a config that quietly means
 worse than one that stops and says so.
 
 Every breaking change below is a config change. If you would rather see the finished shape than a list of
-edits, [config at a glance](https://getbusbar.com/docs/config-at-a-glance/) is one annotated file with
+edits, [config at a glance](docs/config-at-a-glance.md) is one annotated file with
 every section on a single page, and [the 1.5 migration guide](docs/migration-1.5.md) walks the path from
 1.4.
 
