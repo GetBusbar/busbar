@@ -4,18 +4,6 @@ All notable changes to Busbar are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## How to write an entry
-
-The reader is an operator deciding whether to take this upgrade and what it will cost them. Every entry
-answers one question: what does this mean for me? An entry that cannot answer it is deleted, not
-compressed. Internal refactors, renamed types, tooling, CI, test counts and dependency bumps do not belong
-here. One line per entry, in plain language, with a link to the docs for the detail; no internal type,
-function or module names. Breaking changes lead their section, are marked **BREAKING**, and always state
-the exact remedial action, because someone upgrading across several versions reads nothing else. Sections
-appear in this order, and only when they have content: **Added**, **Changed**, **Deprecated**,
-**Removed**, **Fixed**. There is no security section: a security-relevant fix is written as an ordinary
-fix, naming the wrong behaviour and the new one. No em dashes.
-
 ## [Unreleased]
 
 ## [1.5.3], 2026-08-05
