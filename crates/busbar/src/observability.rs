@@ -546,6 +546,22 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
             mask_userinfo(e)
         ));
     }
+    // RESOLVE the host too, not just read its literal text. `otlp_host_is_blocked` above stops
+    // `https://169.254.169.254/v1/traces` and every alternate spelling of it — the misconfiguration
+    // and copy-paste case — but a NAME pointed at an internal address passes it, because a name is
+    // not an address until something resolves it. Span data carries key_ids, pool names and
+    // governance decisions, so the export sink has to be checked as an address, not as a string.
+    //
+    // Safe to do here: this runs from `init_logging` on the RUNTIME boot path only. `--validate`
+    // documents that it performs no network I/O and reaches the OTLP endpoint through
+    // `config_validate`'s own pure textual guard, which is deliberately left alone.
+    if let Some(offender) = otlp_resolves_to_internal(&parsed) {
+        return Err(format!(
+            "observability.otlp_endpoint resolves to the internal address {offender} (SSRF guard; \
+             loopback/localhost collectors are allowed); got '{}'",
+            mask_userinfo(e)
+        ));
+    }
     // The `http://` carve-out is ONLY for the co-located loopback collector. A plaintext hop to a
     // REMOTE collector would put span data (key_ids, pool names, governance decisions) on the wire in
     // cleartext, so require `https://` for any non-loopback host. (`scheme_is` is case-insensitive,
@@ -560,6 +576,61 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
         ));
     }
     Ok(Some(e.to_string()))
+}
+
+/// The first resolved address of `url`'s host that is internal, if any — the resolve half of the
+/// OTLP SSRF guard, paired with the literal-text half in [`otlp_host_is_blocked`].
+///
+/// ANY, not all: a name resolving to one external and one internal address is rejected. Connecting
+/// would be a coin flip between them, and "sometimes exports spans to the metadata service" is not a
+/// smaller problem than "always does".
+///
+/// A resolution FAILURE is not a rejection. A collector whose DNS is briefly down is an availability
+/// event, not a security one: it cannot reach anything, internal or otherwise, and disabling trace
+/// export over a transient blip would be the wrong trade.
+///
+/// The addresses are NOT pinned for the exporter's own connections, unlike the webrequest hook's
+/// forwarder. That is a deliberate difference, not an oversight: the exporter requires `https://`
+/// for every non-loopback collector and verifies the certificate against the hostname, so a host
+/// that later re-resolves to an internal address cannot present a valid certificate for the
+/// configured collector name and the connection fails. TLS closes the rebinding window on this path;
+/// on the hook's path the pin is defence in depth on top of the same requirement.
+fn otlp_resolves_to_internal(url: &reqwest::Url) -> Option<std::net::IpAddr> {
+    use std::net::{IpAddr, ToSocketAddrs};
+    let host = url.host_str()?;
+    let host = host.strip_prefix('[').unwrap_or(host);
+    let host = host.strip_suffix(']').unwrap_or(host);
+    let host = host.strip_suffix('.').unwrap_or(host);
+    // An IP literal was already ruled on textually; resolving it could only agree with itself.
+    if host.parse::<IpAddr>().is_ok() || is_alternate_ipv4_encoding(host) {
+        return None;
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    (host, port)
+        .to_socket_addrs()
+        .ok()?
+        .map(|sa| sa.ip())
+        .find(otlp_addr_is_internal)
+}
+
+/// The internal-address predicate for an ALREADY-RESOLVED address, carrying the same loopback
+/// carve-out [`otlp_host_is_blocked`] applies to literals — so a name and a literal spelling of one
+/// address can never get different verdicts, which is the inconsistency that makes a guard
+/// bypassable.
+fn otlp_addr_is_internal(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return false; // the `::1` loopback collector — allowed
+            }
+            if let Some(v4) = v6.to_ipv4() {
+                return !v4.is_loopback() && is_internal_v4(&v4);
+            }
+            v6.is_unspecified() || is_unique_local_v6(v6) || is_link_local_v6(v6)
+        }
+    }
 }
 
 /// True iff the OTLP endpoint URL's host is the loopback/localhost collector target — the exact
@@ -1340,6 +1411,82 @@ mod tests {
                 "loopback OTLP collector '{ok}' must be accepted; got {res:?}"
             );
         }
+    }
+
+    /// The literal-text guard cannot see through a NAME, which is what the resolve half is for.
+    /// `localhost` is the one name that resolves identically everywhere, and it resolves to
+    /// loopback — which is ALLOWED for a collector, so this pins the carve-out rather than a block.
+    #[test]
+    fn otlp_resolve_check_allows_a_name_resolving_to_loopback() {
+        let url = reqwest::Url::parse("http://localhost:4318/v1/traces").unwrap();
+        assert_eq!(
+            otlp_resolves_to_internal(&url),
+            None,
+            "a loopback collector reached by name is the documented carve-out"
+        );
+        assert!(validate_otlp_endpoint(Some("http://localhost:4318/v1/traces")).is_ok());
+    }
+
+    /// An IP literal has already been ruled on textually; resolving it could only agree with itself.
+    #[test]
+    fn otlp_resolve_check_skips_ip_literals() {
+        for raw in [
+            "https://93.184.216.34:4318/v1/traces",
+            "https://[2606:2800:220:1:248:1893:25c8:1946]:4318/v1/traces",
+            "https://169.254.169.254/v1/traces",
+        ] {
+            let url = reqwest::Url::parse(raw).unwrap();
+            assert_eq!(
+                otlp_resolves_to_internal(&url),
+                None,
+                "an IP literal must not be resolved: {raw}"
+            );
+        }
+    }
+
+    /// The resolved-address verdict must match the literal-text verdict for the SAME address —
+    /// otherwise a name and a literal spelling of one address disagree, which is exactly what makes
+    /// a guard bypassable.
+    #[test]
+    fn otlp_resolved_and_literal_verdicts_agree() {
+        let cases: [(&str, bool); 8] = [
+            ("127.0.0.1", false),      // loopback collector: allowed
+            ("::1", false),            // ditto, v6
+            ("10.0.0.1", true),        // RFC 1918
+            ("192.168.1.1", true),     // RFC 1918
+            ("169.254.169.254", true), // link-local / IMDS
+            ("100.64.0.1", true),      // CGNAT
+            ("fd00::1", true),         // unique-local v6
+            ("93.184.216.34", false),  // ordinary public collector
+        ];
+        for (raw, want_internal) in cases {
+            let ip: std::net::IpAddr = raw.parse().unwrap();
+            assert_eq!(
+                otlp_addr_is_internal(&ip),
+                want_internal,
+                "resolved-address verdict for {raw}"
+            );
+            let url = reqwest::Url::parse(&if ip.is_ipv6() {
+                format!("https://[{raw}]/v1/traces")
+            } else {
+                format!("https://{raw}/v1/traces")
+            })
+            .unwrap();
+            assert_eq!(
+                otlp_host_is_blocked(&url),
+                want_internal,
+                "literal-text verdict for {raw} must match the resolved one"
+            );
+        }
+    }
+
+    /// A collector whose DNS is down is an availability event, not a security one: it cannot reach
+    /// anything, and disabling trace export over a transient blip would be the wrong trade.
+    #[test]
+    fn otlp_resolve_check_allows_a_name_that_does_not_resolve() {
+        let url = reqwest::Url::parse("https://this-collector-must-not-resolve.invalid/v1/traces")
+            .unwrap();
+        assert_eq!(otlp_resolves_to_internal(&url), None);
     }
 
     #[test]
