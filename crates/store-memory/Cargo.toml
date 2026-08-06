@@ -9,3 +9,9 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-api = { path = "../api" }
+
+[dev-dependencies]
+# The shared `Store` contract conformance suite. Core's own reference backend runs it too: if the
+# reference implementation does not pass the checks the plugin backends are held to, the checks are
+# wrong.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["store"] }

@@ -155,3 +155,8 @@ mod tests {
         assert_missing_required_field_rejected(always_err_open, r#"{"other":"field"}"#, "issuer");
     }
 }
+
+/// The [`busbar_api::Store`] contract conformance suite — see the module doc. Behind the `store`
+/// feature so only store plugins pay for the `busbar-api` dependency.
+#[cfg(feature = "store")]
+pub mod store_conformance;
