@@ -228,7 +228,7 @@ impl ProtocolReader for BedrockReader {
                         "block": { "cachePoint": cache_point.clone() },
                     }));
                     // ALSO map the marker onto the preceding block's first-class IR `cache_control`
-                    // (H3 cross-protocol): the positional stash above is dropped on the cross-protocol
+                    // (cross-protocol): the positional stash above is dropped on the cross-protocol
                     // seam, so without this a Bedrock->Anthropic hop would lose the prompt-cache
                     // boundary. Additive — the stash still drives the byte-identical same-protocol
                     // round-trip; the writer suppresses the inline `cache_control` emission whenever
@@ -432,7 +432,7 @@ impl ProtocolReader for BedrockReader {
                                 "block": { "cachePoint": cache_point.clone() },
                             }));
                             // ALSO map the marker onto the preceding block's first-class IR
-                            // `cache_control` (H3 cross-protocol) so the prompt-cache boundary
+                            // `cache_control` (cross-protocol) so the prompt-cache boundary
                             // survives a Bedrock->Anthropic hop where the positional stash is dropped.
                             // Additive — see `set_preceding_block_cache_control`; the writer suppresses
                             // the inline emission while the stash is present, so no double-emit.
@@ -514,7 +514,7 @@ impl ProtocolReader for BedrockReader {
                         // A `cachePoint` entry in the `toolConfig.tools` array marks the prompt-cache
                         // boundary for the tool DEFINITIONS preceding it (Anthropic places the same
                         // breakpoint on a tool). Map it onto the preceding tool's first-class IR
-                        // `cache_control` (H3) so the boundary survives the cross-protocol seam. There
+                        // `cache_control` so the boundary survives the cross-protocol seam. There
                         // is no positional tool-cachePoint stash, so this is the sole carrier; on
                         // same-protocol egress the writer re-emits the marker from this field. A
                         // leading cachePoint with no preceding tool has nothing to attach to and is

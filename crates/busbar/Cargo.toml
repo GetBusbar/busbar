@@ -39,7 +39,7 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # The SecretRef reference type ({module, settings} + env/file sugar) — extracted out of this
 # crate's own config::secret module so busbar-plugin-pack (and future schema-generation tooling)
 # can derive the x-busbar-secret oneOf shape from the SAME type this engine deserializes, rather
-# than a hand-written parallel copy that can drift (plugin-settings-schema-SPEC.md checklist #1).
+# than a hand-written parallel copy that can drift.
 busbar-secret-ref = { path = "../secret-ref" }
 # The built-in plugins, each its own workspace crate under auth/<name>/ or hooks/<name>/ — optional
 # so the matching feature (below) compiles each IN or OUT of the binary.
@@ -151,7 +151,7 @@ sha2 = "0.11.0"
 hmac = "0.13.0"
 hex = "0.4.3"
 getrandom = "0.3"
-# ed25519 for the busbar-signed virtual-key TOKENS (P3): the same primitive the plugin-signing
+# ed25519 for the busbar-signed virtual-key TOKENS: the same primitive the plugin-signing
 # path uses, already in the graph. Mint signs a compact `{sub, exp, kid}` token; verify checks the
 # signature statelessly. `rand_core` is pulled for keypair generation on first boot.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
@@ -212,7 +212,7 @@ tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
 
 [features]
-# 1.5.0 (S8): the static-token allowlist module is REMOVED entirely - data-plane auth is the
+# 1.5.0: the static-token allowlist module is REMOVED entirely - data-plane auth is the
 # built-in `keys` signed-token verifier plus IdP auth modules. Nothing static-token-shaped is
 # compiled into any build.
 default = ["auth-admin-tokens", "hooks-ranking"]

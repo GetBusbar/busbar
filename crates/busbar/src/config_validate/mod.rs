@@ -758,7 +758,7 @@ pub(crate) fn validate_with_unset(
         // degraded-routing policy never engages, with no boot diagnostic. Mirror the member-target
         // resolution check and fail loud.
         //
-        // M4 (validate/boot drift): a MALFORMED action string (`OnExhausted::parse` -> Err) dies in
+        // Validate/boot drift: a MALFORMED action string (`OnExhausted::parse` -> Err) dies in
         // main.rs at boot but was previously SILENTLY IGNORED here (`if let Ok(..)`), so `--validate`
         // passed a config boot would reject - the cardinal validate/boot-drift sin. Match main.rs:
         // surface the parse error into `errors` so `--validate` catches it too.
@@ -1074,7 +1074,7 @@ pub(crate) fn validate_with_unset(
         validate_public_url(public_url, &cfg.blocked_metadata_hosts, &mut errors);
     }
 
-    // Rule (role_bindings): bindings are NESTED BY MODULE (S4). Every module key must appear in
+    // Rule (role_bindings): bindings are NESTED BY MODULE. Every module key must appear in
     // an auth chain (a binding under a module that never authenticates is dead config - almost
     // certainly a typo'd module name silently granting nothing); every `admin_scope` must be a
     // known scope token; every `group` must exist in the top-level `groups:` tree; a role name
@@ -1242,7 +1242,7 @@ pub(crate) fn validate_with_unset(
                 ));
             }
         }
-        // S2 (1.5.1): busbar NO LONGER auto-generates a signing key at boot (the 1.5.0 behavior
+        // 1.5.1: busbar NO LONGER auto-generates a signing key at boot (the 1.5.0 behavior
         // wrote `busbar-signing.key` beside the config, which boot-looped a read-only config mount
         // with a misleading Permission-denied). When the deployment actually VERIFIES busbar-signed
         // keys - the built-in `keys` module is in the data-plane chain - `auth.signing_key` is
@@ -1365,7 +1365,7 @@ pub(crate) fn validate_with_unset(
         }
     }
 
-    // The cost/groups/store/secret surface (S3/S5/S6/C2) - the redistributed pieces of the
+    // The cost/groups/store/secret surface - the redistributed pieces of the
     // dissolved 1.4.x governance block, now first-class on the resolved config.
     validate_cost_model(cfg, &mut errors);
 
@@ -1521,7 +1521,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
 // the old prose: a blank token does not merely lock the admin API, it computes the digest over the
 // blank string, so an empty presented credential would authenticate as the operator.
 
-/// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config (S3/S5/S6/C2):
+/// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config:
 /// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
 /// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
 /// module reference, and every
@@ -1630,7 +1630,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         ));
     }
 
-    // groups (S3): parents exist, chain acyclic — any depth, the cycle check is the bound (shared
+    // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared
     // with the parse-time module), plus
     // value-level checks the tree walk does not cover.
     crate::config::groups::validate_groups(&cfg.groups, &|p| cfg.pools.contains_key(p), errors);
@@ -1647,7 +1647,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // store (S6): the module name must be non-empty; a non-memory module additionally requires the
+    // store: the module name must be non-empty; a non-memory module additionally requires the
     // plugin subsystem (checked with the registry in `plugins_preflight`, the shared boot path).
     if let Some(store) = &cfg.store {
         if store.module.trim().is_empty() {
@@ -1659,7 +1659,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. The built-ins are
+    // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME. The built-ins are
     // `env` and `file`; ANY OTHER module name is a `kind: secret` PLUGIN reference (vault, aws-sm,
     // …), which is the marquee 1.5.0 "secrets are plugins" feature. Whether such a plugin actually
     // exists + is `kind: secret` + is trusted is resolved against the plugin REGISTRY — but this

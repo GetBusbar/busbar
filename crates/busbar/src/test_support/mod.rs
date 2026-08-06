@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! In-crate mock-upstream test harness (/).
+//! In-crate mock-upstream test harness.
 
 /// A data-plane `AuthMiddleware` whose chain is `[keys]` — the built-in signed-key verifier. Since
 /// 1.5.2 virtual-key ENFORCEMENT is driven by the chain shape, not the admin token, so any e2e
@@ -116,7 +116,7 @@ pub(crate) enum MockResponse {
     /// still parked reading this body. On first poll of the body stream this notifies `started` (so
     /// the test knows the client has begun reading and `read_capped_body`'s `.await` is now parked),
     /// then awaits `release` before yielding the body once and ending the stream cleanly. Used by
-    /// the M6 (owned single-flight-probe release) proof: the ONE real request that must park mid-body
+    /// the owned single-flight-probe release proof: the ONE real request that must park mid-body
     /// read; the "second probe" side is simulated directly on the store, copied from
     /// `probe_guard_tests.rs`'s `stalled_guard_does_not_release_a_newer_probe` pattern, rather than
     /// driving a second concurrent HTTP dispatch through the mock server.
@@ -1237,14 +1237,16 @@ pub(crate) fn test_hook_env_with_schema(
         let profile_dir = exe.parent()?.parent()?;
         let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
         // Check BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a
-        // ROOT build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>`
-        // compiler output (refreshed on every build that recompiles the lib). A bare `cargo test` (a
-        // developer running `cargo test -p busbar` locally, or `cargo mutants`'s default build step)
-        // does NOT uplift the cdylib, only `target/deps` — checking only `profile_dir` silently found
-        // nothing even though the cdylib really was built, making EVERY test that calls
+        // ROOT build target, e.g. `cargo build --all-targets`) and the raw
+        // `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the
+        // lib). A bare `cargo test` (a developer running `cargo test -p busbar` locally, or any
+        // other scoped build step) does NOT uplift the cdylib to the top-level profile dir, only to
+        // `target/deps` — checking only `profile_dir` silently found nothing even though the cdylib
+        // really was built, making EVERY test that calls
         // `test_hook_env`/`test_hook_env_with_schema` (the admin hook-registration/resolution suite
-        // among others) silently no-op instead of exercising real coverage. Same fix already applied
-        // to store-postgres-plugin's, auth-oidc-plugin's, and webrequest-hook's equivalent helpers.
+        // among others) silently no-op instead of exercising real coverage. Same fix already
+        // applied to store-postgres-plugin's, auth-oidc-plugin's, and webrequest-hook's equivalent
+        // helpers.
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         let candidate = [uplifted, raw]

@@ -210,7 +210,7 @@ fn admit_check(
                 // duplicate-free): at equality `visited` IS the full pool set, so either the
                 // earlier `!visited.iter().any(...)` clause already rejected `to` (if `to` is a
                 // pool), or the `contains_key` clause below rejects it (if it isn't) — making `<`
-                // vs `<=` behaviorally indistinguishable right here (cargo-mutants flags this; see
+                // vs `<=` behaviorally indistinguishable right here (see
                 // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
                 // one guard clause that IS distinguishable). Kept as an explicit bound rather than
                 // removed: it's the backstop if the duplicate-free invariant is ever loosened.

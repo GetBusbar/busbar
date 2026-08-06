@@ -1,4 +1,4 @@
-/// The re-key union semantics under role_bindings (C6): pools union (OMITTED `allowed_pools` on
+/// The re-key union semantics under role_bindings: pools union (OMITTED `allowed_pools` on
 /// any granting binding = every pool; explicit `[]` contributes nothing), the synthesized key
 /// carries NO inline caps (keys are pure auth; limits live on `groups:`), the first bound
 /// `group` becomes the key's group binding, and a principal whose roles all bind `[]` (or bind
@@ -31,7 +31,7 @@ fn synthesize_principal_key_union_semantics() {
             ..Default::default()
         },
     );
-    // OMITTED allowed_pools = ALL pools (C6).
+    // OMITTED allowed_pools = ALL pools.
     table.insert("all-pools".to_string(), RoleBindingCfg::default());
 
     let mut p = crate::auth::Principal::from_id("test:u");
@@ -60,7 +60,7 @@ fn synthesize_principal_key_union_semantics() {
     );
     assert!(k.enabled);
 
-    // An OMITTED allowed_pools on any granting binding = every pool (the None encoding, C6).
+    // An OMITTED allowed_pools on any granting binding = every pool (the None encoding).
     p.roles = vec!["a".to_string(), "all-pools".to_string()];
     let k = synthesize_principal_key(&p, Some(&table)).expect("granting");
     assert!(
@@ -255,7 +255,7 @@ fn ledger_tokens(store: &MemoryStore, bucket: &str, window: u64) -> u64 {
     store.get_usage(bucket, window).unwrap().total_tokens()
 }
 
-/// H1: CONCURRENCY through the REAL admission wrapper. Fires N concurrent tasks through
+/// CONCURRENCY through the REAL admission wrapper. Fires N concurrent tasks through
 /// `GovState::try_admit` on a SHARED `Arc<GovState>`, the exact admission entrypoint the route
 /// path calls. With a 1c flat fee and a 5c GROUP budget cap (keys are pure auth: the cap lives on
 /// the bound group), exactly 5 of 20 concurrent admissions may land and the group's final derived
@@ -321,7 +321,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
     );
 }
 
-/// H2: the charge -> refund -> re-admit money cycle through `GovState`. Charge a key's GROUP to
+/// The charge -> refund -> re-admit money cycle through `GovState`. Charge a key's GROUP to
 /// its cap so the next request is rejected; `refund_request` reverses one charge; a new request is
 /// admitted again. Proves a refunded fee genuinely frees budget on the live admission path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -800,13 +800,13 @@ fn test_govstate_lookup_pool_allowed_refresh() {
 
     // A key added after construction isn't visible until refresh().
     let mut k2 = sample_key("k2", "binding:k2:gen1");
-    k2.allowed_scopes = None; // omitted grant = all pools (C6)
+    k2.allowed_scopes = None; // omitted grant = all pools
     gov.store().put_key(&k2).unwrap();
     assert!(gov.lookup_by_sub("k2").is_none(), "not cached pre-refresh");
     gov.refresh().unwrap();
     let r2 = gov.lookup_by_sub("k2").unwrap();
     assert!(pool_allowed(&r2, "anything"), "None allowed_pools = all");
-    // And the C6 empty-set arm: an explicit [] admits NO pool.
+    // And the empty-set arm: an explicit [] admits NO pool.
     let mut k3 = sample_key("k3", "h3");
     k3.allowed_scopes = Some(vec![]);
     assert!(
@@ -2534,7 +2534,7 @@ fn test_budget_state_projects_the_whole_chain() {
     assert_eq!(state[2].bucket_id, "group:acme@month");
 }
 
-/// P3 signed-token keys, end to end at the GovState seam: mint -> verify -> revoke/delete/tamper/
+/// Signed-token keys, end to end at the GovState seam: mint -> verify -> revoke/delete/tamper/
 /// rotate/expiry. These drive the real `mint_signed`/`verify_token`/`revoke` path over the memory
 /// store (with its durable denylist), so the whole stateless-verify + denylist contract is proven.
 mod signed_token {
@@ -2590,7 +2590,7 @@ mod signed_token {
             .expect("mint");
         let resolved = g.verify_token(&token, 1_500).expect("verify");
         assert_eq!(resolved.group, None);
-        // Omitted allowed_pools carries as None = all pools (C6 intent intact in the binding).
+        // Omitted allowed_pools carries as None = all pools (intent intact in the binding).
         assert!(resolved.allowed_scopes.is_none());
     }
 
@@ -3240,7 +3240,7 @@ mod metering_fanout {
     }
 }
 
-// ── H1/H2: the self-serve mint offload wrapper + refresh's atomic rollback on a failed tombstone ──
+// ── the self-serve mint offload wrapper + refresh's atomic rollback on a failed tombstone ────────
 
 /// A `Store` that delegates everything to a `MemoryStore` except `delete_key`, which fails
 /// EXACTLY ONCE after `arm()` — the next `delete_key` call errors and every call after that
@@ -3501,7 +3501,7 @@ fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
     );
 }
 
-/// H1 — structural: request-path callers must go through `mint_self_offloaded` (the blocking-pool
+/// Structural: request-path callers must go through `mint_self_offloaded` (the blocking-pool
 /// door), never call `issue_self`/`refresh_self` directly on the reactor. This proves the wrapper
 /// exists, actually runs the mint (`spawn_blocking` + `.await`), and returns the SAME outcome the
 /// sync fn would — i.e. it is a transparent async front door, not a behavior change.

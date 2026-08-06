@@ -1816,7 +1816,7 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
     server.abort();
 }
 
-// ── real boot-time legacy-config refusal / migration (P9.3, end to end) ────────────────────────
+// ── real boot-time legacy-config refusal / migration (end to end) ────────────────────────────────
 //
 // Every legacy/migration test in `config::migrate::tests` drives `detect_legacy_markers` /
 // `migrate_config` directly against an in-memory `serde_yaml::Value` — none of them go through
@@ -1982,7 +1982,7 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
 /// `validate_worker_threads_config`: a config-supplied `advanced.worker_threads: 0` is DIAGNOSED
 /// (`Err`, so the caller warns) rather than silently dropped — matching `worker_threads_from_env`'s
 /// treatment of an invalid env value. A positive count or an unset value passes through as `Ok`.
-/// RED-before-GREEN: pre-fix the config path used `.filter(|n| *n >= 1)`, which returned `None` for
+/// Pre-fix the config path used `.filter(|n| *n >= 1)`, which returned `None` for
 /// `Some(0)` with NO diagnostic — reverting to that (removing this validation) fails the `Err` case.
 #[test]
 fn validate_worker_threads_config_diagnoses_zero() {
@@ -1996,7 +1996,7 @@ fn validate_worker_threads_config_diagnoses_zero() {
 
 /// `upstream_bool_env_override`: the env→config migration precedence for the boot-time upstream
 /// booleans. When the deprecated env var is UNSET, the config value stands; when SET, it wins (`"0"`
-/// or empty = off, anything else = on). RED-before-GREEN: dropping the `None => config_val` arm (so the
+/// or empty = off, anything else = on). Dropping the `None => config_val` arm (so the
 /// config key stops being honored) fails the "env absent → config value" cases.
 #[test]
 fn upstream_bool_env_override_precedence() {
@@ -2027,7 +2027,7 @@ fn upstream_bool_env_override_precedence() {
 
 /// `worker_threads_from_config`: END-TO-END from a real config.yaml (not just a parse). A positive
 /// `advanced.worker_threads` is read back from the file the `BUSBAR_CONFIG` env var names; a `0` is
-/// diagnosed away to `None`. RED-before-GREEN: deleting `worker_threads_from_config`'s parse (or its
+/// diagnosed away to `None`. Deleting `worker_threads_from_config`'s parse (or its
 /// call in `main()`) means `advanced.worker_threads` stops being read from config.yaml — the positive
 /// assertion fails.
 #[test]
@@ -2078,7 +2078,7 @@ fn worker_threads_from_config_reads_a_real_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED-before-GREEN for the `EnvVarGuard` fix above: proves the restore survives a PANIC between
+/// Proves the restore survives a PANIC between
 /// `set_var` and the end of scope, not just the happy path. Before introducing the `Drop` guard, a
 /// failed assertion in `worker_threads_from_config_reads_a_real_file` would unwind past its manual
 /// `match prior { .. }` restore and leak the override to every later test in the binary. This test
@@ -2445,7 +2445,7 @@ const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
 
 /// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section and NO `BUSBAR_CONFIG_OVERLAY`,
 /// `load_config_from_disk` resolves a writable overlay next to config.yaml and reports the config
-/// mutable. RED-before-GREEN: pre-1.5.3 an unset env var meant `overlay_path: None` (RAM-only).
+/// mutable. Pre-1.5.3 an unset env var meant `overlay_path: None` (RAM-only).
 #[test]
 fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
@@ -2462,7 +2462,7 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
 }
 
 /// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
-/// actionable message (writable overlay OR `config.locked: true`). RED-before-GREEN: pre-1.5.3 nothing
+/// actionable message (writable overlay OR `config.locked: true`). Pre-1.5.3 nothing
 /// enforced "mutable XOR writable overlay".
 #[test]
 fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
@@ -2499,9 +2499,9 @@ fn boot_locked_config_has_no_overlay() {
 
 /// 1.5.3 providers migration (`BUSBAR_PROVIDERS` → `providers_file:`): the top-level `providers_file:`
 /// pointer names the catalog (resolved relative to config.yaml), honored with NO env var; and an
-/// explicit override (the deprecated env var, or a reload's live path) still wins. RED-before-GREEN:
-/// pre-1.5.3 the catalog path came ONLY from `BUSBAR_PROVIDERS` / the hardcoded default — a config-file
-/// pointer had no code path.
+/// explicit override (the deprecated env var, or a reload's live path) still wins. Pre-1.5.3 the
+/// catalog path came ONLY from `BUSBAR_PROVIDERS` / the hardcoded default; a config-file pointer had
+/// no code path.
 #[test]
 fn boot_providers_file_pointer_is_honored_and_override_wins() {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2547,7 +2547,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// D1: `App.auth_scope_caps` is keyed by PROVIDER NAME, not by the backing plugin MODULE.
+/// `App.auth_scope_caps` is keyed by PROVIDER NAME, not by the backing plugin MODULE.
 ///
 /// Two named providers sharing one plugin module must get INDEPENDENT ceilings (the invariant
 /// `ChainVerdict::Identified` documents), and the read side (`auth::module_admin_scope_cap`) looks

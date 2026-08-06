@@ -26,8 +26,8 @@ use std::path::PathBuf;
 ///
 /// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a ROOT
 /// build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>` compiler
-/// output (refreshed on every build that recompiles the lib). A bare `cargo test` (what
-/// `cargo-mutants` runs) does NOT uplift the cdylib to the top-level profile dir, only to
+/// output (refreshed on every build that recompiles the lib). A bare `cargo test` (or any other
+/// scoped build) does NOT uplift the cdylib to the top-level profile dir, only to
 /// `target/deps` — checking only `profile_dir` silently found nothing even though the cdylib really
 /// was built, so every test gated on this returned `None` and silently skipped (confirmed by hand:
 /// `cargo test -p busbar hooks::tests::` printed "skip: hook cdylib not built" for every hook
@@ -109,7 +109,7 @@ fn empty_env() -> HookEnv {
     )
 }
 
-/// B1 (fail-closed): a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
+/// Fail-closed: a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
 /// return `Err` (aborting boot/reload CLOSED), matching the store/auth paths — NOT be silently dropped
 /// from the routing chain. A hook whose settings all resolve returns `Ok`.
 #[test]
@@ -1036,7 +1036,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         "tap-req".to_string(),
         mk(HookKind::Tap, Some(crate::config::HookStage::Request)),
     );
-    // FREEZE BLOCKER A3: a tap with NEITHER `phase:` nor `at:` fires at THE FOUR CORE STAGES (not
+    // FREEZE BLOCKER: a tap with NEITHER `phase:` nor `at:` fires at THE FOUR CORE STAGES (not
     // just `request`, and not "every stage that will ever exist") — so it is admitted at request AND
     // response below. See `CORE_HOOK_PHASES`.
     hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, None));
@@ -1063,13 +1063,13 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     assert_eq!(
         completion.len(),
         2,
-        "the explicit response-stage tap AND the unset tap (A3: omitted = the four core stages)"
+        "the explicit response-stage tap AND the unset tap (omitted = the four core stages)"
     );
-    // The ROUTING stage admits only the unset tap (A3), never the two stage-pinned ones.
+    // The ROUTING stage admits only the unset tap, never the two stage-pinned ones.
     assert_eq!(
         resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).len(),
         1,
-        "only the phase-unset tap observes the routing stage (A3: omitted = the four core stages)"
+        "only the phase-unset tap observes the routing stage (omitted = the four core stages)"
     );
     // Every resolved tap here is `prompt: no`, so `send_prompt` (the middle tuple element) is false.
     assert!(
@@ -2072,7 +2072,7 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
     );
 }
 
-/// A1 — the settings-drift signal yields KEY NAMES ONLY, and is computed WITHOUT resolving a single
+/// The settings-drift signal yields KEY NAMES ONLY, and is computed WITHOUT resolving a single
 /// secret.
 ///
 /// Three defects in one line of `GET /api/v1/admin/hooks/{name}/status`. It serialized

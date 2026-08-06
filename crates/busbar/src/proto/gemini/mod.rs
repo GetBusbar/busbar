@@ -822,7 +822,7 @@ fn write_gemini_response_format(
 /// a `responseSchema` or a tool's `parameters`. Gemini accepts a strict OpenAPI 3.0 `Schema` subset,
 /// NOT full JSON Schema, so draft keywords a foreign protocol (OpenAI/Anthropic) routinely emits on a
 /// tool/structured-output schema hard-fail the request. Stripping them (recursively) lets a
-/// cross-protocol tool/structured-output definition survive instead of 400-ing (L3 / M1). Kept as one
+/// cross-protocol tool/structured-output definition survive instead of 400-ing. Kept as one
 /// list so both `responseSchema` and tool `parameters` sanitize identically.
 ///
 /// RESEARCHED AGAINST THE LIVE API (2026-07-30), not just Google's docs, because the docs and the
@@ -879,8 +879,8 @@ const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
 const GEMINI_SCHEMA_NAME_KEYED_MAPS: &[&str] = &["properties", "dependentSchemas"];
 
 /// Recursively strip the JSON-Schema keywords Gemini rejects (`GEMINI_SCHEMA_REJECTED_KEYS`) from a
-/// schema value so a cross-protocol tool / `responseSchema` definition does not hard-fail with a 400
-/// (L3). Returns a cleaned clone — the source IR value is left intact (only the egress wire copy is
+/// schema value so a cross-protocol tool / `responseSchema` definition does not hard-fail with a
+/// 400. Returns a cleaned clone — the source IR value is left intact (only the egress wire copy is
 /// sanitized), so the stripped keys still round-trip same-protocol via the preserved raw object in
 /// `extra` where applicable.
 ///
@@ -1088,7 +1088,7 @@ fn resolve_gemini_schema_refs(schema: &serde_json::Value) -> serde_json::Value {
 /// field (or an individual counter) is absent. Shared by the streaming and prompt-block paths so
 /// usage accounting stays identical regardless of how a response terminates.
 ///
-/// H6 cache tokens: Gemini reports context-cache hits as `usageMetadata.cachedContentTokenCount`
+/// Cache tokens: Gemini reports context-cache hits as `usageMetadata.cachedContentTokenCount`
 /// (the google-genai SDK's `cached_content_token_count`). Map it into the IR's
 /// `cache_read_input_tokens` — the SAME field Bedrock's `cacheReadInputTokens` and Anthropic's
 /// `cache_read_input_tokens` populate — so cached-prompt accounting survives the cross-protocol seam

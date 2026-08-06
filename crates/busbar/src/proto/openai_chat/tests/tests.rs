@@ -1902,7 +1902,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
             // In-progress finish per the chunk shape (no finish_reason on a usage-only chunk).
             assert_eq!(*stop_reason, None);
             assert_eq!(*stop_sequence, None);
-            // A2 normalization: input_tokens is UNCACHED (prompt_tokens 11 - cached 3 = 8);
+            // Normalization: input_tokens is UNCACHED (prompt_tokens 11 - cached 3 = 8);
             // cache_read carries the cached prefix additively.
             assert_eq!(usage.input_tokens, 8);
             assert_eq!(usage.output_tokens, 7);
@@ -2171,7 +2171,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
     assert_eq!(stop_idx, 0);
 }
 
-/// C3: when a tool opens BEFORE any text, then text arrives, a later tool-argument delta must be
+/// When a tool opens BEFORE any text, then text arrives, a later tool-argument delta must be
 /// emitted at the IR index the tool's BlockStart was RECORDED with (`tool_ir_index`), NOT a
 /// recomputed `ir_idx` (which shifts once text is present). Emitting at the recomputed index would
 /// point the arg JSON at the wrong block and corrupt the tool call cross-protocol.
@@ -2234,7 +2234,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
         .expect("tool arg InputJsonDelta");
     assert_eq!(
         arg_idx, tool_start_idx,
-        "C3: arg delta must land at the recorded BlockStart index ({tool_start_idx}), not a \
+        "arg delta must land at the recorded BlockStart index ({tool_start_idx}), not a \
              recomputed index ({arg_idx})"
     );
 }
@@ -4047,7 +4047,7 @@ fn phase0_sampling_fields_roundtrip_same_protocol() {
     );
 }
 
-/// D2: a Responses `file_id` image (the FILE_ID_IMAGE_SENTINEL media_type) reaching the OpenAI
+/// A Responses `file_id` image (the FILE_ID_IMAGE_SENTINEL media_type) reaching the OpenAI
 /// egress is an unresolvable cross-vendor reference. It must be SKIPPED — NOT emitted as a corrupt
 /// `data:file_id;base64,<id>` image_url. The user message's content must carry no image part.
 #[test]

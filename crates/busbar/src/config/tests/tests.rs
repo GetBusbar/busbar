@@ -211,7 +211,7 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
     }
 }
 
-/// M8 (deny_unknown_fields gap): `TlsCfg` is `#[serde(deny_unknown_fields)]`, so a TYPO under
+/// deny_unknown_fields gap: `TlsCfg` is `#[serde(deny_unknown_fields)]`, so a TYPO under
 /// `health:` was the ONE top-level section without `deny_unknown_fields`, so a typo'd probe knob
 /// parsed clean and was silently ignored — the operator believes probing is retuned while it keeps
 /// the defaults. Every sibling section rejects at parse; this one now does too.
@@ -258,7 +258,7 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
     );
 }
 
-/// 1.5.0 CLEAN BREAK (C3): the pre-1.0 serde aliases are GONE. Each old spelling is now an
+/// 1.5.0 CLEAN BREAK: the pre-1.0 serde aliases are GONE. Each old spelling is now an
 /// unknown-field parse error; only the canonical name loads. (This test used to pin the aliases
 /// as accepted; 1.5.0 is unreleased with no back-compat, so it now pins them REJECTED.)
 #[test]
@@ -303,7 +303,7 @@ fn test_removed_key_aliases_are_rejected() {
 /// The new spelling resolves; the 1.4.x key inside the settings bag is rejected (`OtlpSettings` is
 /// `deny_unknown_fields`), so the retirement is loud rather than a silently-dropped trace sink.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
+/// Before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
 /// `otlp` export module at all, so neither half of this compiled.
 #[test]
 fn test_otlp_folds_into_an_export_instance() {
@@ -336,7 +336,7 @@ fn test_otlp_folds_into_an_export_instance() {
 /// turns the bare serde error into an actionable hint naming the new export home + the migrator — the
 /// same shared-table discipline as the HookStage rename.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 these keys were live config fields that parsed silently, so the
+/// Before 1.5.3 these keys were live config fields that parsed silently, so the
 /// parse SUCCEEDED (no error to augment) — this test does not pass on the pre-retirement tree.
 #[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
@@ -533,7 +533,7 @@ fn admin_plane_boot_guard() {
 /// the RETIRED key must LOUD-FAIL at parse rather than being silently ignored (which would leave an
 /// operator believing a waiver still applied).
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 `admin_insecure` was a live field (so it parsed clean) and
+/// Before 1.5.3 `admin_insecure` was a live field (so it parsed clean) and
 /// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
@@ -677,7 +677,7 @@ fn test_client_token_env_lock_serializes_set_interpolate_remove() {
     );
 }
 
-// ── pool `hooks:` list (S9) ──────────────────────────────────────────────────────────────────────
+// ── pool `hooks:` list ───────────────────────────────────────────────────────────────────────────
 
 /// The `hooks: [...]` list parses each native strategy name as the base; absent defaults to
 /// weighted with base NOT named (so the `default:` hook can replace it at resolution).
@@ -793,7 +793,7 @@ fn test_hook_definition_unknown_key_rejected() {
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
-/// Pool member shape (C4): the member names its model via `model:` (renamed from the 1.4.x
+/// Pool member shape: the member names its model via `model:` (renamed from the 1.4.x
 /// `target:`), and the 1.4.x `cost_per_mtok:` member cost is REMOVED (rate_card is the only cost
 /// source). Both removed keys fail deny_unknown_fields.
 #[test]
@@ -1506,7 +1506,7 @@ fn test_resolve_provider_from_def() {
     );
 }
 
-/// C2: a provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
+/// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
 /// from a map), and the removed `api_key_env:` spelling is an unknown-field error.
 #[test]
@@ -1617,7 +1617,7 @@ fn test_resolve_empty_error_map_allowed_in_def() {
     assert!(provider_cfg.error_map.is_empty());
 }
 
-// ── on_exhausted (C1: keyword bare, reference structured) ────────────────────────────────────────
+// ── on_exhausted (keyword bare, reference structured) ────────────────────────────────────────────
 
 /// The structured `on_exhausted:` parses its two bare keywords and the structured fallback-pool
 /// reference, and each projects to the right runtime behavior via `to_runtime()`.
@@ -1942,7 +1942,7 @@ limits:
     assert_eq!(l.request_body_max_bytes, 5 * 1024 * 1024);
 }
 
-// ── SecretRef (C2) ───────────────────────────────────────────────────────────────────────────────
+// ── SecretRef ────────────────────────────────────────────────────────────────────────────────────
 
 /// The `{ env: VAR }` / `{ file: PATH }` sugar spellings desugar to the built-in modules'
 /// canonical `{ module, settings }` form.
@@ -2083,7 +2083,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 /// shape (every typed field parses) plus the property the whole redesign exists for: ONE definition
 /// serving BOTH planes, so its settings cannot drift between them.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 `identity-providers:` did not exist and a chain entry was an
+/// Before 1.5.3 `identity-providers:` did not exist and a chain entry was an
 /// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
@@ -2313,7 +2313,7 @@ fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
     );
 }
 
-/// `auth.role_bindings:` parses as a module-nested map (S4): module -> role -> grant, with the C6
+/// `auth.role_bindings:` parses as a module-nested map: module -> role -> grant, with the
 /// allowed_pools semantics preserved at the type level (omitted = None = ALL pools; `[]` =
 /// Some(empty) = NO pools).
 #[test]
@@ -2345,7 +2345,7 @@ role_bindings:
     );
     assert_eq!(platform.group.as_deref(), Some("eng"));
     assert_eq!(platform.admin_scope.as_deref(), Some("read-only"));
-    // C6: an explicit [] is the EMPTY set (no pools), distinct from omitted (all pools).
+    // An explicit [] is the EMPTY set (no pools), distinct from omitted (all pools).
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
@@ -2353,7 +2353,7 @@ role_bindings:
     assert_eq!(auth.admin_auth, [ADMIN_TOKENS_MODULE]);
 }
 
-// ── groups / limits (S3) ─────────────────────────────────────────────────────────────────────────
+// ── groups / limits ──────────────────────────────────────────────────────────────────────────────
 
 /// Every limit metric parses in the `{ <metric>: amount, per: window }` shape; `concurrent` takes
 /// no window; `enabled` defaults true; `parent` is carried.
@@ -2381,7 +2381,7 @@ limits:
         (LimitMetric::Requests, 9, Some(LimitWindow::Total)),
         (LimitMetric::Budget, 7, Some(LimitWindow::Day)),
     ];
-    assert_eq!(g.limits.len(), expect.len(), "order preserved (C9)");
+    assert_eq!(g.limits.len(), expect.len(), "order preserved");
     for (i, (metric, amount, per)) in expect.into_iter().enumerate() {
         assert_eq!(g.limits[i].metric, metric, "limit {i}");
         assert_eq!(g.limits[i].amount, amount, "limit {i}");
@@ -2517,7 +2517,7 @@ fn test_group_limit_on_exhaust_qualifier() {
     }
 }
 
-// ── top-level DeployCfg surface (S3/S5/S6) ───────────────────────────────────────────────────────
+// ── top-level DeployCfg surface ──────────────────────────────────────────────────────────────────
 
 /// The REMOVED top-level blocks are rejected by deny_unknown_fields: `governance:` (split into
 /// store/rate_card/groups/advanced/auth), the `hooks:` registry (inline refs now), `group_map:`
@@ -2622,7 +2622,7 @@ advanced:
     assert_eq!(StoreCfg::default().module, GOVERNANCE_STORE_MEMORY);
 }
 
-// ── resolve(): hook-registry synthesis + admin_auth projection (S9) ──────────────────────────────
+// ── resolve(): hook-registry synthesis + admin_auth projection ───────────────────────────────────
 
 /// `resolve` builds the runtime hook registry from the top-level `hooks:` DEFINITION map (1.5.3):
 /// each named definition becomes a registry entry keyed by its OWN name (`module:` → `HookCfg.plugin`,
@@ -2900,7 +2900,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
 
 /// A runtime-set PER-PLUGIN `first_party_floors` override on `PluginsCfg` is honored by `to_policy`
 /// (the seam the persisted rollback pin drives) for that name ONLY, while the global `binary_version`
-/// stays the binary's own version — so an UNPINNED first-party plugin still faces the full floor (M1).
+/// stays the binary's own version — so an UNPINNED first-party plugin still faces the full floor.
 #[test]
 fn to_policy_honors_runtime_first_party_floor_override() {
     let mut cfg = PluginsCfg {
@@ -2968,7 +2968,7 @@ models: {}
     assert_eq!(deploy2.public_url, None);
 }
 
-/// FREEZE BLOCKER A7: the 1.5.2 `auth.methods:` block FOLDED INTO the `identity-providers:`
+/// FREEZE BLOCKER: the 1.5.2 `auth.methods:` block FOLDED INTO the `identity-providers:`
 /// definition. `browser_login` and the module's opaque settings are inherently PER PROVIDER — a
 /// client id/secret belongs to one IdP registration — so a second parallel map keyed by the same
 /// namespace was duplicate structure whose two halves could disagree about the same provider.
@@ -2976,7 +2976,7 @@ models: {}
 /// The resolved hosted-login method is now a PROJECTION of the definition, keyed by PROVIDER NAME
 /// and carrying the definition's `module:` separately (two named providers may share one plugin).
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 `auth.methods:` was a live config block that parsed, so this
+/// Before 1.5.3 `auth.methods:` was a live config block that parsed, so this
 /// resolution path did not exist.
 #[test]
 fn test_auth_method_browser_login_parses() {
@@ -3204,7 +3204,7 @@ advanced:
 // later release could silently redefine has to be nailed down NOW, with a test that fails loudly if
 // someone changes it later. Every one names the finding it discharges.
 
-/// FREEZE BLOCKER A1 — the hook-name namespace is CLOSED.
+/// FREEZE BLOCKER — the hook-name namespace is CLOSED.
 ///
 /// `RESERVED_HOOK_NAMES` and the bare strategy keywords accepted in a pool's `hooks:` list share ONE
 /// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, the MCP
@@ -3273,7 +3273,7 @@ fn reserved_hook_names_are_frozen() {
     );
 }
 
-/// FREEZE BLOCKER A3 — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
+/// FREEZE BLOCKER — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
 ///
 /// If omission meant "all stages", an MCP tool-invocation stage added in 1.5.4 (or an A2A delegation
 /// stage in 1.5.6) would retroactively make every already-deployed unscoped hook start firing at
@@ -3324,35 +3324,37 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Routing));
 }
 
-/// THE `phase:` FIELD DOC MUST NOT CONTRADICT THE A3 FREEZE. The field doc said an
-/// omitted `phase:`/`at:` falls back to `request`, while `fires_at_stage` (and the A3 doc on
-/// `CORE_HOOK_PHASES`, and the test above) say it fires at ALL FOUR core stages. A3 is the frozen
+/// THE `phase:` FIELD DOC MUST NOT CONTRADICT THE FREEZE. The field doc said an
+/// omitted `phase:`/`at:` falls back to `request`, while `fires_at_stage` (and the doc on
+/// `CORE_HOOK_PHASES`, and the test above) say it fires at ALL FOUR core stages. THAT is the frozen
 /// semantic, so the DOC was the defect. Read as a source assertion because a doc comment is exactly
 /// the thing no runtime assertion can reach, and a wrong doc on a FROZEN semantic is what an
 /// operator actually acts on.
 ///
-/// RED-BEFORE-GREEN: the pre-fix file contains the contradicting sentence this test rejects.
+/// The pre-fix file contains the contradicting sentence this test rejects.
 #[test]
-fn the_phase_field_doc_agrees_with_the_a3_freeze() {
+fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/mod.rs"))
         .expect("this crate's config/mod.rs is readable");
     assert!(
         !src.contains("falls back to `at` (or `request` when that is also"),
         "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \
-         `fires_at_stage` fires at all four CORE_HOOK_PHASES and A3 froze that"
+         `fires_at_stage` fires at all four CORE_HOOK_PHASES"
     );
     // And the doc positively states the frozen answer, so the next reader is not left guessing.
+    // It asserts on the ANSWER, not on the label we happened to file the decision under: a doc
+    // that names an internal identifier is a doc that leaks one to whoever reads the source.
     let phase_doc_start = src
         .find("1.5.3 named-hook PHASE set")
         .expect("the `phase:` field doc exists");
     let phase_doc = &src[phase_doc_start..phase_doc_start + 700];
     assert!(
-        phase_doc.contains("FOUR CORE STAGES") && phase_doc.contains("A3"),
-        "the `phase:` field doc must name the frozen A3 answer for an omitted phase+at"
+        phase_doc.contains("FOUR CORE STAGES"),
+        "the `phase:` field doc must state that an omitted phase+at fires at all four core stages"
     );
 }
 
-/// FREEZE BLOCKER A4 — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
+/// FREEZE BLOCKER — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
 /// pool's own `hooks:` fires ONCE, at its FIRST (section-level) position.
 ///
 /// The locked combine rule says section-level LISTS are ADDITIVE but never said what
@@ -3361,7 +3363,7 @@ fn the_phase_field_doc_agrees_with_the_a3_freeze() {
 /// one", and reading that as "fire twice" would double-charge a gate's latency budget and
 /// double-count a tap's audit record.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 the two lists were lowered independently, so an overlapping
+/// Before 1.5.3 the two lists were lowered independently, so an overlapping
 /// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
@@ -3412,14 +3414,14 @@ fn additive_hook_lists_dedupe_at_first_position() {
     assert_eq!(cfg.pools["fast"].gates, ["pii"]);
 }
 
-/// FREEZE BLOCKER A5 — the `pools:` reserved section-key set is CLOSED at exactly two words.
+/// FREEZE BLOCKER — the `pools:` reserved section-key set is CLOSED at exactly two words.
 ///
 /// Every reserved word here is a word an operator can no longer use as a POOL NAME, so ADDING one in
 /// a later release retroactively turns a previously-legal config into a boot failure. The set is
 /// therefore frozen, and every FUTURE all-scope knob must land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`) — one word paid once, additive forever.
 ///
-/// RED-BEFORE-GREEN: before 1.5.3 only `hooks` was reserved (so a pool named
+/// Before 1.5.3 only `hooks` was reserved (so a pool named
 /// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
@@ -3445,7 +3447,7 @@ fn pools_reserved_section_keys_are_frozen() {
     }
 }
 
-/// FREEZE BLOCKER A5 (the other half): `pools.upstream_credentials:` is the ALL-POOLS
+/// FREEZE BLOCKER (the other half): `pools.upstream_credentials:` is the ALL-POOLS
 /// SCALAR default and a pool's own value OVERRIDES it (replaces — scalars never union). Pinned
 /// end-to-end because "scalar overrides, list is additive" is the rule every future inherited
 /// setting will be read against.
@@ -3475,7 +3477,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
     assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
 }
 
-/// FREEZE BLOCKER A6 — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
+/// FREEZE BLOCKER — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
 /// named-instance pattern, because it configures a MODULE's `open()` rather than an INSTANCE.
 ///
 /// This is pinned (rather than only documented on the struct) so that a later "consistency" pass
@@ -3505,7 +3507,7 @@ fn secrets_block_stays_module_keyed_by_design() {
         "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect_err("`secrets:` entries take no `module:` — the key IS the module (A6)");
+    .expect_err("`secrets:` entries take no `module:` — the key IS the module");
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
@@ -3514,7 +3516,7 @@ fn secrets_block_stays_module_keyed_by_design() {
 /// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, `otlp` installs the
 /// one tracer subscriber) reject a second instance LOUDLY rather than silently ignoring it.
 ///
-/// RED-BEFORE-GREEN: the type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
+/// The type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
 /// unrepresentable and this test could not be written at all.
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {

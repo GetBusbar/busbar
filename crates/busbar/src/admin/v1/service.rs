@@ -4226,7 +4226,7 @@ mod tests {
         );
     }
 
-    // ── mutation-testing gap closures ───────────────────────────────────────────────────────────
+    // ── narrow-branch coverage ──────────────────────────────────────────────────────────────────
 
     /// A MISSING plugins directory is `Ok` with the empty-entries fingerprint (see the function's own
     /// doc comment) — not a propagated I/O error. A mutated guard (NotFound compared to `false`)

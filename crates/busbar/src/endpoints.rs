@@ -31,7 +31,7 @@ pub(crate) async fn stats(
     // Decide which pools are visible to this caller. No key => no restriction (the visible set is
     // every pool). A key whose `allowed_pools` was omitted at mint (None) admits every pool via
     // `pool_allowed`, so an unrestricted key also sees everything; an explicit list (even empty)
-    // restricts (C6).
+    // restricts.
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
 
     let visible_pool = |name: &str| -> bool {
@@ -288,7 +288,7 @@ mod tests {
     use crate::governance::{ScopeRef, VirtualKey};
     use crate::test_support::{LaneSpec, TestApp};
 
-    /// A virtual key restricted to `allowed_pools`. C6 mapping for the test helper: an EMPTY
+    /// A virtual key restricted to `allowed_pools`. Mapping for the test helper: an EMPTY
     /// slice models the OMITTED grant (all pools, None); a non-empty slice is the explicit list.
     fn vkey(allowed_pools: &[&str]) -> std::sync::Arc<VirtualKey> {
         std::sync::Arc::new(VirtualKey {

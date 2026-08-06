@@ -5250,7 +5250,7 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
     );
 }
 
-// --- H3: cross-protocol cache_control <-> Bedrock cachePoint -------------------------------
+// --- cross-protocol cache_control <-> Bedrock cachePoint -----------------------------------
 
 /// Helper: a bare IR request with the given system / messages / tools and an EMPTY `extra`
 /// (cross-protocol shape — the positional cachePoint stash is absent, so the writer drives
@@ -5292,7 +5292,7 @@ fn ephemeral() -> Option<crate::ir::CacheControl> {
     })
 }
 
-/// H3 (write): an IR message Text block carrying `cache_control` must emit a Bedrock `cachePoint`
+/// Write: an IR message Text block carrying `cache_control` must emit a Bedrock `cachePoint`
 /// block IMMEDIATELY AFTER it (the position Bedrock expects). With an empty `extra` (cross-protocol
 /// shape) the first-class field is the sole driver — the old writer dropped it entirely.
 #[test]
@@ -5344,7 +5344,7 @@ fn test_cache_control_on_message_block_emits_cache_point() {
     assert_eq!(count, 1, "exactly one cachePoint expected; got {out}");
 }
 
-/// H3 (write): a system Text block carrying `cache_control` emits a trailing cachePoint in the
+/// Write: a system Text block carrying `cache_control` emits a trailing cachePoint in the
 /// `system` array (the system prefix is the canonical prompt-cache target).
 #[test]
 fn test_cache_control_on_system_block_emits_cache_point() {
@@ -5370,7 +5370,7 @@ fn test_cache_control_on_system_block_emits_cache_point() {
     );
 }
 
-/// H3 (write): a tool definition carrying `cache_control` emits a `cachePoint` element in the
+/// Write: a tool definition carrying `cache_control` emits a `cachePoint` element in the
 /// `toolConfig.tools` array right after the tool (caching the tool-schema prefix).
 #[test]
 fn test_cache_control_on_tool_emits_cache_point() {
@@ -5400,7 +5400,7 @@ fn test_cache_control_on_tool_emits_cache_point() {
     );
 }
 
-/// H3 (read): a Bedrock `cachePoint` following a content block must map onto the preceding IR
+/// Read: a Bedrock `cachePoint` following a content block must map onto the preceding IR
 /// block's first-class `cache_control` (so a Bedrock->Anthropic hop, where the positional stash is
 /// dropped, still preserves the boundary). The adjacency targets the immediately-preceding block.
 #[test]
@@ -5472,7 +5472,7 @@ fn test_cache_point_maps_onto_preceding_block_cache_control() {
     );
 }
 
-/// H3 (round-trip, cross-protocol shape): reading a cachePoint-bearing body into the IR and then
+/// Round-trip, cross-protocol shape: reading a cachePoint-bearing body into the IR and then
 /// writing it back with `extra` CLEARED (the cross-protocol seam) re-derives the cachePoint purely
 /// from the first-class `cache_control` field — the boundary survives even when the positional
 /// stash is gone.
@@ -5505,7 +5505,7 @@ fn test_cache_control_round_trip_via_field_only() {
         );
 }
 
-/// H3 (no double-emit): on the SAME-protocol path the positional stash AND the first-class
+/// No double-emit: on the SAME-protocol path the positional stash AND the first-class
 /// `cache_control` field are both populated by the reader, but the writer must emit EXACTLY ONE
 /// cachePoint (the stash drives placement; the inline field emission is suppressed). Guards against
 /// a regression that would double-bill the cache boundary.
@@ -5541,7 +5541,7 @@ fn test_same_protocol_cache_point_no_double_emit() {
 
 // --- degradations are observable (warn paths) ----------------------------------------------
 
-/// L4 (warn path): `tool_choice = None` has no native Converse directive, so it degrades to an
+/// Warn path: `tool_choice = None` has no native Converse directive, so it degrades to an
 /// omitted `toolChoice` and a `tracing::warn!`. The observable degradation (no `toolChoice` key,
 /// tools still emitted) is asserted here; the warn fires on the same branch.
 #[test]
@@ -5560,7 +5560,7 @@ fn test_tool_choice_none_warns_and_omits() {
     );
 }
 
-/// L4 (warn path): a malformed image media_type (an empty subtype) is coerced to `format: "png"`
+/// Warn path: a malformed image media_type (an empty subtype) is coerced to `format: "png"`
 /// and a `tracing::warn!` fires. The observable coercion is asserted here; the warn rides the same
 /// fallback branch.
 #[test]
@@ -5598,7 +5598,7 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
     );
 }
 
-/// D3: a cross-protocol IR carrying `response_format` reaching the Bedrock egress must be DROPPED
+/// A cross-protocol IR carrying `response_format` reaching the Bedrock egress must be DROPPED
 /// (Converse has no native response_format field) — and the wire must contain NO `response_format`
 /// key (it would 400 the upstream). Mirrors the Anthropic-egress drop. The `warn!` itself is not
 /// asserted here (tracing capture is out of scope); the contract is "emits nothing".

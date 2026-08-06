@@ -113,7 +113,7 @@ pub(crate) enum ChainVerdict {
     Denied,
 }
 
-// 1.5.0 (S8): the static-token allowlist module is GONE. Data-plane auth is the built-in `keys`
+// 1.5.0: the static-token allowlist module is GONE. Data-plane auth is the built-in `keys`
 // signed-token verifier (engine-handled on the governance path) plus IdP auth modules; the engine
 // holds only the `AuthModule` contract (re-exported above from `busbar-api`).
 
@@ -124,9 +124,9 @@ pub(crate) struct AuthMiddleware {
     // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on
     // `App::upstream_credentials` (the all-pools default) and `PoolRuntime::upstream_credentials` (the
     // per-pool override), resolved per request by `App::pool_upstream_creds`.
-    /// Whether the config chain names the built-in `keys` signed-key verifier. In P1 the actual
-    /// verification rides the governance virtual-key path (the signed-token verifier lands with
-    /// P3); this flag records the operator's intent for validation and reporting.
+    /// Whether the config chain names the built-in `keys` signed-key verifier. The actual
+    /// verification rides the governance virtual-key path (the signed-token verifier is separate);
+    /// this flag records the operator's intent for validation and reporting.
     pub(crate) keys_in_chain: bool,
     /// The AUTH CHAIN — the ordered `auth.chain` modules. `validate_token` runs it: the first module
     /// to `Identify` admits, a `Reject` denies, and if every module `Pass`es (no usable credential
@@ -452,8 +452,8 @@ impl AuthMiddleware {
                             );
                         }
                     }
-                    // No per-module role filter: the NESTED role_bindings table IS the allowlist
-                    // (S4) - a role this module asserts grants nothing unless
+                    // No per-module role filter: the NESTED role_bindings table IS the allowlist -
+                    // a role this module asserts grants nothing unless
                     // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
                     // a VirtualKey (the ABI can't carry one) → `resolved: None`.
                     return ChainVerdict::Identified {
@@ -931,7 +931,7 @@ fn run_admin_chain(
             AuthOutcome::Identify(principal) => {
                 // Carry the identifying MODULE out (role_bindings are nested by module) plus the
                 // module's admin-scope ceiling for the authorization step. There is no per-module
-                // role filter: the nested bindings table IS the allowlist (S4).
+                // role filter: the nested bindings table IS the allowlist.
                 let cap = module_admin_scope_cap(app, name);
                 return (
                     ChainVerdict::Identified {
@@ -1053,7 +1053,7 @@ pub(crate) fn dry_run_admin_scope(
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
 /// the built-in operator token (the `admin-tokens` principal) is FULL by definition (it is the
 /// root credential); any other principal gets the UNION of what its bound roles grant in
-/// `role_bindings.<identifying module>` (S4: bindings are NESTED BY MODULE - a role asserted by
+/// `role_bindings.<identifying module>` (bindings are NESTED BY MODULE - a role asserted by
 /// module A never rides module B's binding; an unbound role grants nothing - fail closed). A
 /// principal can hold two roles bound to INCOMPARABLE scopes at once (a hooks-register role and a
 /// mint role) — `Grants` keeps both rather than collapsing to one (in-tree precedent:

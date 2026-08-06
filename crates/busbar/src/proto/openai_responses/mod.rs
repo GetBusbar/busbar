@@ -534,7 +534,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
     }
 }
 
-/// Build an IR `Image` block from a Responses `input_image` content object (L5). Prefers an inline
+/// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
 /// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
@@ -562,7 +562,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
     None
 }
 
-/// Extract the chain-of-thought text from a Responses `reasoning` output item (H1). A reasoning item
+/// Extract the chain-of-thought text from a Responses `reasoning` output item. A reasoning item
 /// carries its text in two possible arrays: `content[]` entries of type `reasoning_text` (the full
 /// reasoning text) and/or `summary[]` entries of type `summary_text` (a summarized form). Concatenate
 /// every `text` found in BOTH arrays WITHOUT a separator (mirrors the no-separator concat the rest of
@@ -674,8 +674,8 @@ fn write_responses_incomplete_reason(reason: crate::ir::IrStopReason) -> &'stati
     }
 }
 
-/// Normalize a Responses `text` object's `format` into the IR's canonical `response_format` shape
-/// (M1). The Responses API carries structured-output config at `text.format` with a FLAT json_schema
+/// Normalize a Responses `text` object's `format` into the IR's canonical `response_format` shape.
+/// The Responses API carries structured-output config at `text.format` with a FLAT json_schema
 /// shape (`{"type":"json_schema","name":...,"schema":...,"strict":...,"description":...}`), whereas
 /// the IR's canonical `response_format` (the shape the OpenAI Chat-Completions reader stores) NESTS
 /// those under a `json_schema` key (`{"type":"json_schema","json_schema":{name,schema,strict,...}}`).
@@ -748,7 +748,7 @@ fn write_text_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
     }
 }
 
-/// Read the Responses prompt-cache hit count from a `usage` object (H6):
+/// Read the Responses prompt-cache hit count from a `usage` object:
 /// `usage.input_tokens_details.cached_tokens`. Returns `None` when the nested field is absent (so a
 /// usage object without cache details does not gain a spurious `Some(0)`), mapping into the IR's
 /// `cache_read_input_tokens`. Shared by the non-streaming `read_response` and the streaming terminal.
@@ -893,13 +893,13 @@ pub(crate) struct ResponsesWriter {
     /// the completed event. Per-stream INSTANCE state for the same reason as the other fields; a
     /// poisoned lock degrades to an empty array (the prior behavior) rather than panicking.
     output_items: std::sync::Mutex<std::collections::BTreeMap<usize, serde_json::Value>>,
-    /// Output indices for which this writer opened a REASONING item (H1) — emitted the
+    /// Output indices for which this writer opened a REASONING item — emitted the
     /// `output_item.added` typed "reasoning". Tracked separately from text/tool opens so the matching
     /// `BlockStop` (which carries only the index) emits the `output_item.done` typed "reasoning" for
     /// THIS index, and so a reasoning BlockStop is never mistaken for a text/tool close. Per-stream
     /// INSTANCE state for the same reason as the other open-index sets; a poisoned lock degrades safely.
     open_reasoning_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
-    /// Per-stream accumulator of streamed reasoning TEXT (H1), keyed by `output_index`. The terminal
+    /// Per-stream accumulator of streamed reasoning TEXT, keyed by `output_index`. The terminal
     /// `response.output[]` reasoning item carries the COMPLETE reasoning text the stream delivered via
     /// `reasoning_text.delta`; the IR streams it as `ThinkingDelta` fragments, so the writer
     /// concatenates them here and drains the joined text into the finalized reasoning item at
@@ -1321,7 +1321,7 @@ impl ResponsesWriter {
             .unwrap_or(false)
     }
 
-    /// Mark a REASONING item open at `index` (H1) IF not already open and under the cardinality cap,
+    /// Mark a REASONING item open at `index` IF not already open and under the cardinality cap,
     /// returning true when this call performed the open (so the caller emits the `output_item.added`
     /// typed "reasoning" exactly once). Mirrors `open_text_item`'s discipline. Lock poisoning → false.
     fn open_reasoning_item(&self, index: usize) -> bool {
@@ -1347,7 +1347,7 @@ impl ResponsesWriter {
             .unwrap_or(false)
     }
 
-    /// Append a streamed reasoning-text fragment for the reasoning item at `index` (H1). Lock
+    /// Append a streamed reasoning-text fragment for the reasoning item at `index`. Lock
     /// poisoning degrades to a no-op (the terminal item then carries empty reasoning text).
     fn append_reasoning(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.reasoning_accum.lock() {

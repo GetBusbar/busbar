@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SECRET REFERENCE type (CLEAN-CONFIG rule C2): every secret/external value in the config is
+//! The SECRET REFERENCE type (CLEAN-CONFIG rule): every secret/external value in the config is
 //! `{ module: <secret-module>, settings: {…} }` - a reference to a SECRET MODULE (`kind: secret`
 //! plugin), never the secret itself. The built-in modules are `env` (settings.key names an
 //! environment variable) and `file` (settings.path names a file whose contents are the secret);
@@ -21,9 +21,9 @@
 
 /// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
 /// live in the standalone `busbar-secret-ref` crate — it used to be defined here `pub(crate)`,
-/// unreachable from
-/// `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so every call site in
-/// this crate is unchanged; `busbar` still owns `SecretResolver`/`resolve_settings`/the built-in
+/// unreachable from `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so
+/// every call site in this crate is unchanged; `busbar` still owns
+/// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
 pub(crate) use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
@@ -36,7 +36,7 @@ pub(crate) use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_F
 /// interpreted one layer above `SecretRef` parsing, here, not inside the shared type.
 pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
 
-/// The engine-facing SECRET RESOLVER seam (P2): the engine holds a `SecretResolver` and asks it to
+/// The engine-facing SECRET RESOLVER seam: the engine holds a `SecretResolver` and asks it to
 /// turn a [`SecretRef`] into bytes, never touching a secret module's implementation. The built-in
 /// `env` / `file` modules resolve inline (no plugin needed, so a zero-plugin deployment still has
 /// secrets); any OTHER module name is delegated to a `kind: secret` plugin loaded through the
@@ -246,7 +246,7 @@ pub(crate) fn resolve_settings(
     Ok(out)
 }
 
-/// P1-internal BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
+/// BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
 /// environment variable; `file` reads the file. Any other module name is FAIL-CLOSED here - the
 /// full secret-plugin resolver (third-party `kind: secret` modules through the plugin trust
 /// pipeline) is layered on top of this by [`SecretResolver`], which falls back to these built-ins

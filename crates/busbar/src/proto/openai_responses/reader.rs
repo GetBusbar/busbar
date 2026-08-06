@@ -431,7 +431,7 @@ impl ProtocolReader for ResponsesReader {
         // keys below so it does not also linger in `extra`.
         let tool_choice = read_responses_tool_choice(obj.get("tool_choice"));
 
-        // M1 response_format: the Responses API carries structured-output config under `text.format`
+        // response_format: the Responses API carries structured-output config under `text.format`
         // (NOT a top-level `response_format` as Chat Completions does). Read `text.format` and
         // normalize it into the IR's canonical `response_format` shape (the Chat-Completions shape the
         // OpenAI reader stores), so a Responses structured-output request reaches an OpenAI/Anthropic
@@ -441,18 +441,18 @@ impl ProtocolReader for ResponsesReader {
         // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
         // `ResponseCreateParamsBase` — only `temperature`/`top_p`/`top_logprobs`/`text` are present),
         // so none are promoted here (they stay None) and none are added to the modeled-keys exclusion.
-        // STOP (M5): the Responses create API has NO `stop`/`stop_sequences` param either, so `stop`
+        // STOP: the Responses create API has NO `stop`/`stop_sequences` param either, so `stop`
         // stays empty and is not read.
         let response_format = read_text_format(obj.get("text"));
 
         // NOTE: `text` is NOT in the modeled-keys set — it is intercepted by its own branch in the
-        // loop below (its `format` sub-key → IR `response_format` per M1, the remainder preserved
+        // loop below (its `format` sub-key → IR `response_format`, the remainder preserved
         // in `extra`). `metadata` is also deliberately excluded from the set; see `responses_modeled_keys`.
         let modeled_keys = responses_modeled_keys();
 
         for (key, value) in obj.iter() {
             // `text` is partially modeled: its `format` sub-key is promoted to the IR
-            // `response_format` (M1) and MUST NOT also linger in `extra` (the writer rebuilds `text`
+            // `response_format` and MUST NOT also linger in `extra` (the writer rebuilds `text`
             // from `response_format`, so a leftover `extra["text"]["format"]` would double-emit /
             // conflict). But `text` may carry OTHER sub-keys (e.g. `verbosity`) that busbar does not
             // model — those must survive via `extra`. So when `text` carries non-`format` keys, route a
@@ -629,7 +629,7 @@ impl ProtocolReader for ResponsesReader {
                     } else if item_obj.get("type").and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_REASONING)
                     {
-                        // H1 REASONING (stream): a native Responses stream opens a chain-of-thought
+                        // REASONING (stream): a native Responses stream opens a chain-of-thought
                         // item with `output_item.added` typed `reasoning`. The prior `_`/`message`
                         // no-op DROPPED it, so a reasoning stream lost its thinking on any
                         // cross-protocol hop. Open a Thinking block at this `output_index`, tracked in
@@ -658,7 +658,7 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
-            // H1 REASONING (stream): native reasoning text arrives as `response.reasoning_text.delta`
+            // REASONING (stream): native reasoning text arrives as `response.reasoning_text.delta`
             // (the full reasoning) and `response.reasoning_summary_text.delta` (a summarized form),
             // both carrying an `output_index` and a `delta` string. The prior `_ => {}` DROPPED these,
             // so a streamed reasoning response lost its chain-of-thought. Route each as an
@@ -1246,7 +1246,7 @@ impl ProtocolReader for ResponsesReader {
                         });
                     }
 
-                    // H1 REASONING: a native Responses `reasoning` output item carries the model's
+                    // REASONING: a native Responses `reasoning` output item carries the model's
                     // chain-of-thought. The prior `_ => {}` DROPPED it, so a reasoning response lost
                     // its thinking entirely on any cross-protocol hop (Responses → Anthropic/Bedrock,
                     // which DO carry thinking). Read it into an `IrBlock::Thinking` so it survives the

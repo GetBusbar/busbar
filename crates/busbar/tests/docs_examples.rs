@@ -1,36 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Docs-accuracy drift guard, M2 slice: doc-embedded config examples through the REAL
+//! Docs-accuracy drift guard: runs doc-embedded config examples through the REAL
 //! `busbar --validate` pipeline, driving the compiled binary exactly like `cli_validate.rs` does.
 //!
-//! This is a deliberately TRIMMED implementation of the M2 mechanism from the docs-drift-guard
-//! design (see the design doc's "M2" section). Scope decisions, so the next person doesn't
-//! re-litigate them:
+//! The guard is deliberately narrow. What it covers, and why:
 //!
 //! - **Opt-in via directive, not auto-detection.** A fenced ```yaml block is only extracted and
 //!   validated when the line immediately before the fence is `<!-- doc-check: config -->`.
 //!   Auto-detecting "is this a complete config" is a heuristic that produces false failures on
 //!   deliberately-partial fragments (the majority of the tree's 77 yaml blocks are fragments, not
-//!   complete configs) — see the design doc's rationale. Only ONE directive shape ships here
-//!   (`config` — a complete, standalone config.yaml). The design's other five directive shapes
-//!   (`config-section=X`, `providers`, `settings-patch`, `request=METHOD PATH`, `skip=reason`)
-//!   are NOT implemented — deliberately deferred, see the private-repo precommit script's
-//!   companion notes for the record.
+//!   complete configs). Only ONE directive shape ships here: `config`, a complete, standalone
+//!   config.yaml. Other shapes (`config-section=X`, `providers`, `settings-patch`,
+//!   `request=METHOD PATH`, `skip=reason`) are NOT implemented.
 //! - **No secrets required.** `--validate` uses `EnvSubst::Lenient` and never resolves `env`/`file`
-//!   secret refs to their real values (verified against `main.rs`'s `validate_secret_refs` during
-//!   design review) — so every marked example validates with zero environment setup, no flakiness
-//!   risk in CI.
+//!   secret refs to their real values (see `main.rs`'s `validate_secret_refs`), so every marked
+//!   example validates with zero environment setup, no flakiness risk in CI.
 //! - **Anti-vacuity floor.** Only 3 examples are marked today (getting-started.md's minimal config
 //!   AND its Step-5 two-provider-one-pool config, and configuration.md's "Minimal working
-//!   example") — a deliberately small trimmed set, not the design's full "mark every complete
-//!   config" scope. The floor below is sized to that trimmed set (>= 3), not the design's `>= 25`
-//!   (which covered ALL extracted block kinds, not just directive-marked complete configs). Raise
-//!   both together when more examples get marked.
+//!   example"). The floor below is sized to that set (>= 3). Raise both together when more
+//!   examples get marked.
 //! - **Plugin-dependent examples are deliberately NOT marked.** configuration.md's "full annotated
 //!   example" and reliability.md's "production-like" example both reference `store.module: sqlite`
 //!   under `plugins.enabled: true`, which needs a signed plugin-tarball fixture to validate — the
-//!   same fixture-cost tradeoff the design doc names for live-curl execution. Left unmarked with an
+//!   same fixture-cost tradeoff that applies to live-curl execution. Left unmarked with an
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
 // The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
@@ -196,9 +189,9 @@ fn marked_config_examples_validate() {
     );
 }
 
-/// M2 Check C: the SHIPPED config artifacts users literally copy — root `config.yaml` and the
+/// The SHIPPED config artifacts users literally copy — root `config.yaml` and the
 /// clean 1.5.0 example — validate clean against the shipped `providers.yaml`. Three lines of
-/// coverage per the design doc; nothing validated these in CI before this test existed.
+/// coverage; nothing validated these in CI before this test existed.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();

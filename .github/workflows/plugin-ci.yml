@@ -153,8 +153,8 @@ jobs:
 
       - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
         # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
-        # leakage this guards against (internal audit ids, a developer's home directory, TDD
-        # narration, an authorship trailer) was found across the public fleet at once, and per-repo
+        # leakage this guards against (internal tracking ids, a developer's home directory,
+        # test-process narration, an authorship trailer) spans the public fleet, and per-repo
         # adoption of a new lint does not happen. Living in the reusable workflow, every caller gets
         # it with zero per-repo work and no way to drift.
         #

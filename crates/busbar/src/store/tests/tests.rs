@@ -22,7 +22,7 @@ fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
     }
 }
 
-/// D1 CARRY-OVER: health state follows the lane's stable IDENTITY across a store rebuild —
+/// CARRY-OVER: health state follows the lane's stable IDENTITY across a store rebuild —
 /// not its array position. A tripped per-pool breaker, hard-down latch, latency EWMA, and
 /// counters all survive a rebuild that REORDERS the lane set and inserts a new lane in front;
 /// the new lane starts fresh; a removed lane's snapshot is dropped.
@@ -81,7 +81,7 @@ fn test_health_state_follows_identity_across_rebuild() {
     );
 }
 
-/// D1: a restored HARD-DOWN latch (dead + reason) survives the rebuild and keeps blocking.
+/// A restored HARD-DOWN latch (dead + reason) survives the rebuild and keeps blocking.
 #[test]
 fn test_hard_down_follows_identity_across_rebuild() {
     set_now_for_test(5000);

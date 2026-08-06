@@ -596,22 +596,21 @@ pub(crate) fn recorder_installed() -> bool {
 /// back to the plain macro until the recorder is installed (see the cache-module note above).
 /// Byte-for-byte the same series and value the macro produced.
 pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
-    // MUTATION-TESTING NOTE (cargo-mutants: `delete !` here): this `!recorder_installed()` branch
-    // is real (it exists so pre-install traffic never caches a handle bound to the no-op
-    // recorder), but it is NOT practically unit-testable in this crate as it stands. `ENABLED`/
-    // `HANDLE` are process-global `OnceLock`s that install (via `init()`) exactly once per
-    // process and never uninstall; `busbar`'s crate is `[[bin]]`-only (no `[lib]` target — see
-    // Cargo.toml), so there is no way for a `tests/*.rs` integration test to link the crate's
-    // internals into its OWN separate process either (the only integration-test pattern available,
-    // `tests/cli_validate.rs`, black-box-spawns the built binary as a subprocess instead). Within
-    // the single shared `#[cfg(test)]` unit-test process, some other test has near-certainly
-    // already called `init()` before this one runs (parallel test execution, no ordering
-    // guarantee), so this branch is unreachable from a normal `#[test]`. A real fix would mean
-    // adding a `[lib]` target to this crate purely to enable a never-calls-init() integration
-    // test binary — out of scope for a mutation-testing gap. Externally, the two branches are
-    // ALSO behaviorally identical before install: both ultimately call the same no-op
-    // `metrics::counter!` macro against the default recorder, so even a real subprocess test
-    // could not distinguish them by observable effect. Left as a documented, investigated gap.
+    // This `!recorder_installed()` branch is real (it exists so pre-install traffic never caches a
+    // handle bound to the no-op recorder), but it is NOT practically unit-testable in this crate
+    // as it stands. `ENABLED`/`HANDLE` are process-global `OnceLock`s that install (via `init()`)
+    // exactly once per process and never uninstall; `busbar`'s crate is `[[bin]]`-only (no `[lib]`
+    // target — see Cargo.toml), so there is no way for a `tests/*.rs` integration test to link the
+    // crate's internals into its OWN separate process either (the only integration-test pattern
+    // available, `tests/cli_validate.rs`, black-box-spawns the built binary as a subprocess
+    // instead). Within the single shared `#[cfg(test)]` unit-test process, some other test has
+    // near-certainly already called `init()` before this one runs (parallel test execution, no
+    // ordering guarantee), so this branch is unreachable from a normal `#[test]`. A real fix would
+    // mean adding a `[lib]` target to this crate purely to enable a never-calls-init() integration
+    // test binary, which is out of scope here. Externally, the two branches are ALSO behaviorally
+    // identical before install: both ultimately call the same no-op `metrics::counter!` macro
+    // against the default recorder, so even a real subprocess test could not distinguish them by
+    // observable effect. Left as a documented, investigated limitation.
     if !recorder_installed() {
         // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
         metrics::counter!(
@@ -1034,7 +1033,7 @@ mod tests {
     }
 
     /// Closes the `enabled`/`recorder_installed`/`retaining`/`describe`/`GAUGE_IDLE_TIMEOUT`
-    /// cargo-mutants gaps together, since `ENABLED`/`HANDLE` are process-global `OnceLock`s that
+    /// coverage gaps together, since `ENABLED`/`HANDLE` are process-global `OnceLock`s that
     /// can only be driven through their "resolved" state once per test binary — every other test
     /// in this module already calls `init()`, so by the time this runs the globals are certainly
     /// resolved either way; the assertions below are meaningful regardless of ordering.

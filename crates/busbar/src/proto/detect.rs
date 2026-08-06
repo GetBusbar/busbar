@@ -18,7 +18,7 @@ use crate::proto::{
     PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 
-/// The ingress protocol. Ladder (order load-bearing, M2): mandatory-unique auth header → Gemini path
+/// The ingress protocol. Ladder (order load-bearing): mandatory-unique auth header → Gemini path
 /// verb → path discriminator. A `(path, header)` pattern claimed by two protocols must be a registry
 /// error at load time (enforced elsewhere), never a silent first-match.
 pub(crate) fn protocol_id(path: &str, h: &HeaderMap) -> Option<&'static str> {

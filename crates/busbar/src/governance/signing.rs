@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The busbar-SIGNED virtual-key TOKEN (1.5.0, S1/S2). A minted key is a compact token
+//! The busbar-SIGNED virtual-key TOKEN (1.5.0). A minted key is a compact token
 //! `<b64url(payload)>.<b64url(sig)>` where the payload is the JSON `{ sub, exp, kid }`:
 //!
 //! - `sub` - the STABLE subject id (the key's `vk_...` id). Policy (group, allowed_pools, labels)

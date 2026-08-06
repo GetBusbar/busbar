@@ -64,7 +64,7 @@ fn decl(
 /// order = declaration order, so `prometheus` (first) owns `GET /metrics` and `datadog` (second) is the
 /// one refused.
 ///
-/// RED-BEFORE-GREEN: this asserts the EXACT loud message; with `build_route_table` doing
+/// This asserts the EXACT loud message; with `build_route_table` doing
 /// last-writer-wins (no collision arm) the second claim would silently overwrite the first and this
 /// test fails (no `Err`) — proven by removing the collision arm before wiring it.
 #[test]

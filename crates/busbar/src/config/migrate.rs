@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The 1.4.x -> 1.5.0 CONFIG MIGRATOR (`busbar --migrate-config <old.yaml>`) and the LOUD
-//! FAIL-CLOSED 1.x detector the boot/`--validate` path runs (P9).
+//! FAIL-CLOSED 1.x detector the boot/`--validate` path runs.
 //!
 //! Contract redefinition context: the config format is an OPERATOR artifact outside the SemVer
 //! freeze, changed only WITH a migration path and a loud fail-closed boot. This module is both
@@ -29,7 +29,7 @@ use serde_yaml::{Mapping, Value};
 /// config that omitted `db_path` still finds its real, existing database file after migration.
 const DEFAULT_GOVERNANCE_DB_1_4: &str = "busbar-governance.db";
 
-/// The named boot error for a detected 1.x config (P9.3). Every marker is listed so the operator
+/// The named boot error for a detected 1.x config. Every marker is listed so the operator
 /// sees the full scope before running the migrator.
 ///
 /// IT MUST ALSO SPEAK TO THE ALREADY-MIGRATED OPERATOR. `take_shaped` deliberately PRESERVES a
@@ -331,7 +331,7 @@ pub(crate) struct MigrateOutput {
     pub(crate) warnings: Vec<String>,
 }
 
-/// Mechanically migrate a 1.4.x config document to the 1.5.0 shape (P9.2). Deterministic changes
+/// Mechanically migrate a 1.4.x config document to the 1.5.0 shape. Deterministic changes
 /// are applied; judgment calls become TODO entries; the `allowed_pools: []` semantic flip gets a
 /// LOUD warning per occurrence. Total and side-effect free.
 pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
@@ -680,7 +680,7 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
 /// fallback is accompanied by a TODO naming the period AND the window it landed on.
 const APPROX_WINDOW: &str = "month";
 
-/// Map a 1.4.x `budget_period` word to the 1.5.0 C8 window noun (`minute` | `hour` | `day` |
+/// Map a 1.4.x `budget_period` word to the 1.5.0 window noun (`minute` | `hour` | `day` |
 /// `month` | `total` — the only five [`crate::config::groups::LimitWindow`] spells).
 ///
 /// THE ONE RULE: a migration must never silently change what the operator wrote. So the mapping is
@@ -1782,7 +1782,7 @@ fn migrate_on_exhausted(
     ));
 }
 
-/// `observability.otlp_endpoint` -> `otlp_url` (C7).
+/// `observability.otlp_endpoint` -> `otlp_url`.
 fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) else {
         return;
@@ -2182,7 +2182,7 @@ fn migrate_identity_providers(
             .filter(|(m, _)| m == module)
             .map(|(_, n)| n.clone())
             .collect();
-        // `auth.methods:` is EXEMPT from the split (freeze blocker A7): a method entry's flattened
+        // `auth.methods:` is EXEMPT from the split (freeze blocker): a method entry's flattened
         // settings are COMPLEMENTARY to the chain entry's for the same module (a `browser_login:`
         // plus the method's own keys), and the caller UNIONS them into the one definition on purpose.
         // Only the two CHAINS can state genuinely disagreeing settings for one module.
@@ -2293,7 +2293,7 @@ fn migrate_identity_providers(
         auth.insert(plane.into(), Value::Sequence(names));
     }
 
-    // FREEZE BLOCKER A7: `auth.methods:` folds INTO the provider definition — `browser_login` plus the
+    // FREEZE BLOCKER: `auth.methods:` folds INTO the provider definition — `browser_login` plus the
     // method's flattened opaque settings are per-provider, so they belong on the definition and not in
     // a second parallel map that could disagree with it.
     if let Some(Value::Mapping(methods)) = take(&mut auth, "methods") {

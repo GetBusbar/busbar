@@ -87,7 +87,7 @@ impl AdminTransport for JsonV1 {
                     .delete(delete_group),
             )
             .route("/groups/{name}/usage", get(get_group_usage))
-            // Per-section overlay RESET (D3): DISCARD a section's overlay mutations and revert it to
+            // Per-section overlay RESET: DISCARD a section's overlay mutations and revert it to
             // base config.yaml. Full scope (the mutation fallthrough). section ∈ {groups, hooks}.
             .route(
                 "/overlay/{section}",
@@ -349,7 +349,7 @@ fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<Stri
     }
 }
 
-/// Parse the optional `If-Match` header into the caller's expected config version (H3: ONE
+/// Parse the optional `If-Match` header into the caller's expected config version (ONE
 /// optimistic-concurrency mechanism across the whole surface — the RFC-7232 header, exactly as the
 /// keys resource already speaks it; there is no body-level `expected_version` twin). Grammar: the
 /// config-plane ETag is the config version quoted (`"42"`); a bare `42` is accepted leniently and
@@ -385,7 +385,7 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
 fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {
     match expected {
         // RETRYABLE: re-read the resource (fresh ETag) and retry — its own frozen code, split
-        // from terminal `conflict` (R3).
+        // from terminal `conflict`.
         Some(v) if v != current => Some(AdminError::VersionConflict(format!(
             "If-Match version {v} is stale (current is {current})"
         ))),

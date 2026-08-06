@@ -320,7 +320,7 @@ mod tests {
         assert!(c.get("m", "one-more", t + 1).is_some());
     }
 
-    /// C2: an authentication IN FLIGHT across a flush cannot re-insert its PRE-flush allow verdict.
+    /// An authentication IN FLIGHT across a flush cannot re-insert its PRE-flush allow verdict.
     ///
     /// This is the exact interleaving `POST /api/v1/admin/auth/cache/flush` promised to close and
     /// did not: the module is consulted (a JWKS round-trip — seconds, not microseconds), the

@@ -2280,7 +2280,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
 /// In `forward_with_pool_parsed_inner`:
 /// `client_include_usage` (`wants_stream && <client body opted into stream_options.include_usage>`)
 /// gates whether Busbar force-injects `stream_options.include_usage:true` onto the OUTGOING OpenAI
-/// egress request (`&& !client_include_usage` at the injection site) — cargo-mutants: `&&` -> `||`.
+/// egress request (`&& !client_include_usage` at the injection site): an AND, not an OR.
 /// Under the `||` mutant, `wants_stream` ALONE would make `client_include_usage` true for every
 /// streaming request, so this injection would be wrongly SKIPPED for the common case (a client
 /// that streams but never mentions `stream_options`) — busbar would then bill the completion at
@@ -3499,7 +3499,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 
 /// In `translate_response_cross_protocol`: the
 /// gemini JSON-array wrap (`if gemini_json_array && wants_stream`) is gated on BOTH conditions,
-/// not just `wants_stream` alone (cargo-mutants: `&&` -> `||`). `test_gemini_json_array_buffered_
+/// not just `wants_stream` alone (an AND, not an OR). `test_gemini_json_array_buffered_
 /// cross_protocol_emits_one_element_array` above proves the TRUE&&TRUE case (gemini ingress,
 /// stream shim present); this proves the far more common divergent case an `||` mutant would
 /// wrongly array-wrap: a NON-gemini streaming ingress (`gemini_json_array` is always false here —

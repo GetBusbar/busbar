@@ -381,7 +381,7 @@ impl ProtocolWriter for ResponsesWriter {
         // unsupported param would 400 a real `/v1/responses` call. A cross-protocol source that carried
         // them simply loses them here (a target-capability omission, not a leak).
 
-        // M5 STOP: the Responses create API has NO `stop`/`stop_sequences` param (same verification as
+        // STOP: the Responses create API has NO `stop`/`stop_sequences` param (same verification as
         // sampling above — no stop field exists on `ResponseCreateParamsBase`). So stop sequences
         // cannot be expressed on this surface. Rather than silently dropping them, emit a `warn!` so
         // the lossy-by-target omission is observable in logs (mirrors the anthropic/bedrock writers'
@@ -395,7 +395,7 @@ impl ProtocolWriter for ResponsesWriter {
             );
         }
 
-        // M1 response_format → Responses `text.format`. The Responses surface carries structured-output
+        // response_format → Responses `text.format`. The Responses surface carries structured-output
         // config under `text.format` (flat json_schema shape), NOT a top-level `response_format`. Build
         // the `format` value from the canonical IR shape and MERGE it into any `text` object already
         // forwarded via `extra` (e.g. one carrying `verbosity`), so a request that pairs a structured
@@ -575,7 +575,7 @@ impl ProtocolWriter for ResponsesWriter {
                     ))
                 }
                 crate::ir::IrBlockMeta::Thinking => {
-                    // H1 REASONING (stream): open a native Responses `reasoning` output item. The IR
+                    // REASONING (stream): open a native Responses `reasoning` output item. The IR
                     // Thinking BlockStart carries only the index; emit `output_item.added` typed
                     // "reasoning" with a stable `rs_…` item_id (so the matching `.done` reconstructs
                     // it), tracking the open index so BlockStop closes it as a reasoning item. The
@@ -641,7 +641,7 @@ impl ProtocolWriter for ResponsesWriter {
                 }
                 &crate::ir::IrDelta::TextDelta(_) => None,
                 crate::ir::IrDelta::ThinkingDelta(text) if !text.is_empty() => {
-                    // H1 REASONING (stream): emit the native `response.reasoning_text.delta` for the
+                    // REASONING (stream): emit the native `response.reasoning_text.delta` for the
                     // reasoning item at this index, accumulating the fragment so the matching
                     // BlockStop assembles the complete reasoning item. The prior `None` DROPPED the
                     // streamed chain-of-thought. `content_index: 0` — the single reasoning content
@@ -698,7 +698,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // the closing `emitted.map(...)` tail injects the top-level `sequence_number` every
                 // native Responses event carries — an early `return Some(..)` would skip it.
                 if self.take_reasoning_open(*index) {
-                    // H1 REASONING (stream): close the reasoning item opened by the Thinking
+                    // REASONING (stream): close the reasoning item opened by the Thinking
                     // BlockStart. Emit `output_item.done` typed "reasoning" with the SAME `rs_…`
                     // item_id and the assembled reasoning text under a `content[]` `reasoning_text`
                     // part. Record the finalized item so the terminal `response.completed` emits it in
@@ -1060,7 +1060,7 @@ impl ProtocolWriter for ResponsesWriter {
                         "arguments": args_str
                     }));
                 }
-                // H1 REASONING: write an IR Thinking block back as a native Responses `reasoning`
+                // REASONING: write an IR Thinking block back as a native Responses `reasoning`
                 // output item. The prior `_ => {}`-equivalent DROPPED it, so a thinking-carrying
                 // response translated from Anthropic/Bedrock lost its reasoning on the Responses
                 // surface. Emit the text under a `content[]` `reasoning_text` part (the full-reasoning

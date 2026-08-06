@@ -343,7 +343,7 @@ impl ProtocolWriter for CohereWriter {
         }
         if let Some(temperature) = req.temperature {
             // Clamp to Cohere's native [0.0, 1.0] — see `clamp_temperature_for_cohere`.
-            // NON-SILENT clamp (the M2 fidelity fix): the writer previously clamped SILENTLY, exactly
+            // NON-SILENT clamp (the fidelity fix): the writer previously clamped SILENTLY, exactly
             // the lossy mutation busbar exists to avoid. We keep the clamp (Cohere 400s on >1.0) but
             // emit a `warn!` whenever it ACTUALLY changes the value so an operator can detect the
             // divergence in logs. Mirrors the anthropic/bedrock writers' non-silent clamp.
@@ -545,7 +545,7 @@ impl ProtocolWriter for CohereWriter {
                 crate::ir::IrDelta::ThinkingDelta(_) => None,
                 crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // L2-5: Cohere v2 streams carry no citation delta shape; suppress rather than emit
+                // Cohere v2 streams carry no citation delta shape; suppress rather than emit
                 // a non-native frame. The citation is preserved in the IR for protocols that model
                 // streaming citations.
                 crate::ir::IrDelta::CitationsDelta(_) => None,

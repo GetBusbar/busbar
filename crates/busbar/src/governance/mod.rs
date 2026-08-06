@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock};
 /// it for a one-line constant.
 pub(crate) const SECS_PER_DAY: u64 = 86_400;
 
-// ── Window sentinel tokens (C8 nouns; matched in `budget_window`). The SAME strings are the
+// ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
 // suffix, and the metrics/error dimension - one vocabulary everywhere. ─────────────────────────────
 /// The "all-time" window sentinel: a single window from epoch 0.
@@ -228,7 +228,7 @@ pub(crate) enum LimitBlocked {
         retry_after: Option<u64>,
     },
     /// A group in the chain is FROZEN (`enabled: false`): every request charging through it is
-    /// rejected while its history is kept (C10).
+    /// rejected while its history is kept.
     Disabled(String),
     /// The key names a `group` that does not exist in this node's config - FAIL-CLOSED
     /// (mint and boot validate this; it can only arise from a shared durable store whose keys
@@ -495,7 +495,7 @@ pub(crate) struct GovState {
     /// nothing — nothing enforces against them, the store is the only consumer — so there is no
     /// running total to protect and a drained-empty entry needs no reaper or growth cap.
     pending_metering: std::sync::Mutex<HashMap<(String, u64, String, String), MeterCounts>>,
-    /// The busbar SIGNING material (1.5.0, S1/S2) — the mint-side signer paired with the
+    /// The busbar SIGNING material (1.5.0) — the mint-side signer paired with the
     /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
     /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
     /// signing (SigV4-only / legacy-hash tests).
@@ -561,11 +561,11 @@ pub(crate) struct RotatedCredential {
     pub(crate) exp: u64,
 }
 
-/// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,
+/// Parameters for minting a new virtual key (from the management API) - PURE AUTH: identity,
 /// pool grants, at most one group binding, labels. No limits: they live on the bound group.
 pub(crate) struct NewKeySpec {
     pub(crate) name: String,
-    /// Pool grants with the C6 intent carried intact: `None` = the mint body OMITTED
+    /// Pool grants with the intent carried intact: `None` = the mint body OMITTED
     /// `allowed_pools` = ALL pools; `Some(list)` = exactly those; `Some([])` = NO pools.
     pub(crate) allowed_pools: Option<Vec<String>>,
     /// Optional `groups:` binding (validated to exist at mint).
@@ -586,7 +586,7 @@ pub(crate) enum SelfMintOp {
 }
 
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
-/// `GovState::refresh_self`), Steps 4 (H1). Both mint fns take `self_mint_lock` — a plain
+/// `GovState::refresh_self`). Both mint fns take `self_mint_lock` — a plain
 /// `std::sync::Mutex`, NOT a `tokio::sync::Mutex` — and, still holding it, perform SYNCHRONOUS
 /// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
 /// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
@@ -625,14 +625,14 @@ pub(crate) async fn mint_self_offloaded(
 
 /// THE GOVERNANCE RE-KEY for a ROLE-CARRYING principal (an external auth module's verdict): a
 /// synthesized `VirtualKey` built from the principal's roles under the identifying MODULE's
-/// `role_bindings` table (S4: bindings are nested by module - `bindings` here is
+/// `role_bindings` table (bindings are nested by module - `bindings` here is
 /// `role_bindings.<identifying module>`; a role asserted by another module never rides it).
 /// An SSO user and a virtual key then get identical enforcement (pool ACL, group limits, usage
 /// attribution, the hook `send_user` projection) through identical code.
 ///
 /// Fail-closed: `None` when no role of the principal is bound (an unbound role grants nothing),
-/// or when the bound pool grants union to the EMPTY SET (C6: `allowed_pools: []` = NO pools).
-/// Pool semantics per C6: a binding that OMITS `allowed_pools` grants ALL pools; lists union.
+/// or when the bound pool grants union to the EMPTY SET (`allowed_pools: []` = NO pools).
+/// Pool semantics: a binding that OMITS `allowed_pools` grants ALL pools; lists union.
 /// Limits come ONLY from the bound `group:` (keys/principals carry no inline caps); with several
 /// bound groups the first in role order wins (one group per principal - the chain is a tree).
 pub(crate) fn synthesize_principal_key(
@@ -667,7 +667,7 @@ pub(crate) fn synthesize_principal_key(
     if granting.is_empty() {
         return None;
     }
-    // Pool union under C6 semantics: OMITTED `allowed_pools` on any granting binding = ALL pools
+    // Pool union semantics: OMITTED `allowed_pools` on any granting binding = ALL pools
     // (`None` in the runtime encoding too); an explicit list contributes its entries; an explicit
     // `[]` contributes nothing. An all-bindings-empty union = the EMPTY SET = no data-plane access
     // (fail closed: no key at all - nothing to admit).
@@ -688,7 +688,7 @@ pub(crate) fn synthesize_principal_key(
     let allowed_pools = if all_pools {
         None // any omitted grant widens the union to ALL pools
     } else if pools.is_empty() {
-        // Every granting binding said `allowed_pools: []` - the empty set. No access (C6).
+        // Every granting binding said `allowed_pools: []` - the empty set. No access.
         return None;
     } else {
         Some(pools)
@@ -798,13 +798,13 @@ fn generate_aws_secret_access_key() -> Result<String, getrandom::Error> {
     Ok(out)
 }
 
-/// Whether `key` may target `pool` (C6: an OMITTED grant = all pools; an explicit list is
+/// Whether `key` may target `pool` (an OMITTED grant = all pools; an explicit list is
 /// exhaustive; an explicit `[]` = NO pools). Delegates to the contract crate's encoding.
 pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
     key.scope_allowed("pool", pool)
 }
 
-/// The epoch start of the window containing `now` for a given window word (C8 nouns): `total` = a
+/// The epoch start of the window containing `now` for a given window word (nouns): `total` = a
 /// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
 pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
     match period {

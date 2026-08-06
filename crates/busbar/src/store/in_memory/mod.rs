@@ -6,7 +6,7 @@ pub(crate) use breaker::*;
 
 impl HealthState {
     /// The identity-keyed restore shared by the state-carrying constructor (config apply) and the
-    /// in-place boot restore (D3): apply each matching snapshot's lane-global fields and recreate
+    /// in-place boot restore: apply each matching snapshot's lane-global fields and recreate
     /// its per-pool breaker cells eagerly (a restored Open cell blocks dispatch from request one).
     pub(crate) fn restore_health_impl(&self, restored: &[LaneHealthSnapshot]) {
         for (idx, lane) in self.lanes.iter().enumerate() {
@@ -282,7 +282,7 @@ impl HealthState {
         }
     }
 
-    /// Construct with PRIOR HEALTH STATE restored by stable lane identity (D1): each lane whose
+    /// Construct with PRIOR HEALTH STATE restored by stable lane identity: each lane whose
     /// (model, provider) appears in `restored` starts with that snapshot's breaker/cooldown/streak/
     /// hard-down/latency/counters instead of fresh state — the carry-over that makes a lane-set
     /// config APPLY (and, via the persistence layer, a restart) preserve learned reliability.

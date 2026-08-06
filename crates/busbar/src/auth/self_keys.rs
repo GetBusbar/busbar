@@ -81,7 +81,7 @@ pub(crate) struct DeterministicEd25519Keys {
     /// PARENT under which the per-user `user:<sub>` leaf is auto-provisioned. Resolved by
     /// [`resolve_exchange`] (guaranteed present: a self key must charge through a group).
     team: String,
-    /// The pools this principal's bound role grants (C6: `None` = all, `Some([])` = none). Resolved
+    /// The pools this principal's bound role grants (`None` = all, `Some([])` = none). Resolved
     /// from `role_bindings` by [`resolve_exchange`] and carried onto the minted binding.
     allowed_pools: Option<Vec<String>>,
     /// Provisions the `user:<sub>` leaf under `team` before the token is minted (the bug fix).
@@ -278,7 +278,7 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
 /// Decide whether a chain verdict may mint a self-serve key, and resolve the TEAM + pools to mint
 /// under. The identity comes SOLELY from the verdict's `principal` — never from any request body.
 /// Returns the verified principal, the bound TEAM group (the PARENT the per-user `user:<sub>` leaf is
-/// auto-provisioned under — always present, a self key must charge through a group), and the C6
+/// auto-provisioned under — always present, a self key must charge through a group), and the
 /// pool-union over EVERY granting binding, on success, or the typed refusal.
 ///
 /// Both the group selection and the pool union mirror `synthesize_principal_key`'s (governance/mod.rs)
@@ -290,7 +290,7 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
 /// empty-set union (an ad-hoc synthesized key that grants nothing is pointless), while this function
 /// still returns `Ok` with `Some(vec![])` — a self-serve key is a real, persisted binding for an
 /// admitted identity, and `GovState::issue_self`/`refresh_self` already encode `Some([])` as "mint the
-/// key, but it grants no pool" (C6).
+/// key, but it grants no pool".
 pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
@@ -328,7 +328,7 @@ pub(crate) fn resolve_exchange<'a>(
                 .find_map(|b| b.group.clone())
                 .ok_or(ExchangeError::Unbound)?;
             sanitize_self_sub(&principal.id)?;
-            // POOLS: the C6 UNION across ALL granting bindings — IDENTICAL to
+            // POOLS: the UNION across ALL granting bindings — IDENTICAL to
             // `synthesize_principal_key`'s pool-union loop (governance/mod.rs), not just the pools of
             // the single binding the group was taken from. An OMITTED `allowed_pools` on ANY granting
             // binding widens the union to ALL pools (`None`); otherwise the union is the de-duplicated

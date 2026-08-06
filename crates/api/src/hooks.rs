@@ -177,7 +177,7 @@ pub struct BudgetBucketState {
     pub remaining_micros: Option<i64>,
     /// Epoch start of the bucket's current budget window.
     pub window_start: u64,
-    /// This bucket's own window kind: `minute` | `hour` | `day` | `month` | `total` (C8 nouns).
+    /// This bucket's own window kind: `minute` | `hour` | `day` | `month` | `total` (nouns).
     pub budget_period: String,
 }
 

@@ -456,7 +456,7 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
     // has no group; role "B" binds AND carries a group. Before the fix this 403'd with Unbound even
     // though a later granting role clearly admits the principal under group "x".
     //
-    // The POOLS must be the C6 UNION across ALL granting bindings (role A's
+    // The POOLS must be the UNION across ALL granting bindings (role A's
     // "pool-a" AND role B's "pool-b"), matching `synthesize_principal_key` — not just the pools of
     // the single binding the group happened to come from (role B alone, "pool-b" only). Before
     // the fix: only `pool-b` came back, silently narrowing a self-serve key's pools below what the
@@ -503,7 +503,7 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
 
 #[test]
 fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
-    // C6: an OMITTED `allowed_pools` on ANY granting binding is the widest grant (ALL pools) and
+    // An OMITTED `allowed_pools` on ANY granting binding is the widest grant (ALL pools) and
     // must win the union even when another granting binding lists an explicit, narrower set — the
     // SAME rule `synthesize_principal_key` applies. Role A omits `allowed_pools` (all pools); role B
     // (which carries the group) lists only "pool-b". The resolved pools must be `None` (all), not

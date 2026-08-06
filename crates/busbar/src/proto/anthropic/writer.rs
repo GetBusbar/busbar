@@ -331,7 +331,7 @@ impl ProtocolWriter for AnthropicWriter {
             out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
         }
         out.insert("stream".to_string(), serde_json::json!(req.stream));
-        // response_format (M1): Anthropic's Messages API has NO native `response_format` field. The
+        // response_format: Anthropic's Messages API has NO native `response_format` field. The
         // idiomatic Anthropic mapping is tool-forcing (a synthetic tool + `tool_choice:{type:"tool"}`),
         // which is non-trivial and deliberately NOT implemented in this pass. The reader never sets
         // `response_format` on the same-protocol (Anthropic→Anthropic) path — same-protocol relays the
@@ -499,7 +499,7 @@ impl ProtocolWriter for AnthropicWriter {
                     IrDelta::RedactedReasoningDelta(_) => return None,
                     // Anthropic has no logprobs concept at all — lossy-by-target, emit nothing.
                     IrDelta::LogprobsDelta(_) => return None,
-                    // L2-5 STREAMING citation: re-emit each carried citation as its own native
+                    // STREAMING citation: re-emit each carried citation as its own native
                     // `content_block_delta`/`citations_delta` event (the native wire carries ONE
                     // `citation` per delta). `write_citation` re-emits a byte-exact Anthropic `raw`
                     // verbatim (same-protocol path) and synthesizes the Anthropic object from neutral

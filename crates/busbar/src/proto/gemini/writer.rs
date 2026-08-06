@@ -228,7 +228,7 @@ impl ProtocolWriter for GeminiWriter {
                     crate::ir::IrBlock::Thinking {
                         text, signature, ..
                     } => {
-                        // Thinking → Gemini `{text, thought:true, thoughtSignature?}` (H2). Gemini
+                        // Thinking → Gemini `{text, thought:true, thoughtSignature?}`. Gemini
                         // DOES carry reasoning parts; round-trip the text and the opaque resumable
                         // `thoughtSignature`. `thoughtSignature` is emitted only when present.
                         let mut part = serde_json::Map::new();
@@ -459,7 +459,7 @@ impl ProtocolWriter for GeminiWriter {
         if let Some(n) = req.n {
             gen_config.insert("candidateCount".to_string(), serde_json::json!(n));
         }
-        // response_format (M1): map the IR's normalized object back into Gemini's
+        // response_format: map the IR's normalized object back into Gemini's
         // `responseMimeType` / `responseSchema` (overlaying any raw copy preserved in `extra`). The
         // schema is sanitized of JSON-Schema keywords Gemini rejects so a cross-protocol structured
         // output definition does not 400.
@@ -781,7 +781,7 @@ impl ProtocolWriter for GeminiWriter {
                     None
                 }
 
-                // ThinkingDelta → a streamed Gemini thought part `{text, thought:true}` (D4). Gemini
+                // ThinkingDelta → a streamed Gemini thought part `{text, thought:true}`. Gemini
                 // models reasoning as a `thought:true` content part (see the non-stream
                 // read/write_response handling), and its stream framing carries each incremental
                 // reasoning fragment as exactly such a part in a `candidates[].content.parts[]` chunk —
@@ -801,7 +801,7 @@ impl ProtocolWriter for GeminiWriter {
                 )),
 
                 // SignatureDelta → a streamed thought part carrying the opaque resumable
-                // `thoughtSignature` (D4). Gemini attaches the signature to a `thought:true` part
+                // `thoughtSignature`. Gemini attaches the signature to a `thought:true` part
                 // (non-stream emits `{text, thought:true, thoughtSignature}`); on the stream the
                 // signature arrives as its own IR delta, so emit a minimal thought part bearing the
                 // signature (empty text, `thought:true`) — the closest faithful streamed form, since a
@@ -821,7 +821,7 @@ impl ProtocolWriter for GeminiWriter {
                 // drop it rather than emit a non-native part.
                 crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
 
-                // L2-5 STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
+                // STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
                 // chunk, mirroring the non-stream `read_response`/`write_response` shape (Gemini
                 // carries citations at the candidate level, not per part). `write_gemini_citation`
                 // re-emits a byte-exact Gemini source verbatim when `raw` is Gemini-shaped (uri /
@@ -1076,7 +1076,7 @@ impl ProtocolWriter for GeminiWriter {
                     parts_arr.push(serde_json::Value::Object(part_obj));
                 }
 
-                // Thinking → Gemini `{text, thought:true, thoughtSignature?}` (H2). Gemini DOES
+                // Thinking → Gemini `{text, thought:true, thoughtSignature?}`. Gemini DOES
                 // surface reasoning as a `thought:true` content part with an opaque resumable
                 // `thoughtSignature`; emit it so reasoning + signature round-trip on the response
                 // path instead of being dropped.

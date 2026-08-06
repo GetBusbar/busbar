@@ -54,7 +54,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     config::ProviderCfg {
         protocol: protocol.into(),
         base_url: base_url.into(),
-        // C2: the credential is a SECRET REFERENCE now; the env-var sugar keeps the old
+        // The credential is a SECRET REFERENCE now; the env-var sugar keeps the old
         // helper signature usable across every existing test.
         api_key: config::SecretRef::env(api_key_env),
         health: None,
@@ -629,7 +629,7 @@ fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> c
         .iter()
         .map(|m| config::AuthChainEntry::bare(*m))
         .collect();
-    // S2 (1.5.1): the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
+    // 1.5.1: the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
     // otherwise). 1.5.2: it also requires a USABLE ADMIN MINT PATH — a vkey can only be minted
     // through an admin endpoint, so `[keys]` with nothing that can mint one is a boot error. Attach
     // a signing-key ref and an explicit OPEN admin (`admin_auth: []`) — the one structural mint path
@@ -1706,10 +1706,10 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     );
 }
 
-/// 1.5.2 (RED-before-GREEN #5): `auth.chain: [keys]` with a signing key but NO usable admin MINT
+/// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable admin MINT
 /// PATH (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
 /// only be minted through an admin endpoint, so nothing could ever mint one and the data plane
-/// would reject every request. RED on pre-1.5.2 code: no mint-path rule existed, so this validated
+/// would reject every request. Before 1.5.2 no mint-path rule existed, so this config validated
 /// clean (and booted as a silent sealed relay).
 #[test]
 fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
@@ -1731,15 +1731,15 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     );
 }
 
-/// 1.5.1+ (RED-before-GREEN): `auth.chain: [keys]` with a usable admin mint path but NO
+/// 1.5.1+: `auth.chain: [keys]` with a usable admin mint path but NO
 /// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
 /// built-in `keys` verifier has nothing to verify busbar-signed tokens with and the data plane
 /// would reject every request. Isolates the signing-key rule from the mint-path rule by supplying a
 /// usable mint path: an explicit OPEN admin (`admin_auth: []`), the one structural mint path that
 /// validates under BOTH the default build and `--no-default-features` (where the `admin-tokens`
 /// module is compiled out, so a configured admin token would itself be a second, unrelated error —
-/// see `make_auth_chain`). Setting `signing_key` clears the error. RED on pre-1.5.1 code: busbar
-/// auto-generated a key at boot, so this validated clean.
+/// see `make_auth_chain`). Setting `signing_key` clears the error. Before 1.5.1 busbar
+/// auto-generated a key at boot, so this config validated clean.
 #[test]
 fn test_keys_chain_without_signing_key_is_boot_error() {
     let (providers, models, pools) = valid_maps();
@@ -1778,7 +1778,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     );
 }
 
-/// 1.5.2 (RED-before-GREEN #6): an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
+/// 1.5.2: an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
 /// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
 /// spurious mint-path error even when `admin_auth` grants no mint capability.
 #[test]
@@ -1793,7 +1793,7 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     );
 }
 
-/// 1.5.2 (RED-before-GREEN) — THE github/ldap GAP. `auth.chain: [keys]` whose ONLY admin path is an
+/// 1.5.2, the github/ldap gap. `auth.chain: [keys]` whose ONLY admin path is an
 /// EXTERNAL admin IdP (github/ldap) is a usable mint path ONLY if that module declares
 /// `max_admin_scope: full`; otherwise nothing can mint a vkey through the admin API and the data
 /// plane rejects EVERY request. This is the exact config that cost a cycle: the gate's Phase B
@@ -2073,7 +2073,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
         "https://169%2E254%2E169%2E254/",    // IMDS, percent-encoded dots
         "https://169.254.169.254:8443/",     // IMDS with port
         "https://user:pass@169.254.169.254/latest", // IMDS behind userinfo
-        // --- obfuscated inet_aton forms of IMDS (M2/H5: must be caught and canonicalized) ---
+        // --- obfuscated inet_aton forms of IMDS (must be caught and canonicalized) ---
         "https://169.254.43518/", // 3-part inet_aton of 169.254.169.254
         "https://169.16689662/",  // 2-part inet_aton of 169.254.169.254
     ] {
@@ -2642,7 +2642,7 @@ fn test_validate_rejects_unknown_fallback_pool() {
     );
 }
 
-/// The 1.5.0 heir of the malformed-action drift test (M4): `on_exhausted` is a STRUCTURED enum
+/// The 1.5.0 heir of the malformed-action drift test: `on_exhausted` is a STRUCTURED enum
 /// now, so a malformed action (`bogus`, or the retired `fallback_pool:name` string form) is
 /// rejected AT PARSE - it can never reach validate() or boot at all, closing the drift by
 /// construction. The three well-formed spellings parse to the expected variants.
@@ -3918,7 +3918,7 @@ fn test_validate_rate_card_stubs_every_missing_model() {
     }
 }
 
-/// The card is keyed by CONFIG model name (S5): two providers serving one upstream are two
+/// The card is keyed by CONFIG model name: two providers serving one upstream are two
 /// `models:` entries with two card entries, and `upstream_model` does NOT change the rate key.
 /// (The 1.4.x behavior priced the resolved upstream name; that resolution is identity now.)
 #[test]
@@ -4021,7 +4021,7 @@ fn test_validate_rejects_empty_store_module() {
     );
 }
 
-// ---- groups (S3): the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----
+// ---- groups: the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----
 
 /// Build a GroupCfg with the given parent and limits.
 fn group(parent: Option<&str>, limits: Vec<crate::config::groups::LimitCfg>) -> config::GroupCfg {
@@ -4169,7 +4169,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
 }
 
-/// CLEAN BREAK (S5/C4): the 1.4.x pool-member keys are GONE - `cost_per_mtok:` (rate_card is the
+/// CLEAN BREAK: the 1.4.x pool-member keys are GONE - `cost_per_mtok:` (rate_card is the
 /// only cost source) and `target:` (renamed `model:`) both fail AT PARSE via deny_unknown_fields.
 #[test]
 fn test_removed_member_keys_rejected_at_parse() {
@@ -4195,7 +4195,7 @@ fn test_removed_member_keys_rejected_at_parse() {
     assert_eq!(ok.members[0].model, "m");
 }
 
-// ---- role_bindings (S4): nested by module; module active; scopes parse; groups exist ----
+// ---- role_bindings: nested by module; module active; scopes parse; groups exist ----
 
 /// One binding under `module` for `role`, in an AuthCfg whose data-plane chain is `chain`.
 fn auth_with_binding(
@@ -4305,7 +4305,7 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
     );
 }
 
-// ---- secret-module resolvability (C2): every SecretRef's MODULE must be known ----
+// ---- secret-module resolvability: every SecretRef's MODULE must be known ----
 
 /// Unknown secret modules on the provider api_key and the TLS blocks are fail-closed errors
 /// naming the exact config path with a paste-ready `{ env: ... }` stub; env/file refs missing
@@ -4887,7 +4887,7 @@ fn test_public_url_rejects_path_and_metadata() {
 
 #[test]
 fn test_browser_login_requires_public_url() {
-    // 1.5.3/A7: `browser_login` lives on the `identity-providers:` DEFINITION, not a parallel
+    // 1.5.3: `browser_login` lives on the `identity-providers:` DEFINITION, not a parallel
     // `auth.methods:` map.
     let auth = parse_auth(
         "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\n",
