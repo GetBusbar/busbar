@@ -164,8 +164,17 @@ cmd_build() {
   log "build once (2/3): the in-tree dlopen fixture cdylibs (the loader job's exact line)"
   cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
 
-  log "build once (3/3): link the plugin-loader test binaries"
+  log "build once (3/4): link the plugin-loader test binaries"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader --no-run
+
+  # (4/4) The FAST TIER's test binary. Its segments run `cargo test --release -p busbar --bin
+  # busbar`, so without this they link the harness themselves on the far side of the hydrate.
+  # PROFILE MUST MATCH THE SEGMENTS. The first two gate runs failed here: the segments ran in DEBUG
+  # while everything prebuilt here is RELEASE, so they shared nothing (export rebuilt from scratch,
+  # 138s) AND the hook-test cdylib built above into target/release was invisible to a debug test
+  # looking in target/debug/deps, which is what starved `hook-bindings` of its plugin.
+  log "build once (4/4): link the busbar test binary the fast tier runs"
+  cargo test --release -p busbar --bin busbar --no-run
 
   [ -x target/release/busbar ] || die "target/release/busbar missing after build"
   [ -x target/release/busbar-plugin-pack ] || die "target/release/busbar-plugin-pack missing after build"

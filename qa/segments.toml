@@ -91,7 +91,7 @@ tier   = "fast"
 #
 # The webhook/scrape rows that need a REAL receiver are not in this fast segment; they belong to the
 # live-mock cadence and are covered by core-data-plane's release-check soak.
-run    = "cargo test -p busbar --bin busbar -- export"
+run    = "cargo test --release -p busbar --bin busbar -- export"
 
 [[segment]]
 id     = "hook-bindings"
@@ -123,7 +123,7 @@ tier   = "fast"
 #   hooks::* (the wire/plugin/scrape hook seam)
 #
 # Same reasoning as `export` for the substring filter over an enumerated list.
-run    = "cargo test -p busbar --bin busbar -- hook"
+run    = "cargo test --release -p busbar --bin busbar -- hook"
 
 [[segment]]
 id     = "config-stability"
