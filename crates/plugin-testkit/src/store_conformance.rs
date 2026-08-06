@@ -123,8 +123,14 @@ pub fn assert_put_key_does_not_resurrect_a_tombstone(store: &dyn Store) {
 
     // The other half, and the reason this is not simply "reject every write to a tombstoned row":
     // writing a row that already carries the tombstone is legitimate and must still work.
+    //
+    // `enabled` goes false alongside it. `delete_key` sets both together, and a backend is entitled
+    // to enforce that pairing (store-sqlite has a `keys_tombstone_off` CHECK constraint that does
+    // exactly this) — a row that is simultaneously enabled and deleted is a corrupt half-state, not
+    // something a conformance suite should be asking a backend to accept.
     let mut tombstoned = key.clone();
     tombstoned.deleted_at = after.deleted_at;
+    tombstoned.enabled = false;
     store
         .put_key(&tombstoned)
         .expect("writing a row that CARRIES a tombstone clears nothing and must be allowed");
