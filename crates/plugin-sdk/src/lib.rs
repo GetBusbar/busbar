@@ -422,8 +422,30 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
 /// just reads whatever keys are present.
 pub trait HookHandler: Send + Sync {
     /// `decide` — rank candidates / return a verdict. Default: `{}` (abstain).
+    ///
+    /// Implement [`HookHandler::decide_result`] instead if your hook can FAIL as distinct from
+    /// having no opinion. Returning `{}` from here says "no opinion", and the engine acts on that
+    /// difference: an abstain lets the request proceed, a failure resolves the operator's
+    /// `on_error` chain, whose terminal can be `reject`.
     fn decide(&self, _payload: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({})
+    }
+
+    /// `decide`, with the ability to say the hook could not answer.
+    ///
+    /// ADDITIVE, and defaulted to the infallible [`HookHandler::decide`] so every existing
+    /// implementation keeps compiling and behaving identically. Override this one when your hook
+    /// depends on something that can be down: a remote scoring service, a database, a model.
+    ///
+    /// `Err(message)` reaches the engine as a failure and resolves the operator's configured
+    /// `on_error` chain. `Ok(value)` is a successful reply, and `Ok(json!({}))` specifically means
+    /// abstain. Before this existed there was no way to express the difference, so a gate whose
+    /// dependency was down answered "no opinion" and an operator who had deliberately configured
+    /// `on_error: reject` never got it.
+    ///
+    /// The message goes to the operator's log. Do not put request content in it.
+    fn decide_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        Ok(self.decide(payload))
     }
     /// `transform` — a `prompt: rw` gate's rewrite/reject pass. Default: `{}` (abstain, original body).
     fn transform(&self, _payload: &serde_json::Value) -> serde_json::Value {
@@ -486,7 +508,10 @@ pub fn dispatch_hook(
 ) -> busbar_plugin_abi::hook::HookReply {
     use busbar_plugin_abi::hook::{HookReply, HookRequest};
     match req {
-        HookRequest::Decide { payload } => HookReply::Reply(handler.decide(&payload)),
+        HookRequest::Decide { payload } => match handler.decide_result(&payload) {
+            Ok(v) => HookReply::Reply(v),
+            Err(message) => HookReply::Failed { message },
+        },
         HookRequest::Transform { payload } => HookReply::Reply(handler.transform(&payload)),
         HookRequest::Notify { payload } => {
             handler.notify(&payload);

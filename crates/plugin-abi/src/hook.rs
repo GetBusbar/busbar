@@ -134,6 +134,19 @@ pub enum HookReply {
     Routes(Vec<Route>),
     /// An `http_endpoint` reply: the hook's response to a dispatched inbound request. ADDITIVE.
     Http(HttpEndpointResponse),
+    /// The hook could not answer: its own dependency failed, timed out, or returned something it
+    /// refuses to act on. ADDITIVE, same reasoning as `Routes`/`Http`.
+    ///
+    /// This exists because there was previously NO WAY for a hook to say so. `HookHandler::decide`
+    /// returns a bare value, and the only thing a plugin could return when its remote brain was
+    /// down was `{}` — which the engine reads as a successful ABSTAIN, meaning "no opinion". The
+    /// two are not the same and the engine already treats them differently: an abstain contributes
+    /// nothing and the request proceeds, while a failure resolves the operator's `on_error` chain,
+    /// whose terminal can be `reject`. So a gate an operator deliberately configured to fail CLOSED
+    /// failed OPEN instead, silently, and looked exactly like a hook that had no opinion.
+    ///
+    /// `message` is for the operator's log. It must not carry request content.
+    Failed { message: String },
 }
 
 #[cfg(test)]
@@ -191,6 +204,29 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(v["op"], "configure");
+    }
+
+    /// `Failed` is a DISTINCT wire shape from an empty `Reply`, which is the whole point: the
+    /// engine must be able to tell "my dependency is down" from "I have no opinion". If these two
+    /// ever encoded alike, a gate configured to fail closed would silently fail open again.
+    #[test]
+    fn failed_is_distinguishable_from_an_empty_abstain_reply() {
+        let failed = serde_json::to_value(HookReply::Failed {
+            message: "upstream timed out".into(),
+        })
+        .unwrap();
+        let abstain = serde_json::to_value(HookReply::Reply(serde_json::json!({}))).unwrap();
+        assert_ne!(failed, abstain);
+        assert_eq!(failed["Failed"]["message"], "upstream timed out");
+        // ...and it survives the round trip the transport does.
+        let back: HookReply = serde_json::from_slice(
+            &serde_json::to_vec(&HookReply::Failed {
+                message: "x".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(back, HookReply::Failed { .. }));
     }
 
     /// The reply round-trips: an opaque reply object, a configure ack, and the notify empty.

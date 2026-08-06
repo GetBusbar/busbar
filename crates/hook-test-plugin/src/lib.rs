@@ -60,6 +60,11 @@ struct HookConfig {
     /// never a torn-down runtime or a crossed unwind.
     #[serde(default)]
     panic_decide: bool,
+    /// Report from `decide` that the hook COULD NOT ANSWER (`HookReply::Failed`) — the shape a gate
+    /// takes when its own dependency is down. Distinct from an abstain, and the engine must resolve
+    /// the caller's `on_error` chain for it rather than letting the request proceed.
+    #[serde(default)]
+    fail_decide: Option<String>,
 }
 
 struct TestGate {
@@ -72,6 +77,7 @@ struct TestGate {
     empty_management: bool,
     nack_configure: bool,
     panic_decide: bool,
+    fail_decide: Option<String>,
     /// A monotonically incrementing decide count, surfaced via `status` — proves the control-plane
     /// scrape reads a real observed metric back over the ABI. `AtomicU64` keeps `&self` (the handler
     /// is shared behind the ABI handle).
@@ -104,6 +110,17 @@ impl TestGate {
 }
 
 impl HookHandler for TestGate {
+    /// The fallible entry point. A gate whose dependency is down reports that it could not answer,
+    /// which the engine must treat as a FAILURE (resolve `on_error`) and not as an abstain.
+    fn decide_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        if let Some(msg) = &self.fail_decide {
+            self.decides
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(msg.clone());
+        }
+        Ok(self.decide(payload))
+    }
+
     fn decide(&self, payload: &serde_json::Value) -> serde_json::Value {
         self.decides
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -203,6 +220,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         empty_management: c.empty_management,
         nack_configure: c.nack_configure,
         panic_decide: c.panic_decide,
+        fail_decide: c.fail_decide,
         decides: std::sync::atomic::AtomicU64::new(0),
         notifies: std::sync::atomic::AtomicU64::new(0),
     }))
