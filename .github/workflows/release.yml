@@ -15,9 +15,69 @@ permissions:
   attestations: write  # record the build-provenance attestation
 
 jobs:
+  # ── TEST GATE ────────────────────────────────────────────────────────────────────────────────
+  # Nothing is built, signed, attested or published until the suite passes ON THE TAGGED COMMIT.
+  #
+  # `ci.yml` is armed on pushes to main/dev/qa and on PRs — NOT on tags. So a `v*` tag ran this
+  # workflow with no test job anywhere in the graph, and the build-provenance attestation would
+  # faithfully certify the provenance of an artifact whose suite never ran in that run. Test gating
+  # depended entirely on someone having pushed the same commit to a branch first and on that run
+  # having been green, which is a convention, not a gate.
+  #
+  # Mirrors `ci.yml`'s `check` job, including the live Postgres/Valkey service containers: without
+  # them the store roundtrip tests skip, and `CI` being set makes them hard-fail rather than skip
+  # silently, so dropping the services here would turn the gate red rather than hollow — but it
+  # would still be wrong to omit them, since that coverage is exactly what a release should prove.
+  gate:
+    name: gate (fmt · clippy · build · test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked --verbose
+      - name: Test
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          VALKEY_URL: redis://localhost:6379
+        run: cargo test --workspace --locked --verbose
+
   # Create the Release first so the parallel upload jobs have something to attach to
   # (uploading from a matrix without a pre-existing release races → "release not found").
   create-release:
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
