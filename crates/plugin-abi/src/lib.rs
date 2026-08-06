@@ -144,7 +144,57 @@ pub mod symbol {
     pub const FREE: &[u8] = b"busbar_free\0";
     /// `busbar_close(handle)` — drop the instance.
     pub const CLOSE: &[u8] = b"busbar_close\0";
+    /// `busbar_set_log_sink(sink, ctx)` — OPTIONAL, the only symbol here that is. See
+    /// [`super::SetLogSinkFn`] for why its absence is not an error and not a transport bump.
+    pub const SET_LOG_SINK: &[u8] = b"busbar_set_log_sink\0";
 }
+
+/// Severity for a record crossing [`LogSinkFn`]. Deliberately a plain `u32` rather than a Rust enum:
+/// this crosses a C boundary between two independently-compiled objects, so it has to be a value
+/// with a fixed representation. An unrecognized level is clamped by the host, never rejected — a
+/// newer plugin inventing a level must not lose the message.
+pub mod log_level {
+    pub const ERROR: u32 = 1;
+    pub const WARN: u32 = 2;
+    pub const INFO: u32 = 3;
+    pub const DEBUG: u32 = 4;
+}
+
+/// The host-side callback a plugin invokes to emit one log record.
+///
+/// `ctx` is the opaque pointer the host supplied alongside this fn — a plain fn pointer carries no
+/// captured state, so the host needs it to know WHICH plugin is talking. The plugin passes it back
+/// verbatim and must never interpret or free it.
+///
+/// `extern "C"`, NOT `"C-unwind"`: this is the host's code called FROM the plugin, and a panic
+/// unwinding out of it into a differently-compiled object is undefined behaviour. The host catches
+/// its own panics inside.
+///
+/// `msg` is UTF-8, `msg_len` bytes, borrowed for the duration of the call only. The host copies
+/// anything it keeps.
+pub type LogSinkFn =
+    unsafe extern "C" fn(ctx: *mut c_void, level: u32, msg: *const u8, msg_len: usize);
+
+/// `busbar_set_log_sink` — the host hands the plugin somewhere to send its diagnostics.
+///
+/// WHY THIS EXISTS. A plugin is a cdylib that statically links its OWN copy of `tracing-core`, so it
+/// gets its own dispatcher, and nothing bridges that to the host's. Every `tracing::warn!` inside a
+/// loaded plugin was therefore discarded — including auth-oidc's on a FAILED TOKEN SIGNATURE
+/// VERIFICATION, which is precisely the line an operator needs. Plugins worked around it with
+/// `eprintln!`, which does reach the shared stderr, but bypasses the host's subscriber entirely: no
+/// level filtering, no structured fields, no OTLP export, and nothing tying the line to which plugin
+/// emitted it.
+///
+/// WHY IT IS NOT A TRANSPORT BUMP. [`TRANSPORT_VERSION`] covers the SIX required signatures and the
+/// ptr+len rule; this is a SEVENTH, OPTIONAL symbol and none of the six change. The loader looks it
+/// up and simply does not call it when absent, so an existing signed artifact keeps loading and
+/// behaving exactly as before. Same reasoning already applied to adding `STATUS_UNSUPPORTED` /
+/// `STATUS_PANIC`.
+///
+/// CALLED ONCE, immediately after a successful `busbar_open`, before any `busbar_call`. The sink must
+/// remain valid for the life of the plugin and may be invoked from ANY thread, so a plugin storing it
+/// needs a `Sync` cell.
+pub type SetLogSinkFn = unsafe extern "C-unwind" fn(sink: LogSinkFn, ctx: *mut c_void);
 
 /// The hard cap on a single response/error buffer a plugin returns, checked BEFORE allocation on both
 /// sides. Defense against a buggy/hostile plugin handing back a huge length to OOM the engine. 256 MiB
