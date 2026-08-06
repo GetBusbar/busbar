@@ -165,6 +165,14 @@ impl RoutingPolicy for DlopenPolicy {
             .await?;
         match reply {
             HookReply::Reply(v) => Ok((self.projectors.normalize)(v, candidates)),
+            // The hook SAID it could not answer. Distinct from an abstain (`Reply({})`), and that
+            // distinction is the whole point: an abstain lets the request proceed, this resolves
+            // the operator's `on_error` chain, whose terminal can be `reject`. Before the ABI
+            // carried this variant a hook had no way to express it and answered "no opinion"
+            // instead, so a gate configured to fail closed failed open, silently.
+            HookReply::Failed { message } => {
+                Err(format!("hook {} could not answer: {message}", self.name).into())
+            }
             // A wrong reply variant is a protocol violation → on_error (never a silent route).
             other => Err(format!("hook plugin returned {other:?} for decide").into()),
         }
@@ -774,6 +782,57 @@ mod tests {
             "a panicking gate must surface as a fail-closed Err"
         );
     }
+    /// A hook that reports it COULD NOT ANSWER is a failure, not an abstain.
+    ///
+    /// This is the distinction the ABI had no way to carry. `HookHandler::decide` returns a bare
+    /// value, so a gate whose remote dependency was down could only return `{}`, which the engine
+    /// reads as a successful "no opinion": the request proceeds and the operator's `on_error`
+    /// chain, whose terminal can be `reject`, never fires. A gate deliberately configured to fail
+    /// CLOSED failed OPEN, silently, and looked identical to one that genuinely had no view.
+    ///
+    /// Asserts BOTH halves, because only the pair pins the behaviour: a failing gate is an `Err`
+    /// (so `on_error` resolves), and an abstaining gate is `Ok` (so a hook with no opinion still
+    /// lets the request through). Collapsing either into the other reintroduces the defect.
+    #[tokio::test]
+    async fn dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain() {
+        let Some(_) = hook_plugin_path() else {
+            return;
+        };
+        let failing = load(r#"{"fail_decide": "scoring service unreachable"}"#);
+        let r = failing
+            .decide(
+                &req_with_prompt("x"),
+                &[cand(0)],
+                &ctx(),
+                Duration::from_secs(5),
+            )
+            .await;
+        let err = r.expect_err(
+            "a gate that reports it could not answer must be an Err so the operator's on_error \
+             chain resolves, not an Ok that lets the request proceed",
+        );
+        assert!(
+            format!("{err:?}").contains("scoring service unreachable"),
+            "the hook's own reason must reach the operator, got {err:?}"
+        );
+
+        // The other half: an ordinary abstain is still a SUCCESS, so a hook with no opinion does
+        // not start rejecting traffic.
+        let abstaining = load(r#"{"raw_decide_reply": {}}"#);
+        assert!(
+            abstaining
+                .decide(
+                    &req_with_prompt("x"),
+                    &[cand(0)],
+                    &ctx(),
+                    Duration::from_secs(5),
+                )
+                .await
+                .is_ok(),
+            "an abstain must remain a successful no-opinion, not become a failure"
+        );
+    }
+
     /// A `spawn_blocking` task runs to completion, so a timed-out hook call abandons the future but
     /// NOT the thread. Uncapped, a wedged plugin would leak one blocking thread per call until
     /// Tokio's 512-thread pool is exhausted and every unrelated `spawn_blocking` in the process —
