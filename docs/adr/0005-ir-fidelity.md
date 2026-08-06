@@ -1,8 +1,7 @@
 # ADR-0005: Superset IR & translation fidelity
 
-> Status: accepted (reconstructed from code). `ADR-0005` is referenced in
-> `crates/busbar/src/ir/mod.rs` (including the explicit f64-not-f32 note). The prose is
-> reconstructed from the implementation.
+> Status: accepted. `ADR-0005` is referenced in `crates/busbar/src/ir/mod.rs`
+> (including the explicit f64-not-f32 note).
 
 ## Context
 

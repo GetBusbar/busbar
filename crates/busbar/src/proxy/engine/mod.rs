@@ -1,5 +1,5 @@
 use super::*;
-// The tracing seam (task #140): the ONE named level constant every hot-path `#[tracing::instrument]`
+// The tracing seam: the ONE named level constant every hot-path `#[tracing::instrument]`
 // in this file references, so a `#[tracing::instrument(level = "debug")]` hand-picked literal never
 // re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
@@ -104,7 +104,7 @@ pub(crate) async fn forward_with_pool_keyed(
 // Plumbing function: each parameter is an independent request input (state, candidates, body, parsed
 // body, caller token, pool name, affinity key, ingress protocol, usage sink) with no natural grouping.
 #[allow(clippy::too_many_arguments)]
-// `level = crate::observability::HOTPATH_LEVEL` (task #140 tracing seam): at the default info
+// `level = crate::observability::HOTPATH_LEVEL` (the tracing seam): at the default info
 // filter this span is DISABLED at the callsite (one relaxed atomic check) instead of allocating a
 // span + formatting three fields on every request. The info-level events on the rejection paths
 // carry their own pool/policy fields, so no info-level log line loses context; run with
@@ -259,11 +259,11 @@ impl Drop for BudgetSpendGuard<'_> {
 /// response, mirroring [`translate_request_cross_protocol`]'s role on the request side. Both the hot
 /// path ([`forward_with_pool_parsed_inner`]) and the degraded last-resort path
 /// ([`walk::forward_once`], FallbackPool/LeastBad) call THIS function so the two cannot drift apart on
-/// any translation step — exactly the class of bug the request-side unification (R8/R9, see
+/// any translation step — exactly the class of bug the request-side unification (see
 /// `translate_request_cross_protocol`'s doc comment) already fixed once on the request side. Before
 /// this extraction the response-side decision tree (TransportError / Truncated / binary-vs-JSON /
 /// Bedrock-eventstream-synthesis / Gemini-array-wrap) was duplicated near-verbatim between the two
-/// call sites, the same shape of risk R8/R9 fixed, just never carried over to the response direction.
+/// call sites, the same shape of risk the request side fixed but the response direction never inherited.
 ///
 /// Called ONLY once the caller has already decided `ingress_protocol != egress` and the response is
 /// NOT SSE — every exit from this function is a fully-built `Response`, so the caller's own call site
@@ -442,7 +442,7 @@ async fn translate_response_cross_protocol(
                 // Token accounting: we are now committed to translating and delivering this body
                 // (every exit from this block is a delivered response). No FirstByteBody on this
                 // buffered path, so bill here — straight from the IR usage the egress reader just
-                // decoded (Change A).
+                // decoded.
                 record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
                 // Tokens are now committed to this key; keep the lane unit too rather than refund it
                 // out from under an already-billed request.
@@ -682,12 +682,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         .unwrap_or(false);
 
     // Capture whether the ORIGINAL client opted into streaming token usage
-    // (`stream_options.include_usage == true`) BEFORE any rewrite/translation touches `v` (Findings
-    // 2+3). Meaningful only for an OpenAI-family ingress that speaks the `stream_options` convention;
+    // (`stream_options.include_usage == true`) BEFORE any rewrite/translation touches `v`.
+    // Meaningful only for an OpenAI-family ingress that speaks the `stream_options` convention;
     // any other ingress body simply lacks the key and reads `false`. Busbar ALWAYS injects
-    // `include_usage` on the upstream request (so it can bill a streaming call — Finding 3), so this
+    // `include_usage` on the upstream request (so it can bill a streaming call), so this
     // flag alone decides whether the resulting trailing usage chunk is surfaced to THIS client
-    // (Finding 2): a client that did not opt in must not receive the unsolicited `{choices:[], usage}`
+    // a client that did not opt in must not receive the unsolicited `{choices:[], usage}`
     // chunk. Read from the head projection where available (`probe()` is the head projection until a
     // DOM is materialized, then the DOM itself), so no DOM is forced for the common non-opt-in case.
     let client_include_usage = wants_stream
@@ -1241,7 +1241,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // Capture this restrict so it PERSISTS across a `fallback_pool` hop, exactly
                         // as the GATE reconcile arm does. Shrinking `cands` below only covers in-pool
                         // failover; the fallback pool rebuilds candidates independently and consults
-                        // `enforce_restricts`. The gate arm was the c1r13 fix; this BASE routing-policy
+                        // `enforce_restricts`. The gate arm was fixed first; this BASE routing-policy
                         // arm (pool `route:` hook) is the sibling path that was still leaking a
                         // compliance restrict at the pool boundary.
                         request_ctx.active_restricts.push(RestrictConstraint {
@@ -1457,7 +1457,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         }
 
-        // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics (LOW #25).
+        // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
         // Resolves to the routed lane's model name on the default (`""`) cell so these series
         // correlate with REQUESTS_TOTAL (which labels model-routed traffic by model, not `""`);
         // the breaker-cell key below stays `pool_name` (`""`) — only the metric LABEL is decoupled.
@@ -1478,7 +1478,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
         // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
         let _xlate = crate::profile::start(crate::profile::Stage::TranslateReq);
-        // REQUEST SHORT-CIRCUIT WITHOUT A DOM (perf/throughput-1.5.0): hop 1 of a SAME-protocol
+        // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol
         // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
         // fires re-emits the retained bytes verbatim — the exact bytes the translate seam's own
         // pristine short-circuit would emit — without ever materializing the `Value` tree.
@@ -1530,7 +1530,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // SINGLE shared cross-protocol request-shaping seam (shared verbatim with `forward_once`'s
             // degraded path): read→clear-extra→write, shim-key strip, model rewrite, serialize. Both
             // paths route through `translate_request_cross_protocol` so neither can carry a translation
-            // step the other lacks (the recurring drift class this round's unification ends).
+            // step the other lacks (the drift class that sharing one seam ends).
             match translate_request_cross_protocol(
                 &app,
                 i,
@@ -1552,17 +1552,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 }
             }
         };
-        // STREAMING-USAGE UPSTREAM INJECTION (Finding 3, round-3 regression fix): busbar bills a
+        // STREAMING-USAGE UPSTREAM INJECTION: busbar bills a
         // streaming chat call from the token usage it decodes off the upstream stream, but an OpenAI
         // Chat Completions upstream only emits that usage (in a trailing chunk) when the request
         // carried `stream_options.include_usage: true`. A client that did not opt in would otherwise
         // leave the upstream silent on tokens and busbar would bill ZERO. So force
         // `stream_options.include_usage` on a streaming request to an OpenAI Chat egress.
         //
-        // Round-3 regression (R3-A-a) PERF: the prior form ran the DOM-parse+re-serialize injector
-        // UNCONDITIONALLY for every streaming OpenAI egress, including the same-protocol pristine
+        // PERF: an unconditional injector runs the DOM-parse+re-serialize
+        // for every streaming OpenAI egress, including the same-protocol pristine
         // passthrough the head short-circuit exists to keep parse-free (the flagship lazy_body win).
-        // Two gates fix that:
+        // Two gates avoid that:
         //   1. If the CLIENT already opted in (`client_include_usage`), the upstream body ALREADY
         //      carries `include_usage:true` - injection is a pure no-op re-serialize. Skip it entirely,
         //      preserving the pristine re-emit for the opted-in same-proto path.
@@ -1574,8 +1574,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Scoped to `egress_name == "openai"` (Chat Completions) - the Responses egress carries usage
         // unconditionally and non-OpenAI egresses always report usage. The client-facing trailing
         // chunk is then gated on the CLIENT's own opt-in at the framing seam (both the cross-proto
-        // `on_egress_chunk` un-fold/strip AND the same-proto verbatim strip - R3-A-b), so this
-        // injection never leaks an unsolicited usage chunk to an opted-out client (Finding 2).
+        // `on_egress_chunk` un-fold/strip AND the same-proto verbatim strip), so this
+        // injection never leaks an unsolicited usage chunk to an opted-out client.
         let payload = if wants_stream
             && body_is_json
             && egress_name == crate::proto::PROTO_OPENAI
@@ -1599,7 +1599,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let key = match app.pool_upstream_creds(pool_name) {
             // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
             // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
-            // (LOW #15 SECURITY): borrowing the operator key would let an unauthenticated caller
+            // (a SECURITY boundary): borrowing the operator key would let an unauthenticated caller
             // silently spend on the operator's upstream account. An empty credential makes the
             // provider return its own 401/403, attributed to the caller (a client-auth fault, no
             // lane penalty), matching the documented passthrough contract. No-op in canonical
@@ -1895,7 +1895,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     let sig = normalize_raw_error(&raw, &app.lanes[i].error_map);
                     let disposition = classify_disposition(&sig);
 
-                    // Exhaustive match on Disposition - NO _ => allowed per requirements
+                    // Exhaustive match on Disposition - no `_` arm, so a new disposition breaks the build
                     match disposition {
                         Disposition::ClientFault => {
                             // ADR-0002: Client fault (caller's bad input) → no breaker penalty.
@@ -2238,7 +2238,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 let egress_name_for_translate = app.lanes[i].protocol.name();
                 let translate = if is_sse {
                     if ingress_protocol == egress_name_for_translate {
-                        // SAME-PROTOCOL SSE/event-stream (Change B, now permanent): always run the
+                        // SAME-PROTOCOL SSE/event-stream: always run the
                         // verbatim same-proto translator (byte-exact re-emit + IR usage A-tap). The
                         // universal path is unconditional — billing now sources `translate.usage()`, so
                         // there is no longer a passthrough that bypasses the IR. `new_same_proto` is
@@ -2254,7 +2254,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 } else {
                     None
                 };
-                // Thread the client's streaming-usage opt-in to the framing (Findings 2+3). Busbar
+                // Thread the client's streaming-usage opt-in to the framing. Busbar
                 // always injected `include_usage` UPSTREAM, so the upstream stream carries a trailing
                 // usage chunk; the OpenAI-ingress framing surfaces it to the client ONLY when the client
                 // itself opted in, and STRIPS it otherwise so an opted-out client never sees the
@@ -2273,7 +2273,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     })
                     .flatten();
                 // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below,
-                // Cancellation part of the fix) — disarm the local guard so it does not ALSO refund
+                // which owns the cancellation case) — disarm the local guard so it does not ALSO refund
                 // when this stack frame unwinds.
                 budget_guard.disarm();
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
@@ -2358,16 +2358,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     .await
 }
 
-/// GLOBAL TAP (observe) stage of the forward pipeline — extracted from `forward_with_pool_parsed_inner`
-/// so it is independently readable and testable. Fires the global request-stage `kind: tap` hooks
-/// FIRE-AND-FORGET: serialize the projection(s) once, then spawn one detached task per tap. A tap gets
-/// a write-only send with its own deadline; its reply is ignored, its errors swallowed — a tap can
-/// NEVER delay, reorder, or fail the request. Each tap receives the projection its GRANT allows: a
-/// `prompt: ro` tap gets the prompt-content projection, a `prompt: no` (default) tap gets shape-only.
-/// At most TWO projections are built (shape-only + with-prompt) regardless of tap count. ZERO COST
-/// when no tap is configured (the empty-list early return).
 /// Force `stream_options.include_usage: true` on an OpenAI Chat Completions streaming request body so
-/// the upstream emits token usage busbar can bill (Finding 3). Parses `payload`, sets the nested flag
+/// the upstream emits token usage busbar can bill. Parses `payload`, sets the nested flag
 /// (creating `stream_options` if absent, overwriting a `false`), and re-serializes. On any parse/shape
 /// failure the ORIGINAL bytes are returned unchanged — a malformed body is the upstream's to reject,
 /// not busbar's to mangle, and the worst case is the pre-existing zero-usage billing gap rather than a
@@ -2406,7 +2398,7 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// PRISTINE-PRESERVING variant of [`inject_openai_stream_include_usage`] for a body the head
-/// projection already proved carries NO top-level `stream_options` key (R3-A-a). Splices
+/// projection already proved carries NO top-level `stream_options` key. Splices
 /// `"stream_options":{"include_usage":true},` in immediately after the opening `{` instead of
 /// parsing + re-serializing the whole DOM, so a same-protocol pristine passthrough body stays
 /// parse-free while still forcing the upstream to emit billable token usage.
@@ -2468,6 +2460,13 @@ fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
     Bytes::from(out)
 }
 
+/// GLOBAL TAP (observe) stage of the forward pipeline. Fires the global request-stage `kind: tap`
+/// hooks FIRE-AND-FORGET: serialize the projection(s) once, then spawn one detached task per tap. A tap gets
+/// a write-only send with its own deadline; its reply is ignored, its errors swallowed — a tap can
+/// NEVER delay, reorder, or fail the request. Each tap receives the projection its GRANT allows: a
+/// `prompt: ro` tap gets the prompt-content projection, a `prompt: no` (default) tap gets shape-only.
+/// At most TWO projections are built (shape-only + with-prompt) regardless of tap count. ZERO COST
+/// when no tap is configured (the empty-list early return).
 fn fire_global_taps(
     app: &Arc<App>,
     body: &Value,
@@ -2580,7 +2579,7 @@ mod inject_include_usage_tests {
     use super::{inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine};
     use bytes::Bytes;
 
-    /// R3-A-a: the byte-level pristine injector splices `stream_options.include_usage:true` into a body
+    /// The byte-level pristine injector splices `stream_options.include_usage:true` into a body
     /// with NO existing `stream_options` WITHOUT parsing - but the result must still be valid JSON with
     /// the flag set and every original key preserved.
     #[test]
@@ -2639,7 +2638,7 @@ mod inject_include_usage_tests {
         );
     }
 
-    /// R3-A-a: leading whitespace before the opening `{` is tolerated (the only bytes JSON permits
+    /// Leading whitespace before the opening `{` is tolerated (the only bytes JSON permits
     /// ahead of the top-level value) - the splice still lands right after the brace.
     #[test]
     fn pristine_injector_tolerates_leading_whitespace() {
@@ -2653,7 +2652,7 @@ mod inject_include_usage_tests {
         assert_eq!(v.pointer("/model"), Some(&serde_json::json!("m")));
     }
 
-    /// R3-A-a: a degenerate `{}` (no first key) and a non-object body fall back to the DOM injector
+    /// A degenerate `{}` (no first key) and a non-object body fall back to the DOM injector
     /// rather than producing invalid JSON via a blind splice.
     #[test]
     fn pristine_injector_falls_back_on_empty_or_non_object() {
@@ -2709,7 +2708,7 @@ mod inject_include_usage_tests {
         );
     }
 
-    /// FINDING 3: an OpenAI Chat streaming body with NO `stream_options` gains
+    /// An OpenAI Chat streaming body with NO `stream_options` gains
     /// `stream_options.include_usage: true` so the upstream reports usage busbar can bill.
     #[test]
     fn adds_include_usage_when_absent() {

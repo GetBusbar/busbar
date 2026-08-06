@@ -196,7 +196,7 @@ struct CatalogCacheEntry {
     inserted_at: u64,
 }
 
-/// How long a `CATALOG_CACHE` entry may sit unpruned (RESOURCE-MEDIUM finding): the map has no
+/// How long a `CATALOG_CACHE` entry may sit unpruned: the map has no
 /// other eviction and grows once per distinct `plugins_dir` path the process has ever served
 /// `GET /plugins?type=store` for — normally one path for the life of the process, but every test in
 /// this file uses its own temp directory, and a long-lived process that has rotated through several
@@ -220,7 +220,7 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
     CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The bound on CONCURRENT catalog re-scans (CONCURRENCY-HIGH finding, single-flight half):
+/// The bound on CONCURRENT catalog re-scans (the single-flight half):
 /// `spawn_blocking` alone is not a fix for a hot cache-miss path — this codebase's own established
 /// doctrine, per `auth::AUTH_OFFLOAD_PERMITS`'s doc comment and
 /// `governance::revocation::RevocationSync`'s `inflight` bound. Unlike those two (which bound
@@ -238,8 +238,8 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
 static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-/// How long a caller will wait to ACQUIRE [`CATALOG_SCAN_GATE`] before giving up (round-4 audit
-/// finding 1). Mirrors `auth::AUTH_OFFLOAD_PERMITS`'s own `AUTH_OFFLOAD_WAIT` idiom exactly, same
+/// How long a caller will wait to ACQUIRE [`CATALOG_SCAN_GATE`] before giving up. Mirrors
+/// `auth::AUTH_OFFLOAD_PERMITS`'s own `AUTH_OFFLOAD_WAIT` idiom exactly, same
 /// value and same reasoning: `GET /plugins?type=store` is deliberately unmetered by the admin rate
 /// limiter (see [`Self::store_plugin_catalog_async`]'s doc comment), so an ungated wait here is a
 /// PERMANENT-until-restart wedge, not a self-healing one — a stale/hung `plugins_dir` mount (e.g. a
@@ -259,7 +259,7 @@ const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_se
 /// entry's size or mtime, so install/remove/rollback all invalidate the cache on their own, with no
 /// bespoke invalidation hook wired into any of those mutation paths.
 ///
-/// ERROR HANDLING (ERROR-HANDLING-MEDIUM finding): a MISSING directory is a legitimate, cacheable
+/// ERROR HANDLING: a MISSING directory is a legitimate, cacheable
 /// state — `Ok` with the empty-entries fingerprint — matching `registry::discover`'s own
 /// `NotFound` ⇒ `Ok(empty)` treatment (an absent plugins dir is "no plugins", not a failure). Any
 /// OTHER I/O error (permission denied, a bad NFS mount, a per-entry `DirEntry`/`metadata()` read
@@ -298,12 +298,12 @@ fn plugins_dir_fingerprint(dir: &Path) -> std::io::Result<u64> {
     Ok(hasher.finish())
 }
 
-// ── `#[cfg(test)]`-only catalog-scan injection seam (round-4 audit findings 2 + 4) ─────────────────
+// ── `#[cfg(test)]`-only catalog-scan injection seam ────────────────────────────────────────────────
 // `scan_store_plugin_rows` calls `catalog_scan_test_hook!()` once per invocation. In a release build
 // (or any test that never arms it) it expands to nothing / is a no-op — the production scan carries
-// zero extra indirection. Under test it can inject a DETERMINISTIC artificial delay (finding 2: the
-// reactor-parking proof must not depend on real gzip/unpack/sig-verify throughput being consistently
-// slow across CI hardware) and/or a real panic (finding 4: exercises `store_plugin_catalog_async`'s
+// zero extra indirection. Under test it can inject a DETERMINISTIC artificial delay (so the
+// reactor-parking proof does not depend on real gzip/unpack/sig-verify throughput being consistently
+// slow across CI hardware) and/or a real panic (exercising `store_plugin_catalog_async`'s
 // `spawn_blocking` join-error fallback with genuine unwind, not by exploiting an unrelated defect).
 // Global atomics, not a thread-local: the scan runs on a `spawn_blocking` pool thread, a different OS
 // thread than the test that arms the hook, so a thread-local (this file's usual `durable.rs`-style
@@ -600,7 +600,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
         // demotion. Mirrors `build_without_hook`'s DELETE cleanup.
         next.global_hooks.retain(|n| n != name);
     }
-    // FAIL-CLOSED (B1 open-time variant): before re-resolving, actually OPEN every referenced
+    // FAIL-CLOSED (open-time variant): before re-resolving, actually OPEN every referenced
     // decision/rewrite gate so a plugin that fails to `open()` ABORTS this register instead of being
     // silently `filter_map`-dropped by the resolvers below (which would return 200 OK while the gate
     // vanished from the routing chain — a fail-open of an admission control on the live reload path).
@@ -884,7 +884,7 @@ pub(crate) fn build_with_registry(
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
     next.global_hooks = global_hooks;
-    // FAIL-CLOSED (B1 open-time variant): OPEN every referenced decision/rewrite gate before
+    // FAIL-CLOSED (open-time variant): OPEN every referenced decision/rewrite gate before
     // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being
     // silently dropped from the routing chain (fail-open). A genuinely-absent plugin stays a skip.
     if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
@@ -945,8 +945,8 @@ const MAX_INSPECT_SCHEMA_JSON_BYTES: usize = 256 * 1024;
 /// small its byte count is — a byte-size cap ALONE does not bound nesting depth.
 const MAX_INSPECT_SCHEMA_JSON_DEPTH: u32 = 64;
 
-/// `POST /plugins/inspect`'s depth/size guard (question #7's round-2 hardening correction) for an
-/// attacker-controlled JSON document, run BEFORE the text is ever handed to `serde_json::from_str`.
+/// `POST /plugins/inspect`'s depth/size guard for an attacker-controlled JSON document, run
+/// BEFORE the text is ever handed to `serde_json::from_str`.
 /// A pathological schema document is a DISTINCT attack from a pathological tarball: even a small
 /// byte count can encode unbounded nesting, which the tarball-level caps do not catch. Scans the
 /// raw text tracking `{`/`[` nesting depth, correctly skipping the contents of JSON string literals
@@ -992,11 +992,10 @@ fn schema_json_within_bounds(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `schema_url`/`schema_error` for one `GET /plugins` list row (questions #10/#11): `schema_url` is
+/// `schema_url`/`schema_error` for one `GET /plugins` list row: `schema_url` is
 /// non-null whenever the manifest declared a `settings_schema` field AT ALL — even if it fails to
 /// parse, in which case `schema_error` explains why and `schema_url` still points at `GET
-/// /plugins/{name}/schema`, which surfaces the SAME `schema_error` when followed (question #3's
-/// round-4 correction, carried onto the list row per question #11's round-8 correction: a
+/// /plugins/{name}/schema`, which surfaces the SAME `schema_error` when followed (a
 /// present-but-corrupt schema is a worse, distinct condition from "no schema declared", never
 /// folded into the same `schema_url: null` a genuinely schema-less plugin gets). Always the
 /// ADMIN-PREFIXED relative path — never an absolute URL, never a catalog URL for an unverified
@@ -1146,8 +1145,8 @@ impl AdminService {
     }
 
     /// `GET /api/v1/admin/pools?detail=true` — the WHOLE topology with live member status in ONE
-    /// call (audit #7: the summary + per-pool detail split forced an M+1 fan-out per dashboard
-    /// refresh). Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
+    /// call (the summary + per-pool detail split forced an M+1 fan-out per dashboard refresh).
+    /// Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
     pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
         let mut pools: Vec<PoolDetailView> = self
             .app
@@ -1378,11 +1377,10 @@ impl AdminService {
     /// `GET /api/v1/admin/plugins?type=auth|hooks|store|secret` — the plugin catalog for one TYPE.
     /// Read scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as
     /// `info`'s build proof), EXTERNAL plugins (registered over socket/webhook), and DYNAMIC-LIBRARY
-    /// plugins from `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk — checklist
-    /// item 5, question #9's round-4 correction: every kind this spec covers now has a real,
-    /// manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An unknown/absent `type`
-    /// is an `invalid_request` (there is no unified cross-kind list; a caller must pick one — see
-    /// question #9's round-4 correction: busbar-ui makes up to FOUR separate `GET /plugins?type=X`
+    /// plugins from `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk, so every
+    /// kind has a real, manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An
+    /// unknown/absent `type` is an `invalid_request` (there is no unified cross-kind list; a caller
+    /// must pick one — busbar-ui makes up to FOUR separate `GET /plugins?type=X`
     /// calls to build a full picture).
     pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         let mut plugins: Vec<PluginView> = Vec::new();
@@ -1426,11 +1424,11 @@ impl AdminService {
                     }
                 }
                 // External auth modules (runtime-registered over socket/webhook) — none until the
-                // auth-module registration endpoint lands (#56); the catalog shape is ready.
+                // auth-module registration endpoint lands; the catalog shape is ready.
 
-                // DYNAMIC-LIBRARY `kind: auth` plugins installed in `plugins.dir` (question #9's
-                // round-4 correction: give `auth` rows the same manifest-backed view `store` rows
-                // already get — version/publisher/interface_version/trust/schema_url/schema_error —
+                // DYNAMIC-LIBRARY `kind: auth` plugins installed in `plugins.dir`: they get the
+                // same manifest-backed view `store` rows already get —
+                // version/publisher/interface_version/trust/schema_url/schema_error —
                 // rather than leaving every dynamic auth plugin as a bare name+active `basic` row).
                 // This is the SAME directory scan `type=store`/`type=secret` already run (cached,
                 // kind-agnostic), filtered down to `kind: auth` rows here. NOTE: an entry here is
@@ -1497,10 +1495,9 @@ impl AdminService {
                         .filter(|p| p.r#type == "store"),
                 );
             }
-            // DYNAMIC-LIBRARY `kind: secret` plugins (checklist item 5: `GET /plugins?type=secret`
-            // support — previously the ONLY accepted `type` values were `auth`, `hooks`, `store`,
-            // despite secret plugins being in scope throughout this design, question #9's round-4
-            // correction). Same directory scan as `store`/`auth`, filtered to `kind: secret`. No
+            // DYNAMIC-LIBRARY `kind: secret` plugins: previously the ONLY accepted `type` values
+            // were `auth`, `hooks`, `store`, despite secret plugins being in scope throughout this
+            // design. Same directory scan as `store`/`auth`, filtered to `kind: secret`. No
             // compiled-in default (unlike `store`'s `memory`) — there is no built-in secret module
             // that needs a catalog row; `env`/`file` are handled inline by the engine, not as plugins.
             "secret" => {
@@ -1549,7 +1546,7 @@ impl AdminService {
     /// paths. The `GET /plugins?type=store` request path goes through
     /// [`Self::store_plugin_catalog_async`] instead — never this method directly.
     ///
-    /// RACE (CONCURRENCY-LOW finding): the fingerprint read and the scan are two independent,
+    /// RACE: the fingerprint read and the scan are two independent,
     /// non-atomic directory reads, so a concurrent install/remove between them could let a scan and
     /// its "before" fingerprint observe different directory states. To narrow that window this
     /// re-fingerprints the directory AFTER the scan and only memoizes when the two fingerprints
@@ -1575,10 +1572,10 @@ impl AdminService {
         };
 
         let now = crate::store::now();
-        // Bound the cache (RESOURCE-MEDIUM finding) with the same TTL+`retain()` idiom
+        // Bound the cache with the same TTL+`retain()` idiom
         // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
         // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
-        // ROUND-4 AUDIT FINDING 5: `saturating_sub` alone avoids an underflow PANIC if `inserted_at`
+        // CLOCK SKEW: `saturating_sub` alone avoids an underflow PANIC if `inserted_at`
         // is somehow in the future (a backward system-clock jump), but silently floors the computed
         // age at 0 — which means the entry looks brand-new and never ages out, quietly defeating the
         // TTL bound for exactly that entry until real time catches back up to `inserted_at`. Treating
@@ -1590,7 +1587,7 @@ impl AdminService {
             e.inserted_at <= now && now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS
         });
 
-        // ERROR-HANDLING-MEDIUM finding: a real I/O error (NOT a missing directory — see the doc
+        // A real I/O error (NOT a missing directory — see the doc
         // comment on `plugins_dir_fingerprint`) means the fingerprint cannot be trusted as a
         // freshness signal at all. Skip the cache entirely (no read, no write) and fall through to
         // the real scan, whose own `discover()` call fails the same way and surfaces the
@@ -1667,7 +1664,7 @@ impl AdminService {
         dir: &Path,
         policy: &busbar_plugin_sign::TrustPolicy,
     ) -> Vec<PluginView> {
-        // TEST-ONLY injection point (round-4 audit findings 2 + 4): expands to nothing outside
+        // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
         // `catalog_scan_test_hooks` above for what it does and why.
         catalog_scan_test_hook!(dir);
@@ -1689,8 +1686,8 @@ impl AdminService {
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
-            // `r#type` reflects the manifest's OWN `kind` (checklist item 5: `GET
-            // /plugins?type=secret` support, plus real rows for `auth`) — not hardcoded "store".
+            // `r#type` reflects the manifest's OWN `kind` (`GET /plugins?type=secret` support,
+            // plus real rows for `auth`) — not hardcoded "store".
             // `kind: hook` and a manifest-less (invalid/corrupt) row both fall back to "store",
             // preserving the exact pre-existing behavior for every case this change doesn't newly
             // cover (a broken upload of unknown kind still surfaces somewhere an operator will see
@@ -1700,7 +1697,7 @@ impl AdminService {
                 Some("auth") => "auth",
                 _ => "store",
             };
-            // `schema_url`/`schema_error` (questions #10/#11): non-null whenever the manifest
+            // `schema_url`/`schema_error`: non-null whenever the manifest
             // declared a `settings_schema` at all, even unparseable (`schema_error` then explains
             // why) — never folded into the same `null` a schema-less plugin gets. Always the
             // admin-prefixed RELATIVE path to `GET /plugins/{name}/schema`, resolved by this
@@ -1732,7 +1729,7 @@ impl AdminService {
     }
 
     /// The `GET /plugins?type=store` REQUEST-PATH entry point — the async, reactor-safe wrapper
-    /// around [`Self::store_plugin_catalog`] (CONCURRENCY-HIGH finding). The synchronous version
+    /// around [`Self::store_plugin_catalog`]. The synchronous version
     /// performs blocking filesystem I/O on EVERY call, not just a cache miss: the fingerprint
     /// read(s) alone are a `read_dir` + a `metadata()`/`modified()` per entry, and a miss adds the
     /// full `inventory_tarballs` unpack on top — none of it safe to run inline in an `async fn` on a
@@ -1750,7 +1747,7 @@ impl AdminService {
     /// `txn.read_store` closure on `spawn_blocking` (see `admin/v1/json/txn.rs`'s `apply()`), so it
     /// calls the synchronous [`Self::store_plugin_catalog`] directly.
     ///
-    /// GATE TIMEOUT (round-4 audit finding 1): acquiring [`CATALOG_SCAN_GATE`] is bounded by
+    /// GATE TIMEOUT: acquiring [`CATALOG_SCAN_GATE`] is bounded by
     /// [`CATALOG_SCAN_GATE_WAIT`] — see that constant's doc comment for why an unbounded wait here
     /// would be a permanent wedge, not a self-healing one, on an endpoint this rate limiter never
     /// meters. A caller that cannot even START the scan within the bound gets a clear
@@ -1860,7 +1857,7 @@ impl AdminService {
         };
 
         // ── 4. CONFLICT vs the already-installed loadable set ──
-        // M7 (fail-open): a corrupt tarball already in the plugins dir makes scan_and_validate Err.
+        // FAIL-OPEN GAP: a corrupt tarball already in the plugins dir makes scan_and_validate Err.
         // The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Propagate
         // it as a Conflict so we never admit a plugin whose conflict status we could not determine.
         let reg = busbar_plugin_loader::scan_and_validate(&self.app.plugins_dir, &policy).map_err(
@@ -1880,7 +1877,7 @@ impl AdminService {
                 || existing.manifest.alias == manifest.alias
                 || existing.manifest.name == manifest.alias
                 || existing.manifest.alias == manifest.name;
-            // H2 (bricks next boot): the old gate exempted a SAME-NAME upload under a DIFFERENT
+            // BRICKS THE NEXT BOOT: the old gate exempted a SAME-NAME upload under a DIFFERENT
             // filename (`&& existing.manifest.name != manifest.name`). But boot's phase-3
             // conflicts() hard-rejects two loadable plugins with the same name (different files) -
             // admitting one BRICKS the next restart. Reject it here (409) so we never publish a
@@ -1935,9 +1932,9 @@ impl AdminService {
     }
 
     /// `POST /api/v1/admin/plugins/inspect` — a STATELESS, `read-only`-scope PREVIEW of a
-    /// candidate plugin tarball (plugin-settings-schema-SPEC.md checklist item 4, consumer question
-    /// #7): verify its signature, parse its manifest, and return the SAME response shape `GET
-    /// /plugins/{name}/schema` already carries (`schema`/`schema_error`/`trust`/`source`, plus
+    /// candidate plugin tarball: verify its signature, parse its manifest, and return the SAME
+    /// response shape `GET /plugins/{name}/schema` already carries
+    /// (`schema`/`schema_error`/`trust`/`source`, plus
     /// `kind`/`restart_required_default` — see [`Self::install_store_plugin`]'s sibling handler for
     /// the shape those two carry), PLUS `name`/`version` so a caller can identify the candidate
     /// before ever committing to `POST /plugins`. Touches NOTHING: no write to `plugins.dir`, no
@@ -1945,9 +1942,9 @@ impl AdminService {
     /// currently loaded (unlike [`Self::install_store_plugin`], steps 4/5 of that pipeline do not
     /// exist here at all). An untrusted/unverified/rejected candidate is reported, not refused — the
     /// whole point is letting an operator see what a not-yet-trusted plugin WOULD need without ever
-    /// executing it (gap #2, "untrusted-render hardening").
+    /// executing it ("untrusted-render hardening").
     ///
-    /// HARDENING (question #7's round-2/4 corrections — this body is an attacker-controlled,
+    /// HARDENING (this body is an attacker-controlled,
     /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
     /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
     /// checked, so the trust check happens strictly after the dangerous part):
@@ -2360,7 +2357,7 @@ impl AdminService {
                 usage,
             })
             .collect();
-        // Bound the response (no memory/latency cliff at fleet scale — 3rd-party review R2 #1):
+        // Bound the response (no memory/latency cliff at fleet scale):
         // keep the TOP spenders (the rows a FinOps consumer actually wants first), ordered
         // spend-desc then id for determinism, and SAY when the cap fired.
         const BY_KEY_CAP: usize = 1000;
@@ -2695,7 +2692,7 @@ mod tests {
         );
     }
 
-    // ── plugin admin surface (#13, tarball world) ───────────────────────────────────────────────
+    // ── plugin admin surface (tarball world) ────────────────────────────────────────────────────
 
     use busbar_plugin_sign::{sign, Manifest, SigningKey};
 
@@ -2770,7 +2767,7 @@ mod tests {
         cfg
     }
 
-    // ── POST /plugins/inspect (checklist item 4, question #7) ──────────────────────────────────
+    // ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────
 
     /// A trusted, unsigned-under-`allow_unsigned` candidate previews cleanly: the SAME response
     /// shape `GET /plugins/{name}/schema` carries, PLUS `name`/`version`/`kind` — and NOTHING is
@@ -2807,7 +2804,7 @@ mod tests {
             v["schema"].is_object(),
             "schema round-trips as real JSON: {v}"
         );
-        // `secret` kind defaults to restart-required (question #14).
+        // `secret` kind defaults to restart-required.
         assert_eq!(v["restart_required_default"], true);
 
         // NOTHING was written — inspect never installs, never touches `plugins.dir`.
@@ -2820,7 +2817,7 @@ mod tests {
 
     /// An UNTRUSTED (unsigned, strict posture) candidate is REPORTED as `trust: "rejected"`, not
     /// refused with an error — the whole point of inspect is previewing what a not-yet-trusted
-    /// plugin would need without ever installing or executing it (gap #2).
+    /// plugin would need without ever installing or executing it.
     #[test]
     fn inspect_reports_rejected_trust_rather_than_erroring() {
         let dir = tmp_plugins_dir("inspect-rejected");
@@ -2849,9 +2846,8 @@ mod tests {
         ));
     }
 
-    /// A decoded tarball over `MAX_TARBALL_FILE_BYTES` is refused BEFORE `unpack` ever runs
-    /// (question #7's round-2 hardening correction: a hard cap on the raw upload, checked before
-    /// touching the decoder).
+    /// A decoded tarball over `MAX_TARBALL_FILE_BYTES` is refused BEFORE `unpack` ever runs — a
+    /// hard cap on the raw upload, checked before touching the decoder.
     #[test]
     fn inspect_rejects_oversized_tarball_before_unpacking() {
         let dir = tmp_plugins_dir("inspect-oversized");
@@ -2866,8 +2862,8 @@ mod tests {
 
     /// A manifest whose `settings_schema` nests far deeper than the depth cap is refused as a
     /// `schema_error` on the response (never a hard error, and never a parser stack-overflow risk —
-    /// the depth guard runs BEFORE `serde_json::from_str` ever sees the text). Question #7's round-2
-    /// correction: a pathological SCHEMA document is a distinct attack from a pathological tarball.
+    /// the depth guard runs BEFORE `serde_json::from_str` ever sees the text). A pathological
+    /// SCHEMA document is a distinct attack from a pathological tarball.
     #[test]
     fn inspect_bounds_pathological_schema_nesting_depth() {
         let dir = tmp_plugins_dir("inspect-depth-bomb");
@@ -3010,7 +3006,7 @@ mod tests {
         ));
     }
 
-    /// The amplification finding this test guards against: `store_plugin_catalog` (behind `GET
+    /// The amplification this test guards against: `store_plugin_catalog` (behind `GET
     /// /plugins?type=store`) used to fully re-read and re-unpack EVERY tarball in the plugins
     /// directory on EVERY call, and that GET is deliberately unmetered by the admin rate limiter
     /// (reads never reach `auth::classify_for_rate_limit`) — so nothing bounded how often a caller
@@ -3060,11 +3056,10 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR CONCURRENCY-HIGH: `list_plugins("store")`'s catalog read — the fingerprint
-    /// I/O AND, on a cold cache, the full tarball scan — must not park the single worker of a
-    /// `worker_threads = 1` multi-thread runtime. Mirrors `admin::audit`'s
-    /// `valve_write_through_does_not_park_the_reactor` proof shape, with one deliberate difference
-    /// (round-4 audit finding 2): that precedent proves its point with a DETERMINISTIC artificial
+    /// `list_plugins("store")`'s catalog read — the fingerprint I/O AND, on a cold cache, the full
+    /// tarball scan — must not park the single worker of a `worker_threads = 1` multi-thread
+    /// runtime. Mirrors `admin::audit`'s `valve_write_through_does_not_park_the_reactor` proof
+    /// shape, with one deliberate difference: that precedent proves its point with a DETERMINISTIC
     /// delay (`SlowAuditStore` sleeps a fixed 500ms), not real I/O volume — this test originally
     /// relied on 2000 real signed tarballs being "genuinely slow… on ordinary hardware", but
     /// inline-vs-offloaded changes only WHETHER the scan blocks other work, never how long the scan
@@ -3120,7 +3115,7 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 4: `store_plugin_catalog_async`'s `match` on
+    /// `store_plugin_catalog_async`'s `match` on
     /// `spawn_blocking`'s result has an `Err(join_err)` arm for when the CLOSURE ITSELF PANICS (not
     /// just returns an error) — it logs and falls back to the compiled-in `memory`-only row rather
     /// than propagating the panic to the caller. That arm was untested: nothing in the suite ever
@@ -3155,9 +3150,9 @@ mod tests {
         assert_eq!(page.items[0].loader, "compiled-in");
     }
 
-    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 1: a caller that cannot even ACQUIRE
-    /// `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (simulating the scenario the finding
-    /// describes — a scan holding the gate that never returns, e.g. a stale/hung `plugins_dir`
+    /// A caller that cannot even ACQUIRE
+    /// `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (a scan holding the gate that never
+    /// returns, e.g. a stale/hung `plugins_dir`
     /// mount) must be answered with a clear, retryable error rather than hang forever. Runs on
     /// PAUSED virtual time (`start_paused = true` + `tokio::time::advance`) so the test proves the
     /// bound without a real multi-second sleep.
@@ -3185,7 +3180,7 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR THE SINGLE-FLIGHT HALF OF CONCURRENCY-HIGH: N concurrent
+    /// The single-flight bound: N concurrent
     /// `list_plugins("store")` callers that ALL miss the cache at the same instant (the very first
     /// reads against a freshly-built `App`, before any entry exists — e.g. right after boot or a
     /// config reload) must cost exactly ONE real `inventory_tarballs` scan, not one per caller. Every
@@ -3230,7 +3225,7 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR RESOURCE-MEDIUM: `CATALOG_CACHE` has no eviction of its own beyond the
+    /// `CATALOG_CACHE` has no eviction of its own beyond the
     /// fingerprint/trust `key` match, so an entry for a `plugins_dir` the process no longer serves
     /// would sit in the map forever. Mirrors how `admin/mod.rs` proves `idempotency_cache`'s own
     /// TTL+`retain()` bound (reaching into the cache directly — there is no public "age an entry"
@@ -3267,7 +3262,7 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 5: a bare `now.saturating_sub(inserted_at)` avoids an
+    /// A bare `now.saturating_sub(inserted_at)` avoids an
     /// underflow PANIC when `inserted_at` is in the future (a backward system-clock jump) but
     /// silently floors the computed age at 0 — the entry then looks brand-new and never ages out
     /// until real time catches back up to `inserted_at`, quietly defeating the TTL bound for that
@@ -3302,7 +3297,7 @@ mod tests {
         );
     }
 
-    /// THE RED PROOF FOR ERROR-HANDLING-MEDIUM: the staleness scenario the finding describes.
+    /// The staleness scenario this guards against.
     /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
     /// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
     /// denied) with its CONTENTS unchanged — the exact case the old `unwrap_or_default()` collapsed
@@ -3328,7 +3323,7 @@ mod tests {
             "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
         );
 
-        // ROUND-4 AUDIT FINDING 3: restoring permissions with a bare `set_permissions` call at the
+        // Restoring permissions with a bare `set_permissions` call at the
         // END of the test left a window — the two `store_plugin_catalog()` reads below AND the
         // `read_dir` probe above all run un-guarded, and a panic (e.g. an assertion failure inside
         // `store_plugin_catalog`, or any future change to it) during that window would leave the
@@ -3637,7 +3632,7 @@ mod tests {
             .expect("same-name overwrite is a legal upgrade");
     }
 
-    // ---- groups read surface (Phase 1, task #100) ----
+    // ---- groups read surface ----
 
     use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
     use crate::config::{GroupCfg, LimitCfg};
@@ -3904,7 +3899,7 @@ mod tests {
         assert!(matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")));
     }
 
-    /// AUDIT (LOW): deleting a group that virtual keys still charge through is a 409 conflict — an
+    /// Deleting a group that virtual keys still charge through is a 409 conflict — an
     /// orphaned `key.group` would fail that key CLOSED at every admission, so the delete is blocked
     /// (re-bind or delete the keys first) rather than silently orphaning them.
     #[test]
@@ -4197,12 +4192,10 @@ mod tests {
         }
     }
 
-    /// THE RED PROOF: today, a store failure inside `get_usage`'s `spawn_blocking` is destroyed by
-    /// `map_err(|_| ())` and the comment claiming "details logged upstream in the store layer" is
-    /// false — nothing logs. Assert BOTH that the wire contract is unchanged (still
-    /// `AdminError::Internal`, unchanged before and after) AND that the real error now reaches an
-    /// `error!` log — that second half is what is red today: the capture is empty even though (a)
-    /// already passes, because the fix is purely observability.
+    /// A store failure inside `get_usage`'s `spawn_blocking` must reach an `error!` log while the
+    /// wire contract stays unchanged (still `AdminError::Internal`). An earlier version destroyed
+    /// the error with `map_err(|_| ())` under a comment claiming "details logged upstream in the
+    /// store layer" — nothing logged them, so the cause of a 500 was unrecoverable.
     #[test]
     fn usage_read_store_failure_logs_the_real_error() {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -4273,11 +4266,11 @@ mod tests {
     }
 
     /// Each of the three path-escape checks (`/`, `\`, `..`) independently rejects a filename.
-    /// CORRECTED (adversarial review found the original rationale wrong): `../evil.tar.gz` and
-    /// `sub/evil.tar.gz` are ALSO caught by the belt-and-braces single-normal-component check a few
-    /// lines below regardless of `||` vs `&&` here — `Path::components()` on either shape never
-    /// yields exactly one `Normal` component, so those two cases can't actually distinguish the
-    /// mutant on their own. Only `sub\evil.tar.gz` (backslash) does: on Unix, `\` is not a path
+    /// SUBTLETY: `../evil.tar.gz` and `sub/evil.tar.gz` are ALSO caught by the belt-and-braces
+    /// single-normal-component check a few lines below regardless of `||` vs `&&` here —
+    /// `Path::components()` on either shape never yields exactly one `Normal` component, so those
+    /// two cases can't actually distinguish the mutant on their own. Only `sub\evil.tar.gz`
+    /// (backslash) does: on Unix, `\` is not a path
     /// separator, so `Path::components()` treats the whole string as ONE normal component and the
     /// belt-and-braces check passes it through — making `contains('\\')` the ONLY thing standing
     /// between it and acceptance. (On Windows, `\` IS a separator, so the belt-and-braces check

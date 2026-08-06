@@ -9,7 +9,7 @@
 //! contract — not the engine — owns them. No I/O, no engine state: pure data.
 
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
-/// admission-topology substrate (see `generic-admission-topology-SPEC.md`): everywhere busbar used
+/// admission-topology substrate: everywhere busbar used
 /// to name "which pool" with a bare `String`, it now names "which scope, of what kind" with this
 /// pair. `kind` is a plain `String`, deliberately NEVER a closed enum — a closed set here would
 /// repeat the exact mistake this type exists to fix one level up (a hardcoded field per new thing
@@ -36,11 +36,11 @@ impl ScopeRef {
 
 /// The wire (de)serializer for [`VirtualKey::allowed_scopes`], keeping the JSON/YAML shape
 /// BYTE-IDENTICAL to the pre-generalization `allowed_pools: Option<Vec<String>>` for the
-/// pool-only case (gap #1 of the spec): on the wire this is still a plain `allowed_pools` array of
+/// pool-only case: on the wire this is still a plain `allowed_pools` array of
 /// bare strings (or absent/null), never a `{kind, value}` object. The in-memory
 /// `Option<Vec<ScopeRef>>` is translated transparently at the serde boundary. Every entry that
 /// reaches this field is `kind: "pool"` by construction (a future second kind gets its OWN named
-/// wire field, e.g. `allowed_mcp_servers`, per the spec — never mixed into this one), so the
+/// wire field, e.g. `allowed_mcp_servers` — never mixed into this one), so the
 /// translation is a straight `ScopeRef.value` <-> bare-string mapping in both directions.
 mod allowed_scopes_wire {
     use super::ScopeRef;
@@ -124,20 +124,17 @@ impl VirtualKey {
     /// - an explicit list is EXHAUSTIVE ACROSS ALL KINDS — **not** "exhaustive per kind".
     /// - an explicit EMPTY list is NO scopes at all (never "all").
     ///
-    /// # FREEZE BLOCKER A2: CROSS-KIND SEMANTICS ARE FAIL-CLOSED, AND FROZEN
+    /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
     /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.6), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///
-    /// This is the fail-CLOSED reading, and it is the one the code has always implemented; what was
-    /// wrong was this doc comment, which used to say the list is "exhaustive PER KIND". That phrasing
-    /// describes the fail-OPEN behavior (unlisted kind ⇒ unconstrained ⇒ allowed) and would have
-    /// licensed someone to "fix" the code to match it — turning every existing pool-scoped key into a
-    /// wildcard over a brand-new kind, silently, on upgrade. Corrected and pinned here (see
-    /// `scope_allowed_cross_kind_is_fail_closed`) because the semantics ship in 1.5.3 and freeze with
-    /// it: only an OMITTED list is a wildcard.
+    /// The alternative reading — an unlisted kind is "unconstrained", therefore allowed — is
+    /// fail-OPEN: it would turn every existing pool-scoped key into a wildcard over a brand-new
+    /// kind, silently, on upgrade. Pinned by `scope_allowed_cross_kind_is_fail_closed` because
+    /// these semantics ship in 1.5.3 and freeze with it: only an OMITTED list is a wildcard.
     ///
     /// The generalized replacement for the pool-only `pool_allowed` — every existing call site
     /// checking pool admission calls this as `scope_allowed("pool", pool_name)`, which is the exact
@@ -214,9 +211,9 @@ pub enum SecretForm {
 }
 
 /// A credential verified by ROW LOOKUP from a wire-supplied public identifier — the generalized
-/// replacement for the AWS-specific `AwsCredential`/`aws_credentials` (found, mid-audit, to be
-/// vendor-shaped rather than designed: it only ever held SigV4 credentials under an AWS-specific
-/// name). A kind belongs here ONLY if its verification path resolves a row FROM a wire-supplied
+/// replacement for the AWS-specific `AwsCredential`/`aws_credentials`, which was vendor-shaped
+/// rather than designed: it only ever held SigV4 credentials under an AWS-specific name. A kind
+/// belongs here ONLY if its verification path resolves a row FROM a wire-supplied
 /// public identifier — bearer/signed-token auth is deliberately NEVER represented here:
 /// `GovState::verify_token` never looks up a row, it only compares [`VirtualKey::generation_hash`]
 /// (a post-resolution fingerprint) against the token's own `generation` claim. Today's only `kind`
@@ -494,8 +491,7 @@ pub struct MeteringDelta {
     pub tokens_cache_read: u64,
     /// Renamed from `tokens_cache_creation`: the identical concept as `TierTokens::cache_write`
     /// above, just named differently because this type was added later without matching its
-    /// sibling — a naming-drift finding from the credentials-generalization audit, fixed here since
-    /// everything on this seam is still unreleased.
+    /// sibling. Renamed to match while everything on this seam is still unreleased.
     pub tokens_cache_write: u64,
     /// The number of completed responses this delta accumulates. On the wire (not derivable by the
     /// store) because a delta produced by a write-behind flush can coalesce more than one response
@@ -936,15 +932,13 @@ mod tests {
         );
     }
 
-    /// FREEZE BLOCKER A2 — CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
+    /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
     ///
     /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
     /// matters because 1.5.4 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
-    /// (an unlisted kind is "unconstrained", which is what this method's doc comment used to imply by
-    /// calling the list "exhaustive PER KIND") every already-issued pool-scoped key would silently
+    /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
     /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
-    /// version bump. The code has always been fail-closed; the doc comment was wrong, and both are
-    /// fixed and pinned here.
+    /// version bump.
     ///
     /// Only an OMITTED (`None`) list is ever a wildcard. An explicit list — even one that mentions no
     /// entry of the queried kind at all — is exhaustive ACROSS ALL KINDS.
@@ -958,7 +952,7 @@ mod tests {
         for future_kind in ["mcp_server", "agent", "some_kind_not_invented_yet"] {
             assert!(
                 !k.scope_allowed(future_kind, "fast"),
-                "a pool-only grant must grant NOTHING for the future kind '{future_kind}' —                  the unlisted-kind case is FAIL-CLOSED and frozen (A2)"
+                "a pool-only grant must grant NOTHING for the future kind '{future_kind}' — the unlisted-kind case is FAIL-CLOSED and frozen"
             );
             assert!(!k.scope_allowed(future_kind, "anything-else"));
         }
@@ -984,7 +978,7 @@ mod tests {
 
     /// A DIFFERENT kind never matches a `pool`-kind grant, and vice versa - `ScopeRef` is
     /// kind-agnostic and `scope_allowed` is a strict `(kind, value)` membership test, not a bare
-    /// value match (gap #4: kind stays a plain string, never privileging "pool").
+    /// value match: kind stays a plain string, never privileging "pool".
     #[test]
     fn scope_allowed_is_kind_specific() {
         let mut k = sample_key();
@@ -998,7 +992,7 @@ mod tests {
 
     /// THE contract test: a config using only `allowed_pools` (bare strings, no `kind` wrapper)
     /// produces a BYTE-IDENTICAL wire shape before and after the `ScopeRef` generalization - the
-    /// entire point of the wire-compat design (spec gap #1). The in-memory representation is
+    /// entire point of the wire-compat design. The in-memory representation is
     /// `allowed_scopes: Vec<ScopeRef>`, but the JSON on the wire is still the plain
     /// `"allowed_pools":["fast","slow"]` array of bare strings a pre-generalization admin API
     /// client already knows how to read and write.
@@ -1050,8 +1044,8 @@ mod tests {
 
     /// The redacting `Debug` - the guard for the structured-logging surface, since
     /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
-    /// equivalent `generation_hash` / `secret_access_key`. This is the leak the finding is about: any place a
-    /// record reaches a log must show presence only.
+    /// equivalent `generation_hash` / `secret_access_key`. Any place a record reaches a log must
+    /// show presence only.
     #[test]
     fn debug_redacts_secret_equivalents() {
         let key = sample_key();

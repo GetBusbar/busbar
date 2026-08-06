@@ -627,7 +627,7 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
     );
 }
 
-/// CLASS INVARIANT (round-6 #04): REWRITE admission goes through the SAME belt-and-suspenders meet
+/// CLASS INVARIANT: REWRITE admission goes through the SAME belt-and-suspenders meet
 /// as the read projections — `hooks::effective_access`. A `prompt: rw` OPERATOR grant is not
 /// sufficient on its own; the plugin's SIGNED manifest must also declare `needs: { prompt: rw }`.
 ///
@@ -696,7 +696,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
     }
 }
 
-/// HIGH (round-8 codeaudit): a `kind: gate` hook whose OPERATOR grant is `prompt: rw` but whose
+/// A `kind: gate` hook whose OPERATOR grant is `prompt: rw` but whose
 /// SIGNED MANIFEST declares less (`ro`/absent `needs.prompt`) is excluded from BOTH admission chains
 /// by construction — `resolve_pool_gates`/`resolve_gate_hooks` exclude it from the decision chain on
 /// the raw grant (deliberate, see `resolve_pool_gates`'s doc comment); `resolve_pool_rewrites`/
@@ -2007,7 +2007,7 @@ async fn dlopen_configure_nack_does_not_commit() {
     );
 }
 
-// ── offload_bounded (class-9 §1.5/§1.6: bound the transport resolve, name a swallowed JoinError) ──
+// ── offload_bounded (bound the transport resolve, name a swallowed JoinError) ────────────────────
 
 /// UNIT TEST of the new bound (NOT a red proof of the old unbounded `.await` — there is no fixture
 /// that makes a real `dlopen`/constructor hang, so the "no timeout today" claim is established by
@@ -2040,7 +2040,7 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 
 /// UNIT TEST of the new bound's panic arm — but WRITABLE NOW, unlike the timeout arm: the closure
 /// itself can panic without needing a real plugin. Pins the fix for the swallowed `JoinError`
-/// (§1.6): a panicking blocking task must not unwind the caller, and must be named in a captured
+/// a panicking blocking task must not unwind the caller, and must be named in a captured
 /// warn distinctly from an ordinary "no resolvable transport" `None`.
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
@@ -2161,8 +2161,8 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
 }
 
-/// MED-1 (round 4): `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
-/// The round-3 drift fix compared against the RESOLVED desired bag, which reaches
+/// `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
+/// The earlier drift check compared against the RESOLVED desired bag, which reaches
 /// `SecretResolver::resolve` — a SYNCHRONOUS FFI call into a `kind: secret` plugin for any
 /// non-built-in module — inline on a Tokio worker with no `spawn_blocking` and no cache, plus a
 /// `tracing::info!` naming the setting and its reference on EVERY call. A dashboard polling every 5s

@@ -26,8 +26,7 @@ impl ProtocolWriter for CohereWriter {
                 } else {
                     // A non-text system block (image/thinking/tool/…) has no Cohere v2 analog — the
                     // system prompt carries text only. WARN on the drop so the loss is operator-
-                    // visible in observability, mirroring the Gemini writer's warn for the same case
-                    // (the Gemini writer's comment even claims cohere already warns). (audit c2r3.)
+                    // visible in observability, mirroring the Gemini writer's warn for the same case.
                     tracing::warn!(
                         "dropping non-text system block on Cohere egress: Cohere v2 system prompt carries text only"
                     );
@@ -208,7 +207,7 @@ impl ProtocolWriter for CohereWriter {
                     // already carries the correct user-message shape (bare string for a single text
                     // block, a text/image parts array otherwise); emit it only when there IS such
                     // content (a pure tool_result user turn has `content_val == None` and adds no
-                    // user message, matching the original round-1 behavior).
+                    // user message).
                     if let Some(user_content) = content_val {
                         let mut user_obj = serde_json::Map::new();
                         user_obj.insert("role".to_string(), serde_json::json!("user"));
@@ -253,7 +252,7 @@ impl ProtocolWriter for CohereWriter {
                     {
                         // Emit a raw Value::String (unparseable/streaming-partial args) verbatim rather
                         // than JSON-encoding it a second time (double-encoding) — same as the OpenAI/
-                        // Responses writers. (find-1-solve-6: same bug, Cohere sibling.)
+                        // Responses writers.
                         let args_str = crate::proto::openai_chat::tool_arguments_to_string(input);
                         tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                     }
@@ -305,7 +304,7 @@ impl ProtocolWriter for CohereWriter {
         // load-bearing half of the request. What is lost is the *target* (the specific tool name):
         // Cohere may pick any tool, not the one the caller named. This is the ONE documented
         // tool_choice degradation in the codebase — lossy-by-target, intentional, and unavoidable
-        // until/unless the Cohere v2 API gains a named-tool choice (PF-H1).
+        // until/unless the Cohere v2 API gains a named-tool choice.
         // Cohere v2 documents `tool_choice` as only meaningful alongside `tools` (there is nothing
         // to force/forbid otherwise) — the same shape as every sibling protocol's guard. The
         // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
@@ -330,7 +329,7 @@ impl ProtocolWriter for CohereWriter {
                 }
             }
         }
-        // class-6 6c1 egress: Cohere v2 `/v2/chat` models no parallelism control. `is_some()` gates
+        // Egress: Cohere v2 `/v2/chat` models no parallelism control. `is_some()` gates
         // this to requests that actually carried the flag (owner decision 4: no per-request noise).
         if req.parallel_tool_calls.is_some() {
             tracing::warn!(
@@ -343,7 +342,7 @@ impl ProtocolWriter for CohereWriter {
             out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
         }
         if let Some(temperature) = req.temperature {
-            // Clamp to Cohere's native [0.0, 1.0] (PF-M1) — see `clamp_temperature_for_cohere`.
+            // Clamp to Cohere's native [0.0, 1.0] — see `clamp_temperature_for_cohere`.
             // NON-SILENT clamp (the M2 fidelity fix): the writer previously clamped SILENTLY, exactly
             // the lossy mutation busbar exists to avoid. We keep the clamp (Cohere 400s on >1.0) but
             // emit a `warn!` whenever it ACTUALLY changes the value so an operator can detect the
@@ -376,7 +375,7 @@ impl ProtocolWriter for CohereWriter {
                 serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Cohere")),
             );
         }
-        // Phase 0 sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
+        // Sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
         // before the `extra` overlay (the reader pulled these keys out of extra, so there is no
         // double-emit on a same-protocol passthrough).
         if let Some(frequency_penalty) = req.frequency_penalty {
@@ -697,7 +696,6 @@ impl ProtocolWriter for CohereWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw Value::String (avoid double-encoding), same as OpenAI/Responses.
-                    // (find-1-solve-6: same bug, Cohere sibling.)
                     let args_str = crate::proto::openai_chat::tool_arguments_to_string(input);
                     // Accumulate every tool call. Inserting per-iteration would overwrite the
                     // key and silently drop all but the last call on parallel tool use.

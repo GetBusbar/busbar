@@ -4,7 +4,7 @@
 //! THE NAMED-DEFINITION MAP SECTIONS — one description of the 1.5.3 universal config pattern.
 //!
 //! 1.5.3 froze the config grammar into ONE shape: every plugin-instance kind is a top-level NAMED
-//! DEFINITION map (`name → {module, settings, …}`) referenced by bare name (audit-decisions §0). This
+//! DEFINITION map (`name → {module, settings, …}`) referenced by bare name. This
 //! module is that shape expressed ONCE as data — which sections exist, where each lives on a
 //! [`DeployCfg`], how a raw definition document is parsed into its typed config, and which other
 //! config sites reference a name.

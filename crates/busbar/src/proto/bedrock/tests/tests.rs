@@ -385,7 +385,7 @@ fn test_roundtrip() {
     // Converse body read into the IR and written back must reproduce the original body exactly.
     // (Note: an IR->WIRE->IR round-trip is intentionally NOT idempotent for the typed
     // `inferenceConfig` sub-fields — the reader now captures the whole raw `inferenceConfig` into
-    // `extra` so unmodeled sub-fields survive passthrough (finding-2 fix), so reading a written
+    // `extra` so unmodeled sub-fields survive passthrough, so reading a written
     // body re-populates `extra.inferenceConfig`. The contract that matters is the wire round-trip
     // below.)
     let wire = serde_json::json!({
@@ -543,8 +543,8 @@ fn test_stream_decode_sequence() {
     // MessageDelta{stop_reason, usage} (from `metadata`, which BUFFERS the stop_reason from the
     // preceding `messageStop` frame), and the terminal MessageStop (also from `metadata`, emitted
     // AFTER the delta). The combined delta precedes the terminal stop so a non-eventstream ingress
-    // (e.g. Anthropic) writes `message_delta` then `message_stop` — the native order (finding:
-    // delta-before-stop). Previously the order was stop-then-delta (MessageStop on `messageStop`,
+    // (e.g. Anthropic) writes `message_delta` then `message_stop` — the native
+    // delta-before-stop order. Previously it was stop-then-delta (MessageStop on `messageStop`,
     // MessageDelta on `metadata`), which made the Anthropic ingress emit `message_stop` first.
     assert_eq!(events.len(), 7);
 
@@ -595,8 +595,8 @@ fn test_stream_decode_sequence() {
 
     // The `metadata` event emits ONE combined MessageDelta carrying BOTH the buffered stop_reason
     // (from the preceding `messageStop` frame) AND the real usage — a single
-    // `message_delta`-equivalent event, matching what a native non-Bedrock stream emits (finding:
-    // combined MessageDelta). It precedes the terminal MessageStop so the ingress writer emits the
+    // `message_delta`-equivalent event, matching what a native non-Bedrock stream emits. It
+    // precedes the terminal MessageStop so the ingress writer emits the
     // delta before the stop.
     match &events[5] {
         IrStreamEvent::MessageDelta {
@@ -669,7 +669,7 @@ fn test_write_response_event() {
     }
 }
 
-// --- Regression tests for the 1.0 hardening pass -------------------------------------------
+// --- 1.0 hardening regression tests --------------------------------------------------------
 
 /// Regression: a malformed lane credential (access key id containing a control char that
 /// `HeaderValue::from_str` rejects) must NOT panic the request-handling task. It takes the
@@ -686,7 +686,7 @@ fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
     };
     // CR/LF embedded in the access key id → invalid Authorization header value
     // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
-    // header-injection / misconfiguration vector the finding describes.
+    // header-injection / misconfiguration vector this guards.
     let headers = crate::proto::bedrock::sigv4_sign_headers("AKID\r\nINJECT:SECRET", &ctx);
     assert!(
         headers.is_empty(),
@@ -764,7 +764,7 @@ fn test_extract_error_non_json_body() {
 /// A ConverseStream that ends after `messageStop` WITHOUT a trailing `metadata` event
 /// (malformed/truncated upstream) emits NO terminal MessageStop and NO combined MessageDelta:
 /// both are deferred to the `metadata` frame so the combined `MessageDelta{stop_reason, usage}`
-/// can precede the terminal `MessageStop` in IR order (Finding: delta-before-stop, so a
+/// can precede the terminal `MessageStop` in IR order (delta-before-stop, so a
 /// non-eventstream ingress writes `message_delta` then `message_stop` — the native order). The
 /// stop_reason from `messageStop` is buffered but, absent the `metadata` it pairs with, is
 /// dropped on truncation — exactly as token usage was already dropped on a metadata-less stream.
@@ -986,8 +986,6 @@ fn test_synth_response_id_unique_and_nonempty() {
     assert!(u64::from_str_radix(lhs, 16).is_ok());
     assert!(u64::from_str_radix(rhs, 16).is_ok());
 }
-
-// --- Round 2 regression tests --------------------------------------------------------------
 
 /// A stream MessageDelta with `stop_reason = None` (the usage-only trailing
 /// delta the reader emits from the Bedrock `metadata` event, or a cross-protocol egress's usage
@@ -1429,8 +1427,6 @@ fn test_write_response_event_error_names_real_exception() {
     );
 }
 
-// --- Round 3 regression tests --------------------------------------------------------------
-
 /// Unmodeled top-level request fields must be collected into `extra` so a
 /// same-protocol Bedrock->Bedrock passthrough re-emits them faithfully (via `write_request`'s
 /// extra-merge). Previously `extra` was built empty and every native Converse field this reader
@@ -1440,7 +1436,7 @@ fn test_write_response_event_error_names_real_exception() {
 /// leak into `extra` (they are re-serialised from the structured IR; a double-emit / echoed
 /// `stream` would be a tell). `inferenceConfig` is the exception: it is only PARTIALLY modeled
 /// (just `maxTokens`/`temperature`), so the WHOLE raw object is now captured into `extra` to
-/// preserve its unmodeled sub-fields (`stopSequences`/`topP`/`topK`/...) — see the finding-2 fix.
+/// preserve its unmodeled sub-fields (`stopSequences`/`topP`/`topK`/...).
 #[test]
 fn test_read_request_collects_unmodeled_fields_into_extra() {
     let reader = BedrockReader;
@@ -1475,7 +1471,7 @@ fn test_read_request_collects_unmodeled_fields_into_extra() {
     );
 
     // `inferenceConfig` IS now captured verbatim into `extra` (it is only partially modeled, so
-    // its raw object preserves unmodeled sub-fields for passthrough; finding-2 fix).
+    // its raw object preserves unmodeled sub-fields for passthrough).
     assert_eq!(
         ir.extra.get("inferenceConfig"),
         Some(&serde_json::json!({"maxTokens": 10})),
@@ -2065,8 +2061,8 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
 /// emitting arm (Text, ToolUse, Thinking) pushes its own start, delta(s) and stop TOGETHER inside
 /// one match arm, so start/stop balance per index already held even when the index numbering was
 /// wrong. This does not prove contiguity (see
-/// `eventstream_content_block_index_is_contiguous_when_a_block_is_skipped` for that, which IS a RED
-/// proof) — it only proves the fix does not introduce an orphaned start or stop.
+/// `eventstream_content_block_index_is_contiguous_when_a_block_is_skipped` for that) — it only
+/// proves the fix does not introduce an orphaned start or stop.
 #[test]
 fn eventstream_every_content_block_start_has_exactly_one_stop() {
     let resp = crate::ir::IrResponse {
@@ -2268,7 +2264,7 @@ fn test_write_response_projects_image_block() {
 /// ValidationException. `write_request` already guards every turn; this mirrors that guard with a
 /// minimal placeholder text block.
 ///
-/// NOTE: a `Thinking` block is NO LONGER non-representable in a response (R25 MED #3 re-emits it
+/// NOTE: a `Thinking` block is NO LONGER non-representable in a response (the writer re-emits it
 /// as a native `reasoningContent` block), so it cannot be part of an "all non-representable" case;
 /// the lone `ToolResult` (genuinely a user-turn block) is the only remaining no-op here.
 #[test]
@@ -2316,8 +2312,6 @@ fn test_write_response_empty_content_emits_placeholder() {
         "placeholder is a minimal empty-text block (mirrors write_request): {body}"
     );
 }
-
-// --- Round 5 regression tests --------------------------------------------------------------
 
 /// An `inferenceConfig` carrying sub-fields this reader
 /// does NOT type (`stopSequences`, `topP`, `topK`, future AWS additions) must survive a
@@ -2380,7 +2374,7 @@ fn test_inference_config_passthrough_preserves_unmodeled_subfields() {
     assert_eq!(out, wire, "full body must round-trip byte-identically");
 }
 
-/// PF-H1: `top_k` (a first-class IR field) must reach a Bedrock egress via
+/// `top_k` (a first-class IR field) must reach a Bedrock egress via
 /// `additionalModelRequestFields.top_k`. A cross-protocol request (e.g. Anthropic) carries `top_k`
 /// in the IR with an empty `extra`; the Bedrock writer must emit it instead of dropping it. And a
 /// native Bedrock request that pins `top_k` in `additionalModelRequestFields` must round-trip
@@ -2832,7 +2826,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
 /// Bedrock Converse enforces. The writer mirrors the Anthropic writer by emitting a minimal
 /// placeholder `{"text":""}` block so the turn (and its role) survives.
 ///
-/// NOTE: a Thinking block is NO LONGER non-representable on Bedrock (R25 MED #3 re-emits it as a
+/// NOTE: a Thinking block is NO LONGER non-representable on Bedrock (the writer re-emits it as a
 /// native `reasoningContent` block), so the thinking-only assistant turn here now carries that
 /// reasoningContent block — NOT a placeholder. The remaining turn (a URL-sentinel image) is still
 /// non-representable and exercises the placeholder path.
@@ -2915,9 +2909,8 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
         Some("user")
     );
 
-    // The assistant thinking-only turn now re-emits a native `reasoningContent` block (R25 MED
-    // #3) — NOT a placeholder — so the turn survives carrying its reasoning rather than an empty
-    // text stub.
+    // The assistant thinking-only turn re-emits a native `reasoningContent` block — NOT a
+    // placeholder — so the turn survives carrying its reasoning rather than an empty text stub.
     assert_eq!(
         msgs[1]
             .pointer("/content/0/reasoningContent/reasoningText/text")
@@ -2940,8 +2933,6 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
         "image-only (URL-sentinel) user turn must carry a placeholder text block"
     );
 }
-
-// --- Round 6 regression tests --------------------------------------------------------------
 
 /// The region is parsed robustly from the
 /// endpoint host across every real Bedrock shape (vanilla, FIPS, VPC-interface front,
@@ -3497,7 +3488,7 @@ fn test_bedrock_image_block_s3_vendor() {
     );
 }
 
-// --- Round 18 regression tests: prompt-cache token plumbing -------------------------------
+// --- prompt-cache token plumbing regression tests ------------------------------------------
 
 /// A Converse response `usage` carrying
 /// `cacheReadInputTokens` / `cacheWriteInputTokens` must surface them on the IR usage as
@@ -3843,8 +3834,6 @@ fn test_splice_cache_points_out_of_range_does_not_panic() {
     );
 }
 
-// --- Round 21 regression tests: audit findings --------------------------------------------
-
 /// `extract_error` must synthesize the canonical
 /// `context_length_exceeded` provider_code for a real Bedrock oversized-context error body.
 /// Bedrock returns a generic `ValidationException` whose `message` carries the signal; the
@@ -4090,7 +4079,7 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
     );
 }
 
-/// Adversarial-review guard (round-9 codeaudit, correctness lens): on a MALFORMED stream that opens a
+/// Adversarial-input guard: on a MALFORMED stream that opens a
 /// tool-use block WHILE a text block is still (spuriously) open — something a well-formed sequential
 /// Converse wire never does, but a reordered/malformed upstream might — the `contentBlockStop` arm must
 /// match the STOP to its OWN tool index (via `open_tools`) rather than misattributing it to the
@@ -4280,7 +4269,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
 #[test]
 fn test_classify_third_context_length_pattern_matches_extract_error() {
     let reader = BedrockReader;
-    // The third phrasing (R21 #17): "exceeds the maximum" + token/context.
+    // The third phrasing: "exceeds the maximum" + token/context.
     let body = br#"{"__type":"ValidationException","message":"The request exceeds the maximum context length for this model."}"#;
 
     // Production extract_error surfaces the canonical code...
@@ -4314,8 +4303,6 @@ fn test_classify_third_context_length_pattern_matches_extract_error() {
         "classify must match the token variant of the third pattern; got {signal_tok:?}"
     );
 }
-
-// --- Round 23 regression tests: audit findings --------------------------------------------
 
 /// The `extract_error` context-length
 /// override must be GATED on a `400` — Bedrock only emits an oversized-context error as a `400
@@ -5091,7 +5078,7 @@ fn image_format_jpg_normalizes_to_jpeg() {
     }
 }
 
-/// PF-H1: Bedrock `toolChoice:{any:{}}` (must call SOME tool) round-trips through the IR's
+/// Bedrock `toolChoice:{any:{}}` (must call SOME tool) round-trips through the IR's
 /// `Required` variant — read promotes it, write re-emits the native `{any:{}}`.
 #[test]
 fn test_bedrock_tool_choice_any_required_roundtrips() {
@@ -5115,7 +5102,7 @@ fn test_bedrock_tool_choice_any_required_roundtrips() {
     assert_eq!(tc, &serde_json::json!({"any": {}}));
 }
 
-/// PF-H1: Bedrock `toolChoice:{tool:{name}}` (forced specific tool) round-trips through the IR's
+/// Bedrock `toolChoice:{tool:{name}}` (forced specific tool) round-trips through the IR's
 /// `Tool{name}` variant.
 #[test]
 fn test_bedrock_tool_choice_specific_tool() {
@@ -5144,7 +5131,7 @@ fn test_bedrock_tool_choice_specific_tool() {
     assert_eq!(tc, &serde_json::json!({"tool": {"name": "get_weather"}}));
 }
 
-/// class-6 6b3: `toolChoice.tool` (force a SPECIFIC tool) is documented Anthropic-Claude-only on
+/// `toolChoice.tool` (force a SPECIFIC tool) is documented Anthropic-Claude-only on
 /// Converse, but `write_request` receives no model (Bedrock carries it in the URL, not the IR) so
 /// it cannot gate the emission. The writer still emits it (the common Claude-on-Bedrock case is
 /// unaffected) but must now WARN, so a non-Claude target's guaranteed ValidationException is at
@@ -5177,7 +5164,7 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
     );
 }
 
-/// PF-H1: `IrToolChoice::None` has no native Bedrock representation, so the writer must omit
+/// `IrToolChoice::None` has no native Bedrock representation, so the writer must omit
 /// `toolChoice` entirely (rather than emit an invalid shape) while still emitting the tools.
 #[test]
 fn test_bedrock_tool_choice_none_omitted_on_write() {
@@ -5197,7 +5184,7 @@ fn test_bedrock_tool_choice_none_omitted_on_write() {
     );
 }
 
-/// PF-H1: a request with no native `toolChoice` reads back as `tool_choice == None` (no spurious
+/// A request with no native `toolChoice` reads back as `tool_choice == None` (no spurious
 /// directive minted on translation).
 #[test]
 fn test_bedrock_tool_choice_absent_is_none() {
@@ -5552,7 +5539,7 @@ fn test_same_protocol_cache_point_no_double_emit() {
     );
 }
 
-// --- L4: degradations are now observable (warn paths) --------------------------------------
+// --- degradations are observable (warn paths) ----------------------------------------------
 
 /// L4 (warn path): `tool_choice = None` has no native Converse directive, so it degrades to an
 /// omitted `toolChoice` and a `tracing::warn!`. The observable degradation (no `toolChoice` key,
@@ -5954,7 +5941,7 @@ fn write_response_exception_folds_to_stream_union_members() {
     );
 }
 
-/// FINDING 3 [P1] REGRESSION: The native AWS Bedrock ConverseStream `ContentBlockStart$start`
+/// REGRESSION: The native AWS Bedrock ConverseStream `ContentBlockStart$start`
 /// union only models `toolUse`, so a real AWS stream sends NO `contentBlockStart` for a text
 /// block; the block is implied by the first `contentBlockDelta` carrying `text`. The reader's
 /// text-delta arm previously emitted a `BlockDelta` with NO preceding `BlockStart`, producing an
@@ -6024,7 +6011,7 @@ fn test_stream_text_delta_lazily_opens_block_start() {
     }
 }
 
-/// FINDING 4 [P1] REGRESSION: The AWS Bedrock Converse `ContentBlock` union includes top-level
+/// REGRESSION: The AWS Bedrock Converse `ContentBlock` union includes top-level
 /// `document` and `video` members (a PDF/CSV the model reasons over, and a video reference). The
 /// reader previously handled only text/image/toolUse/toolResult/reasoningContent/cachePoint/
 /// guardContent, so a top-level `document` or `video` block was silently DROPPED on a same-protocol

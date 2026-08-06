@@ -342,8 +342,7 @@ fn write_gemini_logprobs_result(lps: &[crate::ir::IrTokenLogprob]) -> serde_json
     obj
 }
 
-/// Normalize Gemini's native `toolConfig.functionCallingConfig` into the IR `tool_choice` union
-/// (PF-H1).
+/// Normalize Gemini's native `toolConfig.functionCallingConfig` into the IR `tool_choice` union.
 ///
 /// Mapping: `AUTO` → `Auto`; `NONE` → `None`; `ANY` with no `allowedFunctionNames` → `Required`
 /// (must call some tool); `ANY` + `allowedFunctionNames:[X, …]` → the targeted `Tool{name:X}` (the
@@ -388,7 +387,7 @@ fn read_gemini_tool_choice(
     }
 }
 
-/// Emit the IR `tool_choice` union as a Gemini `functionCallingConfig` object (PF-H1).
+/// Emit the IR `tool_choice` union as a Gemini `functionCallingConfig` object.
 fn write_gemini_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
     match tc {
         crate::ir::IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
@@ -705,7 +704,7 @@ fn prompt_block_reason(data: &serde_json::Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// Map a Gemini candidate `finishReason` to a canonical IR stop reason (PF-M2).
+/// Map a Gemini candidate `finishReason` to a canonical IR stop reason.
 ///
 /// `STOP`/`MAX_TOKENS`/`SAFETY` map to their direct canonical siblings (`end_turn`/`max_tokens`/
 /// `safety`). The remaining Gemini-only reasons — `RECITATION`, `IMAGE_SAFETY`, `SPII`,

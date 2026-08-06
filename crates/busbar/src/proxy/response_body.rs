@@ -105,10 +105,10 @@ pub(crate) struct FirstByteBody<S, P> {
     stream_failed: bool,
     /// Bounded reassembly buffer for a SAME-PROTOCOL NON-STREAM (`!is_sse`, `translate == None`)
     /// `application/json` body that reqwest delivers across multiple transport frames. This is the
-    /// non-stream analog of Change B's read-for-IR-emit-verbatim: the body is relayed to the client
-    /// byte-for-byte (each chunk passes through unchanged), but a bounded copy is retained here so the
-    /// stream-end arm can run the EGRESS READER over the reassembled body and source `IrUsage` for
-    /// billing (Change A path #4). Same-proto means egress == ingress, so the body is in the ingress
+    /// non-stream analog of the streaming read-for-IR-emit-verbatim path: the body is relayed to the
+    /// client byte-for-byte (each chunk passes through unchanged), but a bounded copy is retained here
+    /// so the stream-end arm can run the EGRESS READER over the reassembled body and source `IrUsage`
+    /// for billing. Same-proto means egress == ingress, so the body is in the ingress
     /// protocol's native shape and `ingress_protocol`'s reader decodes it. Capped at
     /// `MAX_TRANSLATED_BODY_BYTES` (dropping past the cap with a warn like the buffered guards). The
     /// SSE / translation paths never touch this (they bill via `translate.usage()`).
@@ -193,9 +193,9 @@ where
                         this.first_byte_sent = true;
                     }
                     // cross-protocol → translate egress SSE bytes to the ingress format. SAME-protocol
-                    // (Change B) → `t.feed` returns the VERBATIM original frame bytes. Billing now reads
-                    // the IR-derived `t.usage()` at stream end (Change A) — there is no longer a byte-
-                    // scanner tap on this path, so `feed` is the single usage source for both modes.
+                    // → `t.feed` returns the VERBATIM original frame bytes. Billing reads the
+                    // IR-derived `t.usage()` at stream end — there is no byte-scanner tap on this
+                    // path, so `feed` is the single usage source for both modes.
                     if let Some(t) = this.translate.as_mut() {
                         let out = t.feed(&chunk);
                         let out_bytes = Bytes::from(out);
@@ -226,10 +226,10 @@ where
                     // Gating on `usage_sink.is_some()` skips the per-response buffer copy AND the
                     // full-body JSON parse + IR build entirely on the no-governance hot path (a large
                     // RPS/RSS win), while a flat-fee op (or a large-binary response) skips it too. The
-                    // bytes still relay verbatim below, unbuffered. (R1.)
+                    // bytes still relay verbatim below, unbuffered.
                     if !this.is_sse && this.op.taps_nonstream_usage() && this.usage_sink.is_some() {
-                        // SAME-PROTOCOL NON-STREAM `application/json` passthrough (Change A path #4): the
-                        // non-stream analog of B's read-for-IR-emit-verbatim. The body relays verbatim,
+                        // SAME-PROTOCOL NON-STREAM `application/json` passthrough: the
+                        // non-stream analog of read-for-IR-emit-verbatim. The body relays verbatim,
                         // but a bounded copy is retained so the stream-end arm can run the egress reader
                         // (`ingress_protocol`'s reader — same-proto, so egress == ingress) over the
                         // reassembled body and source `IrUsage` for billing. Cap at
@@ -279,7 +279,7 @@ where
                 Poll::Ready(Some(Err(e))) => {
                     // An upstream transport error delivered a broken/partial response — suppress
                     // Drop-time token billing (both this SSE arm and the non-SSE arm below), symmetric
-                    // with the terminal-error / abort no-bill gates. (audit M3.)
+                    // with the terminal-error / abort no-bill gates.
                     this.stream_failed = true;
                     let had_first = this.first_byte_sent;
                     if had_first && this.is_sse {
@@ -360,9 +360,9 @@ where
                         // `record_success_in`), but the response never arrived intact, so that success is
                         // wrong. Record a COMPENSATING transient so the failure counts against the lane.
                         //
-                        // P2 #2 FIX: this transient is now recorded UNCONDITIONALLY on the transport
-                        // failure - it is NO LONGER gated on `had_first`. Previously a pre-first-byte
-                        // failure recorded nothing (treated as "refund-only, no body content emitted"),
+                        // The transient is recorded UNCONDITIONALLY on the transport failure - it is
+                        // NOT gated on `had_first`. Gating it there recorded nothing for a
+                        // pre-first-byte failure (treated as "refund-only, no body content emitted"),
                         // which meant a lane that connects, returns headers, then dies before the first
                         // byte on EVERY attempt kept accruing optimistic successes and NEVER tripped its
                         // circuit breaker - traffic pinned to a black-hole lane. A pre-first-byte
@@ -392,8 +392,8 @@ where
                         // headers already spent one `max_requests` budget unit on this lane, but a
                         // pre-first-byte body transport failure delivers NO usable response — so refund
                         // that unit, or sustained streaming transport failures would permanently drain
-                        // the lane's serving-capacity budget one unit at a time (MED #3). The streaming
-                        // path previously refunded nothing here while the buffered paths did. Refund
+                        // the lane's serving-capacity budget one unit at a time. Without this refund the
+                        // streaming path leaked units here while the buffered paths did not. Refund
                         // ONLY when the headers-spend actually decremented (`budget_spent`): a no-op
                         // spend (unlimited lane, or budget already 0) must not be refunded, since
                         // `refund_budget` is an unconditional `fetch_add` that would otherwise push the
@@ -426,7 +426,7 @@ where
                     // that overflowed `MAX_BUF` (>16MiB without a frame terminator) or hit a
                     // malformed egress prelude calls `abort()` and stops feeding the body — but it
                     // leaves `tap.terminal_error` clear (no in-band `{"type":"error"}` frame was ever
-                    // scanned). That is the SIBLING condition to the R25 mid-body terminal-error fix:
+                    // scanned). That is the SIBLING condition to a mid-body terminal error:
                     // both deliver a partial/aborted response the caller cannot use, so BOTH must be
                     // treated as a failed stream by ALL THREE downstream gates (breaker, token
                     // billing, json-array byte-shaping). The json-array close path below previously
@@ -438,9 +438,8 @@ where
                         .map(|t| t.aborted())
                         .unwrap_or(false);
                     // A stream is FAILED for breaker purposes when EITHER a reader-emitted terminal ERROR
-                    // event was seen (the IR-sourced `translate.terminal_error()`, Change A — replacing
-                    // the deleted `UsageTap::terminal_error` byte-scan) OR the cross-protocol translate
-                    // aborted mid-flight. Every same-proto/cross-proto SSE+eventstream stream now flows
+                    // event was seen (the IR-sourced `translate.terminal_error()`) OR the cross-protocol
+                    // translate aborted mid-flight. Every same-proto/cross-proto SSE+eventstream stream flows
                     // through `translate`, so the terminal error is observable at this point in the arm
                     // for all of them; the billing gate re-evaluates the same predicate AFTER the bedrock
                     // deferred `finish()` below (whose `metadata` frame can surface usage/error at end).
@@ -453,7 +452,7 @@ where
                     if this.is_sse && this.first_byte_sent && breaker_failed {
                         if let Some(app) = this.app.as_ref() {
                             // Distinguish the two failure lineages in the recorded reason so the
-                            // R25 terminal-error path and this R26 translate-abort sibling remain
+                            // terminal-error path and its translate-abort sibling remain
                             // separable in breaker telemetry.
                             let reason = if stream_terminal_error {
                                 "stream-terminal-error"
@@ -471,8 +470,8 @@ where
                             );
                             // A terminal-error frame OR translate abort that drives a Closed→Open
                             // trip is a breaker trip for this (pool, lane) — emit BREAKER_TRIPS_TOTAL
-                            // once (#29). This is the arm the `response.failed` recognition (#H2) now
-                            // reaches for a streaming Responses FAILURE that previously recorded as
+                            // once (#29). This is also the arm `response.failed` recognition reaches
+                            // for a streaming Responses FAILURE, which would otherwise record as a
                             // success.
                             if tripped {
                                 emit_breaker_trip(app, &this.pool, this.lane_idx);
@@ -505,7 +504,7 @@ where
                         // element + `]`. Feeding `tail` too would wrap a SECOND (differently-worded)
                         // error element — the 1.4.0 double-emit regression (1.3.0 discarded `tail`). So
                         // feed `tail` ONLY on the non-aborted path, where it carries finish()'s content /
-                        // trailing-usage frames that must reach the client. (found: 1.4.0 audit, hot-path.)
+                        // trailing-usage frames that must reach the client.
                         let mut wrapped = if translate_aborted {
                             Vec::new()
                         } else {
@@ -522,18 +521,18 @@ where
                     // already reflects it — no separate tap-feed of the binary `done` bytes is needed.
                     drop(this.permit.take());
                     this.ended = true;
-                    // Token usage for billing, sourced from the IR (Change A):
+                    // Token usage for billing, sourced from the IR:
                     //   - STREAMING (SSE / eventstream, same- or cross-proto): `translate.usage()` — the
                     //     terminal `IrUsage` the readers accumulated, post Anthropic start-usage backfill.
                     //   - SAME-PROTOCOL NON-STREAM (`!is_sse`, `translate == None`): run the EGRESS reader
                     //     (`ingress_protocol`'s reader — same-proto, egress == ingress) over the
-                    //     reassembled `nonstream_buf` body and read `ir.usage` (Change A path #4). The body
+                    //     reassembled `nonstream_buf` body and read `ir.usage`. The body
                     //     was relayed verbatim; this is the read-for-IR side-channel for billing.
                     // The unknown-protocol fallback passthrough has no reader and yields `None` (no usage
                     // source — same as before; an unknown protocol cannot be metered).
                     // Skip usage extraction ENTIRELY when there is no sink to bill (governance off /
                     // no key): the terminal-usage clone and the non-stream reader run only to feed
-                    // `record_tokens`, which the `usage_sink.take()` gate below no-ops. (R1.)
+                    // `record_tokens`, which the `usage_sink.take()` gate below no-ops.
                     let ir_usage: Option<crate::ir::IrUsage> = if this.usage_sink.is_none() {
                         None
                     } else if let Some(t) = this.translate.as_ref() {
@@ -607,11 +606,12 @@ where
 
 impl<S, P> Drop for FirstByteBody<S, P> {
     fn drop(&mut self) {
-        // Cancellation: the stream was dropped before reaching any terminal arm (`ended` is only
-        // set at :300, :403, :518 - the three deliberate no-refund exits, none of which leave
-        // `ended` false). A pre-first-byte or mid-stream client disconnect / LB reset otherwise
-        // leaks the headers-time `spend_budget` unit forever. `budget_spent` both guards against
-        // refunding a no-op spend and against double-refunding :396's own clear of the flag.
+        // Cancellation: the stream was dropped before reaching any terminal arm (`ended` is set only
+        // by the three deliberate exits - mid-stream SSE error, pre-first-byte/non-SSE transport
+        // error, and clean end - none of which leave it false). A pre-first-byte or mid-stream client
+        // disconnect / LB reset otherwise leaks the headers-time `spend_budget` unit forever.
+        // `budget_spent` guards both against refunding a no-op spend and against double-refunding
+        // the transport-error arm's own clear of the flag.
         if !self.ended && self.budget_spent {
             if let Some(ref app) = self.app {
                 app.store.refund_budget(self.lane_idx);
@@ -622,7 +622,7 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // `usage_sink`. So a `None` here means "already billed" and this Drop is a no-op — no
         // double-charge. A `Some` means the body was DROPPED MID-STREAM (client disconnect /
         // cancellation) before the natural end, so the token-fee site never ran and the tokens already
-        // generated + delivered would go unbilled (the under-billing the audit flagged). Bill the
+        // generated + delivered would go unbilled — an under-billing on every cancel. Bill the
         // tokens the readers accumulated up to the drop point instead.
         //
         // Best-effort: the provider's terminal usage frame may not have arrived before the cancel, so

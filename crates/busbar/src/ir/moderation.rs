@@ -21,7 +21,7 @@ pub(crate) enum ModerationInput {
 pub(crate) struct ModerationReq {
     pub(crate) model: String,
     pub(crate) input: Vec<ModerationInput>,
-    /// Source-protocol-namespaced extras (B1). Empty for OpenAI (the only provider), but present for
+    /// Source-protocol-namespaced extras. Empty for OpenAI (the only provider), but present for
     /// uniformity so the codec pattern is identical across ops.
     pub(crate) extra: SourceScopedExtra,
 }

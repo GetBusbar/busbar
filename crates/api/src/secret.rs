@@ -12,7 +12,7 @@
 /// The result type every [`SecretModule`] call returns.
 pub type SecretResult<T> = Result<T, SecretError>;
 
-/// The taxonomy a [`SecretError`] carries (E-012, busbar-ui's ENGINE-BUGS.md): distinguishes a
+/// The taxonomy a [`SecretError`] carries: distinguishes a
 /// configuration problem an operator must fix (`NotFound`, `Invalid`, `Denied`) from an outage they
 /// must wait out (`Unavailable`) — conflating the two, as a bare string does, produces exactly the
 /// wrong operator response in both directions. `Internal` is the catch-all for anything that

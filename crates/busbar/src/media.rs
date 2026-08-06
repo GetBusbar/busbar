@@ -3,8 +3,8 @@
 
 //! Opaque media payload value types for the operations rebuild.
 //!
-//! Two distinct value types, deliberately NOT unified (the re-verification, finding C3, showed a
-//! single one-of type is lossy for image output):
+//! Two distinct value types, deliberately NOT unified: a single one-of type is lossy for image
+//! output.
 //!
 //! - [`MediaBlob`] — AUDIO. A single representation (bytes OR base64 OR uri), enforced by a one-of
 //!   enum. Carries optional PCM parameters because headerless raw PCM (`audio/L16`, OpenAI `pcm`)
@@ -120,7 +120,7 @@ impl MediaBlob {
     }
 }
 
-/// A single generated image. ADDITIVE (finding C3): `b64` and `url` may BOTH be present and both are
+/// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
 /// kept. `b64` is the common path; `url`/`uri` are additive (dall-e URL, Vertex `gcsUri`). The other
 /// fields are provider-specific extras kept for lossless round-trip.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -227,7 +227,7 @@ mod tests {
             url: Some("https://example/img.png".into()),
             ..Default::default()
         };
-        // Both present, both kept — the C3 losslessness requirement a one-of would break.
+        // Both present, both kept — the losslessness requirement a one-of would break.
         assert!(img.b64.is_some() && img.url.is_some());
         assert!(img.has_payload());
         assert!(!ImageOutput::default().has_payload());

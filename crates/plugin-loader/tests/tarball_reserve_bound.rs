@@ -99,9 +99,9 @@ fn lying_size_tarball() -> Vec<u8> {
     gzip(&raw)
 }
 
-/// RED on the unfixed code (a `Vec::with_capacity(size as usize)` reserves ~200 MiB up front for a
-/// header that never delivers that much data); GREEN after capping the reservation independent of
-/// the declared size.
+/// A `Vec::with_capacity(size as usize)` sized off the header would reserve ~200 MiB up front for a
+/// header that never delivers that much data. Capping the reservation independent of the declared
+/// size keeps the peak single allocation small.
 #[test]
 fn truncated_lying_header_does_not_force_a_large_reservation() {
     reset_peak();

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# config-schema.py — the config-stability gate's engine (busbar 1.5.3, design 1.5.3-design.md §5).
+# config-schema.py — the config-stability gate's engine.
 #
 # Two jobs, one file (no external deps; stdlib only, so it runs on the same bare runner every other
 # scripts/*-lint.sh does):
@@ -20,9 +20,9 @@
 #                                   JSON-path + reason). This is the additive-only enforcement the
 #                                   openapi guard does NOT have — the whole point of 1.5.3.
 #
-# WHY a structural fingerprint and not schemars: the design's ideal emitter is schemars-derived
-# JsonSchema on DeployCfg, but that is CRATE-SOURCE surgery on config/mod.rs that collides with the
-# concurrent grammar/admin work. A fingerprint extracted from the typed config source is derived from
+# WHY a structural fingerprint and not schemars: a schemars-derived `JsonSchema` on `DeployCfg`
+# would need invasive changes to config/mod.rs and a compile step. A fingerprint extracted from the
+# typed config source is derived from
 # the same source of truth, is featureless-safe (no cargo feature, no compile), and captures exactly
 # the deltas the additive rule cares about: field add/remove/retype, optional<->required, and enum
 # variant append/drop. Refining the emitter to schemars later is itself an additive change to `gen`.
@@ -330,7 +330,7 @@ def extract(src_dir: str) -> dict:
             types.setdefault(name, {"kind": "struct", "fields": {}, "deserialize": "manual"})
 
         # ── HOLE 2: `pub type HookDefs = IndexMap<String, HookDefCfg>;` — the named-DEFINITION-map
-        # aliases (audit §0) are the shape of `hooks:`/`export:`/`identity-providers:` themselves.
+        # aliases are the shape of `hooks:`/`export:`/`identity-providers:` themselves.
         # A field typed `ExportDefs` compares equal even if the alias were retargeted, so pin the
         # alias TARGET too: retargeting `IndexMap<String, ExportDefCfg>` -> `Vec<ExportDefCfg>` is a
         # grammar break (named map -> list) and must land as a RETYPE, not silence.
@@ -347,7 +347,7 @@ def extract(src_dir: str) -> dict:
     return {
         "_meta": {
             "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, "
-            "additive-only forever (config-stability gate, design §5).",
+            "additive-only forever (enforced by the config-stability gate).",
             "frozen_at": "1.5.3",
             "generator": "scripts/config-schema.py gen",
             "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd) + the "

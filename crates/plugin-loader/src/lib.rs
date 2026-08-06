@@ -59,7 +59,7 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 
-/// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name (L1).
+/// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
 /// `DlopenPolicy`/`DynAuth` carry `name: &'static str`, and a name string used to be `Box::leak`ed on
 /// EVERY open — but `open_hook`/`open_auth` run per config/plugin reload, per `push_configure`, per
@@ -447,7 +447,7 @@ fn wire_up_raw(
         let msg = if err.is_null() {
             format!("status {status}")
         } else if err_len == 0 {
-            // LOW (audit): a non-null `err` with `err_len == 0` carries no message but is still an
+            // A non-null `err` with `err_len == 0` carries no message but is still an
             // allocation the plugin owns — free it (the old `err_len == 0` short-circuit leaked it).
             free_guarded(free, &display, err, err_len);
             format!("status {status}")
@@ -470,7 +470,7 @@ fn wire_up_raw(
         };
         return Err(format!("plugin '{display}' open failed: {msg}"));
     }
-    // LOW (audit): on the SUCCESS path a well-behaved plugin leaves `err` null, but an ABI-violating
+    // On the SUCCESS path a well-behaved plugin leaves `err` null, but an ABI-violating
     // plugin may set a non-null `err` alongside `STATUS_OK`. Free it here rather than leaking it on
     // every load (the hot `fetch_status` → `open_hook` → `wire_up_raw` metrics-scrape path).
     free_guarded(free, &display, err, err_len);
@@ -823,7 +823,7 @@ impl Store for DynStore {
     }
 
     fn list_denylist(&self) -> StoreResult<Vec<String>> {
-        // Revocation fail-open closure (D4). A store that cannot DECODE the `ListDenylist` request
+        // Revocation fail-open closure. A store that cannot DECODE the `ListDenylist` request
         // variant hydrates an empty denylist rather than failing boot. Every OTHER failure — a real
         // backend error, a caught PANIC, a caller-protocol violation, an unexpected response variant —
         // PROPAGATES, so boot fails CLOSED rather than accepting previously-revoked signed tokens.
@@ -1185,15 +1185,15 @@ mod tests {
     /// default parallel execution, every such test collided on the SAME file: `list_keys()`
     /// assertions failed because a concurrent test had already written keys to it, and `wire_up_raw`
     /// itself failed outright with a real SQLite `disk I/O error` under lock contention between
-    /// concurrent opens. Confirmed by hand: this reproduced consistently under `dev-gate.yml`'s
-    /// `DEV_GATE=1 cargo test --release -p busbar-plugin-loader` and locally.
+    /// concurrent opens — reproducible under `DEV_GATE=1 cargo test --release -p
+    /// busbar-plugin-loader`.
     ///
     /// These files are deliberately NOT deleted by the test that creates them — a test can't know
     /// when it's safe to remove its own db file (the store may still be open, or a sibling process
     /// under `-j`-parallel `cargo test` invocations may share the same `$TMPDIR`), and CI runners
     /// are ephemeral (wiped between runs) so this never accumulates there. On a long-lived local
     /// dev machine it CAN accumulate across many `cargo test` invocations (observed: 174 files,
-    /// ~14MB, via adversarial review) — self-cleans that by opportunistically sweeping this
+    /// ~14MB) — self-cleans that by opportunistically sweeping this
     /// process's OWN prior runs' files (matched by name pattern, not PID liveness — simpler and
     /// good enough for a `$TMPDIR` nuisance, not a correctness concern) older than an hour, once
     /// per test-binary invocation.
@@ -1471,13 +1471,11 @@ mod tests {
         assert!(err.contains("sqlite"), "names the offending plugin: {err}");
     }
 
-    /// GUARD unit test on a NEW helper (`open_err_is_readable` does not exist on `main` yet, so
-    /// this cannot go RED against current source — it pins the bound rather than proving a fix).
-    /// The claim it supports is "the length cap is applied on both the `busbar_call` AND
-    /// `busbar_open` error paths", not "an oversized open error is survived in production" — there
-    /// is no fake-open seam (`dyn_store_with_fake_call` only patches `call` on an already-opened
-    /// `DynStore`), so an over-the-ABI RED test is not attempted; its failure mode would be an
-    /// out-of-bounds read, not a clean assertion failure.
+    /// Pins the length cap on the `busbar_open` error path, mirroring `response_len_ok`'s on the
+    /// `busbar_call` path. Covered as a unit test rather than over the ABI: there is no fake-open
+    /// seam (`dyn_store_with_fake_call` only patches `call` on an already-opened `DynStore`), and
+    /// the failure mode of an unchecked length is an out-of-bounds read, not a clean assertion
+    /// failure.
     #[test]
     fn open_err_is_readable_refuses_an_oversized_length() {
         assert!(
@@ -1703,11 +1701,9 @@ mod tests {
             assert_ne!(op, np, "each generation stages its OWN file");
         }
         // The NEW instance is a DISTINCT on-disk SQLite backend (each generation gets its own
-        // unique_sqlite_cfg() db_path — NOT a fresh in-memory store, that was the pre-isolation-fix
-        // wording): it does NOT see the old key. Before the per-test sqlite isolation fix, OLD and
-        // NEW shared one file, so this assertion mostly just proved their two `db_path` configs
-        // differ; now that each generation has a genuinely separate backing file, it's real proof
-        // this is a second, independent load — not a cached alias of the first.
+        // `unique_sqlite_cfg()` db_path): it does NOT see the old key. Because each generation has a
+        // genuinely separate backing file, this is real proof that NEW is a second, independent
+        // load — not a cached alias of the first.
         assert!(
             new.get_key("vk_old").expect("new get").is_none(),
             "the new instance's own db_path must be a real, separate backend — not aliasing OLD's"
@@ -1896,11 +1892,11 @@ mod tests {
         // Stage a genuine `RawPlugin` (real `Library` + handle + `close`), then splice in our fake
         // `call`/`free` so the response's (status, body) is what the test chooses.
         let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
-        // `.expect`, NOT `.ok()?`: the ONLY sanctioned reason these D4 guards may skip is "the cdylib
-        // was never built" — which `store_fixture_plugin_path` already turns into a hard panic under
-        // CI. A
-        // STAGING failure is a different thing entirely, and swallowing it into a `None` let the whole
-        // revocation fail-open suite self-disable while the run stayed green.
+        // `.expect`, NOT `.ok()?`: the ONLY sanctioned reason these revocation guards may skip is
+        // "the cdylib was never built" — which `store_fixture_plugin_path` already turns into a hard
+        // panic under CI. A STAGING failure is a different thing entirely, and swallowing it into a
+        // `None` would let the whole revocation fail-open suite self-disable while the run stayed
+        // green.
         let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-store")
             .expect("stage the sibling store-sqlite-plugin cdylib for the fake-call harness");
         let mut raw = wire_up_raw(
@@ -1964,7 +1960,7 @@ mod tests {
         );
     }
 
-    /// THE CLASS TEST for the revocation fail-open (D4). It enumerates every way a store plugin of ANY
+    /// THE CLASS TEST for the revocation fail-open. It enumerates every way a store plugin of ANY
     /// SDK generation can CRASH or violate the protocol, and asserts that NONE of them can empty the
     /// denylist. The discriminator that decides this is `TransportError::from_status`, so one function
     /// has to be wrong for any row here to flip — there is no per-op patch to keep in sync.
@@ -2116,14 +2112,14 @@ mod tests {
         );
     }
 
-    // ── Class-level loader discrimination harness (redesign B): the SAME matrix of injected
+    // ── Class-level loader discrimination harness: the SAME matrix of injected
     // statuses × the three fallback-bearing methods, driven through the real
     // `call_raw_status` → `TransportError::from_status` → `is_unsupported()` path. A new
     // fallback-bearing method inherits this coverage the moment it keys on `is_unsupported()`. ────
 
-    /// THE D4 REGRESSION GUARD: a plugin PANIC on `ListDenylist` arrives as `STATUS_PANIC` → `Fault`,
+    /// THE REGRESSION GUARD: a plugin PANIC on `ListDenylist` arrives as `STATUS_PANIC` → `Fault`,
     /// `is_unsupported()` is false, so `list_denylist` fails CLOSED (Err) — it does NOT silently return
-    /// `Ok(vec![])`. Under the pre-B taxonomy a panic returned `STATUS_PROTOCOL` and was misread as
+    /// `Ok(vec![])`. Under the earlier taxonomy a panic returned `STATUS_PROTOCOL` and was misread as
     /// old-SDK, hydrating an EMPTY revocation denylist (accepting revoked tokens). Now structurally
     /// impossible: STATUS_PANIC and STATUS_UNSUPPORTED are different integers → different kinds.
     #[test]
@@ -2229,7 +2225,8 @@ mod tests {
         )
         .is_unsupported());
         // A BARE STATUS_PROTOCOL — null handle, null request pointer, or a v1-SDK caught panic — is a
-        // caller-protocol violation, NOT unsupported. This is the inversion that reopened D4.
+        // caller-protocol violation, NOT unsupported. Reading it as unsupported is the inversion that
+        // reopens the revocation fail-open.
         assert!(!TransportError::from_status(STATUS_PROTOCOL, "", "p").is_unsupported());
         // Nor is a STATUS_PROTOCOL carrying any OTHER message.
         assert!(!TransportError::from_status(STATUS_PROTOCOL, "null handle", "p").is_unsupported());
@@ -2242,8 +2239,7 @@ mod tests {
         assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
     }
 
-    /// class-13/14 F1: `kind: secret` was the only plugin kind with ZERO over-the-ABI test coverage
-    /// (`grep -rn export_secret_plugin crates/` found only the macro's own definition). Locate the
+    /// `kind: secret` is the one plugin kind with no other over-the-ABI test coverage. Locate the
     /// hermetic `busbar-secret-example-plugin` cdylib, mirroring `store_fixture_plugin_path` above — CI
     /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
     /// a silent skip.

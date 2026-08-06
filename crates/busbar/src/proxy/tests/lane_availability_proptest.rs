@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Property-based invariant for the lane-availability refactor (design §6, R4) + the failover budget
-//! contract (§5, R6).
+//! Property-based invariant for lane availability, plus the failover budget contract.
 //!
 //! A `proptest` generator builds a WORLD — a primary pool (1–5 members) and, for the `fallback_pool`
 //! policy, a fallback pool (1–4 members); each member is bounded(cap 1–8) | unbounded | saturated,
@@ -12,7 +11,7 @@
 //! combinations are generated per member. One request is then driven through the REAL
 //! `forward_with_pool` selection + `on_exhausted` dispatch against a mock provider.
 //!
-//! ## The STRENGTHENED invariant (R4 — disposition-matches-policy, not a pure latency bound)
+//! ## The STRENGTHENED invariant (disposition-matches-policy, not a pure latency bound)
 //!
 //! At DECISION time an ELIGIBLE primary lane is `classify(primary, lane) == Ok` — admissible (not
 //! dead / in budget), the breaker would admit, AND a free permit exists — exactly the predicate
@@ -22,13 +21,13 @@
 //!       * `reject`        → 503 + `Retry-After` ≥ the at-capacity floor (2s) / the real cooldown,
 //!       * `least_bad`     → dispatched to a free admissible sibling (NOT 503 when one exists),
 //!       * `fallback_pool` → SERVED BY THE FALLBACK POOL (primary serves ZERO) when the fallback has
-//!                           an eligible member, else 503 — the discriminating Bug-1 assertion,
+//!                           an eligible member, else 503 — the discriminating assertion,
 //!       * `queue{max_ms}` → waited ≤ max_ms then 503 (permits are held for the whole case, so none
 //!                           ever frees);
 //! and in ALL cases the wall clock from ingress to disposition stays within the failover budget, and
 //! a 503 is NEVER returned while an eligible lane existed at decision time.
 //!
-//! A pure latency bound is NOT sufficient — the disposition is asserted. The Bug-1 witness
+//! A pure latency bound is NOT sufficient — the disposition is asserted. The park-then-serve witness
 //! (breaker-healthy primary + at-capacity + fallback_pool ⇒ MUST spill, never park-then-serve-primary)
 //! is dominated by [`assert_served_by_fallback_not_primary`], whose TEETH are proven by
 //! [`invariant_rejects_park_then_serve_primary_witness`].
@@ -99,7 +98,7 @@ enum Cap {
     /// Bounded with a free permit (cap 1–8).
     BoundedFree(usize),
     /// Bounded `max_concurrent: 1` whose only permit the test HOLDS for the whole case → permanently
-    /// at capacity (the deterministic saturation of the Bug-1 suite).
+    /// at capacity (the deterministic saturation the at-capacity suite relies on).
     Saturated,
 }
 
@@ -185,7 +184,7 @@ fn world_strat() -> impl Strategy<Value = World> {
 fn assert_disposition_reject(ra: u64, soonest: Option<u64>, any_at_cap: bool) {
     assert!(ra >= 1, "Retry-After must be a sane floor (>= 1); got {ra}");
     match soonest {
-        // Pure saturation — jitter-free constant floor. This is the Bug-1 Finding-3 guard: an
+        // Pure saturation — jitter-free constant floor: an
         // at-capacity shed must NOT advertise the misleading `Retry-After: 1`.
         None if any_at_cap => assert!(
             ra >= 2,
@@ -201,7 +200,7 @@ fn assert_disposition_reject(ra: u64, soonest: Option<u64>, any_at_cap: bool) {
     }
 }
 
-/// THE discriminating Bug-1 assertion, factored out so its TEETH can be proven directly
+/// THE discriminating fallback assertion, factored out so its TEETH can be proven directly
 /// ([`invariant_rejects_park_then_serve_primary_witness`]). Under `fallback_pool` with an eligible
 /// fallback, the request MUST SPILL: served with 200 by the FALLBACK pool, with the at-capacity/parked
 /// primary serving ZERO. A park-then-dispatch-before-deadline impl (which serves the PRIMARY once its
@@ -214,7 +213,7 @@ fn assert_served_by_fallback_not_primary(status: u16, primary_ok: u64, fallback_
     );
     assert_eq!(
         primary_ok, 0,
-        "Bug-1: the at-capacity primary must serve ZERO — the request must SPILL to the fallback, \
+        "the at-capacity primary must serve ZERO — the request must SPILL to the fallback, \
          never park-then-serve the primary"
     );
     assert_eq!(
@@ -227,8 +226,8 @@ fn assert_served_by_fallback_not_primary(status: u16, primary_ok: u64, fallback_
 
 /// Which disposition branch `run_world` actually drove for a case — returned so a targeted test can
 /// PROVE the harness plumbing reaches a specific assertion (e.g. `FallbackSpill` ⇒ the fb_elig branch's
-/// [`assert_served_by_fallback_not_primary`] actually ran), closing the "does the generator/harness
-/// reach it, or only the hand-fed witness?" gap.
+/// [`assert_served_by_fallback_not_primary`] actually ran), so the branch is known to be reachable
+/// from the generator and not only from the hand-fed witness.
 #[derive(Debug, PartialEq, Eq)]
 enum Disposition {
     PrimaryServed,
@@ -374,7 +373,7 @@ async fn run_world(world: World) -> Disposition {
     let primary_ok: u64 = (0..p).map(|i| app.store.snapshot(i, t3).ok).sum();
     let fallback_ok: u64 = (p..total).map(|i| app.store.snapshot(i, t3).ok).sum();
 
-    // ── Budget contract (§5/R6): ingress→disposition ≤ failover.timeout + ε, ALWAYS. ──
+    // ── Budget contract: ingress→disposition ≤ failover.timeout + ε, ALWAYS. ──
     assert!(
         elapsed <= Duration::from_secs(FAILOVER_SECS) + TEST_BUDGET_EPS,
         "ingress→disposition {elapsed:?} exceeded the failover budget ({FAILOVER_SECS}s) + ε; \
@@ -382,7 +381,7 @@ async fn run_world(world: World) -> Disposition {
         world.policy
     );
 
-    // ── The strengthened, disposition-matches-policy invariant (R4). ──
+    // ── The strengthened, disposition-matches-policy invariant. ──
     let disposition = if !elig_primary.is_empty() {
         // (a) An eligible primary lane existed → it MUST dispatch there, never shed, never spill.
         assert_eq!(
@@ -490,7 +489,7 @@ proptest! {
     }
 }
 
-// ── Teeth: the invariant CATCHES the park-then-dispatch (Bug-1) failure ───────────────────────────
+// ── Teeth: the invariant CATCHES the park-then-dispatch failure ───────────────────────────────────
 
 /// Proof that [`assert_served_by_fallback_not_primary`] — the discriminating fallback disposition the
 /// property test enforces — has TEETH: it REJECTS the exact park-then-dispatch-before-deadline outcome
@@ -511,7 +510,7 @@ fn invariant_rejects_park_then_serve_primary_witness() {
     assert!(
         broken.is_err(),
         "the invariant FAILED to catch park-then-serve-primary — it lacks teeth and does not \
-         dominate Bug-1"
+         dominate the park-then-serve failure shape"
     );
 
     // The CORRECT spill outcome passes the very same assertion.
@@ -522,17 +521,17 @@ fn invariant_rejects_park_then_serve_primary_witness() {
 /// above proves the assertion FUNCTION rejects a bad triple, but not that `run_world`'s
 /// Policy::Fallback / fb_elig plumbing actually REACHES it on a real dispatch. This drives one `World`
 /// shaped exactly for the fb_elig branch — a breaker-healthy but SATURATED primary (so `elig_primary`
-/// is empty and the Bug-1 park-then-serve temptation is live) with an eligible (Closed, free) fallback
+/// is empty and the park-then-serve temptation is live) with an eligible (Closed, free) fallback
 /// — through the REAL `run_world` harness, and asserts it took the `FallbackSpill` branch. That branch
 /// is where `assert_served_by_fallback_not_primary` runs, so a wiring bug that short-circuited before
 /// it (a shadowed `if`, an early return) would make this return something other than `FallbackSpill`
 /// and fail here.
 ///
-/// Scope honesty: this shape is HAND-BUILT, not drawn from `world_strat()`. The generator's coverage of
+/// This shape is HAND-BUILT, not drawn from `world_strat()`. The generator's coverage of
 /// this exact branch is exercised by the main `strengthened_lane_availability_invariant` proptest, which
 /// runs `run_world` over 128 generated worlds and whose `world_strat()` can produce this
 /// healthy-saturated-primary + eligible-fallback shape — there, reaching the branch runs the same
-/// in-`run_world` `assert_served_by_fallback_not_primary`. So this test's job is narrow and named for it:
+/// in-`run_world` `assert_served_by_fallback_not_primary`. This test's scope is narrower:
 /// prove the fb_elig branch is REACHABLE on the real dispatch path for a concrete targeted shape.
 #[tokio::test]
 async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
@@ -559,7 +558,7 @@ async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
     );
 }
 
-/// The concrete Bug-1 witness on the REAL dispatch path, tied to the shared discriminating assertion:
+/// The concrete park-then-serve witness on the REAL dispatch path, tied to the shared assertion:
 /// a breaker-HEALTHY (Closed) but AT-CAPACITY primary under `fallback_pool` MUST spill to the eligible
 /// fallback (served by the fallback, primary serves zero) — never park-then-serve the primary.
 #[tokio::test]
@@ -617,7 +616,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     server.shutdown().await;
 }
 
-// ── Budget contract holds under full saturation for EVERY policy (§5/R6) ──────────────────────────
+// ── Budget contract holds under full saturation for EVERY policy ──────────────────────────────────
 
 /// The failover budget bound holds under FULL saturation for every `on_exhausted` policy: with the
 /// primary member(s) permanently at capacity, ingress→disposition stays within `FAILOVER_SECS + ε`

@@ -170,7 +170,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some("admin-tokens"),
         "a 1.5.3 admin chain is a list of bare PROVIDER NAMES"
     );
-    // The operator credential rode along onto the `identity-providers:` DEFINITION (audit §2).
+    // The operator credential rode along onto the `identity-providers:` DEFINITION.
     let token_env = get(&["identity-providers", "admin-tokens", "token", "env"])
         .as_str()
         .map(str::to_string);
@@ -877,7 +877,7 @@ pools:
     );
 
     // (b) the oidc provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
-    // `identity-providers:` DEFINITION (audit §2), which the chain now references by bare name — so
+    // `identity-providers:` DEFINITION, which the chain now references by bare name — so
     // the scope rewrite and the definition lift compose in ONE migrator run.
     let oidc_cap =
         dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str());
@@ -910,7 +910,7 @@ pools:
     );
 }
 
-/// task #139: `observability.emit_server_timing` -> `advanced.response_headers.server_timing`. The
+/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing`. The
 /// key is REMOVED from `observability` (else `deny_unknown_fields` rejects the migrated document —
 /// see `test_migrated_configs_boot_parse`-style coverage) and reappears nested under the new
 /// `advanced.response_headers` block, alongside any advanced fields that were already present.
@@ -1069,7 +1069,7 @@ fn migrate_emit_server_timing_absent_is_a_no_op() {
 /// or a top-level `metrics:` block LOUD-FAILS at boot/`--validate` — `detect_legacy_markers` names
 /// each retired key with the migrate breadcrumb.
 ///
-/// RED-BEFORE-GREEN: before this unit these keys parsed silently (they were live `ObservabilityCfg` /
+/// RED-BEFORE-GREEN: before 1.5.3 these keys parsed silently (they were live `ObservabilityCfg` /
 /// `MetricsCfg` fields), so `detect_legacy_markers` returned NO marker for them — this assertion fails
 /// on the pre-retirement tree.
 #[test]
@@ -1107,7 +1107,7 @@ pools: {}
 /// under `export.request-log-webhook.settings`, the metrics block under `export.prometheus.settings`,
 /// and the old keys are gone from `observability:` / the top level. Idempotent.
 ///
-/// RED-BEFORE-GREEN: `migrate_observability_export` did not exist before this unit, so the migrated
+/// RED-BEFORE-GREEN: `migrate_observability_export` did not exist before 1.5.3, so the migrated
 /// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
@@ -1165,7 +1165,7 @@ pools: {}
         dig(&doc, &["export", "metrics", "settings", "key_gauge_limit"]).and_then(|v| v.as_u64()),
         Some(1500),
     );
-    // 1.5.3 §3: `otlp_url` folds into an `otlp` export instance and the `observability:` BLOCK IS
+    // 1.5.3: `otlp_url` folds into an `otlp` export instance and the `observability:` BLOCK IS
     // DELETED outright — `export:` is the single telemetry-egress surface.
     assert_eq!(
         dig(&doc, &["export", "traces", "module"]).and_then(|v| v.as_str()),
@@ -1288,7 +1288,7 @@ global_hooks:
     );
 }
 
-// ── 1.5.3 GRAMMAR-LOCK migration GOLDENS (audit §2/§3/§4/§5) ─────────────────────────────────────
+// ── 1.5.3 GRAMMAR-LOCK migration GOLDENS ─────────────────────────────────────────────────────────
 //
 // One golden per retired key. Each asserts the same four things, because those four together are
 // what "a migration path" means for a break-once release:
@@ -1331,10 +1331,10 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
     (out, doc)
 }
 
-/// GOLDEN §5 — `admin_insecure: true` -> `admin_require_mtls: false` (the flag INVERTED so the safe
+/// GOLDEN — `admin_insecure: true` -> `admin_require_mtls: false` (the flag INVERTED so the safe
 /// posture is the default).
 ///
-/// RED-BEFORE-GREEN: `admin_require_mtls` did not exist before this unit, and `admin_insecure` was a
+/// RED-BEFORE-GREEN: `admin_require_mtls` did not exist before 1.5.3, and `admin_insecure` was a
 /// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
@@ -1366,10 +1366,10 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
     );
 }
 
-/// GOLDEN §4 — `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
+/// GOLDEN — `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
 /// default (whose credential reaches the upstream is a ROUTING property, not an inbound-auth one).
 ///
-/// RED-BEFORE-GREEN: `pools.upstream_credentials` did not exist before this unit and
+/// RED-BEFORE-GREEN: `pools.upstream_credentials` did not exist before 1.5.3 and
 /// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
@@ -1396,10 +1396,10 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
     );
 }
 
-/// GOLDEN §3 — the `observability:` BLOCK is DELETED and its last field folds into a `module: otlp`
+/// GOLDEN — the `observability:` BLOCK is DELETED and its last field folds into a `module: otlp`
 /// `export:` instance, so `export:` is the single telemetry-egress surface.
 ///
-/// RED-BEFORE-GREEN: there was no `otlp` export module before this unit, so `otlp_url` had nowhere
+/// RED-BEFORE-GREEN: there was no `otlp` export module before 1.5.3, so `otlp_url` had nowhere
 /// to go and the block could not be deleted without losing the trace sink.
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
@@ -1438,10 +1438,10 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
     );
 }
 
-/// GOLDEN §3 — the TYPE-KEYED `export:` block becomes the NAMED map (`<name>: { module, settings }`),
+/// GOLDEN — the TYPE-KEYED `export:` block becomes the NAMED map (`<name>: { module, settings }`),
 /// which is what makes two instances of one module expressible at all.
 ///
-/// RED-BEFORE-GREEN: the type-keyed shape was the live grammar before this unit, so there was
+/// RED-BEFORE-GREEN: the type-keyed shape was the live grammar before 1.5.3, so there was
 /// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
@@ -1487,15 +1487,15 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     assert!(export.prometheus.is_some());
 }
 
-/// GOLDEN §2 + A7 — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
+/// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
 /// lift into ONE `identity-providers:` definition per module, referenced by bare name.
 ///
-/// This is THE point of audit §2, and the assertion that proves it is the DEDUPE: `oidc` appears in
+/// This is THE point of the redesign, and the assertion that proves it is the DEDUPE: `oidc` appears in
 /// BOTH chains and in `methods:` in the source, and there is exactly ONE definition afterwards,
 /// carrying the union of what the three sites contributed. Under the retired grammar the operator
 /// wrote those settings three times and nothing stopped the copies from drifting.
 ///
-/// RED-BEFORE-GREEN: `identity-providers:` did not exist before this unit, so there was no map to
+/// RED-BEFORE-GREEN: `identity-providers:` did not exist before 1.5.3, so there was no map to
 /// converge onto and the inline form was the live grammar.
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
@@ -1662,7 +1662,7 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
     );
 }
 
-/// AUDIT HIGH-2 — A MIGRATION MUST NEVER SILENTLY DROP OPERATOR CONFIG. `root.remove()` takes the
+/// A MIGRATION MUST NEVER SILENTLY DROP OPERATOR CONFIG. `root.remove()` takes the
 /// `auth:` key whatever its shape, so a MALFORMED block (`auth: null`, `auth: []`, a scalar — real
 /// hand-edited shapes) hit the `let … else` and returned, leaving the migrated document with NO
 /// `auth:` key and NO ledger entry at all. The block must survive VERBATIM and be named in the todos.
@@ -1732,7 +1732,7 @@ fn migrate_never_drops_a_malformed_identity_providers_block() {
     );
 }
 
-/// AUDIT MED-1 — the `observability:`/`metrics:` blocks ARE deleted in 1.5.3 (retired sections), so a
+/// The `observability:`/`metrics:` blocks ARE deleted in 1.5.3 (retired sections), so a
 /// malformed one legitimately disappears; what must not happen is it disappearing with NO record. The
 /// deletion is recorded in `changes` so an operator diffing the ledger sees it.
 ///
@@ -1763,7 +1763,7 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
     );
 }
 
-/// AUDIT HIGH-3 — THE DEDUPE MUST NOT EAT A PLANE'S SETTINGS. One module configured on BOTH auth
+/// THE DEDUPE MUST NOT EAT A PLANE'S SETTINGS. One module configured on BOTH auth
 /// planes with DIFFERENT settings (the data chain against one OIDC issuer, the admin chain against
 /// another) was deduped into ONE definition carrying only the FIRST plane's settings — so the
 /// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
@@ -1922,7 +1922,7 @@ pools: {}
     );
 }
 
-/// LOW-2 (round 4): an APPROXIMATED window may never loosen the operator's cap.
+/// An APPROXIMATED window may never loosen the operator's cap.
 ///
 /// `weekly -> month` errs TIGHTER (a week's allowance has to last a month) — fail-closed, fine.
 /// `yearly -> month` errs LOOSER, and the migrator carried the AMOUNT over unchanged: the operator's
@@ -2072,7 +2072,7 @@ pools:
     }
 }
 
-/// 1.5.3 §C — the redis→valkey rename. The first-party Valkey store plugin was renamed
+/// 1.5.3 — the redis→valkey rename. The first-party Valkey store plugin was renamed
 /// wholesale: repo, crate, artifact, manifest NAME (`busbar-store-valkey-plugin`) and the config
 /// ALIAS (`valkey`). Nothing resolves `redis` any more — the loader matches a `store.module:` against
 /// the installed manifests' `name`/`alias`, and neither spelling exists on the renamed artifact — so

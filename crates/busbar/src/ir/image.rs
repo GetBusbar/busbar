@@ -15,7 +15,7 @@ use crate::billing::{Billing, TokenUsage};
 use crate::lossless::SourceScopedExtra;
 use crate::media::ImageOutput;
 
-/// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404 (m3).
+/// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ImageOp {
     #[default]

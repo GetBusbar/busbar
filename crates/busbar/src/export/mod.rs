@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Built-in observability EXPORTERS (design §2/§7): the distribution half of the observability
+//! Built-in observability EXPORTERS: the distribution half of the observability
 //! streams, lifted OUT of core into compiled-in modules that CONSUME the `export` plugin kind + the
 //! plugin HTTP endpoint registration. PRESENCE + settings (the `export:` config block,
 //! [`crate::config::ExportCfg`]) is the on/off switch, exactly like the built-in `env`/`file` secret
 //! modules — no config boolean, no dynamic tarball.
 //!
-//! The COLLECTION half stays core (design §9): the Prometheus recorder + the ~57 emit sites + the
+//! The COLLECTION half stays core: the Prometheus recorder + the ~57 emit sites + the
 //! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
@@ -32,7 +32,7 @@ use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The live plugin-route declarations the built-in exporters contribute (design §5) — today just the
+/// The live plugin-route declarations the built-in exporters contribute — today just the
 /// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
 ///
@@ -49,7 +49,7 @@ use std::sync::Arc;
 ///   PUTs the config. The metrics recorder is additionally `OnceLock`-guarded and installed once.
 ///
 /// This is the SAME boot-frozen mechanism already documented for `max_inbound_concurrent` in
-/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields` — and, since audit finding E1, the
+/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields`, and the
 /// `export:` named map REPORTS it the same way: a mutation that introduces a route path the router
 /// never registered at boot answers with `reload_to_apply` naming that path plus a `note` saying a
 /// restart is required ([`crate::plugin_routes::paths_awaiting_restart`]). The apply is still a no-op

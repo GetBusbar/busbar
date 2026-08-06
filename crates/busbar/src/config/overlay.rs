@@ -682,7 +682,7 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
         OverlayReadState::Absent => None,
         OverlayReadState::Loaded(doc) => Some(*doc),
         OverlayReadState::Unreadable => {
-            // ADMISSION-CONTROL SIGNAL (audit LOW): a torn overlay drops every API-registered hook,
+            // ADMISSION-CONTROL SIGNAL: a torn overlay drops every API-registered hook,
             // which includes SECURITY GATES — so admission control silently reverts to base config. Warn
             // LOUD and name gates explicitly, aligning with the fail-closed hook discipline: an operator
             // who registered a gate via the API must not silently lose it to a corrupt overlay without a
@@ -874,7 +874,7 @@ pub(crate) struct UnparseableNamedDef {
 /// Every definition STORED in the overlay at `path` under `section` that this binary CANNOT parse —
 /// `name -> {error, raw}`, empty when everything parses (and when there is no overlay at all).
 ///
-/// MED-2/LOW-1. [`apply_named_maps_to_deploy`] drops such an entry with a `tracing::error!` and then
+/// [`apply_named_maps_to_deploy`] drops such an entry with a `tracing::error!` and then
 /// omits it forever: the definition sits in the operator's overlay, is never applied, and NOTHING
 /// outside a boot log line says so — the admin read simply showed the name as absent, which is
 /// indistinguishable from "I never wrote it". This is the read-side signal that closes that: the

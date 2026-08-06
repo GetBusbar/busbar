@@ -403,7 +403,7 @@ pub(crate) struct RootCfg {
     pub(crate) pools: HashMap<String, PoolCfg>,
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
     /// `pools.upstream_credentials:` key (1.5.3 — moved off the retired `auth.upstream_credentials:`).
-    /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule, audit §4).
+    /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule).
     pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
     /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
     /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
@@ -489,7 +489,7 @@ pub(crate) struct TlsCfg {
     pub(crate) client_ca: Option<SecretRef>,
 }
 
-/// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3, audit §2). The map
+/// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map
 /// KEY is the provider INSTANCE name — the bare name `auth.chain:`, `auth.admin_auth:` and
 /// `role_bindings:` all reference — and this value says which `kind: auth` module backs it, how it is
 /// configured, and what admin ceiling it carries.
@@ -531,7 +531,7 @@ pub(crate) struct IdentityProviderCfg {
     /// page and example config copied it from here; they told operators to write a config the binary
     /// refuses. The value list and the "absent = most restrictive" prose below now agree.)
     ///
-    /// 1.5.3 moved this ONTO the definition (audit §2): it used to sit on a data-plane CHAIN entry,
+    /// 1.5.3 moved this ONTO the definition: it used to sit on a data-plane CHAIN entry,
     /// which was incoherent — an admin ceiling is a property of the identity source, not of one
     /// plane's reference to it. Absent = the MOST RESTRICTIVE default (`read-only`) for every
     /// provider EXCEPT the built-in `admin-tokens` operator credential, which is `full` by
@@ -559,7 +559,7 @@ pub(crate) struct IdentityProviderCfg {
 }
 
 /// The top-level `identity-providers:` map: provider NAME → [`IdentityProviderCfg`]. Insertion-ordered
-/// so the hosted-login button order (audit §2 / A7) is the operator's config order.
+/// so the hosted-login button order is the operator's config order.
 pub(crate) type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
 
 /// A RESOLVED auth-chain entry: one `auth.chain:` / `auth.admin_auth:` NAME joined to the
@@ -670,7 +670,7 @@ pub(crate) type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 
 /// The WIRE shape of the `auth:` block (1.5.3). `chain:` / `admin_auth:` are lists of bare NAMES
 /// referencing the top-level `identity-providers:` map (or a bare built-in) — the inline
-/// `- <module>: { settings: … }` entry form is REMOVED, which is the whole point of audit §2.
+/// `- <module>: { settings: … }` entry form is REMOVED: a provider is defined once, by name.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct AuthDeployCfg {
@@ -788,19 +788,19 @@ pub(crate) const KEYS_MODULE: &str = "keys";
 pub(crate) const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
-/// `identity-providers:` definition at all (audit §0/§2). A definition entry for one of these exists
+/// `identity-providers:` definition at all. A definition entry for one of these exists
 /// only when it needs config — `admin-tokens` carrying its `token:` secret ref is the one real case.
 pub(crate) const BUILTIN_IDENTITY_PROVIDERS: &[&str] = &[KEYS_MODULE, ADMIN_TOKENS_MODULE];
 
 /// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits
-/// `max_admin_scope:` (audit §2). "Most restrictive" is `read-only`, matching the pre-1.5.3 behavior
+/// `max_admin_scope:`. "Most restrictive" is `read-only`, matching the pre-1.5.3 behavior
 /// exactly (the retired chain-entry field defaulted the same way); the built-in `admin-tokens`
 /// operator credential is EXEMPT (full by definition), which is why this is applied by
 /// [`resolve_auth`] only to non-`admin-tokens` providers.
 pub(crate) const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 
 /// Join each `auth.chain:` / `auth.admin_auth:` NAME to its `identity-providers:` definition, producing
-/// the RESOLVED [`AuthCfg`] every runtime consumer reads (audit §2).
+/// the RESOLVED [`AuthCfg`] every runtime consumer reads.
 ///
 /// The DEDUPE property this whole redesign exists for: one provider definition referenced from BOTH
 /// chains yields two [`AuthChainEntry`]s that share one definition — same module, same settings, same
@@ -869,7 +869,7 @@ pub(crate) fn resolve_auth(
                     settings: def.settings.clone(),
                 }
             }
-            // A BARE BUILT-IN needs no definition (audit §0). Anything else is a dangling reference.
+            // A BARE BUILT-IN needs no definition. Anything else is a dangling reference.
             None if BUILTIN_IDENTITY_PROVIDERS.contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }
@@ -928,7 +928,7 @@ pub(crate) fn resolve_auth(
 /// Append a targeted migration hint to a config-deserialize error when it is the removed 1.3.0
 /// `auth.mode:` key (rejected by `AuthCfg`'s `deny_unknown_fields`), so an upgrading operator gets
 /// actionable guidance instead of serde's bare "unknown field `mode`, expected one of …". Additive:
-/// any other error is returned verbatim. (1.4.0 audit, config-compat — the key was renamed to
+/// any other error is returned verbatim. (1.4.0 config compatibility — the key was renamed to
 /// `auth.chain:` / `auth.upstream_credentials:` but the failure gave no upgrade breadcrumb.)
 pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
     let msg = err.to_string();
@@ -945,7 +945,7 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
     {
         // 1.5.3 HARD rename of the tap `at:` vocabulary (Route→Candidate, Attempt→Routing,
         // Completion→Response). Serde rejects the old wire string as an unknown variant with no
-        // upgrade breadcrumb; name the old AND the new value + point at the migrator (§1.2).
+        // upgrade breadcrumb; name the old AND the new value + point at the migrator.
         format!(
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
@@ -955,7 +955,7 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
         .copied()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
-        // 1.5.3 observability→export lift-out (§2.1, §7). Serde rejects the retired key as an unknown
+        // 1.5.3 observability→export lift-out. Serde rejects the retired key as an unknown
         // field; name the old key AND its new home under the built-in exporters + point at the
         // migrator, exactly like the HookStage rename above.
         format!(
@@ -968,7 +968,7 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
         .copied()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
-        // The 1.5.3 GRAMMAR-LOCK retirements (audit §2/§3/§4/§5). Same shared-table discipline as
+        // The 1.5.3 GRAMMAR-LOCK retirements. Same shared-table discipline as
         // the two branches above: one table drives this hint, the `detect_legacy_markers` boot
         // loud-fail, AND the migrator's rewrite, so the three can never disagree about a key.
         format!(
@@ -988,20 +988,20 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
 /// is frozen additive-only afterwards.
 pub(crate) const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
-    // §3: the whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
+    // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
     // retired leaves reports the block-level move (the leaves have nowhere left to live).
     (
         "observability",
         "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / \
          `module: otlp` instance (all telemetry egress is now the single `export:` surface)",
     ),
-    // §5: inverted so the SAFE posture is the default.
+    // Inverted so the SAFE posture is the default.
     ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)"),
-    // §4: whose credential reaches the upstream is a routing property, not an inbound-auth one.
+    // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
     ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override"),
-    // §2: the IdP is DEFINED once and REFERENCED by name.
+    // The IdP is DEFINED once and REFERENCED by name.
     ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)"),
-    // §3: the last `observability:` field folded into `export:`.
+    // The last `observability:` field folded into `export:`.
     ("otlp_url", "an `export:` instance with `module: otlp` and `settings.url`"),
     ("otlp_endpoint", "an `export:` instance with `module: otlp` and `settings.url`"),
 ];
@@ -1359,7 +1359,7 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
 #[derive(Debug, Clone)]
 pub(crate) struct PoolCfg {
     pub(crate) members: Vec<PoolMember>,
-    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (audit §4: a
+    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (a
     /// SCALAR, so the entity value REPLACES the inherited one — it does not union). `None` = inherit
     /// the `pools:`-level default. Moved here (out of the retired `auth.upstream_credentials:`) in
     /// 1.5.3: whose credential reaches the upstream is a routing property of the pool, not of the
@@ -1526,11 +1526,11 @@ pub(crate) const RESERVED_POOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_cre
 pub(crate) struct PoolsCfg {
     /// The ALL-POOLS attach list — hook names that fire for EVERY pool (the reserved `pools.hooks:`
     /// key). Empty when absent. Firing order: these fire BEFORE a pool's own hooks. LIST ⇒ ADDITIVE
-    /// (audit §4): a pool's own `hooks:` are appended to this, deduped by name (see freeze blocker
-    /// A4 / [`combine_hook_refs`]).
+    /// a pool's own `hooks:` are appended to this, deduped by name (see
+    /// [`combine_hook_refs`]).
     pub(crate) all_pool_hooks: Vec<String>,
     /// The ALL-POOLS `upstream_credentials:` default (the reserved `pools.upstream_credentials:`
-    /// key). SCALAR ⇒ OVERRIDE (audit §4): a pool's own value REPLACES this. `None` = absent ⇒ the
+    /// key). SCALAR ⇒ OVERRIDE: a pool's own value REPLACES this. `None` = absent ⇒ the
     /// built-in default (`own`).
     pub(crate) all_pool_upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// The real pools, keyed by name (every top-level key except [`RESERVED_POOLS_SECTION_KEYS`]).
@@ -1603,10 +1603,10 @@ impl<'de> Deserialize<'de> for PoolsCfg {
     }
 }
 
-/// Freeze blocker **A4** — the ADDITIVE-LIST DEDUPE rule, in ONE place so every plane section that
+/// The ADDITIVE-LIST DEDUPE rule, in ONE place so every plane section that
 /// ships an additive `hooks:` list (today `pools:`; later `tools:`/`agents:`) combines identically.
 ///
-/// The audit's combine rule (§4) says section-level LISTS are ADDITIVE, but "additive" alone does not
+/// The locked combine rule says section-level LISTS are ADDITIVE, but "additive" alone does not
 /// say what happens when the SAME hook name appears in BOTH `pools.hooks:` and a pool's own `hooks:`.
 /// Both answers were defensible, so 1.5.3 PINS one forever:
 ///
@@ -1616,7 +1616,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
 /// Rationale: attaching a hook to all pools and then *also* naming it on one pool is the natural way
 /// an operator writes "…and definitely on this one" — reading that as "fire twice" would silently
 /// double-charge a gate's latency budget and double-count a tap's audit record. Deduping by NAME is
-/// safe precisely because the name IS the instance (audit §0): two DIFFERENT configurations of one
+/// safe precisely because the name IS the instance: two DIFFERENT configurations of one
 /// module are two different NAMES, so dedupe can never collapse two distinct hooks.
 pub(crate) fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + entity.len());
@@ -1827,7 +1827,7 @@ pub(crate) fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 /// the runtime register/PUT API). Two reasons, one rule:
 /// - REGISTRY UNIQUENESS: the native ranking strategies + built-in auth modules already answer to
 ///   their names — two things can't answer to one name.
-/// - UNION DISAMBIGUATION (3rd-party audit #8): `on_error` is a string union of "reserved terminal"
+/// - UNION DISAMBIGUATION: `on_error` is a string union of "reserved terminal"
 ///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
 ///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
 ///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
@@ -1981,7 +1981,7 @@ pub(crate) struct HookCfg {
     // `service::settings_keys(&…settings)`, or passes the tree through
     // `service::redact_settings_bags` first.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
-    /// The Feature-2 "decision observability" DECLARED-SIGNAL surface (task #141): the typed
+    /// The "decision observability" DECLARED-SIGNAL surface: the typed
     /// [`busbar_api::Signal`] catalog entries this hook wants computed + projected onto its own
     /// wire payload. Default empty (no signal beyond the always-on core fields) — the zero-cost
     /// default this whole design protects. Parsed via `Signal`'s own `#[serde(rename_all =
@@ -2434,7 +2434,7 @@ fn default_admin_listen() -> String {
 }
 
 /// The serde default for `admin_require_mtls:` — **true**. 1.5.3 inverted the retired
-/// `admin_insecure:` boolean (audit §5): the SAFE posture is the DEFAULT and the waiver is the
+/// `admin_insecure:` boolean: the SAFE posture is the DEFAULT and the waiver is the
 /// explicit `false`, so a config that says nothing gets the guard rather than the hole.
 fn default_admin_require_mtls() -> bool {
     true
@@ -2597,7 +2597,7 @@ pub(crate) struct DeployCfg {
     /// `admin_require_mtls: false`.
     #[serde(default)]
     pub(crate) admin_tls: Option<TlsCfg>,
-    /// TOP-LEVEL boot-policy flag (audit §5): does a network-exposed admin plane REQUIRE mTLS?
+    /// TOP-LEVEL boot-policy flag: does a network-exposed admin plane REQUIRE mTLS?
     /// `true` (the DEFAULT) ⇒ a non-loopback `admin_listen` without `admin_tls.client_ca` REFUSES to
     /// boot. `false` ⇒ the operator deliberately accepts a token-only admin plane on an exposed
     /// address (mTLS terminated upstream by a mesh). Loopback binds are exempt either way.
@@ -2610,7 +2610,7 @@ pub(crate) struct DeployCfg {
     #[serde(default = "default_admin_require_mtls")]
     pub(crate) admin_require_mtls: bool,
     pub(crate) auth: Option<AuthDeployCfg>,
-    /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3, audit §2): provider NAME →
+    /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3): provider NAME →
     /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from
     /// `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. Absent ⇒ only the bare built-ins
     /// (`keys` / `admin-tokens`) are referenceable.
@@ -2656,7 +2656,7 @@ pub(crate) struct DeployCfg {
     /// single telemetry-egress surface. Absent/empty ⇒ collection inert (no recorder, no request-log
     /// sink, no tracer).
     ///
-    /// 1.5.3 also DELETED the `observability:` block outright (audit §3): its last remaining field
+    /// 1.5.3 also DELETED the `observability:` block outright: its last remaining field
     /// (`otlp_url`) is now an `export:` instance with `module: otlp`. A config still carrying
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
@@ -2976,7 +2976,7 @@ impl PluginsCfg {
             publishers.insert(p.name.clone(), key);
         }
         // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
-        // fails closed at the comparator, refusing just the one floored plugin, per class-12 D2) but
+        // fails closed at the comparator, refusing just the one floored plugin) but
         // it IS worth telling the operator about early, before an artifact is even present: an
         // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
         // it is armed should not have to discover that from a missing `--list-plugins` row.
@@ -3071,7 +3071,7 @@ fn default_governance_store() -> String {
 ///
 /// Every OTHER plugin-instance kind in 1.5.3 is a top-level NAMED-DEFINITION map — `hooks:`,
 /// `identity-providers:`, `export:`, `store:` are all `name → {module, settings, …}` and are
-/// referenced by bare name (audit §0). **`secrets:` is deliberately NOT, and must stay that way.**
+/// referenced by bare name. **`secrets:` is deliberately NOT, and must stay that way.**
 ///
 /// The reason is that `secrets:` does not configure an INSTANCE. It configures a MODULE's `open()` —
 /// the one-time initialization of the secret backend itself. There is nothing to reference by name:
@@ -3130,7 +3130,7 @@ pub(crate) struct AdvancedCfg {
     #[serde(default)]
     pub(crate) upstream_h2_prior_knowledge: bool,
     /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response
-    /// header (`task #139`). Every busbar-injected header is a fingerprint an unauthenticated client
+    /// header. Every busbar-injected header is a fingerprint an unauthenticated client
     /// can observe on every response, so each one is OFF by default and an operator opts IN
     /// per-header. See `docs/observability.md#response-headers` for the full catalogue. BOOT-TIME
     /// (restart-to-apply), same freezing mechanism as the rest of this struct's non-`Patch`able
@@ -3154,7 +3154,7 @@ impl Default for AdvancedCfg {
     }
 }
 
-/// The `advanced.response_headers:` block (task #139): opt-in toggles for every busbar-INJECTED
+/// The `advanced.response_headers:` block: opt-in toggles for every busbar-INJECTED
 /// response header, unified in ONE place instead of each header having its own bespoke gate (or, as
 /// `x-busbar-route-policy`/`-target` had before this, NO gate at all). Every field defaults `false`
 /// (invisible out of the box) — see each field's doc comment for the header it controls and why it
@@ -3163,7 +3163,7 @@ impl Default for AdvancedCfg {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseHeadersCfg {
     /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from
-    /// the 1.5.x `observability.emit_server_timing` (C7-style rename, task #139); the old key is now
+    /// the 1.5.x `observability.emit_server_timing`; the old key is now
     /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`) — run
     /// `busbar --migrate-config` to move it. The header is a useful latency probe, but it is also an
     /// in-band busbar fingerprint on an otherwise anti-fingerprinting gateway — and the one
@@ -3275,7 +3275,7 @@ pub(crate) struct RateEntryCfg {
     pub(crate) cache_write_utok: f64,
 }
 
-/// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3, audit §0/§3). The map KEY is the
+/// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the
 /// exporter INSTANCE name; `module:` says which built-in exporter backs it and `settings:` is the
 /// opaque per-module bag — the SAME shape as `hooks:` / `identity-providers:` / `store:`.
 ///
@@ -3283,7 +3283,7 @@ pub(crate) struct RateEntryCfg {
 /// may back MULTIPLE named instances: two `request-log-webhook`s shipping to two different URLs is a
 /// real deployment (app logs + SIEM) that the type-keyed shape could not express at all.
 ///
-/// The four modules map onto the export-ABI streams (audit §3): `prometheus` → Metrics (PULL
+/// The four modules map onto the export-ABI streams: `prometheus` → Metrics (PULL
 /// `/metrics`), `request-log-webhook` / `request-log-file` → Logs (PUSH per request), `otlp` →
 /// Traces. `otlp` ABSORBS the DELETED `observability:` block's only remaining field (`otlp_url`), so
 /// `export:` is now the single telemetry-egress surface.
@@ -3312,8 +3312,7 @@ pub(crate) struct ExportDefCfg {
     /// DISCLOSURE, and if `fields:` were additive then a future release that adds a field to a
     /// stream's defaults would SILENTLY WIDEN what every already-configured sink receives. Override
     /// means the operator's list is exhaustive, so a field added next year can never leak into a
-    /// sink someone configured today. (Recorded next to the combine rule in
-    /// `design/audit-decisions-1.5.3.md`.)
+    /// sink someone configured today.
     ///
     /// It bounds DISCLOSURE but must not break STRUCTURE: omitting a PINNED field (the join key, the
     /// chain link) is a LOUD config error, never a silent no-op.
@@ -3472,7 +3471,7 @@ pub(crate) struct FileSettings {
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
-/// `observability.otlp_url` (audit §3). The tracer/log-init machinery in `crate::observability` is
+/// `observability.otlp_url`. The tracer/log-init machinery in `crate::observability` is
 /// unchanged; only the config surface that drives it moved.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -4230,7 +4229,7 @@ pub(crate) fn resolve(
     }
 
     // Join every `auth.chain:`/`auth.admin_auth:` NAME to its `identity-providers:` definition
-    // (audit §2 — define once, reference by name). Dangling references land in `errors`.
+    // (define once, reference by name). Dangling references land in `errors`.
     let resolved_auth = deploy
         .auth
         .as_ref()

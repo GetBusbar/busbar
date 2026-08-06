@@ -89,7 +89,7 @@ impl WireBody {
 }
 
 /// A request that could not be parsed into this operation's IR — rendered as a caller-dialect 4xx
-/// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the m3 second 404 site
+/// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the second 404 site
 /// (`ImageIr.op` unsupported for the model) — distinct from handler-absence, same terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IngressReject {

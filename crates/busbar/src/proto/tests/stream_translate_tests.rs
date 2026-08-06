@@ -153,10 +153,9 @@ fn encode_wire_frame(
 ///     real OpenAI-compatible upstream sends. Without this the fixture only ever exercises
 ///     `StreamTranslate`'s SINGLE-message_delta terminal path, never the trailing-usage-only
 ///     `MessageDelta` merge branch (`on_usage_only_delta` / `folds_terminal_usage`'s
-///     `merge_trailing_usage`) that a real OpenAI-egress stream drives on every request (an
-///     adversarial review of this exact test caught that gap; this closes it for OpenAI, the only
-///     protocol besides Bedrock whose `new_stream_framing()` isn't the inert
-///     `PassthroughFraming`).
+///     `merge_trailing_usage`) that a real OpenAI-egress stream drives on every request. That gap
+///     is closed here for OpenAI, the only protocol besides Bedrock whose `new_stream_framing()`
+///     isn't the inert `PassthroughFraming`.
 ///
 /// For every protocol where both seams are no-ops (`PassthroughFraming`), the event is written
 /// as-is, unchanged from the diagonal test's plain `write_response_event` loop.
@@ -700,7 +699,7 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
         assert_eq!(ir.usage.cache_read_input_tokens, None);
         let out = p.writer().write_response(&ir);
         assert_eq!(out["usage"]["input_tokens"], json!(12));
-        // Finding 6: unlike Chat Completions (where `prompt_tokens_details` is optional), the Responses
+        // Unlike Chat Completions (where `prompt_tokens_details` is optional), the Responses
         // API SDKs type `input_tokens_details`/`output_tokens_details` and `total_tokens` as REQUIRED,
         // so they are ALWAYS emitted — `cached_tokens`/`reasoning_tokens` are 0 with no cache, not
         // omitted.
@@ -1423,7 +1422,7 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
     );
     assert!(out.contains("message_stop"), "terminator; got:\n{out}");
 
-    // Finding 1 (delta-before-stop): Bedrock splits stop_reason (`messageStop`) from usage
+    // Delta-before-stop: Bedrock splits stop_reason (`messageStop`) from usage
     // (`metadata`); the egress reader collapses them into ONE combined IR `MessageDelta` emitted
     // BEFORE the terminal `MessageStop`. The Anthropic ingress writer must therefore emit
     // `message_delta` BEFORE `message_stop` — the native non-eventstream order. (Before the fix
@@ -1435,7 +1434,7 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
         "message_delta must precede message_stop (native order); got:\n{out}"
     );
 
-    // Finding 2: each translated Anthropic SSE data body carries the native top-level `type`
+    // Each translated Anthropic SSE data body carries the native top-level `type`
     // field matching its `event:` header. Assert it for the delta and the terminal stop produced
     // on this cross-protocol path.
     assert!(
@@ -1453,7 +1452,7 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
     );
 }
 
-/// Finding 1 regression at the reader→writer level (independent of eventstream framing): the
+/// Delta-before-stop regression at the reader→writer level (independent of eventstream framing): the
 /// Bedrock reader must emit the combined `MessageDelta` BEFORE the terminal `MessageStop`, so the
 /// Anthropic writer maps them to `message_delta` then `message_stop` — the native order. Guards
 /// against a reorder regressing back to MessageStop-then-MessageDelta (which made the Anthropic
@@ -1607,7 +1606,7 @@ fn openai_egress_chunk_identity_and_trailing_usage_byte_shape() {
     }
 }
 
-/// FINDING 2 (unsolicited trailing usage chunk): a client that did NOT send
+/// Unsolicited trailing usage chunk: a client that did NOT send
 /// `stream_options.include_usage` must receive a stream with NO usage anywhere — no trailing
 /// `{choices:[], usage}` chunk (which would `choices[0]` IndexError) and no folded usage on the finish
 /// chunk. This is the default (opt-out) framing state. Billing is unaffected: it reads the IR-side
@@ -1673,7 +1672,7 @@ fn openai_egress_without_include_usage_emits_no_usage_chunk() {
     );
 }
 
-/// FINDING 1 (0-based streaming tool_calls index): an Anthropic backend stream with a leading text
+/// 0-based streaming tool_calls index: an Anthropic backend stream with a leading text
 /// block (block 0) followed by TWO tool_use blocks (blocks 1 and 2) must translate to an OpenAI
 /// ingress stream whose `tool_calls[].index` starts at 0 and increments per tool call — NOT the raw
 /// IR block indices 1 and 2. OpenAI's SDK argument accumulators key on that index; a first tool call
@@ -1877,7 +1876,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_binary_frames() {
     );
     // The combined IR MessageDelta (stop_reason + usage) must FAN OUT into BOTH a `messageStop`
     // frame AND a following `metadata` frame carrying the real usage — the native two-frame
-    // ConverseStream sequence (finding: messageStop+metadata fan-out). A single Anthropic
+    // ConverseStream sequence (messageStop+metadata fan-out). A single Anthropic
     // `message_delta` thus reproduces the genuine Bedrock pair.
     assert!(
         types.contains(&"metadata"),
@@ -2249,8 +2248,8 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
 /// reusing one writer across rows would make a later `None`/`None` row a statement about the
 /// PREVIOUS row's writer having cleaned up after itself, not a property of a virgin stream.
 ///
-/// The two protocol-axis assertions below are GATES, not RED proofs for THIS test — each is
-/// independently provable-to-fail per the design doc (§3B): deleting the `PROTO_COHERE` arm from
+/// The two protocol-axis assertions below are GATES, not the property under test here — each is
+/// independently provable-to-fail: deleting the `PROTO_COHERE` arm from
 /// `protocol_for` trips the first; appending a 7th name to `KNOWN_PROTOCOLS` trips the second. A
 /// naive `assert_eq!(rows.len(), KNOWN_PROTOCOLS.len())` would be a TAUTOLOGY (both sides move
 /// together, since rows are built BY iterating `KNOWN_PROTOCOLS`) and is deliberately not used.
@@ -2311,8 +2310,8 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
 /// projection (`BedrockWriter`'s `BlockStart` arm maps `IrBlockMeta::Image` to `None`), but the
 /// `BlockStop` arm previously emitted `contentBlockStop` unconditionally regardless of whether the
 /// start was suppressed — an orphan close for an index a real ConverseStream client never saw
-/// opened (finding 7.2). Must NOT assert contiguity: index 0 gets no `contentBlockStart` on this
-/// path either before or after the fix (§3F declines a wire-density claim); the fix only removes
+/// opened. Must NOT assert contiguity: index 0 gets no `contentBlockStart` on this
+/// path either before or after the fix; the fix only removes
 /// the invalid orphan STOP frame.
 #[test]
 fn anthropic_image_stream_to_bedrock_ingress_has_no_orphan_content_block_stop() {
@@ -2417,7 +2416,7 @@ fn test_translate_error_to_bedrock_ingress_is_exception_frame() {
     );
 }
 
-/// MEDIUM/conformance regression: on a cross-protocol Gemini-INGRESS stream, the MessageStart
+/// Conformance regression: on a cross-protocol Gemini-INGRESS stream, the MessageStart
 /// frame must still carry a `responseId` even though `StreamTranslate` strips the foreign id/model
 /// to `None` — a native google-genai SDK reads `chunk.response_id` off the first chunk. Previously
 /// the Gemini writer emitted NO frame when both id and model were `None`, leaving the client with
@@ -2637,7 +2636,7 @@ fn test_translate_openai_egress_to_anthropic_ingress() {
     );
 }
 
-// Finding 1 (input-token loss across the IR on streaming). Anthropic's SSE carries
+// Input-token loss across the IR on streaming. Anthropic's SSE carries
 // `usage.input_tokens` ONLY on `message_start`; its `message_delta` carries `output_tokens`
 // alone. On a cross-protocol hop OUT of an Anthropic backend the terminal `MessageDelta.usage`
 // therefore had `input_tokens == 0` and the prompt-token count vanished. `StreamTranslate` now
@@ -2679,7 +2678,7 @@ fn test_translate_anthropic_egress_to_gemini_ingress_preserves_input_tokens() {
     );
 }
 
-// Finding 1, same-protocol round-trip: an Anthropic stream read into IR events and written back
+// Input-token carry, same-protocol round-trip: an Anthropic stream read into IR events and written back
 // out by the Anthropic writer must carry input tokens (message_start) AND output tokens
 // (message_delta) — neither half lost. (Same-protocol forwarding is byte-passthrough in prod and
 // never hits StreamTranslate; this asserts the reader+writer IR contract underneath that.)
@@ -2807,7 +2806,7 @@ fn test_translate_anthropic_egress_to_responses_ingress() {
     );
 }
 
-// MEDIUM/conformance (proto/mod.rs fan-out): OpenAI egress with `stream_options.include_usage`
+// Conformance (proto/mod.rs fan-out): OpenAI egress with `stream_options.include_usage`
 // splits its terminal info across TWO chunks — a finish_reason chunk with NO usage, then a
 // usage-only chunk. A native ConverseStream emits EXACTLY ONE `metadata` frame; the pre-fix
 // fan-out emitted a zero-usage metadata for the first AND a real metadata for the second. Assert
@@ -2884,8 +2883,7 @@ fn test_translate_openai_include_usage_to_anthropic_ingress_no_post_stop_message
 
     // The deferred terminal `message_delta` must carry the MERGED usage from the trailing include_usage
     // chunk (prompt 7 / completion 11), NOT the pre-merge zeros — an ordering-only check would pass a
-    // regression that flushed the fold with zero usage, silently zeroing token accounting. (1.4.0 audit:
-    // tighten the fold assertion beyond frame ordering.)
+    // regression that flushed the fold with zero usage, silently zeroing token accounting.
     assert!(
         wire.contains("\"usage\":{\"input_tokens\":7,\"output_tokens\":11}"),
         "the folded terminal message_delta must carry the merged usage (7 in / 11 out); wire:\n{wire}"
@@ -2905,7 +2903,7 @@ fn test_translate_openai_include_usage_to_anthropic_ingress_no_post_stop_message
     );
 }
 
-// MEDIUM/conformance (proto/mod.rs fan-out): DEFAULT OpenAI streaming — NO
+// Conformance (proto/mod.rs fan-out): DEFAULT OpenAI streaming — NO
 // `stream_options.include_usage` — the finish chunk carries no usage AND there is NO trailing
 // usage-only chunk. The pre-fix fan-out DEFERRED the `metadata` frame to a trailing delta that
 // never arrived, so the ConverseStream ended with messageStop but NO `metadata` frame at all (a
@@ -3177,7 +3175,7 @@ fn test_feed_aborts_on_unbounded_buffer() {
     );
 }
 
-/// MEDIUM/conformance (StreamTranslate::abort / finish for bedrock ingress): when the SSE
+/// Conformance (`StreamTranslate::abort` / `finish` for bedrock ingress): when the SSE
 /// reassembly buffer overflows MAX_BUF without a frame terminator on a BEDROCK-INGRESS stream, the
 /// stream must NOT end with a bare TCP close. A real ConverseStream ALWAYS terminates with
 /// messageStop+metadata or a modeled exception frame; a bare close with neither is structurally
@@ -4028,7 +4026,7 @@ fn test_bedrock_and_responses_register() {
     );
 }
 
-/// R3-A-b (SAME-PROTOCOL verbatim strip, OPTED-OUT client): busbar forces
+/// SAME-PROTOCOL verbatim strip, OPTED-OUT client: busbar forces
 /// `stream_options.include_usage` UPSTREAM so it can bill, so an OpenAI upstream emits a NATIVE
 /// trailing usage-only chunk (`{... "choices":[], "usage":{...}}`) even on an OpenAI->OpenAI
 /// same-protocol passthrough. The same-proto verbatim path re-emits frames byte-for-byte and never
@@ -4091,7 +4089,7 @@ fn same_proto_openai_opted_out_strips_trailing_usage_chunk() {
     assert_eq!(u.input_tokens, 11, "billing input tokens from A-tap");
 }
 
-/// R3-A-b (SAME-PROTOCOL verbatim, OPTED-IN client): when the client DID send
+/// SAME-PROTOCOL verbatim, OPTED-IN client: when the client DID send
 /// `stream_options.include_usage:true`, the native trailing usage-only chunk is exactly what it asked
 /// for, so it must reach the client verbatim - AND billing still holds the usage.
 #[test]
@@ -4282,7 +4280,7 @@ fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
     );
 }
 
-/// class-6 6g: a translated cross-protocol Anthropic-INGRESS stream must emit `event: ping`
+/// A translated cross-protocol Anthropic-INGRESS stream must emit `event: ping`
 /// immediately after `message_start` — a native Anthropic stream always does, and its absence is
 /// both a fingerprintable proxy tell and closes part of the idle-timeout gap a native stream
 /// survives. Driven with an OpenAI EGRESS so the assertion is purely about the ingress-side framing.

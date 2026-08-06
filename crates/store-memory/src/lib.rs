@@ -929,8 +929,8 @@ mod tests {
         );
     }
 
-    /// CODEAUDIT ROUND-2 FIX 2: `delete_key` tombstones rows (kept forever, by design, for
-    /// billing/audit attribution) but nothing previously bounded that growth — unlike `usage` and
+    /// `delete_key` tombstones rows (kept forever, by design, for billing/audit attribution), and
+    /// that growth needs its own bound — unlike `usage` and
     /// `metering`, the `keys` map had no retention sweep, so a repeated self-serve refresh loop by
     /// one principal grew it without bound. `put_key` (the hot write path for issue/refresh) now
     /// runs the SAME amortized sweep, pruning only tombstoned rows past the 31-day ceiling; a live
@@ -977,7 +977,7 @@ mod tests {
         );
     }
 
-    /// CODEAUDIT ROUND-3 FIX 2: unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
+    /// Unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
     /// retention sweep at all — its only shrink path was `delete_key`'s cascade, which never fires for
     /// a credential rotated on a LIVE key. A long-lived key's occupied-slot -> revoke -> re-put
     /// rotation cycle (mint into the free slot, revoke the old one) therefore grew `creds` without

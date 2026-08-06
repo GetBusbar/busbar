@@ -56,7 +56,7 @@ pub(crate) fn default_expires_in() -> u64 {
 /// `#[serde(default = "default_expires_in")]` on the field). A strict `u64` field breaks token minting
 /// for those providers, silently downing the lane. Accept an integer, a JSON float/decimal
 /// (`3600.0` / `"3600.5"`, truncated toward zero — a fractional second on a token TTL is noise), or a
-/// numeric string. A negative or non-finite value is rejected. (1.4.0 audit: float tolerance.)
+/// numeric string. A negative or non-finite value is rejected.
 pub(crate) fn deserialize_expires_in<'de, D>(d: D) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -104,13 +104,12 @@ where
 /// memory. A real OAuth token response is well under 1 KiB, so the cap has zero effect on legitimate
 /// traffic. Shared by `jwt_bearer::Signer::mint` and `oauth_client_credentials::ClientCreds::mint` so
 /// the capped-read-and-decode logic lives in exactly one place instead of being duplicated byte-for-byte
-/// across the two mechanisms (Craft audit finding, 1.4.0).
+/// across the two mechanisms.
 ///
 /// Distinguishes WHY the read did not complete, mirroring how `proxy::engine`'s own `ReadEnd` call
 /// sites (`walk.rs`, `engine/mod.rs`) already report `Truncated` vs `TransportError` separately rather
 /// than folding them into one ambiguous message: an operator debugging a real connection drop needs a
-/// different signal than one debugging an oversized-response misconfiguration (Error-handling audit
-/// finding, 1.4.0).
+/// different signal than one debugging an oversized-response misconfiguration.
 pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Result<String, String> {
     let cap = crate::proxy::max_upstream_buffered_bytes();
     let (raw, read_end) = crate::proxy::read_capped(resp, cap).await;
@@ -132,7 +131,6 @@ pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Resul
 /// provider's and global `allow_metadata_hosts` carve-outs, the nuclear `allow_all_metadata`, and the
 /// operator's extra `blocked_metadata_hosts`. Without threading these, a token endpoint an operator
 /// deliberately allow-listed passes `--validate` but dies at boot — the reverse of the safety guarantee.
-/// (found: 1.4.0 audit, egress-auth.)
 pub(crate) struct MetadataSsrfPolicy<'a> {
     pub(crate) allow_overrides: &'a [String],
     pub(crate) allow_all: bool,
@@ -154,7 +152,6 @@ pub(crate) trait CredentialProvider: Send + Sync {
     /// mint completes — `headers_for` returns no header then, so an active health probe would send an
     /// unauthenticated request and a guaranteed 401 could HardDown-park a healthy lane. The prober
     /// consults this to skip a not-yet-minted lane until its token is live. Default: always ready.
-    /// (1.4.0 audit, egress-auth.)
     fn is_ready(&self) -> bool {
         true
     }

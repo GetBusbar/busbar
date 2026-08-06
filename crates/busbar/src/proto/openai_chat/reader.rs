@@ -111,7 +111,7 @@ impl ProtocolReader for OpenAiReader {
             !obj.contains_key("max_tokens") && obj.contains_key("max_completion_tokens");
         let temperature = obj.get("temperature").and_then(|v| v.as_f64());
         let top_p = obj.get("top_p").and_then(|v| v.as_f64());
-        // Phase 0 first-class sampling/output controls now promoted out of `extra` to first-class IR
+        // First-class sampling/output controls, promoted out of `extra` to first-class IR
         // fields (read in OpenAI's native top-level shape). `frequency_penalty`/`presence_penalty` are
         // floats; `seed`/`n` are integers; `response_format` is the raw object (json_object / json_schema),
         // stored verbatim so the writer can re-emit it unchanged.
@@ -324,11 +324,11 @@ impl ProtocolReader for OpenAiReader {
 
         // Collect unmodeled top-level keys into extra (excluding modeled ones). The fields the IR
         // models as first-class — model, messages, tools, max_tokens, temperature, top_p, stop, stream,
-        // tool_choice, and (Phase 0) frequency_penalty, presence_penalty, seed, n, response_format — are
+        // tool_choice, frequency_penalty, presence_penalty, seed, n, response_format — are
         // excluded; everything else (logit_bias, …) flows through `extra` verbatim so a SAME-protocol
         // OpenAI passthrough reaches the upstream unchanged.
         //
-        // Phase 0: frequency_penalty / presence_penalty / seed / n / response_format are now promoted to
+        // frequency_penalty / presence_penalty / seed / n / response_format are promoted to
         // first-class IR fields (read above) and excluded here, so they no longer linger in `extra` —
         // otherwise the writer would double-emit them (once from the typed field, once from the extra
         // sweep). Cross-protocol mapping of these to Gemini/Anthropic/Bedrock analogs is handled by the

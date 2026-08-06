@@ -219,12 +219,11 @@ review discipline alone.
 2. **The fix is the choke point + ONE class-level test.** You introduce (or
    confirm) the single point every sibling passes through, route all of them
    through it, and attach exactly one test *there*. You do **not** patch N
-   instances with N tests — that is N new places for the next round to find.
-3. **A later-round sibling is a PROCESS failure, not a new bug.** If a
-   subsequent audit finds another member of an already-remediated family, the
-   previous remediation patched an instance instead of the class. File it
-   against the process and build retroactively the choke point that should have
-   been built the first time.
+   instances with N tests — that is N new places for the same mistake to recur.
+3. **A repeat sibling means the class was never fixed.** If a later review finds
+   another member of an already-remediated family, the previous remediation
+   patched an instance instead of the class. Build the choke point that should
+   have been built the first time, and route the whole family through it.
 
 ## The choke-point registry
 

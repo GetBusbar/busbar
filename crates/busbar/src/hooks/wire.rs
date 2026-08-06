@@ -11,7 +11,7 @@ use super::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use serde::{Deserialize, Serialize};
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
-/// (contract audit #5: the three kinds were wire-indistinguishable; a hook binary receiving bytes
+/// (before it, the three kinds were wire-indistinguishable; a hook binary receiving bytes
 /// had to infer the kind from field presence/endpoint, and two registrations sharing one socket
 /// provably could not tell them apart). MANAGEMENT messages stay key-discriminated (a top-level
 /// `configure` / `describe` / `status` key); everything else is a per-request message and `op`
@@ -107,7 +107,7 @@ pub(crate) struct HookReqProjection<'a> {
     /// Absent when the grant is `no`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) user: Option<HookUser<'a>>,
-    /// The Feature-2 declared-signal bag (task #141), `#[serde(flatten)]`ed so its entries render
+    /// The declared-signal bag, `#[serde(flatten)]`ed so its entries render
     /// as flat top-level keys (`{"candidate_breaker_state": "closed", ...}`) alongside the fields
     /// above, never nested. EMPTY (the default: no consumer declared anything beyond the core
     /// fields above) flattens to ZERO additional keys — byte-identical to the pre-catalog wire.
@@ -154,7 +154,7 @@ pub(crate) struct HookCandidate<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) context_max: Option<usize>,
     // Optional live signals — omitted when unset (ONE idiom across the wire: absent = unset,
-    // never a mix of `null` and absence; contract audit #6).
+    // never a mix of `null` and absence).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tier: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,14 +171,14 @@ pub(crate) struct HookCandidate<'a> {
     /// configs keep the exact pre-tags payload.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub(crate) tags: &'a [String],
-    /// The Feature-2 declared-signal bag (task #141) — see [`HookReqProjection::signals`] for the
+    /// The declared-signal bag — see [`HookReqProjection::signals`] for the
     /// full contract; identical here, flattened onto this candidate's own JSON object.
     #[serde(flatten)]
     pub(crate) signals: busbar_api::SignalBag,
 }
 
 /// The POOL-SCOPED signal bucket (distinct from the per-candidate signals). `request.pool` already
-/// names the pool — it is not duplicated here (contract audit #12).
+/// names the pool — it is not duplicated here.
 #[derive(Serialize)]
 pub(crate) struct HookContext<'a> {
     /// Pool-level remaining request budget; omitted when the pool is uncapped.

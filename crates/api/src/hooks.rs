@@ -44,7 +44,7 @@ pub struct RoutingRequest<'a> {
     /// governance virtual-key `id`/`name` and the body's end-user field. NEVER the caller's
     /// secret/token, regardless of configuration.
     pub identity: Option<CallerIdentity>,
-    /// The Feature-2 declared-signal bag (task #141): request-phase [`crate::Signal`] entries a
+    /// The declared-signal bag: request-phase [`crate::Signal`] entries a
     /// consumer explicitly declared (see `busbar::hooks::RequestedSignals`), computed ONLY when
     /// declared — EMPTY (never allocated past the inline `SmallVec` capacity) on the default path,
     /// where the wire's `#[serde(flatten)]` renders it as zero additional keys. ADDITIVE: every
@@ -148,7 +148,7 @@ pub struct Candidate<'a> {
     /// deterministically by `idx` — but the field is per-candidate so a future per-lane rate signal
     /// drops in without a contract change.
     pub rate_headroom: Option<f64>,
-    /// The Feature-2 declared-signal bag (task #141): candidate-phase [`crate::Signal`] entries a
+    /// The declared-signal bag: candidate-phase [`crate::Signal`] entries a
     /// consumer explicitly declared (e.g. `CandidateBreakerState`/`CandidateErrorRate`), computed
     /// ONLY when declared. See [`RoutingRequest::signals`] for the full contract; identical here.
     pub signals: crate::SignalBag,

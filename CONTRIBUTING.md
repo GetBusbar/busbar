@@ -58,7 +58,7 @@ before fixing a bug. In short:
   same mistake is possible at a second call site, fix the class, not the instance.
 - **The fix is the choke point + ONE class-level test**, not N patched instances
   with N tests.
-- **A later-round sibling is a process failure**: it means the previous
+- **A repeat sibling means the class was never fixed**: the previous
   remediation patched an instance instead of the class.
 - A defect test must be **contract-derived**, **RED-demonstrated**, or
   **cross-checked by an independent oracle** — a `assert_eq!(actual, <inline

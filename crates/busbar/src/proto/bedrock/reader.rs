@@ -79,10 +79,10 @@ impl ProtocolReader for BedrockReader {
         let lower = text.to_lowercase();
 
         // Keep this set of context-length phrasings in LOCKSTEP with the production
-        // `extract_error` above (R21 #17 added the third `exceeds the maximum` pattern there but
+        // `extract_error` above (the third `exceeds the maximum` pattern was once added there but
         // not here, drifting the two). All three must match identically so the test-only classifier
         // mirrors what the breaker actually sees. The `status == 400` gate is ALSO part of that
-        // lockstep (R23 LOW #14): `extract_error` only runs the body-scan override on a 400
+        // lockstep: `extract_error` only runs the body-scan override on a 400
         // ValidationException, so a 5xx body that happens to echo context-length phrasing must NOT
         // be reclassified as ContextLength here either — it falls through to the ServerError arm
         // below.
@@ -537,7 +537,7 @@ impl ProtocolReader for BedrockReader {
             }
         }
 
-        // Promote Bedrock's native `toolConfig.toolChoice` into the IR union (PF-H1) so a forced /
+        // Promote Bedrock's native `toolConfig.toolChoice` into the IR union so a forced /
         // targeted directive survives the cross-protocol seam instead of degrading to `auto`.
         let tool_choice = read_bedrock_tool_choice(obj.get("toolConfig"));
 
@@ -568,7 +568,7 @@ impl ProtocolReader for BedrockReader {
         // writer's overlay re-emits the typed fields onto the raw object, so a Bedrock->Bedrock
         // round-trip is unaffected (the overlaid value equals the captured one).
         let top_p = inference_config.and_then(|ic| ic.get("topP").and_then(|v| v.as_f64()));
-        // Promote `top_k` (PF-H1 fidelity fix). Bedrock's Converse API carries `top_k` only via the
+        // Promote `top_k` (fidelity fix). Bedrock's Converse API carries `top_k` only via the
         // model-specific `additionalModelRequestFields` escape hatch (it has no `inferenceConfig`
         // home). Anthropic-on-Bedrock and several model families spell it `top_k`; some use `topK`.
         // Accept either so a native Bedrock request that pins top_k populates the first-class IR field
@@ -1003,7 +1003,7 @@ impl ProtocolReader for BedrockReader {
                 //
                 // The terminal `MessageStop` is emitted HERE, AFTER the combined delta, so the IR order
                 // is delta-then-stop and the ingress writer emits its native `message_delta` then
-                // `message_stop` (Finding: delta-before-stop ordering). It is pushed unconditionally
+                // `message_stop` (delta-before-stop ordering). It is pushed unconditionally
                 // (even when `metadata` carries no `usage`) so the downstream stream always receives its
                 // terminal frame once `metadata` arrives.
                 // Emit the combined MessageDelta UNCONDITIONALLY — even when `metadata` carries no

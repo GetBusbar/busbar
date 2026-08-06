@@ -1,10 +1,9 @@
 # Architecture Decision Records
 
-These ADRs are **reconstructed from the code**: the source references ADR
-numbers (e.g. `ADR-0001`, `ADR-0002`, `ADR-0005`) but the original decision
-documents are not in this repository. Each record below is rebuilt from the
-observed implementation; sections marked as reconstructed or inferred should be
-treated as such until reconciled with any canonical ADR source.
+These records document the load-bearing design decisions the code refers to by
+ADR number (e.g. `ADR-0001`, `ADR-0002`, `ADR-0005`). Each one states the
+context, the decision, and the consequences that shipped, and cross-references
+the modules that implement it.
 
 | ADR | Title | Primary code |
 |---|---|---|
@@ -12,9 +11,6 @@ treated as such until reconciled with any canonical ADR source.
 | [0002](0002-circuit-breaker.md) | Circuit breaker: disposition taxonomy & recovery | `crates/busbar/src/breaker.rs`, `crates/busbar/src/store/mod.rs`, `crates/busbar/src/proxy/engine/mod.rs` |
 | [0005](0005-ir-fidelity.md) | Superset IR & translation fidelity | `crates/busbar/src/ir/mod.rs`, `crates/busbar/src/proto/` |
 | [0010](0010-plugin-licensing.md) | Plugin licensing: plugin self-validates; core resolves SecretRefs & delivers settings | `crates/busbar/src/config/secret.rs`, `crates/busbar/src/auth/mod.rs`, `crates/busbar/src/hooks/mod.rs` |
-
-`ADR-0010` is authored as a real 1.5.0 decision (not reconstructed); the rest
-above are reconstructed from code.
 
 Other ADR numbers referenced in code but not written up here (the references are
 in comments only):

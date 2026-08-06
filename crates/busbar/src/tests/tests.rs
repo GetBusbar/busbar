@@ -1046,7 +1046,7 @@ fn alias_conflict_fails_boot_naming_both() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── secrets: block validation + alias/name canonicalization (audit MEDIUM) ─────────────────────
+// ── secrets: block validation + alias/name canonicalization ──────────────────────────────────────
 
 /// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
 /// carries the store ABI, which the secret kind would reject).
@@ -1080,7 +1080,7 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     (dir, reg)
 }
 
-/// AUDIT (NIT #17): a `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
+/// A `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
 /// module is rejected — the built-ins take no module-level open() config, so such an entry is an
 /// operator error, not a silent no-op.
 #[test]
@@ -1107,7 +1107,7 @@ fn secrets_block_rejects_unknown_module() {
     );
 }
 
-/// AUDIT (MEDIUM #8): the `secrets:` block key canonicalizes through the SAME by_name/by_alias
+/// The `secrets:` block key canonicalizes through the SAME by_name/by_alias
 /// resolution the registry uses — a block keyed on the ALIAS and a block keyed on the CANONICAL name
 /// both resolve to the plugin's canonical name, so a later `SecretRef` written under either spelling
 /// finds the configured open() config (no silent `{}`).
@@ -1341,7 +1341,7 @@ fn build_once(
     prior: Option<&crate::state::App>,
 ) -> Result<crate::state::App, String> {
     // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
-    // resolved governance-credential rotation immediately (the old, pre-round-8 behavior) is correct
+    // resolved governance-credential rotation immediately is correct
     // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
     let (app, gov_rotate) = crate::build_app_from_config(
         cfg,
@@ -1358,7 +1358,7 @@ fn build_once(
     Ok(app)
 }
 
-/// class-10b: an unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild —
+/// An unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild —
 /// otherwise a mutation cadence faster than the probe interval (`/config/settings` metered at
 /// 10/min vs a 30s default interval) resets every generation before its first tick and probing goes
 /// dark while still logging that it is enabled. A lane-set CHANGE must mint a fresh one, because
@@ -1718,7 +1718,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     server.abort();
 }
 
-// ── task #139: response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ─
+// ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
 //
 // Drives a REAL request through the REAL layer stack (like the 413 test above), rather than calling
 // `server_timing` or `maybe_attach_route_policy` directly, so the assertion is on what actually ships
@@ -1946,7 +1946,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
 
 /// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
 /// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
-/// printed (not silently ignored -- a v1.4.0 audit fix, see the function's own doc comment). Uses a
+/// printed (not silently ignored, see the function's own doc comment). Uses a
 /// test-unique env var name so this can never collide with a concurrently-running test.
 #[test]
 fn worker_threads_from_env_parses_valid_rejects_invalid() {
@@ -2366,7 +2366,7 @@ fn signing_key_guidance_omits_secret() {
     );
 }
 
-/// Step 3 wiring: boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
+/// Boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
 /// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
 /// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
 #[test]
@@ -2412,7 +2412,7 @@ fn fetch_cached_pin_boots_without_network() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Step 7 (source review, per the spec's boot-logging matrix): the enabled/disabled boot lines and
+/// Source review of the boot-logging matrix: the enabled/disabled boot lines and
 /// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
 /// observability wording against silent removal.
 #[test]

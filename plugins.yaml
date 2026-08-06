@@ -38,8 +38,13 @@
 # Optional fields:
 #   checkout_dir:  local sibling/checkout directory name when it differs from `repo`
 #                  (no entry needs it today; kept for the next repo rename)
-#   checkout_ref:  git ref dev-gate.yml's registry-driven clone loop checks the repo out at
-#                  (default: the repo's default branch)
+#   checkout_ref:  git ref the qa-gate's registry-driven clone loop checks the repo out at.
+#                  DEFAULT: `dev`, NOT the repo's default branch. Every first-party repo runs
+#                  busbar's own branch model (main = release-only, dev = ongoing work), so a
+#                  sibling's `main` is pinned to its last RELEASE and cannot carry the plugin-side
+#                  adaptation to the unreleased core this gate exists to test. qa-gate-run.sh's
+#                  `siblings` documents the five legs that cost. Set this only for a repo that
+#                  departs from that model; it falls back to the default branch when `dev` is absent.
 
 # Org repos that MATCH the plugin naming pattern but are deliberately NOT plugins (the reverse
 # check in plugin-registry-check.sh flags any pattern-matching org repo that is neither listed
@@ -128,7 +133,8 @@ plugins:
     service: none
     release_gate: optional
     gate: smoke
-    # `dev` (not the default branch) carries the sibling-relative-path dependency fix dev-gate's
-    # build actually needs — mirrors busbar's own main/dev split: main stays release-only, ongoing
-    # work lands on dev. (Formerly a hand-written `ref: dev` in dev-gate.yml's checkout step.)
-    checkout_ref: dev
+    # No `checkout_ref` here any more, and that is not a loosening. This entry used to pin `dev`
+    # because it carries the sibling-relative-path dependency fix the gate's build needs; `dev` is
+    # now the DEFAULT for every sibling (see the field doc above), so the pin said nothing the
+    # default does not. Restating it would imply the OTHER nine were deliberately on `main`, which
+    # is precisely the reading that cost qa-gate run 31059945604 five legs.

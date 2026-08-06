@@ -8,9 +8,9 @@ use crate::observability::HOTPATH_LEVEL;
 /// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
 /// order of one in-flight request — there is no fixed breaker window to quote — but advertising the
 /// bare 1s floor reads to a rate-aware client as "retry immediately", which just re-collides with the
-/// saturation. A small non-trivial floor asks the client to back off briefly instead. (Bug 1 Finding
-/// 3: post-fix, an at-capacity 503 is the COMMON shed shape, so this must not always be 1.)
-// DERIVED (R5) from the neutral store-side floor `store::AT_CAPACITY_RECOVERY_FLOOR_MS` (2000ms) so
+/// saturation. A small non-trivial floor asks the client to back off briefly instead. An
+/// at-capacity 503 is the COMMON shed shape, so this must not always be 1.
+// DERIVED from the neutral store-side floor `store::AT_CAPACITY_RECOVERY_FLOOR_MS` (2000ms) so
 // there is exactly one owner of the 2s value and the store never has to depend UP on `proxy`. This
 // path floors the whole-second `Retry-After` at that same value rather than a separate — and
 // regressing — literal.
@@ -79,7 +79,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    // Cycle-guard fix (LOW #22): mark the ORIGINATING pool visited here, BEFORE the mode lookup —
+    // Cycle guard: mark the ORIGINATING pool visited here, BEFORE the mode lookup —
     // this is the single point every pool's exhaustion handling flows through. The loop guard in
     // `handle_fallback_pool` only checks/marks the FALLBACK pool name, so an A->B->A chain was not
     // caught on the second hop: when A exhausted it jumped straight to `handle_fallback_pool(B)`
@@ -146,11 +146,11 @@ pub(crate) async fn handle_exhaustion_for_pool(
         }
     };
 
-    // R6/§5 budget contract, asserted at the on_exhausted DISPOSITION (the one convergence point every
+    // Budget contract, asserted at the on_exhausted DISPOSITION (the one convergence point every
     // policy's shed/spill/queue outcome flows through). Under saturation every disposition here is
     // bounded — reject sheds now, queue waits ≤ max_ms, fallback spills — so the wall clock from
-    // ingress must be within the failover budget + ε. A regression that blocks past the budget (the
-    // Bug-1 park) trips this in dev/CI. No-op in release.
+    // ingress must be within the failover budget + ε. A regression that blocks past the budget (a
+    // park under saturation) trips this in dev/CI. No-op in release.
     request_ctx.debug_assert_within_budget(pool_name);
     resp
 }
@@ -161,13 +161,13 @@ pub(crate) async fn handle_exhaustion_for_pool(
 /// — selection stays non-blocking, so the "no unbounded await in the pick path" rule holds
 /// structurally.
 ///
-/// R2 wait mechanism: the waiter acquires DIRECTLY on the candidate lanes' OWN FIFO semaphores (a
+/// Wait mechanism: the waiter acquires DIRECTLY on the candidate lanes' OWN FIFO semaphores (a
 /// `select_all` over `sem.acquire_owned()`), RACED against `sleep_until(deadline)`. The semaphore
 /// STORES a released permit (no lost wakeup — a permit freed in the small window between two polls is
 /// not dropped) and hands one permit to one waiter (no thundering herd, FIFO fairness) — this is why
-/// the design killed the earlier per-pool `Notify`.
+/// this replaced an earlier per-pool `Notify`.
 ///
-/// R2 breaker composition: winning a permit proves capacity, NOT breaker admission. The won lane's
+/// Breaker composition: winning a permit proves capacity, NOT breaker admission. The won lane's
 /// breaker is re-checked via `try_admit_breaker` (it may have TRIPPED Open while we were queued);
 /// only on success do we dispatch. A lane whose breaker opened while queued can no longer be served by
 /// waiting — it is dropped from the candidate set (same rationale as the entry pre-check) and we keep
@@ -188,7 +188,7 @@ pub(crate) async fn handle_queue(
 ) -> Response {
     use crate::store::Unavailable;
 
-    // R2 pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
+    // Pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
     // drop. If every exclusion is Dead / BudgetExhausted / BreakerOpen / ProbeInFlight, nothing will
     // free a slot, so waiting is pointless (waiting 250ms for a pool that's DOWN, not busy). Skip the
     // wait and shed now. Dedup by lane (the sticky fast path may record a lane the main loop also did).
@@ -202,7 +202,7 @@ pub(crate) async fn handle_queue(
         return handle_status_503(app, cands, now(), pool, ingress_protocol);
     }
 
-    // R8 ms-precision deadline: bound the wait by `min(max_ms, failover_budget_remaining)` in MS so a
+    // Ms-precision deadline: bound the wait by `min(max_ms, failover_budget_remaining)` in MS so a
     // sub-second `max_ms` is representable and a near-second-boundary budget does not collapse to 0.
     // Captured ONCE as an absolute instant so it survives the re-wait loop (a won-but-breaker-Open
     // permit re-enters the wait against the SAME deadline — it can never extend the budget).
@@ -249,7 +249,7 @@ pub(crate) async fn handle_queue(
         let (lane, permit_res) = match won {
             Some(v) => v,
             // Deadline: shed with an honest Retry-After (`retry_after_secs` reads the same capacity /
-            // cooldown axes `recovery_hint_ms` does). R6/§5: the ONE blocking await in the whole
+            // cooldown axes `recovery_hint_ms` does). The ONE blocking await in the whole
             // dispatch path must never resume past its bounded `deadline` — assert it (dev/CI only).
             None => {
                 debug_assert!(
@@ -257,7 +257,7 @@ pub(crate) async fn handle_queue(
                         <= deadline
                             + std::time::Duration::from_millis(QUEUE_WAIT_ASSERT_EPSILON_MS),
                     "queue wait overran its bounded deadline — the on_exhausted queue blocked past \
-                     min(max_ms, failover budget) (R6/§5)"
+                     min(max_ms, failover budget)"
                 );
                 return handle_status_503(app, cands, now(), pool, ingress_protocol);
             }
@@ -270,7 +270,7 @@ pub(crate) async fn handle_queue(
         let permit = crate::store::Permit::Bounded(owned);
 
         // We hold capacity but have NOT passed the breaker. Run ONLY the breaker admission step on the
-        // won lane (R2) — the dispatched request owns the probe it wins (`forward_once` releases it
+        // won lane — the dispatched request owns the probe it wins (`forward_once` releases it
         // via `release_probe_in`, exactly like the fallback dispatch path).
         match app.store.try_admit_breaker(pool, lane, now()) {
             Ok(probe_epoch) => {
@@ -373,7 +373,7 @@ pub(crate) fn handle_status_503(
 /// crossed boundary. Same-protocol targets pass through verbatim.
 #[allow(clippy::too_many_arguments)]
 // plumbing: each arg is an independent request input
-// `level = crate::observability::HOTPATH_LEVEL` (task #140 tracing seam): this span fires on EVERY
+// `level = crate::observability::HOTPATH_LEVEL` (the tracing seam): this span fires on EVERY
 // degraded-path attempt (fallback-pool routing + least-bad), so it must be filtered off at the
 // default `RUST_LOG=info` the same as the main `forward` span in `engine/mod.rs` — routed through
 // the ONE named constant rather than a second hand-picked `"debug"` literal, so the hot-path level
@@ -416,7 +416,7 @@ pub(crate) async fn forward_once(
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
-    // RAII probe release covering the WHOLE dispatch window (HIGH concurrency finding), built ONLY when
+    // RAII probe release covering the WHOLE dispatch window, built ONLY when
     // this dispatch actually won a probe (`probe_epoch == Some`). The caller won a single-flight
     // recovery probe on the `(pool, i)` cell before entering here; if THIS future is dropped mid-`.await`
     // (client disconnects while the upstream call is in flight) none of the explicit early-return paths
@@ -433,7 +433,7 @@ pub(crate) async fn forward_once(
     // `probe_epoch == None` (the least-bad path, which bypasses the breaker and owns NO probe) builds NO
     // guard at all: there is nothing to release, so this dispatch can never revert a probe a concurrent
     // PEER legitimately won on the same cell. Representing "no probe" as `None` — rather than passing the
-    // cell's CURRENT epoch to an armed guard — is what closes that HIGH: an epoch-equality release keyed
+    // cell's CURRENT epoch to an armed guard — is what makes that safe: an epoch-equality release keyed
     // on a peer's live epoch would otherwise revert the peer's in-flight probe on a dropped future.
     let mut probe_guard = probe_epoch.map(|epoch| crate::proxy::select::ProbeGuard {
         store: app.store.as_ref(),
@@ -494,7 +494,7 @@ pub(crate) async fn forward_once(
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
     // strip, model rewrite, serialize) — the SAME function the hot `forward_with_pool` path uses, so
-    // this degraded route cannot drift from it. This unification is what fixes the R9 high (this path
+    // this degraded route cannot drift from it. Sharing the seam is what keeps them aligned (this path
     // previously lacked the `ir.extra.clear()` the hot path had, leaking source-only keys like OpenAI
     // `logprobs`/`top_logprobs`/`n` to a foreign backend): the clear now lives in the one shared fn,
     // so neither path can be missing it.
@@ -524,7 +524,7 @@ pub(crate) async fn forward_once(
     let key = match app.pool_upstream_creds(pool) {
         // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
         // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
-        // (LOW #15 SECURITY): borrowing the operator key would let an unauthenticated caller
+        // (a SECURITY boundary): borrowing the operator key would let an unauthenticated caller
         // silently spend on the operator's upstream account. An empty credential makes the
         // provider return its own 401/403, attributed to the caller (a client-auth fault, no
         // lane penalty), matching the documented passthrough contract. No-op in canonical
@@ -683,7 +683,7 @@ pub(crate) async fn forward_once(
                     // this degraded route can no longer drift (the bug it fixes: a 401/403 on the
                     // degraded path was labeled `invalid_request_error`, the wrong typed-exception
                     // discriminant for an Anthropic SDK and a proxy tell).
-                    // Probe-leak guard (HIGH #1): a non-2xx response carries no breaker recording
+                    // Probe-leak guard: a non-2xx response carries no breaker recording
                     // on this degraded relay path (it relays verbatim, no disposition), so the
                     // single-flight HalfOpen probe this fallback attempt CAS-won on the POOL cell
                     // is still in flight. Release it before returning or the cell stays HalfOpen +
@@ -736,7 +736,7 @@ pub(crate) async fn forward_once(
                         upstream_relay_id.as_deref(),
                     );
                 }
-                // Probe-leak guard (HIGH #1): same as the cross-protocol non-2xx branch above —
+                // Probe-leak guard: same as the cross-protocol non-2xx branch above —
                 // a verbatim same-protocol error relay records no breaker outcome, so release the
                 // POOL-cell single-flight probe this fallback attempt CAS-won before returning, or
                 // the cell stays HalfOpen + `probe_in_flight` forever. Idempotent; no-op off a
@@ -844,7 +844,7 @@ pub(crate) async fn forward_once(
             let translate = if is_sse && cross_protocol {
                 crate::proto::StreamTranslate::new(ingress_protocol, egress_name)
             } else if is_sse && !cross_protocol {
-                // SAME-PROTOCOL SSE/event-stream (Change B, now permanent) on the degraded path: mirror
+                // SAME-PROTOCOL SSE/event-stream on the degraded path: mirror
                 // the main `forward_with_pool` wiring — the verbatim same-proto translator (byte-exact
                 // re-emit + IR usage A-tap). `None` for an unknown protocol → legacy passthrough.
                 crate::proto::StreamTranslate::new_same_proto(ingress_protocol)
@@ -916,10 +916,10 @@ pub(crate) async fn forward_once(
             // -wins a HalfOpen probe on it), so this transport failure must reopen the POOL cell — not
             // the default `""` cell, which would leave the pool cell wedged HalfOpen forever.
             // BREAKER_TRIPS_TOTAL is emitted here too, gated on the trip bool, mirroring the sibling
-            // degraded arms (non-2xx at ~3925/3977, post-headers transport at ~4046) so a logical
+            // degraded arms (the two non-2xx relays and the post-headers transport arm) so a logical
             // Closed→Open trip is counted exactly once regardless of which degraded failure shape hit
             // it. (`tripped` is false for a HalfOpen reopen / already-Open no-op, so it is not
-            // inflated.) Closes the cross-arm counter asymmetry the audit flagged.
+            // inflated.) Keeps the cross-arm counters symmetric.
             let err_type = if e.is_timeout() {
                 ERR_NET_TIMEOUT
             } else {
@@ -1111,7 +1111,7 @@ pub(crate) async fn handle_least_bad(
     usage_sink: Option<UsageSink>,
 ) -> Response {
     // Rank admissible members by soonest cooldown (the "least bad" order), then dispatch to the FIRST
-    // that ALSO has a free concurrency permit. Bug 1 Finding 2: the soonest-cooldown member may itself
+    // that ALSO has a free concurrency permit. The soonest-cooldown member may itself
     // be AT-CAPACITY, and `least_bad` exists precisely to serve a degraded response when everything is
     // tripped — refusing with a hard 503 because the single best member is momentarily busy, while a
     // slightly-worse sibling has a free slot, defeats its purpose. The prior code did one `try_acquire`

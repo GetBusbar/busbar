@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SELF-SERVE key SEAM (1.5.2 token-exchange, Step 4).
+//! The SELF-SERVE key SEAM (1.5.2 token-exchange).
 //!
 //! `POST /auth/token` and the hosted browser login flow depend ONLY on the [`SelfServeKeys`] trait —
 //! never on `TokenSigner`, the ed25519 envelope, the epoch, or any mint internal. The concrete
@@ -123,7 +123,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await?;
-        // Offloaded (H1): `issue_self` holds a std::sync::Mutex across synchronous store I/O, so
+        // Offloaded: `issue_self` holds a std::sync::Mutex across synchronous store I/O, so
         // request-path callers must never invoke it directly on the reactor. See
         // `governance::mint_self_offloaded`.
         let (binding, token) = crate::governance::mint_self_offloaded(
@@ -151,7 +151,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await?;
-        // Offloaded (H1): `refresh_self` holds the same std::sync::Mutex across synchronous store
+        // Offloaded: `refresh_self` holds the same std::sync::Mutex across synchronous store
         // I/O (write + delete). See `governance::mint_self_offloaded`.
         let (binding, token) = crate::governance::mint_self_offloaded(
             self.gov.clone(),
@@ -232,7 +232,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
     }
 }
 
-/// Why an exchange was refused. Mapped to a status by the HTTP handler (Step 6): `StaticKeyPresented`
+/// Why an exchange was refused. Mapped to a status by the HTTP handler: `StaticKeyPresented`
 /// → 400, `Unauthorized` → 401, `Unbound`/`BadSubject` → 403, `MintFailed` → 500.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExchangeError {

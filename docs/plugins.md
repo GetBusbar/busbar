@@ -424,8 +424,7 @@ A plugin's manifest may carry `settings_schema`: a JSON Schema (draft 2020-12) d
 the shape of its `settings:` block, embedded and signed alongside everything else. It powers `GET
 /plugins/{name}/schema` — a UI can render an install/config form for a plugin **without ever
 loading it**, because the schema comes from the signed manifest, not a runtime `describe` call
-(store/secret/auth plugins have no such call; see "Where this needs to be more than the raw idea" in
-the plugin-settings-schema design for the full rationale). A `kind: hook` plugin's live `describe`
+(store/secret/auth plugins have no such call). A `kind: hook` plugin's live `describe`
 narrows this baseline when the plugin is loaded and answers; the manifest schema is what every kind
 gets, including one that has never run.
 

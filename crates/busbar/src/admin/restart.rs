@@ -57,7 +57,7 @@ const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST
 // unlike `set_var`, this is invisible to every other test's own OS thread.
 // Only used by admin::tests, which itself requires `auth-admin-tokens` (see that module's own
 // `mod tests;` gate) -- under --no-default-features, plain `cfg(test)` compiled these in with no
-// caller, tripping -D dead-code (same class of gap as taxonomy.rs's earlier fix tonight).
+// caller, tripping -D dead-code.
 #[cfg(all(test, feature = "auth-admin-tokens"))]
 thread_local! {
     static FORCE_UNSUPERVISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

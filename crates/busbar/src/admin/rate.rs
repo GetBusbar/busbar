@@ -21,8 +21,7 @@ pub(crate) const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 pub(crate) enum MutationClass {
     Config,
     Crud,
-    /// `POST /plugins/inspect`'s OWN dedicated budget (plugin-settings-schema-SPEC.md checklist
-    /// item 4, question #7's round-2/4 hardening correction) — NOT the shared 60/min CRUD bucket
+    /// `POST /plugins/inspect`'s OWN dedicated budget — NOT the shared 60/min CRUD bucket
     /// (already shared across key/group/hook/cache-flush mutations; inspecting N candidate
     /// artifacts during a fleet-wide plugin upgrade would burn N of the same 60/min an operator
     /// needs for real mutating work in that window) and NOT the unmetered-read bucket either,
@@ -105,7 +104,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 /// [`CONFIG_CLASS_RULES`] plus the carve-outs: `/config/validate` is a read-only dry-run that must
 /// not contend with the CONFIG budget despite living under `/config/`, and `/plugins/inspect` is a
 /// read-only archive preview that must not contend with EITHER the CONFIG or the shared CRUD budget
-/// — it gets its own dedicated [`MutationClass::PluginInspect`] bucket (checklist item 4).
+/// — it gets its own dedicated [`MutationClass::PluginInspect`] bucket.
 pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
     if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
@@ -269,9 +268,8 @@ mod tests {
     }
 
     /// `POST /plugins/inspect` gets its OWN dedicated budget — neither the CONFIG class nor the
-    /// shared CRUD class (checklist item 4, question #7's round-2/4 hardening correction: burning
-    /// the shared 60/min CRUD budget on N candidate-artifact inspections during a fleet-wide plugin
-    /// upgrade would starve real mutating work in the same window).
+    /// shared CRUD class: burning the shared 60/min CRUD budget on N candidate-artifact inspections
+    /// during a fleet-wide plugin upgrade would starve real mutating work in the same window.
     #[test]
     fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
         use crate::admin::v1::contract::PATH_PLUGINS_INSPECT;

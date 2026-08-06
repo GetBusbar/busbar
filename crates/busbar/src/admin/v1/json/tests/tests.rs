@@ -87,8 +87,8 @@ fn openapi_doc_is_31_and_v1_prefixed() {
     }
 }
 
-/// Release tooling, not a behavioral assertion. Publishing the OpenAPI schema is a release chore
-/// WE do — an operator gets the doc from the live `GET /openapi.json` endpoint or the release
+/// Release tooling, not a behavioral assertion. Publishing the OpenAPI schema is a release chore —
+/// an operator gets the doc from the live `GET /openapi.json` endpoint or the release
 /// asset, so it earns no user-facing CLI surface. This test is the build-time handle CI uses to
 /// capture the artifact straight from the same `openapi_doc()` the gateway serves, guaranteeing the
 /// published file matches the shipped binary. A normal `cargo test` (no env var) just re-asserts
@@ -364,7 +364,7 @@ fn served_openapi_equals_committed_file() {
     assert_eq!(super::OPENAPI_JSON, committed);
 }
 
-/// class-13/14 R2: `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
+/// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
 /// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
 /// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
 /// no-body call (the common one — an operator with a supervisor never needs `confirm`) is invalid. A
@@ -546,8 +546,8 @@ fn declared_errors_is_total_and_well_formed() {
                 assert_eq!(
                     responses[&status]["description"].as_str(),
                     Some(description.as_str()),
-                    "{key} {rel} {status} is not the projection of its declaration — someone \
-                     hand-wrote a response body again"
+                    "{key} {rel} {status} is not the projection of its declaration — a response \
+                     body was hand-written instead of projected"
                 );
             }
         }

@@ -36,9 +36,9 @@ pub(crate) struct CachedToken {
     /// The `Authorization: Bearer <token>` header value, pre-built ONCE here (at mint time) rather
     /// than on every `headers_for` call — `headers_for` runs inline on the egress hot path for every
     /// outbound request, while a token only changes on the background refresh loop (roughly hourly),
-    /// so re-`format!`ing and re-validating the same bytes per request was pure waste (1.4.0 audit,
-    /// egress-auth, performance lens). `None` when `token` is empty (the pre-first-mint sentinel) or
-    /// contains bytes invalid for an HTTP header value — both cases mean "emit no auth header",
+    /// so re-`format!`ing and re-validating the same bytes per request was pure waste. `None` when
+    /// `token` is empty (the pre-first-mint sentinel) or contains bytes invalid for an HTTP header
+    /// value — both cases mean "emit no auth header",
     /// exactly as before.
     header: Option<HeaderValue>,
 }
@@ -130,8 +130,8 @@ pub(crate) fn spawn(minter: Minter) -> CredentialProviderArc {
 /// Refresh `REFRESH_SKEW_SECS` BEFORE expiry for a normally-lived token so a request never races the
 /// expiry boundary. But that skew cannot be honored for a SHORT-TTL token: the old
 /// `(ttl - SKEW).max(MIN_SLEEP)` floored the sleep back up to `MIN_SLEEP_SECS` (30s) even for a token
-/// that expired in, say, 10s — so `headers_for` served an EXPIRED bearer for ~20s and the upstream 401'd
-/// (1.4.0 audit, egress-auth). Instead:
+/// that expired in, say, 10s — so `headers_for` served an EXPIRED bearer for ~20s and the upstream 401'd.
+/// Instead:
 ///   - `ttl == 0` (already expired / garbage `expires_in ≈ 0`): back off `MIN_SLEEP_SECS` so the mint
 ///     loop cannot spin hot — nothing useful to serve, fail safe.
 ///   - `ttl <= REFRESH_SKEW_SECS` (too short to refresh a full skew early): re-mint at ~half the
@@ -161,7 +161,7 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
             // an empty token collides with the pre-first-mint sentinel, so `is_ready()` would stay false
             // forever (the prober skips the lane permanently) AND `headers_for` would emit no auth header
             // (organic traffic 401s forever) — a permanent wedge with no self-healing. Retry at
-            // MIN_SLEEP instead, exactly like a mint error. (1.4.0 audit, egress-auth.)
+            // MIN_SLEEP instead, exactly like a mint error.
             Ok(fresh) if fresh.token.expose_secret().is_empty() => {
                 tracing::warn!(
                     "OAuth token endpoint returned a 200 with an empty access_token; treating as a \
@@ -226,7 +226,7 @@ mod tests {
         }
     }
 
-    /// task #87: the minted bearer is held `Redacted`, so a `{:?}` of the token field shows
+    /// The minted bearer is held `Redacted`, so a `{:?}` of the token field shows
     /// `[REDACTED]`, never the token bytes — even though the pre-built header still carries them.
     #[test]
     fn cached_token_field_is_redacted_in_debug() {
@@ -245,10 +245,10 @@ mod tests {
         assert_eq!(h[0].1.to_str().unwrap(), "Bearer tok-abc");
     }
 
-    // Performance fix (1.4.0 audit, egress-auth, perf lens): the `Authorization` header value is now
-    // built ONCE by `CachedToken::new` (mint time) rather than re-`format!`+re-validated on every
-    // `headers_for` call. Simulate the background refresh loop's store step directly (swap in a fresh
-    // `CachedToken`, as `refresh_loop` does via `*p.token.write()... = Arc::new(fresh)`) and assert
+    // The `Authorization` header value is built ONCE by `CachedToken::new` (mint time) rather than
+    // re-`format!`+re-validated on every `headers_for` call. Simulate the background refresh loop's
+    // store step directly (swap in a fresh `CachedToken`, as `refresh_loop` does via
+    // `*p.token.write()... = Arc::new(fresh)`) and assert
     // `headers_for` picks up the newly pre-built header — proving the cache-once, clone-on-read path
     // stays correct across a refresh, not just at construction.
     #[test]
@@ -288,7 +288,7 @@ mod tests {
             .is_empty());
     }
 
-    // 1.4.0 audit: the prober consults `is_ready` to SKIP an OAuth lane whose first token has not
+    // The prober consults `is_ready` to SKIP an OAuth lane whose first token has not
     // minted (empty token) — probing it would send no auth header and the guaranteed 401 could
     // HardDown-park a healthy lane. Ready only once a non-empty token is present.
     #[test]
@@ -297,7 +297,7 @@ mod tests {
         assert!(BearerToken::with_token_for_test("tok").is_ready());
     }
 
-    // 1.4.0 audit (egress-auth): a short-TTL token must be re-minted BEFORE it expires — the old
+    // A short-TTL token must be re-minted BEFORE it expires — the old
     // `(ttl - SKEW).max(MIN_SLEEP)` floored the sleep to 30s even for a 10s token, serving it expired.
     #[test]
     fn next_refresh_never_sleeps_past_a_live_token_expiry() {
@@ -317,10 +317,10 @@ mod tests {
         assert_eq!(next_refresh_secs(now - 100, now), MIN_SLEEP_SECS);
     }
 
-    /// LOW: `headers_for` runs inline on the request hot path, so a POISONED lock must be recovered,
+    /// `headers_for` runs inline on the request hot path, so a POISONED lock must be recovered,
     /// not panicked over (a panic there would 500 a request because some other thread poisoned the
     /// lock). Poison the RwLock by panicking while holding the write guard, then assert `headers_for`
-    /// still returns the Bearer (via `into_inner`). Red-before: with `.expect(...)` instead of
+    /// still returns the Bearer (via `into_inner`). With `.expect(...)` instead of
     /// `.unwrap_or_else(|e| e.into_inner())` this call panics on the poisoned lock.
     #[test]
     fn headers_for_recovers_from_poisoned_lock() {

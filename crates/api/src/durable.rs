@@ -14,11 +14,11 @@
 //! and gets back "durable or `Err`". The sequence is a straight line inside one private function,
 //! each fallible step gated by `?`, and the temp cleanup is a `Drop` guard (not a `return` an author
 //! must remember), so:
-//!   * a failed write NEVER leaves a stale temp (the D4 "cleaned only on rename failure" class),
-//!   * a RELATIVE path's parent-dir fsync is NEVER skipped (the D2 class — empty parent resolves to
-//!     `"."` unconditionally),
-//!   * the signing-key posture (0600-at-open + O_EXCL anti-pre-plant + stale-temp pre-removal, the
-//!     D3 concern) survives via `DurableOpts` with no bespoke code at the call-site.
+//!   * a failed write NEVER leaves a stale temp (the "cleaned only on rename failure" class),
+//!   * a RELATIVE path's parent-dir fsync is NEVER skipped (an empty parent resolves to `"."`
+//!     unconditionally),
+//!   * the signing-key posture (0600-at-open + O_EXCL anti-pre-plant + stale-temp pre-removal)
+//!     survives via `DurableOpts` with no bespoke code at the call-site.
 
 use std::io;
 use std::path::Path;
@@ -76,7 +76,7 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// fsynced for the change to survive a power loss. A RELATIVE `path` has an empty parent
 /// (`Some("")`, which cannot be opened), so it resolves to "." -- the CWD, where the file actually
 /// lives. UNCONDITIONAL and in ONE place, so no caller can pass a relative path that dodges the
-/// parent fsync (the D2 class), and `write`/`remove` can never disagree about which directory it is.
+/// parent fsync, and `write`/`remove` can never disagree about which directory it is.
 fn holding_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -148,9 +148,8 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
     // Resolve the directory that HOLDS `path`. A RELATIVE `path` has an empty parent (`Some("")`, an
     // empty path that cannot be opened) — resolve it to "." (the CWD, which is where the file lives
     // and whose directory entry the rename mutates). This resolution is UNCONDITIONAL and lives here,
-    // so no caller can pass a relative path that dodges the parent fsync (fixes the D2 class). The
-    // temp is created in this same resolved parent, so temp + target always co-locate (same-FS
-    // rename).
+    // so no caller can pass a relative path that dodges the parent fsync. The temp is created in this
+    // same resolved parent, so temp + target always co-locate (same-FS rename).
     let parent = holding_dir(path);
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
@@ -174,7 +173,7 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
 
     // RAII: the temp is removed on EVERY early return (every `?` below, and any future `?` an editor
     // adds) UNLESS we disarm after a successful rename. There is no manual cleanup to forget, so the
-    // D4 class ("cleaned only on the rename path") cannot recur.
+    // "cleaned only on the rename path" class cannot recur.
     struct TmpGuard<'a> {
         tmp: &'a Path,
         armed: bool,
@@ -196,7 +195,7 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
         open_opts.write(true);
         if opts.exclusive {
             // Anti-wedge: clear ONLY our own about-to-use name (ephemeral, never the real file), then
-            // create with O_EXCL so we still refuse to ADOPT a temp we did not just clear (the D3
+            // create with O_EXCL so we still refuse to ADOPT a temp we did not just clear (the
             // anti-pre-plant property). A genuine race where the temp reappears surfaces as the create
             // error below.
             let _ = std::fs::remove_file(&tmp);
@@ -389,9 +388,8 @@ mod tests {
 
     /// The injected-failure matrix — for every step × {ENOSPC, EIO}, the write returns `Err`,
     /// the target is UNCHANGED (prior contents, or still absent), and NO durable temp remains (the
-    /// RAII guard ran on every early-return path). The temp assertion is the one that would have
-    /// caught D4 (leaked `.tmp` on a pre-rename error); the "target unchanged" is the whole-family
-    /// integrity guarantee.
+    /// RAII guard ran on every early-return path). The temp assertion catches a leaked `.tmp` on a
+    /// pre-rename error; the "target unchanged" is the whole-family integrity guarantee.
     #[test]
     fn fault_matrix_returns_err_untouched_target_no_temp_leak() {
         let sc = Scratch::new("matrix");
@@ -425,7 +423,7 @@ mod tests {
                 );
                 assert!(
                     !sc.has_durable_temp("absent.json"),
-                    "step {step:?} errno {errno}: no durable temp may leak (would have caught D4)"
+                    "step {step:?} errno {errno}: no durable temp may leak"
                 );
 
                 // Case B: target has PRIOR contents → must be byte-for-byte unchanged, no temp.
@@ -480,17 +478,17 @@ mod tests {
     }
 
     /// Success on a RELATIVE path round-trips AND the parent fsync was attempted on the
-    /// resolved "." — the assertion that would have caught D2 (relative-path parent fsync skipped).
+    /// resolved "." — the assertion that catches a skipped relative-path parent fsync.
     ///
     /// `CWD_LOCK` MUST be a module-level (not function-local) static: a `static` declared inside a
     /// function body is scoped to that function and contends with nothing, which is the same defect
-    /// `store::now_for_test`'s doc (see its own "CRITICAL #1" note) documents elsewhere in this
-    /// crate. Even hoisted, this lock only serializes CWD mutation AGAINST ITSELF — no OTHER test in
-    /// this binary that resolves a relative path takes it, so the window between `set_current_dir`
-    /// calls below is still a real (if currently unexercised) cross-file hazard. The deterministic
-    /// fix is `holding_dir_resolves_a_relative_path_to_dot` above, which needs no CWD mutation at
-    /// all; this test is kept because it also proves the write()/fsync ROUND TRIP that caught D2 in
-    /// the first place, which the pure unit test above does not cover.
+    /// `store::now_for_test`'s doc documents elsewhere in this crate. Even hoisted, this lock only
+    /// serializes CWD mutation AGAINST ITSELF — no OTHER test in this binary that resolves a
+    /// relative path takes it, so the window between `set_current_dir` calls below is still a real
+    /// (if currently unexercised) cross-file hazard. The deterministic alternative is
+    /// `holding_dir_resolves_a_relative_path_to_dot` above, which needs no CWD mutation at all;
+    /// this test is kept because it also exercises the write()/fsync ROUND TRIP, which the pure
+    /// unit test above does not cover.
     #[test]
     fn success_relative_path_fsyncs_dot() {
         let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -509,7 +507,7 @@ mod tests {
         assert_eq!(
             fsynced.as_deref(),
             Some(Path::new(".")),
-            "a relative path must fsync the parent resolved to \".\" (would have caught D2)"
+            "a relative path must fsync the parent resolved to \".\""
         );
         assert_eq!(
             std::fs::read(sc.path("relative.json")).unwrap(),
@@ -521,7 +519,7 @@ mod tests {
     /// A pre-existing stale temp of a DIFFERENT (crashed-run) name is irrelevant under the
     /// primitive's per-call-unique naming — a fresh write succeeds and ignores the foreign leftover.
     /// And for the `exclusive` posture, a stale temp of our OWN about-to-use name does not wedge
-    /// (pre-removed) — covering D3's wedge concern.
+    /// (pre-removed).
     #[test]
     fn stale_foreign_temp_is_ignored() {
         let sc = Scratch::new("stale");
@@ -540,7 +538,7 @@ mod tests {
 
     /// The `exclusive` + `mode` posture (the signing key): the published file is 0600 on
     /// unix, and a pre-planted temp of our own name is cleared rather than wedging (anti-wedge), while
-    /// O_EXCL still refuses to ADOPT a foreign temp we did not clear. Covers D3's security posture.
+    /// O_EXCL still refuses to ADOPT a foreign temp we did not clear.
     #[test]
     #[cfg(unix)]
     fn exclusive_mode_publishes_0600_and_survives_stale_own_temp() {
@@ -561,16 +559,14 @@ mod tests {
         assert!(!sc.has_durable_temp("signing.key"));
     }
 
-    /// THE ANTI-WEDGE PRE-REMOVAL, actually exercised. `exclusive` opens the temp with `O_EXCL`, so a
-    /// leftover at the exact about-to-use name from a crashed run would make every subsequent write
-    /// fail `EEXIST` forever -- the signing key could never be rotated again. The `remove_file(&tmp)`
-    /// that prevents it had NO test: the temp name embeds a pid and an atomic counter, so no test
-    /// could name the file it needed to plant, and the old case admitted as much ("we can't predict
-    /// the exact pid-seq") and then asserted only that an ordinary re-write succeeds -- which it does
-    /// with the pre-removal deleted.
+    /// THE ANTI-WEDGE PRE-REMOVAL. `exclusive` opens the temp with `O_EXCL`, so a leftover at the
+    /// exact about-to-use name from a crashed run would make every subsequent write fail `EEXIST`
+    /// forever -- the signing key could never be rotated again. The `remove_file(&tmp)` that
+    /// prevents it is awkward to exercise from outside: the temp name embeds a pid and an atomic
+    /// counter, so no test can name the file it needs to plant.
     ///
-    /// `plant_decoy_arm` plants INSIDE the primitive, at the exact path it computed. RED with the
-    /// pre-removal removed: `EEXIST`.
+    /// `plant_decoy_arm` plants INSIDE the primitive, at the exact path it computed, so this case
+    /// fails with `EEXIST` the moment the pre-removal is dropped.
     #[test]
     fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
         let sc = Scratch::new("wedge");

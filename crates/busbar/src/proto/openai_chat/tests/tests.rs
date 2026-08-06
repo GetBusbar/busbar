@@ -187,7 +187,7 @@ fn read_request_concatenates_multiple_system_messages() {
     assert!(ir.messages.iter().all(|m| m.role != IrRole::System));
 }
 
-// --- read_request: degenerate (content-less) system message must not vanish (fix 4)
+// --- read_request: degenerate (content-less) system message must not vanish
 
 #[test]
 fn read_request_preserves_contentless_system_message() {
@@ -447,7 +447,7 @@ fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
 
 #[test]
 fn response_format_survives_same_protocol_roundtrip() {
-    // Phase 0: `response_format` (json_object / json_schema / structured output) is now a first-class
+    // `response_format` (json_object / json_schema / structured output) is a first-class
     // IR field (read verbatim into `ir.response_format`), so it leaves `extra` and survives both a
     // same-protocol OpenAI->OpenAI passthrough AND the cross-protocol seam (which clears `extra`).
     let body = serde_json::json!({
@@ -519,7 +519,7 @@ fn write_request_omits_token_cap_when_absent() {
     assert!(obj.get("max_tokens").is_none());
 }
 
-// --- write_request: ToolUse on a non-assistant message must not be dropped (fix 6)
+// --- write_request: ToolUse on a non-assistant message must not be dropped
 
 #[test]
 fn write_request_keeps_tool_use_on_user_message() {
@@ -759,7 +759,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
     assert_eq!(tool_msg["content"], serde_json::json!("the answer is 42"));
 }
 
-// --- write_response: content collected once; null when no text (fix 5 regression guard)
+// --- write_response: content collected once; null when no text (regression guard)
 
 #[test]
 fn write_response_joins_text_blocks_and_keeps_tool_calls() {
@@ -832,7 +832,7 @@ fn write_response_content_null_when_no_text() {
     );
 }
 
-// --- Task 1: native OpenAI error envelope shape ---
+// --- native OpenAI error envelope shape ---
 
 #[test]
 fn write_error_native_openai_shape() {
@@ -881,7 +881,7 @@ fn write_error_empty_kind_falls_back_to_status_bucket() {
     );
 }
 
-// --- Task 2: identity-field fidelity ---
+// --- identity-field fidelity ---
 
 #[test]
 fn read_response_captures_upstream_identity() {
@@ -1195,7 +1195,7 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert!(!ir.extra.contains_key("stop"));
     assert_eq!(ir.top_p, Some(0.9_f64));
     assert_eq!(ir.stop, vec!["\n\n".to_string()]);
-    // Phase 0: penalties / seed / n / response_format are now PROMOTED to first-class IR fields too,
+    // Penalties / seed / n / response_format are PROMOTED to first-class IR fields too,
     // so they leave `extra` and land in the typed fields. Only `logit_bias` (no IR field) stays in
     // `extra` (still re-emitted on a same-protocol passthrough, still stripped cross-protocol).
     assert!(!ir.extra.contains_key("frequency_penalty"));
@@ -1217,7 +1217,7 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert_eq!(out["n"], serde_json::json!(2));
 }
 
-/// class-6 6c3: `reasoning_effort` values `IrReasoningEffort::parse` does not know (`"none"`,
+/// `reasoning_effort` values `IrReasoningEffort::parse` does not know (`"none"`,
 /// `"xhigh"` — real `gpt-5`-family spellings) must NOT be lost. `reasoning_effort` is a MODELED
 /// key, so it is excluded from the generic `extra` sweep; without a rescue, an unrecognised value
 /// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
@@ -3602,7 +3602,7 @@ fn test_ir_request() -> crate::ir::IrRequest {
     }
 }
 
-/// FINDING 2 (opt-out strips usage): with `client_include_usage == false` (the default), the OpenAI
+/// Opt-out strips usage: with `client_include_usage == false` (the default), the OpenAI
 /// framing STRIPS a folded usage off the finish chunk and emits NO trailing usage chunk. With `true`
 /// it un-folds into a native separate trailing usage-only chunk.
 #[test]
@@ -3661,7 +3661,7 @@ fn test_framing_gates_usage_on_client_include_usage() {
     );
 }
 
-/// FIX 3 (usage-strip object gate): an OpenAI-COMPATIBLE upstream may omit the `object` field on its
+/// Usage-strip object gate: an OpenAI-COMPATIBLE upstream may omit the `object` field on its
 /// content chunks while still stamping the forced-`include_usage` `"usage":null` tell. The same-proto
 /// strip predicate must fire on a content chunk (non-empty `choices` + a top-level `usage` key)
 /// REGARDLESS of `object`, and must never strip a usage the client legitimately requested.
@@ -3713,7 +3713,7 @@ fn strip_same_proto_usage_fires_without_object_field() {
     );
 }
 
-/// FINDING 1 (0-based streaming tool_calls index, unit): `remap_tool_call_index` rewrites the
+/// 0-based streaming tool_calls index (unit): `remap_tool_call_index` rewrites the
 /// writer's raw IR-block index onto a 0-based per-call ordinal. First distinct raw index → 0, next →
 /// 1; the same raw index (argument-fragment chunks) replays its ordinal. Guarantees the first tool
 /// call is index 0 even when the source opened it at a non-zero block index.
@@ -3779,7 +3779,7 @@ fn test_remap_tool_call_index_is_0_based_per_call() {
     );
 }
 
-/// FINDING 4 (n>1 cross-protocol): a request asking for N>1 candidate completions cannot round-trip
+/// N>1 cross-protocol: a request asking for N>1 candidate completions cannot round-trip
 /// through the single-candidate response IR, so the cross-protocol egress seam
 /// (`prepare_for_egress`) must CLAMP `n` to 1 before the egress writer emits it — otherwise the
 /// backend generates (and bills for) N candidates while translation keeps only choice 0 and
@@ -3937,7 +3937,7 @@ fn test_openai_tool_choice_unknown_object_is_none() {
     assert_eq!(ir.tool_choice, None);
 }
 
-// --- Phase 0: frequency_penalty / presence_penalty / seed / n / response_format as first-class
+// --- frequency_penalty / presence_penalty / seed / n / response_format as first-class
 // IR fields. Each proves: OpenAI body -> IR carries it; IR -> OpenAI body re-emits it; and that
 // they leave `extra` (promoted, not lingering). ---
 
@@ -4013,7 +4013,7 @@ fn phase0_sampling_fields_written_from_ir() {
 
 #[test]
 fn phase0_sampling_fields_omitted_when_absent() {
-    // None on every Phase 0 field => the writer emits none of the keys.
+    // None on every sampling field => the writer emits none of the keys.
     let out = OpenAiWriter.write_request(&test_ir_request());
     let obj = out.as_object().expect("object");
     assert!(obj.get("frequency_penalty").is_none());
@@ -4025,7 +4025,7 @@ fn phase0_sampling_fields_omitted_when_absent() {
 
 #[test]
 fn phase0_sampling_fields_roundtrip_same_protocol() {
-    // OpenAI -> IR -> OpenAI preserves every Phase 0 field byte-for-byte.
+    // OpenAI -> IR -> OpenAI preserves every sampling field byte-for-byte.
     let body = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
@@ -4624,7 +4624,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
     assert_eq!(anns[1]["end_index"], 26);
 }
 
-/// class-6 6e3: `start_index: i64::MAX` (upstream-controlled, only sign-checked) must not panic on
+/// `start_index: i64::MAX` (upstream-controlled, only sign-checked) must not panic on
 /// the response path. `cargo test` builds debug, where the un-clamped `+` in the old code panics.
 #[test]
 fn url_annotation_offset_saturates_on_absurd_upstream_index() {
@@ -4649,7 +4649,7 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
     );
 }
 
-/// class-6 6e1 site 1: the writer's base accumulator must advance in CHARACTERS, not bytes — the
+/// The writer's base accumulator must advance in CHARACTERS, not bytes — the
 /// IR citation contract is characters. A non-ASCII first block shifts every citation in block 2+
 /// by its byte-vs-char delta under the old `text.len()` accumulator.
 #[test]
@@ -4710,7 +4710,7 @@ fn url_annotation_base_accumulates_in_characters() {
     );
 }
 
-/// class-6 6e1 site 2: the quote-recovery arm's `text.find(q)`/`q.len()` are byte offsets/lengths;
+/// The quote-recovery arm's `text.find(q)`/`q.len()` are byte offsets/lengths;
 /// converting to chars at the point of use must report character-based indices even when the
 /// quoted text follows non-ASCII content in the same block.
 #[test]
@@ -4769,7 +4769,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
 
-/// class-6 6c4: `image_url.detail` is a cost/latency hint no `IrBlock::Image` field can carry
+/// `image_url.detail` is a cost/latency hint no `IrBlock::Image` field can carry
 /// (nested inside `messages`, a modeled key, so it cannot ride `extra` either — and only one
 /// protocol models it, so per owner decision no IR field is added). It must at least be
 /// diagnosable via a warn rather than silently vanishing, even OpenAI->OpenAI same-lane. `"auto"`
@@ -4822,7 +4822,7 @@ fn image_detail_warns_on_drop_except_auto() {
     );
 }
 
-/// REGRESSION PROOF (class-6 6e1 anti-regression, T16): an Anthropic-sourced citation's
+/// REGRESSION PROOF: an Anthropic-sourced citation's
 /// `start_char_index`/`end_char_index` are ALREADY characters (the IR contract). The `(Some,Some)`
 /// arm in `url_annotations` must NOT be touched by the byte->char fixes above — converting it again
 /// would DOUBLE-CONVERT and corrupt Anthropic->OpenAI citations on non-ASCII text. This must pass

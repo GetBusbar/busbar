@@ -525,9 +525,8 @@ fn write_error_kind_vocabulary_mapping() {
 /// A cross-protocol upstream 503 relayed to an Anthropic-ingress client arrives with the
 /// generic router kind `api_error`. Native Anthropic represents upstream overload as the 529
 /// `overloaded_error`, NOT a generic `api_error`, so `write_error` must map by status: a 503
-/// (and the 529 it canonically maps to) yields `error.type == "overloaded_error"`. Regression
-/// guard for the conformance finding — fails against the old `_status`-ignoring code, which
-/// emitted `api_error`.
+/// (and the 529 it canonically maps to) yields `error.type == "overloaded_error"`. Fails against
+/// the old `_status`-ignoring code, which emitted `api_error`.
 #[test]
 fn write_error_503_maps_to_overloaded_error_not_api_error() {
     let type_for = |status: u16| {
@@ -538,7 +537,7 @@ fn write_error_503_maps_to_overloaded_error_not_api_error() {
             .and_then(|t| t.as_str())
             .map(String::from)
     };
-    // The finding's exact scenario: cross-protocol 503 + generic `api_error` kind.
+    // The exact scenario: cross-protocol 503 + generic `api_error` kind.
     assert_eq!(
         type_for(STATUS_OVERLOADED).as_deref(),
         Some("overloaded_error"), // golden wire-contract literal (kept bare on purpose)
@@ -1423,7 +1422,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     }
 }
 
-/// class-6 6a1: the empty-Text degrade above holds the TURN's shape (so message/block ordering
+/// The empty-Text degrade above holds the TURN's shape (so message/block ordering
 /// survives), but it also DESTROYS the block on its own protocol's round-trip — the corollary the
 /// Bedrock reader upholds (its unmodeled `document`/`video` blocks park verbatim under a
 /// positional `extra` sentinel) but the Anthropic reader did not. This drives a FULL
@@ -2040,7 +2039,7 @@ fn message_start_emits_model_even_when_none() {
 /// — including the Error variant — must carry a top-level `type` in its data body that matches
 /// the SSE event name. A native SDK dispatches on `data.type`; a missing/mismatched `type` is a
 /// decode failure and a proxy-signature tell. This sweeps all `write_response_event` arms, not
-/// just the cited Error arm.
+/// just the Error arm.
 #[test]
 fn every_write_response_event_carries_matching_top_level_type() {
     let events = vec![
@@ -2906,12 +2905,12 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
     );
 }
 
-// ---- Phase 0 fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
+// ---- Fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
 use crate::test_support::warn_capture::WarnCapture;
 
-/// SAMPLING (Phase 0): Anthropic's Messages API does NOT support `frequency_penalty`,
+/// SAMPLING: Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read
 /// from an OpenAI request) must produce an egress that emits NONE of those keys — the writer never
 /// references these fields, so they are dropped (the correct lossy-by-target behavior; emitting an
@@ -3435,7 +3434,7 @@ fn test_client_thinking_block_cannot_forge_redacted() {
     }
 }
 
-/// L2: an Anthropic text block carrying citations of EVERY variant (char/page/content_block
+/// An Anthropic text block carrying citations of EVERY variant (char/page/content_block
 /// document locations AND the web-search `web_search_result_location`) must round-trip BYTE-EXACT
 /// through IR (reader → IrCitation incl. `raw` → writer re-emits `raw` verbatim). This is the
 /// no-regression guarantee for the historical raw-`Value` fidelity.
@@ -3506,7 +3505,7 @@ fn anthropic_citations_roundtrip_byte_exact_all_variants() {
     );
 }
 
-/// L2: when an IrCitation has NO `raw` (synthesized on a cross-protocol hop, e.g. Gemini→IR), the
+/// When an IrCitation has NO `raw` (synthesized on a cross-protocol hop, e.g. Gemini→IR), the
 /// Anthropic writer BUILDS the correct Anthropic shape from neutral fields. Covers the
 /// web_search_result_location synthesis path (url/title/cited_text) a Gemini grounding source maps to.
 #[test]
@@ -3544,7 +3543,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
     );
 }
 
-/// L2: an empty-citations Text block is unaffected — no `citations` key is emitted.
+/// An empty-citations Text block is unaffected — no `citations` key is emitted.
 #[test]
 fn anthropic_empty_citations_text_block_unaffected() {
     let block = crate::ir::IrBlock::Text {

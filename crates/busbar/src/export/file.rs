@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The built-in **request-log-file** exporter (PUSH) — design §2.3, §8.
+//! The built-in **request-log-file** exporter (PUSH).
 //!
 //! Appends each built request-log line to a JSONL file. Like the webhook exporter it is a DISTRIBUTION
 //! sink: the projection is built in core, this module only ships it. Configured from
@@ -93,7 +93,7 @@ fn append_one(sink: &'static FileSink, line: String) {
     tokio::task::spawn_blocking(move || {
         let _permit = permit; // slot releases on task end via the owned permit's Drop.
         let _guard = sink.lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Best-effort size bound (design §8 `rotate_mb`): when the file exceeds the configured size,
+        // Best-effort size bound (`rotate_mb`): when the file exceeds the configured size,
         // roll over by truncation rather than a rename (which would bypass the durable-write choke
         // point) — a bounded on-disk footprint without a second durable-write path.
         let truncate = sink

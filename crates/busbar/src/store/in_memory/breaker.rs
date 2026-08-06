@@ -104,7 +104,7 @@ impl BreakerCell {
 }
 
 /// The decoded breaker situation for ONE cell at an instant — the output of the single
-/// `breaker_verdict` decoder (R3). Read-only: `ProbeWinnable` reports that a probe COULD be won here,
+/// `breaker_verdict` decoder. Read-only: `ProbeWinnable` reports that a probe COULD be won here,
 /// it does not win one (the mutating `cell_acquire_breaker` still owns the CAS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BreakerVerdict {
@@ -203,7 +203,7 @@ impl BreakerCellAccess for LaneState {
 /// the single-flight recovery probe. The Open→HalfOpen transition + probe CAS is performed
 /// exactly once, on the single lane selection actually dispatches, via `cell_acquire_breaker`.
 pub(crate) fn cell_ready_breaker(c: &dyn BreakerCellAccess, now: u64) -> bool {
-    // Delegate to the single `breaker_verdict` decoder (R3) so there is exactly ONE implementation
+    // Delegate to the single `breaker_verdict` decoder so there is exactly ONE implementation
     // of "would this breaker admit". A cell is ready-to-admit iff a request could proceed WITHOUT
     // losing a race: Closed-and-elapsed (`Ready`) or expired-Open where a probe could be won
     // (`ProbeWinnable`). `Open`/`HalfOpen` are not ready. Behaviour is byte-identical to the prior
@@ -215,7 +215,7 @@ pub(crate) fn cell_ready_breaker(c: &dyn BreakerCellAccess, now: u64) -> bool {
     )
 }
 
-/// THE single decoder (R3) of a cell's breaker situation into [`BreakerVerdict`]. Read-only — no
+/// THE single decoder of a cell's breaker situation into [`BreakerVerdict`]. Read-only — no
 /// Open→HalfOpen transition, no probe CAS. Every "is the breaker open" question (`cell_ready_breaker`
 /// for the selection filter, `classify` for observability, and `try_admit` before its CAS) resolves
 /// here, so the notions can never drift. An unexpected state fails SAFE (mapped to `Open`), matching
@@ -451,7 +451,7 @@ impl HealthState {
     /// the shard lock with no transition lock held).
     ///
     /// Test-only: the production recovery path (`recover_lane`) now closes cells through
-    /// `cell_closed_if_recoverable` (which re-validates suppression under the lock — LOW #16); the only
+    /// `cell_closed_if_recoverable` (which re-validates suppression under the lock); the only
     /// remaining caller of this unconditional close is the `closed_state` test handle.
     #[cfg(test)]
     pub(crate) fn cell_closed(c: &dyn BreakerCellAccess) {
@@ -466,7 +466,7 @@ impl HealthState {
     /// `observed_cooldown` is the `cooldown_until` value the lock-free pre-filter read for this cell.
     /// A successful 2xx probe is authoritative for the upstream state it OBSERVED, so it may clear the
     /// trip/cooldown it saw — but it must NOT clobber a STRICTER suppression a peer armed in the
-    /// meantime. The race the finding (#16) calls out: between the pre-filter read and the close, a
+    /// meantime. The race this closes: between the pre-filter read and the close, a
     /// concurrent `record_hard_down_all_cells` / `cell_record_failure` parks the cell Open with a
     /// FRESH sticky cooldown (`now_hd + HARD_DOWN_COOLDOWN_SECS`, strictly later than anything the
     /// probe saw). An unconditional close would drop that just-armed cooldown and recover a lane the
@@ -511,7 +511,7 @@ impl HealthState {
         // lifetime `LaneState.err` counter, which must stay monotonic (like `LaneState.ok`).
         // The breaker FSM never reads `err()` — `should_trip` keys off `outcome_window` + `streak`
         // — so this zeroing was dead for recovery health yet corrupted the stats counter, making
-        // `LaneState.err` non-monotonic on every default-cell recovery (LOW #12). Recovery health
+        // `LaneState.err` non-monotonic on every default-cell recovery. Recovery health
         // is fully reset by the `streak`/`outcome_window`/`cooldown`/`state` stores below.
         lock_recover(c.outcome_window()).clear();
         c.cooldown_until().store(0, Ordering::Release);

@@ -8,8 +8,9 @@
 //! the `RoutingPolicy` contract (`busbar-api`) and ranks on a signal the hook wire already
 //! projects, so an external hook could do the same. `weighted` is NOT here — it is the engine's
 //! non-removable inline SWRR floor, never a plugin (the `weighted` NAME/entry lives alongside for
-//! registry completeness, but the floor's zero-cost behavior is the engine's inline path). Each native is the proof-of-completeness for its input signal (the scope-lock
-//! conformance rule): if a native can't be written, the contract's in-data is incomplete.
+//! registry completeness, but the floor's zero-cost behavior is the engine's inline path). Each
+//! native is the proof-of-completeness for its input signal: if a native can't be written, the
+//! contract's in-data is incomplete.
 //!
 //! All natives are SYNC and never touch async or I/O; the async-trait wrapper is free for them. The
 //! default `weighted` native exists only as the explicit `route: native, policy.name: weighted`

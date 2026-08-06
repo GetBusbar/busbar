@@ -69,8 +69,7 @@ fn split_credential(credential: &str) -> Result<(&str, &str), String> {
 
 /// Validate an `oauth-client-credentials` credential WITHOUT constructing the provider — the config
 /// `--validate` dry-run entry point (mirrors `jwt_bearer::validate_credential`, so a malformed
-/// credential is caught at validate time for BOTH OAuth mechanisms, not only jwt-bearer). (found: 1.4.0
-/// audit, egress-auth.)
+/// credential is caught at validate time for BOTH OAuth mechanisms, not only jwt-bearer).
 pub(crate) fn validate_credential(credential: &str) -> Result<(), String> {
     split_credential(credential).map(|_| ())
 }
@@ -83,8 +82,7 @@ pub(crate) fn validate_credential(credential: &str) -> Result<(), String> {
 /// direct-target case). The `ssrf` posture MUST be the operator's real one (provider+global
 /// `allow_metadata_hosts`, `allow_all_metadata`, `blocked_metadata_hosts`) so this boot/reload check
 /// matches config_validate's validate-time check EXACTLY — else a token_url an operator legitimately
-/// allow-listed passes `--validate` but dies here at boot. (found: 1.4.0 audit, egress-auth — parity
-/// with jwt-bearer plus validate==apply parity for the operator override surface.)
+/// allow-listed passes `--validate` but dies here at boot.
 fn validate_token_url(token_url: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
     use crate::config_validate::{
         extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
@@ -149,7 +147,7 @@ impl ClientCreds {
         Ok(CachedToken::new(
             tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
-            // huge value must clamp to u64::MAX rather than wrap/panic (1.4.0 audit, egress-auth).
+            // huge value must clamp to u64::MAX rather than wrap/panic.
             now.saturating_add(tok.expires_in),
         ))
     }
@@ -178,7 +176,7 @@ mod tests {
         }
     }
 
-    /// task #87: the resolved `client_secret` NEVER appears in this struct's `Debug` (it is held
+    /// The resolved `client_secret` NEVER appears in this struct's `Debug` (it is held
     /// `Redacted`). A `{:?}` of the exchange material must show `[REDACTED]`, not the secret.
     #[test]
     fn client_secret_is_redacted_in_debug() {
@@ -218,7 +216,7 @@ mod tests {
         assert!(validate_credential("id:secret").is_ok());
     }
 
-    // 1.4.0 audit (egress-auth): build() re-validates token_url for SSRF/https as defense-in-depth
+    // build() re-validates token_url for SSRF/https as defense-in-depth
     // (parity with jwt-bearer). A plaintext-http public token_url and a cloud-metadata/IMDS host are
     // rejected even with a well-formed credential; loopback http is allowed (local dev IdP).
     #[test]
@@ -228,7 +226,7 @@ mod tests {
         assert!(build("id:secret", "http://127.0.0.1:8080/token", "s", &deny()).is_ok());
     }
 
-    // 1.4.0 audit (egress-auth, MAJOR): the boot-time token_url check MUST honor the operator's
+    // The boot-time token_url check MUST honor the operator's
     // metadata-host allow-overrides the SAME way config_validate does — else a config that
     // allow-lists a metadata host as its token endpoint passes `--validate` but dies at boot
     // (validate != apply). With the host allow-listed (or `allow_all`), build() must accept it.
@@ -266,7 +264,7 @@ mod tests {
         assert!(build("client-abc:secret:with:colons", "https://t", "s", &deny()).is_ok());
     }
 
-    // 1.4.0 audit (egress-auth): `expires_in` must tolerate a JSON number, a numeric string (ADFS /
+    // `expires_in` must tolerate a JSON number, a numeric string (ADFS /
     // Azure AD v1), and absence (defaulting to 1 h) — a strict u64 breaks minting for those IdPs.
     #[test]
     fn token_response_tolerates_expires_in_as_number_string_or_absent() {
@@ -278,7 +276,7 @@ mod tests {
         assert_eq!(s.expires_in, 7200);
         let absent: TokenResponse = serde_json::from_str(r#"{"access_token":"a"}"#).unwrap();
         assert_eq!(absent.expires_in, super::super::default_expires_in());
-        // 1.4.0 audit: also tolerate a JSON float and a decimal string (truncated toward zero).
+        // Also tolerate a JSON float and a decimal string (truncated toward zero).
         let float: TokenResponse =
             serde_json::from_str(r#"{"access_token":"a","expires_in":3600.0}"#).unwrap();
         assert_eq!(float.expires_in, 3600);

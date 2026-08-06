@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for the built-in `prometheus` exporter: `/metrics` is served via the plugin HTTP endpoint
-//! registration (design §7.1), gated on `export.prometheus` presence.
+//! registration, gated on `export.prometheus` presence.
 
 use super::*;
 use crate::config::{ExportCfg, PrometheusSettings};
@@ -19,10 +19,10 @@ fn cfg_with_prometheus() -> ExportCfg {
 }
 
 /// `/metrics` is registered as a plugin route ONLY when `export.prometheus` is configured — the
-/// presence-is-the-switch contract (design §2). The declared route is the well-known `GET /metrics`,
+/// presence-is-the-switch contract. The declared route is the well-known `GET /metrics`,
 /// auth `none`, owned by `prometheus`.
 ///
-/// RED-BEFORE-GREEN: before this unit `/metrics` was a hard-wired core route gated on a config
+/// RED-BEFORE-GREEN: before 1.5.3 `/metrics` was a hard-wired core route gated on a config
 /// boolean and there was no `export::prometheus::route_decl` at all — this test does not compile
 /// against the pre-lift-out tree.
 #[test]

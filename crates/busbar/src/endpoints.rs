@@ -79,11 +79,11 @@ pub(crate) async fn stats(
         .filter(|&i| lane_visible(i))
         .map(|i| {
             let snap = app.store.snapshot(i, t);
-            // Phase 2: `availability` is rendered from the SHARED `Unavailable` taxonomy (the same
+            // `availability` is rendered from the SHARED `Unavailable` taxonomy (the same
             // `classify` routing dispatches on), so /stats can't drift from behaviour. `Ok` → the
             // sentinel "available"; `Err` → the variant name + its `recovery_hint_ms` (null when the
             // reason has no self-recovery, e.g. dead/budget). `breaker_state` and `at_capacity` remain
-            // SEPARATE, orthogonal axes (R9): a saturated Open lane shows breaker_state="open" AND
+            // SEPARATE, orthogonal axes: a saturated Open lane shows breaker_state="open" AND
             // at_capacity=true AND availability="breaker_open", so operators can see why its recovery
             // probe (which needs a dispatch it can't win) never fires — not collapsed into one string.
             let (availability, recovery_hint_ms) = match snap.availability {
@@ -105,7 +105,7 @@ pub(crate) async fn stats(
                 "model": snap.model,
                 "provider": snap.provider,
                 "max_concurrent": snap.max_concurrent,
-                // Alias of `max_concurrent` under the design §8 field name (the lane's concurrency
+                // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
                 // limit). Kept alongside `max_concurrent` for backward compatibility.
                 "limit": snap.max_concurrent,
                 "inflight": snap.inflight,
@@ -119,7 +119,7 @@ pub(crate) async fn stats(
                     None => json!("unbounded"),
                 },
                 "at_capacity": snap.at_capacity,
-                // Phase 2 unified availability signal + independent breaker axis (R9).
+                // Unified availability signal + independent breaker axis.
                 "availability": availability,
                 "recovery_hint_ms": recovery_hint_ms,
                 "breaker_state": breaker_state,
@@ -438,7 +438,7 @@ mod tests {
             "idle bounded lane: 1 permit free"
         );
         assert_eq!(bounded["at_capacity"], json!(false));
-        // Phase 2: the unified availability signal is rendered from `classify` — an idle, healthy
+        // The unified availability signal is rendered from `classify` — an idle, healthy
         // bounded lane reads "available" with a null recovery hint and a closed breaker.
         assert_eq!(bounded["availability"], json!("available"));
         assert_eq!(bounded["recovery_hint_ms"], Value::Null);
@@ -465,10 +465,10 @@ mod tests {
             json!(true),
             "a saturated bounded lane must be flagged at_capacity in /stats"
         );
-        // Phase 2: the same saturation the `at_capacity` flag reports now ALSO flows through the
+        // The same saturation the `at_capacity` flag reports ALSO flows through the
         // unified `availability` signal (breaker healthy, so the reason is at-capacity), with the
         // honest at-capacity recovery floor (2s) instead of a deceptive Retry-After=1. The breaker
-        // axis stays independently "closed" — the two are orthogonal (R9).
+        // axis stays independently "closed" — the two are orthogonal.
         assert_eq!(
             bounded["availability"],
             json!("at_capacity"),

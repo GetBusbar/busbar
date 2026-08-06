@@ -7,9 +7,8 @@
 
 use serde_json::Value;
 
-// Per-operation IR variants. Chat is the existing `IrRequest`/`IrResponse` below; the
-// new operations live in submodules and are assembled into `enum IrReq`/`enum IrResp` once
-// all six exist.
+// Per-operation IR variants. Chat is the `IrRequest`/`IrResponse` below; the other
+// operations live in submodules and are assembled into `enum IrReq`/`enum IrResp`.
 pub(crate) mod audio;
 pub(crate) mod embeddings;
 pub(crate) mod image;
@@ -566,7 +565,7 @@ pub(crate) enum CacheKind {
 }
 
 /// Neutral, cross-protocol citation IR for grounding / web-search CITATIONS carried on a `Text`
-/// block (L2). Before this type the field was `Vec<serde_json::Value>` holding RAW Anthropic-shaped
+/// block. Before this type the field was `Vec<serde_json::Value>` holding RAW Anthropic-shaped
 /// citation objects: only Anthropic read/wrote them, Gemini's `citationMetadata` was never read, and
 /// every other protocol left the vec empty — so a citation was LOST the moment it crossed a protocol
 /// boundary. `IrCitation` captures the UNION of the protocol-native citation shapes so a citation can
@@ -632,7 +631,7 @@ pub(crate) struct IrTool {
     /// breakpoint was being dropped on every hop. First-class so it survives the seam. Only the
     /// Anthropic reader populates it / writer emits it; other protocols leave it `None`.
     pub(crate) cache_control: Option<CacheControl>,
-    /// HOSTED (built-in) tool passthrough spec (Finding 5). The OpenAI Responses API `tools` array
+    /// HOSTED (built-in) tool passthrough spec. The OpenAI Responses API `tools` array
     /// mixes CUSTOM function tools with provider-HOSTED tools discriminated purely by a top-level
     /// `type` (`web_search`, `file_search`, `code_interpreter`, `computer_use_preview`, `mcp`, ...).
     /// A hosted tool carries NO `name`/`parameters`, so parsing it as a function tool yields an empty
@@ -709,7 +708,7 @@ pub(crate) enum IrDelta {
     /// it; a writer that models redacted reasoning (Bedrock `redactedContent`) re-emits it, others drop
     /// it (the bytes are encrypted/opaque and have no plaintext analog).
     RedactedReasoningDelta(String),
-    /// L2-5 STREAMING grounding/web-search citations. ADDITIVE variant (no existing variant changed
+    /// STREAMING grounding/web-search citations. ADDITIVE variant (no existing variant changed
     /// — 1.0-freeze-safe): a streamed citation that arrives mid-block is carried as a
     /// [`crate::ir::IrCitation`] (neutral fields + the byte-exact `raw` escape hatch) rather than
     /// dropped. The Anthropic reader maps a `citations_delta` content_block_delta here (one citation
@@ -748,7 +747,7 @@ pub(crate) struct StreamDecodeState {
     /// a duplicate `BlockStart` at the same claimed index, an unbalanced stream (two `content_block_start`
     /// for one index) on an Anthropic egress. The open sites gate on `!text_block_closed` so an
     /// out-of-spec upstream that resumes text after tools is dropped rather than un-balancing the stream.
-    /// Cohere reader only; other readers leave it false. (1.4.0 audit, translation.)
+    /// Cohere reader only; other readers leave it false.
     pub(crate) text_block_closed: bool,
     pub(crate) open_tools: std::collections::BTreeSet<usize>,
     /// Set once a reasoning (chain-of-thought) delta is seen on the stream. When true, the
@@ -788,7 +787,7 @@ pub(crate) struct StreamDecodeState {
     /// Cohere reader: the index is assigned once at `tool-call-start` and never recomputed (no
     /// divergent base to reconcile), so this map exists purely as the O(log n) lookup counterpart to
     /// `open_tools`'s O(log n) membership check — replacing an O(n) linear scan that made a stream
-    /// with many sequential tool calls cost O(n²) overall (round-9 codeaudit, performance lens).
+    /// with many sequential tool calls cost O(n²) overall.
     ///
     /// Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/`text_index`
     /// directly and never need this lookup).

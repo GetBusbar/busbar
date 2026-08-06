@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-operation IR enums: `IrReq` / `IrResp`, one variant per operation. The
-//! design's single `enum Ir` reconciles to TWO enums because the engine already splits request from
+//! The per-operation IR enums: `IrReq` / `IrResp`, one variant per operation. A single `enum Ir`
+//! would not fit: the engine already splits request from
 //! response (`IrRequest`/`IrResponse`). The inherent methods here ARE the surface the operation-blind
 //! middle sees; each exhaustive `match` is the removability / symmetry gate — adding the next
 //! operation (an 8th, past the current seven Chat..Rerank) is a compile error at every one.
 //!
-//! `affinity_key` and cross-protocol drop accounting are not built in 1.5.0 — they were never wired
-//! past the request/response IR split done here.
+//! `affinity_key` and cross-protocol drop accounting are not built as of 1.5.0: they are not wired
+//! through the request/response IR split.
 
 use super::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use super::embeddings::{EmbeddingsReq, EmbeddingsResp};
@@ -30,8 +30,8 @@ use crate::operation::Operation;
 /// MUST be emitted as a literal JSON string, never as SDK-typed `bytes` — some Google client SDKs
 /// model `thoughtSignature` as `bytes` and silently base64-encode it, which breaks the bypass since
 /// the backend then sees the base64 encoding of this string, not the string itself. busbar builds
-/// raw JSON directly (see `proto::gemini::writer`), so this is correct by construction — do not
-/// "improve" this into a typed representation later.
+/// raw JSON directly (see `proto::gemini::writer`), so this is correct by construction; a typed
+/// representation would reintroduce the encoding hazard.
 pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
 /// Request-side IR — one variant per operation. `Chat` reuses the existing `IrRequest` verbatim.
@@ -165,7 +165,7 @@ impl IrReq {
                         );
                     }
                 }
-                // Anthropic cache_control CAP (class-6 6b1): "A maximum of 4 blocks with
+                // Anthropic cache_control CAP: "A maximum of 4 blocks with
                 // cache_control may be provided". Reachable ONLY cross-protocol — same-protocol
                 // Anthropic is a verbatim byte passthrough that never reaches a writer, so this
                 // can never clamp a request that is legal for its own backend. Walk in Anthropic's
@@ -220,7 +220,7 @@ impl IrReq {
                         );
                     }
                 }
-                // HOSTED-TOOL cross-protocol drop (R3-B). A Responses hosted tool
+                // HOSTED-TOOL cross-protocol drop. A Responses hosted tool
                 // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
                 // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
                 // an `IrTool` as a function tool keyed on `name`, so a hosted tool becomes a malformed
@@ -241,7 +241,7 @@ impl IrReq {
                          Route hosted-tool requests to a Responses lane to use them"
                     );
                 }
-                // class-6 6c2: Gemini `cachedContent` references a server-side context cache at
+                // Gemini `cachedContent` references a server-side context cache at
                 // Google that busbar cannot project into `contents` — it has no handle on the
                 // cached turns' text. `extra` is about to be wiped wholesale below (this is the
                 // cross-protocol-only seam; same-protocol Gemini->Gemini never reaches here), so a

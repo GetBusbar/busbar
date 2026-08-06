@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for the built-in `request-log-webhook` exporter — the request-log delivery + SSRF guard +
-//! AdmissionGate relocated out of `observability` (design §7.2). 1.5.3: the separate
+//! AdmissionGate relocated out of `observability`. 1.5.3: the separate
 //! `generic-webhook` exporter FOLDED into this one (its only extra, `auth_header:`, is now a setting
 //! here, and its other reason to exist — a SECOND target — is what the NAMED `export:` map provides).
 
@@ -13,7 +13,7 @@ use crate::export::test_logs_projection;
 /// [`Target`] rather than read from a process-global, so it is an argument here.
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// A stand-in per-instance in-flight delivery cap. 1.5.3 + audit MED-5: the cap is carried on each
+/// A stand-in per-instance in-flight delivery cap. 1.5.3: the cap is carried on each
 /// named instance's [`Target`] (one `AdmissionGate` PER INSTANCE, sized to that instance's own
 /// `settings.max_inflight_deliveries`), so it too is an argument here.
 const TEST_MAX_INFLIGHT: usize = 4;
@@ -23,8 +23,8 @@ const TEST_MAX_INFLIGHT: usize = 4;
 /// [`crate::observability::validate_webhook_url`], and carries a generic-webhook auth header onto the
 /// built target.
 ///
-/// RED-BEFORE-GREEN: `crate::export::webhook` (and `push_target`/`Target`) did not exist before this
-/// unit — the request-log webhook lived entirely in `observability`.
+/// RED-BEFORE-GREEN: `crate::export::webhook` (and `push_target`/`Target`) did not exist before
+/// 1.5.3 — the request-log webhook lived entirely in `observability`.
 #[test]
 fn push_target_validates_and_carries_auth_header() {
     let mut targets = Vec::new();
@@ -175,7 +175,7 @@ fn build_request_log_shape() {
 /// Delivering with NO webhook configured is a harmless no-op — the allocation-guarded default path
 /// EVERY request-finish takes on an unconfigured deployment.
 ///
-/// AUDIT MED-3: this test used to call `deliver_logs` and assert NOTHING, so the no-op it claims to
+/// This test used to call `deliver_logs` and assert NOTHING, so the no-op it claims to
 /// prove was unmeasured — deleting the `TARGETS` guard left it green. The no-op is now asserted on
 /// what it OBSERVABLY means: no webhook is configured, and the call spawns NO delivery task. Neuter
 /// the guard (make the unset `TARGETS` read fall through to a delivery, e.g. via `.expect`) and this
@@ -210,7 +210,7 @@ async fn deliver_logs_is_noop_when_unconfigured() {
     );
 }
 
-/// AUDIT MED-5 — ONE ADMISSION GATE PER NAMED INSTANCE, sized to THAT instance's own configured cap.
+/// ONE ADMISSION GATE PER NAMED INSTANCE, sized to THAT instance's own configured cap.
 /// Two named webhook sinks (the documented "app logs + SIEM" shape) are two independent delivery
 /// budgets: a stalled SIEM must not consume the permits an operator capped low on the fast sink, and
 /// the low cap must actually be enforced on the instance that declares it.

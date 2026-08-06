@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAZY request-body DOM (perf/throughput-1.5.0).
+//! LAZY request-body DOM.
 //!
 //! The dominant same-protocol passthrough request never needs the full `serde_json::Value` tree it
 //! used to pay for on every ingress: the pristine short-circuit re-emits the ORIGINAL bytes, and the
@@ -42,7 +42,7 @@ fn captured_head_keys() -> &'static [&'static str] {
     CACHE
         .get_or_init(|| {
             // `stream_options` is captured so the engine can read `stream_options.include_usage`
-            // (the OpenAI streaming-usage opt-in, Findings 2+3) off the head projection WITHOUT forcing
+            // (the OpenAI streaming-usage opt-in) off the head projection WITHOUT forcing
             // a full DOM materialization on the common streaming path. It is a small top-level object;
             // capturing it keeps the point read O(1) and DOM-equivalent.
             let mut v: Vec<&'static str> = vec!["model", "stream", "stream_options", "system"];

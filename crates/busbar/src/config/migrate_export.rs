@@ -8,10 +8,10 @@
 //! Everything that moves INTO the single telemetry-egress surface lives here, in the order the
 //! migrator runs it:
 //!
-//! 1. [`migrate_export_named_map`] — 1.5.3 §3: the retired TYPE-KEYED `export:` block becomes the
+//! 1. [`migrate_export_named_map`] — 1.5.3: the retired TYPE-KEYED `export:` block becomes the
 //!    NAMED-DEFINITION map (`<name>: { module, settings }`), so one module can back several
 //!    instances.
-//! 2. [`migrate_observability_block`] — 1.5.3 §3: the `observability:` block is DELETED, its last
+//! 2. [`migrate_observability_block`] — 1.5.3: the `observability:` block is DELETED, its last
 //!    field folded into an `export:` instance with `module: otlp`.
 //! 3. [`migrate_export_projection`] — 1.5.3 A0.1: each instance's PROJECTION is made explicit
 //!    (`streams:`), from the same module→streams table the validator reads.
@@ -64,7 +64,7 @@ pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
         .expect("an unbounded counter always finds a free name")
 }
 
-/// 1.5.3 §3: rewrite the TYPE-KEYED `export:` block into the NAMED-DEFINITION map
+/// 1.5.3: rewrite the TYPE-KEYED `export:` block into the NAMED-DEFINITION map
 /// (`<name>: { module, settings }`). SHAPE-CONVERGENT and IDEMPOTENT: an entry that already names a
 /// `module:` is ALREADY an instance and is left untouched, so a second run is a no-op.
 pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
@@ -214,14 +214,14 @@ fn migrate_one_export_projection(
     ));
 }
 
-/// 1.5.3 §3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
+/// 1.5.3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
 /// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance with
 /// `module: otlp`. IDEMPOTENT: a config with no `observability:` block has nothing to fold.
 ///
 /// A MALFORMED block (`observability: null`, a sequence, a scalar — real hand-edited shapes) is still
 /// DELETED: the section does not exist in 1.5.3, so there is nothing to carry it into and leaving it
-/// would fail the `deny_unknown_fields` parse. But the deletion is RECORDED in the ledger (audit
-/// MED-1) — `root.remove` always removes the key, so without this arm a malformed block vanished from
+/// would fail the `deny_unknown_fields` parse. But the deletion is RECORDED in the ledger:
+/// `root.remove` always removes the key, so without this arm a malformed block vanished from
 /// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
 /// config" shape `migrate_auth` refuses.
 pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {

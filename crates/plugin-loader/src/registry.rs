@@ -51,7 +51,7 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
-        // browser-login primitives). The FLOOR MUST STAY 1 (RISK 5): the v2 wire additions are
+        // browser-login primitives). The FLOOR MUST STAY 1: the v2 wire additions are
         // externally-tagged additive variants, so a v1 plugin that only speaks `Authenticate`/
         // `Identity` still loads and works. `[1, AUTH_ABI_VERSION]` = `[1, 2]`.
         "auth" => &[1, busbar_plugin_abi::AUTH_ABI_VERSION],
@@ -452,11 +452,6 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
     // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
     // before any validation gets a chance to reject it.
-    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
-    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
-    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
-    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
-    // before any validation gets a chance to reject it.
     match std::fs::metadata(path) {
         Ok(meta) if meta.len() > tarball::MAX_TARBALL_FILE_BYTES => {
             return FileOutcome::Invalid {
@@ -657,7 +652,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 let signature = match s.kind {
                     RejectKind::AntiDowngrade => "trusted (below floor)",
                     // A floored artifact that could NOT prove trust: labeled as the UNTRUSTED artifact
-                    // it is, never mislabeled "trusted (below floor)" (the round-1 regression).
+                    // it is, never mislabeled "trusted (below floor)".
                     RejectKind::UntrustedFloored => "untrusted (below floor)",
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
@@ -709,7 +704,7 @@ mod tests {
         SigningKey::from_bytes(&[seed; 32])
     }
 
-    /// RISK 5: after the auth ABI v1→2 bump the loader floor MUST still admit v1 — a pre-built v1
+    /// After the auth ABI v1→2 bump the loader floor MUST still admit v1 — a pre-built v1
     /// auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The supported range is the
     /// inclusive `[1, 2]`.
     #[test]
@@ -717,7 +712,7 @@ mod tests {
         let range = supported_abi("auth");
         assert_eq!(range, &[1, busbar_plugin_abi::AUTH_ABI_VERSION]);
         let (floor, max) = (range[0], range[1]);
-        assert_eq!(floor, 1, "v1 auth plugins must still load (RISK 5)");
+        assert_eq!(floor, 1, "v1 auth plugins must still load");
         assert_eq!(max, 2, "v2 is the current auth payload schema");
         assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
         assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
@@ -1017,7 +1012,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Kind gating for SECRETS (P2): a `kind: secret` plugin passes the SAME scan/trust pipeline
+    /// Kind gating for SECRETS: a `kind: secret` plugin passes the SAME scan/trust pipeline
     /// as a store plugin (a plugin is a plugin), and the kind gate is symmetric - a store plugin
     /// cannot resolve config secrets, and a secret plugin cannot back the store. FAIL-CLOSED both
     /// ways.
@@ -1248,12 +1243,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// class-12 D2: a malformed `min_versions` floor SKIPS just the one floored plugin — the boot is
-    /// NOT killed — and the graduated escalation ladder (`registry.rs:374-389`'s "a rejection here is
-    /// a SKIP, unless referenced") already surfaces it: `skipped()` names the reason, and
-    /// `--list-plugins`/the admin catalog show a `REJECTED:` row. All four asserted in one test
-    /// because the graduated escalation IS the design. RED: before the fix the floor is a no-op, so
-    /// the plugin loads, `skipped()` is empty, and the index panics.
+    /// A malformed `min_versions` floor SKIPS just the one floored plugin — the boot is NOT killed —
+    /// and the graduated escalation ladder ("a rejection here is a SKIP, unless referenced")
+    /// surfaces it: `skipped()` names the reason, and `--list-plugins`/the admin catalog show a
+    /// `REJECTED:` row. All four asserted in one test because the graduated escalation IS the design.
     #[test]
     fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
         let release = key(1);
@@ -1291,11 +1284,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// class-12 D2: the escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a
-    /// malformed floor fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the
-    /// same string `main.rs`'s hard boot error interpolates for a referenced module). Proves the
-    /// reason is available and correct; the `main.rs` interpolation itself is verified by reading
-    /// source, not by a test (no in-tree harness boots the binary).
+    /// The escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a malformed floor
+    /// fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the same string
+    /// `main.rs`'s hard boot error interpolates for a referenced module).
     #[test]
     fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
         let release = key(1);
@@ -1326,7 +1317,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// AUDIT REGRESSION (LOW): the `--list-plugins` signature label is derived from the STRUCTURED
+    /// REGRESSION GUARD: the `--list-plugins` signature label is derived from the STRUCTURED
     /// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
     /// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection
     /// reason text contains "anti-downgrade") must still be labeled `unknown-publisher`, never
@@ -1365,7 +1356,7 @@ mod tests {
             rows[0].status
         );
 
-        // AUDIT REGRESSION (round 2): the SAME untrusted artifact but with a configured `min_versions`
+        // And the SAME untrusted artifact but with a configured `min_versions`
         // floor on its name must NEVER be labeled `trusted (below floor)`. The floor is trust-relative:
         // `AntiDowngrade` is reserved for artifacts that proved trust. An untrusted+floored artifact is
         // categorized as `UntrustedFloored` and labeled `untrusted (below floor)` — a hard SKIP, never
@@ -1398,7 +1389,7 @@ mod tests {
     }
 
     /// The auth range's MAX reads `busbar_plugin_abi::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
-    /// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (RISK 5: v1 plugins still load — see
+    /// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (v1 plugins still load — see
     /// `supported_abi_auth_floor_admits_v1`), so the range is `[1, AUTH_ABI_VERSION]`, not
     /// `[AUTH_ABI_VERSION, AUTH_ABI_VERSION]`.
     #[test]

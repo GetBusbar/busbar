@@ -156,9 +156,9 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
             // `u64::MAX` precisely so it is the identity for `min` and an unscheduled slot takes
             // `first`. This both inherits a racing generation's already-landed deadline (never
             // pushing it out) and makes a SHORTENED `interval_secs` take effect within one new
-            // interval instead of waiting out the old one. Same monotonicity posture as AUDIT's
-            // `fetch_max` seq. Strictly subsumes the old `compare_exchange(UNSCHEDULED, first)`: that
-            // was the `min` identity case.
+            // interval instead of waiting out the old one. Same monotonicity posture as the audit
+            // log's `fetch_max` seq. Strictly subsumes the old
+            // `compare_exchange(UNSCHEDULED, first)`: that was the `min` identity case.
             Some(slot) => slot.fetch_min(first, Ordering::Relaxed).min(first),
             // Lane count grew without a rebuild: fall back to an unshared schedule for this lane.
             None => first,
@@ -258,8 +258,8 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // `path_base` (`{path_base}/{model}:rawPredict`) nor the Vertex wire transform (model-strip +
     // `anthropic_version`) that organic forwarding does. Probing such a lane would hit the wrong URL with
     // the wrong body, never 2xx, and bench a HEALTHY lane. Skip it — passive half-open breaker recovery
-    // on organic traffic still restores a tripped path_base lane. (found: 1.4.0 audit; active probing of
-    // path_base lanes needs the probe to route through the organic EgressCtx path — a follow-up.)
+    // on organic traffic still restores a tripped path_base lane. (Active probing of path_base lanes
+    // needs the probe to route through the organic EgressCtx path — a follow-up.)
     if lane.path_base.is_some() {
         return;
     }
@@ -268,7 +268,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // minted yet: during that boot/reload window `credential.headers_for` emits no auth header, so the
     // probe would send an unauthenticated request and the guaranteed 401 (classified HardDown) would
     // park a HEALTHY lane dead. Skip until the token is live — the background minter fills it within a
-    // second, and organic traffic + passive half-open recovery cover the gap. (found: 1.4.0 audit.)
+    // second, and organic traffic + passive half-open recovery cover the gap.
     if !lane.credential.is_ready() {
         return;
     }
@@ -889,7 +889,7 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// class-10b: a SHORTENED `interval_secs` takes effect on an inherited schedule within one new
+    /// A SHORTENED `interval_secs` takes effect on an inherited schedule within one new
     /// interval, rather than waiting out the old (far longer) one. Targets the `fetch_min` clamp
     /// specifically — deadlines are offsets from each schedule's OWN `origin`, so a numeric
     /// comparison only discriminates when both spawns share one `Arc` (the state `App::clone`
@@ -943,7 +943,7 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// class-10b: the tick-side owner-checked write. A late-arriving prober's post-tick write must
+    /// The tick-side owner-checked write. A late-arriving prober's post-tick write must
     /// NOT revert a newer generation's spawn-time clamp — the deeper reason `advance_owned_deadline`
     /// is `compare_exchange`, keyed on the value THIS prober last observed itself owning, rather than
     /// an unconditional `store`. Plain synchronous unit test: no runtime, no clock, nothing for a

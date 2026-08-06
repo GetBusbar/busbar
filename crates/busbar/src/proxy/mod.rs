@@ -35,7 +35,7 @@ const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
 const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
 
 /// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
-/// (`advanced.response_headers.route_policy`, task #139; default `false`). Set SYNCHRONOUSLY once at
+/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at
 /// boot by [`configure_route_policy_headers`], mirroring `metrics::ENABLED` / `metrics::enabled()`:
 /// a settled decision read at every emission site, never rebuilt by a config apply (restart-to-apply,
 /// same as `advanced.response_headers.server_timing`). Unset ⇒ `false`: any test or build that never
@@ -144,11 +144,11 @@ pub(crate) use wire::*;
 #[path = "tests/usage_tap_tests.rs"]
 mod usage_tap_tests;
 
-// Change A deleted the `UsageTap` byte-scanner and its unit tests (usage extraction across protocols,
-// message_start input-token counting, feed_whole past-cap, terminal-error detection, eventstream
-// metadata/exception). Their job was to prove the byte-scanner matched the wire usage shapes; billing
-// now sources `IrUsage` directly from the per-protocol IR readers, which carry their OWN per-reader
-// usage tests, plus the billing-parity tests cover all four {stream,non-stream}×{same,cross} combos.
+// There is no byte-scanning usage tap to unit-test here: billing sources `IrUsage` directly from the
+// per-protocol IR readers, which carry their OWN per-reader usage tests (usage extraction across
+// protocols, message_start input-token counting, terminal-error detection, eventstream
+// metadata/exception), and the billing-parity tests below cover all four
+// {stream,non-stream}×{same,cross} combos end to end.
 
 #[cfg(test)]
 #[path = "tests/cross_protocol_extra_tests.rs"]
@@ -174,7 +174,7 @@ mod max_tokens_precedence_tests;
 #[path = "tests/on_exhausted_tests.rs"]
 mod on_exhausted_tests;
 
-/// Change B step 1 — REQUEST short-circuit. Proves that a same-protocol passthrough request whose
+/// REQUEST short-circuit. Proves that a same-protocol passthrough request whose
 /// body triggers none of invalidators #1-#4 is re-emitted BYTE-IDENTICAL to the retained original
 /// (`hop_bytes`), and that each invalidator individually forces NON-pristine and the correct
 /// rewritten bytes. Cross-protocol behaviour is exercised elsewhere; here we pin the same-proto path.
@@ -182,15 +182,12 @@ mod on_exhausted_tests;
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 
-/// Change A — BILLING PARITY GATE. Asserts the IR-derived A-tap usage (`StreamTranslate::usage()`,
-/// the value Change A routes billing through) produces EXACTLY the billed (input, output) tokens for
-/// every {streaming, non-stream} × {same-proto, cross-proto} path. The numbers asserted here are the
-/// SAME numbers the deleted `UsageTap` byte-scanner produced for 5/6 protocols; Responses STREAMING
-/// is the one CORRECTED case (the byte-scanner read a top-level `usage` that Responses nests under
-/// `response.usage`, so it reported 0 and under-billed — the IR reader reads it correctly, so the
-/// asserted number here is the new, higher, CORRECT value). The old shadow-check module that fed both
-/// the A-tap and the live byte-scanner and asserted agreement has been retired — its job (prove the
-/// A-tap matches the byte-scanner) is done, and the byte-scanner no longer exists.
+/// BILLING PARITY GATE. Asserts the IR-derived usage (`StreamTranslate::usage()`, the value billing
+/// is routed through) produces EXACTLY the billed (input, output) tokens for
+/// every {streaming, non-stream} × {same-proto, cross-proto} path. Responses STREAMING is the
+/// subtlest case: it nests usage under `response.usage` rather than at the top level, so a reader
+/// that looks only at the top level reports 0 and under-bills. The asserted number pins the
+/// correctly-nested read.
 #[cfg(test)]
 #[path = "tests/billing_parity_tests.rs"]
 mod billing_parity_tests;

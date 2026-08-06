@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Step 4 (token-exchange) guards: deterministic idempotent mint, refresh-invalidates-old, the
+//! Token-exchange guards: deterministic idempotent mint, refresh-invalidates-old, the
 //! HMAC-is-a-mint-time-selector-not-the-credential property, identity-from-principal-not-body, and a
 //! FAKE `SelfServeKeys` proving the endpoint is key-scheme agnostic.
 
@@ -147,12 +147,12 @@ fn first_call_provisions_second_call_reuses_one_row() {
     assert!(gov.verify_token(&t2, 2000).is_some());
 }
 
-/// THE 1.5.2 TOKEN-EXCHANGE FIX (red-before-green). A self-serve exchange must produce a USABLE key:
+/// THE 1.5.2 TOKEN-EXCHANGE FIX. A self-serve exchange must produce a USABLE key:
 /// the `user:<sub>` budget group is auto-provisioned as a leaf under the resolved TEAM, stamped from
 /// the team's `child_default`, so enforcement resolves the chain instead of failing closed with 429
 /// MissingGroup. Idempotent: a second exchange reuses the one leaf and the one key row.
 ///
-/// RED before the fix: the mint seam bound the key to `user:<sub>` but never created that group, so
+/// Before the fix: the mint seam bound the key to `user:<sub>` but never created that group, so
 /// `reg.get("user:sam")` is absent (panic) and a cost model built from the registry can't resolve the
 /// key's chain — exactly the live `429 group 'user:<sub>' is not configured` the demo hit.
 #[tokio::test]
@@ -316,7 +316,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
 }
 
 /// Re-login after an admin NARROWS the group's `allowed_pools` must take effect: the single reused
-/// binding is re-persisted with the freshly-resolved pools, not left with the stale set. RED before
+/// binding is re-persisted with the freshly-resolved pools, not left with the stale set. Before
 /// the fix: `issue_self`'s reuse branch returned the existing binding verbatim, keeping the OLD pools
 /// forever.
 #[test]
@@ -450,15 +450,15 @@ fn bound_role_without_group_is_403() {
 
 #[test]
 fn later_role_group_used_when_earlier_role_bound_but_groupless() {
-    // CODEAUDIT ROUND-2 FIX 1: resolve_exchange must scan ALL of the principal's granting bindings
+    // resolve_exchange must scan ALL of the principal's granting bindings
     // in the module for the first one that carries a group — not just take the FIRST role that has
     // any binding at all and then fail if THAT one happens to be groupless. Here role "A" binds but
     // has no group; role "B" binds AND carries a group. Before the fix this 403'd with Unbound even
     // though a later granting role clearly admits the principal under group "x".
     //
-    // CODEAUDIT ROUND-3 FIX 1: the POOLS must be the C6 UNION across ALL granting bindings (role A's
+    // The POOLS must be the C6 UNION across ALL granting bindings (role A's
     // "pool-a" AND role B's "pool-b"), matching `synthesize_principal_key` — not just the pools of
-    // the single binding the group happened to come from (role B alone, "pool-b" only). RED before
+    // the single binding the group happened to come from (role B alone, "pool-b" only). Before
     // the fix: only `pool-b` came back, silently narrowing a self-serve key's pools below what the
     // SAME identity gets on the data plane through `synthesize_principal_key`.
     let mut inner = BTreeMap::new();
@@ -581,8 +581,8 @@ async fn resolve_then_issue_via_real_seam() {
 
 /// A real OIDC/GitHub/LDAP plugin sets `principal.id = "oidc:<sub>"` (module-namespaced). Such an id
 /// is LEGITIMATE and verified — it must mint a key, grouped under `user:oidc:<sub>` (the internal ':'
-/// cannot escape the `user:` namespace because the group is ALWAYS `user:` + the whole sub). RED
-/// before the fix: `sanitize_self_sub` rejected ANY ':' → 403 BadSubject, so token-exchange with a
+/// cannot escape the `user:` namespace because the group is ALWAYS `user:` + the whole sub). Before
+/// the fix: `sanitize_self_sub` rejected ANY ':' → 403 BadSubject, so token-exchange with a
 /// real OIDC JWT never issued a key.
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {

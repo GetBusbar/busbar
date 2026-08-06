@@ -23,7 +23,7 @@ use serde::Serialize;
 #[cfg(feature = "openapi-schema")]
 pub(crate) mod schema;
 
-// The per-endpoint error DECLARATION `openapi.json` is a projection of (design D). Always compiled:
+// The per-endpoint error DECLARATION `openapi.json` is a projection of. Always compiled:
 // the generator reads it under `openapi-schema`, the class-level drift test reads it under `test`,
 // and the emission recorder tags responses with it in a test build.
 pub(crate) mod taxonomy;
@@ -43,8 +43,8 @@ pub(crate) const ADMIN_PREFIX: &str = "/api/v1/admin";
 /// single-sourced here so the three surfaces cannot drift.
 pub(crate) const PATH_ADMIN_AUTH: &str = "/admin-auth";
 pub(crate) const PATH_CONFIG_VALIDATE: &str = "/config/validate";
-/// `POST /plugins/inspect` (plugin-settings-schema-SPEC.md checklist item 4, question #7) — a
-/// stateless, `read-only`-scope preview of a candidate plugin tarball. Single-sourced here for the
+/// `POST /plugins/inspect` — a stateless, `read-only`-scope preview of a candidate plugin
+/// tarball. Single-sourced here for the
 /// same reason as `PATH_CONFIG_VALIDATE`: the scope matrix, the mutation-rate classifier, and the
 /// router all key off this exact string.
 pub(crate) const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
@@ -278,9 +278,8 @@ pub(crate) enum AdminError {
     /// invalid_request`.
     Validation(String),
     /// Optimistic-concurrency mismatch: the caller's `If-Match` is STALE — re-read the resource
-    /// and retry. `code = version_conflict`. Split from `conflict` (external review R3): a client
-    /// must distinguish RETRYABLE (this) from TERMINAL state conflicts without string-matching the
-    /// human message.
+    /// and retry. `code = version_conflict`. Split from `conflict` (R3): a client must distinguish
+    /// RETRYABLE (this) from TERMINAL state conflicts without string-matching the human message.
     VersionConflict(String),
     /// A TERMINAL state conflict: the request contradicts server state in a way a retry cannot fix
     /// (governance disabled, base-defined hook, immutable grant change, in-flight idempotency
@@ -295,8 +294,7 @@ pub(crate) enum AdminError {
     /// abandoned rather than left to hang the request indefinitely. `code = unavailable`. Unlike
     /// [`AdminError::Internal`] the message is specific and caller-safe (e.g. "the plugin catalog
     /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
-    /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait (round-4
-    /// audit finding 1).
+    /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait.
     Unavailable(String),
 }
 
@@ -394,7 +392,7 @@ pub(crate) struct InfoView {
     pub(crate) uptime_seconds: Option<u64>,
     /// Epoch seconds of process start — the BOOT EPOCH marker: `config_version` (and any
     /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
-    /// to read a counter reset as "new epoch", never as "reverted" (audit minor #2 / #4).
+    /// to read a counter reset as "new epoch", never as "reverted".
     pub(crate) started_at: Option<u64>,
     pub(crate) topology: TopologyInfo,
     /// Whether config-overlay persistence is enabled — i.e. the config is MUTABLE with a writable
@@ -485,7 +483,7 @@ pub(crate) struct PoolMemberStatusView {
     pub(crate) dead: bool,
     /// MONOTONIC count of Closed→Open breaker trips on this lane. Breaker episodes are transient
     /// and can open+close entirely between two polls — a consumer alerting on trips diffs this
-    /// count instead of trying to catch the live edge (audit #5). Carried across config apply and
+    /// count instead of trying to catch the live edge. Carried across config apply and
     /// restart with the rest of the learned health.
     pub(crate) trip_count: u64,
     /// Epoch seconds of the most recent trip; `None` = never tripped.
@@ -536,7 +534,7 @@ pub(crate) struct HookView {
     pub(crate) priority: u16,
     /// TAP observation stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or `None` for a gate.
     pub(crate) at: Option<&'static str>,
-    /// Gate fallback on timeout/error — a CLOSED, unambiguous string union (audit #8): one of the
+    /// Gate fallback on timeout/error — a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
     /// fallback hook the chain continues through. Unambiguous by construction: the terminal words
     /// are ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in
@@ -838,19 +836,19 @@ pub(crate) struct PluginView {
     /// Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
-    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint (questions
-    /// #10/#11 of plugin-settings-schema-SPEC.md) — ALWAYS a relative path under the admin origin
+    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint — ALWAYS a
+    /// relative path under the admin origin
     /// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
     /// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
     /// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
-    /// surfaces `schema_error` — question #11, round-8 correction: a present-but-corrupt schema is a
-    /// worse, distinct condition from "no schema declared", never folded into the same `null`).
+    /// surfaces `schema_error`: a present-but-corrupt schema is a worse, distinct
+    /// condition from "no schema declared", never folded into the same `null`).
     /// `null` for a compiled-in/external row (no manifest to carry a schema at all) and for any
     /// dynamic-library row whose manifest never set `settings_schema`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) schema_url: Option<String>,
-    /// A manifest that SET `settings_schema` but whose value fails to parse (question #3's round-4
-    /// correction, carried onto the list row too) — distinct from a manifest that never set the
+    /// A manifest that SET `settings_schema` but whose value fails to parse (carried onto the
+    /// list row too) — distinct from a manifest that never set the
     /// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
     /// this case; the operator sees the row is degraded from the list alone, before ever following
     /// the URL.
@@ -1023,10 +1021,8 @@ pub(crate) fn decode_offset_cursor(cursor: &str) -> Option<usize> {
     // cursor always leaves a trailing 1-byte remainder for `step_by(2)`'s last chunk, so
     // `cursor.get(i..i+2)` returns `None` there regardless of this early check; an empty cursor
     // decodes to `bytes = Some(vec![])` -> `s = ""` -> `strip_prefix("o:")` fails on "" too. Both
-    // branches this guard exists to short-circuit are ALSO rejected by the decode below — checked
-    // by hand-applying `&&` here and confirming the full cursor + pagination test surface
-    // (cursor_tests, limit_zero_does_not_produce_a_self_referential_cursor,
-    // list_groups_is_cursor_paginated) still passes.
+    // branches this guard exists to short-circuit are ALSO rejected by the decode below, so the
+    // guard is a fast path, not the thing that makes either case safe.
     if cursor.is_empty() || !cursor.len().is_multiple_of(2) {
         return None;
     }
@@ -1073,7 +1069,7 @@ pub(crate) struct EffectiveConfigView {
 /// is busbar's DERIVED estimate from the operator's configured global prices, computed at read time
 /// (raw counts are what's stored — a price change re-prices history consistently).
 ///
-/// Time base — THE PINNED SHAPE RULING (external review R3 #1): a usage response is ALWAYS exactly
+/// Time base — THE PINNED SHAPE RULING (R3): a usage response is ALWAYS exactly
 /// ONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST
 /// bucket (default: the current one); a multi-window series is the CLIENT fetching N buckets — or
 /// a future additive `?from=&to=` returning an ARRAY OF THIS SAME PER-BUCKET SHAPE, never a

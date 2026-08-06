@@ -280,7 +280,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     let lane = lane_app.lanes[0].clone();
 
     // A buffered completion carrying 600 input + 400 output = 1000 tokens, sourced from IrUsage
-    // (Change A: billing now reads the IR usage the egress reader decoded, not a byte-scan).
+    // (Billing reads the IR usage the egress reader decoded, not a byte-scan).
     let usage = IrUsage {
         input_tokens: 600,
         output_tokens: 400,

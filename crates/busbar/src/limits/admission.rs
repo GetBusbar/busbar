@@ -66,8 +66,8 @@ impl AdmissionGate {
     }
 }
 
-/// The 503 returned when an inbound request is SHED because `max_inbound_concurrent` is saturated
-/// (Bug 4). This admission control sits OUTSIDE protocol routing, so it uses a generic JSON envelope
+/// The 503 returned when an inbound request is SHED because `max_inbound_concurrent` is saturated.
+/// This admission control sits OUTSIDE protocol routing, so it uses a generic JSON envelope
 /// (the request's ingress dialect is not yet known here) with a `Retry-After` so rate-aware clients
 /// back off instead of hammering the full gateway.
 fn inbound_overloaded_response() -> axum::response::Response {
@@ -91,7 +91,7 @@ fn inbound_overloaded_response() -> axum::response::Response {
 /// Lean, hand-rolled `Layer`/`Service` pair for the OUTERMOST inbound-concurrency cap — replaces the
 /// old `HandleErrorLayer + LoadShedLayer + GlobalConcurrencyLimitLayer` tower stack with a single
 /// `AdmissionGate`-backed service. Same admission semantics (a request that arrives with the cap FULL
-/// is SHED with a 503 immediately, never queued for a permit — Bug 4), far less per-request overhead:
+/// is SHED with a 503 immediately, never queued for a permit), far less per-request overhead:
 /// no `BoxError`/`HandleError` indirection and no separate `LoadShed` wrapper, just one non-blocking
 /// `try_enter` and, on success, a future that holds the permit until the inner call completes.
 #[derive(Clone)]
@@ -146,7 +146,7 @@ where
 
     /// Admission never parks the caller: it either grabs a free slot synchronously in `call` or sheds
     /// immediately, so there is nothing for `poll_ready` to wait on — always ready, matching the old
-    /// stack's `LoadShed` (which never propagates inner backpressure either, by design: Bug 4).
+    /// stack's `LoadShed` (which never propagates inner backpressure either, by design).
     fn poll_ready(
         &mut self,
         _cx: &mut std::task::Context<'_>,
@@ -170,7 +170,7 @@ where
                     inner.call(req).await
                 })
             }
-            // Gate saturated: shed immediately rather than queue behind the cap (Bug 4) — no inner
+            // Gate saturated: shed immediately rather than queue behind the cap — no inner
             // call at all, so a full gate costs one `try_acquire_owned` and nothing else.
             None => Box::pin(async move { Ok(inbound_overloaded_response()) }),
         }

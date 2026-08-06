@@ -96,7 +96,7 @@ pub(crate) enum ChainVerdict {
     /// 1.5.3: `module` carries the PROVIDER NAME (the `identity-providers:` key), not the backing
     /// plugin's own reported name. That is the identity `role_bindings.<name>` binds and
     /// `auth_scope_caps` keys off — so two NAMED providers sharing one plugin module (the whole point
-    /// of the named-definition pattern, audit §0) get INDEPENDENT bindings and ceilings instead of
+    /// of the named-definition pattern) get INDEPENDENT bindings and ceilings instead of
     /// silently collapsing onto the plugin's single self-reported name.
     Identified {
         module: String,
@@ -120,7 +120,7 @@ pub(crate) enum ChainVerdict {
 /// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
 pub(crate) struct AuthMiddleware {
     // 1.5.3: `upstream_creds` is NO LONGER a field here. The mode moved off `auth:` onto the `pools:`
-    // section (audit §4: an all-pools default plus a per-pool override), because whose credential
+    // section (an all-pools default plus a per-pool override), because whose credential
     // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on
     // `App::upstream_credentials` (the all-pools default) and `PoolRuntime::upstream_credentials` (the
     // per-pool override), resolved per request by `App::pool_upstream_creds`.
@@ -168,7 +168,7 @@ static AUTH_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_OFFLOAD_MAX_INFLIGHT));
 
 /// The bound on CONCURRENT offloaded ADMIN-chain calls — a SEPARATE budget from the data-plane
-/// [`AUTH_OFFLOAD_MAX_INFLIGHT`] (decision 6): a wedged admin IdP (JWKS/introspection I/O in an
+/// [`AUTH_OFFLOAD_MAX_INFLIGHT`]: a wedged admin IdP (JWKS/introspection I/O in an
 /// external `kind: auth` admin plugin) must not starve data-plane auth of its offload permits, and
 /// vice versa. Smaller: the admin plane is operator traffic, not customer request volume.
 const ADMIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
@@ -425,7 +425,7 @@ impl AuthMiddleware {
             // CACHE KEY is the PROVIDER NAME, not the plugin's self-reported name (1.5.3): two named
             // providers backed by the same module are DIFFERENT verifiers with different settings, so
             // sharing a cache row between them would let one provider's verdict admit the other's
-            // credential. The name is the instance (audit §0), so the cache key must be the name.
+            // credential. The name is the instance, so the cache key must be the name.
             let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
                 Some(hit) => hit,
                 None => {
@@ -956,7 +956,7 @@ fn run_admin_chain(
 /// still needing a worker to run) and every other route stall and the node fails its liveness probe.
 ///
 /// So a plugin admin chain is bounded by its OWN [`ADMIN_OFFLOAD_PERMITS`] budget (separate from the
-/// data plane's, decision 6) and run on the blocking pool. An admin-tokens-only chain (no plugin) is
+/// data plane's) and run on the blocking pool. An admin-tokens-only chain (no plugin) is
 /// microsecond constant-time compares and runs INLINE. FAIL-CLOSED at every failure: a permit that
 /// cannot be acquired in time, a chain that does not finish in time, and a panicking plugin (join
 /// error) are all `Denied`, never an admit.
@@ -1025,11 +1025,11 @@ fn module_admin_scope_cap(
     )
 }
 
-/// D4 DRY-RUN: evaluate what EFFECTIVE admin scope the presented carriers would earn under
+/// DRY-RUN: evaluate what EFFECTIVE admin scope the presented carriers would earn under
 /// `app`'s admin chain (chain verdict → role_bindings resolution → module ceiling), without serving
 /// anything. Empty `Grants` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through
 /// the CANDIDATE chain with this before committing — a chain that would lock the caller out is
-/// rejected instead of applied (D4 ruling; restart remains the backstop).
+/// rejected instead of applied (restart remains the backstop).
 pub(crate) fn dry_run_admin_scope(
     app: &crate::state::App,
     bearer: Option<&str>,
@@ -1080,7 +1080,7 @@ fn admin_scope_for(
         // Full-by-reserved-id is gated on the identifying MODULE being the built-in `admin-tokens`
         // (the operator credential), NOT merely on the id string: an EXTERNAL admin module returning
         // a roleless principal that happens to carry the reserved id (`"admin"`) must NOT reach
-        // `Grants::of(Full)` — it falls to `Grants::default()` (RISK 7). Only admin-tokens itself
+        // `Grants::of(Full)` — it falls to `Grants::default()`. Only admin-tokens itself
         // mints the operator identity, so only it confers operator authority.
         #[cfg(feature = "auth-admin-tokens")]
         if module == Some(crate::config::ADMIN_TOKENS_MODULE)
@@ -1104,8 +1104,8 @@ fn admin_scope_for(
 /// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
 /// naming the scope that WOULD have sufficed — never any other principal's data.
 /// A 401 in the frozen admin error envelope — no/invalid admin credential. The admin plane's
-/// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on
-/// (3rd-party audit #9); the data plane keeps vendor-native 401 shaping (`unauthorized_response`).
+/// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
+/// the data plane keeps vendor-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
     let e = crate::admin::v1::contract::AdminError::Unauthorized;
     let body = serde_json::json!({
@@ -1216,14 +1216,14 @@ pub(crate) async fn auth_middleware(
     }
     // The token-exchange route runs the auth chain ITSELF (it needs the identified principal to
     // self-scope the minted key), so the middleware must NOT admit/deny it. EXACT match only — never
-    // a prefix — so nothing else rides this bypass. Mounted on the DATA router only (Step 6 asserts
+    // a prefix — so nothing else rides this bypass. Mounted on the DATA router only (a test asserts
     // it is absent from the admin router); `/metrics` and every other path stay gated.
     if path == crate::auth::exchange::AUTH_TOKEN_PATH {
         drop(_mw.take());
         return Ok(next.run(req).await);
     }
 
-    // PLUGIN HTTP ROUTES (design §5.4): a registered plugin route carries its OWN declared auth level,
+    // PLUGIN HTTP ROUTES: a registered plugin route carries its OWN declared auth level,
     // enforced through THIS chain. `none` bypasses (like `/healthz`); `admin` is forced down the admin
     // chain below; `key` needs no special handling (it flows through the normal client-token check).
     // Consulted off the LIVE snapshot so a hot-swap that changes a route's auth takes effect at once.
@@ -1541,7 +1541,7 @@ pub(crate) async fn auth_middleware(
             // this module HAS a `role_bindings` table (governance is configured for it): its roles
             // were supposed to define its data-plane access and defined none (an unbound role, or an
             // explicit `allowed_pools: []`). Admitting it `key: None` would hand it UNRESTRICTED pool
-            // access — the widening the adversarial review forbids, and a regression against the
+            // access — an unacceptable widening, and a regression against the
             // pre-1.5.2 active-governance path (`test_role_bound_principal_governed_like_a_virtual_key`).
             // This reconciles the two pre-refactor behaviors under one gate: with NO bindings table
             // for the module (no governance configured — `bindings.is_none()`), a role principal is
@@ -1824,7 +1824,7 @@ pub(crate) mod self_keys;
 /// the [`self_keys`] seam).
 pub(crate) mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2, Step 6): the chooser / begin / callback
+/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
 /// sub-states, PKCE + state + nonce, the core-executed token-exchange hop (client_secret injected by
 /// the CORE only), and the render of the key-issued page — all issuing through the SAME [`self_keys`]
 /// seam as the headless `POST`.

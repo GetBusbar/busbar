@@ -8,7 +8,7 @@
 //! generated from the pre-optimization translate pipeline (the `serde_json::Value`-building
 //! reader/writer path), so any CPU/allocation optimization of the translate path — including a
 //! direct-serialize fast path that skips the intermediate `Value` — must reproduce the wire output
-//! BYTE-FOR-BYTE or these tests fail. This is the fidelity wall for the translation-wave perf work.
+//! BYTE-FOR-BYTE or these tests fail. This is the fidelity wall for translate-path perf work.
 //!
 //! The harness replays the same step list the production seams run:
 //!   * REQUEST  (`translate_request_cross_protocol`, JSON branch): parse → anthropic

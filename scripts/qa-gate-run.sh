@@ -161,8 +161,17 @@ cmd_build() {
   log "build once (1/3): busbar + busbar-plugin-pack (release-check.sh Phase 0's exact line)"
   cargo build --release -p busbar -p busbar-plugin-pack
 
+  # THE LIST HERE IS THE WHOLE POINT, so state what governs it: every in-tree cdylib that some test
+  # dlopens, and each of those tests PANICS under CI when its .so is missing rather than skipping.
+  # `busbar-export-example-plugin` was omitted from this line and cost the loader leg in qa-gate run
+  # 31059945604 (`load_and_exercise_export_example_plugin`, "the export example plugin cdylib is not
+  # built under CI"). The old monolithic gate never noticed because it reached these tests through a
+  # `cargo test --workspace`, which builds every workspace member's cdylib as a side effect; naming
+  # packages explicitly is faster but makes the set a thing that can silently fall out of date.
+  # If you add a cdylib fixture crate to the workspace, add it here AND to cmd_loader.
   log "build once (2/3): the in-tree dlopen fixture cdylibs (the loader job's exact line)"
-  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
+  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin \
+    -p busbar-export-example-plugin
 
   log "build once (3/4): link the plugin-loader test binaries"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader --no-run
@@ -281,9 +290,29 @@ cmd_hydrate() {
 #   checkout_dir  clone destination when it differs from the repo name. No entry needs it today (the
 #                 last user, the Valkey store, was renamed repo-and-directory in 1.5.3); the knob
 #                 stays for the next repo rename.
-#   checkout_ref  non-default branch to clone (headroom-hook pins `dev` - it carries the
-#                 sibling-relative-path dependency fix this build actually needs; mirrors busbar's
-#                 own main/dev split).
+#   checkout_ref  branch to clone, when it must differ from SIBLING_DEFAULT_REF below.
+#
+# ── WHY SIBLINGS ARE CLONED AT `dev`, NOT AT THEIR DEFAULT BRANCH ────────────────────────────────
+#
+# Every first-party repo runs the SAME branch model busbar does: `main` is release-only, ongoing work
+# lands on `dev`. A sibling's `main` is therefore pinned to that plugin's LAST RELEASE, and a release
+# cut before the core change under test cannot possibly carry the sibling-side adaptation to it.
+# This gate exists to prove an UNRELEASED core against its plugins, so cloning `main` asks the wrong
+# question: it pairs tomorrow's core with yesterday's plugins.
+#
+# That is not theoretical. qa-gate run 31059945604 lost FIVE legs to exactly this, from one cause:
+# busbar 1.5.3 retired the inline `auth.admin_auth:` entry form and made retired keys a FAIL-CLOSED
+# boot refusal. store-postgres, store-mysql, auth-oidc and busbar-admin had each already migrated
+# their e2e fixture off that form ON `dev` -- but the gate cloned `main`, booted busbar against the
+# retired grammar, and the child exited 1 before its admin listener came up. store-valkey lost the
+# same way twice over: its `main` predates the redis->valkey rename, so its suite still demanded
+# `REDIS_URL` while release-check.sh provisions `VALKEY_URL`. Every one of those legs was green in
+# the sibling's OWN CI on `dev` at the same moment.
+#
+# So `dev` is the DEFAULT, and `checkout_ref` is now the override for a repo that departs from the
+# shared model rather than a per-repo opt-in to it. A repo with no `dev` branch falls back to its
+# default branch below, so this cannot turn a differently-organised sibling into a hard failure.
+#
 # A failed clone warns and continues; release-check.sh itself decides what is fatal
 # (release_gate: required -> hard fail there).
 #
@@ -291,6 +320,27 @@ cmd_hydrate() {
 # sibling is the expensive part and release-check.sh only builds what its segment touches. Cloning
 # the full set keeps this script agnostic to how qa/segments.toml partitions its segments, which is
 # the whole design goal - the partition must be reshapeable without reworking the plumbing.
+SIBLING_DEFAULT_REF=dev
+
+# Clone ONE sibling at $SIBLING_DEFAULT_REF, falling back to its default branch if that branch does
+# not exist. The fallback is what keeps the new default safe: `gh repo clone -- --branch dev` is a
+# hard failure on a repo with no `dev`, and silently losing a sibling is the failure mode this whole
+# registry-driven loop was written to end. Warn-and-continue on top of that, as before.
+clone_sibling() {
+  local repo="$1" dir="$2" ref="$3" why="$4"
+  echo "::group::clone GetBusbar/${repo} -> ${dir} (ref: ${ref})"
+  if [ -d "../${dir}" ]; then
+    note "already present: ../${dir}"
+  elif (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1 --branch "${ref}"); then
+    note "cloned GetBusbar/${repo} at ${ref}"
+  elif [ "$ref" = "$SIBLING_DEFAULT_REF" ] && (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1); then
+    echo "::warning::GetBusbar/${repo} has no '${ref}' branch - fell back to its default branch, which for a release-only \`main\` may predate the core change this gate is testing"
+  else
+    echo "::warning::clone of GetBusbar/${repo} failed - ${why}"
+  fi
+  echo "::endgroup::"
+}
+
 cmd_siblings() {
   log "sibling checkouts (registry-driven from plugins.yaml)"
   [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || note "no GH_TOKEN set - public clones may still work, private ones will not"
@@ -299,32 +349,19 @@ cmd_siblings() {
   registry="$(./scripts/plugin-registry-check.sh --list)"
   [ -n "$registry" ] || die "empty registry feed"
 
-  # feed fields: repo dir alias kind service release_gate gate checkout_ref
+  # feed fields: repo dir alias kind service release_gate gate checkout_ref ("-" when unset)
   while IFS=$'\t' read -r repo dir _ _ _ _ _ ref; do
     [ -n "$repo" ] || continue
-    # An explicit `if`, not `[ ... ] && args+=(...)`: under `set -e` that form is only safe because
-    # it is not the last statement in the body, which is a fragile thing to rely on.
-    local args=(--depth 1)
-    if [ "$ref" != "-" ]; then args+=(--branch "$ref"); fi
-    echo "::group::clone GetBusbar/${repo} -> ${dir} (ref: ${ref})"
-    if [ -d "../${dir}" ]; then
-      note "already present: ../${dir}"
-    elif ! (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- "${args[@]}"); then
-      echo "::warning::clone of GetBusbar/${repo} failed - release-check.sh will skip or fail its phase"
-    fi
-    echo "::endgroup::"
+    [ "$ref" != "-" ] || ref="$SIBLING_DEFAULT_REF"
+    clone_sibling "$repo" "$dir" "$ref" "release-check.sh will skip or fail its phase"
   done <<<"$registry"
 
   # busbar-admin (busbarctl) is NOT a plugin, so it is not in plugins.yaml - but release-check.sh
   # runs its integration.sh against the freshly-built busbar (the reverse of the plugin phases,
-  # bidirectional testing). Explicit sibling, same warn-and-continue posture.
-  echo "::group::clone GetBusbar/busbar-admin -> busbar-admin"
-  if [ -d ../busbar-admin ]; then
-    note "already present: ../busbar-admin"
-  elif ! (cd .. && gh repo clone GetBusbar/busbar-admin busbar-admin -- --depth 1); then
-    echo "::warning::clone of GetBusbar/busbar-admin failed - the busbarctl reverse-direction phase will skip"
-  fi
-  echo "::endgroup::"
+  # bidirectional testing). Explicit sibling, same branch rule: its `dev` is where its side of a
+  # core change lands, and cloning its release-only `main` is what cost the core-data-plane leg.
+  clone_sibling busbar-admin busbar-admin "$SIBLING_DEFAULT_REF" \
+    "the busbarctl reverse-direction phase will skip"
 
   ls -la ..
 }
@@ -353,11 +390,14 @@ cmd_loader() {
     echo "::warning::no ../store-sqlite sibling checkout - loader tests will fall back"
   fi
 
-  # Hydration should already have supplied these, but build them explicitly anyway: both crates
+  # Hydration should already have supplied these, but build them explicitly anyway: all three crates
   # hard-panic via their own path-discovery helpers under CI if they are ever missing, so a future
-  # regression fails loud rather than silently losing this coverage again.
-  log "build the in-tree hook-test-plugin and secret-example-plugin cdylibs"
-  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
+  # regression fails loud rather than silently losing this coverage again. Keep this set identical
+  # to cmd_build's (2/3) line -- when they drifted, the artifact was missing the export-example
+  # cdylib and this belt-and-braces rebuild did not cover for it.
+  log "build the in-tree hook-test, secret-example and export-example cdylibs"
+  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin \
+    -p busbar-export-example-plugin
 
   log "loader-mechanism tests against the real sibling-built store-sqlite-plugin"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader

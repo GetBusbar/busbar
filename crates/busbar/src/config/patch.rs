@@ -76,8 +76,8 @@ section_patch!(
     }
 );
 
-// 1.5.3: there is NO `ObservabilityPatch` any more. The `observability:` BLOCK IS DELETED (audit
-// §3) — its last field (`otlp_url`) is now an `export:` instance with `module: otlp`, and the
+// 1.5.3: there is NO `ObservabilityPatch` any more. The `observability:` BLOCK IS DELETED
+// — its last field (`otlp_url`) is now an `export:` instance with `module: otlp`, and the
 // `export:` block is edited in config.yaml + applied via plugin reload like every other exporter,
 // never through the single-value settings overlay.
 

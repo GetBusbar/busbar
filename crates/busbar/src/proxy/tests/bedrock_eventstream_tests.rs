@@ -48,7 +48,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
     assert_eq!(payload["usage"]["inputTokens"], 11);
     assert_eq!(payload["usage"]["outputTokens"], 7);
     assert_eq!(payload["usage"]["totalTokens"], 18);
-    // HIGH (R9): a real ConverseStream `metadata` event ALWAYS carries `metrics.latencyMs`
+    // A real ConverseStream `metadata` event ALWAYS carries `metrics.latencyMs`
     // (the SDK surfaces it via `ConverseStreamMetadataEvent::metrics()`). The buffered-synthesis
     // path must inject it too — `None` here would be a deterministic proxy tell. Mirrors the
     // live StreamTranslate path assertion in proto/mod.rs.
@@ -59,7 +59,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
     );
 }
 
-/// MEDIUM (R9, proxy engine): the `IrBlock::ToolUse` arm of `bedrock_response_to_eventstream`
+/// The `IrBlock::ToolUse` arm of `bedrock_response_to_eventstream`
 /// must synthesize native ConverseStream tool-use framing — a `contentBlockStart` carrying
 /// `start.toolUse.{toolUseId,name}` and a `contentBlockDelta` carrying `delta.toolUse.input` — so a
 /// native AWS SDK ConverseStream client receiving a buffered cross-protocol tool-call completion can

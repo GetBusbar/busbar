@@ -90,8 +90,7 @@ fn parse_service_account(
     // Defense in depth: the SA JSON's token_uri is the POST target for the signed assertion. Vet it the
     // same way oauth-client-credentials' token_url is vetted — https for a public host (http only for
     // loopback/private) and never a cloud-metadata/IMDS endpoint, honoring the operator's metadata
-    // posture. The minter client already refuses redirects; this closes the direct-target case. (found:
-    // 1.4.0 audit, egress-auth.)
+    // posture. The minter client already refuses redirects; this closes the direct-target case.
     validate_token_uri(&sa.token_uri, ssrf)?;
     let der = pem_to_pkcs8_der(&sa.private_key)?;
     let key_pair = ring::signature::RsaKeyPair::from_pkcs8(&der)
@@ -102,7 +101,7 @@ fn parse_service_account(
 /// Validate a `jwt-bearer` credential WITHOUT constructing the provider — the config `--validate`
 /// dry-run entry point (which does not build the app, so it otherwise never reaches [`build`], leaving
 /// malformed SA JSON / non-PKCS#8 keys to surface only at boot/apply). Runs the exact same checks as
-/// [`build`]. (found: 1.4.0 audit, egress-auth.)
+/// [`build`].
 pub(crate) fn validate_credential(
     credential: &str,
     ssrf: &super::MetadataSsrfPolicy,
@@ -115,8 +114,8 @@ pub(crate) fn validate_credential(
 /// for a loopback/private endpoint) and the shared cloud-metadata/IMDS denylist, honoring the operator's
 /// metadata posture (`ssrf`). The token_uri is not a per-provider config field, but the DEPLOYMENT-global
 /// posture still applies — a global `blocked_metadata_hosts` deny is enforced here and `allow_all_metadata`
-/// uniformly disables the guard, matching oauth-client-credentials (1.4.0 audit: the two mechanisms were
-/// asymmetric — jwt ignored the global posture). Reuses `config_validate`'s SSRF primitives so this can
+/// uniformly disables the guard, matching oauth-client-credentials (the two mechanisms were otherwise
+/// asymmetric: jwt ignored the global posture). Reuses `config_validate`'s SSRF primitives so this can
 /// never diverge from the config path (`config_validate` passes the identical `ssrf` at validate time).
 fn validate_token_uri(token_uri: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
     use crate::config_validate::{
@@ -204,7 +203,7 @@ impl Signer {
         Ok(CachedToken::new(
             tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
-            // huge value must clamp to u64::MAX rather than wrap/panic (1.4.0 audit, egress-auth).
+            // huge value must clamp to u64::MAX rather than wrap/panic.
             now.saturating_add(tok.expires_in),
         ))
     }
@@ -343,7 +342,7 @@ mod tests {
         }
     }
 
-    // 1.4.0 audit (egress-auth): the SA JSON's token_uri is the POST target for the signed assertion,
+    // The SA JSON's token_uri is the POST target for the signed assertion,
     // so it gets the same https + cloud-metadata guards as oauth-client-credentials' token_url.
     #[test]
     fn validate_token_uri_requires_https_for_public_and_blocks_metadata() {
@@ -357,7 +356,7 @@ mod tests {
         assert!(validate_token_uri("https://169.254.169.254/token", &deny()).is_err());
     }
 
-    // 1.4.0 audit (egress-auth): jwt-bearer must honor the operator's DEPLOYMENT-global metadata posture
+    // jwt-bearer must honor the operator's DEPLOYMENT-global metadata posture
     // symmetrically with oauth-client-credentials — a global `blocked_metadata_hosts` deny is enforced on
     // the token_uri, and `allow_all_metadata` / an allow-override unblocks an otherwise-denied host.
     #[test]
@@ -387,7 +386,7 @@ mod tests {
         assert!(validate_token_uri("https://evil.example.com/token", &blocked).is_err());
     }
 
-    // 1.4.0 audit (egress-auth): validate_credential is the config `--validate` dry-run entry point; it
+    // validate_credential is the config `--validate` dry-run entry point; it
     // must catch a malformed SA JSON and an SSRF token_uri without constructing the provider.
     #[test]
     fn validate_credential_rejects_malformed_json_and_ssrf_token_uri() {
@@ -398,7 +397,7 @@ mod tests {
         assert!(e.contains("metadata") || e.contains("169.254"), "got: {e}");
     }
 
-    /// M1: the `scope` threaded from provider config lands VERBATIM in the assertion claims (this is
+    /// The `scope` threaded from provider config lands VERBATIM in the assertion claims (this is
     /// the value `main.rs` now passes through as `scope_override` instead of a hardcoded `None`), and
     /// iss/aud/iat/exp are placed correctly.
     #[test]
@@ -423,12 +422,11 @@ mod tests {
         assert_eq!(v["exp"], 4600);
     }
 
-    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` UNSET (the default — every
-    /// existing Vertex AI config, which never sets it), the claim set must contain NO `sub` key at all —
-    /// byte-identical to pre-fix behavior. This is the regression guard: a prior attempt that
-    /// unconditionally set `sub = iss` was REFUTED by adversarial review because Google service-account
-    /// OAuth treats the mere PRESENCE of `sub` as a domain-wide-delegation/impersonation switch,
-    /// regardless of value, and would have broken every plain (non-delegated) service account.
+    /// RFC 7523 §3: with `subject` UNSET (the default — every existing Vertex AI config, which never
+    /// sets it), the claim set must contain NO `sub` key at all. This is the regression guard:
+    /// unconditionally setting `sub = iss` would break every plain (non-delegated) service account,
+    /// because Google service-account OAuth treats the mere PRESENCE of `sub` as a
+    /// domain-wide-delegation/impersonation switch, regardless of value.
     #[test]
     fn jwt_claims_omit_sub_when_subject_unset() {
         let json = jwt_claims_json(
@@ -452,11 +450,8 @@ mod tests {
         );
     }
 
-    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` explicitly configured, the
-    /// claim set MUST contain `sub` set to that exact value — this is the opt-in RFC-7523-conformant /
-    /// Google-delegation-correct path the fix adds. RED-before-green: this fails to COMPILE against the
-    /// unfixed code (`jwt_claims_json` had no 6th parameter at all — see the earlier red run) and passes
-    /// once `jwt_claims_json`/`Signer`/`build`/`ProviderCfg` grow the opt-in `subject` plumbing.
+    /// RFC 7523 §3: with `subject` explicitly configured, the claim set MUST contain `sub` set to that
+    /// exact value — the opt-in RFC-7523-conformant / Google-delegation-correct path.
     #[test]
     fn jwt_claims_include_sub_with_exact_value_when_subject_set() {
         let json = jwt_claims_json(
@@ -472,7 +467,7 @@ mod tests {
         assert_eq!(v["sub"], "impersonated-user@example.com");
     }
 
-    /// M10: a quote/backslash/control char in an operator-controlled claim value is ESCAPED, not
+    /// A quote/backslash/control char in an operator-controlled claim value is ESCAPED, not
     /// spliced — the claims are always valid JSON and the value round-trips exactly. This is what the
     /// serde serializer buys over string interpolation (which would emit malformed JSON / inject).
     #[test]

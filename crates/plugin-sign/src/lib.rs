@@ -145,7 +145,7 @@ pub struct Manifest {
     /// this session already produced still parses unchanged. A field marked `"x-busbar-secret":
     /// true` in the schema is validated by callers against a `oneOf` secret-reference shape
     /// (`{"env": "..."}` / `{"file": "..."}` / `{"module": "...", "key": "..."}`), never a bare
-    /// string - see `busbarAI-private/design/plugin-settings-schema-SPEC.md`.
+    /// string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_schema: Option<String>,
     /// SELF-ATTESTED, not verified by `busbar-plugin-pack` (which only embeds a schema FILE it is
@@ -156,9 +156,8 @@ pub struct Manifest {
     /// Consumers (busbar-ui, `default`/`required` trust) must NOT treat this flag alone as a
     /// verified guarantee: it is load-bearing only when paired with `trust == "trusted"` AND
     /// `publisher == "busbar"` (busbar's own CI is the only pipeline where derivation is
-    /// structurally enforced, a compile error rather than an assertion) — see
-    /// `busbarAI-private/design/plugin-settings-schema-SPEC.md` question #4's round-3/5
-    /// corrections. `false` by default (serde-default so every existing manifest still parses).
+    /// structurally enforced, a compile error rather than an assertion).
+    /// `false` by default (serde-default so every existing manifest still parses).
     #[serde(default)]
     pub schema_derived: bool,
     /// Which product this manifest was packaged for: `busbar` (the OSS engine, and the IMPLICIT
@@ -249,7 +248,7 @@ pub struct TrustPolicy {
     /// automatic "plugin >= binary version" floor would have rejected every correctly-signed
     /// current first-party release and was removed before 1.5.0 shipped.
     pub binary_version: String,
-    /// PER-PLUGIN first-party anti-downgrade floors (1.5.0 rollback pins, M1) — with no automatic
+    /// PER-PLUGIN first-party anti-downgrade floors (1.5.0 rollback pins) — with no automatic
     /// binary floor these are the ONLY first-party floors (alongside `min_versions`). `name` ->
     /// the pinned minimum version; a name absent here carries no first-party floor. Scoping per
     /// name keeps a rollback of plugin A from ever changing what plugin B is allowed to be.
@@ -283,8 +282,8 @@ pub enum Verdict {
 }
 
 /// The engine's BINDING LIFECYCLE default for whether a settings change needs a process restart,
-/// derived from plugin `kind` — never plugin-declared (plugin-settings-schema-SPEC.md question
-/// #14). `store`/`secret` plugins bind once at process start (every field is restart-scoped by
+/// derived from plugin `kind` — never plugin-declared. `store`/`secret` plugins bind once at
+/// process start (every field is restart-scoped by
 /// construction, regardless of what a plugin author writes); `hook`/`auth` plugin registries
 /// rebuild hot. An unrecognized kind defaults to the SAFE direction (restart-required) — the same
 /// fail-safe posture [`effective_restart_required`]'s override gate takes.
@@ -301,14 +300,14 @@ pub fn kind_restart_default(kind: &str) -> bool {
 
 /// The EFFECTIVE restart-required verdict for one settings field: the kind-derived default
 /// ([`kind_restart_default`]), with a per-field `x-busbar-restart-required` override honored
-/// ASYMMETRICALLY (question #14, round-4 correction):
+/// ASYMMETRICALLY:
 ///   * an override to `true` against a kind default of `false` is ALWAYS honored — claiming a field
 ///     needs a restart when the kind default says it doesn't is the safe direction to be wrong in
 ///     (worst case: one unnecessary restart);
 ///   * an override to `false` against a kind default of `true` is honored ONLY when the manifest
 ///     verifiably came from a TRUSTED, first-party (`publisher == "busbar"`) artifact — the same
-///     trust+publisher gate `schema_derived`'s load-bearing rule uses (question #4's round-3/5
-///     corrections), for the identical reason: a third-party claim in the direction that could
+///     trust+publisher gate `schema_derived`'s load-bearing rule uses, for the identical reason:
+///     a third-party claim in the direction that could
 ///     cause a setting to silently fail to apply is not trusted; a claim in the fail-safe direction
 ///     is. `publisher` ALONE is never sufficient proof — `Verdict::Trusted { first_party: true, .. }`
 ///     is what `evaluate()` only ever returns for a manifest that verified against the EMBEDDED
@@ -327,7 +326,7 @@ pub fn effective_restart_required(
             if !default {
                 // The kind default is already hot-appliable; a `false` override changes nothing
                 // observable, so there is nothing to gate — this is not the silent-data-loss
-                // direction question #14 is guarding against.
+                // direction the asymmetry exists to guard against.
                 false
             } else if matches!(
                 verdict,
@@ -578,9 +577,8 @@ pub fn validate_structure(
     // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
     // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
     //
-    // `host_identity` is a PARAMETER, not a hardcoded const (see E-010 in busbar-ui's
-    // ENGINE-BUGS.md): this verifier is shared verbatim by sibling products with different host
-    // identities (busbar's own callers pass `HOST_IDENTITY` = `"busbar"`; busbar-ui passes its
+    // `host_identity` is a PARAMETER, not a hardcoded const: this verifier is shared verbatim by
+    // sibling products with different host identities (busbar's own callers pass `HOST_IDENTITY` = `"busbar"`; busbar-ui passes its
     // own), so it cannot close over a single fixed value the way `supported_abi` never did either.
     if let Some(host) = m.host.as_deref() {
         if host != host_identity {
@@ -743,8 +741,8 @@ pub fn evaluate(
     // state so the display label is honest: a TRUSTED artifact below the floor is `AntiDowngrade`
     // ("trusted (below floor)"); an UNTRUSTED artifact carrying a floored name is `UntrustedFloored`
     // (labeled by its real untrusted state). Both are still hard rejects — the floor requires trusted
-    // proof, so a stripped-signature copy cannot launder a downgrade past it — but the untrusted case is
-    // NO LONGER mislabeled "trusted (below floor)" in `--list-plugins` (the round-1 regression).
+    // proof, so a stripped-signature copy cannot launder a downgrade past it — but the untrusted case
+    // is never mislabeled "trusted (below floor)" in `--list-plugins`.
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
             Ok(_) if version_at_least(&manifest.version, floor) => {}
@@ -932,7 +930,7 @@ mod tests {
         );
     }
 
-    /// P2: `kind: secret` is a first-class plugin kind - a signed secret-module manifest passes
+    /// `kind: secret` is a first-class plugin kind - a signed secret-module manifest passes
     /// structural validation and the trust evaluation identically to a store plugin (a plugin is a
     /// plugin), while an unknown kind still fails structure.
     #[test]
@@ -1025,7 +1023,7 @@ mod tests {
         );
     }
 
-    /// M1 (per-name scoping, floors-only form): a PER-NAME first-party floor binds the pinned name
+    /// Per-name scoping: a PER-NAME first-party floor binds the pinned name
     /// ONLY. Plugin A's floor must never change what plugin B is allowed to be — B is judged
     /// solely by its own pin (or, absent one, no floor).
     #[test]
@@ -1431,11 +1429,11 @@ mod tests {
         ));
     }
 
-    /// class-12 D2: a MALFORMED `min_versions` floor (no leading `v`, so it fails [`valid_semver`])
-    /// must be UNSATISFIABLE, not silently void. Before the fix, `version_components("v2.0.0")` ==
-    /// `[0,0,0]`, so `version_at_least("1.0.0", "v2.0.0")` was `true` and the old artifact evaluated
-    /// `Verdict::Trusted` — the exact silent admission F2 describes. RED, load-bearing: revert only
-    /// the `version_at_least` hunk and this goes back to `Ok(..)`.
+    /// A MALFORMED `min_versions` floor (no leading `v`, so it fails [`valid_semver`]) must be
+    /// UNSATISFIABLE, not silently void. `version_components("v2.0.0")` truncates to `[0,0,0]`, so
+    /// without the [`valid_semver`] guard `version_at_least("1.0.0", "v2.0.0")` would be `true` and
+    /// the old artifact would evaluate `Verdict::Trusted` — a silent admission past a floor the
+    /// operator believed was armed.
     #[test]
     fn garbage_min_version_floor_is_unsatisfiable_not_void() {
         let acme = test_key(2);
@@ -1457,11 +1455,11 @@ mod tests {
         );
     }
 
-    /// class-12 D2: a malformed `first_party_floors` override must NOT erase the automatic
-    /// `binary_version` floor it REPLACES — the sharpest case in F2, because the override makes a
-    /// plugin the automatic floor alone would have refused instead get ADMITTED, i.e. strictly LESS
-    /// protection than configuring nothing at all. RED: before the fix, the override reads as
-    /// `[0,0,0]`, which every version satisfies.
+    /// A malformed `first_party_floors` override must NOT erase the automatic `binary_version`
+    /// floor it REPLACES — the sharpest case, because the override would make a plugin the
+    /// automatic floor alone would have refused instead get ADMITTED, i.e. strictly LESS
+    /// protection than configuring nothing at all. Unguarded, the override reads as `[0,0,0]`,
+    /// which every version satisfies.
     #[test]
     fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
         let release = test_key(1);
@@ -1484,9 +1482,7 @@ mod tests {
         assert_eq!(err.kind, RejectKind::AntiDowngrade);
     }
 
-    /// class-12 D2: `floor_note`'s operator-facing wording, pinned by a test rather than by review.
-    /// LABEL: guard unit test on a NEW helper — it cannot go red against pre-fix source, because the
-    /// helper does not exist there. Not a RED proof.
+    /// `floor_note`'s operator-facing wording, pinned by a test rather than by review.
     #[test]
     fn malformed_floor_reason_says_the_floor_is_malformed() {
         assert_eq!(floor_note("1.6.0"), "");
@@ -1504,8 +1500,8 @@ mod tests {
         assert!(embedded_release_pubkey().is_none());
     }
 
-    /// `store`/`secret` default to restart-required; `hook`/`auth` default to hot-appliable
-    /// (question #14) — derived from `kind`, never plugin-declared.
+    /// `store`/`secret` default to restart-required; `hook`/`auth` default to hot-appliable —
+    /// derived from `kind`, never plugin-declared.
     #[test]
     fn kind_restart_default_matches_binding_lifecycle() {
         assert!(kind_restart_default("store"));
@@ -1554,7 +1550,7 @@ mod tests {
 
     /// The override direction that DECREASES caution (`false` against a `true` kind default) is
     /// honored ONLY for a trusted, first-party (`publisher == "busbar"`) manifest — the exact same
-    /// trust+publisher gate `schema_derived`'s load-bearing rule uses (question #4/#14). A
+    /// trust+publisher gate `schema_derived`'s load-bearing rule uses. A
     /// trusted THIRD-PARTY publisher, or an unsigned/allowed artifact, does NOT clear the gate —
     /// `publisher` alone is never sufficient; only `Verdict::Trusted { first_party: true, .. }` does.
     #[test]
@@ -1591,7 +1587,7 @@ mod tests {
 
     /// A `false` override against an ALREADY hot-appliable kind default changes nothing observable
     /// (there is no restart-required claim being weakened), so it is honored regardless of trust —
-    /// this is not the silent-data-loss direction question #14 guards against.
+    /// this is not the silent-data-loss direction the asymmetry guards against.
     #[test]
     fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditionally() {
         assert!(!effective_restart_required(
@@ -1601,7 +1597,7 @@ mod tests {
         ));
     }
 
-    // ── E-008: manifest `host` disambiguates sibling products that share this exact plugin ABI ──
+    // ── manifest `host` disambiguates sibling products that share this exact plugin ABI ─────────
 
     /// BACKWARD COMPAT: a manifest with no `host` field at all (every manifest packed before this
     /// field existed — real packed tarballs, not just an in-memory struct) still parses AND still
@@ -1689,7 +1685,7 @@ mod tests {
         assert!(validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err());
     }
 
-    /// E-010 REGRESSION GUARD: `host_identity` must be the parameter `validate_structure` actually
+    /// REGRESSION GUARD: `host_identity` must be the parameter `validate_structure` actually
     /// consults, not a decorative signature widening that still checks against a hardcoded
     /// `HOST_IDENTITY` const internally. Every OTHER test in this file passes `HOST_IDENTITY`
     /// verbatim, so none of them can tell the difference between "the parameter is load-bearing"

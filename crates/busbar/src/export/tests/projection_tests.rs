@@ -37,7 +37,7 @@ fn assert_error_mentions(errors: &[String], needles: &[&str]) {
 /// THE HARD RULE. A stream in the frozen vocabulary that this release cannot produce must LOUD-FAIL
 /// at validate, naming the stream and saying it arrives later. Accepting it would validate and
 /// silently deliver nothing — the exact defect class (key delete, cache flush, the migrator, the
-/// release verifier) every audit round in this release surfaced.
+/// release verifier) this release keeps guarding against.
 #[test]
 fn producerless_stream_is_a_loud_config_error() {
     for stream in ["costs", "decisions", "identity", "prompts", "completions"] {

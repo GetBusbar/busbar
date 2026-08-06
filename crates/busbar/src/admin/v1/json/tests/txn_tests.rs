@@ -172,10 +172,10 @@ async fn delete_team(handle: Arc<AppHandle>) -> StatusCode {
 /// has its own separate thread pool, so a read deferred through `txn.read_store` leaves the reactor
 /// scheduling and the gap stays in the noise.
 ///
-/// RED before the guard: `build_without_group` held a `&GovState` and called `all_keys()` inline
-/// under the async mutation lock — the probe stalls for the whole read. GREEN after: the builder has
-/// no store handle at all (the count is an ARGUMENT), so the read can only happen inside the
-/// deferred closure, on a blocking thread.
+/// A `build_without_group` that held a `&GovState` and called `all_keys()` inline under the async
+/// mutation lock would stall the probe for the whole read. The builder instead has no store handle
+/// at all (the count is an ARGUMENT), so the read can only happen inside the deferred closure, on a
+/// blocking thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
     crate::metrics::init();
@@ -252,8 +252,8 @@ async fn slow_store_read_does_not_stall_the_executor() {
 /// is fired while A still holds the lock, so it necessarily queues behind A and its post-lock
 /// snapshot is A's result.
 ///
-/// RED with a pre-lock read: the mint's snapshot was captured by the extractor before A committed,
-/// so it would enforce the OLD cap of 5 and admit a second key. GREEN under the txn: `txn.app()` is
+/// With a pre-lock read the mint's snapshot would be captured by the extractor before A committed,
+/// so it would enforce the OLD cap of 5 and admit a second key. Under the txn, `txn.app()` is
 /// the post-lock snapshot and there is no older one in scope, so the mint sees cap 1 and 409s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cap_is_read_from_the_post_lock_snapshot() {
@@ -441,9 +441,9 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
 /// WHOLE plugin directory to build one `App`.
 ///
 /// The fix is membership in one global mutation domain, and membership is what this asserts: while a
-/// transaction holds the section, an install cannot make progress. Before the change the install
-/// completed immediately regardless (RED); now it necessarily lands after the holder releases, so no
-/// plugin write can appear inside another plugin op's validate→rebuild window.
+/// transaction holds the section, an install cannot make progress. Outside the domain the install
+/// completes immediately regardless; inside it, the install necessarily lands after the holder
+/// releases, so no plugin write can appear inside another plugin op's validate→rebuild window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plugin_install_is_serialized_by_the_mutation_domain() {
     crate::metrics::init();
@@ -573,14 +573,14 @@ async fn concurrent_transactions_never_lose_a_swap() {
 /// point when that happens: **a transaction whose caller is cancelled still owns the mutation domain
 /// until its deferred work is genuinely finished.**
 ///
-/// RED before the fix: the guard was a borrowed `MutexGuard` held across `spawn_blocking(f).await`.
+/// A borrowed `MutexGuard` held across `spawn_blocking(f).await` cannot carry that property.
 /// Dropping a `JoinHandle` does not cancel a blocking task, but dropping the ENCLOSING future drops
-/// the guard — so the abandoned section kept running with its lock RELEASED, and a concurrent
-/// `rollback_plugin`/`reload_plugins` could take the domain and `rebuild_app_from_disk` over a
-/// plugins directory the abandoned `install_plugin` was still writing into. Under the old shape the
+/// the guard — so the abandoned section keeps running with its lock RELEASED, and a concurrent
+/// `rollback_plugin`/`reload_plugins` can take the domain and `rebuild_app_from_disk` over a
+/// plugins directory the abandoned `install_plugin` is still writing into. Under that shape the
 /// second transaction below acquires immediately and the timeout assertion fails.
 ///
-/// GREEN after: the guard is `lock_owned()` and MOVED into the blocking task, which nothing can
+/// The guard is instead `lock_owned()` and MOVED into the blocking task, which nothing can
 /// cancel, so the domain is released only when the last deferred step returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {

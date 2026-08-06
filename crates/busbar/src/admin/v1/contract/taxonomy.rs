@@ -30,7 +30,7 @@ use super::{AdminError, Scope};
 #[cfg(any(test, feature = "openapi-schema"))]
 use crate::config::named_map::{NamedMapSection, NamedMapShape};
 
-// ── ERROR TAXONOMY → OpenAPI PROJECTION (design D) ───────────────────────────────────────────────
+// ── ERROR TAXONOMY → OpenAPI PROJECTION ──────────────────────────────────────────────────────────
 //
 // The per-endpoint 4xx error set is DECLARED here, once, as data — never hand-authored beside each
 // operation in `openapi_doc()`. `openapi_doc()` ENUMERATES `declared_errors` to emit the 400/404/409
@@ -174,7 +174,7 @@ pub(crate) enum Cond {
     NameCollision,
     InvalidLabels,
     /// A named-map mutation tried to RAISE an `identity-providers.<name>.max_admin_scope` trust
-    /// ceiling. Refused outright over the API (1.5.3 unit D) — the ceiling is operator FILE policy.
+    /// ceiling. Refused outright over the API (1.5.3) — the ceiling is operator FILE policy.
     TrustCeilingRaise,
     /// A named-map DELETE would leave a DANGLING REFERENCE: another config site still names the
     /// definition by bare name (e.g. `auth.chain`).
@@ -440,7 +440,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Delete, "/plugins/{file}") => {
             de![Validation / InvalidFilename, NotFound / UnknownResource,]
         }
-        // Stateless preview of a candidate tarball (checklist item 4, question #7) — every failure
+        // Stateless preview of a candidate tarball — every failure
         // mode is a malformed/oversized/untrusted-shaped INPUT, never a state conflict (it writes
         // nothing and conflict-checks nothing), so `Validation` is its only declarable kind.
         (Post, "/plugins/inspect") => de![Validation / MalformedBody],
@@ -495,7 +495,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
         (Get, "/pools") => de![Validation / InvalidQueryValue],
         (Get, "/usage") => de![Validation / InvalidQueryValue],
-        // ── Virtual keys (surface B, unified onto this taxonomy by design D route 2) ──────────
+        // ── Virtual keys (unified onto this taxonomy) ─────────────────────────────────────────
         (Get, "/keys") => de![Validation / MalformedCursor, Validation / InvalidQueryValue,],
         (Post, "/keys") => de![
             Validation / MalformedBody,

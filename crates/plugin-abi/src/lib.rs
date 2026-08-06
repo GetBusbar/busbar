@@ -54,7 +54,7 @@ pub mod export;
 pub mod hook;
 pub mod http_endpoint;
 
-/// The Feature-2 "decision observability" signal catalog (task #141) — re-exported wholesale from
+/// The "decision observability" signal catalog — re-exported wholesale from
 /// `busbar-api` (where it actually lives; see that crate's `signal` module doc comment for why) so
 /// a hook plugin author can write `busbar_plugin_abi::Signal::CandidateBreakerState` without a
 /// direct `busbar-api` dependency, mirroring every other type this crate re-exports for the same
@@ -327,7 +327,7 @@ pub const SECRET_ABI_VERSION: u32 = 1;
 /// [`auth::AuthResponse::AuthorizeUrl`]/[`auth::AuthResponse::TokenExchange`]. `AuthRequest`/
 /// `AuthResponse` are externally-tagged with NO `deny_unknown_fields`, so the new variants are
 /// wire-additive: a v1 plugin that only ever emits `Authenticate`/`Identity` is unaffected, and the
-/// loader floor stays `[1, 2]` (v1 plugins still load — RISK 5). Bumping the const value is the v2
+/// loader floor stays `[1, 2]` (v1 plugins still load). Bumping the const value is the v2
 /// declaration; the identity-only `Identity` invariant (its own `deny_unknown_fields`) is untouched.
 pub const AUTH_ABI_VERSION: u32 = 2;
 
@@ -337,7 +337,7 @@ pub enum SecretRequest {
     /// `resolve` - one secret reference's opaque settings map in, the secret bytes out.
     Resolve {
         settings: serde_json::Map<String, serde_json::Value>,
-        /// Optional caller-side deadline in milliseconds (E-012). `#[serde(default)]` so an OLD
+        /// Optional caller-side deadline in milliseconds. `#[serde(default)]` so an OLD
         /// plugin decoding a request from a NEW engine (which doesn't know this field) still
         /// parses fine, and a NEW plugin decoding a request from an OLD engine (which never sends
         /// it) sees `None` — additive both directions. Advisory only: the transport itself does
@@ -351,7 +351,7 @@ pub enum SecretRequest {
 /// explicitly signals a status the loader treats as an error) still returns `STATUS_ERR` with a
 /// UTF-8 message in the out buffer (which must never carry secret material) — that path is
 /// unchanged and every plugin built before this variant existed keeps working exactly as before.
-/// `Error` (E-012) is the ADDITIVE alternative: a plugin that wants to report a TYPED module-level
+/// `Error` is the ADDITIVE alternative: a plugin that wants to report a TYPED module-level
 /// failure (as opposed to a transport failure) returns it here, via `STATUS_OK`, instead of the
 /// untyped `STATUS_ERR` string channel — this is what lets a host distinguish "no such secret"
 /// from "the backend is unreachable" and react correctly to each.
@@ -377,7 +377,7 @@ pub enum SecretResponse {
 // `catch_unwind` at the call site can NEVER intercept it and a panicking plugin aborts the whole
 // gateway. `extern "C-unwind"` makes unwinding across this boundary DEFINED: a panic propagates as a
 // forced unwind that the engine's `catch_unwind` DOES catch, turning a panicking plugin into a clean
-// fail-closed error instead of a process abort. This is the load-bearing half of the L6 panic-safety
+// fail-closed error instead of a process abort. This is the load-bearing half of the panic-safety
 // seam; the engine wraps every call site (open/call/close/free/handshake) in `catch_unwind` (see the
 // loader), and non-`"C-unwind"` C/Go/Zig plugins still abort on unwind exactly as before (their
 // runtimes don't unwind), which is the pre-existing, documented behavior for non-Rust plugins.

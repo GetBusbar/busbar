@@ -100,7 +100,7 @@ impl VersionLog {
 // the live, overlay-merged config; the durable config that backs "fix the config and restart"
 // recovery lives in the config-overlay persistence, not here. Durable cross-restart rollback to a
 // PRE-restart intermediate version would need a store seam, which does not exist over the plugin
-// wire ABI today (see the 1.5.3 report) — recommended as a deliberate follow-up, not a refactor rider.
+// wire ABI today; that seam is a deliberate follow-up.
 
 #[cfg(test)]
 mod tests {

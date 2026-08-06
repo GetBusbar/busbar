@@ -37,7 +37,7 @@ pub use boundary::BoundaryOutcome;
 // callers outside this repo, not for anything internal to the macro.
 pub use busbar_api::Store as StoreTrait;
 
-/// The Feature-2 "decision observability" signal catalog (task #141): a plugin author references
+/// The "decision observability" signal catalog: a plugin author references
 /// `busbar_plugin_sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
 /// catalog entries their hook wants computed + projected — see `busbar_api::Signal`'s doc comment
 /// for the full catalog and the append-only/non_exhaustive contract.
@@ -357,7 +357,7 @@ pub fn dispatch_secret(
     req: busbar_plugin_abi::SecretRequest,
 ) -> Result<busbar_plugin_abi::SecretResponse, busbar_api::SecretError> {
     match req {
-        // `deadline_ms` is advisory-only at this layer (E-012) — no enforcement here; a module
+        // `deadline_ms` is advisory-only at this layer — no enforcement here; a module
         // that can bound its own call reads it from the request before this dispatch runs.
         busbar_plugin_abi::SecretRequest::Resolve { settings, .. } => Ok(
             busbar_plugin_abi::SecretResponse::Bytes(module.resolve(&settings)?),
@@ -383,7 +383,7 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
             Ok(payload) => BoundaryOutcome::Ok(payload),
             Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
         },
-        // A module-level failure (E-012): encode it as a TYPED SecretResponse::Error and return
+        // A module-level failure: encode it as a TYPED SecretResponse::Error and return
         // it via BoundaryOutcome::Ok (STATUS_OK on the wire), not the untyped STATUS_ERR string
         // channel — this is what lets a host distinguish "no such secret" from "backend
         // unreachable". If encoding that itself fails (should be unreachable — the payload is two
@@ -899,7 +899,7 @@ mod tests {
         Ok(Box::new(EchoSecret))
     }
 
-    /// SECRET glue (P2): dispatch maps the wire enum to the trait, success and failure.
+    /// SECRET glue: dispatch maps the wire enum to the trait, success and failure.
     #[test]
     fn secret_dispatch_resolves_and_fails_closed() {
         let mut settings = serde_json::Map::new();
@@ -928,8 +928,8 @@ mod tests {
         assert!(err.message.contains("settings.name required"));
     }
 
-    /// SECRET glue (P2): the FFI path (open -> call -> close) round-trips a resolve and surfaces a
-    /// module failure as a TYPED `SecretResponse::Error` over STATUS_OK (E-012) — not the untyped
+    /// SECRET glue: the FFI path (open -> call -> close) round-trips a resolve and surfaces a
+    /// module failure as a TYPED `SecretResponse::Error` over STATUS_OK — not the untyped
     /// STATUS_ERR string channel, so a host can distinguish failure kinds instead of pattern-matching
     /// message text.
     #[test]
@@ -1365,7 +1365,7 @@ mod tests {
 
     /// `OutBuf::commit` (the successor to `write_buf`) with a null `out` must DROP the owned `Vec`, not
     /// leak it: the alloc (`into_boxed_slice`/`Box::into_raw`) lives INSIDE the non-null branch, so the
-    /// null path never realizes a raw box — D1 made structurally impossible. `out_len` is left
+    /// null path never realizes a raw box — the leak is made structurally impossible. `out_len` is left
     /// untouched; a non-null slot returns a freeable (ptr, len) pair. Under Miri/ASan this flags the
     /// leak the old ordering caused.
     #[test]
@@ -1442,12 +1442,9 @@ mod tests {
         }
     }
 
-    /// class-13/14 F4: `auth_abi_version()` now reads `busbar_plugin_abi::AUTH_ABI_VERSION` instead
-    /// of a bare literal, mirroring `secret_abi_version()`/`hook_abi_version()`. This is a
-    /// COMPILE-TIME GUARD, not a RED test: the two sides were already numerically equal (both `1`)
-    /// before this change, so no runtime assertion here can distinguish "wired to the const" from
-    /// "still a coincidentally-matching literal" — the property this fix buys is that a future bump
-    /// of `AUTH_ABI_VERSION` now propagates here automatically instead of silently drifting.
+    /// `auth_abi_version()` reads `busbar_plugin_abi::AUTH_ABI_VERSION` rather than a bare literal,
+    /// mirroring `secret_abi_version()`/`hook_abi_version()`. The property that buys: a future bump
+    /// of `AUTH_ABI_VERSION` propagates here automatically instead of silently drifting.
     #[test]
     fn auth_abi_version_reads_the_shared_const() {
         assert_eq!(auth_abi_version(), busbar_plugin_abi::AUTH_ABI_VERSION);

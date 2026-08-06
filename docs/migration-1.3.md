@@ -153,7 +153,7 @@ under top-level `hooks:` (kind: gate, socket:) and name it in the pool's `hooks:
 
 > **Reading this in 1.5.3 or later?** This section describes the 1.2.x → 1.3 hop, so its target shape
 > is historical. Two of the keys below moved again since: `auth.upstream_credentials` is now
-> `pools.upstream_credentials` (audit §4 — whose credential reaches the provider is a ROUTING
+> `pools.upstream_credentials` (whose credential reaches the provider is a ROUTING
 > property), and a chain is a list of bare PROVIDER NAMES referencing `identity-providers:` rather
 > than inline module entries. `busbar --migrate-config` takes a 1.2.x/1.3 config all the way to the
 > 1.5.3 shape in one run; the up-to-date reference is

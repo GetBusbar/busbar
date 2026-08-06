@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The built-in **request-log-webhook** + **generic-webhook** exporters (PUSH) — design §2.3, §7.2.
+//! The built-in **request-log-webhook** + **generic-webhook** exporters (PUSH).
 //!
 //! This is the relocated home of the request-log webhook DELIVERY that used to live in
 //! `crate::observability`: the bounded fire-and-forget POST behind the SSRF guard
 //! ([`crate::observability::validate_webhook_url`], reused not reinvented) and the in-flight
 //! [`AdmissionGate`] backpressure. `export.request-log-webhook` is the direct replacement for the
 //! retired `observability.request_log_webhook_url`; `export.generic-webhook` is the same machinery
-//! plus a configurable auth header (design §2.3 — logs + audit).
+//! plus a configurable auth header (logs + audit).
 //!
 //! busbar core no longer POSTs telemetry anywhere itself — the request-finish path hands the built
 //! request-log line to [`deliver_logs`], which fans it out to whichever webhook sinks the operator
@@ -34,7 +34,7 @@ struct Target {
     /// deadlines — the timeout is therefore per target here, not a process-global read.
     timeout: Duration,
     /// This instance's OWN in-flight delivery cap (`settings.max_inflight_deliveries`), for the same
-    /// reason the timeout is per instance (audit MED-5). Two named webhook sinks — the documented
+    /// reason the timeout is per instance. Two named webhook sinks — the documented
     /// "app logs + SIEM" shape — are two INDEPENDENT budgets: one shared gate meant a stalled SIEM
     /// could hold every permit and starve the fast sink, and that a low cap an operator set on one
     /// instance was never actually enforced (the shared gate was sized to the MAX across instances).

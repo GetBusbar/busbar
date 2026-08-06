@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! [`Redacted`] — the in-memory wrapper for a RESOLVED secret VALUE (task #87).
+//! [`Redacted`] — the in-memory wrapper for a RESOLVED secret VALUE.
 //!
 //! Every secret busbar resolves at boot and then HOLDS in memory — a `SecretRef` resolved to its
 //! plaintext, an egress bearer/client-credentials/sigv4 secret, the admin token, a provider api_key,

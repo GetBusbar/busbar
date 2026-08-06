@@ -483,7 +483,7 @@ pub(crate) struct GovState {
     /// restart forgets nothing. The atomic chain check-and-charge acquires every involved shard
     /// lock in ascending shard order (deadlock-free), so admission against the whole chain is one
     /// indivisible critical section per node.
-    /// NOTE (perf, playbook): the old `token_spend_carry` sub-cent carry map is GONE - the ledger
+    /// NOTE (perf): the old `token_spend_carry` sub-cent carry map is GONE - the ledger
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
@@ -639,7 +639,7 @@ pub(crate) fn synthesize_principal_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
 ) -> Option<Arc<VirtualKey>> {
-    // BUCKET-NAMESPACE GUARD (audit cost-1.5.0): the synthesized key's `id` becomes its LEDGER
+    // BUCKET-NAMESPACE GUARD: the synthesized key's `id` becomes its LEDGER
     // BUCKET id, and group buckets live in the same store namespace as `group:<name>`. A
     // principal id (attacker-influenced at the IdP) literally starting with `group:` would alias a
     // group's cell - charging it, reading it, and corrupting group enforcement. Fail closed:
@@ -1018,8 +1018,8 @@ mod limits_tests;
 mod budget_cell_tests {
     use super::*;
 
-    /// AUDIT: the sweep's `prune_dead_models` bounds the per-cell `models` Vec so a
-    /// never-rolled cell cannot accumulate a dead entry per model name ever seen. A model with live
+    /// The sweep's `prune_dead_models` bounds the per-cell `models` Vec so a never-rolled cell
+    /// cannot accumulate a dead entry per model name ever seen. A model with live
     /// tokens (or an unacked flush delta) is KEPT (enforcement/write-behind truth); a zero-token,
     /// fully-flushed entry is DROPPED; a re-appearing model is simply re-interned by `accrue`.
     #[test]

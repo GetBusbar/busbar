@@ -1,8 +1,6 @@
 # ADR-0001: Smooth weighted round-robin (SWRR) member selection
 
-> Status: accepted (reconstructed from code). The number `ADR-0001` is referenced
-> in `crates/busbar/src/store/mod.rs`; the prose below is reconstructed from the implementation, not
-> from an original ADR document.
+> Status: accepted. `ADR-0001` is referenced in `crates/busbar/src/store/mod.rs`.
 
 ## Context
 

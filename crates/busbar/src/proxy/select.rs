@@ -1,6 +1,6 @@
 use super::*;
 
-/// Slack ε for the [`RequestCtx::debug_assert_within_budget`] failover-budget guard (R6/§5). Generous
+/// Slack ε for the [`RequestCtx::debug_assert_within_budget`] failover-budget guard. Generous
 /// on purpose: the guard is a regression tripwire for a path that blocks PAST the whole failover
 /// budget (seconds), so a multi-second ε cannot mask that class of bug while it does absorb scheduler
 /// jitter / a slow CI box. The meaningful, tight bound lives in the property + budget TESTS.
@@ -23,7 +23,7 @@ pub(crate) struct RequestCtx {
     /// Computed once at start; each hop checks remaining time against this.
     deadline: u64,
     /// The SAME failover deadline as `deadline`, captured as a monotonic wall-clock instant so the
-    /// `on_exhausted: queue` bound has MILLISECOND precision (R8). `deadline`/`remaining()` are whole
+    /// `on_exhausted: queue` bound has MILLISECOND precision. `deadline`/`remaining()` are whole
     /// EPOCH SECONDS — a 250ms `max_ms` is unrepresentable there and a near-second-boundary
     /// `remaining()` collapses to 0 — so the queue wait budgets against `remaining_ms()` instead.
     deadline_wall: std::time::Instant,
@@ -137,7 +137,7 @@ impl RequestCtx {
         self.deadline.saturating_sub(now)
     }
 
-    /// Remaining failover budget in MILLISECONDS until the deadline (R8). Used by the `on_exhausted:
+    /// Remaining failover budget in MILLISECONDS until the deadline. Used by the `on_exhausted:
     /// queue` wait so a sub-second `max_ms` is representable and a near-second-boundary budget does not
     /// collapse to 0 the way `remaining(now) * 1000` would. Saturates to 0 once the deadline passes.
     pub(crate) fn remaining_ms(&self) -> u64 {
@@ -146,19 +146,19 @@ impl RequestCtx {
             .as_millis() as u64
     }
 
-    /// R6 / §5 budget contract, as an asserted invariant. `deadline_wall` is captured at ingress as
+    /// The budget contract, as an asserted invariant. `deadline_wall` is captured at ingress as
     /// `ingress + failover.timeout`, so requiring the wall clock at THIS disposition to be within
     /// `deadline_wall` plus ε is exactly "wall-clock ingress→disposition ≤ failover.timeout + ε". A
     /// `debug_assert!` so it runs in dev/CI (test + debug builds) and is compiled out of the release
     /// request path — it exists to CATCH a selection / queue path that regresses to blocking past the
-    /// failover budget (the exact Bug-1 park pathology), never to change production behaviour. ε is
+    /// failover budget (a park under saturation), never to change production behaviour. ε is
     /// deliberately generous ([`BUDGET_ASSERT_EPSILON`]) so the guard never false-fires on scheduler
     /// jitter or a slow CI box; the property/budget TESTS assert a tighter, meaningful bound.
     pub(crate) fn debug_assert_within_budget(&self, context: &str) {
         debug_assert!(
             std::time::Instant::now() <= self.deadline_wall + BUDGET_ASSERT_EPSILON,
             "failover budget exceeded at `{context}`: disposition landed more than {}ms past the \
-             failover deadline — a selection/queue path blocked past the budget (R6/§5)",
+             failover deadline — a selection/queue path blocked past the budget",
             BUDGET_ASSERT_EPSILON.as_millis(),
         );
     }
@@ -195,7 +195,7 @@ impl RequestCtx {
 /// only when a request records an outcome. If the future holding the probe is DROPPED mid-dispatch
 /// (client disconnect while the upstream call is in flight) no early-return cleanup runs, so without a
 /// Drop guard the cell stays HalfOpen + probe_in_flight and the lane is benched until the slow
-/// out-of-band prober resets it (the HIGH this fixes).
+/// out-of-band prober resets it.
 ///
 /// `Drop` calls the owner-checked `release_probe_owned_in` (CAS HalfOpen→Open + clear flag) while
 /// `armed`. A path that hands the probe to a dispatched request that will record its own outcome
@@ -221,7 +221,7 @@ pub(crate) struct ProbeGuard<'a> {
     /// The probe-epoch (owner token) captured when the probe was won. Because a guard can be dropped
     /// LATE — after the dispatched request already recorded an outcome and a peer won a NEWER probe on
     /// the same cell — the drop uses the OWNER-CHECKED `release_probe_owned_in` so a stale release
-    /// cannot revert that newer probe (P2 #4). It is a strict no-op unless the cell's epoch still
+    /// cannot revert that newer probe. It is a strict no-op unless the cell's epoch still
     /// matches this captured value.
     pub(crate) probe_epoch: u64,
 }
@@ -288,7 +288,7 @@ pub(crate) async fn pick_among(
             // caller's cross-hop exclusion set) here — those are selection-policy skips, NOT
             // `Unavailable` reasons, so they are not recorded.
             if cands[pos].weight != 0 && !request_ctx.excluded.contains(&sticky) {
-                // R6: the sticky fast path uses the SAME admission primitive as the main loop —
+                // The sticky fast path uses the SAME admission primitive as the main loop —
                 // `try_admit` wins-or-releases the single-flight probe and grabs-or-fails the permit
                 // atomically (probe ownership transfers via `Admit.probe_epoch` on success; on failure
                 // it releases the probe internally, EXACTLY, so nothing wedges HalfOpen). On
@@ -363,7 +363,7 @@ pub(crate) async fn pick_among(
                 let now_t = now();
                 // First ranked lane that is in this hop's candidate set, NOT drained, AND breaker-ready.
                 //
-                // C2 (weight:0 drain): SWRR's `select_weighted_in` skips `weight == 0` members (the
+                // Weight-0 drain: SWRR's `select_weighted_in` skips `weight == 0` members (the
                 // operator drain signal — see store.rs). The side-effect-free `ready_in` does NOT
                 // check weight, so without this filter the ordered walk could rank a DRAINED lane #1
                 // and dispatch to it, violating operator drain intent. Mirror SWRR here: a candidate
@@ -402,11 +402,11 @@ pub(crate) async fn pick_among(
             },
         };
 
-        // ONE admission path, ONE exclusion arm (design §2). `try_admit` is the thin composition over
+        // ONE admission path, ONE exclusion arm. `try_admit` is the thin composition over
         // the breaker check + `try_acquire`: it wins-or-loses the single-flight probe and
         // grabs-or-fails the permit atomically, handing back the held resources on success or the
         // shared `Unavailable` taxonomy on failure. The two former `insert;continue` sites
-        // (breaker-lost @ the old ~330, at-capacity @ the old ~379) are now the SAME `Err(reason)` arm
+        // (breaker-lost and at-capacity) are now the SAME `Err(reason)` arm
         // — they were always the same kind of thing (a lane that can't take this request), differing
         // only in the reason carried forward. `try_admit` also owns the probe lifecycle: on the
         // at-capacity path it releases the won-but-undispatched probe EXACTLY (owner-checked, no leak,

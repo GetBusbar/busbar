@@ -508,7 +508,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
 
 #[test]
 fn test_virtualkey_debug_redacts_key_hash() {
-    // LOW #17 (SECURITY): VirtualKey's Debug must NOT print `generation_hash` (the stored authenticator
+    // VirtualKey's Debug must NOT print `generation_hash` (the stored authenticator
     // for the key's secret). A derived Debug leaked it in plaintext; the manual impl prints
     // presence only. The hash value is deliberately distinctive so a substring check catches it.
     let mut k = sample_key("vk_dbg", "SECRET-key-hash-value-zzz");
@@ -675,7 +675,7 @@ fn test_delete_key_removes_aws_credential() {
 
 #[test]
 fn test_refresh_updates_both_indices_atomically() {
-    // LOW-1 invariant: a key minted WITH an AWS credential is resolvable through BOTH auth
+    // A key minted WITH an AWS credential is resolvable through BOTH auth
     // indices (the subject-id `by_id` index AND the AccessKeyId `by_access_key_id` index), and a
     // `delete_key` (which calls `refresh`) clears it from BOTH in the same swap. This pins the
     // single-lock atomic refresh against a future split-lock regression where one index could be
@@ -1353,7 +1353,7 @@ fn test_rate_headroom_reports_fraction_remaining() {
 /// The original sweep retained only cells matching THIS bucket's window, so a day-window bucket's
 /// Nth admission evicted the valid CURRENT cells of `total`/`month` buckets sharing the shard,
 /// silently resetting their accrued spend (the hard cap) and dropping dirty unflushed spend.
-/// The fix mirrors the carry-map rule (audit 1.4.0): age-based retain, `total` (window 0) never
+/// The fix mirrors the carry-map rule: age-based retain, `total` (window 0) never
 /// ages out. This test seeds current-window co-tenants of BOTH other windows plus one genuinely
 /// stale cell into the admitting key's shard, fires the sweep, and asserts only the stale cell
 /// dies.
@@ -1669,7 +1669,7 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
 
 #[test]
 fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
-    // PATCH /admin/keys/:id (#28): a key can be disabled WITHOUT destroying it, and its group
+    // PATCH /admin/keys/:id: a key can be disabled WITHOUT destroying it, and its group
     // binding changed, with the secret/hash preserved. Keys are pure auth, so `enabled` and
     // `group` are the whole mutable surface. A missing field leaves its value unchanged; a
     // present `null` (inner None) UNBINDS the group back to unlimited.
@@ -2342,7 +2342,7 @@ fn test_hydrate_budgets_restores_group_buckets() {
     }
 }
 
-/// M9 (boot fail-open): `hydrate_budgets` must PROPAGATE a store error, not warn-and-reset to empty
+/// BOOT FAIL-OPEN: `hydrate_budgets` must PROPAGATE a store error, not warn-and-reset to empty
 /// cells. A store that fails `get_usage` (a boot-time blip) previously left budgets at ZERO, letting
 /// a maxed-out key spend its whole cap again. Now the error surfaces (boot fails).
 #[test]
@@ -2775,8 +2775,8 @@ mod signed_token {
 
     /// (b) A revoke written DIRECTLY to the shared store by a "peer" node (this node's in-memory set
     /// is never told) is honoured here within `REVOCATION_SYNC_TTL_SECS` — the documented staleness
-    /// window — instead of never. RED without the check-time re-sync: the final assertion admits
-    /// forever.
+    /// window — instead of never. Without the check-time re-sync, the final assertion below would
+    /// admit forever.
     #[test]
     fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
         use crate::governance::{Store, REVOCATION_SYNC_TTL_SECS};
@@ -3048,7 +3048,7 @@ mod metering_fanout {
         in_flight: AtomicUsize,
         high_water: AtomicUsize,
         total_calls: AtomicUsize,
-        /// Positive: fail this many times before delegating (T3). Decremented via `fetch_sub`
+        /// Positive: fail this many times before delegating. Decremented via `fetch_sub`
         /// clamped at 0 by `saturating_sub`-style checked arithmetic.
         fail_n_times: AtomicI64,
     }
@@ -3113,17 +3113,15 @@ mod metering_fanout {
         }
     }
 
-    /// T2 — the metering write fan-out is bounded at 1, not N: with N responses metered
-    /// concurrently on a live runtime, `add_metering` never sees more than one call in flight, and
-    /// all N are eventually accounted once flushed.
+    /// The metering write fan-out is bounded at 1, not N: with N responses metered concurrently on
+    /// a live runtime, `add_metering` never sees more than one call in flight, and all N are
+    /// eventually accounted once flushed.
     ///
-    /// RED procedure (documented, not re-run every CI pass): against the pre-fix
-    /// `offload_store_write` per-response fire-and-forget `spawn_blocking`, N concurrent responses
-    /// each spawn their OWN blocking task that calls the store directly, so the high-water mark
-    /// reaches up to N — confirmed by temporarily restoring that call shape in `record_metering`
-    /// and rerunning this test, which failed with `high_water > 1` (observed 8/8 on an 8-response
-    /// run). The fix replaces that fan-out with the accumulate-then-drain flusher below, so exactly
-    /// one thread ever calls `add_metering` at a time (the `flush_metering` loop is sequential).
+    /// Under the previous `offload_store_write` per-response fire-and-forget `spawn_blocking`, N
+    /// concurrent responses each spawned their OWN blocking task calling the store directly, so the
+    /// high-water mark reached up to N. The accumulate-then-drain flusher replaces that fan-out, so
+    /// exactly one thread ever calls `add_metering` at a time (the `flush_metering` loop is
+    /// sequential).
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn metering_write_fanout_is_bounded_at_one() {
         let store = std::sync::Arc::new(CountingStore::new(0));
@@ -3163,9 +3161,9 @@ mod metering_fanout {
         );
     }
 
-    /// T3 — a store error re-queues the entry and neither loses it nor double-counts it. Assert on
-    /// the STORE TOTAL (the discriminator that actually separates re-queue from double-send, per
-    /// the design doc — "the entry exists" does not discriminate: a drain-with-no-add-back makes
+    /// A store error re-queues the entry and neither loses it nor double-counts it. Assert on
+    /// the STORE TOTAL (the discriminator that actually separates re-queue from double-send —
+    /// "the entry exists" does not discriminate: a drain-with-no-add-back makes
     /// the delta vanish, and a re-queue-without-clearing double-sends. Only a total-count assertion
     /// across two flushes catches both).
     #[test]
@@ -3320,10 +3318,10 @@ fn self_binding_for(gov: &GovState, user_sub: &str) -> Option<VirtualKey> {
         .find(|k| k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str()))
 }
 
-/// H2 — RED before the fix: `refresh_self` wrote+enabled the NEW binding, THEN tombstoned the old
-/// one; when the tombstone (`store.delete_key`) failed, the fn returned `Err` but the new binding
-/// was already live AND the old was never disabled — two valid tokens for one subject. GREEN:
-/// on a failed tombstone, `refresh_self` rolls the new binding back before returning `Err`, so
+/// `refresh_self` used to write+enable the NEW binding, THEN tombstone the old one; when the
+/// tombstone (`store.delete_key`) failed, the fn returned `Err` but the new binding was already
+/// live AND the old was never disabled — two valid tokens for one subject. Now, on a failed
+/// tombstone, `refresh_self` rolls the new binding back before returning `Err`, so
 /// exactly the OLD binding remains enabled (the caller's existing token keeps working and it can
 /// retry the refresh).
 #[test]
@@ -3411,9 +3409,8 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
 /// A `Store` that delegates everything to a `MemoryStore` except `list_keys`, which fails EXACTLY
 /// ONCE right after a `delete_key` call succeeds (`delete_key` arms it; the very next `list_keys`
 /// errors, then it's disarmed). Models a `refresh()` cache-reconcile round-trip failing
-/// specifically AFTER the store-level tombstone already landed — the CODEAUDIT ROUND-2 FIX 3
-/// scenario — while leaving the FIRST `refresh()` inside `write_self_binding` (before the delete)
-/// unaffected.
+/// specifically AFTER the store-level tombstone already landed, while leaving the FIRST
+/// `refresh()` inside `write_self_binding` (before the delete) unaffected.
 struct FailListKeysAfterDeleteStore {
     inner: MemoryStore,
     fail_next_list_keys: std::sync::atomic::AtomicBool,
@@ -3468,15 +3465,14 @@ impl Store for FailListKeysAfterDeleteStore {
     }
 }
 
-/// CODEAUDIT ROUND-2 FIX 3 (red-before-green). Before the fix: `refresh_self` tombstoned the old
-/// binding in the STORE, then called `self.refresh()?` to reconcile the cache — a bare `?`. If
-/// THAT refresh failed (e.g. a transient store round-trip error), the fn returned `Err` while the
-/// cache still held BOTH the old binding (still `enabled` from the refresh done earlier inside
-/// `write_self_binding`, before the delete) and the new one, so the OLD token kept verifying even
-/// though the store had already tombstoned it. GREEN: on that specific refresh failure,
-/// `refresh_self` surgically evicts the old id straight from the cache (no store round-trip
-/// needed) before returning `Err`, so the old token stops verifying immediately regardless of
-/// whether the full refresh ever succeeds.
+/// `refresh_self` used to tombstone the old binding in the STORE, then call `self.refresh()?` to
+/// reconcile the cache — a bare `?`. If THAT refresh failed (e.g. a transient store round-trip
+/// error), the fn returned `Err` while the cache still held BOTH the old binding (still `enabled`
+/// from the refresh done earlier inside `write_self_binding`, before the delete) and the new one,
+/// so the OLD token kept verifying even though the store had already tombstoned it. Now, on that
+/// specific refresh failure, `refresh_self` surgically evicts the old id straight from the cache
+/// (no store round-trip needed) before returning `Err`, so the old token stops verifying
+/// immediately regardless of whether the full refresh ever succeeds.
 #[test]
 fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
     let store = Arc::new(FailListKeysAfterDeleteStore::new());
@@ -3588,11 +3584,10 @@ impl Store for PanicOnPutKeyStore {
     }
 }
 
-/// CODEAUDIT ROUND-2 FIX 4(b) — coverage gap: `mint_self_offloaded` maps a `JoinError` (the
-/// `spawn_blocking` task PANICKED) to a `StoreError`, per its `.unwrap_or_else` fallback, rather
-/// than propagating the panic across the `.await` and crashing the calling task. This was
-/// previously unexercised by any test. Drive an actual panic inside the offloaded closure (via a
-/// `Store::put_key` that panics) and assert the `.await` resolves to a plain `Err`, not a panic.
+/// `mint_self_offloaded` maps a `JoinError` (the `spawn_blocking` task PANICKED) to a
+/// `StoreError`, per its `.unwrap_or_else` fallback, rather than propagating the panic across the
+/// `.await` and crashing the calling task. Drive an actual panic inside the offloaded closure (via
+/// a `Store::put_key` that panics) and assert the `.await` resolves to a plain `Err`, not a panic.
 #[tokio::test]
 async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
     let store = Arc::new(PanicOnPutKeyStore {
@@ -3678,7 +3673,7 @@ impl Store for RefreshBlipStore {
     }
 }
 
-/// HIGH-2 (REVOCATION HONESTY). `delete_key` commits a DURABLE tombstone and only then reconciles
+/// REVOCATION HONESTY: `delete_key` commits a DURABLE tombstone and only then reconciles
 /// the in-memory cache. When that reconcile fails the old code returned a bare `Err` — so the
 /// operator saw a 500 (reasonable reading: "the revocation did not take") while the cache went on
 /// resolving the key, i.e. the revoked credential KEPT WORKING and the operator was told it had not
@@ -3730,8 +3725,8 @@ fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
     );
 }
 
-/// MED-1 (ROTATION HONESTY) — the same shape as HIGH-2. `store.put_key` commits the new
-/// `generation_hash` (so the PREVIOUS credential is durably dead) and only then is the cache
+/// ROTATION HONESTY — the same shape as the `delete_key` case above. `store.put_key` commits the
+/// new `generation_hash` (so the PREVIOUS credential is durably dead) and only then is the cache
 /// reconciled. A bare `Err` from that reconcile returned a 500 with no new secret, from which an
 /// admin concludes "rotation did not happen" and the OLD credential is still fine — while the stale
 /// cache in fact went on resolving that old credential. After the fix the old credential stops
@@ -3785,7 +3780,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
     );
 }
 
-/// C1a: the amortized sweep's `group:` exemption is only as wide as its own stated rationale — "the
+/// The amortized sweep's `group:` exemption is only as wide as its own stated rationale — "the
 /// cell holds an ENFORCED cap whose spend must not reset".
 ///
 /// It used to be the blanket `id.starts_with("group:")`, with no age check and no existence check.
@@ -3866,7 +3861,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     );
 }
 
-/// C1b: deleting a group RECLAIMS its in-memory budget cells — the group-shaped twin of the
+/// Deleting a group RECLAIMS its in-memory budget cells — the group-shaped twin of the
 /// reclamation `delete_key` has always done for a key's cell. Without it, nothing ever dropped them:
 /// the sweep exempts cells that back an enforced cap, and a deleted group's cells simply stopped
 /// being anything's business.
@@ -3925,14 +3920,14 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     );
 }
 
-/// HIGH-1 (round 4): the sweep's cap exemption must hold for a group whose NAME CONTAINS `@` — the
+/// The sweep's cap exemption must hold for a group whose NAME CONTAINS `@` — the
 /// ORDINARY SSO case, not a pathological one. `sanitize_self_sub` permits `@` explicitly, no
 /// charset check exists on a group name anywhere (`validate_groups` checks parent-existence /
 /// acyclicity / amount > 0; `build_with_group` checks empty + length), and an IdP subject is
 /// normally an email — so token exchange auto-provisions `user:alice@corp.com`, whose team's
 /// `child_default` stamps an all-time budget on it.
 ///
-/// The round-3 exemption took "everything before the FIRST `@`" as the group name, resolved
+/// The earlier exemption took "everything before the FIRST `@`" as the group name, resolved
 /// `user:alice`, found nothing, and declared the cell uncapped: it was swept, and because hydrate is
 /// boot-only its lifetime spend re-read as 0 — an EXHAUSTED all-time cap admitting again. A BUDGET
 /// BYPASS, strictly worse than the leak the check closed. `#` (the scope-suffix delimiter) is
@@ -4000,7 +3995,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
     );
 }
 
-/// LOW-1 (round 4): the same false premise, the other way round. `reclaim_group_cells` swept
+/// The same false premise, the other way round: `reclaim_group_cells` swept
 /// `starts_with("group:<name>@")`, which is only a boundary if no name contains `@`. Deleting
 /// `user:alice` therefore also dropped the cell of `user:alice@corp.com` — a DIFFERENT group that is
 /// still live and still capped — resetting its spend to 0.

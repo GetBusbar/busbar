@@ -1,4 +1,4 @@
-//! Tests for the Feature-2 "decision observability" signal catalog substrate (task #141):
+//! Tests for the "decision observability" signal catalog substrate:
 //! `busbar_api::Signal`/`SignalValue`/`SignalBag`, the `RequestedSignals` declared-signal gate
 //! (`crate::hooks::requested_signals`/`RequestedSignals::wants`), and the two health signals
 //! wired into `decide_policy_order`'s candidate loop (`CandidateBreakerState`/`CandidateErrorRate`).

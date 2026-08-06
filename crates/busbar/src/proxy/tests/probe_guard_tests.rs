@@ -46,7 +46,7 @@ fn win_probe(store: &Arc<HealthState>) {
     );
 }
 
-/// Dropping an ARMED guard releases the probe (cell reverts HalfOpen→Open) — the leak A1 fixes
+/// Dropping an ARMED guard releases the probe (cell reverts HalfOpen→Open) — the leak it fixes
 /// (the implicit future-drop-while-parked path).
 #[test]
 fn dropping_armed_guard_releases_probe() {

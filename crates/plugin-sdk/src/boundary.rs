@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SINGLE export-boundary choke point every plugin C symbol routes through (redesign B).
+//! The SINGLE export-boundary choke point every plugin C symbol routes through.
 //!
 //! Every `extern "C-unwind"` plugin export used to independently re-implement the same three boundary
 //! invariants, and each new symbol got one facet wrong (a leak on a null out-slot, a missing

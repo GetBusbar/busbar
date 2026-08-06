@@ -98,7 +98,7 @@ fn per_model_then_global_then_4096() {
     );
 }
 
-/// class-6 6b1: Anthropic 400s with "A maximum of 4 blocks with cache_control may be provided".
+/// Anthropic 400s with "A maximum of 4 blocks with cache_control may be provided".
 /// The IR carries breakpoints unbounded, so a cross-protocol request (e.g. Bedrock ingress, whose
 /// reader populates `cache_control` from `cachePoint`) can exceed it. `prepare_for_egress` must
 /// clamp to the egress writer's cap, in Anthropic's own prefix order (system -> messages -> tools),

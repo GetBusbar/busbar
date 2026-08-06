@@ -150,7 +150,7 @@ advanced:
 
 Every per-request span/event lives at the SAME level, set in exactly one place, so it is off by
 default and an operator can turn the whole request path on with one env var. The rule this section
-documents (task #140): **every `#[tracing::instrument]` must carry an explicit `level =` — a
+documents: **every `#[tracing::instrument]` must carry an explicit `level =` — a
 "rogue" instrument with no level silently defaults to INFO, which is always-on on the hot path — and
 that level is set in one spot, not re-picked ad hoc at each call site.**
 
@@ -177,10 +177,9 @@ line in the process. Both stay off at the default `RUST_LOG=info` filter either 
 `RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on stderr, or configure OTLP to
 get them exported without touching stderr at all.
 
-**Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced** — the
-task's own hot-path audit (proxy/auth/governance/ingress) found every existing `info!`/`warn!` in
-those modules fires only on an error, rejection, degraded, or boot/config condition, never on the
-per-request happy path, so none were reclassified. The convention going forward: a `debug!`/`trace!`
+**Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced.** In the
+hot modules (proxy/auth/governance/ingress) every `info!`/`warn!` fires only on an error, rejection,
+degraded, or boot/config condition, never on the per-request happy path. The convention: a `debug!`/`trace!`
 (hot level) event on the per-request happy path is fine and expected; reserve `info!`/`warn!`/
 `error!` for exactly the conditions above — a state an operator running at the default level should
 see. Whether a NEW event macro belongs at the hot level is a judgment call (does it fire on every

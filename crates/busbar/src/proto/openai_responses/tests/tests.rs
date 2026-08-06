@@ -1,6 +1,6 @@
 use super::*;
 
-/// class-6 6a2: an `input_file` content block (a legitimate Responses input shape) must not
+/// An `input_file` content block (a legitimate Responses input shape) must not
 /// silently vanish. Before this fix, `responses_block`'s bare `_ => Err(..)` was swallowed by
 /// every caller's `filter_map(..ok())` with ZERO log at any level — not a 400, not a warn, just a
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
@@ -498,7 +498,7 @@ fn test_read_response_decode() {
     assert_eq!(resp.usage.output_tokens, 25);
 }
 
-/// Fix #9 (lenience): a Responses `read_response` body with NO `usage` object must parse to a
+/// Lenience: a Responses `read_response` body with NO `usage` object must parse to a
 /// zero IrUsage rather than hard-erroring with a ClientError — mirroring all five sibling readers
 /// (openai_chat.rs, etc.). A missing `usage` on an otherwise valid 200 is an upstream format quirk,
 /// not a client mistake; erroring here would make proxy engine discard a valid body and 500.
@@ -564,7 +564,7 @@ fn test_write_response_roundtrip_text_only() {
     assert_eq!(out["created_at"], json["created_at"]);
     assert_eq!(out["status"], "completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(out["model"], "gpt-4o");
-    // Finding 6: the emitted usage carries ALL SDK-required fields (total_tokens + the two detail
+    // The emitted usage carries ALL SDK-required fields (total_tokens + the two detail
     // objects), not just the two scalar counts the source body happened to carry.
     assert_eq!(out["usage"]["input_tokens"], 10);
     assert_eq!(out["usage"]["output_tokens"], 5);
@@ -1024,7 +1024,7 @@ fn test_stream_fanout() {
     // response.completed with usage. The function_call block opened at index 1 (events2) was
     // never closed by an `output_item.done`, so it is STILL OPEN at the terminal event. The
     // terminal arm must close it (BlockStop{index:1}) BEFORE MessageStop so the stream stays
-    // balanced (MED #5), giving: BlockStop + MessageDelta + MessageStop.
+    // balanced, giving: BlockStop + MessageDelta + MessageStop.
     let completed_json = serde_json::json!({
         "response": {
             "status": STATUS_COMPLETED,
@@ -2566,8 +2566,8 @@ fn test_synth_token_meets_minimum_width() {
 /// The streaming `response.failed` terminal event
 /// (emitted from an IR `Error`) must carry the native non-error skeleton — specifically a
 /// present-but-empty `output` array (REQUIRED by the SDK's typed `Response`), never omitting it.
-/// A failed response produced no assistant items, so `output` is `[]`. (The `output: []` emission
-/// already lived in the Error arm before Round 18; this test locks it against future regression.)
+/// A failed response produced no assistant items, so `output` is `[]`. This locks the `output: []`
+/// emission in the Error arm against future regression.
 #[test]
 fn test_response_failed_carries_empty_output_skeleton() {
     let writer = ResponsesWriter;
@@ -5384,7 +5384,7 @@ fn test_synth_token_uniform_base62_only() {
     );
 }
 
-// PF-H1: `tool_choice: "required"` must round-trip through the Responses reader into the IR
+// `tool_choice: "required"` must round-trip through the Responses reader into the IR
 // union and back out the writer — not silently degrade to `auto`/omitted on the seam.
 #[test]
 fn test_responses_tool_choice_required_roundtrips() {
@@ -5408,7 +5408,7 @@ fn test_responses_tool_choice_required_roundtrips() {
     );
 }
 
-// PF-H1: a targeted `{"type":"function","name":"X"}` (the Responses flat shape) must preserve the
+// A targeted `{"type":"function","name":"X"}` (the Responses flat shape) must preserve the
 // pinned tool name through the IR and re-emit it in the same flat shape.
 #[test]
 fn test_responses_tool_choice_specific_function() {
@@ -5543,7 +5543,7 @@ fn test_reasoning_item_thinking_round_trip() {
     );
 }
 
-/// Fix #6 (request-input reasoning): a prior-turn `reasoning` INPUT item must read into an IR
+/// Request-input reasoning: a prior-turn `reasoning` INPUT item must read into an IR
 /// assistant Thinking block (no longer silently dropped) AND the writer must re-emit it as a
 /// top-level `reasoning` input item — a same-protocol Responses->Responses request round-trip.
 #[test]
@@ -5673,7 +5673,7 @@ fn test_cached_tokens_mapping() {
     let ir2 = reader.read_response(&no_cache).expect("read_response");
     assert_eq!(ir2.usage.cache_read_input_tokens, None);
     let out2 = writer.write_response(&ir2);
-    // Finding 6: `input_tokens_details` is a REQUIRED field in the official SDKs, so it is ALWAYS
+    // `input_tokens_details` is a REQUIRED field in the official SDKs, so it is ALWAYS
     // emitted — with `cached_tokens: 0` when there was no cache hit (NOT omitted, which would raise a
     // strict Pydantic/Zod decoder).
     assert_eq!(
@@ -6175,7 +6175,7 @@ fn text_format_json_schema_flat_round_trips() {
     );
 }
 
-/// FINDING 5 (hosted tools): a Responses request whose `tools` array mixes a HOSTED tool
+/// Hosted tools: a Responses request whose `tools` array mixes a HOSTED tool
 /// (`web_search`, `file_search`) with a CUSTOM function tool must round-trip the hosted specs
 /// VERBATIM — never mangled into empty `{"type":"function","name":""}` tools — while the function
 /// tool keeps its flat Responses shape. Same-protocol Responses -> Responses passthrough.
@@ -6245,7 +6245,7 @@ fn test_hosted_tools_pass_through_intact() {
     }
 }
 
-/// R3-B (hosted tools CROSS-protocol drop): a Responses hosted tool routed to a NON-Responses egress
+/// Hosted tools, CROSS-protocol drop: a Responses hosted tool routed to a NON-Responses egress
 /// has no function-tool analog, so `IrReq::prepare_for_egress` (the cross-protocol seam) must DROP it
 /// with a warn - never let a non-Responses writer emit a malformed empty-name function tool the
 /// backend 400s on. The custom function tool alongside it survives. The paired same-protocol
@@ -6386,7 +6386,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     );
 }
 
-/// FINDING 6 (usage required fields): the emitted Responses `usage` object must carry `total_tokens`
+/// Usage required fields: the emitted Responses `usage` object must carry `total_tokens`
 /// AND the required `input_tokens_details`/`output_tokens_details` objects, so a strict SDK
 /// (Pydantic/Zod) that types them as required does not raise. Covers both the cache-hit and no-cache
 /// cases (details objects present, and correctly populated, in BOTH).
@@ -6432,7 +6432,7 @@ fn test_responses_usage_carries_all_required_fields() {
         uc["total_tokens"], 25,
         "total = input_total(20) + output(5)"
     );
-    // R3-C: the native Responses usage schema defines NO `cache_write_tokens` - the round-1 writer
+    // The native Responses usage schema defines NO `cache_write_tokens` - an earlier writer
     // fabricated it. Assert it is absent (an extra key is a decode surprise + a distinguishability
     // tell); cache-creation tokens still fold into the `input_tokens` total (20 above).
     assert!(
@@ -6599,7 +6599,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
     assert_eq!(anns[0]["end_index"], 14);
 }
 
-/// class-6 6f: a `developer`/`system` item AFTER an earlier conversational turn is still hoisted
+/// A `developer`/`system` item AFTER an earlier conversational turn is still hoisted
 /// (behavior unchanged — the IR cannot express a positioned system turn), but must now WARN, since
 /// hoisting silently changes when the instruction takes effect relative to native Responses
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).

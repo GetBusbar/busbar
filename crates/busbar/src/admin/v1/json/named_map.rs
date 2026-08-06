@@ -39,7 +39,7 @@
 //! one that declares a path this process never mounted (a `prometheus` instance, hence `GET /metrics`,
 //! where none existed at boot) is stored and live on the snapshot yet keeps 404ing until a RESTART.
 //!
-//! That used to be a silent 200 (audit finding E1). The mutation response now carries
+//! That used to be a silent 200. The mutation response now carries
 //! `reload_to_apply` + `note` ([`MutatedDefView`]) naming exactly the paths this mutation declared and
 //! the process cannot serve — the same restart-required contract `PUT /config/settings` has for its
 //! boot-frozen fields. Both fields are omitted when nothing is pending, so a mutation that changes no
@@ -527,7 +527,7 @@ async fn apply(
                 }
             };
             let installed = Arc::new(built);
-            // RESTART-TO-APPLY (audit finding E1), decided on the REBUILT snapshot while the
+            // RESTART-TO-APPLY, decided on the REBUILT snapshot while the
             // pre-mutation one is still in hand: a mutation that introduces a plugin-route PATH the
             // router never mounted at boot is stored and live on the snapshot, but the path itself
             // keeps 404ing until a restart. Carried out of the transaction so the response can SAY so.
@@ -613,7 +613,7 @@ async fn apply(
 
 /// THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the
 /// restart-required signal when this mutation introduced a plugin route the running process cannot
-/// serve (audit finding E1).
+/// serve.
 ///
 /// `#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the
 /// signal is purely ADDITIVE — and both signal fields are omitted entirely when nothing is pending,

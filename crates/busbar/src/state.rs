@@ -109,7 +109,7 @@ pub(crate) struct PoolRuntime {
     pub(crate) members: std::collections::HashMap<usize, MemberMeta>,
     /// Per-pool failover settings (deadline, cap, and member exclusions).
     pub(crate) failover: Option<crate::config::FailoverCfg>,
-    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3, audit §4).
+    /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (1.5.3).
     /// `None` = inherit `App::upstream_credentials`. Read per request by
     /// [`App::pool_upstream_creds`].
     pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
@@ -189,8 +189,8 @@ impl UpstreamClients {
 }
 
 /// Live per-pool depth of requests currently PARKED in an `on_exhausted: queue` wait — the real
-/// source behind the `busbar_pool_queued{pool}` gauge (Phase 2 defined the gauge reading a literal 0;
-/// Phase 3 makes it read this). A parked request calls [`park`](QueuedDepth::park) on entry and holds
+/// source behind the `busbar_pool_queued{pool}` gauge, which reads this at scrape time.
+/// A parked request calls [`park`](QueuedDepth::park) on entry and holds
 /// the returned RAII guard for the whole wait; the guard decrements on EVERY exit (dispatch, deadline
 /// shed, or a dropped future on client disconnect), so the depth can never leak. Arc-shared across
 /// config swaps (`App::clone` clones the Arc) so an in-flight parked request on an old `App` snapshot
@@ -306,7 +306,7 @@ pub(crate) struct App {
     /// out-of-process transport needed.
     pub(crate) hook_env: crate::hooks::HookEnv,
     pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
-    /// The Feature-2 "decision observability" signal catalog's (task #141) config-generation
+    /// The "decision observability" signal catalog's config-generation
     /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
     /// alongside `hook_registry` above, never per request. All-zero (the default) when no hook
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
@@ -341,7 +341,7 @@ pub(crate) struct App {
     /// a 409 (edit config.yaml — the API cannot silently shadow or subtract operator file config, and
     /// the additive overlay can't durably remove a base group); API-created (overlay) groups mutate
     /// freely. Immutable after boot — mirrors `base_hook_names`.
-    // Read by the Phase 1 groups-CRUD PUT/DELETE base-shadow guard (task #100); carried here first.
+    // Read by the groups-CRUD PUT/DELETE base-shadow guard.
     #[allow(dead_code)]
     pub(crate) base_group_names: std::collections::HashSet<String>,
     /// The EFFECTIVE `identity-providers:` NAMED-DEFINITION map (base `config.yaml` + the overlay's
@@ -381,7 +381,7 @@ pub(crate) struct App {
     /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub(crate) admin_modules: Arc<crate::auth::AdminAuthChain>,
-    /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2 Step 6) — each opened as a login
+    /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login
     /// capable `kind: auth` plugin over ABI v2, keyed by the config method/module name (insertion
     /// order = login-page button order). Carries the CORE-only confidential-client secret and the
     /// `browser_login` flag. `GET /auth/token` renders a button per method with a button and drives
@@ -427,7 +427,7 @@ pub(crate) struct App {
     /// Anti-sprawl cap on the NUMBER of groups a mint may AUTO-PROVISION
     /// (`limits.max_auto_provisioned_groups`). The key cap bounds a group's contents; this bounds
     /// the tree's SHAPE, which a `mint`-scope credential could otherwise grow without bound
-    /// (round-5 #20). `0` = unlimited (default). Carried on the snapshot for the same reason as
+    /// `0` = unlimited (default). Carried on the snapshot for the same reason as
     /// `max_keys_per_principal`.
     pub(crate) max_auto_provisioned_groups: usize,
     /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
@@ -494,11 +494,11 @@ pub(crate) struct App {
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
     pub(crate) request_id_counter: Arc<std::sync::atomic::AtomicU64>,
-    /// The live PLUGIN HTTP ROUTE TABLE (design §5): the collision-checked, namespace-confined
+    /// The live PLUGIN HTTP ROUTE TABLE: the collision-checked, namespace-confined
     /// `{path, method}` → owning-plugin index behind every registered plugin route (`/metrics`, a
     /// hook's `/feedback`). Carried on the snapshot (Arc-shared for cheap `App::clone`) so the mounted
     /// route handler resolves the CURRENT owner on every request — a hot-swapped telemetry plugin never
-    /// leaves a stale route (§7.1). Empty until an export/hook plugin declares a route; an empty table
+    /// leaves a stale route. Empty until an export/hook plugin declares a route; an empty table
     /// is inert (no mounts, `declared_auth` returns `None`, so the auth middleware is unaffected).
     pub(crate) plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
     /// The plugin-route PATHS this PROCESS can actually serve: the [`plugin_routes`] table's path set
@@ -510,8 +510,8 @@ pub(crate) struct App {
     /// router is never rebuilt. So a config that ADDS a path (an `export:` prometheus instance where
     /// none existed at boot) is durably stored and live on the snapshot, yet the path keeps 404ing
     /// until a restart. This is the only thing that knows the difference, and it is what lets a config
-    /// mutation tell the operator "restart required" instead of silently no-opping (audit finding E1,
-    /// [`crate::plugin_routes::paths_awaiting_restart`]).
+    /// mutation tell the operator "restart required" instead of silently no-opping
+    /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
 
@@ -522,7 +522,7 @@ impl App {
     /// `auth.upstream_credentials`), never mutated. Cheap: `Copy`.
     ///
     /// Prefer [`App::pool_upstream_creds`] on any path that knows its pool: a pool's own
-    /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule, audit §4). This accessor is
+    /// `upstream_credentials:` OVERRIDES this (the SCALAR combine rule). This accessor is
     /// the right one only where there IS no pool (direct/ad-hoc model routes, health probes).
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
         self.upstream_credentials
@@ -530,7 +530,7 @@ impl App {
 
     /// The UPSTREAM-credential mode in force for `pool`: the pool's own `upstream_credentials:` when
     /// it sets one, else the all-pools default ([`App::upstream_creds`]). SCALAR override, never a
-    /// union — the pool's value REPLACES the inherited one (audit §4). An empty/unknown pool name
+    /// union — the pool's value REPLACES the inherited one. An empty/unknown pool name
     /// (the direct-model and degraded ad-hoc routes) falls back to the default.
     pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
         self.pool_runtime
@@ -602,7 +602,7 @@ impl AppHandle {
     /// exit once the App they were spawned against drops, so EVERY swap must re-attach them —
     /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
-    /// unchanged (audit 1.4.0: only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
+    /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
     /// Doing it in `swap` itself makes it impossible for a future swap site to forget.
     pub(crate) fn swap(&self, next: Arc<App>) {
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();

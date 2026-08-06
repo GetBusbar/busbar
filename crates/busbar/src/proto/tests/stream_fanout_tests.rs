@@ -221,9 +221,9 @@ fn openai_sparse_tool_indices_are_dense_from_zero() {
     );
 }
 
-/// REGRESSION PROOF (passes at HEAD too — HEAD's recomputed-base arithmetic happens to land on 2
-/// here, a slot neither tool0 nor text ever claimed) — but is RED against v2's now-withdrawn dense
-/// formula (`offset + text_index.is_some() + tool_ir_index.len()`), which computes 1 = text's own
+/// REGRESSION PROOF. The current recomputed-base arithmetic happens to land on 2 here, a slot
+/// neither tool0 nor text ever claimed, so this passes today — but it FAILS against the withdrawn
+/// dense formula (`offset + text_index.is_some() + tool_ir_index.len()`), which computes 1 = text's own
 /// slot on this exact path, because the terminal branch's `mem::take` clears the tool maps but not
 /// `text_index`. This test exists to stop that formula from ever being reintroduced: a tool_calls
 /// chunk arriving AFTER a finish chunk must claim a FRESH index that collides with neither the

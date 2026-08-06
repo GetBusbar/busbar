@@ -299,7 +299,7 @@ impl ProtocolWriter for GeminiWriter {
             );
         }
 
-        // toolConfig{functionCallingConfig{mode, allowedFunctionNames}} (PF-H1).
+        // ToolConfig{functionCallingConfig{mode, allowedFunctionNames}}.
         //
         // Start from the RAW `toolConfig` the reader preserved in `extra` (same-protocol Gemini→Gemini
         // byte-identity), then OVERLAY a fresh `functionCallingConfig` built from the typed
@@ -338,7 +338,7 @@ impl ProtocolWriter for GeminiWriter {
                 serde_json::Value::Object(tool_config),
             );
         }
-        // class-6 6c1 egress: `generateContent` models no parallelism control at all — `None` is
+        // Egress: `generateContent` models no parallelism control at all — `None` is
         // NOT touched here (owner decision 4: a warn on EVERY request would be noise). The
         // `is_some()` gate means this can only fire on a request that actually carried the flag.
         if req.parallel_tool_calls.is_some() {
@@ -835,8 +835,8 @@ impl ProtocolWriter for GeminiWriter {
                     } else {
                         // STREAMING egress has no accumulated full response text to convert a
                         // foreign (non-Gemini-sourced) citation's character offsets back to bytes
-                        // against — the same limitation the streaming READER documents (class-6
-                        // 6e1 site 3 is scoped to the non-stream path on both sides). The `raw`
+                        // against — the same limitation the streaming READER documents (the
+                        // conversion is scoped to the non-stream path on both sides). The `raw`
                         // short-circuit inside `write_gemini_citation` still makes the common
                         // same-protocol case byte-exact regardless.
                         let sources: Vec<serde_json::Value> = citations

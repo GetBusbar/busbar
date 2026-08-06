@@ -1265,7 +1265,7 @@ impl GovState {
     /// `GovState` (never on a config reload/apply - the prior `Arc<GovState>` keeps its live
     /// cells).
     ///
-    /// M9 (boot fail-open): a store error here is FATAL, not best-effort. The old code warned and
+    /// BOOT FAIL-OPEN: a store error here is FATAL, not best-effort. The old code warned and
     /// started with EMPTY cells on a `list_keys`/`get_usage` failure, which silently RESET every
     /// budget to zero - a transient store blip at boot would let a maxed-out key spend its whole cap
     /// again. Propagate any store error so boot fails loudly (the supervisor restarts) rather than
@@ -1354,7 +1354,7 @@ impl GovState {
     /// fallback, spend recomputed from tokens x current rates. `include_request_fee` controls whether
     /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
-    /// must pass `true` for both (N2/M5). The parameter exists only for callers that deliberately want
+    /// must pass `true` for both. The parameter exists only for callers that deliberately want
     /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
     pub(crate) fn derived_bucket_usage(
         &self,

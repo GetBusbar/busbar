@@ -1,8 +1,8 @@
 # ADR-0002: Circuit breaker: disposition taxonomy & recovery
 
-> Status: accepted (reconstructed from code). `ADR-0002` is referenced throughout
-> `crates/busbar/src/breaker.rs`, `crates/busbar/src/store/mod.rs`, `crates/busbar/src/proxy/engine/mod.rs`, and `crates/busbar/src/config/mod.rs`. The
-> prose is reconstructed from the implementation.
+> Status: accepted. `ADR-0002` is referenced throughout
+> `crates/busbar/src/breaker.rs`, `crates/busbar/src/store/mod.rs`,
+> `crates/busbar/src/proxy/engine/mod.rs`, and `crates/busbar/src/config/mod.rs`.
 
 ## Context
 

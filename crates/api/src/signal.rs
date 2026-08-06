@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The Feature-2 "decision observability" signal CATALOG (task #141): a single, append-only
+//! The "decision observability" signal CATALOG: a single, append-only
 //! enumeration of every observable busbar can produce about a request/decision/outcome, plus the
 //! compact wire value type and bag it rides the hook projections in. Lives here (`busbar-api`) —
 //! not a new crate — because `busbar-plugin-sdk` (a hook-plugin author's actual dependency) and
@@ -24,7 +24,7 @@ use std::borrow::Cow;
 
 /// One entry per observable busbar can produce about a request, organized by the PHASE it is
 /// available at (the doc-comment groups below — Request / Candidate / Routing / Response — mirror
-/// the settled Feature-2 phase vocabulary; the underlying wire `HookStage` enum keeps its
+/// the decision-observability phase vocabulary; the underlying wire `HookStage` enum keeps its
 /// existing `Request|Route|Attempt|Completion` variant names unchanged, see
 /// `crate::hooks`/`busbar::config::HookStage`'s own doc comment).
 ///
@@ -71,29 +71,27 @@ pub enum Signal {
     /// already-tracked state, not new collection. `None`-shaped (absent from the wire) when the
     /// lane has served no outcomes in the window yet.
     CandidateErrorRate,
-    /// p95 end-to-end latency for this candidate lane. DEFERRED (task #141 scope): no bounded
-    /// sketch/reservoir exists in the store today, and building one is out of scope for this
-    /// additive substrate pass (see `decision-observability.md` §9.1 / the companion design's
-    /// §1.4 "gate the collection, not just the projection" requirement). The variant is reserved
-    /// in the catalog (declarable today, so a future collector need not touch the wire contract)
-    /// but its compute fn does not exist yet — TODO(#141-p95): wire a maintained reservoir once
-    /// its own always-on collection cost is independently justified, then implement the compute
-    /// fn and remove this doc note.
+    /// p95 end-to-end latency for this candidate lane. DEFERRED: no bounded sketch/reservoir
+    /// exists in the store today, and collection must be gated the same way the projection is —
+    /// an always-on reservoir is a cost every deployment would pay whether or not any consumer
+    /// declared this signal. The variant is reserved in the catalog (declarable today, so a
+    /// future collector need not touch the wire contract) but its compute fn does not exist yet —
+    /// TODO(latency-p95): wire a maintained reservoir once its own always-on collection cost is
+    /// independently justified, then implement the compute fn and remove this doc note.
     CandidateLatencyP95Ms,
 
     // ── Routing phase (known once the policy has decided) ───────────────────────────────────────
     /// The resolved policy's stable name (`policy.name()` — already a `&'static str` in hand at
     /// decision time; free to project). Reserved for the request-log/decision-observability
-    /// consumer (task #141's companion, not wired by this pass).
+    /// consumer, which is not wired yet.
     RoutingPolicy,
 
     // ── Response phase (known once the upstream response completes) ────────────────────────────
     /// Output token count. DEFERRED wiring: the outcome-signal plumbing (`OutcomeInputs`, the
-    /// response/completion-tap outcome slice) is a separate, larger seam
-    /// (`decision-observability.md` §5d) not built by this additive pass — the variant is
-    /// reserved in the catalog so a future response-phase consumer can declare it without a wire
-    /// change, but no compute fn exists yet. TODO(#141-outcome): wire once the response tap's
-    /// `OutcomeInputs` seam lands.
+    /// response/completion-tap outcome slice) is a separate, larger seam that does not exist
+    /// yet — the variant is reserved in the catalog so a future response-phase consumer can
+    /// declare it without a wire change, but no compute fn exists yet. TODO(outcome-signals):
+    /// wire once the response tap's `OutcomeInputs` seam lands.
     ResponseTokensOut,
 }
 

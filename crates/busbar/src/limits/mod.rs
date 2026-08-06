@@ -155,7 +155,7 @@ pub(crate) fn upstream_error_body_max_bytes() -> usize {
         .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES)
 }
 
-// 1.5.3 (audit MED-5): there is deliberately NO process-global webhook-delivery-CONCURRENCY accessor
+// 1.5.3: there is deliberately NO process-global webhook-delivery-CONCURRENCY accessor
 // here either. Each NAMED `export:` webhook instance owns its `settings.max_inflight_deliveries` and
 // its own `AdmissionGate` (`export::webhook::Target::gate`), so one saturated sink can never consume
 // the budget an operator capped on another. `LimitsResolved::max_inflight_webhook_deliveries` (the
