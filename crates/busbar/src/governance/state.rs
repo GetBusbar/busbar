@@ -391,8 +391,56 @@ impl GovState {
             .cloned()
     }
 
+    /// The first epoch at or after `from` whose derived id is not a tombstoned row, with that id.
+    /// See [`GovState::write_self_binding`] for why a tombstoned epoch must be skipped rather than
+    /// written over.
+    ///
+    /// Bounded: a live row (the ordinary idempotent-upsert case) stops the scan on the first
+    /// iteration, and only a run of consecutively tombstoned epochs advances it at all, which takes
+    /// one admin deletion or one rolled-back refresh each. The cap keeps a corrupted store from
+    /// turning a login into an unbounded scan; reaching it is a real fault and says so.
+    fn first_free_self_epoch(
+        &self,
+        seed: &[u8; 32],
+        user_sub: &str,
+        from: u64,
+    ) -> StoreResult<(String, u64)> {
+        const MAX_SKIPPED_EPOCHS: u64 = 64;
+        for step in 0..MAX_SKIPPED_EPOCHS {
+            let epoch = from.saturating_add(step);
+            let id = Self::derive_self_subject(seed, user_sub, epoch);
+            let tombstoned = self
+                .store
+                .get_key(&id)?
+                .is_some_and(|k| k.deleted_at.is_some());
+            if !tombstoned {
+                return Ok((id, epoch));
+            }
+        }
+        Err(StoreError(format!(
+            "self-serve binding: {MAX_SKIPPED_EPOCHS} consecutive epochs from {from} are all \
+             tombstoned; refusing to reissue a deleted key id"
+        )))
+    }
+
     /// Write (upsert) a self-serve binding at `epoch` and issue the signed token over it. The id is
     /// derived (not random), so `put_key` at the same `(sub, epoch)` is idempotent by id.
+    ///
+    /// A derived id whose row is TOMBSTONED is skipped, and the epoch advances until one is free.
+    /// Two distinct paths land on a tombstoned derived id, and reusing it would be wrong in both:
+    ///
+    /// - An admin deleted this user's self-serve key. The next login finds no live binding, so it
+    ///   arrives here at epoch 0 — the same epoch, therefore the same id, therefore the tombstoned
+    ///   row. Writing over it would silently undo the admin's deletion and revive every token
+    ///   minted before it. This is the live instance of the resurrection hazard
+    ///   [`busbar_api::Store::put_key`] now refuses at the row, and skipping is what makes the
+    ///   refusal a correct outcome here rather than a dead end.
+    /// - [`GovState::refresh_self`]'s documented rollback tombstones the just-written binding so
+    ///   the client keeps its working token and can retry. The retry re-derives that very id, so
+    ///   without this it would fail on every attempt, permanently.
+    ///
+    /// Skipping is also the semantically honest move: an epoch whose binding was tombstoned had its
+    /// tokens deliberately invalidated, and re-deriving that id would put them back in play.
     fn write_self_binding(
         &self,
         material: &SigningMaterial,
@@ -403,7 +451,7 @@ impl GovState {
         now: u64,
     ) -> StoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
-        let id = Self::derive_self_subject(&seed, user_sub, epoch);
+        let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch)?;
         let generation = epoch.to_string();
         let binding = VirtualKey {
             id: id.clone(),

@@ -4044,3 +4044,119 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         "the longer name reclaims its own two cells"
     );
 }
+
+/// An admin deletion of a user's self-serve key must SURVIVE that user's next login.
+///
+/// The self-serve id is derived from `(sub, epoch)`, not random, and `issue_self` only looks for a
+/// LIVE binding — so after an admin tombstones the epoch-0 key, the next login finds none, arrives
+/// at epoch 0 again, and re-derives the very id that was just deleted. A plain upsert there writes a
+/// live row straight over the tombstone: the admin's deletion is undone and every token minted
+/// before it is valid again, with nothing reporting it. This is the concrete, reachable instance of
+/// the resurrection hazard the `Store::put_key` contract now refuses at the row.
+///
+/// The correct outcome is not a failed login: it is a NEW binding at a later epoch, leaving the
+/// tombstone intact.
+#[test]
+fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:carol";
+    let now = 1_700_000_000u64;
+
+    let (first, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    assert!(gov.verify_token(&first_token, now).is_some());
+
+    // The admin revokes it, exactly as `DELETE /api/v1/admin/keys/{id}` would.
+    gov.delete_key(&first.id).unwrap();
+    assert!(
+        gov.verify_token(&first_token, now).is_none(),
+        "precondition: the deleted key's token must stop verifying"
+    );
+
+    // The user logs in again. This is the moment the old code resurrected the row.
+    let (second, second_token) = gov
+        .issue_self(sub, None, now + 3600, now)
+        .expect("a login after an admin deletion must still succeed, with a NEW binding");
+
+    assert_ne!(
+        second.id, first.id,
+        "the new binding must not reuse the deleted id — that id is never reissued"
+    );
+    let tombstone = gov
+        .store()
+        .get_key(&first.id)
+        .unwrap()
+        .expect("the tombstoned row is kept for attribution");
+    assert!(
+        tombstone.deleted_at.is_some(),
+        "the admin's deletion must still stand after the login: {tombstone:?}"
+    );
+    assert!(
+        gov.verify_token(&first_token, now).is_none(),
+        "the pre-deletion token must NOT come back to life"
+    );
+    assert!(
+        gov.verify_token(&second_token, now).is_some(),
+        "the freshly issued token must work"
+    );
+}
+
+/// A rolled-back refresh must remain RETRYABLE.
+///
+/// `refresh_self`'s rollback tombstones the new binding so the client keeps its working token and
+/// can retry — that is the documented contract of the rollback. But the retry recomputes the same
+/// `(sub, epoch)` and therefore the same id, which the rollback just tombstoned. If a tombstoned
+/// derived id were reused, the retry would resurrect it; if it were merely refused, the retry would
+/// fail on every attempt and the user could never rotate again. Skipping to the next free epoch is
+/// what makes both come out right.
+#[test]
+fn a_rolled_back_refresh_can_still_be_retried() {
+    let store = Arc::new(FailDeleteStore::new());
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:dave";
+    let now = 1_700_000_000u64;
+
+    let (first, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+
+    // Arm one delete failure: the refresh writes the new binding, fails to tombstone the old, and
+    // rolls the new one back (tombstoning it).
+    store.arm();
+    gov.refresh_self(sub, None, now + 3600, now)
+        .expect_err("precondition: the armed failure makes this refresh fail");
+
+    // The retry, against a healthy store. It must succeed, and must not hand back either the
+    // original id or the rolled-back one.
+    let (retried, retried_token) = gov
+        .refresh_self(sub, None, now + 3600, now)
+        .expect("a refresh that was rolled back must remain retryable");
+
+    assert_ne!(
+        retried.id, first.id,
+        "the retry must rotate away from the original binding"
+    );
+    assert!(
+        gov.verify_token(&retried_token, now).is_some(),
+        "the retried refresh's token must verify"
+    );
+    assert!(
+        gov.verify_token(&first_token, now).is_none(),
+        "the original token must be dead once the retry succeeded"
+    );
+
+    // Exactly one enabled binding for the subject: no stranded rows from the failed attempt.
+    let enabled: Vec<VirtualKey> = gov
+        .all_keys()
+        .unwrap()
+        .into_iter()
+        .filter(|k| {
+            k.enabled
+                && k.deleted_at.is_none()
+                && k.group.as_deref() == Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}").as_str())
+        })
+        .collect();
+    assert_eq!(
+        enabled.len(),
+        1,
+        "the retry must leave exactly one enabled binding: {enabled:?}"
+    );
+}
