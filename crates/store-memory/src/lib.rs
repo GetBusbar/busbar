@@ -1074,18 +1074,19 @@ mod conformance {
     use super::MemoryStore;
     use busbar_plugin_testkit::store_conformance as conf;
 
+    // A fresh MemoryStore per check is already an empty namespace, so `ns` only has to be stable.
     #[test]
     fn put_key_does_not_resurrect_a_tombstone() {
-        conf::assert_put_key_does_not_resurrect_a_tombstone(&MemoryStore::new());
+        conf::assert_put_key_does_not_resurrect_a_tombstone(&MemoryStore::new(), "conf");
     }
 
     #[test]
     fn delete_key_unknown_id_is_an_error() {
-        conf::assert_delete_key_unknown_id_is_an_error(&MemoryStore::new());
+        conf::assert_delete_key_unknown_id_is_an_error(&MemoryStore::new(), "conf");
     }
 
     #[test]
     fn revoke_credential_unknown_id_is_an_error() {
-        conf::assert_revoke_credential_unknown_id_is_an_error(&MemoryStore::new());
+        conf::assert_revoke_credential_unknown_id_is_an_error(&MemoryStore::new(), "conf");
     }
 }

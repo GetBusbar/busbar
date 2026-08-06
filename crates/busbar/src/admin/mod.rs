@@ -1916,10 +1916,13 @@ pub(crate) async fn delete_key(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // Existence check before delete: the key RECORD is looked up first and `None` means not-found
-    // (the store's `delete_key` silently no-ops a zero-row delete, so we cannot rely on it to signal
-    // not-found). Use the public GovState API rather than reaching into the store. The record (not a
-    // bare existence bit) is needed anyway: the optional If-Match guard compares its ETag.
+    // Existence check before delete: the key RECORD is looked up first and `None` means not-found.
+    // The store's `delete_key` does now error on an unknown id (the trait settled that), but this
+    // check still has to be here and cannot be replaced by it: an ALREADY-TOMBSTONED row is
+    // idempotent `Ok(())` at the store layer while this endpoint must answer 404 for it, and a
+    // store error carries no way to tell those apart. Use the public GovState API rather than
+    // reaching into the store. The record (not a bare existence bit) is needed anyway: the optional
+    // If-Match guard compares its ETag.
     //
     // Both store calls (the lookup and the delete) run on ONE `spawn_blocking` task so neither
     // blocks a Tokio worker thread, matching the request-path discipline. Running them on the same

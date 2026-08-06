@@ -14,9 +14,17 @@
 //! these from its own test module; a new ruling added here reaches every backend on its next
 //! dependency bump, instead of being hand-copied into each repo and drifting again.
 //!
-//! Each helper takes an EMPTY, freshly-opened store, and each is independent — a backend runs the
-//! ones that apply to it (a store with no credential support skips the credential one) and no helper
-//! depends on another having run.
+//! # Namespacing, and why every helper takes one
+//!
+//! Two of the backends (store-postgres, store-mysql) run their suites against a SHARED, live
+//! database that is not reset between tests, and their CI can run more than one test binary against
+//! it at once. A fixture on a fixed id would then make two concurrent runs each other's failure —
+//! store-postgres's own audit test already derives its `seq` from the process id for exactly this
+//! reason. So every helper takes an `ns` (or an explicit `seq`) and derives its fixtures from it.
+//!
+//! The caller owns cleanup: **reset [`key_ids`] and [`credential_ids`] for your `ns`, and delete
+//! your `seq`, before calling.** An in-memory backend gets this for free by opening a fresh store;
+//! a shared-database backend must issue the deletes itself, since this crate has no SQL of its own.
 //!
 //! Usage, from a store plugin's own tests:
 //! ```ignore
@@ -24,11 +32,28 @@
 //!
 //! #[test]
 //! fn put_key_does_not_resurrect_a_tombstone() {
-//!     conf::assert_put_key_does_not_resurrect_a_tombstone(&open_fresh());
+//!     let ns = format!("conf{}", std::process::id());
+//!     hard_reset(&store, &conf::key_ids(&ns));   // the backend's own cleanup
+//!     conf::assert_put_key_does_not_resurrect_a_tombstone(&open(), &ns);
 //! }
 //! ```
 
 use busbar_api::{AuditRecord, CredentialMeta, CredentialSecret, SecretForm, Store, VirtualKey};
+
+/// Every `VirtualKey` id the suite writes under `ns`. A shared-database backend must delete these
+/// (and their credential rows) before calling, and should clean them up afterwards.
+pub fn key_ids(ns: &str) -> Vec<String> {
+    vec![
+        format!("{ns}_resurrect"),
+        format!("{ns}_deltwice"),
+        format!("{ns}_credowner"),
+    ]
+}
+
+/// Every credential id the suite writes under `ns`. See [`key_ids`].
+pub fn credential_ids(ns: &str) -> Vec<String> {
+    vec![format!("{ns}_cred")]
+}
 
 /// A minimal live key. `id` names the row; every other field is a don't-care the checks never read.
 pub fn live_key(id: &str) -> VirtualKey {
@@ -55,6 +80,8 @@ pub fn credential(id: &str, key_id: &str) -> CredentialSecret {
             key_id: key_id.to_string(),
             kind: "sigv4".to_string(),
             slot: 0,
+            // Bounded well under the 128-char column every backend uses, and unique per `ns` so two
+            // concurrent runs cannot collide on the global `(kind, public_id)` uniqueness rule.
             public_id: format!("AKIA{id}"),
             secret_form: SecretForm::Recoverable,
             created_at: 1_700_000_000,
@@ -90,13 +117,14 @@ pub fn audit(seq: u64, action: &str) -> AuditRecord {
 /// Enforced in the store rather than by the caller on purpose: core's callers do check `deleted_at`
 /// first, but that is a read-then-write, and a `delete_key` committing in the gap goes straight
 /// through it. Only the backend can make the test and the write atomic.
-pub fn assert_put_key_does_not_resurrect_a_tombstone(store: &dyn Store) {
-    let key = live_key("resurrect-me");
+pub fn assert_put_key_does_not_resurrect_a_tombstone(store: &dyn Store, ns: &str) {
+    let id = format!("{ns}_resurrect");
+    let key = live_key(&id);
     store.put_key(&key).expect("seed the live key");
-    store.delete_key("resurrect-me").expect("tombstone it");
+    store.delete_key(&id).expect("tombstone it");
 
     let stored = store
-        .get_key("resurrect-me")
+        .get_key(&id)
         .expect("read back")
         .expect("the row is kept, only tombstoned");
     assert!(
@@ -105,15 +133,14 @@ pub fn assert_put_key_does_not_resurrect_a_tombstone(store: &dyn Store) {
     );
 
     // The whole point: an ordinary live-shaped put, exactly as a rename or an enable would issue.
-    let err = store.put_key(&key);
     assert!(
-        err.is_err(),
+        store.put_key(&key).is_err(),
         "put_key with deleted_at: None overwrote a tombstoned row — the key is now live again and \
          nothing said so"
     );
 
     let after = store
-        .get_key("resurrect-me")
+        .get_key(&id)
         .expect("read back")
         .expect("still present");
     assert!(
@@ -140,18 +167,19 @@ pub fn assert_put_key_does_not_resurrect_a_tombstone(store: &dyn Store) {
 /// "already tombstoned" means the intent is satisfied and the evidence is on disk, while "no such
 /// id" means nothing was touched, and `Ok(())` there tells an operator a key was revoked when it was
 /// not.
-pub fn assert_delete_key_unknown_id_is_an_error(store: &dyn Store) {
+pub fn assert_delete_key_unknown_id_is_an_error(store: &dyn Store, ns: &str) {
     assert!(
-        store.delete_key("no-such-key-id").is_err(),
+        store.delete_key(&format!("{ns}_no_such_key")).is_err(),
         "delete_key on an id that names no row returned Ok — an operator who typo'd an id is told \
          the key is revoked"
     );
 
     // And the case that IS idempotent, so the check above cannot be satisfied by erroring on both.
-    store.put_key(&live_key("delete-twice")).expect("seed");
-    store.delete_key("delete-twice").expect("first delete");
+    let id = format!("{ns}_deltwice");
+    store.put_key(&live_key(&id)).expect("seed");
+    store.delete_key(&id).expect("first delete");
     store
-        .delete_key("delete-twice")
+        .delete_key(&id)
         .expect("deleting an ALREADY-tombstoned key is idempotent, not an error");
 }
 
@@ -161,26 +189,26 @@ pub fn assert_delete_key_unknown_id_is_an_error(store: &dyn Store) {
 /// no-op lets an operator believe a leaked secret was killed when it was not.
 ///
 /// Skip on a backend with no credential support.
-pub fn assert_revoke_credential_unknown_id_is_an_error(store: &dyn Store) {
+pub fn assert_revoke_credential_unknown_id_is_an_error(store: &dyn Store, ns: &str) {
     assert!(
         store
-            .revoke_credential("no-such-credential-id", "leaked")
+            .revoke_credential(&format!("{ns}_no_such_cred"), "leaked")
             .is_err(),
         "revoke_credential on an id that names no row returned Ok — an operator responding to a \
          leak is told the credential is dead when it is still live"
     );
 
+    let key_id = format!("{ns}_credowner");
+    let cred_id = format!("{ns}_cred");
+    store.put_key(&live_key(&key_id)).expect("seed the key");
     store
-        .put_key(&live_key("cred-owner"))
-        .expect("seed the key");
-    store
-        .put_credential(&credential("cred-1", "cred-owner"))
+        .put_credential(&credential(&cred_id, &key_id))
         .expect("seed the credential");
     store
-        .revoke_credential("cred-1", "leaked")
+        .revoke_credential(&cred_id, "leaked")
         .expect("first revoke");
     store
-        .revoke_credential("cred-1", "leaked again")
+        .revoke_credential(&cred_id, "leaked again")
         .expect("revoking an ALREADY-revoked credential is idempotent, not an error");
 }
 
@@ -192,31 +220,34 @@ pub fn assert_revoke_credential_unknown_id_is_an_error(store: &dyn Store) {
 /// keeping the first is not correct either: it collapses both cases into one and drops a genuinely
 /// different record on the floor.
 ///
-/// Skip on a backend that does not provide durable audit (the defaulted no-op).
-pub fn assert_append_audit_duplicate_seq(store: &dyn Store) {
-    let first = audit(1, "hook.register");
+/// `seq` must be free before this runs (see the module doc on namespacing). Skip on a backend that
+/// does not provide durable audit (the defaulted no-op).
+pub fn assert_append_audit_duplicate_seq(store: &dyn Store, seq: u64) {
+    let first = audit(seq, "hook.register");
     store.append_audit(&first).expect("first append");
     store
         .append_audit(&first)
         .expect("re-appending the IDENTICAL record is the retry path and must be Ok");
 
-    let forked = audit(1, "hook.remove");
+    let forked = audit(seq, "hook.remove");
     assert!(
         store.append_audit(&forked).is_err(),
         "a DIFFERENT record on an already-occupied seq was accepted — the audit chain has forked \
          and the store said nothing"
     );
 
-    // The stored record must still be the original: neither overwritten nor recomputed.
+    // The stored record must still be the original: neither overwritten nor recomputed. Filtered by
+    // `seq` rather than read positionally, so a shared `audit_log` carrying other tests' rows (or a
+    // concurrent run's) cannot affect the result.
     let entries = store.list_audit().expect("list");
-    let at_one: Vec<_> = entries.iter().filter(|e| e.seq == 1).collect();
+    let at_seq: Vec<_> = entries.iter().filter(|e| e.seq == seq).collect();
     assert_eq!(
-        at_one.len(),
+        at_seq.len(),
         1,
-        "exactly one record may occupy a seq, got {at_one:?}"
+        "exactly one record may occupy a seq, got {at_seq:?}"
     );
     assert_eq!(
-        at_one[0].action, "hook.register",
+        at_seq[0].action, "hook.register",
         "the rejected append must not have overwritten the stored record"
     );
 }
