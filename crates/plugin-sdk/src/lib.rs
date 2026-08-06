@@ -43,6 +43,13 @@ pub use busbar_api::Store as StoreTrait;
 /// for the full catalog and the append-only/non_exhaustive contract.
 pub use busbar_plugin_abi::{Signal, SignalBag, SignalValue};
 
+/// Re-export used ONLY by the `export_plugin!` expansion, so a plugin crate does not need its own
+/// direct `busbar-plugin-abi` dependency just to name the log-sink type in the generated symbol.
+#[doc(hidden)]
+pub mod __abi {
+    pub use busbar_plugin_abi::LogSinkFn;
+}
+
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type StoreHandle = Box<dyn Store>;
@@ -275,6 +282,66 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Emit an `auth`-kind cdylib plugin from `$ctor` (a
 /// `fn(&str) -> Result<Box<dyn busbar_api::AuthModule>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "auth"` + the six neutral symbols.
+/// The host log bridge — how a plugin's diagnostics reach the operator.
+///
+/// A plugin is a cdylib that statically links its OWN `tracing-core`, so its dispatcher is not the
+/// host's and nothing joins them: every `tracing::warn!` inside a loaded plugin is discarded. That
+/// included auth-oidc's warning on a FAILED TOKEN SIGNATURE VERIFICATION, which is exactly the line
+/// an operator needs to see. `eprintln!` reaches the shared stderr but bypasses the host's
+/// subscriber, so it gets no level filtering, no structured fields, no OTLP export, and nothing
+/// identifying which plugin emitted it.
+///
+/// The host installs a sink through the optional `busbar_set_log_sink` symbol right after `open`.
+/// Until then — and forever, for a host too old to call it — [`log`] falls back to `eprintln!`, so a
+/// plugin never loses a message by using this.
+pub mod hostlog {
+    use busbar_plugin_abi::{log_level, LogSinkFn};
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    /// The installed sink, as raw parts. Two atomics rather than a `OnceLock<(fn, ptr)>` because the
+    /// host may call `busbar_set_log_sink` from any thread and [`log`] may be called concurrently
+    /// from any other; both are written once, before any `busbar_call`, and only ever read after.
+    static SINK: AtomicUsize = AtomicUsize::new(0);
+    static CTX: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// Record the host's sink. Called ONLY by the `busbar_set_log_sink` symbol `export_plugin!`
+    /// emits — not part of a plugin's own API.
+    ///
+    /// # Safety
+    /// `sink` must stay callable, and `ctx` valid, for the life of the plugin.
+    pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void) {
+        CTX.store(ctx, Ordering::Release);
+        SINK.store(sink as usize, Ordering::Release);
+    }
+
+    /// Emit one record at `level`. Goes to the host's subscriber when a sink is installed, else to
+    /// stderr — never nowhere.
+    pub fn log(level: u32, msg: &str) {
+        let raw = SINK.load(Ordering::Acquire);
+        if raw == 0 {
+            // No host bridge (an older host, or before `open` returned). stderr still reaches an
+            // operator collecting the process's output, which is strictly better than dropping it.
+            eprintln!("[busbar-plugin] {msg}");
+            return;
+        }
+        // SAFETY: `raw` was stored from a valid `LogSinkFn` by `install`, which the host contract
+        // requires to stay callable for the plugin's life. The message is borrowed for the call only.
+        let sink: LogSinkFn = unsafe { std::mem::transmute::<usize, LogSinkFn>(raw) };
+        let ctx = CTX.load(Ordering::Acquire);
+        unsafe { sink(ctx, level, msg.as_ptr(), msg.len()) };
+    }
+
+    pub fn error(msg: &str) {
+        log(log_level::ERROR, msg);
+    }
+    pub fn warn(msg: &str) {
+        log(log_level::WARN, msg);
+    }
+    pub fn info(msg: &str) {
+        log(log_level::INFO, msg);
+    }
+}
+
 #[macro_export]
 macro_rules! export_auth_plugin {
     ($ctor:path) => {
@@ -720,6 +787,21 @@ macro_rules! export_plugin {
         pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
             const KIND_NUL: &str = concat!($kind, "\0");
             KIND_NUL.as_ptr()
+        }
+
+        /// # Safety
+        /// Called at most once by the busbar loader, immediately after a successful `busbar_open`
+        /// and before any `busbar_call`, with a sink that stays callable for this plugin's life.
+        ///
+        /// OPTIONAL on both sides: a host that never calls it leaves the plugin logging to stderr,
+        /// and a host that looks it up on an older plugin simply does not find it. That is what
+        /// keeps this additive rather than a transport bump.
+        #[no_mangle]
+        pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+            sink: $crate::__abi::LogSinkFn,
+            ctx: *mut ::std::ffi::c_void,
+        ) {
+            unsafe { $crate::hostlog::install(sink, ctx) };
         }
 
         /// # Safety

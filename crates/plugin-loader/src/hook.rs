@@ -793,6 +793,59 @@ mod tests {
     /// Asserts BOTH halves, because only the pair pins the behaviour: a failing gate is an `Err`
     /// (so `on_error` resolves), and an abstaining gate is `Ok` (so a hook with no opinion still
     /// lets the request through). Collapsing either into the other reintroduces the defect.
+    /// A plugin's diagnostics must reach the HOST rather than vanishing.
+    ///
+    /// A cdylib statically links its own `tracing-core`, so its dispatcher is not this process's and
+    /// nothing joins them: every `tracing::warn!` inside a loaded plugin was silently discarded,
+    /// including auth-oidc's on a FAILED TOKEN SIGNATURE VERIFICATION. This drives the optional
+    /// `busbar_set_log_sink` symbol end to end over a REAL dlopen and asserts the record arrives,
+    /// attributed to the plugin that emitted it.
+    ///
+    /// Asserted at the loader's tap rather than through a capturing `tracing` subscriber: interest
+    /// is cached per callsite and GLOBALLY, and this binary's sibling tests load plugins with no
+    /// subscriber, which caches the sink's callsite as uninteresting and makes a thread-local
+    /// subscriber miss the event. That is the harness, not the bridge — instrumenting the loader
+    /// showed the sink invoked correctly on every load — and the tap tests the property that
+    /// actually matters without depending on global tracing state.
+    #[test]
+    fn a_plugin_log_reaches_the_host() {
+        let Some(_) = hook_plugin_path() else {
+            return;
+        };
+        let before = crate::log_tap::RECORDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+
+        // The test plugin logs through the bridge from its CONSTRUCTOR, which is the case that
+        // matters: installing the sink after `open` would drop exactly those lines.
+        let _policy = load("{}");
+
+        let records = crate::log_tap::RECORDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mine: Vec<_> = records
+            .iter()
+            .skip(before)
+            .filter(|(_, _, text)| text.contains("host log bridge check"))
+            .collect();
+        assert!(
+            !mine.is_empty(),
+            "the plugin's own log record never crossed the ABI; records since this test began: {:?}",
+            &records[before.min(records.len())..]
+        );
+        assert_eq!(
+            mine[0].0, "test-hook",
+            "the record must carry WHICH plugin emitted it"
+        );
+        assert_eq!(
+            mine[0].1,
+            busbar_plugin_abi::log_level::WARN,
+            "the plugin's chosen level must survive the crossing"
+        );
+    }
+
     #[tokio::test]
     async fn dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain() {
         let Some(_) = hook_plugin_path() else {
