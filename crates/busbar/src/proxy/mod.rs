@@ -217,8 +217,8 @@ mod lane_availability_proptest;
 mod probe_guard_tests;
 
 #[cfg(test)]
-#[path = "tests/m6_probe_release_owner_tests.rs"]
-mod m6_probe_release_owner_tests;
+#[path = "tests/probe_release_owner_tests.rs"]
+mod probe_release_owner_tests;
 
 #[cfg(test)]
 #[path = "tests/hook_opt_in_projection_tests.rs"]

@@ -20,8 +20,8 @@
 //! an unknown module or a failed resolution is a hard error, never an empty secret.
 
 /// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
-/// live in the standalone `busbar-secret-ref` crate (plugin-settings-schema-SPEC.md checklist,
-/// shared-crate extraction) — it used to be defined here `pub(crate)`, unreachable from
+/// live in the standalone `busbar-secret-ref` crate — it used to be defined here `pub(crate)`,
+/// unreachable from
 /// `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so every call site in
 /// this crate is unchanged; `busbar` still owns `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than

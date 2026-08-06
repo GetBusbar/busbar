@@ -158,7 +158,7 @@ pub(crate) fn normalize_raw_error(
     let provider_signal = if let Some(ref code) = raw.provider_code {
         if let Some(mapped_class) = error_map.get(code) {
             if let Some(class) = status_class_from_str(mapped_class) {
-                // CLASS guard (R27 #8/#3): context_length must NEVER mask a 5xx upstream
+                // CLASS guard: context_length must NEVER mask a 5xx upstream
                 // outage. An operator error_map mapping a code to `context_length` on a 5xx
                 // status would otherwise reclassify a transient outage as no-penalty
                 // ContextLength and skip the breaker penalty. Suppress the early return in
@@ -187,7 +187,7 @@ pub(crate) fn normalize_raw_error(
         // be reclassified as ContextLength (that would mask a transient outage and skip the breaker
         // penalty). Let such cases fall through to the HTTP-status classification below, where the
         // operator error_map can still countermand via the structured-type signal (Step 1b).
-        // TIGHTEN (R27 #3, breaker-layer half): the built-in context_length code only ever
+        // TIGHTEN (breaker-layer half): the built-in context_length code only ever
         // applies to oversized-request statuses (400 Bad Request / 413 Payload Too Large).
         // The previous `!(500..600)` guard let any non-5xx (e.g. a 200/3xx/auth) carrying a
         // `context_length_exceeded` code masquerade as ContextLength; restrict to the precise
@@ -365,11 +365,10 @@ mod tests {
 
     #[test]
     fn test_operator_map_context_length_on_5xx_is_penalized() {
-        // R27 #8/#3 regression: an operator error_map mapping a provider code to
+        // Regression: an operator error_map mapping a provider code to
         // `context_length` on a 503 must NOT mask the upstream outage. The early return is
         // suppressed and we fall through to HTTP-status classification → ServerError
-        // (TransientUpstream), so the breaker is penalized. (Fails against pre-R27 code, which
-        // returned ContextLength.)
+        // (TransientUpstream), so the breaker is penalized.
         let raw = RawUpstreamError {
             http_status: 503,
             provider_code: Some("1234".to_string()),
@@ -402,7 +401,6 @@ mod tests {
     fn test_structured_type_context_length_on_5xx_is_penalized() {
         // Same CLASS guard on the structured-type path: a typed signal mapped to
         // `context_length` on a 502 must fall through to ServerError, not mask the outage.
-        // (Fails against pre-R27 code, which returned ContextLength.)
         let raw = RawUpstreamError {
             http_status: 502,
             provider_code: None,
@@ -417,10 +415,10 @@ mod tests {
 
     #[test]
     fn test_builtin_context_length_not_recognized_on_non_request_size_4xx() {
-        // R27 #3 tighten regression: the built-in context_length code only applies to the
+        // Tighten regression: the built-in context_length code only applies to the
         // oversized-request statuses (400/413). A 403 carrying the canonical code must NOT be
         // reclassified as ContextLength; it falls through to HTTP classification (Auth here).
-        // (Fails against pre-R27 code, whose `!(500..600)` guard accepted any non-5xx.)
+        // A guard of merely `!(500..600)` would wrongly accept any non-5xx.
         let raw = RawUpstreamError {
             http_status: 403,
             provider_code: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),

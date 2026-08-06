@@ -323,7 +323,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
 }
 
 /// The single exclusion arm records WHY each lane was excluded into `RequestCtx::excluded_reasons`
-/// in the shared `Unavailable` taxonomy (design §2, item 5) — fed to `on_exhausted` dispatch. A
+/// in the shared `Unavailable` taxonomy, fed to `on_exhausted` dispatch. A
 /// one-lane pool at capacity yields no pick, with an `AtCapacity` reason recorded.
 #[tokio::test]
 async fn excluded_reasons_records_at_capacity() {

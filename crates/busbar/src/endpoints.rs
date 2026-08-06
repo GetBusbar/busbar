@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(bounded["breaker_state"], json!("closed"));
     }
 
-    /// R9: a lane that is BOTH breaker-Open AND at capacity can never close its breaker (its recovery
+    /// A lane that is BOTH breaker-Open AND at capacity can never close its breaker (its recovery
     /// probe needs a dispatch it cannot win). `/stats` must make that combination legible — the
     /// breaker axis and the capacity axis are exposed INDEPENDENTLY, never collapsed into one string.
     #[tokio::test]

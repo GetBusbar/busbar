@@ -19,9 +19,9 @@ use serde::Serialize;
 
 use super::{AdminError, HookView};
 
-/// Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
+/// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
-/// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools (C6); `group` names the
+/// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the
 /// bound `groups:` entry (`null` = unlimited).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct KeyView {
@@ -32,21 +32,21 @@ pub(crate) struct KeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// E-007: `enabled` alone cannot distinguish a reversible pause from either of the two permanent
-    /// dispositions — `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
+    /// `enabled` alone cannot distinguish a reversible pause from either of the two permanent
+    /// dispositions. `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
     /// used to leave `enabled: false` with nothing else to tell them apart. One of exactly four
     /// values, additive and derived (never independently settable):
-    /// - `"active"` — enabled, not revoked, not deleted.
-    /// - `"disabled"` — `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
-    /// - `"revoked"` — `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
+    /// - `"active"`: enabled, not revoked, not deleted.
+    /// - `"disabled"`: `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
+    /// - `"revoked"`: `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
     ///   `GET /keys/{id}`) stays live for audit/usage attribution.
-    /// - `"tombstoned"` — `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
+    /// - `"tombstoned"`: `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
     ///   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
     ///   `GET /keys` by default; visible there with `?include=tombstoned`.
     pub(crate) state: String,
 }
 
-/// `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
+/// `POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
 /// credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
 /// bearer-only mint.
 #[derive(Serialize, JsonSchema)]
@@ -58,26 +58,26 @@ pub(crate) struct CreatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// E-007: same field as `KeyView.state` — a fresh mint is always `"active"` (enabled, not
+    /// Same field as `KeyView.state`; a fresh mint is always `"active"` (enabled, not
     /// revoked, not deleted).
     pub(crate) state: String,
-    /// The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
+    /// The busbar-SIGNED token: the key credential (1.5.0), shown EXACTLY once and never
     /// returned by any read. (This is the field a client must capture to authenticate.)
     pub(crate) token: String,
     /// Unix-seconds expiry of the signed token.
     pub(crate) expires_at: u64,
-    /// Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal
+    /// Whether this mint AUTO-PROVISIONED its bound group leaf (self-service); lets a portal
     /// distinguish "bound to an existing bucket" from "created your personal bucket + bound".
     pub(crate) group_provisioned: bool,
     /// AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aws_access_key_id: Option<String>,
-    /// AWS SigV4 secret access key — shown once (present only with an AWS credential).
+    /// AWS SigV4 secret access key, shown once (present only with an AWS credential).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aws_secret_access_key: Option<String>,
 }
 
-/// `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
+/// `POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
 /// `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
 /// prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
 #[derive(Serialize, JsonSchema)]
@@ -89,18 +89,18 @@ pub(crate) struct RotatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// E-007: same field as `KeyView.state` — rotate does not change `enabled`/revoked/tombstoned
+    /// Same field as `KeyView.state`; rotate does not change `enabled`/revoked/tombstoned
     /// status, so this reflects whatever the key's disposition already was (rotating a `disabled` or
     /// `revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,
     /// which surfaces as 404 instead of this response).
     pub(crate) state: String,
-    /// The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
+    /// The fresh busbar-SIGNED token, shown EXACTLY once (signed-token keys).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) token: Option<String>,
     /// Unix-seconds expiry of the re-minted signed token (present with `token`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) expires_at: Option<u64>,
-    /// The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).
+    /// The fresh bearer secret, shown EXACTLY once (legacy hashed-secret keys only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) secret: Option<String>,
 }
@@ -124,7 +124,7 @@ pub(crate) struct KeyMeteringView {
     pub(crate) rate_headroom: Option<f64>,
 }
 
-/// `GET /keys` — the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
+/// `GET /keys`: the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
 /// keys handler rather than via `Page<T>`).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct KeyPageView {
@@ -132,7 +132,7 @@ pub(crate) struct KeyPageView {
     pub(crate) next_cursor: Option<String>,
 }
 
-/// `POST /config/apply` — apply-a-full-config result. The change is live but not written to disk.
+/// `POST /config/apply`: apply-a-full-config result. The change is live but not written to disk.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigApplyView {
     pub(crate) applied: bool,
@@ -140,14 +140,14 @@ pub(crate) struct ConfigApplyView {
     pub(crate) note: String,
 }
 
-/// `POST /config/reload` — reload-from-disk result.
+/// `POST /config/reload`: reload-from-disk result.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigReloadView {
     pub(crate) reloaded: bool,
     pub(crate) config_version: u64,
 }
 
-/// `POST /restart` — accepted-and-draining result.
+/// `POST /restart`: accepted-and-draining result.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct RestartView {
     pub(crate) restarting: bool,
@@ -156,7 +156,7 @@ pub(crate) struct RestartView {
     pub(crate) note: String,
 }
 
-/// `POST /config/rollback` — restore-a-retained-version result (the restored version + the NEW
+/// `POST /config/rollback`: restore-a-retained-version result (the restored version + the NEW
 /// config version the rollback produced).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigRollbackView {
@@ -164,7 +164,7 @@ pub(crate) struct ConfigRollbackView {
     pub(crate) config_version: u64,
 }
 
-/// `DELETE /overlay/{section}` — per-section overlay reset result: the section reverted, the
+/// `DELETE /overlay/{section}`, per-section overlay reset result: the section reverted, the
 /// resulting config version, and whether anything changed (`false` = the section had no overlay state,
 /// an idempotent no-op).
 #[derive(Serialize, JsonSchema)]
@@ -176,20 +176,20 @@ pub(crate) struct OverlayResetView {
     pub(crate) changed: bool,
 }
 
-/// `POST /auth/cache/flush` — number of cached credential-decision entries dropped.
+/// `POST /auth/cache/flush`: number of cached credential-decision entries dropped.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct CacheFlushView {
     pub(crate) flushed: usize,
 }
 
-/// `POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.
+/// `POST /keys/{id}/revoke`: the revoked key's id (denylisted without deleting the binding). 1.5.0.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct RevokeView {
     /// The id that was revoked (durably denylisted; the binding record remains).
     pub(crate) revoked: String,
 }
 
-/// `POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
+/// `POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
 /// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct SigningKeyRotateView {
@@ -201,18 +201,18 @@ pub(crate) struct SigningKeyRotateView {
     pub(crate) message: String,
 }
 
-/// `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
+/// `GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 /// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
 /// a restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot
 /// invariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses
-/// the PUT (`400`) instead of applying it in memory only — the silent-loss outcome is gone.
+/// the PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.
 /// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
 /// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the
 /// `admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend
-/// is reused across a hot reload — none can hot-swap, so they take effect on the next RESTART (or a
+/// is reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a
 /// supervisor restart), NEVER on a
-/// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
+/// `POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
 /// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
 /// (no overlay); `note` names the affected fields instead. Everything else
 /// (`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;
@@ -220,9 +220,9 @@ pub(crate) struct SigningKeyRotateView {
 /// `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
 /// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 /// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
-/// only `Arc<App>`, never the router) — two independent freezing mechanisms. There is NO
+/// only `Arc<App>`, never the router): two independent freezing mechanisms. There is NO
 /// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
-/// grammar, and `RootSettings` (what this endpoint projects) carries neither field — a PUT naming
+/// grammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming
 /// `observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry
 /// egress is now `export:`, a NAMED MAP of exporter instances that this endpoint does not reach at
 /// all: it is edited in `config.yaml` and made live by a plugin reload, not by `PUT /config/settings`.
@@ -238,7 +238,7 @@ pub(crate) struct SigningKeyRotateView {
 /// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
-/// process-global `OnceLock` — neither rebuilt by an apply.
+/// process-global `OnceLock`; neither is rebuilt by an apply.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
@@ -248,7 +248,7 @@ pub(crate) struct ConfigSettingsView {
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
     /// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today
     /// `store.settings`, whose `url` is a credential in busbar's own docs) appears as
-    /// `settings_keys` — sorted key names, no values. Same on the GET and on the PUT echo.
+    /// `settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.
@@ -257,7 +257,7 @@ pub(crate) struct ConfigSettingsView {
     pub(crate) settings: serde_json::Value,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
-    /// make them live — `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
+    /// make them live; `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
     /// only live-swappable fields (or on a GET). The field NAME is frozen wire; only this description
     /// changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -267,7 +267,7 @@ pub(crate) struct ConfigSettingsView {
     pub(crate) note: Option<String>,
 }
 
-/// `PUT /admin-auth` — the resource post-state (`{configured, modules}`, the same shape
+/// `PUT /admin-auth`: the resource post-state (`{configured, modules}`, the same shape
 /// `GET /admin-auth` returns) plus apply metadata, so a client uses the PUT response as post-state.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AdminAuthPutView {
@@ -278,7 +278,7 @@ pub(crate) struct AdminAuthPutView {
     pub(crate) note: String,
 }
 
-/// `GET /hooks/{name}/schema` — the hook's self-described settings JSON Schema (proxied over the
+/// `GET /hooks/{name}/schema`: the hook's self-described settings JSON Schema (proxied over the
 /// `describe` wire message), or `null` when the hook/transport does not answer.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct HookSchemaView {
@@ -287,10 +287,10 @@ pub(crate) struct HookSchemaView {
     pub(crate) schema: Option<serde_json::Value>,
 }
 
-/// `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`].
+/// `GET /plugins/{name}/schema`: the generalized, all-kinds sibling of [`HookSchemaView`].
 /// Carries `trust`/`source`/`schema_error` on top of
 /// `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
-/// precedence rule from context — the server always picks exactly one source and reports which.
+/// precedence rule from context; the server always picks exactly one source and reports which.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct PluginSchemaView {
     pub(crate) name: String,
@@ -300,16 +300,16 @@ pub(crate) struct PluginSchemaView {
     /// handler always sends, rather than silently dropping it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<String>,
-    /// The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
+    /// The plugin's settings JSON Schema verbatim, or `null`, either because the manifest never
     /// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
     /// failed to parse.
     pub(crate) schema: Option<serde_json::Value>,
-    /// Set only when the manifest's `settings_schema` was present but failed to parse as JSON —
+    /// Set only when the manifest's `settings_schema` was present but failed to parse as JSON;
     /// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
     /// `schema: null`: a present-but-corrupt schema is a real
     /// authoring/packaging bug, not "this plugin simply has none."
     pub(crate) schema_error: Option<String>,
-    /// `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
+    /// `"trusted" | "unverified" | "rejected"`: the same vocabulary the plugin catalog already
     /// uses (never `"verified"`).
     pub(crate) trust: String,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
@@ -330,7 +330,7 @@ pub(crate) struct PluginSchemaView {
 }
 
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-/// (KEY NAMES only — see [`super::HookView::settings_keys`]) and their version.
+/// (KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct HookDesiredStatus {
     /// Sorted KEY NAMES of the desired settings bag, never its values.
@@ -342,7 +342,7 @@ pub(crate) struct HookDesiredStatus {
 /// (present only when the hook answered `status`).
 ///
 /// KEY NAMES only, and for a sharper reason than the desired side: the reported bag is the hook's
-/// ECHO of the SECRET-RESOLVED settings busbar pushed it, i.e. the PLAINTEXT of every `SecretRef` —
+/// ECHO of the SECRET-RESOLVED settings busbar pushed it, i.e. the PLAINTEXT of every `SecretRef`,
 /// and this read is reachable at READ-ONLY admin scope. `null` when the hook answered `status` but
 /// reported no settings.
 #[derive(Serialize, JsonSchema)]
@@ -352,7 +352,7 @@ pub(crate) struct HookReportedStatus {
     pub(crate) settings_version: Option<u64>,
 }
 
-/// `GET /hooks/{name}/status` — the hook's OBSERVED state: desired vs reported settings with a
+/// `GET /hooks/{name}/status`, the hook's OBSERVED state: desired vs reported settings with a
 /// `drift` verdict, plus the hook's self-reported metrics. `reported`/`drift` are `null` and `note`
 /// is present when the hook did not answer (fail-open); `metrics` is invariantly an array.
 #[derive(Serialize, JsonSchema)]
@@ -361,7 +361,7 @@ pub(crate) struct HookStatusView {
     pub(crate) desired: HookDesiredStatus,
     pub(crate) reported: Option<HookReportedStatus>,
     pub(crate) drift: Option<bool>,
-    /// The DESIRED settings KEY NAMES the hook is not actually running — the actionable half of
+    /// The DESIRED settings KEY NAMES the hook is not actually running: the actionable half of
     /// `drift`, carrying names this body already serves and no value from either bag. Invariantly an
     /// array (empty on the no-answer branch, where no drift is known).
     pub(crate) drift_keys: Vec<String>,
@@ -369,13 +369,13 @@ pub(crate) struct HookStatusView {
     /// the hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/
     /// `label`/`unit`/`viz`/`max` members.
     ///
-    /// E-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for
+    /// schemars' blanket `JsonSchema` impl for
     /// `serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s
-    /// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's
-    /// `items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
+    /// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but, nested here as this array's
+    /// `items`, is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
     /// every published SDK generates through) cannot represent one at all: the parse aborts, taking
     /// out Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just
-    /// this field's schema to `{"type": "array", "items": {}}` — `{}` is the equivalent "accepts
+    /// this field's schema to `{"type": "array", "items": {}}`; `{}` is the equivalent "accepts
     /// anything" schema every generator DOES understand, and is what busbar-ui's own
     /// `openapi-prep.py` already rewrites `items: true` into client-side. This is the only
     /// `items: true` in the document; every other `additionalProperties: true` schemars emits
@@ -390,7 +390,7 @@ pub(crate) struct HookStatusView {
     pub(crate) note: Option<String>,
 }
 
-/// The `HookStatusView.metrics` array's item schema (E-004): `{}`, not schemars' default boolean
+/// The `HookStatusView.metrics` array's item schema: `{}`, not schemars' default boolean
 /// `true` for `serde_json::Value` — the "accepts anything" schema every generator understands, in a
 /// position (`items`) where the boolean form is fatal to `kin-openapi`/`oapi-codegen`.
 fn hook_status_metrics_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -400,7 +400,7 @@ fn hook_status_metrics_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sc
     })
 }
 
-/// `GET /config/versions/{v}` — one retained config version WITH its full hook-surface snapshot
+/// `GET /config/versions/{v}`: one retained config version WITH its full hook-surface snapshot
 /// (projected through the wire `HookView`, keyed by hook name) and the global wiring at that version.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigVersionDetailView {
@@ -412,7 +412,7 @@ pub(crate) struct ConfigVersionDetailView {
     pub(crate) global_hooks: Vec<String>,
 }
 
-/// The `hooks` object of a `GET /config/diff` — hook names added / removed / changed between the two
+/// The `hooks` object of a `GET /config/diff`: hook names added / removed / changed between the two
 /// versions.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigDiffHooks {
@@ -421,14 +421,14 @@ pub(crate) struct ConfigDiffHooks {
     pub(crate) changed: Vec<String>,
 }
 
-/// The `global_hooks` delta of a `GET /config/diff` — present only when the global wiring changed.
+/// The `global_hooks` delta of a `GET /config/diff`, present only when the global wiring changed.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigDiffGlobalHooks {
     pub(crate) from: Vec<String>,
     pub(crate) to: Vec<String>,
 }
 
-/// `GET /config/diff` — structured hook-surface diff between two retained versions. `global_hooks` is
+/// `GET /config/diff`: structured hook-surface diff between two retained versions. `global_hooks` is
 /// present only when the global wiring differed between the two sides.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigDiffView {
@@ -439,7 +439,7 @@ pub(crate) struct ConfigDiffView {
     pub(crate) global_hooks: Option<ConfigDiffGlobalHooks>,
 }
 
-/// `GET /audit` — the cursor-paginated audit-log envelope (`{items, next_cursor}`, hand-rolled in the
+/// `GET /audit`: the cursor-paginated audit-log envelope (`{items, next_cursor}`, hand-rolled in the
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AuditPageView {
@@ -447,7 +447,7 @@ pub(crate) struct AuditPageView {
     pub(crate) next_cursor: Option<String>,
 }
 
-/// `GET /config/versions` — the cursor-paginated version-history envelope (`{items, next_cursor}`).
+/// `GET /config/versions`: the cursor-paginated version-history envelope (`{items, next_cursor}`).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigVersionPageView {
     pub(crate) items: Vec<crate::admin::versions::ConfigVersion>,

@@ -129,7 +129,7 @@ async fn declared_signal_is_computed_and_projected() {
 }
 
 /// An UNDECLARED signal is absent from the projected bag (never computed) — the exact "declared
-/// signal in, everything else out" contract §4 of the design describes.
+/// signal in, everything else out" contract.
 #[tokio::test]
 async fn undeclared_signal_is_absent() {
     let bags = run_with_declared(vec![Signal::CandidateBreakerState]).await;

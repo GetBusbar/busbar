@@ -699,7 +699,7 @@ mod tests {
     /// ONCE — not once per cell. The lane sits in THREE pools, so the pre-fix code (which recorded the
     /// success via a per-cell `record_success_in` loop over the default cell plus every pool) bumped
     /// `LaneState.ok` 4 times per 2xx probe (1 default + 3 pools), inflating the public `/stats` `ok`
-    /// metric by (N+1). The R23 fix had already decoupled the SYMMETRIC failure path (one `err` bump
+    /// metric by (N+1). The SYMMETRIC failure path was already decoupled (one `err` bump
     /// per probe) but the success path still multi-counted. After the fix `ok` rises by exactly 1 per
     /// successful probe, mirroring how `record_probe_failure_all_cells` bumps `err` once. We drive 2
     /// probes and assert `ok == 2` (the pre-fix code would read 8).

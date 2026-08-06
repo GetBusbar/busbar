@@ -2691,7 +2691,7 @@ fn test_validate_accepts_existing_fallback_pool() {
 
 #[test]
 fn test_queue_config_parses_and_both_keys_conflict() {
-    // R7 disambiguation: a `queue` mapping parses to Queue{max_ms}; a mapping carrying BOTH
+    // Disambiguation: a `queue` mapping parses to Queue{max_ms}; a mapping carrying BOTH
     // `fallback_pool` and `queue` is an explicit "exactly one of" error, not a silent force-fit.
     match serde_yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }").unwrap() {
         config::OnExhaustedCfg::Queue { max_ms } => assert_eq!(max_ms, 250),

@@ -62,7 +62,7 @@ selftest() {
   # A tiny baseline fingerprint the fixtures mutate. Shapes mirror the REAL 1.5.3 grammar surface:
   # a named-definition map alias (`hooks:` = HookDefs), its definition struct, and the `phase:` stage
   # enum. There is deliberately NO `plane`/`bindings`/`principal` fixture — that grammar was DELETED
-  # in the 1.5.3 audit (audit-decisions §1) and must not survive even as a test fixture.
+  # in 1.5.3 and must not survive even as a test fixture.
   cat >"$tmp/base.json" <<'JSON'
 {
   "_meta": {"frozen_at": "1.5.3"},
@@ -102,14 +102,14 @@ PY
     fi
   }
 
-  # ── GREEN (additive) cases — catalog CFG-09/CFG-10/CFG-11 ──
+  # ── GREEN (additive) cases ──
   run_case "additive: new OPTIONAL field is GREEN"        0 'd["types"]["Root"]["fields"]["added"]={"type":"String","optional":True}'
   run_case "additive: new whole section is GREEN"         0 'd["types"]["NewSection"]={"kind":"struct","fields":{"x":{"type":"u32","optional":True}}}'
   run_case "additive: enum-variant append is GREEN"       0 'd["types"]["HookStage"]["variants"].append("candidate")'
   run_case "additive: required->optional relax is GREEN"  0 'd["types"]["Root"]["fields"]["keep"]["optional"]=True'
   run_case "no-op: key reorder / reformat is GREEN"       0 'd["types"]={k:d["types"][k] for k in sorted(d["types"],reverse=True)}'
 
-  # ── RED (breaking) cases — catalog CFG-05..CFG-08 ──
+  # ── RED (breaking) cases ──
   run_case "breaking: field REMOVAL is RED"               3 'del d["types"]["Root"]["fields"]["keep"]'
   run_case "breaking: field RETYPE is RED"                3 'd["types"]["Root"]["fields"]["keep"]["type"]="u32"'
   run_case "breaking: newly-REQUIRED field is RED"        3 'd["types"]["Root"]["fields"]["opt"]["optional"]=False'
@@ -124,7 +124,7 @@ PY
   run_case "breaking: def-map alias RETARGET is RED"      3 'd["types"]["type HookDefs"]["target"]="Vec<HookDefCfg>"'
   run_case "additive: NEW def-map alias is GREEN"         0 'd["types"]["type ExportDefs"]={"kind":"alias","target":"indexmap::IndexMap<String, ExportDefCfg>"}'
 
-  # ── CFG-13 anti-launder: a snapshot "refresh" must NOT launder a break. The classifier's baseline
+  # ── anti-launder: a snapshot "refresh" must NOT launder a break. The classifier's baseline
   # is the git-ref fingerprint (here base.json), independent of any working-tree snapshot rewrite:
   # even when the fresh render already dropped the field (exactly what a laundered snapshot looks
   # like), classify(baseline, fresh) still sees base.json's field and fails RED.

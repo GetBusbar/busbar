@@ -452,7 +452,7 @@ pub(crate) struct RootCfg {
     /// by `config_validate::validate`, threaded into the store/client/TLS/App at startup, and
     /// installed into the process-wide `crate::limits` statics for the deep call-stack use sites.
     pub(crate) limits: LimitsResolved,
-    /// The resolved `export:` block — the built-in observability exporters (design §2/§7). Default
+    /// The resolved `export:` block — the built-in observability exporters. Default
     /// (all-`None`) ⇒ collection inert. Read at App construction to install the recorder + build the
     /// `/metrics` plugin route (prometheus) and to configure the request-log sinks.
     pub(crate) export: ExportCfg,
@@ -2333,7 +2333,7 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
                 ))),
             },
             v @ serde_yaml::Value::Mapping(_) => {
-                // R7: a structured `on_exhausted` mapping is DISAMBIGUATED by its key set rather than
+                // A structured `on_exhausted` mapping is DISAMBIGUATED by its key set rather than
                 // force-fit into `FallbackBody` — peek the top-level keys so `fallback_pool` and
                 // `queue` route to distinct variants, both keys present is an explicit error, and an
                 // unrecognized mapping still gets the actionable "one of …" message.

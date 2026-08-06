@@ -390,17 +390,17 @@ pub(crate) struct InfoView {
     pub(crate) build: BuildInfo,
     /// Seconds since process start, or `None` if the start instant was never stamped.
     pub(crate) uptime_seconds: Option<u64>,
-    /// Epoch seconds of process start — the BOOT EPOCH marker: `config_version` (and any
+    /// Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any
     /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
     /// to read a counter reset as "new epoch", never as "reverted".
     pub(crate) started_at: Option<u64>,
     pub(crate) topology: TopologyInfo,
-    /// Whether config-overlay persistence is enabled — i.e. the config is MUTABLE with a writable
+    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
     /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
     /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
     /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
     pub(crate) config_persistence: bool,
-    /// Monotonic config version — `0` at boot, +1 per API config apply. Drift-detection: re-read and
+    /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).
     pub(crate) config_version: u64,
 }
@@ -413,7 +413,7 @@ pub(crate) struct BuildInfo {
     pub(crate) auth_modules: Vec<&'static str>,
     /// Hook plugins baked into this binary (e.g. `["ranking"]`).
     pub(crate) hook_plugins: Vec<&'static str>,
-    /// The inline SWRR floor — ALWAYS `true` (compiled in unconditionally, non-removable).
+    /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
     pub(crate) weighted_floor: bool,
 }
 
@@ -428,7 +428,7 @@ pub(crate) struct TopologyInfo {
 
 /// A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
 /// models and their weights. LIVE per-member status (breaker state, available concurrency, latency
-/// EWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set
+/// EWMA, budget/rate headroom) is an additive follow-up; the field set
 /// only grows.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -445,7 +445,7 @@ pub(crate) struct PoolMemberView {
     pub(crate) weight: u32,
 }
 
-/// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard
+/// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`), the reliability/capacity dashboard
 /// data: each member's breaker state, concurrency headroom, in-flight
 /// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
 /// ranks on. No LLM content, no credentials.
@@ -458,7 +458,7 @@ pub(crate) struct PoolDetailView {
 
 /// One member's live status within a pool. The breaker signal is the release-exposed
 /// `usable`/`cooldown_remaining_seconds` pair (a lane in breaker cooldown reports `usable: false` with the
-/// seconds remaining) — the same summary `/stats` surfaces.
+/// seconds remaining), the same summary `/stats` surfaces.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PoolMemberStatusView {
@@ -468,7 +468,7 @@ pub(crate) struct PoolMemberStatusView {
     /// tripped breaker cools down or the lane is dead.
     pub(crate) usable: bool,
     /// Seconds until a tripped breaker's cooldown elapses; `0` when not cooling down. (`_seconds`
-    /// suffix — the one unit-suffix spelling across the surface, like `uptime_seconds`.)
+    /// suffix: the one unit-suffix spelling across the surface, like `uptime_seconds`.)
     pub(crate) cooldown_remaining_seconds: u64,
     /// Free concurrency slots on this lane right now (lane-global; permits are shared across pools).
     pub(crate) available_concurrency: usize,
@@ -482,7 +482,7 @@ pub(crate) struct PoolMemberStatusView {
     /// Whether the lane is hard-down/dead (distinct from a transiently-tripped breaker).
     pub(crate) dead: bool,
     /// MONOTONIC count of Closed→Open breaker trips on this lane. Breaker episodes are transient
-    /// and can open+close entirely between two polls — a consumer alerting on trips diffs this
+    /// and can open+close entirely between two polls, so a consumer alerting on trips diffs this
     /// count instead of trying to catch the live edge. Carried across config apply and
     /// restart with the rest of the learned health.
     pub(crate) trip_count: u64,
@@ -508,13 +508,13 @@ pub(crate) struct ProviderView {
     pub(crate) model_count: usize,
 }
 
-/// A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the
+/// A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the
 /// plugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a
-/// secret — INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see
+/// secret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see
 /// [`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is
 /// no `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the
 /// top-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and
-/// ATTACHED by bare name — at the reserved all-pools key `pools.hooks:`, which is what makes it
+/// ATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it
 /// global, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection
 /// axes (which callers, which pipeline stages). On THIS API the same hook is written with
 /// `global: true`; the wire and the config file are deliberately different surfaces. Live connection
@@ -534,7 +534,7 @@ pub(crate) struct HookView {
     pub(crate) priority: u16,
     /// TAP observation stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or `None` for a gate.
     pub(crate) at: Option<&'static str>,
-    /// Gate fallback on timeout/error — a CLOSED, unambiguous string union: one of the
+    /// Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
     /// fallback hook the chain continues through. Unambiguous by construction: the terminal words
     /// are ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in
@@ -542,7 +542,7 @@ pub(crate) struct HookView {
     pub(crate) on_error: String,
     /// Gate decision deadline in milliseconds.
     pub(crate) timeout_ms: u64,
-    /// The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values — the same
+    /// The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values, the same
     /// redacted projection [`NamedDefView::settings_keys`] carries, produced by the same helper.
     ///
     /// This used to be the bag itself, under a doc comment claiming hook settings are "never a
@@ -551,42 +551,42 @@ pub(crate) struct HookView {
     /// resolves it before every configure push), and `config::secret::resolve_settings` forwards a
     /// non-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and
     /// `GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where
-    /// they are writable — the config file and the config overlay.
+    /// they are writable: the config file and the config overlay.
     pub(crate) settings_keys: Vec<String>,
     /// Whether this hook fires on every request (globally wired).
     pub(crate) global: bool,
 }
 
-/// ONE definition of ONE 1.5.3 named-DEFINITION map — the read shape of the GENERIC named-map CRUD
+/// ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD
 /// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
 /// `tools:`/`agents:` when they land).
 ///
 /// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
 /// `{module, settings}` spine and differ only by optional kind-specific fields, which are
 /// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
-/// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling —
+/// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,
 /// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
 ///
-/// SECRETS ARE NEVER PROJECTED, by construction — and that claim covers the `settings:` bag too,
+/// SECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,
 /// which is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET
 /// REFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator
 /// legitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),
 /// so projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets
 /// through `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps
 /// the introspection the read surface exists for ("what is configured here?") with no field a value
-/// could ride out on — the same discipline `token_configured` already applies to the reference.
+/// could ride out on: the same discipline `token_configured` already applies to the reference.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedDefView {
-    /// The instance NAME — the map key, and the token every reference site uses.
+    /// The instance NAME: the map key, and the token every reference site uses.
     pub(crate) name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
     pub(crate) module: String,
-    /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values — the
+    /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
     /// never a place a VALUE can leak from: a settings value may be a credential (see the type doc),
     /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
-    /// values are readable only where they are writable — the config file and the config overlay.
+    /// values are readable only where they are writable: the config file and the config overlay.
     pub(crate) settings_keys: Vec<String>,
     /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
     /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
@@ -597,13 +597,13 @@ pub(crate) struct NamedDefView {
     /// `admin-tokens` operator credential). The reference itself is never projected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) token_configured: Option<bool>,
-    /// `identity-providers` ONLY: whether a `browser_login:` block is configured — the presence that
+    /// `identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) browser_login_configured: Option<bool>,
     /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
     /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
-    /// overlay) — the value is the parse error. Such an entry is dropped at every rebuild, so it is
+    /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
     /// NOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not
     /// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
     /// log line. Absent (and omitted from the body) for every live definition.
@@ -612,7 +612,7 @@ pub(crate) struct NamedDefView {
 }
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
-/// `GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config
+/// `GET /api/v1/admin/groups/{name}`): the limit-tree read surface. Projects the `groups:` config
 /// entry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`
 /// budget template for auto-provisioned children), never a secret. This is the READ shape; the
 /// WRITE verbs accept a `GroupCfg` verbatim (paste a config.yaml group block). Additive-only.
@@ -694,7 +694,7 @@ impl GroupView {
     }
 }
 
-/// `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
+/// `GET /groups/{name}/usage`: one group's DERIVED current-window usage, one row per
 /// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
 /// caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
 /// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
@@ -707,7 +707,7 @@ pub(crate) struct GroupUsageView {
     /// `false` = the group is FROZEN (`enabled: false`): every request through it rejects.
     pub(crate) enabled: bool,
     /// One row per enforcement bucket, in the group's resolved bucket order. Empty for a group
-    /// with only a `concurrent` limit (or none) — there is no windowed ledger to read.
+    /// with only a `concurrent` limit (or none); there is no windowed ledger to read.
     pub(crate) buckets: Vec<GroupBucketUsageView>,
     /// Epoch seconds the read was taken at (the windows below are current AS OF this instant).
     pub(crate) as_of: u64,
@@ -742,7 +742,7 @@ pub(crate) struct GroupBucketUsageView {
 
 /// The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
 /// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
-/// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+/// socket path or URL); the retired 1.4.x socket/webhook sidecar transports are gone.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookTransportView {
@@ -754,7 +754,7 @@ pub(crate) struct HookTransportView {
 }
 
 /// The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks
-/// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —
+/// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry;
 /// this is a plugin-LOAD status check, not a network reachability probe: it never opens a
 /// connection, and it cannot tell you whether a `kind: hook` plugin's own configured external
 /// endpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the
@@ -765,7 +765,7 @@ pub(crate) struct HookHealthView {
     pub(crate) name: String,
     pub(crate) transport: HookTransportView,
     /// `Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not
-    /// (wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's
+    /// (wrong kind, or not installed/loaded), always `Some`, never `None`, as of 1.5.0's
     /// in-process plugin model.
     pub(crate) reachable: Option<bool>,
     /// A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a
@@ -774,9 +774,9 @@ pub(crate) struct HookHealthView {
 }
 
 /// One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
-/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
+/// COMPILED-IN (baked into the binary, feature-gated, provably removable via `--no-default-features`)
 /// or a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed
-/// plugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
+/// plugin ABI; this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
 /// retired 1.4.x socket/webhook "external" transport is gone). `active` is `Some(true/false)`
 /// where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
 /// dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
@@ -785,19 +785,19 @@ pub(crate) struct HookHealthView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PluginView {
     pub(crate) name: String,
-    /// `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
+    /// `"auth"`, `"hooks"`, or `"store"`: the plugin TYPE (each a distinct engine contract).
     pub(crate) r#type: &'static str,
-    /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin — auth, hook, and store
+    /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin: auth, hook, and store
     /// kinds alike as of 1.5.0's signed plugin ABI).
     pub(crate) loader: &'static str,
     /// Whether the plugin is currently active, where tracked; `None` when activation is not summarized
     /// at this level.
     pub(crate) active: Option<bool>,
-    /// For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
+    /// For a dynamic-library plugin, its NAME (not a socket path or URL, the retired 1.4.x
     /// transport target). `None` for compiled-in.
     pub(crate) target: Option<String>,
-    /// The artifact FILENAME in `plugins.dir` — the `{file}` path segment `DELETE
-    /// /plugins/{file}` and `GET /plugins/{file}/schema` key off (E-003: a list row previously
+    /// The artifact FILENAME in `plugins.dir`: the `{file}` path segment `DELETE
+    /// /plugins/{file}` and `GET /plugins/{file}/schema` key off (a list row previously
     /// carried no field a client could feed straight back into either sibling endpoint; `target`
     /// is documented as the manifest NAME, not necessarily the on-disk filename, and is not a
     /// reliable substitute). `None` for compiled-in/external rows, which have no backing artifact
@@ -805,9 +805,9 @@ pub(crate) struct PluginView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) file: Option<String>,
     /// `true` iff `GET /plugins/{file}/schema` would resolve this row's `file` to a manifest that
-    /// declares `settings_schema` at all — i.e. iff `schema_url` below is non-null — so a plugin
-    /// catalog can render which rows are configurable in one list call instead of a fetch per row
-    /// (E-003). Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
+    /// declares `settings_schema` at all, i.e. iff `schema_url` below is non-null, so a plugin
+    /// catalog can render which rows are configurable in one list call instead of a fetch per row.
+    /// Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
     /// caller to null-check `schema_url` for the same fact. `false` for compiled-in/external rows
     /// (no manifest to carry a schema) and for a dynamic-library row whose manifest never set
     /// `settings_schema`. Additive.
@@ -825,7 +825,7 @@ pub(crate) struct PluginView {
     pub(crate) interface_version: Option<u32>,
     /// The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running
     /// `plugins.trust` posture: `"trusted"` (signed by an allowlisted publisher), `"unverified"`
-    /// (loaded but not verified — the posture permits it), or `"rejected"` (the `halt` posture would
+    /// (loaded but not verified, the posture permits it), or `"rejected"` (the `halt` posture would
     /// refuse it). `None` for compiled-in/external.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) trust: Option<&'static str>,
@@ -833,10 +833,10 @@ pub(crate) struct PluginView {
     /// can load (ABI handshake). `None` for compiled-in/external.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) valid: Option<bool>,
-    /// Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
+    /// Why a dynamic-library plugin did not validate (`valid: false`): a short, secret-free reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
-    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint — ALWAYS a
+    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint: ALWAYS a
     /// relative path under the admin origin
     /// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
     /// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
@@ -848,7 +848,7 @@ pub(crate) struct PluginView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) schema_url: Option<String>,
     /// A manifest that SET `settings_schema` but whose value fails to parse (carried onto the
-    /// list row too) — distinct from a manifest that never set the
+    /// list row too), distinct from a manifest that never set the
     /// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
     /// this case; the operator sees the row is degraded from the list alone, before ever following
     /// the URL.
@@ -891,7 +891,7 @@ impl PluginView {
 /// The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The
 /// engine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never
 /// trusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)
-/// into the plugins directory. `active` takes effect on the next store (re)load — a store change
+/// into the plugins directory. `active` takes effect on the next store (re)load; a store change
 /// applies on restart / `store.module` apply, not as a hot swap (design: store install is
 /// boot-time/config-apply). Additive-only; never a secret.
 #[derive(Debug, Clone, Serialize)]
@@ -942,7 +942,7 @@ pub(crate) struct PluginReloadView {
 /// The result of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`, 1.5.0
 /// rollback-friendly versioning): the operator deliberately pinned a plugin DOWN to a prior version and
 /// the engine hot-swapped to that artifact. The pin is persisted (survives restart) and the trust
-/// floor was lowered to EXACTLY the pinned version for THIS plugin — a lower artifact still cannot
+/// floor was lowered to EXACTLY the pinned version for THIS plugin; a lower artifact still cannot
 /// load, and an automatic/silent replay of an old artifact is still refused (only this explicit,
 /// audited action lowered the floor). Additive-only; never a secret.
 #[derive(Debug, Clone, Serialize)]
@@ -963,7 +963,7 @@ pub(crate) struct PluginRollbackView {
 }
 
 /// The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
-/// callers + the upstream-credential mode. Never a secret — module names and the mode are config
+/// callers + the upstream-credential mode. Never a secret: module names and the mode are config
 /// identifiers, not credentials. An empty `chain` is the open front door (admits every request).
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -1038,16 +1038,16 @@ pub(crate) fn decode_offset_cursor(cursor: &str) -> Option<usize> {
 #[path = "tests/cursor_tests.rs"]
 mod cursor_tests;
 
-/// The EFFECTIVE config snapshot (`GET /api/v1/admin/config`) — the running configuration as busbar
+/// The EFFECTIVE config snapshot (`GET /api/v1/admin/config`): the running configuration as busbar
 /// resolved it, for drift detection (compare against your desired config) and one-shot inspection.
 /// Composed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/
-/// provider topology, hook definitions, global-hook wiring) — so it carries NO secret: no client
+/// provider topology, hook definitions, global-hook wiring), so it carries NO secret: no client
 /// tokens, no provider keys, no hook payloads. Additive-only; the source-layer annotation (base vs
 /// overlay) lands with the config overlay substrate.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct EffectiveConfigView {
-    /// The monotonic config version at the time of this read (see `InfoView.config_version`) — so a
+    /// The monotonic config version at the time of this read (see `InfoView.config_version`), so a
     /// drift-detection read gets the config AND its version in one call.
     pub(crate) version: u64,
     pub(crate) auth: AuthView,
@@ -1056,7 +1056,7 @@ pub(crate) struct EffectiveConfigView {
     pub(crate) providers: Vec<ProviderView>,
     pub(crate) hooks: Vec<HookView>,
     /// Names fired on EVERY request: the hooks attached at the reserved all-pools key `pools.hooks:`
-    /// in `config.yaml` (the 1.5.3 replacement for the DELETED `global_hooks:` key — that key no
+    /// in `config.yaml` (the 1.5.3 replacement for the DELETED `global_hooks:` key; that key no
     /// longer parses), plus any hook this API declares with `global: true`. The response FIELD name
     /// stays `global_hooks`; only the config-file spelling changed.
     pub(crate) global_hooks: Vec<String>,
@@ -1106,15 +1106,15 @@ pub(crate) struct UsageView {
     #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
     pub(crate) currency: (),
     pub(crate) total: UsageBreakdown,
-    /// Per-(model, provider) aggregation — cost attribution by model (the FinOps unit).
+    /// Per-(model, provider) aggregation: cost attribution by model (the FinOps unit).
     pub(crate) by_model: Vec<ModelUsageView>,
     /// Per-key aggregation (same raw-split shape). CAPPED at the top 1000 rows by spend (the
-    /// FinOps-relevant ordering); `by_key_truncated` says the cap fired — never a silent cut.
+    /// FinOps-relevant ordering); `by_key_truncated` says the cap fired, never a silent cut.
     pub(crate) by_key: Vec<KeyUsageView>,
     /// True when `by_key` was truncated to the cap (a deployment with more active keys than the
     /// cap). `by_model` is never capped (bounded by the configured model fleet).
     pub(crate) by_key_truncated: bool,
-    /// The summed remainder BEYOND the `by_key` cap — present exactly when `by_key_truncated`, so
+    /// The summed remainder BEYOND the `by_key` cap, present exactly when `by_key_truncated`, so
     /// every unit of consumption is attributable at least to "others" (FinOps completeness:
     /// `total == sum(by_key) + others`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1129,7 +1129,7 @@ pub(crate) struct UsageWindow {
     pub(crate) end: u64,
 }
 
-/// The raw consumption counts + the derived spend estimate — the one shape shared by `total`,
+/// The raw consumption counts + the derived spend estimate: the one shape shared by `total`,
 /// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -1165,31 +1165,31 @@ pub(crate) struct ModelUsageView {
 pub(crate) struct KeyUsageView {
     pub(crate) id: String,
     /// The key's display name; `None` when the key was deleted after metering accumulated (history
-    /// outlives the key — the id still attributes it).
+    /// outlives the key; the id still attributes it).
     pub(crate) name: Option<String>,
     #[serde(flatten)]
     pub(crate) usage: UsageBreakdown,
 }
 
-/// The admin-plane auth read (`GET /api/v1/admin/admin-auth`) — which modules guard the ADMIN surface
+/// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
 /// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
 /// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
-/// the open (anonymous, full-authority) dev posture — `configured: false`. Never a secret.
+/// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct AdminAuthView {
     /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
     pub(crate) configured: bool,
-    /// The active admin-plane guard module names — the `admin_auth` chain verbatim (e.g.
+    /// The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.
     /// `["admin-tokens"]`), reported in order. Empty when the admin plane is open.
     pub(crate) modules: Vec<String>,
 }
 
-/// The result of `POST /api/v1/admin/config/validate` — a DRY-RUN: does a proposed config resolve +
+/// The result of `POST /api/v1/admin/config/validate`, a DRY-RUN: does a proposed config resolve +
 /// validate, WITHOUT applying anything. `ok` is the verdict; `errors` lists every structural/resolution
 /// failure at once (empty when `ok`). A well-formed request always returns 200 with this view (a valid
 /// request that describes an INVALID config is `ok: false`, not an HTTP error); only a MALFORMED request
-/// body is an `invalid_request`. Env-var interpolation is out of scope — this checks structure and
+/// body is an `invalid_request`. Env-var interpolation is out of scope; this checks structure and
 /// cross-reference resolution, not runtime secret presence.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]

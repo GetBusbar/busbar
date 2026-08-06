@@ -252,7 +252,7 @@ async fn patch_settings(
     .await
 }
 
-/// The `PATCH /api/v1/admin/<section>/{name}/settings` body — the whole replacement settings bag.
+/// The `PATCH /api/v1/admin/<section>/{name}/settings` body: the whole replacement settings bag.
 /// A sibling of the hooks surface's `PatchSettingsReq` (same shape, same semantics: `settings:` is
 /// REPLACED, not deep-merged, so the stored bag is always exactly what the caller sent).
 #[derive(serde::Deserialize)]
@@ -799,7 +799,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                 },
                 "put": {
                     "summary": format!(
-                        "Create or REPLACE one `{key}:` definition (upsert) — persisted to the \
+                        "Create or REPLACE one `{key}:` definition (upsert), persisted to the \
                          config overlay and live after an atomic rebuild-and-swap. A \
                          base-config-defined entry is 409 (edit config.yaml){}",
                         if section.has_trust_ceiling() {
@@ -821,7 +821,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                 },
                 "delete": {
                     "summary": format!(
-                        "Remove one `{key}:` definition — refused while another config section \
+                        "Remove one `{key}:` definition, refused while another config section \
                          still references it by bare name"
                     ),
                     "parameters": [name_param],

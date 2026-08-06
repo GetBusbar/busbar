@@ -3512,7 +3512,7 @@ fn test_synth_response_id_base62_is_unbiased() {
     );
 }
 
-/// Uniqueness burst (R18): a large run of synthesized ids must be collision-free in practice (each
+/// Uniqueness burst: a large run of synthesized ids must be collision-free in practice (each
 /// is ~95 bits). Mint a burst and assert every id is distinct and native-shaped.
 #[test]
 fn test_synth_response_id_uniqueness_burst() {

@@ -15,7 +15,7 @@ use serde::Serialize;
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
 /// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
-/// altered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite
+/// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
 /// the whole chain; prevention is shipping the log off-box to a SIEM).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -31,14 +31,14 @@ pub(crate) struct AuditEntry {
     /// Stable outcome token: `applied` (mutation committed) | `rejected` (validation/conflict, nothing
     /// changed).
     pub(crate) outcome: String,
-    /// WHO — the authenticated principal id that attempted the mutation (`admin` for the operator
+    /// WHO: the authenticated principal id that attempted the mutation (`admin` for the operator
     /// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
     /// explicit open admin posture). Attribution, never a credential.
     pub(crate) principal: String,
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
     pub(crate) prev_hash: String,
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the tamper-evidence digest.
+    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
     pub(crate) hash: String,
     /// TRUE only for entries THIS process appended via `record_by`. Seeded entries — from the file
     /// snapshot or from the durable store — are FALSE. This is the ONLY thing that distinguishes an

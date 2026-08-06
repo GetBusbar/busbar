@@ -2,7 +2,7 @@ use super::super::*;
 use super::*;
 
 impl HealthState {
-    /// Aggregate the per-cell [`breaker_verdict`](breaker_verdict) (the SINGLE R3 decoder)
+    /// Aggregate the per-cell [`breaker_verdict`](breaker_verdict) (the SINGLE decoder)
     /// across the cells production actually routes through — the SAME cell-selection rule as
     /// [`lane_usable_any_cell`](Self::lane_usable_any_cell): the per-pool cells if the lane has any,
     /// else the lane-default cell — into ONE lane-global verdict. "Best" wins so the aggregate matches
@@ -48,7 +48,7 @@ impl HealthState {
     /// [`lane_breaker_verdict`](Self::lane_breaker_verdict), then the SAME lane-global permit peek —
     /// so the `/stats` availability can never drift from the routing verdict. Side-effect-free.
     /// Breaker-first: an Open-and-at-capacity lane returns `BreakerOpen` (the orthogonal
-    /// `at_capacity`/`breaker_state` snapshot fields keep each axis independently legible — R9).
+    /// `at_capacity`/`breaker_state` snapshot fields keep each axis independently legible).
     // Retained as the direct (verdict-computing) entry point exercised by the store tests as the
     // canonical statement of the lane-global taxonomy; `snapshot` uses the `_from_verdict` arm to avoid
     // a second fold, so this has no non-test caller.
@@ -93,7 +93,7 @@ impl HealthState {
     /// [`lane_breaker_verdict`](Self::lane_breaker_verdict) so it shares the ONE decoder. A dead lane
     /// reports `Open { until: u64::MAX }` (matching `breaker_state_for`). An expired-Open cell maps to
     /// `Open` (its cooldown deadline is in the past) even though it would win a probe — the RAW FSM
-    /// state, so an operator sees `open` alongside `at_capacity` for the R9 wedge case.
+    /// state, so an operator sees `open` alongside `at_capacity` for the wedge case.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn lane_breaker_state(&self, lane: usize, now: u64) -> BreakerState {
         self.lane_breaker_state_from_verdict(lane, self.lane_breaker_verdict(lane, now), now)
@@ -221,7 +221,7 @@ impl LaneRuntime for HealthState {
     // (lane-global classify + aggregate breaker state live as inherent helpers above `snapshot`.)
 
     fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable> {
-        // R3: read `dead` and `budget` SEPARATELY (NOT the bool-collapsing `lane_admissible`) so a
+        // Read `dead` and `budget` SEPARATELY (NOT the bool-collapsing `lane_admissible`) so a
         // dead lane and a budget-exhausted lane get DISTINCT taxonomy variants.
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
@@ -259,14 +259,14 @@ impl LaneRuntime for HealthState {
             return Err(Unavailable::BudgetExhausted);
         }
         let cell = self.cell(pool, lane);
-        // R3: consume the SINGLE `breaker_verdict` decoder BEFORE the mutating CAS below, to decide
+        // Consume the SINGLE `breaker_verdict` decoder BEFORE the mutating CAS below, to decide
         // the failure taxonomy without re-deriving "is the breaker open".
         match breaker_verdict(cell.as_ref(), now) {
             BreakerVerdict::Open { until } => return Err(Unavailable::BreakerOpen { until }),
             BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
             BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
         }
-        // R9 fix: acquire the concurrency PERMIT before the breaker probe CAS. For a `ProbeWinnable`
+        // Acquire the concurrency PERMIT before the breaker probe CAS. For a `ProbeWinnable`
         // (expired-Open) cell that is ALSO at capacity, the old breaker-first order won the single-flight
         // recovery probe and then immediately reverted it when `try_acquire` failed — every attempt,
         // forever, so a tripped+saturated lane could never observe a real dispatch outcome and never
@@ -314,7 +314,7 @@ impl LaneRuntime for HealthState {
     }
 
     fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable> {
-        // Same lane-global gates as `try_admit` (SEPARATE reads, R3): the lane may have gone
+        // Same lane-global gates as `try_admit` (SEPARATE reads): the lane may have gone
         // dead/budget-exhausted while the caller was parked on the semaphore.
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
