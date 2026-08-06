@@ -1577,6 +1577,24 @@ mod tests {
     /// library unloads BEFORE the staged file is removed (the order Windows requires: a mapped
     /// DLL's file cannot be deleted).
     ///
+    /// Every `busbar-plugins-<pid>-*` staging directory currently in the temp dir. The prefix is
+    /// keyed on the process id, which every test in this binary shares, so this set is only
+    /// meaningful as a before/after DIFFERENCE, never as an absolute count.
+    fn staging_dirs_for_this_process() -> std::collections::BTreeSet<std::path::PathBuf> {
+        let prefix = format!("busbar-plugins-{}-", std::process::id());
+        std::fs::read_dir(std::env::temp_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(&prefix))
+            })
+            .map(|e| e.path())
+            .collect()
+    }
+
     /// Asserts on THIS load's own staged path, not a process-wide count of
     /// `busbar-plugins-<pid>-*` entries. The count was the wrong instrument twice over: FLAKY,
     /// because a concurrent test in this binary stages or releases files between the two samples
@@ -1590,6 +1608,9 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
+        // Snapshot before the load, so the memfd branch below can assert on what THIS load created
+        // rather than on a process-wide total that a concurrent test contributes to.
+        let before = staging_dirs_for_this_process();
         let staged: Option<std::path::PathBuf> = {
             let store = load_dyn_store_from_bytes(
                 &bytes,
@@ -1621,23 +1642,22 @@ mod tests {
                 p.display()
             ),
             // Linux memfd: zero disk files by construction, so there was never a path to remove.
+            // There is no path to assert on here, so this is the one branch that has to look at the
+            // directory. It compares against a snapshot taken BEFORE the load rather than asserting
+            // an absolute count of zero: the `busbar-plugins-<pid>-*` prefix is keyed on the PROCESS
+            // id, which every test in this binary shares, so an absolute count sees any staging
+            // directory a concurrently-running test happens to own and fails on it. That is the
+            // exact flake this test's own doc comment says the path-based assertion replaced -- but
+            // the replacement only reached the `Some(p)` branch, and this is the branch Linux CI
+            // always takes, so the fix landed everywhere except where it was needed. Observed
+            // failing this way on qa-gate run 31094255293 having passed twice on the same commit.
             None => {
-                let base = std::env::temp_dir();
-                let prefix = format!("busbar-plugins-{}-", std::process::id());
-                let dirs = std::fs::read_dir(&base)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|e| {
-                        e.file_name()
-                            .to_str()
-                            .is_some_and(|n| n.starts_with(&prefix))
-                    })
-                    .count();
-                assert_eq!(
-                    dirs, 0,
+                let after = staging_dirs_for_this_process();
+                let created: Vec<_> = after.difference(&before).collect();
+                assert!(
+                    created.is_empty(),
                     "a memfd load reports no staged path, so it must have created no staging \
-                     directory either"
+                     directory either, but these appeared: {created:?}"
                 );
             }
         }
