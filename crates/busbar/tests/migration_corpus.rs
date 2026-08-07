@@ -7,7 +7,7 @@
 //! every non-rc git tag, named `<tag>_<path>.yaml`. Not hand-written fixtures — the actual documents
 //! shipped to users, which is the only set guaranteed to contain the shapes people really have.
 //!
-//! WHY THIS EXISTS. terraform-provider-busbar issue #8: a config shape aged out, a downstream
+//! WHY THIS EXISTS. the terraform provider's acceptance harness: a config shape aged out, that consumer
 //! consumer broke, and nothing noticed until a daily poll went red. Worse, the first error masked a
 //! second one — validation stops at the first failure, so fixing the reported problem just moved the
 //! break somewhere else. A corpus catches both at once, before release, for every version at once.
