@@ -35,6 +35,7 @@ pub mod auth;
 pub mod export;
 pub mod fetch;
 pub mod hook;
+mod hostlog;
 pub mod registry;
 mod stage;
 pub mod tarball;
@@ -435,12 +436,25 @@ fn wire_up_raw(
     // precisely those lines.
     unsafe {
         if let Ok(set_sink) = lib.get::<busbar_plugin_abi::SetLogSinkFn>(symbol::SET_LOG_SINK) {
-            // The ctx identifies WHICH plugin is talking, since a bare fn pointer carries no captured
-            // state. Leaked on purpose: the sink must stay valid for the life of the plugin, and a
-            // loaded plugin lives until process exit (`close` runs at shutdown, after which nothing
-            // can call back). One small leak per plugin load, bounded by the plugin count.
-            let ctx = Box::into_raw(Box::new(display.clone())) as *mut c_void;
-            (*set_sink)(host_log_sink, ctx);
+            // The ctx identifies WHICH plugin is talking, since a bare fn pointer carries no
+            // captured state. It points at the INTERNED name, not a fresh `Box::into_raw` per load.
+            //
+            // That distinction is the whole point of `intern_name` (see its doc): this function runs
+            // per config reload, per `push_configure`, per `fetch_schema`, and per `fetch_status` —
+            // which fires on EVERY Prometheus `/metrics/hooks` scrape and every admin status poll.
+            // A per-load allocation here would therefore be per-CALL and unbounded, driven by
+            // routine external scraping: exactly the leak `intern_name` was written to close, and my
+            // first version of this reintroduced it directly below the comment warning about it.
+            // Interned, it is one allocation per DISTINCT plugin name for the life of the process.
+            //
+            // `&'static str` rather than `String`: the interned value already lives forever, so the
+            // sink reads it as a `str` with no ownership question.
+            // The host's own level, so the plugin filters BEFORE building a record. Sampled at load.
+            (*set_sink)(
+                hostlog::host_log_sink,
+                hostlog::intern_log_ctx(&display),
+                hostlog::host_max_level(),
+            );
         }
     }
 
@@ -918,74 +932,6 @@ impl std::fmt::Debug for DynSecret {
 /// Load a SECRET module from EXACTLY the verified library `bytes` (the TOCTOU-safe entrypoint;
 /// see [`load_store_from_bytes`] for the staging contract). `manifest_kind` is the trust-verified
 /// signed-manifest `kind`, cross-checked against the library's exported `busbar_plugin_kind()`.
-/// Test-visible tap on the records crossing the bridge.
-///
-/// The end-to-end assertion cannot go through `tracing` itself: interest is cached PER CALLSITE and
-/// GLOBALLY, and this binary's other tests load plugins with no subscriber installed, so the sink's
-/// callsite gets cached as uninteresting and a thread-local capturing subscriber then never sees the
-/// event. That is a property of the test harness, not of the bridge — instrumenting the loader
-/// showed the sink being invoked correctly on every load — so the record is tapped here instead,
-/// where the assertion is deterministic and tests exactly what matters: that the plugin's message
-/// crossed the ABI and arrived attributed to the right plugin.
-#[cfg(test)]
-pub(crate) mod log_tap {
-    use std::sync::Mutex;
-    pub(crate) static RECORDS: Mutex<Vec<(String, u32, String)>> = Mutex::new(Vec::new());
-}
-
-#[cfg(test)]
-fn record_for_test(name: &str, level: u32, text: &str) {
-    log_tap::RECORDS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((name.to_string(), level, text.to_string()));
-}
-
-/// The sink handed to every plugin that exports `busbar_set_log_sink`, re-emitting the plugin's
-/// record through THIS process's `tracing` subscriber so it lands wherever the operator's logs go.
-///
-/// `extern "C"`, NOT `"C-unwind"`: this is host code called from a differently-compiled object, and
-/// letting a panic unwind across that boundary is undefined behaviour. Everything is therefore
-/// wrapped in `catch_unwind`, and a panic here is swallowed — losing one log line is not a reason to
-/// take down a gateway.
-///
-/// # Safety
-/// Called by a plugin with the `ctx` this loader supplied and a UTF-8 `msg` of `msg_len` bytes,
-/// borrowed for the call. Nothing here retains either pointer.
-unsafe extern "C" fn host_log_sink(ctx: *mut c_void, level: u32, msg: *const u8, msg_len: usize) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if msg.is_null() || msg_len == 0 {
-            return;
-        }
-        // Bound what a single record can cost: a plugin handing over a huge length must not make the
-        // host allocate it, mirroring MAX_PLUGIN_RESPONSE_LEN's reasoning on the reply path.
-        const MAX_LOG_LEN: usize = 64 * 1024;
-        let len = msg_len.min(MAX_LOG_LEN);
-        let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
-        // LOSSY, never a hard error: a plugin that hands over malformed UTF-8 has a bug, but that is
-        // itself worth seeing rather than a reason to drop the record.
-        let text = String::from_utf8_lossy(bytes);
-        let name: &str = if ctx.is_null() {
-            "<unknown>"
-        } else {
-            unsafe { &*(ctx as *const String) }
-        };
-        #[cfg(test)]
-        record_for_test(name, level, &text);
-        match level {
-            busbar_plugin_abi::log_level::ERROR => {
-                tracing::error!(plugin = %name, "{text}")
-            }
-            busbar_plugin_abi::log_level::WARN => tracing::warn!(plugin = %name, "{text}"),
-            busbar_plugin_abi::log_level::DEBUG => tracing::debug!(plugin = %name, "{text}"),
-            // INFO, and anything a newer plugin invents: clamped to info rather than dropped. Losing
-            // a record because its level is unrecognized would be the worst possible failure mode for
-            // a channel that exists to stop losing records.
-            _ => tracing::info!(plugin = %name, "{text}"),
-        }
-    }));
-}
-
 pub fn load_secret_from_bytes(
     bytes: &[u8],
     cfg_json: &str,

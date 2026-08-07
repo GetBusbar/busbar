@@ -812,16 +812,38 @@ mod tests {
         let Some(_) = hook_plugin_path() else {
             return;
         };
-        let before = crate::log_tap::RECORDS
+        let before = crate::hostlog::log_tap::RECORDS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len();
 
+        // A host subscriber has to be installed for this, and that is the POINT rather than test
+        // scaffolding: the plugin is handed the host's level and filters on its own side, so with no
+        // host subscriber the level is OFF and NOTHING should cross. Setting one to WARN is what
+        // makes the plugin's `warn!` eligible while leaving its `debug!`/`trace!` filtered.
+        struct Quiet;
+        impl tracing::Subscriber for Quiet {
+            fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+                *m.level() <= tracing::Level::WARN
+            }
+            fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+                Some(tracing::level_filters::LevelFilter::WARN)
+            }
+            fn new_span(&self, _a: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _s: &tracing::span::Id, _v: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _s: &tracing::span::Id, _f: &tracing::span::Id) {}
+            fn event(&self, _e: &tracing::Event<'_>) {}
+            fn enter(&self, _s: &tracing::span::Id) {}
+            fn exit(&self, _s: &tracing::span::Id) {}
+        }
+
         // The test plugin logs through the bridge from its CONSTRUCTOR, which is the case that
         // matters: installing the sink after `open` would drop exactly those lines.
-        let _policy = load("{}");
+        let _policy = tracing::subscriber::with_default(Quiet, || load("{}"));
 
-        let records = crate::log_tap::RECORDS
+        let records = crate::hostlog::log_tap::RECORDS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
@@ -868,6 +890,57 @@ mod tests {
             traced[0].1,
             busbar_plugin_abi::log_level::WARN,
             "the tracing level must map across"
+        );
+
+        // The plugin also emits at DEBUG and TRACE. Under this binary's default (no host subscriber
+        // installed, so the host level is OFF/quiet) neither may cross: the plugin is told the
+        // host's level and filters BEFORE building a record. Letting them through would make every
+        // `trace!` in a plugin's whole dependency tree allocate and cross the FFI call on the
+        // request path, only for the host to drop it.
+        let noisy: Vec<_> = records
+            .iter()
+            .skip(before)
+            .filter(|(_, lvl, _)| {
+                *lvl == busbar_plugin_abi::log_level::DEBUG
+                    || *lvl == busbar_plugin_abi::log_level::TRACE
+            })
+            .collect();
+        assert!(
+            noisy.is_empty(),
+            "debug/trace records crossed the boundary despite a quiet host: {noisy:?}"
+        );
+    }
+
+    /// The sink's `ctx` must be interned per DISTINCT plugin name, not allocated per LOAD.
+    ///
+    /// `wire_up_raw` runs per config reload, per `push_configure`, per `fetch_schema` and per
+    /// `fetch_status` — the last of which fires on every Prometheus scrape and every admin status
+    /// poll. A per-load allocation is therefore per-CALL and unbounded, driven by routine external
+    /// scraping: the exact leak `intern_name` exists to close, and the first version of the log
+    /// bridge reintroduced it. Loading the same plugin repeatedly must hand out ONE pointer.
+    #[test]
+    fn the_log_ctx_is_interned_not_allocated_per_load() {
+        let Some(_) = hook_plugin_path() else {
+            return;
+        };
+        let before = crate::hostlog::log_tap::RECORDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        for _ in 0..5 {
+            let _ = load("{}");
+        }
+        let names: Vec<String> = crate::hostlog::log_tap::RECORDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .skip(before)
+            .map(|(n, _, _)| n.clone())
+            .collect();
+        assert!(!names.is_empty(), "the loads should have produced records");
+        assert!(
+            names.iter().all(|n| n == "test-hook"),
+            "every load must report the same interned name: {names:?}"
         );
     }
 
