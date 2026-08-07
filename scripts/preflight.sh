@@ -59,6 +59,21 @@ else
   echo "    covered locally; verify it green before tagging."
 fi
 
+# ── Local artifact audit (optional, machine-local) ──
+# A developer machine carries things a published tree must not: credential material, personal paths,
+# editor leftovers. Point BUSBAR_LOCAL_AUDIT at an executable that audits for them and it runs here.
+# Unset or missing = skipped with a note, so an ordinary clone is never blocked by a tool it has no
+# reason to have.
+echo; echo "━━━ local dev artifacts"
+_scrub="${BUSBAR_LOCAL_AUDIT:-}"
+if [ -x "$_scrub" ]; then
+  if "$_scrub" . >/tmp/preflight-scrub.log 2>&1; then echo "  ✓"; else
+    echo "  ✗ FAILED:"; grep -vE '^==|^clean' /tmp/preflight-scrub.log | head -8; fail=1
+  fi
+else
+  echo "  ⚠ BUSBAR_LOCAL_AUDIT not set or not executable — skipped"
+fi
+
 # ── Job 3: windows build · test (best-effort locally) ──
 # Catches cfg(unix)-only items left dead on Windows (e.g. a const used only inside #[cfg(unix)]).
 echo; echo "━━━ windows check (x86_64-pc-windows-msvc)"

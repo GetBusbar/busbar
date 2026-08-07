@@ -11,7 +11,7 @@ ones nobody thought of — a field that quietly aged out three releases ago and 
 config somewhere.
 
 This corpus exists because of
-[terraform-provider-busbar#8](https://github.com/GetBusbar/terraform-provider-busbar/issues/8): an
+the terraform provider's acceptance harness: an
 acceptance harness carried a config shape that had been retired, the gateway refused to boot, and
 nothing noticed until a daily poll went red. It had two independent breaks, and the first masked
 the second — config validation stops at the first error, so fixing the reported problem only moved

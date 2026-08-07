@@ -205,8 +205,8 @@ jobs:
   # Every config busbar ever SHIPPED must still migrate to the current shape. The corpus is the real
   # `config.yaml` (and companion `providers.yaml`) from every non-rc tag, so this asks the only
   # question that matters to an operator upgrading: does the migrator still work for the version I
-  # am actually on? Motivated by terraform-provider-busbar#8, where a shape aged out, broke a
-  # downstream consumer, and nothing noticed until a daily poll went red.
+  # am actually on? Motivated by the terraform provider, where a config shape aged out, broke
+  # that consumer, and nothing noticed until a daily poll went red.
   #
   # Needs full history: the corpus is checked in, but `refresh.sh` reads tags, and a shallow clone
   # would make a regenerated corpus silently smaller rather than failing loudly.
@@ -277,7 +277,7 @@ jobs:
   # discovers ZERO files is a HARD FAILURE, so neither a broken rule table nor a mistyped path can
   # read as "clean". The same script runs over every PLUGIN repo via the plugin-ci reusable workflow.
   public-hygiene:
-    name: public-hygiene gate (nothing public may describe how it was built)
+    name: docs hygiene (public prose describes the software, not the process)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
