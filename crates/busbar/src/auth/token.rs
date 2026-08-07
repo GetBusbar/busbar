@@ -923,13 +923,25 @@ async fn execute_hop(
 
     let mut form: Vec<(String, String)> = hop.form.clone();
     if let Some(field) = hop.secret_form_field.as_deref() {
-        if let Some(secret) = client_secret {
+        match client_secret {
             // Overwrite the placeholder value the plugin wrote for the secret key with the real value.
-            if let Some(slot) = form.iter_mut().find(|(k, _)| k == field) {
-                slot.1 = secret.to_string();
-            } else {
-                form.push((field.to_string(), secret.to_string()));
+            Some(secret) => {
+                if let Some(slot) = form.iter_mut().find(|(k, _)| k == field) {
+                    slot.1 = secret.to_string();
+                } else {
+                    form.push((field.to_string(), secret.to_string()));
+                }
             }
+            // NO secret configured: DROP the placeholder rather than sending it empty.
+            //
+            // A plugin writes the key with an empty value and lets the core fill it in, so leaving
+            // it alone here puts `client_secret=` on the wire. An empty secret is NOT the same as an
+            // absent one: for a PUBLIC client (the shape with no secret at all) the parameter should
+            // simply not be there, and an IdP is entitled to read an empty string as a WRONG secret
+            // and answer `invalid_client` rather than as "this client is public". Removing it makes
+            // the request the correct shape for the configuration the operator actually has, and
+            // cannot affect the confidential path, which takes the arm above.
+            None => form.retain(|(k, _)| k != field),
         }
     }
     let method =

@@ -1430,3 +1430,57 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
         rt.block_on(async { t.await.ok() });
     }
 }
+
+/// A PUBLIC client must not send `client_secret=` at all — an empty value is not an absent one.
+///
+/// A plugin writes the secret KEY with an empty placeholder and lets the core inject the VALUE, so
+/// when no secret is configured the placeholder used to survive and `client_secret=` went on the
+/// wire. That is the wrong request shape for a public client, and an IdP is entitled to read an
+/// empty string as a WRONG secret and answer `invalid_client` rather than as "this client is
+/// public". The confidential path is asserted alongside it, so this cannot be satisfied by dropping
+/// the field in both cases.
+#[tokio::test]
+async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_confidential_one() {
+    let (url, mock) = mock_echo_endpoint().await;
+    let allowed = allowed_hosts_for(&url);
+    let hop = LoginHop {
+        method: "POST".into(),
+        url: url.clone(),
+        form: vec![
+            ("grant_type".into(), "authorization_code".into()),
+            ("client_secret".into(), String::new()),
+        ],
+        secret_form_field: Some("client_secret".into()),
+        headers: vec![],
+    };
+
+    // PUBLIC client: no secret configured.
+    let (status, body) = execute_hop(hop_client(), &hop, None, &allowed)
+        .await
+        .expect("hop runs");
+    assert_eq!(status, 200);
+    assert!(
+        !body.contains("client_secret"),
+        "a public client must omit the parameter entirely, got body: {body}"
+    );
+    assert!(
+        body.contains("grant_type=authorization_code"),
+        "the rest of the form must survive: {body}"
+    );
+
+    // CONFIDENTIAL client: the placeholder is replaced by the real value, not duplicated.
+    let (status, body) = execute_hop(hop_client(), &hop, Some("s3cr3t"), &allowed)
+        .await
+        .expect("hop runs");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("client_secret=s3cr3t"),
+        "the core must inject the real secret: {body}"
+    );
+    assert_eq!(
+        body.matches("client_secret").count(),
+        1,
+        "the secret key must appear exactly once, not appended alongside the placeholder: {body}"
+    );
+    mock.abort();
+}
