@@ -729,7 +729,25 @@ pub(crate) async fn push_configure(
 /// CALLER, not the work. A timed-out `spawn_blocking` thread is abandoned (bounded at one per hook
 /// by the scrape's `InFlight` claim) — the alternative is a control-plane request that never returns
 /// and a `/metrics/hooks` slot that is never freed for the life of the process.
+#[cfg(not(test))]
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
+
+/// The same bound, relaxed FOR THE TEST BINARY ONLY.
+///
+/// 5s is the right production number: staging a cdylib, `dlopen`ing it and running its constructor
+/// is milliseconds on a machine doing normal work. But the test binary runs ~2900 tests in parallel
+/// on every `cargo test`, and fifteen of them each do that same staging and dlopen while the rest
+/// saturate the CPU. The deadline then elapses for reasons that say nothing about the code, and the
+/// caller reports "hook plugin unresolvable" — observed as `dlopen_configure_acks_exact_version` and
+/// `dlopen_status_and_schema_reads` failing roughly one run in three under `--workspace`, while both
+/// pass in isolation in under two seconds.
+///
+/// Raising it under `cfg(test)` keeps the PRODUCTION guarantee exactly as it was (that constant is
+/// what ships) while removing a false failure from the suite. The alternative — relaxing the real
+/// deadline — would weaken a bound that protects a control-plane request from hanging forever, to
+/// fix a problem that only exists because the test harness oversubscribes the machine.
+#[cfg(test)]
+const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = 60_000;
 
 /// Run a blocking closure with a deadline, collapsing "ran out of time" and "panicked" into the same
 /// `None` the caller already treats as "unresolvable" — but LOGGING each distinctly first, so a
