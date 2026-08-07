@@ -64,7 +64,38 @@ fn hook_cdylib() -> Option<PathBuf> {
 /// declared manifest `needs`. `None` when the cdylib is not built (the caller skips). Uses the
 /// unsigned + `allow_unsigned` path (the test can't sign with the embedded first-party key), which
 /// still exercises the full scan/trust/load pipeline.
+/// Serialises the dlopen-backed hook tests.
+///
+/// Resolving a hook transport stages a copy of the cdylib to disk, `dlopen`s it and runs its
+/// constructor, all under `TRANSPORT_RESOLVE_TIMEOUT_MS` (5s). That deadline is a deliberate
+/// PRODUCTION value and correct: the work is milliseconds on any sane machine. But fifteen of these
+/// tests run concurrently inside a full `cargo test --workspace`, each doing that same staging and
+/// dlopen, and on an oversubscribed machine the 5s can genuinely elapse — the caller then reports
+/// "hook plugin unresolvable" and the test fails for a reason that says nothing about the code.
+///
+/// Observed as an intermittent failure of `dlopen_configure_acks_exact_version` and
+/// `dlopen_status_and_schema_reads`: green in isolation and single-threaded, red roughly one run in
+/// three under `--workspace`. Serialising the tests fixes the oversubscription, which is a
+/// TEST-HARNESS problem, rather than loosening a deadline that protects a real control-plane path.
+///
+/// Held only for the STAGING step inside `test_env_needs`, never across an await: that is the part
+/// that competes for disk and CPU, and it is what the callers (sync and async alike) all share. A
+/// plain `std` mutex is therefore correct and works for both, where a guard spanning an await would
+/// not be.
+pub(super) static DLOPEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Held for the WHOLE body of every `dlopen_*` test, which the staging lock above cannot do.
+///
+/// The expensive, deadline-bound part is not staging: it is `gate_transport_named` doing the real
+/// `dlopen` and running the plugin constructor, inside `offload_bounded`'s 5s budget, during the
+/// test body. Fifteen of those racing each other is what actually elapses the deadline. Async
+/// because the guard spans awaits.
+pub(super) static DLOPEN_BODY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<HookEnv> {
+    // Poison-tolerant: a panicking test elsewhere must not cascade into every other dlopen test
+    // reporting a lock error instead of its own result.
+    let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let lib = std::fs::read(hook_cdylib()?).expect("read hook cdylib");
     let dir = crate::tests::tmp_plugin_dir(&format!("hook-env-{alias}"));
     let mut m = crate::tests::plugin_manifest("busbar-hook-test-plugin", alias, "acme");
@@ -1469,6 +1500,7 @@ fn dctx() -> RoutingContext<'static> {
 /// `wire::normalize` (unknown idxs dropped); an empty order abstains.
 #[tokio::test]
 async fn dlopen_decide_order_and_abstain() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1500,6 +1532,7 @@ async fn dlopen_decide_order_and_abstain() {
 /// surfaces as a `RoutingDecision::Reject` through the REAL fail-closed normalizer (status/message).
 #[tokio::test]
 async fn dlopen_decide_reject_from_opt_in_prompt() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1537,6 +1570,7 @@ async fn dlopen_decide_reject_from_opt_in_prompt() {
 /// screen token — reject > rewrite precedence, through the REAL `wire::transform_outcome`.
 #[tokio::test]
 async fn dlopen_transform_rewrite_and_reject() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     use busbar_api::TransformOutcome;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
@@ -1565,6 +1599,7 @@ async fn dlopen_transform_rewrite_and_reject() {
 /// a seam stubbed to a no-op would have passed it just as happily as the real one.
 #[tokio::test]
 async fn dlopen_notify_is_fire_and_forget() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1615,6 +1650,7 @@ async fn dlopen_notify_is_fire_and_forget() {
 /// schema envelope (via `fetch_schema`, single-nest extracted), using the REAL projectors.
 #[tokio::test]
 async fn dlopen_status_and_schema_reads() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1653,6 +1689,7 @@ async fn dlopen_status_and_schema_reads() {
 /// (A wrong-version ack rejecting the commit is covered at the DlopenPolicy configure unit level.)
 #[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1668,6 +1705,7 @@ async fn dlopen_configure_acks_exact_version() {
 /// `reject` terminal. Ported from the socket on_error-chain test onto the dlopen seam.
 #[tokio::test]
 async fn dlopen_on_error_chain_link_is_live_plugin() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1713,6 +1751,7 @@ async fn dlopen_on_error_chain_link_is_live_plugin() {
 /// reject on prompt content it never received.
 #[tokio::test]
 async fn dlopen_prompt_no_grant_withholds_content() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1758,6 +1797,7 @@ async fn dlopen_prompt_no_grant_withholds_content() {
 /// anything outside 400..=499 to 403 — a hook cannot mint a success/redirect/5xx through the ABI.
 #[tokio::test]
 async fn dlopen_decide_reject_status_is_clamped() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1798,6 +1838,7 @@ async fn dlopen_decide_reject_status_is_clamped() {
 /// EMPTY tag set (resolved downstream by `on_empty`, never allow-all).
 #[tokio::test]
 async fn dlopen_decide_restrict_and_fail_closed() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1845,6 +1886,7 @@ async fn dlopen_decide_restrict_and_fail_closed() {
 /// request can never have it routed because a detail was malformed.
 #[tokio::test]
 async fn dlopen_decide_raw_reply_is_fail_closed() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1901,6 +1943,7 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
 /// This is the identity analogue of the prompt opt-in delivery test.
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     use busbar_plugin_sign::{HookNeeds, NeedLevel};
     let Some(env) = test_env_needs(
         "user-hook",
@@ -1941,6 +1984,7 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
 /// plugin never stalls the runtime.
 #[tokio::test]
 async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1968,6 +2012,7 @@ async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
 /// "doesn't speak it" — `fetch_status`/`fetch_schema` return `None`, never affecting a request.
 #[tokio::test]
 async fn dlopen_empty_management_reads_are_fail_open_none() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1992,6 +2037,7 @@ async fn dlopen_empty_management_reads_are_fail_open_none() {
 /// settings PATCH would not commit — the exact-version ack rule holds over the ABI.
 #[tokio::test]
 async fn dlopen_configure_nack_does_not_commit() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
