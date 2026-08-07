@@ -783,6 +783,13 @@ impl AuthCfg {
 }
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
+/// The config shape `--migrate-config` targets, for anything that needs to NAME it in output.
+///
+/// Derived from the crate version rather than written down, because the previous hardcoded "1.5.0"
+/// in the migrator's banner was still claiming 1.5.0 three releases after the target moved. A
+/// version string a human has to remember to bump is a version string that goes stale.
+pub(crate) const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub(crate) const KEYS_MODULE: &str = "keys";
 /// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
 pub(crate) const ADMIN_TOKENS_MODULE: &str = "admin-tokens";

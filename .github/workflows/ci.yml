@@ -202,6 +202,41 @@ jobs:
   # (2) ADDITIVE-ONLY — the committed baseline (read from a git ref, NEVER the working tree, so a
   # snapshot refresh cannot launder a break) vs the fresh render, classified: new optional field / new
   # section / enum-append = OK; field removed/retyped, newly-required, enum-drop = FAIL naming the field.
+  # Every config busbar ever SHIPPED must still migrate to the current shape. The corpus is the real
+  # `config.yaml` (and companion `providers.yaml`) from every non-rc tag, so this asks the only
+  # question that matters to an operator upgrading: does the migrator still work for the version I
+  # am actually on? Motivated by terraform-provider-busbar#8, where a shape aged out, broke a
+  # downstream consumer, and nothing noticed until a daily poll went red.
+  #
+  # Needs full history: the corpus is checked in, but `refresh.sh` reads tags, and a shallow clone
+  # would make a regenerated corpus silently smaller rather than failing loudly.
+  migration-corpus:
+    name: migration corpus (every shipped config still migrates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Corpus is present and covers the tags
+        run: |
+          set -euo pipefail
+          n=$(find tests/migration-corpus/from-tags -name '*.yaml' | wc -l)
+          tags=$(git tag | grep -vcE 'rc' || true)
+          echo "corpus: $n config(s) across $tags non-rc tag(s)"
+          # A corpus that silently shrank is the failure mode this whole job exists to prevent, so
+          # an empty or truncated one fails HERE with a clear message rather than passing a test
+          # that iterated over nothing.
+          if [ "$n" -lt 20 ]; then
+            echo "::error::migration corpus has only $n config(s); regenerate with tests/migration-corpus/refresh.sh"
+            exit 1
+          fi
+      - name: Every shipped config migrates to a valid current config
+        run: cargo test -p busbar --test migration_corpus --locked -- --nocapture
+
   config-stability:
     name: config-stability gate (frozen grammar · additive-only)
     runs-on: ubuntu-latest

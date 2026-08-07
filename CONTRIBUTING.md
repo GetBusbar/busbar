@@ -3,6 +3,17 @@
 Thanks for your interest in improving Busbar. This document covers how to build,
 test, and submit changes.
 
+
+## Cutting a release: refresh the migration corpus
+
+After tagging, run `tests/migration-corpus/refresh.sh` so the new release's `config.yaml` joins the
+corpus. `crates/busbar/tests/migration_corpus.rs` then asserts, on every CI run, that a config from
+that version still migrates to whatever the current shape is.
+
+The point is that the guarantee grows automatically: an operator on any released version can run
+`busbar --migrate-config` and get something that boots. See
+`tests/migration-corpus/README.md` for why it holds real shipped files rather than fixtures.
+
 ## Ground rules
 
 - Be respectful and constructive in all project spaces.

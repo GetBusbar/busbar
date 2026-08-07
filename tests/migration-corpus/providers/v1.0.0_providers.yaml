@@ -1,0 +1,299 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Matthew Jackson
+#
+# Vetted provider catalog for busbar.
+#
+# Each entry maps a provider NAME to its wire `protocol`, `base_url`, and an optional `error_map`
+# (provider-specific JSON error code -> canonical disposition: billing | rate_limit). Operators
+# deploy by referencing a provider name in config.yaml and supplying its key via an env var.
+#
+# busbar's thesis is "protocols, not providers": it implements a small set of wire protocols
+# (anthropic, openai, gemini, bedrock, responses, cohere) losslessly, and any provider speaking one of
+# those protocols is just a catalog entry here — no new code. A client speaking any protocol can
+# target any provider; busbar translates through its superset IR when they differ.
+#
+# Auth is a per-protocol seam, not a single scheme: most providers use `Authorization: Bearer <key>`,
+# gemini uses the `x-goog-api-key` header, and bedrock signs each request with AWS SigV4 (see below).
+# Future enterprise backends (Azure OpenAI, Google Vertex AI) plug into this same seam as auth
+# adapters — see docs/roadmap.md. HTTP-status errors (429/5xx/401/...) are classified by the circuit
+# breaker without an error_map; error_map is only for provider-specific JSON codes.
+
+# ── Anthropic protocol (/v1/messages) ───────────────────────────────────────────────────────────
+anthropic:
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  error_map: {}
+
+# z.ai exposes two surfaces. `z.ai` is the Anthropic-compatible coding-agent endpoint
+# (/api/anthropic + /v1/messages). `zai-api` (below, in the OpenAI section) is the general
+# pay-as-you-go API (OpenAI-compatible, version in the base path). Pick the one your key targets.
+z.ai:
+  protocol: anthropic
+  base_url: https://api.z.ai/api/anthropic
+  error_map:
+    "1113": billing
+    "1302": rate_limit
+
+# ── OpenAI Chat Completions protocol (/v1/chat/completions) ──────────────────────────────────────
+# Any provider exposing an OpenAI-compatible chat-completions endpoint. The `base_url` is composed
+# with `/v1/chat/completions`; the entries below place each provider's prefix accordingly.
+openai:
+  protocol: openai
+  base_url: https://api.openai.com
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+groq:
+  protocol: openai
+  base_url: https://api.groq.com/openai
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+# z.ai general API (pay-as-you-go), OpenAI-compatible. The version lives in the base path
+# (/api/paas/v4) and the endpoint is <base>/chat/completions, so the appended path is overridden.
+zai-api:
+  protocol: openai
+  base_url: https://api.z.ai/api/paas/v4
+  path: /chat/completions
+  error_map:
+    "1113": billing
+    "1302": rate_limit
+
+together:
+  protocol: openai
+  base_url: https://api.together.xyz
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+fireworks:
+  protocol: openai
+  base_url: https://api.fireworks.ai/inference
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+deepseek:
+  protocol: openai
+  base_url: https://api.deepseek.com
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+mistral:
+  protocol: openai
+  base_url: https://api.mistral.ai
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+xai:
+  protocol: openai
+  base_url: https://api.x.ai
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+openrouter:
+  protocol: openai
+  base_url: https://openrouter.ai/api
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+cerebras:
+  protocol: openai
+  base_url: https://api.cerebras.ai
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+deepinfra:
+  protocol: openai
+  # base_url embeds the API version (/v1/openai) and serves /chat/completions directly, so override
+  # the appended path to avoid a doubled /v1.
+  base_url: https://api.deepinfra.com/v1/openai
+  path: /chat/completions
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+moonshot:
+  protocol: openai
+  base_url: https://api.moonshot.ai
+  error_map:
+    rate_limit_exceeded: rate_limit
+
+# Additional OpenAI-compatible providers (base_urls verified against provider docs). Most signal
+# errors via HTTP status (classified by the breaker), so error_map is empty; add billing/rate
+# codes per provider only when documented. `path` overrides are set where the version lives in the
+# base path and the endpoint is <base>/chat/completions.
+meta-llama:
+  protocol: openai
+  base_url: https://api.llama.com/compat
+  error_map: {}
+
+nvidia-nim:
+  protocol: openai
+  base_url: https://integrate.api.nvidia.com
+  error_map: {}
+
+sambanova:
+  protocol: openai
+  base_url: https://api.sambanova.ai
+  error_map: {}
+
+hyperbolic:
+  protocol: openai
+  base_url: https://api.hyperbolic.xyz
+  error_map: {}
+
+novita:
+  protocol: openai
+  base_url: https://api.novita.ai/v3/openai
+  path: /chat/completions
+  error_map: {}
+
+nebius:
+  protocol: openai
+  base_url: https://api.studio.nebius.ai
+  error_map: {}
+
+lambda:
+  protocol: openai
+  base_url: https://api.lambda.ai
+  error_map: {}
+
+featherless:
+  protocol: openai
+  base_url: https://api.featherless.ai
+  error_map: {}
+
+friendliai:
+  protocol: openai
+  base_url: https://api.friendli.ai/serverless
+  error_map: {}
+
+scaleway:
+  protocol: openai
+  base_url: https://api.scaleway.ai
+  error_map: {}
+
+ovhcloud:
+  protocol: openai
+  base_url: https://oai.endpoints.kepler.ai.cloud.ovh.net
+  error_map: {}
+
+nscale:
+  protocol: openai
+  base_url: https://inference.api.nscale.com
+  error_map: {}
+
+gmi:
+  protocol: openai
+  base_url: https://api.gmi-serving.com
+  error_map: {}
+
+baseten:
+  protocol: openai
+  base_url: https://inference.baseten.co
+  error_map: {}
+
+chutes:
+  protocol: openai
+  base_url: https://llm.chutes.ai
+  error_map: {}
+
+# Alibaba DashScope (Qwen) international host; the version lives in /compatible-mode/v1 so the
+# default /v1/chat/completions composes correctly.
+dashscope:
+  protocol: openai
+  base_url: https://dashscope-intl.aliyuncs.com/compatible-mode
+  error_map: {}
+
+minimax:
+  protocol: openai
+  base_url: https://api.minimax.io
+  error_map: {}
+
+sarvam:
+  protocol: openai
+  base_url: https://api.sarvam.ai
+  error_map: {}
+
+# Multi-model aggregators exposing one OpenAI-compatible chat-completions endpoint.
+aimlapi:
+  protocol: openai
+  base_url: https://api.aimlapi.com
+  error_map: {}
+
+cometapi:
+  protocol: openai
+  base_url: https://api.cometapi.com
+  error_map: {}
+
+nano-gpt:
+  protocol: openai
+  base_url: https://nano-gpt.com/api
+  error_map: {}
+
+publicai:
+  protocol: openai
+  base_url: https://platform.publicai.co
+  error_map: {}
+
+synthetic:
+  protocol: openai
+  base_url: https://api.synthetic.new/openai
+  error_map: {}
+
+wandb:
+  protocol: openai
+  base_url: https://api.inference.wandb.ai
+  error_map: {}
+
+# Azure OpenAI is the OpenAI chat-completions protocol behind a different auth shape: the `api-key`
+# header (not bearer), with the API version and deployment in the path. Its host and deployment are
+# per-resource, so it is not shipped as a live entry — copy this template into your config.yaml
+# providers map and fill in your values:
+#
+#   azure:
+#     protocol: openai
+#     base_url: https://YOUR-RESOURCE.openai.azure.com
+#     auth: api-key                                  # send `api-key: <key>` instead of bearer
+#     path: /openai/deployments/YOUR-DEPLOYMENT/chat/completions?api-version=2024-06-01
+#     error_map: {}
+#     api_key_env: AZURE_OPENAI_KEY
+
+# ── OpenAI Responses protocol (/v1/responses) ────────────────────────────────────────────────────
+# The newer stateful OpenAI surface, distinct from chat completions. Bearer auth + a fixed path.
+responses:
+  protocol: responses
+  base_url: https://api.openai.com
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+# ── Google Gemini protocol (generateContent) ─────────────────────────────────────────────────────
+# The path embeds the model and auth uses x-goog-api-key, both handled by the gemini protocol.
+gemini:
+  protocol: gemini
+  base_url: https://generativelanguage.googleapis.com
+  error_map:
+    RESOURCE_EXHAUSTED: rate_limit
+
+# ── AWS Bedrock protocol (Converse / ConverseStream) ─────────────────────────────────────────────
+# Auth is native AWS SigV4: set this provider's api_key_env to the AWS credentials as
+# `ACCESS_KEY_ID:SECRET_ACCESS_KEY` or `ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN`. The region is
+# parsed from the base_url host (`bedrock-runtime.<region>.amazonaws.com`) — set it to your region.
+# Streaming requests use ConverseStream; busbar decodes the binary
+# application/vnd.amazon.eventstream frames and translates them to the caller's protocol.
+bedrock:
+  protocol: bedrock
+  base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+  error_map:
+    ThrottlingException: rate_limit
+    ServiceQuotaExceededException: billing
+
+# ── Cohere v2 Chat protocol (/v2/chat) ───────────────────────────────────────────────────────────
+# Cohere's Command family via the v2 Chat API. Bearer auth; the protocol targets /v2/chat. Errors
+# are signalled by HTTP status (classified by the breaker), so error_map is empty.
+cohere:
+  protocol: cohere
+  base_url: https://api.cohere.com
+  error_map: {}
