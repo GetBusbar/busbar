@@ -158,6 +158,12 @@ pub mod log_level {
     pub const WARN: u32 = 2;
     pub const INFO: u32 = 3;
     pub const DEBUG: u32 = 4;
+    /// Distinct from [`DEBUG`] on purpose. Folding the two together destroys the level in transit,
+    /// so a host running at DEBUG could not filter plugin TRACE back out.
+    pub const TRACE: u32 = 5;
+    /// "Emit nothing." What the host passes when its own subscriber is disabled entirely, so the
+    /// plugin can skip building a record no one will read.
+    pub const OFF: u32 = 0;
 }
 
 /// The host-side callback a plugin invokes to emit one log record.
@@ -194,7 +200,14 @@ pub type LogSinkFn =
 /// CALLED ONCE, immediately after a successful `busbar_open`, before any `busbar_call`. The sink must
 /// remain valid for the life of the plugin and may be invoked from ANY thread, so a plugin storing it
 /// needs a `Sync` cell.
-pub type SetLogSinkFn = unsafe extern "C-unwind" fn(sink: LogSinkFn, ctx: *mut c_void);
+/// `max_level` is the HOST's own maximum enabled level (a [`log_level`] constant), so the plugin can
+/// filter on ITS side of the boundary. That direction matters: a plugin's dispatcher would otherwise
+/// claim interest in everything, and every `trace!`/`debug!` in the plugin's whole dependency tree
+/// (its SQL driver, its HTTP stack) would render a string and cross this call on the REQUEST PATH
+/// only for the host to drop it. Sampled once at load; a host whose level changes later keeps
+/// working, it just filters a little coarsely until the next load.
+pub type SetLogSinkFn =
+    unsafe extern "C-unwind" fn(sink: LogSinkFn, ctx: *mut c_void, max_level: u32);
 
 /// The hard cap on a single response/error buffer a plugin returns, checked BEFORE allocation on both
 /// sides. Defense against a buggy/hostile plugin handing back a huge length to OOM the engine. 256 MiB

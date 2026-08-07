@@ -296,21 +296,28 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// plugin never loses a message by using this.
 pub mod hostlog {
     use busbar_plugin_abi::{log_level, LogSinkFn};
-    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
     /// The installed sink, as raw parts. Two atomics rather than a `OnceLock<(fn, ptr)>` because the
     /// host may call `busbar_set_log_sink` from any thread and [`log`] may be called concurrently
     /// from any other; both are written once, before any `busbar_call`, and only ever read after.
     static SINK: AtomicUsize = AtomicUsize::new(0);
     static CTX: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+    /// The HOST's maximum enabled level. Filtering happens on THIS side of the boundary, before a
+    /// record is built: a dispatcher that claimed interest in everything would make every
+    /// `trace!`/`debug!` in this plugin's dependency tree allocate a string and cross the FFI call
+    /// on the request path, only for the host to discard it. Defaults to `OFF` so nothing is built
+    /// before a host has said what it wants.
+    static MAX_LEVEL: AtomicU32 = AtomicU32::new(log_level::OFF);
 
     /// Record the host's sink. Called ONLY by the `busbar_set_log_sink` symbol `export_plugin!`
     /// emits — not part of a plugin's own API.
     ///
     /// # Safety
     /// `sink` must stay callable, and `ctx` valid, for the life of the plugin.
-    pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void) {
+    pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void, max_level: u32) {
         CTX.store(ctx, Ordering::Release);
+        MAX_LEVEL.store(max_level, Ordering::Release);
         SINK.store(sink as usize, Ordering::Release);
         // Light up every `tracing` call site already in this plugin, including in library crates
         // that never depended on this SDK.
@@ -319,6 +326,13 @@ pub mod hostlog {
 
     /// Emit one record at `level`. Goes to the host's subscriber when a sink is installed, else to
     /// stderr — never nowhere.
+    /// True when the host would actually keep a record at `level`. Cheap enough to call before
+    /// building the message, which is the whole point.
+    pub fn enabled(level: u32) -> bool {
+        // Lower constant = more severe. `OFF` (0) is below ERROR (1), so it enables nothing.
+        level != log_level::OFF && level <= MAX_LEVEL.load(Ordering::Acquire)
+    }
+
     pub fn log(level: u32, msg: &str) {
         let raw = SINK.load(Ordering::Acquire);
         if raw == 0 {
@@ -350,10 +364,34 @@ pub mod hostlog {
     fn install_tracing_bridge() {
         use tracing_core::{span, Event, Metadata, Subscriber};
 
+        fn abi_level(l: &tracing_core::Level) -> u32 {
+            match *l {
+                tracing_core::Level::ERROR => log_level::ERROR,
+                tracing_core::Level::WARN => log_level::WARN,
+                tracing_core::Level::INFO => log_level::INFO,
+                tracing_core::Level::DEBUG => log_level::DEBUG,
+                tracing_core::Level::TRACE => log_level::TRACE,
+            }
+        }
+
         struct Forwarder;
         impl Subscriber for Forwarder {
-            fn enabled(&self, _m: &Metadata<'_>) -> bool {
-                true
+            fn enabled(&self, m: &Metadata<'_>) -> bool {
+                super::hostlog::enabled(abi_level(m.level()))
+            }
+
+            /// Without this, `tracing-core` assumes TRACE and every `trace!` in this plugin's whole
+            /// dependency tree becomes a live callsite. With it, those callsites go back to being a
+            /// static check — which is what they were before any subscriber existed here.
+            fn max_level_hint(&self) -> Option<tracing_core::LevelFilter> {
+                Some(match MAX_LEVEL.load(Ordering::Acquire) {
+                    log_level::OFF => tracing_core::LevelFilter::OFF,
+                    log_level::ERROR => tracing_core::LevelFilter::ERROR,
+                    log_level::WARN => tracing_core::LevelFilter::WARN,
+                    log_level::INFO => tracing_core::LevelFilter::INFO,
+                    log_level::DEBUG => tracing_core::LevelFilter::DEBUG,
+                    _ => tracing_core::LevelFilter::TRACE,
+                })
             }
             fn new_span(&self, _a: &span::Attributes<'_>) -> span::Id {
                 span::Id::from_u64(1)
@@ -376,15 +414,15 @@ pub mod hostlog {
                         }
                     }
                 }
+                let level = abi_level(event.metadata().level());
+                // Re-checked here as well as in `enabled`: a cached callsite interest can outlive a
+                // level change, and rendering is where the cost actually is.
+                if !super::hostlog::enabled(level) {
+                    return;
+                }
                 let mut r = Render(String::new());
                 event.record(&mut r);
-                let level = match *event.metadata().level() {
-                    tracing_core::Level::ERROR => log_level::ERROR,
-                    tracing_core::Level::WARN => log_level::WARN,
-                    tracing_core::Level::DEBUG | tracing_core::Level::TRACE => log_level::DEBUG,
-                    tracing_core::Level::INFO => log_level::INFO,
-                };
-                log(level, &r.0);
+                log(abi_level(event.metadata().level()), &r.0);
             }
             fn enter(&self, _s: &span::Id) {}
             fn exit(&self, _s: &span::Id) {}
@@ -862,8 +900,9 @@ macro_rules! export_plugin {
         pub unsafe extern "C-unwind" fn busbar_set_log_sink(
             sink: $crate::__abi::LogSinkFn,
             ctx: *mut ::std::ffi::c_void,
+            max_level: u32,
         ) {
-            unsafe { $crate::hostlog::install(sink, ctx) };
+            unsafe { $crate::hostlog::install(sink, ctx, max_level) };
         }
 
         /// # Safety

@@ -214,6 +214,18 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         probe = "tracing-bridge",
         "test-hook tracing call (bridge check)"
     );
+    // Emitted at levels a WARN-level host does not want. These must NOT cross the boundary at all:
+    // the plugin is handed the host's level and skips building the record entirely, so a `trace!`
+    // in a plugin's dependency tree costs a static check rather than an allocation and an FFI call
+    // on the request path.
+    tracing::debug!(
+        probe = "tracing-bridge",
+        "test-hook debug call (must not cross when quiet)"
+    );
+    tracing::trace!(
+        probe = "tracing-bridge",
+        "test-hook trace call (must not cross when quiet)"
+    );
     let c: HookConfig = if cfg.trim().is_empty() {
         HookConfig::default()
     } else {
