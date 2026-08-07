@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Matthew Jackson
+#
+# Deployment configuration for busbar.
+# This file references providers by NAME from providers.yaml and supplies their keys.
+
+listen: "0.0.0.0:8080"
+
+auth:
+  mode: token
+  client_tokens:
+    - "${BUSBAR_CLIENT_TOKEN}"
+
+providers:
+  z.ai:
+    api_key_env: ZAI_KEY
+    # Optional overrides (rarely needed):
+    # protocol: anthropic
+    # base_url: https://api.z.ai/api/anthropic
+    # error_map:
+    #   "1113": billing
+
+  # Uncomment to use anthropic directly:
+  # anthropic:
+  #   api_key_env: ANTHROPIC_KEY
+
+  # Enable when OpenAI protocol lands (B-501):
+  # openai:
+  #   api_key_env: OPENAI_KEY
+
+models:
+  glm-4.5:
+    provider: z.ai
+    max_concurrent: 10
+    max_requests: -1
+  glm-5.1:
+    provider: z.ai
+    max_concurrent: 10
+    max_requests: -1
+  glm-4.6:
+    provider: z.ai
+    max_concurrent: 3
+    max_requests: -1
+
+pools:
+  glm:
+    members:
+      - target: glm-5.1
+        weight: 1
+      - target: glm-4.6
+        weight: 1
+      - target: glm-4.5
+        weight: 1
+  hindsight:
+    members:
+      - target: glm-5.1
+        weight: 1
+      - target: glm-4.6
+        weight: 1
+      - target: glm-4.5
+        weight: 1

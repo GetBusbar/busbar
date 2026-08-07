@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Matthew Jackson
+#
+# Provider definitions for busbar.
+# This file contains vetted provider knowledge (protocol, base_url, error_map).
+# Operators deploy by referencing a provider NAME in config.yaml and providing their key.
+
+z.ai:
+  protocol: anthropic
+  base_url: https://api.z.ai/api/anthropic
+  error_map:
+    "1113": billing
+    "1302": rate_limit
+
+anthropic:
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  error_map: {}
+
+openai:
+  protocol: openai
+  base_url: https://api.openai.com
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+# Google Gemini (generateContent). The path embeds the model and auth uses x-goog-api-key,
+# both handled by the gemini protocol. Cross-protocol: an Anthropic/OpenAI-format client can
+# target a gemini lane and busbar translates losslessly through the superset IR.
+gemini:
+  protocol: gemini
+  base_url: https://generativelanguage.googleapis.com
+  error_map:
+    RESOURCE_EXHAUSTED: rate_limit
+
+# OpenAI Responses API (the newer stateful /v1/responses surface, distinct from chat completions).
+# Bearer auth + a fixed path — fully usable. Cross-protocol: any client format can target a
+# responses lane and busbar translates through the superset IR.
+responses:
+  protocol: responses
+  base_url: https://api.openai.com
+  error_map:
+    insufficient_quota: billing
+    rate_limit_exceeded: rate_limit
+
+# AWS Bedrock (Converse API). Request/response translation is at the IR level; auth is native AWS
+# SigV4 (C-4). Set this provider's api_key_env to the AWS credentials in the form
+# `ACCESS_KEY_ID:SECRET_ACCESS_KEY` or `ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN`. The region is
+# parsed from the base_url host (`bedrock-runtime.<region>.amazonaws.com`) — set it to your region.
+# Streaming requests use ConverseStream and busbar decodes the binary
+# application/vnd.amazon.eventstream frames, translating them to the caller's protocol (C-5).
+bedrock:
+  protocol: bedrock
+  base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+  error_map:
+    ThrottlingException: rate_limit
+    ServiceQuotaExceededException: billing

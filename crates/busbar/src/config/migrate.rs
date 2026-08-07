@@ -386,18 +386,33 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
-    // serde_yaml cannot attach comments to nodes, so the TODO/WARNING ledger renders as a header
-    // comment block on the printed document (each entry names its config path).
+    // The header is written ONLY when there is something a human must act on.
+    //
+    // A migration that needs no decisions should produce a file indistinguishable from one somebody
+    // wrote by hand — a 1.5.0 config brought to 1.5.3 is almost entirely mechanical, and stamping
+    // "migrated by a tool, review before deploying" across the top of a clean result is noise the
+    // operator then has to decide whether to delete. It also aged badly: the banner said "1.5.0
+    // config" long after the target moved to 1.5.3.
+    //
+    // When there ARE warnings or TODOs the header stays, because then the file genuinely is not
+    // finished and the reader needs to know that before it reaches a cluster. serde_yaml cannot
+    // attach comments to nodes, so the ledger renders as a header block, each entry naming its
+    // config path.
     let mut yaml = String::new();
-    yaml.push_str("# busbar 1.5.0 config, migrated by `busbar --migrate-config`.\n");
-    yaml.push_str("# Review before deploying; `busbar --validate` must pass.\n");
-    for w in &warnings {
-        yaml.push_str(&format!("# WARNING(migrate): {w}\n"));
+    if !warnings.is_empty() || !todos.is_empty() {
+        yaml.push_str(&format!(
+            "# busbar {} config, migrated by `busbar --migrate-config`.\n",
+            crate::config::CONFIG_TARGET_VERSION
+        ));
+        yaml.push_str("# The items below need a decision; `busbar --validate` must pass.\n");
+        for w in &warnings {
+            yaml.push_str(&format!("# WARNING(migrate): {w}\n"));
+        }
+        for t in &todos {
+            yaml.push_str(&format!("# TODO(migrate): {t}\n"));
+        }
+        yaml.push('\n');
     }
-    for t in &todos {
-        yaml.push_str(&format!("# TODO(migrate): {t}\n"));
-    }
-    yaml.push('\n');
     yaml.push_str(&body);
     Ok(MigrateOutput {
         yaml,
