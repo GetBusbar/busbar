@@ -312,6 +312,9 @@ pub mod hostlog {
     pub unsafe fn install(sink: LogSinkFn, ctx: *mut std::ffi::c_void) {
         CTX.store(ctx, Ordering::Release);
         SINK.store(sink as usize, Ordering::Release);
+        // Light up every `tracing` call site already in this plugin, including in library crates
+        // that never depended on this SDK.
+        install_tracing_bridge();
     }
 
     /// Emit one record at `level`. Goes to the host's subscriber when a sink is installed, else to
@@ -329,6 +332,65 @@ pub mod hostlog {
         let sink: LogSinkFn = unsafe { std::mem::transmute::<usize, LogSinkFn>(raw) };
         let ctx = CTX.load(Ordering::Acquire);
         unsafe { sink(ctx, level, msg.as_ptr(), msg.len()) };
+    }
+
+    /// Forward this plugin's OWN `tracing` events into the host sink.
+    ///
+    /// This is what makes the bridge worth having. Without it, a plugin only reaches the operator
+    /// from call sites rewritten to call [`log`] by hand — and the calls that matter most are the
+    /// ones already written as `tracing::warn!` inside plugin LIBRARY crates that have no reason to
+    /// depend on this SDK at all (auth-ldap's ambiguous-match and truncation warnings, its whole
+    /// pure-lib diagnostic surface). Installing a dispatcher INSIDE the cdylib means every one of
+    /// them lights up unchanged.
+    ///
+    /// Called automatically when the host installs a sink, so no plugin has to remember to.
+    ///
+    /// Best-effort: if the plugin has already set its own global dispatcher, `set_global_default`
+    /// fails and we leave theirs alone rather than fighting over it.
+    fn install_tracing_bridge() {
+        use tracing_core::{span, Event, Metadata, Subscriber};
+
+        struct Forwarder;
+        impl Subscriber for Forwarder {
+            fn enabled(&self, _m: &Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _a: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+            fn record(&self, _s: &span::Id, _v: &span::Record<'_>) {}
+            fn record_follows_from(&self, _s: &span::Id, _f: &span::Id) {}
+            fn event(&self, event: &Event<'_>) {
+                struct Render(String);
+                impl tracing_core::field::Visit for Render {
+                    fn record_debug(&mut self, f: &tracing_core::Field, v: &dyn std::fmt::Debug) {
+                        if !self.0.is_empty() {
+                            self.0.push(' ');
+                        }
+                        // The `message` field is the human sentence; everything else is a
+                        // structured key the operator still wants, rendered as `key=value`.
+                        if f.name() == "message" {
+                            self.0.push_str(&format!("{v:?}"));
+                        } else {
+                            self.0.push_str(&format!("{}={:?}", f.name(), v));
+                        }
+                    }
+                }
+                let mut r = Render(String::new());
+                event.record(&mut r);
+                let level = match *event.metadata().level() {
+                    tracing_core::Level::ERROR => log_level::ERROR,
+                    tracing_core::Level::WARN => log_level::WARN,
+                    tracing_core::Level::DEBUG | tracing_core::Level::TRACE => log_level::DEBUG,
+                    tracing_core::Level::INFO => log_level::INFO,
+                };
+                log(level, &r.0);
+            }
+            fn enter(&self, _s: &span::Id) {}
+            fn exit(&self, _s: &span::Id) {}
+        }
+
+        let _ = tracing::subscriber::set_global_default(Forwarder);
     }
 
     pub fn error(msg: &str) {

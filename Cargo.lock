@@ -360,6 +360,7 @@ dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -420,6 +421,8 @@ dependencies = [
  "busbar-plugin-abi",
  "busbar-store-memory",
  "serde_json",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]

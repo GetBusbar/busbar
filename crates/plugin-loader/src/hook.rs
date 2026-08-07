@@ -844,6 +844,31 @@ mod tests {
             busbar_plugin_abi::log_level::WARN,
             "the plugin's chosen level must survive the crossing"
         );
+
+        // And the half that matters most in practice: a PLAIN `tracing::warn!` inside the plugin,
+        // the shape every plugin library crate already uses, reaches the host too. Those call sites
+        // are the ones that were being discarded — auth-ldap's ambiguous-match warning, auth-oidc's
+        // failed-signature warning — and none of them would be rewritten by hand.
+        let traced: Vec<_> = records
+            .iter()
+            .skip(before)
+            .filter(|(_, _, text)| text.contains("test-hook tracing call"))
+            .collect();
+        assert!(
+            !traced.is_empty(),
+            "a plain tracing::warn! inside the plugin must reach the host: {:?}",
+            &records[before.min(records.len())..]
+        );
+        assert!(
+            traced[0].2.contains("probe=") && traced[0].2.contains("tracing-bridge"),
+            "structured fields must survive, not just the message: {:?}",
+            traced[0].2
+        );
+        assert_eq!(
+            traced[0].1,
+            busbar_plugin_abi::log_level::WARN,
+            "the tracing level must map across"
+        );
     }
 
     #[tokio::test]

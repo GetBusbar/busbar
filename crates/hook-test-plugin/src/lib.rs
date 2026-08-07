@@ -208,6 +208,12 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
     busbar_plugin_sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");
+    // A PLAIN `tracing` call, the shape every plugin library crate already uses. It reaches the
+    // operator only because the SDK forwards this cdylib's own dispatcher into the host sink.
+    tracing::warn!(
+        probe = "tracing-bridge",
+        "test-hook tracing call (bridge check)"
+    );
     let c: HookConfig = if cfg.trim().is_empty() {
         HookConfig::default()
     } else {
