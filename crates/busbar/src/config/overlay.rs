@@ -367,20 +367,41 @@ impl RootSettings {
     /// Whether NO root override is set (every field `None`) — drives the section-empty predicate and
     /// the idempotent-reset short-circuit. Checked field-by-field (not via `PartialEq`) so the nested
     /// config structs need no `PartialEq` derive.
+    ///
+    /// DRIFT GUARD, same idiom as `config::patch::tests::every_patch_mirrors_every_field_of_its_section`:
+    /// an EXHAUSTIVE destructure with NO `..`, so a field added to `RootSettings` fails to compile
+    /// until it is considered here. This predicate decides whether `persist_root` stores the section
+    /// at all, so a field missing from it would make a `PUT /config/settings` naming ONLY that field
+    /// compute "empty", store `None`, and return 200 — a SILENT DISCARD reported as a success.
     pub(crate) fn is_empty(&self) -> bool {
-        self.listen.is_none()
-            && self.tls.is_none()
-            && self.admin_listen.is_none()
-            && self.admin_tls.is_none()
-            && self.admin_require_mtls.is_none()
-            && self.rate_card.is_none()
-            && self.per_request_fee.is_none()
-            && self.store.is_none()
-            && self.security.is_none()
-            && self.limits.is_none()
-            && self.advanced.is_none()
-            && self.health.is_none()
-            && self.routing.is_none()
+        let RootSettings {
+            listen,
+            tls,
+            admin_listen,
+            admin_tls,
+            admin_require_mtls,
+            rate_card,
+            per_request_fee,
+            store,
+            security,
+            limits,
+            advanced,
+            health,
+            routing,
+        } = self;
+        listen.is_none()
+            && tls.is_none()
+            && admin_listen.is_none()
+            && admin_tls.is_none()
+            && admin_require_mtls.is_none()
+            && rate_card.is_none()
+            && per_request_fee.is_none()
+            && store.is_none()
+            && security.is_none()
+            && limits.is_none()
+            && advanced.is_none()
+            && health.is_none()
+            && routing.is_none()
     }
 
     /// Splice the present overrides onto a base `DeployCfg`, IN PLACE. Applied BEFORE `resolve` so the
@@ -388,51 +409,70 @@ impl RootSettings {
     /// as for a hand-written config. Only `Some` fields overwrite; a `None` field leaves base config
     /// untouched. `admin_require_mtls`/`per_request_fee` are non-optional on `DeployCfg`, so an unset
     /// overlay override simply preserves the base value.
+    ///
+    /// DRIFT GUARD: EXHAUSTIVE destructure with NO `..` (same idiom as `is_empty`), so a field added
+    /// to `RootSettings` cannot be stored-but-never-applied by omission — the compiler forces it to
+    /// be spliced onto `DeployCfg` here (or bound `_` with a stated reason).
     pub(crate) fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
-        if let Some(v) = &self.listen {
+        let RootSettings {
+            listen,
+            tls,
+            admin_listen,
+            admin_tls,
+            admin_require_mtls,
+            rate_card,
+            per_request_fee,
+            store,
+            security,
+            limits,
+            advanced,
+            health,
+            routing,
+        } = self;
+        if let Some(v) = listen {
             deploy.listen = v.clone();
         }
-        if self.tls.is_some() {
-            deploy.tls = self.tls.clone();
+        if tls.is_some() {
+            deploy.tls = tls.clone();
         }
-        if let Some(v) = &self.admin_listen {
+        if let Some(v) = admin_listen {
             deploy.admin_listen = v.clone();
         }
-        if self.admin_tls.is_some() {
-            deploy.admin_tls = self.admin_tls.clone();
+        if admin_tls.is_some() {
+            deploy.admin_tls = admin_tls.clone();
         }
-        if let Some(v) = self.admin_require_mtls {
-            deploy.admin_require_mtls = v;
+        if let Some(v) = admin_require_mtls {
+            deploy.admin_require_mtls = *v;
         }
-        if self.rate_card.is_some() {
-            deploy.rate_card = self.rate_card.clone();
+        if rate_card.is_some() {
+            deploy.rate_card = rate_card.clone();
         }
-        if let Some(v) = self.per_request_fee {
-            deploy.per_request_fee = v;
+        if let Some(v) = per_request_fee {
+            deploy.per_request_fee = *v;
         }
-        if self.store.is_some() {
-            deploy.store = self.store.clone();
+        if store.is_some() {
+            deploy.store = store.clone();
         }
         // PER-FIELD from here down. Assigning the whole section instead meant a partial `PUT`
         // deserialized into a full struct of compiled defaults, so every field the operator did not
         // name silently reverted — `config.yaml` values included.
-        if let Some(v) = &self.security {
+        if let Some(v) = security {
             v.apply(deploy.security.get_or_insert_with(Default::default));
         }
-        if let Some(v) = &self.limits {
+        if let Some(v) = limits {
             v.apply(&mut deploy.limits);
         }
-        if let Some(v) = &self.advanced {
+        if let Some(v) = advanced {
             v.apply(&mut deploy.advanced);
         }
         // 1.5.3: the retired `metrics:` AND `observability:` overlay sections are gone — Prometheus
         // metrics and OTLP traces are now named `export:` instances (`module: prometheus` /
         // `module: otlp`), edited in config.yaml + applied via plugin reload (consistent with every
         // other exporter), never through the single-value settings overlay.
-        if let Some(v) = &self.health {
+        if let Some(v) = health {
             v.apply(&mut deploy.health);
         }
-        if let Some(v) = &self.routing {
+        if let Some(v) = routing {
             v.apply(&mut deploy.routing);
         }
     }
