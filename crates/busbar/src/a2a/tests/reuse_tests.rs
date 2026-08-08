@@ -257,12 +257,27 @@ fn the_a2a_plane_declares_no_trust_state_of_its_own() {
         "fn unpin",
         "fn state",
     ];
-    for (path, source) in [
-        ("a2a/mod.rs", include_str!("../mod.rs")),
-        ("a2a/canonical.rs", include_str!("../canonical.rs")),
-        ("a2a/card.rs", include_str!("../card.rs")),
-        ("a2a/pin.rs", include_str!("../pin.rs")),
-    ] {
+    // ENUMERATED, never listed. The first version of this test named its four files literally, and
+    // two modules were added afterwards that it therefore never scanned: a ratchet with a hand-kept
+    // list is a ratchet that silently stops covering the newest code, which is the code most likely
+    // to reach for a shortcut. So the plane's production sources are read off disk, and a new file
+    // is covered the moment it exists rather than when somebody remembers to add it.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/a2a");
+    let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("the plane's source directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    sources.sort();
+    assert!(
+        sources.len() >= 4,
+        "the scan found {} source file(s), which cannot be right: a scan that discovers nothing \
+         passes vacuously, which is worse than no scan at all",
+        sources.len()
+    );
+
+    for path in sources {
+        let source = std::fs::read_to_string(&path).expect("readable source");
         let code: String = source
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
@@ -271,9 +286,10 @@ fn the_a2a_plane_declares_no_trust_state_of_its_own() {
         for needle in BANNED {
             assert!(
                 !code.contains(needle),
-                "{path} declares `{needle}`. The trust lifecycle is plane-neutral and this plane \
+                "{} declares `{needle}`. The trust lifecycle is plane-neutral and this plane \
                  PARAMETERISES it; a second declaration here is a fork, and two machines disagree \
-                 the first time one of them is fixed. Add to the artifact, not to the machine."
+                 the first time one of them is fixed. Add to the artifact, not to the machine.",
+                path.display()
             );
         }
     }
