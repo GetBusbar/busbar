@@ -483,9 +483,25 @@ jobs:
             -H 'Accept: text/html,application/xhtml+xml' \
             -o /tmp/pt-download.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
           dl_size="$(wc -c < /tmp/pt-download.html 2>/dev/null || echo 0)"
-          if [ "$dl_code" != "200" ] || [ "$dl_size" -lt 500 ]; then
-            record "getbusbar.com/download/ readability" "HTTP 200 and a real HTML page" "HTTP ${dl_code}, ${dl_size} bytes" \
-              "The download page could not be READ from here, so nothing can be concluded about which version it advertises. If a browser loads it fine this is an edge/bot block against datacenter IPs rather than a stale site - fix the block or allowlist, do not redeploy the site."
+          # 403/429 IS NOT THE SAME INCIDENT AS 404/5xx, and conflating them is why this check has
+          # been red on main every day. A 403 is aimed at US: getbusbar.com sits behind an edge that
+          # challenges datacenter IPs, so a GitHub runner is refused while a browser is served
+          # normally. That means the check COULD NOT RUN, not that the assertion failed - and
+          # reporting "the site is stale" for a site that is fine is how a gate gets ignored. It is a
+          # VISIBLE SKIP, announced three ways (log, annotation, step summary), never a silent one.
+          # Anything else non-200 is broken for real users too, and stays a hard failure.
+          case "${dl_code}:$([ "$dl_size" -lt 500 ] && echo small || echo ok)" in
+            200:ok) dl_state=readable ;;
+            403:*|429:*) dl_state=blocked ;;
+            *) dl_state=broken ;;
+          esac
+          if [ "$dl_state" = "blocked" ]; then
+            echo "VISIBLE SKIP: getbusbar.com/download/ returned HTTP ${dl_code} to this runner, so the advertised-version assertion could NOT be evaluated. This is an edge/bot block against GitHub's datacenter IPs, not a stale page: a browser is served normally."
+            echo "::warning::(pointers) PARTIAL: getbusbar.com/download/ returns HTTP ${dl_code} to GitHub Actions runners, so the 'site advertises the current version' assertion did not run. Every other pointer WAS checked and is authoritative. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /download/ (or expose a small unchallenged JSON route carrying the current version), so this assertion can be made from CI at all."
+            { echo "### Moving pointers: PARTIAL - getbusbar.com/download/ returns HTTP ${dl_code} to this runner, so the advertised-version check did not run"; } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$dl_state" = "broken" ]; then
+            record "getbusbar.com/download/ availability" "HTTP 200 and a real HTML page" "HTTP ${dl_code}, ${dl_size} bytes" \
+              "The download page is not being served at all. Unlike a 403, this is broken for every visitor, not just for CI. Fix: redeploy the marketing site."
           elif grep -qE "v${V}([^0-9]|\$)" /tmp/pt-download.html; then
             echo "PASS: getbusbar.com/download/ advertises v${V}"
           else
@@ -974,21 +990,36 @@ jobs:
           # from a datacenter IP can be served a challenge page instead of the site, which reads as
           # "the version is missing" and sends someone to redeploy a site that is fine.
           UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+          dl_code=000
           for i in $(seq 1 20); do
-            curl -fsSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
-              "https://getbusbar.com/download/" -o /tmp/dl-version.html 2>/dev/null || : > /tmp/dl-version.html
+            dl_code="$(curl -sSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+              -o /tmp/dl-version.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
             if grep -qE "v${V}([^0-9]|\$)" /tmp/dl-version.html; then
               found=1
               break
             fi
-            echo "  ...getbusbar.com/download/ does not yet show v${V} (attempt $i/20), retrying in 15s"
+            # A 403/429 will not become a 200 by waiting: it is an edge rule about WHO is asking,
+            # not a deploy that has not landed yet. Burning five minutes of retries on it delays the
+            # rest of the run and dresses a block up as a slow rollout.
+            case "$dl_code" in 403|429) break ;; esac
+            echo "  ...getbusbar.com/download/ does not yet show v${V} (HTTP ${dl_code}, attempt $i/20), retrying in 15s"
             sleep 15
           done
           if [ "$found" = 1 ]; then
             echo "PASS: getbusbar.com/download/ shows v${V}"
+          elif [ "$dl_code" = "403" ] || [ "$dl_code" = "429" ]; then
+            # VISIBLE SKIP, same shape and same reasoning as the brew half of check (j). This is the
+            # true cause of the daily red on main: the page DOES advertise the version when fetched
+            # from a browser, and getbusbar.com's edge refuses GitHub's datacenter IPs, so the check
+            # was reporting a stale site that is not stale. A check that is red for a reason nobody
+            # can act on is worse than no check, because it is the one that teaches people that red
+            # means nothing here.
+            echo "VISIBLE SKIP: getbusbar.com/download/ returned HTTP ${dl_code} to this runner, so the advertised-version half of (g) could NOT be evaluated. The link-resolution half below DID run and is authoritative."
+            echo "::warning::(g) PARTIAL: getbusbar.com/download/ returns HTTP ${dl_code} to GitHub Actions runners (an edge/bot rule against datacenter IPs, not a stale page - a browser is served normally), so the 'site advertises v${V}' assertion did not run. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /download/, or expose a small unchallenged JSON route carrying the current version, so this can be asserted from CI at all."
+            { echo "### (g) getbusbar.com: PARTIAL - HTTP ${dl_code} to this runner, advertised-version check not exercised"; } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
-            echo "::error::(g) getbusbar.com/download/ does not advertise v${V}. Fix: redeploy the marketing site so the download page picks up the new release."
+            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries (last HTTP ${dl_code})"
+            echo "::error::(g) getbusbar.com/download/ does not advertise v${V} (last response HTTP ${dl_code}). Fix: redeploy the marketing site so the download page picks up the new release."
             fail=1
           fi
 
@@ -998,11 +1029,18 @@ jobs:
           # can be green while every button hands users a stale binary — and they 404 outright if
           # the Release exists but is not flagged 'latest'. Both are user-visible breakage that
           # nothing else in this workflow covers, so resolve what the buttons actually point at.
-          curl -fsSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
-            "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
-            echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links. Fix: redeploy the marketing site."
+          page_code="$(curl -sSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+            -o /tmp/dl-page.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+          if [ "$page_code" = "403" ] || [ "$page_code" = "429" ]; then
+            # Blocked, not broken. Skip the LINK-SCRAPING half visibly, but keep going: the
+            # /releases/latest resolution below needs no page at all and is the assertion that
+            # actually decides whether every button on the site serves the right release.
+            echo "VISIBLE SKIP: cannot scrape getbusbar.com/download/'s links (HTTP ${page_code} to this runner). The /releases/latest resolution below still runs and is the load-bearing half."
+            : > /tmp/dl-page.html
+          elif [ "$page_code" != "200" ]; then
+            echo "::error::(g) getbusbar.com/download/ returned HTTP ${page_code} - not a block (403/429) but a genuine failure to serve, which every visitor sees too. Fix: redeploy the marketing site."
             exit 1
-          }
+          fi
           # Where does /releases/latest actually land? That is what every button on the page follows.
           loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
             "https://github.com/GetBusbar/busbar/releases/latest" || true)"
@@ -1015,9 +1053,15 @@ jobs:
           fi
           links="$(grep -oE 'https://github\.com/GetBusbar/busbar/releases/latest/download/[A-Za-z0-9._-]+' /tmp/dl-page.html | sort -u || true)"
           if [ -z "$links" ]; then
-            echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
-            echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
-            fail=1
+            if [ "$page_code" = "403" ] || [ "$page_code" = "429" ]; then
+              # We were never given the page, so "no links on it" is a statement about the block,
+              # not about the page. Saying the site exposes no downloads here would be a fabrication.
+              echo "VISIBLE SKIP: no links to check because the page was not served to this runner (HTTP ${page_code}); this is NOT evidence that the page lacks download links."
+            else
+              echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
+              echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
+              fail=1
+            fi
           fi
           while IFS= read -r u; do
             [ -n "$u" ] || continue
