@@ -23,10 +23,13 @@ compiled `busbar --validate`, exactly the way `docs_examples.rs` does it. A reim
 `detect_legacy_markers` would drift from the engine within one release and give false confidence;
 this cannot, because it IS the engine.
 
-`--validate` is LENIENT about secret refs (`EnvSubst::Lenient`: `{ env: VAR }` is not resolved and
-`{ file: /path }` is not read — verified against `main.rs`'s `validate_secret_refs`), which is what
-makes scanning executable configs practical at all: an extracted heredoc needs no secrets, no
-services and no real key material to reach a verdict on its SHAPE.
+`--validate` RESOLVES built-in secret refs: `{ env: VAR }` is read from the environment and
+`{ file: /path }` is read from disk, and an unresolvable one is a hard failure (see
+`validate_builtin_secrets_resolve` in `main.rs`). That is right for an operator validating a real
+deployment, and wrong for this scanner, whose question is only ever whether a document has a valid
+SHAPE. So `validate()` below gives every referenced secret something real to resolve to: each named
+env var is set to a placeholder, and every `file:` ref is pointed at a scratch file. What survives is
+a verdict about the document, never about the machine the scan happens to run on.
 
 FIDELITY. A heredoc is not a file; it is a shell template. Rather than EXECUTING extracted shell
 (which would be arbitrary code execution out of whatever repo is being scanned — this gate runs over
@@ -587,18 +590,64 @@ def catalog_for(config_text, siblings):
     return yaml.safe_dump(base, default_flow_style=False, sort_keys=False)
 
 
+# A secret value that satisfies every built-in shape check: 64 hex chars is valid for
+# `auth.signing_key`, and harmless as any other secret's value.
+PLACEHOLDER_SECRET = "0" * 63 + "1"
+
+_ENV_REF = re.compile(r"env:\s*([A-Za-z_][A-Za-z0-9_]*)")
+_FILE_REF = re.compile(r"file:\s*[^}\s]+")
+
+
+def _referenced_env_names(*texts):
+    """Every `{ env: NAME }` the documents under test reference, in first-seen order.
+
+    Enumerating the names here instead would rot: the scanned corpus spans docs, heredocs, and every
+    shipped release, and a doc adding one new variable would turn the gate red for a reason that has
+    nothing to do with the config's shape.
+    """
+    seen = []
+    for text in texts:
+        for name in _ENV_REF.findall(text or ""):
+            if name not in seen:
+                seen.append(name)
+    return seen
+
+
+def _point_file_refs_at(text, stand_in):
+    """Rewrite `{ file: /some/path }` to a real file, so validation tests the config's SHAPE.
+
+    A shipped artifact names a PRODUCTION path (`/var/lib/busbar/signing.key`) that exists on no CI
+    runner and on no developer's laptop. The document is not wrong for saying so.
+    """
+    return _FILE_REF.sub("file: " + stand_in, text or "")
+
+
 def validate(doc, busbar, scratch, siblings=()):
     """-> (verdict, detail): "ok" | "legacy" | "env" | "artifact" | "invalid" (see VERDICTS above)."""
     d = tempfile.mkdtemp(dir=scratch)
     cfg, prov = os.path.join(d, "config.yaml"), os.path.join(d, "providers.yaml")
     if doc.kind == "providers":
-        open(prov, "w", encoding="utf-8").write(doc.text)
-        open(cfg, "w", encoding="utf-8").write(stub_config_for(doc.text))
+        cfg_text, prov_text = stub_config_for(doc.text), doc.text
     else:
-        open(cfg, "w", encoding="utf-8").write(doc.text)
-        open(prov, "w", encoding="utf-8").write(catalog_for(doc.text, siblings))
+        cfg_text, prov_text = doc.text, catalog_for(doc.text, siblings)
+
+    # `--validate` RESOLVES built-in (`env`/`file`) secret references and exits non-zero when one
+    # cannot resolve. That is deliberate: a gateway whose credentials are missing fails every
+    # upstream request, and it should say so before it boots rather than after. But it means this
+    # scanner would otherwise report a document as INVALID because of THIS MACHINE's environment
+    # rather than because of anything written in the document. Give every referenced secret
+    # something real to resolve to, so the verdict is about the config and nothing else.
+    stand_in = os.path.join(d, "secret-stand-in")
+    open(stand_in, "w", encoding="utf-8").write(PLACEHOLDER_SECRET)
+    cfg_text, prov_text = (_point_file_refs_at(cfg_text, stand_in),
+                           _point_file_refs_at(prov_text, stand_in))
+
+    open(cfg, "w", encoding="utf-8").write(cfg_text)
+    open(prov, "w", encoding="utf-8").write(prov_text)
     env = dict(os.environ, BUSBAR_CONFIG=cfg, BUSBAR_PROVIDERS=prov)
     env.pop("BUSBAR_CONFIG_OVERLAY", None)
+    for name in _referenced_env_names(cfg_text, prov_text):
+        env[name] = PLACEHOLDER_SECRET
     try:
         r = subprocess.run([busbar, "--validate"], env=env, capture_output=True, text=True,
                            timeout=60)

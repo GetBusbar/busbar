@@ -170,6 +170,23 @@ jobs:
           VALKEY_URL: redis://localhost:6379
         run: cargo test --workspace --locked --verbose
 
+      # A test that writes into the repo is a test that can leak. The docs example harness once
+      # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
+      # which put four generated artifacts in the working tree, two of them carrying the absolute
+      # home-directory path of the machine that ran them. They were committed, and only the
+      # public-hygiene gate downstream noticed. This makes the suite itself prove it wrote nothing:
+      # scratch belongs in a temp dir, always.
+      - name: Test suite left the working tree clean (no test writes into the repo)
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The test suite modified the working tree. Tests must write scratch to a temp dir."
+            echo "Offending paths:"
+            git status --porcelain
+            git diff --stat
+            exit 1
+          fi
+          echo "working tree clean after the full test suite"
+
   # OpenAPI schema gate (CI-ONLY `openapi-schema` feature). `openapi_doc()` derives typed response
   # schemas via schemars — a dependency deliberately kept OUT of the shipped binary (the `check` job
   # above builds/tests WITHOUT the feature, proving that). This job compiles the feature, lints it,
