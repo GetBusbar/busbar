@@ -19,3 +19,7 @@
 pub(crate) mod contract;
 pub(crate) mod json;
 pub(crate) mod service;
+
+#[cfg(test)]
+#[path = "tests/hook_stage_projection.rs"]
+mod hook_stage_projection;
