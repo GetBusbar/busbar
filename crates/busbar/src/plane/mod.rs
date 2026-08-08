@@ -210,6 +210,155 @@ fn path_is_under(path: &str, mount: &str) -> bool {
     }
 }
 
+/// THE SHARED CONTAINER for the three sibling plane sections: `pools:`, `tools:` and `agents:` are
+/// ONE code object with three namespaces, not three types that happen to look alike.
+///
+/// ## Siblings, and therefore no cross-references
+///
+/// The sections are INDEPENDENT namespaces. One name may exist in all three and each means a
+/// different thing, so a name is not globally unique and must never be treated as if it were.
+///
+/// The rule that follows, and the reason this type exists rather than three maps: a name is
+/// resolved ONLY within the plane doing the referencing. A `tools:` entry naming an agent is not a
+/// clever shortcut, it is a plane boundary violation, and the resolver REFUSES it.
+///
+/// ## The refusal DIAGNOSES rather than merely denying
+///
+/// [`RefError::CrossPlane`] names the plane the entry actually lives on, so the operator reads
+/// "that is an agent, referenced from a tools entry". A bare not-found would send someone hunting
+/// for a typo that is not there, which is why an unknown name is a genuinely different error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaneSections<T> {
+    llm: std::collections::BTreeMap<String, T>,
+    mcp: std::collections::BTreeMap<String, T>,
+    a2a: std::collections::BTreeMap<String, T>,
+}
+
+/// Why a name did not resolve. The two arms are kept distinct because only one of them is
+/// actionable in the same way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RefError {
+    /// The name exists, but on ANOTHER plane. A plane boundary violation.
+    CrossPlane {
+        name: String,
+        referenced_from: Plane,
+        defined_in: Plane,
+    },
+    /// The name exists nowhere.
+    Unknown { name: String, plane: Plane },
+}
+
+impl std::fmt::Display for RefError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefError::CrossPlane {
+                name,
+                referenced_from,
+                defined_in,
+            } => write!(
+                f,
+                "`{}` references `{name}`, which is defined in `{}`. The plane sections are \
+                 siblings and never reference each other: define `{name}` in `{}`, or move the \
+                 reference.",
+                referenced_from.config_section(),
+                defined_in.config_section(),
+                referenced_from.config_section()
+            ),
+            RefError::Unknown { name, plane } => write!(
+                f,
+                "`{}` references `{name}`, which is not defined.",
+                plane.config_section()
+            ),
+        }
+    }
+}
+
+// `Default` is hand-written, NOT derived. The derive would bound it on `T: Default`, which is
+// wrong twice over: an EMPTY container needs nothing from `T`, and requiring it would force every
+// entry type a plane ever holds to invent a meaningless empty value just to be storable here.
+impl<T> Default for PlaneSections<T> {
+    fn default() -> Self {
+        Self {
+            llm: std::collections::BTreeMap::new(),
+            mcp: std::collections::BTreeMap::new(),
+            a2a: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> PlaneSections<T> {
+    fn map(&self, plane: Plane) -> &std::collections::BTreeMap<String, T> {
+        match plane {
+            Plane::Llm => &self.llm,
+            Plane::Mcp => &self.mcp,
+            Plane::A2a => &self.a2a,
+        }
+    }
+
+    fn map_mut(&mut self, plane: Plane) -> &mut std::collections::BTreeMap<String, T> {
+        match plane {
+            Plane::Llm => &mut self.llm,
+            Plane::Mcp => &mut self.mcp,
+            Plane::A2a => &mut self.a2a,
+        }
+    }
+
+    /// Declare `name` on `plane`.
+    pub(crate) fn insert(&mut self, plane: Plane, name: &str, entry: T) -> Option<T> {
+        self.map_mut(plane).insert(name.to_string(), entry)
+    }
+
+    /// This plane's entry for `name`, or `None`. Scoped to the plane: it never reads a sibling
+    /// section, so a caller cannot accidentally cross the boundary by using the cheap read.
+    pub(crate) fn get(&self, plane: Plane, name: &str) -> Option<&T> {
+        self.map(plane).get(name)
+    }
+
+    /// One plane's whole section.
+    pub(crate) fn section(&self, plane: Plane) -> &std::collections::BTreeMap<String, T> {
+        self.map(plane)
+    }
+
+    /// THE VALIDATOR ENTRY POINT: resolve `name` as referenced FROM `plane`, refusing a cross-plane
+    /// reference with a diagnosis.
+    ///
+    /// The sibling scan runs in `Plane::ALL` order so a name defined on several other planes always
+    /// diagnoses the same one. A nondeterministic diagnostic is worse than none: it makes a boot
+    /// failure unreproducible.
+    pub(crate) fn resolve(&self, plane: Plane, name: &str) -> Result<&T, RefError> {
+        if let Some(entry) = self.map(plane).get(name) {
+            return Ok(entry);
+        }
+        for other in Plane::ALL {
+            if *other != plane && self.map(*other).contains_key(name) {
+                return Err(RefError::CrossPlane {
+                    name: name.to_string(),
+                    referenced_from: plane,
+                    defined_in: *other,
+                });
+            }
+        }
+        Err(RefError::Unknown {
+            name: name.to_string(),
+            plane,
+        })
+    }
+
+    /// Every entry across every plane, attributed to the plane it belongs to. Walked by the config
+    /// validator, so a plane absent here is a plane that is never validated.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Plane, &str, &T)> {
+        Plane::ALL.iter().flat_map(move |p| {
+            self.map(*p)
+                .iter()
+                .map(move |(name, entry)| (*p, name.as_str(), entry))
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/plane_tests.rs"]
 mod plane_tests;
+
+#[cfg(test)]
+#[path = "tests/sections_tests.rs"]
+mod sections_tests;
