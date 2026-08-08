@@ -508,8 +508,11 @@ jobs:
       - name: Resolve label version
         id: ver
         run: |
-          VER="${{ inputs.label_version }}"
-          echo "ver=${VER#v}" >> "$GITHUB_OUTPUT"
+          VER="${{ inputs.label_version }}"; VER="${VER#v}"
+          # Matches the plugin-pack step's fallback, so a bare `test` dispatch labels the image
+          # honestly rather than with an empty string.
+          [ -n "$VER" ] || VER="0.0.0-test"
+          echo "ver=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Compute tags and labels
         id: meta
@@ -551,7 +554,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # THE VERSION LABEL IS REPEATED HERE ON PURPOSE, AND IT IS NOT BELT-AND-BRACES FOR ITS OWN
+          # SAKE. metadata-action derives an `org.opencontainers.image.version` label from the tag it
+          # computed, which under a throwaway name would be `staging-<sha>`; the `labels:` input above
+          # overrides it, but that override depends on metadata-action's merge order, which is a
+          # property of a third-party action rather than of anything here. buildx applies `--label`
+          # last-one-wins, so restating it after the generated block makes the outcome deterministic
+          # regardless. This matters because verify-deploy's check (d) reads exactly this label: if it
+          # ever said `staging-<sha>`, EVERY release would fail the staged gate, and a check that
+          # blocks every release for a reason unrelated to the software is the fragile-gate defect.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
