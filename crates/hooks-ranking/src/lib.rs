@@ -21,8 +21,8 @@
 //!
 //! ## Every native is written ONCE, for every plane
 //!
-//! Each `impl` below is `impl<P: RoutingPlane> RoutingPolicy<P>`, so one body serves the LLM plane and any
-//! plane that comes after it. That is not a convenience: it is the machine-check on the
+//! Each `impl` below is `impl<P: RoutingPlane> RoutingPolicy<P>`, so one body serves the LLM plane
+//! and any plane that comes after it. That is not a convenience: it is the machine-check on the
 //! plane-neutral / plane-specific line. A native that reached for a plane-specific fact would fail
 //! to compile as a generic impl, and the failure lands on the native rather than on the plane, which
 //! is exactly where the question "is this signal really neutral?" belongs.
