@@ -480,6 +480,12 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / MalformedIfMatch,
             Validation / NoDiskBase,
             Validation / InvalidConfig,
+            // 1.5.4, `named_maps` only: the bulk reset refuses when base config.yaml still names a
+            // definition that exists solely as an API-applied overlay entry, so clearing the
+            // section would leave a dangling reference. Same verdict, same `Cond`, as the
+            // per-entry `DELETE /identity-providers/{name}` -- two guards over one invariant must
+            // not disagree about whether the invariant holds.
+            Conflict / StillReferenced,
             VersionConflict / StaleIfMatch,
         ],
         (Get, "/config/diff") => de![

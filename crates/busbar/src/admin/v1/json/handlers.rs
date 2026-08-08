@@ -1509,9 +1509,17 @@ pub(crate) async fn reset_overlay_section(
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     let Some(section) = OverlaySection::parse(&section) else {
+        // The expected-list is built from `OverlaySection::ALL`, never hand-written. A hand-written
+        // list is how this message came to omit `named_maps`: it is the ONLY discovery surface an
+        // operator who typo'd a section name gets, so a stale one actively teaches them that a real
+        // section does not exist.
+        let expected = OverlaySection::ALL
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, `root`, or \
-             `plugin_versions`"
+            "unknown overlay section `{section}`: expected one of {expected}"
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -1583,12 +1591,64 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let built = crate::load_config_from_disk(
+            let loaded = crate::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
                 crate::config::EnvSubst::Strict,
             )
+            .map_err(AdminError::Validation)?;
+            // DANGLING-REFERENCE GUARD (`named_maps`): refuse a bulk reset that would leave a base
+            // config site naming a definition the reset is about to remove.
+            //
+            // WHY REFUSE rather than proceed and let the rebuild fail. The per-entry
+            // `DELETE /identity-providers/{name}` ALREADY refuses with `409 conflict` naming the
+            // referents. A bulk reset that succeeded where N single deletes would each refuse would
+            // be a laundering path: an operator could reach exactly the dangling state the
+            // per-entry guard exists to prevent just by choosing a different endpoint. Two guards
+            // over one invariant must not disagree about whether the invariant holds.
+            //
+            // It is also the more actionable failure. This handler PERSISTS BEFORE IT SWAPS, so
+            // "let the rebuild fail" means an error from deep inside `resolve` about a config the
+            // operator never wrote. Refusing up front names the entry, the referent and the fix,
+            // and touches nothing.
+            //
+            // `loaded.deploy` is the FRESHLY disk-loaded, PRE-overlay base config, which is exactly
+            // the state that would remain after the reset. Every blocking entry is reported at
+            // once: an operator clearing a section wants one actionable message, not N rounds of
+            // trial and error.
+            if section == OverlaySection::NamedMaps {
+                use crate::config::named_map::NamedMapSection;
+                let mut blocked: Vec<String> = Vec::new();
+                if let Some(doc) = loaded.overlay_doc.as_ref() {
+                    for s in NamedMapSection::ALL {
+                        let Some(entries) = doc.named_maps.get(s.key()) else {
+                            continue;
+                        };
+                        for name in entries.keys() {
+                            let referents = s.referents(&loaded.deploy, name);
+                            if !referents.is_empty() {
+                                blocked.push(format!(
+                                    "{} `{name}` (still referenced by {})",
+                                    s.singular(),
+                                    referents.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+                if !blocked.is_empty() {
+                    return Err(AdminError::Conflict(format!(
+                        "cannot reset the `named_maps` overlay section: base config.yaml still \
+                         references {} definition(s) that only exist as API-applied overlay \
+                         entries, so the reset would leave a dangling reference: {}. Remove the \
+                         reference(s) from config.yaml first, or delete the entries individually.",
+                        blocked.len(),
+                        blocked.join("; ")
+                    )));
+                }
+            }
+            let built = Ok(loaded)
             .and_then(|mut loaded| {
                 // CLEAR the target section from the persisted overlay FIRST — that slice reverts to
                 // base, the other slices stay live. The clear happens before both merge halves so a
@@ -4039,13 +4099,29 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    // The section enum and the summary's section list are both derived from
+    // `OverlaySection::ALL`, never hand-written. A hand-written copy is exactly how `named_maps`
+    // came to be absent from the served contract while the code had no such section either: two
+    // hand-maintained lists agreeing with each other is not the same as either being right.
+    let sections: Vec<&'static str> = crate::config::overlay::OverlaySection::ALL
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     paths.insert(
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": format!(
+                    "DISCARD a section's overlay mutations and revert it to base config.yaml \
+                     (section in {}). Per-section reset: the OTHER sections' overlay survives. A \
+                     NEW config version; an already-empty section is an idempotent no-op \
+                     (changed:false). A `named_maps` reset is refused (409 conflict) when base \
+                     config.yaml still references a definition that exists only as an overlay \
+                     entry, naming every blocking entry and its referents",
+                    sections.join("|")
+                ),
                 "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
+                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": sections}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
                 }

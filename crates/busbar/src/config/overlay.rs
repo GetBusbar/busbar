@@ -558,6 +558,18 @@ pub(crate) enum OverlaySection {
     /// restoring the base-config `plugins.min_versions` floors — the plugins then upgrade back to their
     /// current artifacts on the next (re)load.
     PluginVersions,
+    /// EVERY named-DEFINITION map the generic admin CRUD serves (1.5.3's universal named-map
+    /// pattern): `identity-providers:` and `export:` today, and whatever [`NamedMapSection::ALL`]
+    /// grows to. ONE section, not one per map, because [`OverlayDoc::named_maps`] is ONE field
+    /// keyed by section name and the whole point of the generic pattern is that a new map costs a
+    /// `NamedMapSection` variant and nothing else. A per-map reset already exists: delete the
+    /// entries individually.
+    ///
+    /// 1.5.4: this was MISSING. `OverlaySection` had four variants and `named_maps` was in none of
+    /// them, so API-applied identity-provider and export definitions could not be bulk-reverted to
+    /// `config.yaml` truth at all — while `docs/admin-api.md` and `openapi.json` both stated the
+    /// four-value set as COMPLETE.
+    NamedMaps,
 }
 
 impl OverlaySection {
@@ -569,6 +581,7 @@ impl OverlaySection {
             "groups" => Some(OverlaySection::Groups),
             "root" => Some(OverlaySection::Root),
             "plugin_versions" => Some(OverlaySection::PluginVersions),
+            "named_maps" => Some(OverlaySection::NamedMaps),
             _ => None,
         }
     }
@@ -580,8 +593,21 @@ impl OverlaySection {
             OverlaySection::Groups => "groups",
             OverlaySection::Root => "root",
             OverlaySection::PluginVersions => "plugin_versions",
+            OverlaySection::NamedMaps => "named_maps",
         }
     }
+
+    /// EVERY section, in wire order. The handler's unknown-section 400 builds its "expected ..."
+    /// list from THIS, so a new variant can never be added without the operator-facing discovery
+    /// message learning about it. That message going stale is exactly how `named_maps` stayed
+    /// invisible: it is the only surface an operator who typo'd a section name ever sees.
+    pub(crate) const ALL: &'static [OverlaySection] = &[
+        OverlaySection::Groups,
+        OverlaySection::Hooks,
+        OverlaySection::Root,
+        OverlaySection::PluginVersions,
+        OverlaySection::NamedMaps,
+    ];
 }
 
 /// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —
@@ -693,6 +719,13 @@ impl OverlayDoc {
             OverlaySection::PluginVersions => {
                 self.plugin_versions.clear();
             }
+            // Drop the whole map, not each section's entries: an empty
+            // `BTreeMap` under a section key would serialize as `"export": {}`, which is overlay
+            // state that `section_is_empty` would then have to special-case. Removing outright
+            // keeps "cleared" and "never written" the same bytes on disk.
+            OverlaySection::NamedMaps => {
+                self.named_maps.clear();
+            }
         }
     }
 
@@ -708,6 +741,11 @@ impl OverlayDoc {
             OverlaySection::Groups => self.groups.is_empty() && self.deleted_groups.is_empty(),
             OverlaySection::Root => self.root.as_ref().is_none_or(RootSettings::is_empty),
             OverlaySection::PluginVersions => self.plugin_versions.is_empty(),
+            // `values().all(is_empty)`, not `named_maps.is_empty()`: a hand-edited overlay (or an
+            // older writer) can leave an EMPTY section map behind, and treating that as live state
+            // would make the reset re-run the whole boot pipeline and bump the config version on
+            // every call, forever, while changing nothing.
+            OverlaySection::NamedMaps => self.named_maps.values().all(BTreeMap::is_empty),
         }
     }
 }

@@ -13706,6 +13706,22 @@ async fn drive_named_map_errors() {
             "a dangling delete is a terminal conflict: {parsed}"
         );
         assert_eq!(parsed["error"]["code"], "conflict");
+
+        // The BULK twin (1.5.4): `DELETE /overlay/named_maps` takes the same verdict as the
+        // per-entry DELETE above, on the same fixture. Driven here so the declared
+        // `Conflict / StillReferenced` on `/overlay/{section}` is witness-backed even when the
+        // dedicated test is filtered out of a run.
+        let r = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/named_maps")))
+            .send()
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        let parsed: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            status, 409,
+            "a bulk named_maps reset that would dangle a reference is a conflict: {parsed}"
+        );
+        assert_eq!(parsed["error"]["code"], "conflict");
         handle.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -14013,6 +14029,224 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         store.get("settings").is_none(),
         "no raw settings bag anywhere on this wire: {json}"
     );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -- B4: the `named_maps` overlay section is resettable ------------------------------------------
+
+/// RESET NAMED_MAPS: `DELETE /overlay/named_maps` discards every API-applied named-map definition
+/// (identity providers, exporters) and reverts those sections to base `config.yaml` truth.
+///
+/// Before 1.5.4 there was NO such section: `OverlaySection` had four variants, `named_maps` was in
+/// none of them, and `OverlaySection::parse` 400'd the name. So an operator who had built up
+/// identity-provider or export definitions through the API had no way to bulk-revert them, while
+/// `docs/admin-api.md` and `openapi.json` both stated the four-value set as COMPLETE.
+///
+/// WHAT WOULD MAKE THIS FAIL: dropping the `NamedMaps` variant, its `clear_section` arm (the reset
+/// would 200 while changing nothing), or its `section_is_empty` arm (the idempotent-no-op probe
+/// would report `changed:true` forever and re-run the boot pipeline on every call).
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_named_maps_reverts_to_base() {
+    // `base_export: false` -- the base config defines NO exporter, so the API-applied prometheus
+    // instance below is the only one (a second `module: prometheus` is a hard config error: it
+    // serves the one well-known /metrics route).
+    let (dir, overlay, addr, handle) = named_map_app_opts("reset-nm", false, false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // Build up API-applied definitions in BOTH named-map sections.
+    let put = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/export/extra")))
+        .body(r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    assert!(
+        doc.named_maps.contains_key("identity-providers") && doc.named_maps.contains_key("export"),
+        "both named-map sections carry overlay entries before the reset: {:?}",
+        doc.named_maps
+    );
+
+    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/named_maps")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
+    let body: serde_json::Value = reset.json().await.unwrap();
+    assert_eq!(body["reset"], "named_maps");
+    assert_eq!(body["changed"], true, "the reset discarded the definitions");
+
+    // Cleared on disk, and the whole section is gone (not merely emptied in place).
+    let doc = crate::config::overlay::read(&overlay).expect("overlay still readable");
+    assert!(
+        doc.named_maps.is_empty(),
+        "the overlay named_maps section is cleared: {:?}",
+        doc.named_maps
+    );
+
+    // The API-applied entries are gone; the BASE-config entries are untouched. That asymmetry is
+    // the whole point of a revert-to-config.yaml: it reverts, it does not wipe.
+    for (path, want) in [
+        ("identity-providers/corp-ad", 404),
+        ("identity-providers/base-idp", 200),
+        ("export/extra", 404),
+    ] {
+        let r = admin(client.get(format!("http://{addr}/api/v1/admin/{path}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), want, "GET {path} after the reset");
+    }
+
+    // A second reset is an idempotent no-op: nothing changed, so the version must not bump and the
+    // boot pipeline must not re-run.
+    let again: serde_json::Value =
+        admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/named_maps")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert_eq!(
+        again["changed"], false,
+        "an already-empty named_maps reset is a no-op"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REFERENTIAL INTEGRITY: a bulk `named_maps` reset REFUSES when clearing it would leave a DANGLING
+/// REFERENCE, naming every blocking entry and its referents.
+///
+/// The single-entry `DELETE /identity-providers/{name}` already refuses with `409 conflict` when
+/// another config site still names the entry (`NamedMapSection::referents`). A bulk reset that
+/// silently succeeded where N single deletes would each refuse would be a LAUNDERING PATH: an
+/// operator could reach exactly the dangling state the per-entry guard exists to prevent just by
+/// picking a different endpoint. So the bulk reset takes the same verdict as its per-entry twin.
+///
+/// Refusing beats proceeding-and-failing-later for a second reason: the reset is a
+/// read-modify-write that persists BEFORE the swap, so "let the rebuild fail" means reporting an
+/// error from deep inside `resolve` about a config the operator never wrote. The refusal names the
+/// entry, the referent and the fix, in one message, before anything is touched.
+///
+/// The refusal lists ALL blocking entries at once, not the first: an operator clearing a section
+/// wants one actionable message, not N rounds of trial and error.
+///
+/// WHAT WOULD MAKE THIS FAIL: removing the guard (the reset would 200 and leave `auth.admin_auth`
+/// naming a provider that no longer exists, so the NEXT reload fails to boot), or narrowing it to
+/// report only the first offender.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_named_maps_refuses_dangling_reference() {
+    let (dir, overlay, addr, handle) = named_map_app("reset-nm-dangling", false).await;
+    let config_path = dir.join("config.yaml");
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    let put = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(r#"{"module":"keys"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+
+    // NOW make the BASE config reference it. A `role_bindings:` key names the provider without the
+    // admin chain also trying to LOAD its module, which isolates the guard under test from plugin
+    // loading. This is a real operator sequence: define the provider through the API, then wire it
+    // up in config.yaml.
+    let base = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("{base}auth:\n  role_bindings:\n    corp-ad:\n      viewer: {{ admin_scope: read-only }}\n"),
+    )
+    .unwrap();
+
+    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/named_maps")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reset.status().as_u16(),
+        409,
+        "a reset that would dangle a reference must be refused"
+    );
+    let body: serde_json::Value = reset.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("corp-ad") && msg.contains("auth.role_bindings.corp-ad"),
+        "the refusal names the entry AND the referent: {msg}"
+    );
+
+    // NOTHING was cleared: a refused reset must not have already written.
+    let doc = crate::config::overlay::read(&overlay).expect("overlay still readable");
+    assert!(
+        doc.named_maps
+            .get("identity-providers")
+            .is_some_and(|m| m.contains_key("corp-ad")),
+        "the refused reset left the overlay untouched: {:?}",
+        doc.named_maps
+    );
+    let still = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(still.status().as_u16(), 200, "the definition is still live");
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The unknown-section 400 must NAME every valid section. It is the only discovery surface an
+/// operator hitting a typo gets, so a message that omits a real section teaches them it does not
+/// exist. `named_maps` was missing from the enum, so it was necessarily missing here too.
+///
+/// WHAT WOULD MAKE THIS FAIL: adding a section to `OverlaySection::parse` without adding it to the
+/// handler's error text, which is exactly how this message went stale in the first place.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_unknown_section_names_every_valid_one() {
+    let (dir, _overlay, addr, handle) = named_map_app("reset-nm-unknown", false).await;
+    let client = reqwest::Client::new();
+
+    let r = client
+        .delete(format!(
+            "http://{addr}/api/v1/admin/overlay/no_such_section"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let body: serde_json::Value = r.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    for section in ["groups", "hooks", "root", "plugin_versions", "named_maps"] {
+        assert!(
+            msg.contains(section),
+            "the 400 must name the `{section}` section: {msg}"
+        );
+    }
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
