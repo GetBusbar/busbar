@@ -1,0 +1,32 @@
+[package]
+name = "oauth-as"
+version = "0.1.0"
+publish = false            # workspace-internal for now; extraction to its own repo is planned
+edition = "2021"
+rust-version = "1.97"
+description = "An embeddable OAuth 2.1 Authorization Server library: spec-mirroring types (RFC 6749, RFC 8628, RFC 7636), a full device-authorization-grant state machine, and a storage trait the host implements. Deliberately host-agnostic: this crate depends on NO other crate in this workspace (CI-enforced by scripts/oauth-as-isolation-gate.sh) so it can be extracted to a standalone repository unchanged. Nothing is allocated until the host constructs an AuthorizationServer, so an embedding host pays zero memory until its config enables the feature."
+license = "Apache-2.0"
+
+# DEPENDENCY POLICY: every runtime dependency here was already in the workspace lockfile (nothing new
+# is vendored into the shipped binary), and NONE may be a workspace crate or a `path` dependency.
+# The isolation gate (scripts/oauth-as-isolation-gate.sh) fails CI on any violation.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+sha2 = "0.10"              # PKCE S256 (RFC 7636); verified against the RFC's appendix B vector
+base64 = "0.22"            # BASE64URL-without-padding, the exact PKCE challenge encoding
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+# INDEPENDENT CONFORMANCE HARNESS (dev-only; never in any shipped binary):
+#   - `oauth2` is a widely used third-party OAuth 2 CLIENT. tests/third_party_client.rs drives it
+#     against this AS as a black box through its pluggable HTTP-client seam, so the CLIENT library
+#     (not our own assertions) decides whether our device-flow responses and error bodies are
+#     spec-legal. Pinned exactly: a silent client upgrade must never change what "conformant" means.
+#   - `jsonschema` validates every emitted body against schemas transcribed from RFC 6749 section 5
+#     and RFC 8628 sections 3.2 / 3.5 (tests/conformance_schema.rs).
+oauth2 = { version = "=5.0.0", default-features = false }
+jsonschema = "0.49"
+http = "1"
+url = "2"
