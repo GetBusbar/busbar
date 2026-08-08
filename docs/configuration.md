@@ -323,7 +323,7 @@ auth:
 **Token extraction order (data plane):** `Authorization: Bearer`, then `x-api-key`, then
 `x-goog-api-key`. Blank values are treated as absent.
 
-**Three orthogonal axes (as of 1.5.2).** Data-plane admission, admin-API access, and governance
+**Three orthogonal axes (as of 1.5.3).** Data-plane admission, admin-API access, and governance
 enforcement are independent, each with one local source of truth:
 
 - **Data-plane admission** is decided **solely** by `auth.chain`: `[]` = open/anonymous, `[keys]` =
