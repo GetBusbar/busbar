@@ -215,8 +215,23 @@ jobs:
     # / VALKEY_URL (set on the Test step below) and, because `CI` is set in Actions, HARD-FAIL rather
     # than silently skip if a service is misconfigured - so this coverage cannot vanish unnoticed.
     services:
+      # PINNED BY DIGEST for the same reason as release.yml's gate: `postgres:16` and
+      # `valkey/valkey:8` are moving tags, and these containers are load-bearing (without them the
+      # store roundtrip tests hard-fail rather than skip). What they resolve to must be a fact about
+      # the commit, not about the day. Re-pin with `docker buildx imagetools inspect <tag>`; the
+      # monthly-refresh PR is the natural place.
+      #
+      # NO `credentials:` HERE, DELIBERATELY, AND IT LEAVES HALF THE HOLE OPEN. Authenticating would
+      # raise Docker Hub's anonymous per-IP rate limit, which is the half a digest pin cannot fix --
+      # but this workflow runs on `pull_request`, where secrets are withheld from fork runs, so an
+      # unconditional `credentials:` block would hand every fork PR empty credentials. release.yml's
+      # gate (push to main only) IS authenticated. Closing this half properly means either
+      # restricting the credentials to non-fork events, which GitHub does not allow on a service
+      # container, or mirroring both images into GHCR and pulling from there. Written down rather
+      # than quietly left, because `branch-green` requires this workflow green: a throttled pull
+      # here stops a release.
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
         env:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
@@ -230,7 +245,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
         ports:
           - 6379:6379
         options: >-
