@@ -6,7 +6,7 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
-## [1.5.3], 2026-08-05
+## [1.5.3], 2026-08-08
 
 This release reshapes the config file, so give yourself a few minutes for the upgrade.
 `busbar --migrate-config <config.yaml>` does most of it for you and tells you what it changed. Busbar will
