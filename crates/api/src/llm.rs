@@ -4,7 +4,7 @@
 //! THE LLM PLANE: its marker, the candidate facts it contributes, and the short spelling of its own
 //! candidate.
 //!
-//! This is one instantiation of [`crate::Plane`], and everything in it is a noun the neutral core
+//! This is one instantiation of [`crate::RoutingPlane`], and everything in it is a noun the neutral core
 //! deliberately does not know. A member of an LLM pool is a MODEL served by a PROVIDER, with a
 //! context-window ceiling and an operator-declared tier. None of those four is a fact another plane
 //! can fill, so none of them is a field on every candidate of every plane.
@@ -16,10 +16,10 @@
 
 /// The LLM plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Llm;
+pub struct LlmPlane;
 
-impl crate::Plane for Llm {
-    const NAME: &'static str = "llm";
+impl crate::RoutingPlane for LlmPlane {
+    const KEY: &'static str = "llm";
     type Facts<'a> = LlmFacts<'a>;
 }
 
@@ -42,4 +42,4 @@ pub struct LlmFacts<'a> {
 
 /// The LLM plane's candidate. The alias exists so the plane's own code reads the way it did before
 /// the split, without the neutral core having to name a plane to provide it.
-pub type LlmCandidate<'a> = crate::Candidate<'a, Llm>;
+pub type LlmCandidate<'a> = crate::Candidate<'a, LlmPlane>;

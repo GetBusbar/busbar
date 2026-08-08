@@ -20,7 +20,7 @@
 //! a core that had absorbed any one plane's field names could host neither.
 
 use super::*;
-use crate::{Plane, SignalBag};
+use crate::{RoutingPlane, SignalBag};
 
 /// Shape one: a single borrowed name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +31,8 @@ struct NamedFacts<'a> {
     handle: &'a str,
 }
 
-impl Plane for Named {
-    const NAME: &'static str = "named";
+impl RoutingPlane for Named {
+    const KEY: &'static str = "named";
     type Facts<'a> = NamedFacts<'a>;
 }
 
@@ -60,15 +60,15 @@ struct LayeredFacts<'a> {
     posture: Posture,
 }
 
-impl Plane for Layered {
-    const NAME: &'static str = "layered";
+impl RoutingPlane for Layered {
+    const KEY: &'static str = "layered";
     type Facts<'a> = LayeredFacts<'a>;
 }
 
 /// ONE ranking, written once, over any plane. This function is the proof: if a neutral field had
 /// leaked into a plane, or a plane fact had leaked into the core, this could not be written without
 /// a parameter it does not have.
-fn cheapest_first<P: Plane>(candidates: &[Candidate<'_, P>]) -> Vec<usize> {
+fn cheapest_first<P: RoutingPlane>(candidates: &[Candidate<'_, P>]) -> Vec<usize> {
     let mut keyed: Vec<(usize, Option<f64>)> = candidates.iter().map(|c| (c.idx, c.cost)).collect();
     keyed.sort_by(|(ia, ka), (ib, kb)| match (ka, kb) {
         (Some(a), Some(b)) => a
@@ -85,7 +85,11 @@ fn cheapest_first<P: Plane>(candidates: &[Candidate<'_, P>]) -> Vec<usize> {
 /// Build a candidate on any plane from the neutral values plus that plane's facts. Every neutral
 /// field is set from the same arguments whichever plane is being built, which is the whole assertion
 /// the neutral/specific line makes.
-fn candidate<P: Plane>(idx: usize, cost: Option<f64>, facts: P::Facts<'_>) -> Candidate<'_, P> {
+fn candidate<P: RoutingPlane>(
+    idx: usize,
+    cost: Option<f64>,
+    facts: P::Facts<'_>,
+) -> Candidate<'_, P> {
     Candidate {
         idx,
         weight: 1,
@@ -155,13 +159,18 @@ fn the_same_ranking_serves_a_multi_value_plane() {
     assert_eq!(cheapest_first(&cands), vec![1, 0, 2]);
 }
 
-/// The plane NAME travels with the plane and is never inferred by the core. It is what an audit row
+/// The plane KEY travels with the plane and is never inferred by the core. It is what an audit row
 /// records and a metric labels, and the machine never reads it.
+///
+/// The LLM plane's key is asserted as a LITERAL on purpose. The engine carries a runtime plane enum
+/// whose own key for this plane is the same string, and the two must never disagree about which
+/// planes exist or what they are called. Pinning the literal on this side means a drift shows up as
+/// a failing test here rather than as two subtly different vocabularies in audit records.
 #[test]
-fn the_plane_name_belongs_to_the_plane_not_the_core() {
-    assert_eq!(Named::NAME, "named");
-    assert_eq!(Layered::NAME, "layered");
-    assert_eq!(crate::Llm::NAME, "llm");
+fn the_plane_key_belongs_to_the_plane_not_the_core() {
+    assert_eq!(Named::KEY, "named");
+    assert_eq!(Layered::KEY, "layered");
+    assert_eq!(crate::LlmPlane::KEY, "llm");
 }
 
 /// THE RATCHET, and the reason this file is more than two instantiations.
@@ -179,7 +188,7 @@ fn the_plane_name_belongs_to_the_plane_not_the_core() {
 fn the_neutral_candidate_names_no_plane_in_its_code() {
     const BANNED: &[&str] = &[
         "llm",
-        "Llm",
+        "LlmPlane",
         "LLM",
         "mcp",
         "Mcp",

@@ -29,7 +29,7 @@
 //!   short: anything a single consumer wants goes there and is paid for only when declared, rather
 //!   than becoming a field every request of every plane fills.
 //!
-//! PARAMETERISED ([`Plane::Facts`]), because the planes disagree on the shape and not just the
+//! PARAMETERISED ([`RoutingPlane::Facts`]), because the planes disagree on the shape and not just the
 //! contents: what is being routed TO. There is no honest neutral spelling of it. Flattening the
 //! union of every plane's facts into this struct would put a field on every request of every plane
 //! that only one plane can ever fill, and would make the next plane's arrival an edit to this file
@@ -54,16 +54,30 @@
 /// A ROUTING PLANE: the marker naming one plane and fixing the plane-specific facts its candidates
 /// carry.
 ///
-/// A marker type rather than a value, because a plane is a compile-time fact about a pool and never
-/// a per-request one. That is also what makes a cross-plane reference unrepresentable rather than
+/// A marker TYPE rather than a value, because which plane a pool is on is settled at config load and
+/// never per request. That is also what makes a cross-plane reference unrepresentable rather than
 /// merely rejected: a slice of one plane's candidates cannot be handed to a policy resolved for
 /// another, so the refusal is the type system's and not a validator's to remember.
-pub trait Plane: Copy + std::fmt::Debug + Send + Sync + 'static {
-    /// The operator-facing name of the plane. Read by audit records, metrics labels and
+///
+/// ## Its relationship to the engine's runtime plane
+///
+/// The engine also carries a plane as a VALUE, for the jobs that genuinely are runtime decisions:
+/// which plane an inbound request dispatches to, which config section declares a plane, which scope
+/// kinds grant on it. Those are one-of-N choices made per request or per config document, and an
+/// enum is the right shape for them.
+///
+/// This is the same notion at the other level, and the two must never disagree about which planes
+/// exist. `KEY` is the join: it is spelled to match the runtime plane's own key, so the day both
+/// live on one branch the reconciliation is a single equality assertion per plane rather than a
+/// design question. Deliberately NOT a dependency in either direction: this crate is the contract
+/// every plugin builds against, and it must not grow a dependency on the engine to say what a
+/// candidate looks like.
+pub trait RoutingPlane: Copy + std::fmt::Debug + Send + Sync + 'static {
+    /// The plane's short stable key (`llm`, `mcp`, `a2a`). Read by audit records, metrics labels and
     /// operator-facing views; NEVER interpreted by the machine, which is why the machine cannot
     /// acquire a per-plane special case by accident. Exactly the role `mechanism()` plays for a
-    /// pinned artifact.
-    const NAME: &'static str;
+    /// pinned artifact, and the value that must equal the runtime plane's key.
+    const KEY: &'static str;
 
     /// The plane-specific facts one candidate carries: what is at the end of this lane, said in the
     /// plane's own vocabulary.
@@ -84,7 +98,7 @@ pub trait Plane: Copy + std::fmt::Debug + Send + Sync + 'static {
 /// know is which planes exist. A plane that wants the short spelling writes its own alias, next to
 /// its own facts, where the noun belongs.
 #[derive(Debug, Clone)]
-pub struct Candidate<'a, P: Plane> {
+pub struct Candidate<'a, P: RoutingPlane> {
     /// Index into the caller's member table - the ordered walk's lingua franca.
     pub idx: usize,
     /// The configured SWRR weight. Projected to the hook wire so an external hook can implement a

@@ -1336,7 +1336,7 @@ pub(crate) fn fire_stage_taps(
     if taps.is_empty() {
         return;
     }
-    let hook_req = crate::hooks::wire::HookRequest::<'_, '_, busbar_api::Llm> {
+    let hook_req = crate::hooks::wire::HookRequest::<'_, '_, busbar_api::LlmPlane> {
         op: crate::hooks::wire::OP_NOTIFY,
         request: crate::hooks::wire::HookReqProjection {
             request_id: shape.request_id,

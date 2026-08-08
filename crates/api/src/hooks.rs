@@ -253,10 +253,10 @@ pub struct HookStatus {
 /// policy trait would be a plane that needed its own webhook, its own socket framing and its own
 /// copy of every shipped strategy. The parameter DEFAULTS to the LLM plane so every signature that
 /// already named `RoutingPolicy` keeps meaning what it meant on the frozen surface; a strategy that
-/// reads only neutral candidate fields is written `impl<P: Plane> RoutingPolicy<P>` and serves every
+/// reads only neutral candidate fields is written `impl<P: RoutingPlane> RoutingPolicy<P>` and serves every
 /// plane at once, which is also the machine-check that it reads only neutral fields.
 #[async_trait::async_trait]
-pub trait RoutingPolicy<P: crate::Plane = crate::Llm>: Send + Sync + 'static {
+pub trait RoutingPolicy<P: crate::RoutingPlane = crate::LlmPlane>: Send + Sync + 'static {
     /// Rank candidates for this request. MUST be cancel-safe and SHOULD respect `budget` (a
     /// wall-clock deadline; the caller also wraps the call in a hard `timeout`). Returning `Err` or
     /// exceeding the deadline is handled by the caller per `on_error`; an impl SHOULD prefer

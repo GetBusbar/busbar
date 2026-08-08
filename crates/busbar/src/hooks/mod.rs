@@ -49,8 +49,8 @@ pub(crate) mod wire;
 // implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
 pub(crate) use busbar_api::{
-    CallerIdentity, Candidate, Plane, PolicyError, PolicyResult, PromptProjection, RoutingContext,
-    RoutingDecision, RoutingPolicy, RoutingRequest,
+    CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
+    RoutingDecision, RoutingPlane, RoutingPolicy, RoutingRequest,
 };
 // The "decision observability" signal catalog — `Signal`/`SignalValue`/
 // `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-

@@ -428,7 +428,7 @@ CHOKE_POINTS=(
   #         after which every other plane fills it with nothing forever and the shipped ranking
   #         strategies stop being writable once. The class test reads the module's own code and
   #         fails on any plane noun in it.
-  'G-candidate-projection|CANDIDATE-PLANE-LEAK|crates/api/src/candidate.rs (Candidate / Plane, generic over the plane facts)|crates/api/src/tests/candidate_genericity_tests.rs::the_neutral_candidate_names_no_plane_in_its_code|put the plane noun in that plane facts type, never on the neutral candidate|-|the split is made ahead of the second plane, so neutrality has to be a test rather than a review habit'
+  'G-candidate-projection|CANDIDATE-PLANE-LEAK|crates/api/src/candidate.rs (Candidate / RoutingPlane, generic over the plane facts)|crates/api/src/tests/candidate_genericity_tests.rs::the_neutral_candidate_names_no_plane_in_its_code|put the plane noun in that plane facts type, never on the neutral candidate|-|the split is made ahead of the second plane, so neutrality has to be a test rather than a review habit'
 
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )

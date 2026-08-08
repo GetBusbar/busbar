@@ -10,7 +10,7 @@
 //!   plus the constant-time credential primitives every module compares with.
 //! - **hooks** — the [`RoutingPolicy`] trait (decide/transform/notify + configure/describe) and
 //!   the read-only projections it is invoked with.
-//! - **candidate** — the plane-neutral [`Candidate`] projection and the [`Plane`] trait that fixes
+//! - **candidate** — the plane-neutral [`Candidate`] projection and the [`RoutingPlane`] trait that fixes
 //!   the plane-specific facts one carries; **llm** is the LLM plane's instantiation of it.
 //! - **store** — the [`Store`] trait a `db` plugin implements, plus the durable-store records
 //!   ([`VirtualKey`], [`UsageLedger`], [`CredentialMeta`], [`CredentialSecret`], …) it reads and
@@ -37,12 +37,12 @@ pub use auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,
 };
-pub use candidate::{Candidate, Plane};
+pub use candidate::{Candidate, RoutingPlane};
 pub use hooks::{
     BudgetBucketState, CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection,
     RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
-pub use llm::{Llm, LlmCandidate, LlmFacts};
+pub use llm::{LlmCandidate, LlmFacts, LlmPlane};
 pub use redacted::Redacted;
 pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
 pub use signal::{Signal, SignalBag, SignalValue};

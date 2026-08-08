@@ -8,7 +8,7 @@
 //! append-only.
 
 use super::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
-use busbar_api::Plane;
+use busbar_api::RoutingPlane;
 use serde::{Deserialize, Serialize};
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
@@ -27,7 +27,7 @@ pub(crate) const OP_NOTIFY: &str = "notify";
 /// impls on `PromptProjection`/`CallerIdentity`.
 #[derive(Serialize)]
 #[serde(bound(serialize = ""))]
-pub(crate) struct HookRequest<'a, 'f, P: Plane = busbar_api::Llm> {
+pub(crate) struct HookRequest<'a, 'f, P: RoutingPlane = busbar_api::LlmPlane> {
     /// The message kind: `decide` (a gate's blocking decision), `transform` (a rewrite pass), or
     /// `notify` (a fire-and-forget tap — never answer it). See [`OP_DECIDE`].
     pub(crate) op: &'static str,
@@ -150,7 +150,7 @@ pub(crate) struct HookUser<'a> {
 /// candidate rather than a neutral shell with a plane-shaped lump in it.
 #[derive(Serialize)]
 #[serde(bound(serialize = ""))]
-pub(crate) struct HookCandidate<'f, P: Plane = busbar_api::Llm> {
+pub(crate) struct HookCandidate<'f, P: RoutingPlane = busbar_api::LlmPlane> {
     pub(crate) idx: usize,
     /// The configured SWRR weight — lets an external hook implement a weighted-variant strategy (the
     /// signal the built-in `weighted` floor ranks on; projected so the contract is complete).
@@ -609,7 +609,7 @@ pub(crate) fn sanitize_reject_message(raw: &str) -> String {
 
 /// Build the wire projection from the live request/candidates/context. Borrows everywhere — the
 /// projection is serialized immediately by the transport, never stored.
-pub(crate) fn build<'a, 'f, P: Plane>(
+pub(crate) fn build<'a, 'f, P: RoutingPlane>(
     op: &'static str,
     req: &'a RoutingRequest<'_>,
     // The CANDIDATES' borrow is its own lifetime, and the wire candidate carries that one rather than
@@ -677,7 +677,7 @@ pub(crate) fn build<'a, 'f, P: Plane>(
 /// Normalize a parsed hook reply into a decision: `reject` (clamped + sanitized) wins over
 /// everything; then explicit abstain / absent order → `Abstain`; otherwise the shared liberal
 /// normalizer (drop unknown idxs, dedup, empty → Abstain). One normalization for every transport.
-pub(crate) fn normalize<P: Plane>(
+pub(crate) fn normalize<P: RoutingPlane>(
     parsed: HookResponse,
     candidates: &[Candidate<'_, P>],
 ) -> RoutingDecision {
