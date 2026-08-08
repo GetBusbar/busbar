@@ -1,0 +1,547 @@
+name: plugin-consumer-verify
+
+# plugin-consumer-verify - the ONE consumer-side check every first-party plugin repo calls, the way
+# they all already call plugin-ci.yml. It answers exactly one question per repo:
+#
+#     DOES THE THING WE PUBLISHED ACTUALLY WORK WHEN A USER GETS IT?
+#
+# WHY THE FLEET NEEDED THIS. Not one plugin repo verified what it published. Every repo's release
+# workflow ends with an assertion about ITS OWN upload step, from inside the run that did the
+# uploading, which proves the run believed it succeeded and nothing else. Two failures came straight
+# out of that gap:
+#
+#   * headroom-hook's SHIPPED docker/bundle/config.yaml carries config shapes busbar 1.5.3 retired
+#     (`auth.admin_auth:` with INLINE module entries, which moved under `identity-providers:`). The
+#     published bundle therefore CANNOT BOOT: busbar exits 1 with "this looks like a busbar 1.x
+#     config" before it ever binds a port. The image built fine, pushed fine, and every workflow
+#     involved was green, because "it built" and "it runs" are different claims and only the first
+#     one was ever checked.
+#   * webrequest-hook v1.0.4 published as a zero-asset phantom. The tag exists, the Release object
+#     exists, and there is nothing in it to download.
+#
+# Both are the same shape and neither needs a clever check to catch. It needs SOMEBODY TO ACTUALLY
+# FETCH THE PUBLISHED THING AND USE IT, from outside, after publication.
+#
+# THIS IS DELIBERATELY SMALLER THAN CORE'S verify-deploy.yml. A plugin has no install.sh, no
+# Homebrew tap, no helm chart, no marketing site. It has a Release with tarballs in it, and
+# sometimes a container image. So the whole check is: the Release is real and public, every platform
+# archive it owes is present and downloadable through the moving `latest` pointer, one of those
+# archives unpacks into a plugin busbar would actually accept, and - where the repo ships a runnable
+# bundle - the published image BOOTS AND SERVES rather than merely existing.
+#
+# HOW TO ADOPT IT, in the calling repo's .github/workflows/consumer-verify.yml:
+#
+#   name: consumer-verify
+#   on:
+#     release: { types: [published] }
+#     schedule: [{ cron: "41 9 * * *" }]
+#     workflow_dispatch: { inputs: { version: { required: false, type: string } } }
+#   permissions: { contents: read, issues: write, actions: read }
+#   jobs:
+#     verify:
+#       uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@main
+#       with:
+#         asset_prefix: busbar-store-postgres
+#         plugin_name:  busbar-store-postgres-plugin
+#         plugin_alias: postgres
+#         plugin_kind:  store
+#
+# and, in the repo's OWN release.yml, as the final job so a broken publish turns the RELEASE red:
+#
+#     consumer-verification:
+#       needs: [verify-assets]
+#       if: ${{ !cancelled() }}
+#       uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@main
+#       with: { version: ${{ github.ref_name }}, asset_prefix: ..., ... }
+#       permissions: { contents: read, issues: write, actions: read }
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      asset_prefix:
+        description: >-
+          The release asset basename before the version, i.e. the pack --out prefix. The published
+          asset is <asset_prefix>-<version>-<target>.tar.gz. NOTE it is not always the same as
+          plugin_name: the store repos drop the trailing -plugin from the filename and the auth
+          repos keep it, so this is an input rather than something derived.
+        required: true
+        type: string
+      plugin_name:
+        description: "The manifest `name` the tarball must declare (pack --name), e.g. busbar-store-postgres-plugin"
+        required: true
+        type: string
+      plugin_alias:
+        description: "The manifest `alias` (pack --alias), e.g. postgres"
+        required: true
+        type: string
+      plugin_kind:
+        description: "store | auth | hook | secret - the manifest `kind` (pack --kind)"
+        required: true
+        type: string
+      version:
+        description: >-
+          Version to verify, with or without a leading v. Leave empty and the newest published
+          release of the CALLING repo is used, which is what the daily schedule wants.
+        required: false
+        type: string
+        default: ""
+      targets:
+        description: >-
+          Space-separated platform triples the release owes an archive for. The default is the
+          5-target matrix every plugin repo's release.yml builds. Windows ships .zip in core but
+          .tar.gz here, because plugin-pack always writes a tarball.
+        required: false
+        type: string
+        default: "x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc"
+      require_signed:
+        description: >-
+          Assert the published manifest carries a signature. Default true, and it should stay true:
+          every plugin release workflow falls back to --allow-unsigned when BUSBAR_SIGN_KEY is
+          unset, so an unsigned publish looks identical to a signed one from inside the release run
+          and is refused by busbar at load time on the user's machine. Set false ONLY with a comment
+          saying why, so the exemption is a visible decision rather than a silent gap.
+        required: false
+        type: boolean
+        default: true
+      bundle_image:
+        description: >-
+          Docker repository of a runnable bundle this repo publishes, e.g. getbusbar/busbar-headroom.
+          Empty means the repo ships no bundle and the boot check is declared not-applicable rather
+          than silently skipped. When set, the image is pulled FRESH, its :latest is checked against
+          the version pin by manifest digest, and the container must BOOT AND SERVE.
+        required: false
+        type: string
+        default: ""
+      bundle_env:
+        description: >-
+          Space-separated KEY=VALUE pairs passed to `docker run -e` for the bundle boot. The bundle's
+          shipped config decides what is required; headroom's needs ANTHROPIC_KEY and
+          BUSBAR_ADMIN_TOKEN. Dummy values are correct here: this asserts BOOT and health, and
+          deliberately spends no real provider call.
+        required: false
+        type: string
+        default: ""
+      bundle_health_path:
+        description: "Path the booted bundle must serve"
+        required: false
+        type: string
+        default: "/healthz"
+      bundle_health_body:
+        description: "Exact body the health path must return"
+        required: false
+        type: string
+        default: "ok"
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  consumer:
+    name: consumer check (fetch what we published and use it)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      ASSET_PREFIX: ${{ inputs.asset_prefix }}
+      PLUGIN_NAME: ${{ inputs.plugin_name }}
+      PLUGIN_ALIAS: ${{ inputs.plugin_alias }}
+      PLUGIN_KIND: ${{ inputs.plugin_kind }}
+      IN_VERSION: ${{ inputs.version }}
+      TARGETS: ${{ inputs.targets }}
+      REQUIRE_SIGNED: ${{ inputs.require_signed }}
+      BUNDLE_IMAGE: ${{ inputs.bundle_image }}
+      BUNDLE_ENV: ${{ inputs.bundle_env }}
+      HEALTH_PATH: ${{ inputs.bundle_health_path }}
+      HEALTH_BODY: ${{ inputs.bundle_health_body }}
+    steps:
+      # No actions/checkout, on purpose and for the same reason core's verify-deploy.yml has none:
+      # this job must not be able to read the repository. Every byte it judges is fetched from the
+      # published Release or pulled from the registry, because a fix that is committed but never
+      # published is still broken for every user, and a working copy is exactly how that gets hidden.
+      - name: Does what we published actually work?
+        id: check
+        run: |
+          set -uo pipefail   # NOT -e: every check runs and ALL failures are reported. "the bundle
+                             # does not boot" and "the bundle does not boot AND two archives are
+                             # missing" are different incidents and the first must not hide the second.
+          fail=0
+          : > /tmp/findings.md
+
+          record() {  # record <what> <expected> <observed> <hint>
+            echo "FAIL: $1 | expected: $2 | observed: $3"
+            {
+              echo "- **$1**"
+              echo "  - expected: \`$2\`"
+              echo "  - observed: \`$3\`"
+              echo "  - $4"
+            } >> /tmp/findings.md
+            echo "::error::CONSUMER CHECK FAILED: $1 - expected '$2', observed '$3'. $4"
+            fail=1
+          }
+          declared() { echo "NOT APPLICABLE: $1 - $2"; }
+
+          # -- Which version --------------------------------------------------------------------
+          V="${IN_VERSION#v}"
+          if [ -z "$V" ]; then
+            # From the RELEASES list, not from /releases/latest, which is one of the pointers this
+            # job is about to test. Asking a pointer what the answer is and then checking the
+            # pointer against its own answer is a check that can never fail.
+            V="$(gh api --paginate "repos/${REPO}/releases" \
+                  --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null \
+                | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          fi
+          if [ -z "${V:-}" ]; then
+            echo "::error::${REPO} has no published, non-draft release to verify. Either nothing has shipped yet, or - the failure this exists to catch - the release was created as a DRAFT and never promoted, which means it is invisible to every user while looking perfectly fine on the Actions tab."
+            exit 1
+          fi
+          TAG="v$V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Verifying what ${REPO} published as ${TAG}, from the outside."
+
+          # -- C1: the Release is REAL and PUBLIC -----------------------------------------------
+          # A draft Release is the failure mode two repos in the fleet are one bug away from:
+          # headroom-hook and webrequest-hook both create the Release with --draft and rely on their
+          # verify-assets job running `gh release edit --draft=false` afterwards. If that job is
+          # skipped (a `needs:` on a failed job skips its dependent by DEFAULT, which is exactly how
+          # busbar's own verify-assets got skipped precisely when the release was broken), the tag
+          # exists, the run may even be green, and users see nothing at all.
+          meta="$(gh api "repos/${REPO}/releases/tags/${TAG}" 2>/dev/null || true)"
+          if [ -z "$meta" ]; then
+            record "GitHub Release ${TAG}" "a published Release" "<does not exist>" \
+              "The tag was pushed but no Release object is visible. Fix: check the release workflow's create-release job."
+            echo "$fail" >/dev/null
+          else
+            is_draft="$(printf '%s' "$meta" | jq -r '.draft')"
+            if [ "$is_draft" = "true" ]; then
+              record "GitHub Release ${TAG} draft flag" "false (published)" "true (still a DRAFT)" \
+                "A draft Release is INVISIBLE to users: nothing downloads, and \`gh release download\` fails. The release workflow creates it with --draft and promotes it in verify-assets, so verify-assets was skipped or failed. Fix: \`gh release edit ${TAG} --repo ${REPO} --draft=false --latest\`, then fix the promote step."
+            else
+              echo "PASS: Release ${TAG} exists and is published (not a draft)"
+            fi
+          fi
+
+          # -- C2: the moving `latest` pointer resolves to it -----------------------------------
+          # Users and tooling that do not pin a version follow /releases/latest. It 404s if the
+          # newest Release is not flagged latest and silently serves the PREVIOUS release otherwise.
+          loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
+            "https://github.com/${REPO}/releases/latest" || true)"
+          if [ "${loc##*/releases/tag/}" = "$TAG" ]; then
+            echo "PASS: github.com/${REPO}/releases/latest -> ${TAG}"
+          else
+            record "${REPO} /releases/latest" ".../releases/tag/${TAG}" "${loc:-<no redirect>}" \
+              "Anyone fetching this plugin without pinning a version gets a different release than ${TAG}. Fix: flag ${TAG} as latest (\`gh release edit ${TAG} --latest\`)."
+          fi
+
+          # -- C3: every platform archive is present, sized and DOWNLOADABLE --------------------
+          # THE PHANTOM GUARD, and the reason it is not a count. webrequest-hook v1.0.4 published
+          # with zero assets; a `>= 1` assertion would have caught that one but passes happily for a
+          # release missing four of five platforms, which is the busbar-1.5.3 shape one level down.
+          # A count can never see a MISSING PLATFORM. Only a name can. And a name in the asset list
+          # is still not a usable artifact: GitHub creates the row when the upload STARTS, so a
+          # truncated upload lists identically to a good one. Assert name, size and real bytes.
+          listed="$(printf '%s' "$meta" | jq -r '.assets[]? | "\(.name)\t\(.size)"' 2>/dev/null || true)"
+          if [ -z "$listed" ]; then
+            record "Release ${TAG} assets" "one archive per platform in: ${TARGETS}" "ZERO assets" \
+              "PHANTOM RELEASE: the tag and the Release object exist and there is nothing in them to download. This is webrequest-hook v1.0.4 verbatim. Fix: every leg of the release build matrix failed to upload - check the cdylib build and the sibling busbar checkout pin in .busbar-ref."
+          fi
+          first_archive=""
+          for t in $TARGETS; do
+            a="${ASSET_PREFIX}-${V}-${t}.tar.gz"
+            sz="$(printf '%s\n' "$listed" | awk -F'\t' -v n="$a" '$1==n{print $2; exit}')"
+            if [ -z "${sz:-}" ]; then
+              record "Release asset ${a}" "present on ${TAG}" "<missing>" \
+                "Users on ${t} get a 404. Fix: that target's leg of the release build matrix did not upload - it runs with fail-fast:false, so the other platforms succeeding tells you nothing about this one."
+              continue
+            fi
+            # A packed plugin is a compressed cdylib: hundreds of KB at the very least. 50 KiB is far
+            # below any real one and far above a truncated or header-only upload.
+            if [ "$sz" -lt 51200 ]; then
+              record "Release asset ${a} size" ">= 51200 bytes" "${sz} bytes" \
+                "A truncated upload: it is listed as present and is useless to anyone who downloads it. Fix: re-upload the asset."
+              continue
+            fi
+            # Through /releases/latest/download/, not the pinned tag URL: that is the version-agnostic
+            # path, so this proves the moving pointer AND the asset in one request.
+            u="https://github.com/${REPO}/releases/latest/download/${a}"
+            code="$(curl -sSL --max-time 60 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            case "$code" in
+              200|206)
+                echo "PASS: ${a} present (${sz} bytes) and downloadable through /releases/latest/download/"
+                [ -z "$first_archive" ] && first_archive="$a"
+                ;;
+              *) record "/releases/latest/download/${a}" "HTTP 200/206" "HTTP ${code}" \
+                   "The asset is listed on the Release but downloading it fails, so a user following the documented URL gets nothing. Fix: re-upload it." ;;
+            esac
+          done
+
+          # -- C4: the archive is a plugin busbar would actually accept -------------------------
+          # An archive that downloads is not an archive that LOADS. busbar refuses a plugin whose
+          # manifest is absent, whose declared sha256 does not bind the cdylib beside it, or (under
+          # default trust) that carries no signature - and every one of those is invisible from
+          # inside the release run that produced it.
+          if [ -n "$first_archive" ]; then
+            work="$(mktemp -d)"
+            if curl -fsSL --max-time 120 \
+                 "https://github.com/${REPO}/releases/latest/download/${first_archive}" \
+                 -o "${work}/p.tar.gz" && tar xzf "${work}/p.tar.gz" -C "$work" 2>/dev/null; then
+              if [ ! -s "${work}/manifest.json" ]; then
+                record "${first_archive} contents" "a manifest.json at the archive root" "<absent>" \
+                  "busbar rejects the plugin at load time with no manifest. Fix: the pack step produced a malformed archive."
+              else
+                py_out="$(python3 - "$work" "$PLUGIN_NAME" "$PLUGIN_ALIAS" "$PLUGIN_KIND" "$V" "$REQUIRE_SIGNED" <<'PY'
+          import glob, hashlib, json, os, sys
+          work, want_name, want_alias, want_kind, want_ver, require_signed = sys.argv[1:7]
+          m = json.load(open(os.path.join(work, "manifest.json")))
+          out = []
+          def chk(field, got, want):
+              out.append(("ok" if got == want else "bad", "manifest %s" % field, str(want), str(got)))
+          chk("name", m.get("name"), want_name)
+          chk("alias", m.get("alias"), want_alias)
+          chk("kind", m.get("kind"), want_kind)
+          chk("version", m.get("version"), want_ver)
+          libs = [p for p in glob.glob(os.path.join(work, "*"))
+                  if os.path.basename(p) not in ("manifest.json", "p.tar.gz")]
+          if not libs:
+              out.append(("bad", "cdylib in the archive", "one shared library beside manifest.json", "none"))
+          else:
+              b = open(libs[0], "rb").read()
+              chk("sha256 binding to %s" % os.path.basename(libs[0]),
+                  hashlib.sha256(b).hexdigest(), m.get("sha256"))
+              # The magic byte check is cheap and catches the whole family of "we packed the wrong
+              # file": a build script that packed a .d, an empty stub, or a text error message.
+              magic = "ELF" if b[:4] == b"\x7fELF" else ("Mach-O" if b[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe") else ("PE" if b[:2] == b"MZ" else "not a shared library"))
+              out.append(("ok" if magic != "not a shared library" else "bad",
+                          "packed file is a real shared library", "ELF/Mach-O/PE", magic))
+          if require_signed == "true":
+              out.append(("ok" if m.get("signature") else "bad", "manifest signature", "a non-empty signature", m.get("signature") or "<EMPTY: packed with --allow-unsigned>"))
+          for verdict, what, want, got in out:
+              print("\t".join((verdict, what, want, got)))
+          PY
+          )" || py_out=""
+                if [ -z "$py_out" ]; then
+                  record "${first_archive} manifest" "a readable manifest.json" "<unparseable>" \
+                    "The published archive's manifest could not be read at all. Fix: re-run the pack step."
+                fi
+                while IFS=$'\t' read -r verdict what want got; do
+                  [ -n "${verdict:-}" ] || continue
+                  if [ "$verdict" = "ok" ]; then
+                    echo "PASS: ${what} == ${got}"
+                  else
+                    record "${first_archive}: ${what}" "$want" "$got" \
+                      "busbar refuses to load this plugin on the user's machine. A signature is empty when BUSBAR_SIGN_KEY was unset and the pack step silently fell back to --allow-unsigned; a sha256 mismatch means the archive was rebuilt after signing. Fix: provision BUSBAR_SIGN_KEY in this repo and re-cut."
+                  fi
+                done <<< "$py_out"
+              fi
+            else
+              record "${first_archive} download+extract" "a valid .tar.gz" "<could not download or untar>" \
+                "The published bytes are not a readable gzip archive. Fix: re-upload the asset."
+            fi
+            rm -rf "$work"
+          fi
+
+          # -- C5: THE BUNDLE MUST BOOT AND SERVE -----------------------------------------------
+          # "It built" and "it runs" are different claims, and only the first was ever checked
+          # anywhere in this fleet. headroom-hook's published bundle proves the gap is not theoretical:
+          # its shipped docker/bundle/config.yaml still uses `auth.admin_auth:` with inline module
+          # entries, retired in busbar 1.5.3, so the container exits 1 during config load with "this
+          # looks like a busbar 1.x config" and never binds a port. The image builds, pushes, and
+          # every workflow involved goes green.
+          if [ -z "$BUNDLE_IMAGE" ]; then
+            declared "runnable bundle boot" "this repo publishes no container bundle (bundle_image is empty), so there is no image to boot. If it grows one, set bundle_image and this check starts applying automatically."
+          else
+            # DELETE THE LOCAL COPIES FIRST. `docker pull` is a no-op against a tag the daemon
+            # already has and `docker run`/`inspect` then use the LOCAL image, which reports a stale
+            # bundle as fresh. Nothing below may be allowed to answer from cache.
+            docker rmi -f "${BUNDLE_IMAGE}:${V}" "${BUNDLE_IMAGE}:latest" >/dev/null 2>&1 || true
+            if ! docker pull -q "${BUNDLE_IMAGE}:${V}" >/dev/null 2>&1; then
+              record "${BUNDLE_IMAGE}:${V}" "a pullable image" "<pull failed>" \
+                "The bundle for ${TAG} was never pushed, so \`docker run ${BUNDLE_IMAGE}\` cannot give anyone this version. Fix: re-run the bundle build workflow for ${TAG}."
+            else
+              # `:latest` must be the same image, by DIGEST. A bundle whose :latest never moved hands
+              # every unpinned user the previous release, silently and indefinitely.
+              d_ver="$(docker image inspect "${BUNDLE_IMAGE}:${V}" --format '{{index .RepoDigests 0}}' 2>/dev/null | sed 's/.*@//')"
+              d_latest=""
+              docker pull -q "${BUNDLE_IMAGE}:latest" >/dev/null 2>&1 \
+                && d_latest="$(docker image inspect "${BUNDLE_IMAGE}:latest" --format '{{index .RepoDigests 0}}' 2>/dev/null | sed 's/.*@//')"
+              if [ -n "$d_ver" ] && [ "$d_ver" = "$d_latest" ]; then
+                echo "PASS: ${BUNDLE_IMAGE}:latest == :${V} (${d_ver})"
+              else
+                record "${BUNDLE_IMAGE}:latest" "${d_ver:-<unknown>} (the :${V} digest)" "${d_latest:-<nothing>}" \
+                  "\`docker run ${BUNDLE_IMAGE}\` with no tag - what the docs show - serves a different release than ${TAG}. Fix: the bundle build must tag and push \`latest\` as well as the version; docker/metadata-action does NOT imply latest from a semver pattern."
+              fi
+
+              # THE PORT MUST BE PROVEN FREE BEFORE THE PROBE, and this is not paranoia: probing a
+              # port that something else already answers on returns a cheerful 200 from the wrong
+              # process while the container under test is dead in the water. That happened while this
+              # check was being written and briefly reported a bundle as healthy that had exited 1.
+              port=18723
+              if curl -s -m 3 -o /dev/null "http://127.0.0.1:${port}${HEALTH_PATH}" 2>/dev/null; then
+                echo "::error::port ${port} on the runner is already answering before the container starts, so a health probe against it would prove nothing. Refusing to report a possibly-false PASS."
+                fail=1
+              else
+                envargs=""
+                for kv in $BUNDLE_ENV; do envargs="${envargs} -e ${kv}"; done
+                docker rm -f busbar-bundle-verify >/dev/null 2>&1 || true
+                # shellcheck disable=SC2086
+                docker run -d --name busbar-bundle-verify -p "${port}:8080" $envargs \
+                  "${BUNDLE_IMAGE}:${V}" >/dev/null 2>&1 || true
+                body=""
+                for _ in $(seq 1 30); do
+                  # A container that EXITED will never answer, so stop waiting the moment it dies
+                  # rather than burning the full 60s and then reporting a timeout, which reads like a
+                  # slow boot instead of a refusal to boot.
+                  st="$(docker inspect -f '{{.State.Status}}' busbar-bundle-verify 2>/dev/null || echo missing)"
+                  [ "$st" = "exited" ] || [ "$st" = "missing" ] && break
+                  body="$(curl -fsS -m 3 "http://127.0.0.1:${port}${HEALTH_PATH}" 2>/dev/null || true)"
+                  [ "$body" = "$HEALTH_BODY" ] && break
+                  sleep 2
+                done
+                st="$(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' busbar-bundle-verify 2>/dev/null || echo 'missing exit=?')"
+                if [ "$body" = "$HEALTH_BODY" ]; then
+                  echo "PASS: ${BUNDLE_IMAGE}:${V} boots and serves '${HEALTH_BODY}' on ${HEALTH_PATH}"
+                else
+                  echo "--- container log ---"
+                  docker logs busbar-bundle-verify 2>&1 | head -40 || true
+                  echo "---------------------"
+                  record "${BUNDLE_IMAGE}:${V} boot" "serves '${HEALTH_BODY}' on ${HEALTH_PATH}" "container ${st}, body '${body:-<none>}'" \
+                    "THE PUBLISHED BUNDLE DOES NOT RUN. A user who does \`docker run ${BUNDLE_IMAGE}\` gets a container that dies. The log is above; the known cause in this fleet is the bundle's own shipped config.yaml using config shapes a newer busbar retired, in which case busbar exits 1 with 'this looks like a busbar 1.x config' before binding a port. Fix: run \`busbar --migrate-config\` over docker/bundle/config.yaml, and pin .busbar-ref to the engine the bundle actually embeds."
+                fi
+                docker rm -f busbar-bundle-verify >/dev/null 2>&1 || true
+              fi
+            fi
+          fi
+
+          {
+            echo "### Consumer check for \`${TAG}\`"
+            echo
+            if [ "$fail" = 0 ]; then
+              echo "What ${REPO} published as \`${TAG}\` downloads, unpacks into a plugin busbar accepts, and (where a bundle is published) boots and serves."
+            else
+              echo "**What ${REPO} published as \`${TAG}\` does NOT work for a user:**"
+              echo
+              cat /tmp/findings.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$fail" = 0 ]
+
+  # Same alert shape as core's verify-deploy.yml, and for the same reason: a red run in a repo
+  # nobody is watching is not a signal. Because this is a reusable workflow, `github.repository` is
+  # the CALLING repo, so the issue lands where the broken release lives. Idempotent by label: one
+  # open issue at a time, retitled and rewritten on every later failure, so a daily schedule updates
+  # it instead of filing thirty.
+  alert:
+    name: alert (open or update the release-broken issue)
+    needs: consumer
+    if: ${{ always() && needs.consumer.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      VERSION: ${{ needs.consumer.outputs.version }}
+      LABEL: consumer-verification
+    steps:
+      - name: Open or update the single open release-broken issue
+        run: |
+          set -uo pipefail
+          V="${VERSION:-unknown}"
+          TITLE="[release-broken] Published v${V} does not work for a consumer"
+
+          # Read the findings out of the FAILED JOB'S OWN LOG rather than restating them. The job
+          # already printed `FAIL: <what> | expected: <x> | observed: <y>` and an `::error::` line
+          # naming the fix; re-deriving that here would be a second statement of the same fact, free
+          # to drift from the first, which is the exact defect shape this whole workflow exists to
+          # catch. Job logs are available over the API as soon as the JOB finishes, which it has.
+          : > /tmp/findings.md
+          jid="$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs" \
+                  --jq '[.jobs[]? | select(.conclusion=="failure")][0].id' 2>/dev/null || true)"
+          if [ -n "${jid:-}" ] && gh api "repos/${REPO}/actions/jobs/${jid}/logs" > /tmp/job.log 2>/dev/null; then
+            sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' /tmp/job.log \
+              | grep -E '^(FAIL:|::error::)' | sed -E 's/^::error::/DIAGNOSIS: /' \
+              | head -40 | sed 's/^/    /' >> /tmp/findings.md
+          fi
+          [ -s /tmp/findings.md ] || echo "    (the failed job's log was not retrievable over the API; open the run and read it there)" >> /tmp/findings.md
+
+          {
+            echo "<!-- consumer-verification-alert -->"
+            echo
+            echo "**What this repo published does not work when a user gets it.** Opened and"
+            echo "maintained automatically by \`GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml\`,"
+            echo "which downloads the published artifact from the Release and uses it - it does not"
+            echo "read this repository, so a fix that is committed but not published still fails here."
+            echo
+            echo "This is **not a flaky test**. Every check reads what is published."
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| version under test | \`v${V}\` |"
+            echo "| failing run | ${RUN_URL} |"
+            echo "| last checked | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo
+            echo "## What failed"
+            echo
+            cat /tmp/findings.md
+            echo
+            echo "## What to do"
+            echo
+            echo "Read the \`DIAGNOSIS:\` lines - each names the user-visible symptom and the fix."
+            echo "Fix it at the source (the release workflow, the bundle's shipped config), then"
+            echo "re-run the check. This issue is reused, not duplicated, and closes itself when a"
+            echo "run passes."
+          } > /tmp/issue-body.md
+
+          gh label create "$LABEL" --repo "$REPO" --color B60205 \
+            --description "A published release is broken for consumers (auto-filed)" >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "${existing:-}" ]; then
+            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file /tmp/issue-body.md
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC') - ${RUN_URL}"
+            echo "::error::Consumer verification is FAILING for v${V}. Details in ${GITHUB_SERVER_URL}/${REPO}/issues/${existing}"
+          else
+            num="$(gh issue create --repo "$REPO" --title "$TITLE" --label "$LABEL" \
+              --body-file /tmp/issue-body.md 2>/dev/null | tail -1)"
+            echo "::error::Consumer verification is FAILING for v${V}. Opened ${num}"
+          fi
+
+  # Without this the issue is opened once and lives forever, and a stale open "release is broken"
+  # issue is worse than none: the next real breakage looks like the old one and gets ignored.
+  resolved:
+    name: close the release-broken issue when the check passes
+    needs: consumer
+    if: ${{ always() && needs.consumer.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      LABEL: consumer-verification
+    steps:
+      - name: Close any open release-broken issue
+        run: |
+          set -uo pipefail
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          [ -n "${existing:-}" ] || { echo "No open ${LABEL} issue. Nothing to close."; exit 0; }
+          gh issue comment "$existing" --repo "$REPO" \
+            --body "Consumer verification is GREEN again as of $(date -u '+%Y-%m-%d %H:%M UTC'): the published release downloads, unpacks into a plugin busbar accepts, and boots where a bundle is published. Closing. Run: ${RUN_URL}"
+          gh issue close "$existing" --repo "$REPO" --reason completed
+          echo "Closed #${existing}."

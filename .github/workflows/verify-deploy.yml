@@ -462,11 +462,27 @@ jobs:
           # as a failed pipeline - so the check goes RED EXACTLY WHEN THE ASSERTION HOLDS and green
           # only when the page is missing the version. That inversion is live in check (g) below and
           # is fixed there too. Fetch to a file, then grep the file.
-          curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/pt-download.html 2>/dev/null || : > /tmp/pt-download.html
-          if grep -qE "v${V}([^0-9]|\$)" /tmp/pt-download.html; then
+          # "COULD NOT READ THE PAGE" AND "THE PAGE IS STALE" ARE DIFFERENT INCIDENTS and must not
+          # share a message. The first run of this check on a GitHub runner reported "v1.5.3 not
+          # present on the page" for a page that plainly shows v1.5.3 from a laptop: the runner's
+          # datacenter IP gets a different response (bot challenge / edge block) than a browser. A
+          # check that says "the site is stale" when it means "I was blocked" sends whoever reads
+          # the issue to redeploy a site that is fine, and the second time it does that, everyone
+          # stops believing it. So: send the User-Agent a real visitor sends, and report the HTTP
+          # code and body size when the page cannot be read as a page, distinct from staleness.
+          dl_code="$(curl -sSL --max-time 30 \
+            -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            -o /tmp/pt-download.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+          dl_size="$(wc -c < /tmp/pt-download.html 2>/dev/null || echo 0)"
+          if [ "$dl_code" != "200" ] || [ "$dl_size" -lt 500 ]; then
+            record "getbusbar.com/download/ readability" "HTTP 200 and a real HTML page" "HTTP ${dl_code}, ${dl_size} bytes" \
+              "The download page could not be READ from here, so nothing can be concluded about which version it advertises. If a browser loads it fine this is an edge/bot block against datacenter IPs rather than a stale site - fix the block or allowlist, do not redeploy the site."
+          elif grep -qE "v${V}([^0-9]|\$)" /tmp/pt-download.html; then
             echo "PASS: getbusbar.com/download/ advertises v${V}"
           else
-            record "getbusbar.com/download/ advertised version" "v${V}" "<not present on the page>" \
+            record "getbusbar.com/download/ advertised version" "v${V}" \
+              "<not present in ${dl_size} bytes of HTML: $(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' /tmp/pt-download.html | sort -u | tr '\n' ' ' | head -c 80)>" \
               "The site tells visitors the current release is something other than ${TAG}. Fix: redeploy the marketing site."
           fi
 
@@ -946,8 +962,13 @@ jobs:
           # the branch was taken only when the page did NOT contain the version - this check has
           # been reporting "getbusbar.com/download/ does not show vX.Y.Z" against a page that
           # plainly does, burning its full 5 minutes of retries first. Fetch, then grep the file.
+          # And the UA is a real browser's for the reason the `pointers` job documents: a bare curl
+          # from a datacenter IP can be served a challenge page instead of the site, which reads as
+          # "the version is missing" and sends someone to redeploy a site that is fine.
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
           for i in $(seq 1 20); do
-            curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/dl-version.html 2>/dev/null || : > /tmp/dl-version.html
+            curl -fsSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+              "https://getbusbar.com/download/" -o /tmp/dl-version.html 2>/dev/null || : > /tmp/dl-version.html
             if grep -qE "v${V}([^0-9]|\$)" /tmp/dl-version.html; then
               found=1
               break
@@ -969,7 +990,8 @@ jobs:
           # can be green while every button hands users a stale binary — and they 404 outright if
           # the Release exists but is not flagged 'latest'. Both are user-visible breakage that
           # nothing else in this workflow covers, so resolve what the buttons actually point at.
-          curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
+          curl -fsSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+            "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
             echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links. Fix: redeploy the marketing site."
             exit 1
           }
