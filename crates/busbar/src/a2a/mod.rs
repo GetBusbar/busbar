@@ -30,6 +30,7 @@
 // in the deployment.
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
 pub(crate) mod jws;
