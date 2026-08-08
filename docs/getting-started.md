@@ -94,7 +94,9 @@ Busbar reads two YAML files:
 - `providers.yaml`: the shipped provider catalog (protocol, `base_url`, error maps). You almost never edit this. The one-line installer fetches it for you, or grab it from [getbusbar.com/providers.yaml](https://getbusbar.com/providers.yaml).
 - `config.yaml`, your deployment: which providers to activate, their key env-var names, your models, and optionally pools.
 
-**Important: keys are never written into config.** `api_key: { env: VAR }` is a secret REFERENCE naming the *environment variable* that holds a provider's key; Busbar resolves it at startup (a `{ file: /path }` reference or a secret plugin work the same way). (Separately, `${VAR}` tokens elsewhere in `config.yaml` are expanded from the environment at load time.) An unset referenced variable is a loud startup failure, not a silent skip.
+**Important: keys are never written into config.** `api_key: { env: VAR }` is a secret REFERENCE naming the *environment variable* that holds a provider's key; Busbar resolves it at startup (a `{ file: /path }` reference or a secret plugin work the same way). (Separately, `${VAR}` tokens elsewhere in `config.yaml` are expanded from the environment at load time.)
+
+**An unset referenced variable does NOT stop Busbar.** It logs a warning at boot and starts anyway, so the gateway serves and every request to that provider fails upstream on a missing credential. `--validate` does not catch it either: it checks the shape of the reference, not whether the variable resolves, and exits 0. Check your environment before you conclude a config is good, and read the boot log for `api_key did not resolve`.
 
 ### Minimal `config.yaml` (one provider, one model, no auth)
 
