@@ -69,10 +69,16 @@ name: Verify deploy
 # is worse than not making it.
 #
 # Triggers:
-#   - workflow_run: fires when release.yml ("Release") or docker.yml ("Docker") completes on a tag
-#     push. The two run in parallel off the same tag push (tag-on-main.yml), so there is no fixed
-#     ordering — each check below retries with backoff for a few minutes to ride out the race
-#     instead of false-failing because the OTHER workflow hasn't finished publishing yet.
+#   - workflow_run: LARGELY VESTIGIAL NOW, AND SAID SO RATHER THAN QUIETLY LEFT. It used to fire
+#     when release.yml or docker.yml completed on a tag push, because the two ran in parallel off
+#     one tag and neither could wait for the other. Neither runs on a tag any more: release.yml
+#     runs on the main push and CALLS this file twice (in `staging` mode as the pre-promote gate,
+#     then in public mode as the last step), and docker.yml only runs as a called workflow, which
+#     emits no workflow_run event of its own. The trigger is kept because it costs nothing and
+#     still catches a manual dispatch of either workflow, and its `head_branch` starts-with-'v'
+#     guard means the main-push release runs do not double-fire it. The retry-with-backoff loops
+#     below are kept for the same reason they always existed: registries and CDNs settle at their
+#     own pace.
 #   - workflow_dispatch: manual re-check of an already-shipped version.
 #   - schedule (daily): install.sh worked on release day and broke LATER — GitHub's unauthenticated
 #     rate limiting is environmental, not a property of our artifacts, so nothing about the release
@@ -119,10 +125,12 @@ name: Verify deploy
 # repo-state dependency to go stale against. A dispatcher would add a checkout whose entire purpose
 # is to be read, in a workflow whose entire purpose is to read nothing local.
 #
-# So `release: [published]` is now a trigger in its own right. `create-release` publishes the Release
-# object BEFORE the build matrix runs, and that event fires regardless of what the rest of the run
-# does, which is exactly the property needed: if a release object exists in public, it gets verified,
-# whether or not the workflow that made it finished happy.
+# So `release: [published]` is now a trigger in its own right, and under the draft-then-promote order
+# it means something sharper than it used to. The release object is created as a DRAFT, which fires
+# NO event; the `published` event fires at the moment the draft is promoted. So this trigger now
+# means exactly "a release just became visible to users", whoever made it visible and whether or not
+# the workflow that made it finished happy. A release promoted by hand gets verified the same as one
+# promoted by the pipeline.
 #
 # -- THIS IS THE LAST STEP OF THE RELEASE, NOT A BYSTANDER ---------------------------------------
 # Until now every trigger above fired this workflow BESIDE the release. release.yml's own graph
@@ -143,13 +151,27 @@ name: Verify deploy
 #   * A called workflow's failure is the caller job's failure. No polling, no timeout heuristics,
 #     no second source of truth about whether verification passed.
 #
-# CONSUMER VERIFICATION IS POST-PUBLICATION BY NATURE, and this does not pretend otherwise. You
-# cannot `docker pull` an image that was never pushed, or `brew install` a formula the tap has not
-# bumped. So this CANNOT gate publication and is not designed to. What it does instead:
-#   1. makes the verdict part of the release's own status (RED on the release run), and
-#   2. opens/updates a GitHub issue naming the failing check (see the `alert` job below),
-# because a release that is published and unusable is a fact somebody has to be TOLD, and red alone
-# is a signal only for whoever happens to be looking at that run.
+# THIS FILE USED TO SAY CONSUMER VERIFICATION WAS POST-PUBLICATION BY NATURE. THAT WAS WRONG, AND
+# THE CORRECTION IS THE `stage` INPUT ABOVE.
+#
+# The argument was: you cannot `docker pull` an image that was never pushed, or `brew install` a
+# formula the tap has not bumped, therefore verification cannot gate publication. That conflated two
+# different things - the artifact EXISTING, and the artifact being PUBLISHED UNDER THE NAME USERS
+# CONSUME - and they are separable. An image pushed as `staging-<sha>` exists and pulls. A DRAFT
+# release's assets have real, downloadable URLs and can be fetched and executed. Neither is a name
+# any user, doc or chart refers to.
+#
+# So the file now runs in two modes, and the split is by what CAN be true before publication rather
+# than by convenience:
+#   * `stage: staging` - the ARTIFACT checks, run by release.yml BEFORE anything is tagged. These
+#     DO gate publication: a failure means no version tag is ever created.
+#   * default (public) - the CHANNEL checks, which genuinely cannot run earlier because the tap, the
+#     chart, the site and `/releases/latest` only move once the release is public. For these the old
+#     paragraph still holds: they cannot gate, so instead they
+#       1. make the verdict part of the release's own status (RED on the release run), and
+#       2. open or update a GitHub issue naming the failing check (see the `alert` job below),
+#     because a release that is published and unusable is a fact somebody has to be TOLD, and red
+#     alone is a signal only for whoever happens to be looking at that run.
 on:
   release:
     types: [published]
@@ -162,6 +184,40 @@ on:
         description: "Version to verify (e.g. 1.5.2, no leading v)"
         required: true
         type: string
+      # -- STAGING MODE: the same checks, run BEFORE the version has a public name -----------------
+      #
+      # `stage: staging` is how release.yml gates a release on consumer verification instead of
+      # merely reporting it afterwards. The release object is still a DRAFT and the image is still
+      # under a throwaway `staging-<sha>` tag, so the subset of checks below that can be true at
+      # that point runs, and the subset that structurally cannot is skipped VISIBLY.
+      #
+      # WHAT RUNS IN STAGING MODE: (c) every expected asset is present, plausibly sized and really
+      # downloadable; (c2) the real linux binary is unpacked and EXECUTED and `--version` agrees;
+      # (d) the image is pulled FRESH and its OCI version label agrees; (l) the documented quickstart
+      # boots, both the binary half and the docker one-liner; (m) `gh attestation verify` passes on
+      # the real bytes. That is the artifact-side half of this file, unchanged and reused rather
+      # than reimplemented -- a second copy of these checks is exactly the defect this file's own
+      # comments keep warning about.
+      #
+      # WHAT IS SKIPPED IN STAGING MODE, AND WHY IT IS NOT A GAP: (a)(b) `latest` and the version pin
+      # agreeing, (e) the Terraform registry, (f) the Helm chart appVersion, (g) getbusbar.com, (h)(i)
+      # install.sh, (j) Homebrew, (k) the site's APIs, (n) the live counters. Every one of those
+      # reads a DOWNSTREAM channel that only moves once the release is published. Asserting them
+      # against an unpublished version would not be a stricter gate, it would be an assertion that
+      # is false by construction. They all still run, unchanged, from release.yml's
+      # `consumer-verification` job after the promote.
+      stage:
+        description: "'public' (default, every check) or 'staging' (artifact-side checks only, pre-promote)"
+        required: false
+        type: string
+        default: public
+      image_ref:
+        description: >-
+          Fully-qualified image to verify instead of getbusbar/busbar:<version>, e.g.
+          getbusbar/busbar:staging-abc123456789. Staging mode only.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       version:
@@ -235,6 +291,11 @@ jobs:
   pointers:
     name: moving pointers (every default a user gets is the newest release)
     runs-on: ubuntu-latest
+    # NOT IN STAGING MODE. Every assertion in this job is "the default pointer resolves to the
+    # NEWEST PUBLISHED release". Pre-promote the release under test is not published, so the honest
+    # answer to every one of these is the PREVIOUS version and the job would fail on a release that
+    # is doing exactly the right thing. release.yml runs it, unchanged, after the promote.
+    if: ${{ inputs.stage != 'staging' }}
     # HEAD requests and small JSON reads only. If this has not finished in 20 minutes something is
     # hanging, and on a 3-hourly cron a hung run must die well before the next one fires.
     timeout-minutes: 20
@@ -631,7 +692,30 @@ jobs:
       DOCKERHUB_IMAGE: getbusbar/busbar
       GHCR_IMAGE: ghcr.io/getbusbar/busbar
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 'public' (default) or 'staging'. Referenced from `if:` as `inputs.stage` and from scripts as
+      # $STAGE; both spellings are needed because `if:` cannot read a job `env:`.
+      STAGE: ${{ inputs.stage || 'public' }}
+      # The image the artifact-side checks actually pull. Empty means "the published pin",
+      # `${DOCKERHUB_IMAGE}:${V}`, which is what every non-staging trigger wants.
+      IMAGE_REF: ${{ inputs.image_ref || '' }}
     steps:
+      - name: What this run is verifying, and what it therefore cannot
+        run: |
+          set -euo pipefail
+          if [ "$STAGE" = "staging" ]; then
+            echo "STAGING MODE. The release is a DRAFT and the image is under a throwaway tag."
+            echo "  image under test: ${IMAGE_REF:-<none supplied>}"
+            echo "  running: (c) assets, (c2) execute the binary, (d) fresh image pull + label,"
+            echo "           (l) documented quickstart, (m) attestation."
+            echo "  VISIBLY SKIPPED, because they read channels that only move after publication:"
+            echo "           (a)(b) registry pointers, (e) terraform, (f) helm, (g) getbusbar.com,"
+            echo "           (h)(i) install.sh, (j) homebrew, (k) site APIs, (n) live counters."
+            echo "  Those all run from release.yml's consumer-verification job after the promote."
+            [ -n "$IMAGE_REF" ] || { echo "::error::staging mode requires image_ref; without it the image checks would silently verify the PUBLISHED image and pass on the previous release."; exit 1; }
+          else
+            echo "PUBLIC MODE. Every check runs."
+          fi
+
       - name: Resolve version under test
         id: ver
         run: |
@@ -704,6 +788,10 @@ jobs:
 
       - name: "(a) registry-1.docker.io: version tag exists, latest == same digest"
         id: dockerhub
+        # POST-PUBLICATION ONLY: `latest` has not been moved yet at staging time, and the version
+        # pin does not exist under that name yet either. Both are asserted by docker.yml's own
+        # promote assertion at promote time, and again here after the promote.
+        if: ${{ inputs.stage != 'staging' }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -737,6 +825,9 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(b) ghcr.io carries the SAME digest as the Docker Hub version tag"
+        # POST-PUBLICATION ONLY: same reason as (a). docker.yml's promote assertion covers the
+        # cross-registry digest equality at the moment the names are created.
+        if: ${{ inputs.stage != 'staging' }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -858,18 +949,80 @@ jobs:
               fail=1
               continue
             fi
-            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
-            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
-            case "$code" in
-              200|206) echo "PASS: Release asset present, ${sz} bytes, downloadable: $a" ;;
-              *)
-                echo "FAIL: Release asset ${a} is listed but NOT downloadable (HTTP ${code})"
-                echo "::error::(c) Release ${TAG} lists ${a} but downloading it returns HTTP ${code}. Fix: re-upload the asset on the Release."
+            # THE FETCH PATH DIFFERS BY MODE, AND THE ASSERTION DOES NOT. A DRAFT's assets are real
+            # and really downloadable, but only through the API -- the public
+            # /releases/download/<tag>/<asset> URL 404s until the release is published, which is
+            # exactly the property that makes a draft safe to build against. So staging mode fetches
+            # the same bytes with `gh release download`, and public mode keeps using the anonymous
+            # URL a user's curl actually hits. Both prove the same thing: the listed name yields
+            # bytes.
+            if [ "$STAGE" = "staging" ]; then
+              d="$(mktemp -d)"
+              if gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$d" --clobber >/dev/null 2>&1 \
+                 && [ -s "$d/$a" ]; then
+                echo "PASS: draft asset present, ${sz} bytes, downloadable via the release API: $a"
+              else
+                echo "FAIL: draft asset ${a} is listed but could not be downloaded"
+                echo "::error::(c) the ${TAG} draft lists ${a} but downloading it fails. Nothing is public and no tag exists, so fix the upload and re-run the release."
                 fail=1
-                ;;
-            esac
+              fi
+              rm -rf "$d"
+            else
+              u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
+              code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+              case "$code" in
+                200|206) echo "PASS: Release asset present, ${sz} bytes, downloadable: $a" ;;
+                *)
+                  echo "FAIL: Release asset ${a} is listed but NOT downloadable (HTTP ${code})"
+                  echo "::error::(c) Release ${TAG} lists ${a} but downloading it returns HTTP ${code}. Fix: re-upload the asset on the Release."
+                  fail=1
+                  ;;
+              esac
+            fi
           done
           [ "$fail" = 0 ]
+
+      # (c2) THE BYTES RUN, AND THEY SAY WHO THEY ARE. STAGING MODE'S ANSWER TO (h).
+      #
+      # (c) proves an asset downloads. That is not the same as the asset being a working busbar, and
+      # the difference is not academic: a tarball can be complete, correctly sized, correctly named
+      # and contain a binary that segfaults on start or reports the previous version. In public mode
+      # (h) closes that by running the LIVE install.sh end to end, but install.sh follows
+      # /releases/latest, which a draft deliberately does not resolve as -- so pre-promote there has
+      # to be a direct equivalent.
+      #
+      # This is it: pull the linux tarball off the DRAFT, unpack it, mark it executable, and run
+      # `busbar --version`. The assertion is on what the binary SAYS about itself, anchored, not a
+      # substring: `1.5.4` must not be satisfied by a binary printing `1.5.40`, and a version bump
+      # that never reached the build (a stale Cargo.toml, a cached target dir, the wrong commit
+      # built) is exactly the mistake it catches.
+      - name: (c2) the release binary from the draft actually executes and reports the version
+        if: ${{ inputs.stage == 'staging' }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"; TAG="${{ steps.ver.outputs.tag }}"
+          a="busbar-x86_64-unknown-linux-gnu.tar.gz"   # the runner's own platform, so it can run
+          work="$(mktemp -d)"
+          gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$work" --clobber
+          tar -xzf "$work/$a" -C "$work"
+          bin="$work/busbar"
+          [ -f "$bin" ] || { echo "::error::(c2) ${a} does not contain a \`busbar\` binary at the archive root. install.sh and every documented unpack step expect it there."; exit 1; }
+          chmod +x "$bin"
+          out="$("$bin" --version 2>&1)" || {
+            echo "--- output ---"; echo "$out"; echo "--------------"
+            echo "::error::(c2) the busbar binary from the ${TAG} draft FAILED TO EXECUTE. Every user who downloads this platform's tarball gets a binary that does not run. Nothing is public and no tag exists: fix the build and re-run."
+            exit 1
+          }
+          echo "busbar --version -> $out"
+          # Anchored on a word boundary at both ends: '1.5.4' must not match '1.5.40'.
+          if echo "$out" | grep -qE "(^|[^0-9.])${V//./\\.}([^0-9.]|$)"; then
+            echo "PASS: (c2) the draft's linux binary executes and reports ${V}"
+          else
+            echo "::error::(c2) the busbar binary from the ${TAG} draft runs but reports '${out}', which does not contain ${V}. The archive and the bytes disagree about which release this is. Fix: confirm crates/busbar/Cargo.toml was bumped on the commit being released and that the build was not served from a stale cache."
+            exit 1
+          fi
+          rm -rf "$work"
 
       - name: "(d) running image's org.opencontainers.image.version label == version"
         # `docker pull` has no built-in timeout and will sit on a stalled registry indefinitely.
@@ -880,6 +1033,13 @@ jobs:
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
           fail=0
+          # THE IMAGE UNDER TEST. In staging mode that is the throwaway `staging-<sha>` tag: real
+          # bytes in the real registry, pulled over the real network, under a name no user consumes.
+          # The label assertion below is unchanged and is the whole point of docker.yml setting
+          # org.opencontainers.image.version explicitly from label_version -- the staged image
+          # already claims the version it will be promoted to, so this is a real check now and not
+          # one deferred until the name is permanent.
+          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
           # -- THE LOCAL CACHE TRAP --------------------------------------------------------------
           # `docker pull` is a no-op when a local image already carries that tag and the daemon
           # believes it is current, and `docker inspect` then reads the LOCAL copy. On any runner or
@@ -887,15 +1047,24 @@ jobs:
           # registry serves - which reports a stale `latest` as fresh, and (this cost real time) a
           # fresh `latest` as stale. Deleting the local tags first makes the pull authoritative.
           # This is also why the `pointers` job compares registry DIGESTS and pulls nothing at all.
-          docker rmi -f "${DOCKERHUB_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:latest" >/dev/null 2>&1 || true
-          docker pull "${DOCKERHUB_IMAGE}:${V}"
-          label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:${V}")"
+          docker rmi -f "$IMG" "${DOCKERHUB_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:latest" >/dev/null 2>&1 || true
+          docker pull "$IMG"
+          label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMG")"
           if [ "$label" = "$V" ]; then
-            echo "PASS: running image label org.opencontainers.image.version == ${V}"
+            echo "PASS: running image label org.opencontainers.image.version == ${V} (image: ${IMG})"
           else
             echo "FAIL: running image label org.opencontainers.image.version == '${label}', expected '${V}'"
-            echo "::error::(d) ${DOCKERHUB_IMAGE}:${V} is tagged ${V} but the image inside reports org.opencontainers.image.version='${label}'. The tag and the bytes disagree. Fix: re-run docker.yml for v${V}."
+            echo "::error::(d) ${IMG} should be busbar ${V} but the image inside reports org.opencontainers.image.version='${label}'. The tag and the bytes disagree. Fix: check docker.yml's label_version input for this build."
             fail=1
+          fi
+          # THE UNTAGGED PULL IS A POST-PUBLICATION ASSERTION. `docker pull getbusbar/busbar` with no
+          # tag reads `latest`, which has deliberately not moved yet at staging time, so asserting it
+          # here would assert that the release under test is already the default -- false by
+          # construction, and it would go green only if the promote had already happened.
+          if [ "$STAGE" = "staging" ]; then
+            echo "VISIBLE SKIP: (d) the untagged \`docker pull ${DOCKERHUB_IMAGE}\` half is post-publication - \`latest\` has not been moved yet, which is the point. docker.yml's promote assertion proves latest == ${V} the moment it moves, and this check re-proves it in public mode."
+            [ "$fail" = 0 ]
+            exit 0
           fi
           # AND THE COMMAND A USER ACTUALLY TYPES. `docker pull getbusbar/busbar` -- no tag - is what
           # the README, the docs and getbusbar.com all show. The `pointers` job proves :latest and
@@ -916,6 +1085,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(e) terraform-provider-busbar is published on registry.terraform.io (independent semver)"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           # MIXED-MODEL distribution versioning: the Terraform provider is a WRAPPER, so it keeps
@@ -957,6 +1127,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(f) GetBusbar/helm-charts busbar chart appVersion == vX.Y.Z"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -983,6 +1154,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -1098,6 +1270,11 @@ jobs:
       # ---------------------------------------------------------------------------------------
 
       - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
+        # POST-PUBLICATION ONLY: the live install.sh follows /releases/latest, which a draft does
+        # not resolve as. (c2) below is the staging-mode substitute: it downloads the same tarball
+        # from the draft and EXECUTES it, so the binary is proven runnable before promotion even
+        # though the install PATH cannot be.
+        if: ${{ inputs.stage != 'staging' }}
         # Bounds the 10-attempt install loop plus the tarball download it performs.
         timeout-minutes: 20
         run: |
@@ -1225,6 +1402,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(i) install.sh must NOT depend on api.github.com (the 403 that broke it)"
+        if: ${{ inputs.stage != 'staging' }}  # reads the LIVE served script; unrelated to the artifacts
         run: |
           set -euo pipefail
           # WHY THIS EXISTS SEPARATELY FROM (h): (h) can pass on a runner while failing on every
@@ -1260,6 +1438,7 @@ jobs:
           echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
 
       - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        if: ${{ inputs.stage != 'staging' }}  # the tap bumps off the published release
         # `brew install` builds/downloads and has no timeout of its own.
         timeout-minutes: 20
         run: |
@@ -1359,6 +1538,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(k) getbusbar.com's own API endpoints answer with real numbers"
+        if: ${{ inputs.stage != 'staging' }}  # site-side, independent of the release under test
         run: |
           set -euo pipefail
           fail=0
@@ -1441,9 +1621,47 @@ jobs:
             return 1
           }
 
-          # --- l.1: the binary quickstart from the README / getting-started, using the binary the
-          # --- live install.sh produced in (h). Docs promise: `curl -s localhost:8080/healthz` -> ok
-          if [ -f /tmp/site-blocked ] || [ ! -x /tmp/busbar-e2e/bin/busbar ]; then
+          # --- l.1: the binary quickstart from the README / getting-started. Docs promise:
+          # --- `curl -s localhost:8080/healthz` -> ok
+          #
+          # WHERE THE BINARY COMES FROM DEPENDS ON THE MODE, AND IT HAS TO. In public mode it is the
+          # binary the LIVE install.sh produced in (h), because the point is to verify the quickstart
+          # against the artifact a user actually ends up with. In staging mode install.sh cannot run
+          # (it follows /releases/latest, which a draft does not resolve as), so the binary is
+          # downloaded straight off the draft -- the same bytes install.sh would eventually fetch,
+          # one hop earlier. What is being asserted is identical either way: the documented minimal
+          # config boots this release and answers /healthz.
+          if [ "$STAGE" = "staging" ]; then
+            a="busbar-x86_64-unknown-linux-gnu.tar.gz"
+            gh release download "${{ steps.ver.outputs.tag }}" --repo GetBusbar/busbar \
+              --pattern "$a" --dir "$work" --clobber
+            tar -xzf "$work/$a" -C "$work"
+            chmod +x "$work/busbar"
+            # The quickstart needs a providers.yaml beside the binary; install.sh fetches it, and
+            # the release ships it inside the image rather than as an asset, so pull the copy from
+            # the repository AT THE COMMIT BEING RELEASED. `main` is that commit: this workflow is
+            # called from a release run on main.
+            curl -fsSL --max-time 30 -o "$work/providers.yaml" \
+              "https://raw.githubusercontent.com/GetBusbar/busbar/main/providers.yaml" || true
+          fi
+          if [ "$STAGE" = "staging" ] && [ -x "$work/busbar" ] && [ -s "$work/providers.yaml" ]; then
+          pushd "$work" >/dev/null
+          BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar > "$work/busbar.log" 2>&1 &
+          bpid=$!
+          popd >/dev/null
+          if probe "http://127.0.0.1:8080/healthz" "the documented binary quickstart (draft asset)"; then
+            :
+          else
+            echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
+            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work for the ${V} DRAFT binary: it did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes would fail. Nothing is public and no tag exists, so fix it and re-run."
+            fail=1
+          fi
+          kill "$bpid" 2>/dev/null || true
+          for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          elif [ "$STAGE" = "staging" ]; then
+            echo "::error::(l.1) staging mode could not assemble a binary quickstart (binary or providers.yaml missing). Refusing to pass a check that did not run: this is the half that proves a new user's first five minutes work."
+            fail=1
+          elif [ -f /tmp/site-blocked ] || [ ! -x /tmp/busbar-e2e/bin/busbar ]; then
             # l.1 runs the binary that (h) installed FROM THE LIVE install.sh, on purpose - it
             # verifies the documented quickstart against the artifact a user actually ends up with.
             # When (h) could not run (getbusbar.com refuses this runner) there is no such binary, and
@@ -1470,18 +1688,26 @@ jobs:
           fi
 
           # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
-          # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
+          # --- image is pinned (check (a) already proves :latest == :${V} in public mode, so pinning
           # --- tests the same bytes while making a failure unambiguous about WHICH release broke).
+          # --- In staging mode the pin is the throwaway tag, so this boots the exact digest that
+          # --- will be promoted -- the promote copies manifests and rebuilds nothing.
+          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
+          # FRESH, NOT CACHED. (d) ran in this same job on this same runner and left the image in
+          # the local daemon; booting that copy would prove the local cache boots. Remove and re-pull
+          # so the container under test came off the registry.
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          docker rmi -f "$IMG" >/dev/null 2>&1 || true
+          docker pull "$IMG"
           docker run -d --name busbar-quickstart -p 8080:8080 \
             -e ANTHROPIC_KEY \
             -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
-            "${DOCKERHUB_IMAGE}:${V}" >/dev/null
+            "$IMG" >/dev/null
           if probe "http://127.0.0.1:8080/healthz" "the documented docker one-liner"; then
             :
           else
             echo "--- docker logs ---"; docker logs busbar-quickstart 2>&1 || true; echo "-------------------"
-            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${DOCKERHUB_IMAGE}:${V}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above — usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
+            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${IMG}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above. Usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
             fail=1
           fi
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
@@ -1551,6 +1777,7 @@ jobs:
       # catch a frozen number and nothing looser. Expect this check to be RED until the Worker is
       # actually deployed. That is the check doing its job, not a miscalibration.
       - name: (n) the live numbers on getbusbar.com really are live
+        if: ${{ inputs.stage != 'staging' }}  # site-side, independent of the release under test
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -1641,8 +1868,15 @@ jobs:
     # that made release.yml's own `verify-assets` get skipped precisely when the release was broken.
     # A notifier that only runs when nothing failed is not a notifier. Also fires when `verify` was
     # skipped (the 3-hourly pointer cron) and `pointers` alone failed.
+    #
+    # NOT IN STAGING MODE, AND THIS IS NOT AN OVERSIGHT. This issue says "a published release is
+    # broken and users are affected". A staging failure means the opposite: the gate WORKED, nothing
+    # became public, no tag exists, no fan-out fired, and the remedy is a re-run rather than an
+    # incident. Filing a release-broken issue for a release that never happened is the same class of
+    # error as the daily false alarm on getbusbar.com -- a notifier that cries wolf is worse than
+    # none. The signal for a staging failure is release.yml's own run going red at the gate.
     if: >-
-      ${{ always() &&
+      ${{ always() && inputs.stage != 'staging' &&
           (needs.pointers.result == 'failure' || needs.verify.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
