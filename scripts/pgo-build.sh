@@ -151,13 +151,19 @@ PY
 cat > "$WORK/config.yaml" <<YAML
 listen: "127.0.0.1:$PORT"
 admin_listen: "127.0.0.1:$((PORT + 1))"
-observability:
-  emit_server_timing: true
+# 1.5.3 grammar. Two keys moved and the old spellings are now fail-closed boot refusals, which is
+# how this script broke the 1.5.3 Docker build: PGO is mandatory, the instrumented binary refused
+# its own training config, and the release could not produce an image. The trainer must be written
+# in the grammar of the binary it trains.
+#   observability.emit_server_timing -> advanced.response_headers.server_timing (block DELETED)
+#   auth.upstream_credentials        -> pools.upstream_credentials (all-pools default)
+advanced:
+  response_headers:
+    server_timing: true
 # Training runs against a local mock with the open front door (empty chain): the static-token
 # module was removed in 1.5.0 and signed-key minting is pointless for a throwaway trainer.
 auth:
   chain: []
-  upstream_credentials: own
 providers:
   mock:
     api_key: { env: PGO_MOCK_KEY }
@@ -167,6 +173,7 @@ models:
     max_concurrent: 512
     max_requests: -1
 pools:
+  upstream_credentials: own
   bench-pool:
     members:
       - model: gpt-4o-mini
