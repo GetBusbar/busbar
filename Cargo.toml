@@ -19,6 +19,7 @@ members = [
     "crates/hooks-ranking",
     "crates/store-memory",
     "crates/oauth-as",
+    "crates/oauth-as-conformance",
 ]
 
 [profile.release]

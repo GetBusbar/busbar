@@ -1,0 +1,74 @@
+# OAuth 2.1 AS independent conformance gate. Separate file from ci.yml ON PURPOSE
+# (parallel work on the AS crate edits ci.yml; this file is owned by the conformance harness).
+#
+# HONESTY (what this gate is, and is not):
+#   There is no official OAuth 2.1 conformance suite, and the OpenID Foundation conformance
+#   suite (gitlab.com/openid/conformance-suite, MIT) ships only OIDC / FAPI1-Advanced / FAPI2 /
+#   FAPI-CIBA / eKYC profiles, all presupposing OpenID Connect semantics plus a MongoDB-backed
+#   suite server; it cannot test a plain OAuth 2.1 + RFC 8628 AS and is therefore NOT run here.
+#   What runs instead, named plainly:
+#     1. Vendored RFC test vectors (RFC 7636 App B, RFC 7515 App A.1-A.3), byte-exact, plus
+#        validator self-checks for RFC 9068, RFC 8414, RFC 6749 s5.1/s5.2, RFC 8628 s3.2/s3.5.
+#     2. Black-box response-shape conformance, positive AND negative, against the live AS.
+#     3. A full device-code flow and a full auth-code+PKCE flow driven by the pinned
+#        third-party oauth2 crate (=5.0.0), which judges spec legality independently.
+#
+# NO continue-on-error anywhere: every step is load-bearing and a failure is RED.
+# The self-test runs FIRST in each job: never trust this gate's verdict before proving the
+# gate can still go red (same discipline as the structure-lint self-tests in ci.yml).
+
+name: OAuth Conformance
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+
+concurrency:
+  group: oauth-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Hermetic half: RFC vectors and validator self-checks. No AS needed; always meaningful.
+  rfc-vectors:
+    name: RFC vectors (hermetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # RED first: a corrupted expectation must fail the suite, or the suite proves nothing.
+      - name: Prove the vector suite can fail (deliberate corruption)
+        run: |
+          set +e
+          OAUTH_CONFORMANCE_SELFTEST_BREAK=pkce \
+            cargo test --locked -p oauth-as-conformance --test rfc_vectors
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::vector suite passed with a corrupted PKCE expectation; gate is dead"
+            exit 1
+          fi
+          echo "vector suite failed as required under deliberate corruption (exit $rc)"
+      - name: RFC vector suite
+        run: cargo test --locked -p oauth-as-conformance --test rfc_vectors
+
+  # Live half: black-box shape conformance + third-party client drive against crates/oauth-as.
+  # FAILS LOUDLY when crates/oauth-as is absent; it never skips and never passes vacuously.
+  blackbox:
+    name: black-box AS conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Conformance gate self-test (must go RED on a nonconformant AS)
+        run: scripts/oauth-conformance.sh --selftest
+      - name: Black-box conformance against the live AS
+        run: scripts/oauth-conformance.sh --check

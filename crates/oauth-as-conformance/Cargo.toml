@@ -1,0 +1,41 @@
+[package]
+name = "oauth-as-conformance"
+version = "0.1.0"
+publish = false            # internal conformance harness; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Independent black-box conformance harness for the busbar OAuth 2.1 authorization server (crates/oauth-as). Vendored RFC vectors plus a pinned third-party client that drives the AS over HTTP."
+license = "Apache-2.0"
+
+# HONESTY NOTE (read before trusting this harness):
+# There is no official OAuth 2.1 conformance suite anywhere, and the OpenID Foundation
+# conformance suite (gitlab.com/openid/conformance-suite, MIT) only ships OIDC / FAPI1-Advanced /
+# FAPI2 / FAPI-CIBA / eKYC profiles, all of which presuppose OpenID Connect semantics
+# (id_token, browser-driven OP tests, MongoDB-backed suite server). It cannot test a plain
+# OAuth 2.1 + RFC 8628 AS. The closest honest equivalents implemented here are:
+#   1. Vendored, pinned RFC test vectors (RFC 7636 App B, RFC 7515 App A.1-A.3), byte-exact.
+#   2. Machine-checkable response-shape validators for RFC 6749 s5.1/s5.2, RFC 8628 s3.2/s3.5,
+#      RFC 8414 s2/s3.2, RFC 9068 s2.1/s2.2, driven against the live AS as a black box.
+#   3. A pinned THIRD-PARTY client (oauth2 = "=5.0.0", ramosbugs/oauth2-rs) that runs the full
+#      device-code and authorization-code-with-PKCE flows; that library, not this repo, judges
+#      whether responses are spec-legal.
+# None of these is "the OpenID conformance suite" and nothing here claims to be.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+hmac = "0.12"
+# jsonwebtoken verifies the RFC 7515 Appendix A RS256/ES256 vectors and, in black-box mode,
+# verifies RFC 9068 access tokens against the AS's advertised jwks_uri.
+jsonwebtoken = "9"
+url = "2"
+
+[dev-dependencies]
+# THE independent judge: a widely used third-party OAuth 2.0/2.1 client. Pinned EXACTLY so a
+# silent upgrade can never loosen what it accepts. 5.0.0 is the latest 5.x line release
+# verified against crates.io on 2026-08-07 (MIT OR Apache-2.0).
+oauth2 = { version = "=5.0.0", default-features = false, features = ["reqwest"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
