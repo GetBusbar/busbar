@@ -4,7 +4,14 @@ name: Docker
 # manifest (linux/amd64 + linux/arm64), FROM scratch over static musl binaries.
 #
 # Triggers:
-#   - v* tags: publish with the semver tag cascade (X.Y.Z, X.Y, X, latest)
+#   - v* tags: publish the EXACT semver pin plus `latest` (X.Y.Z and latest) -- no floating
+#     X.Y or X aliases. This header used to claim an "X.Y.Z, X.Y, X, latest" cascade that the
+#     `tags:` block has never produced; the code is right about the shape and the header was stale.
+#     Both halves of that drift are now GUARDED rather than merely corrected: verify-deploy.yml
+#     asserts that `latest` and the version pin resolve to the SAME manifest digest on BOTH
+#     registries, which is the assertion whose absence let `latest` sit frozen at 1.5.2 through the
+#     whole of the 1.5.3 release. GetBusbar/helm-charts pins `getbusbar/busbar:<appVersion>`, the
+#     exact pin, so this tag shape is load-bearing downstream and not cosmetic.
 #   - workflow_dispatch: publish a `test` tag only — end-to-end pipeline check
 #     without cutting a release.
 #

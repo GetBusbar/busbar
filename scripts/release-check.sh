@@ -170,7 +170,7 @@ add_phase() { PHASE_IDS+=("$1"); PHASE_NEEDS_BIN+=("$2"); PHASE_DESC+=("$3"); }
 # for "what plugins exist"), so a new suite plugin gets a phase id here with zero edits to this file.
 # Read up front, not lazily: a parse/shape failure must fail loudly rather than yield an empty gate.
 REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
-[ -n "$REGISTRY_LIST" ] || { echo "plugin-registry-check.sh --list returned an empty registry" >&2; exit 1; }
+[ -n "$REGISTRY_LIST" ] || setup_fail "plugin-registry-check.sh --list returned an empty registry: the gate has no plugins to test, which is a broken registry read, not a busbar defect."
 
 # EVERY registry entry maps to exactly one phase id, keyed off its `gate` column. This is what lets
 # `--segment plugin-<repo>` work for ALL TEN registry plugins rather than only the seven `gate: suite`
@@ -443,14 +443,66 @@ any_selected_needs_service() {
 # ── Fail-fast diagnostics ────────────────────────────────────────────────────────────────────────
 SECONDS=0
 PHASE="startup"
-on_err() {
-  local ec=$?
+
+# --- TWO KINDS OF RED, AND WHY THE GATE NOW SAYS WHICH ----------------------------------------
+# The 1.5.3 full plugin gate went RED TWICE and found ZERO product defects. Both failures were
+# INFRASTRUCTURE: sibling plugin repos cloned at a stale branch, and fixture configs naming secrets
+# that nothing in the harness set. Every one of those runs printed "DO NOT TAG THIS RELEASE", which
+# is exactly right for a product defect and exactly wrong for an unset environment variable.
+#
+# That is not a cosmetic complaint. A gate that cries wolf twice per release teaches everyone to
+# RERUN it rather than READ it, and a gate people rerun without reading is how a real defect gets
+# waved through. The verdict has to distinguish "busbar is broken" from "this harness is broken",
+# because the two demand completely different actions from completely different people.
+#
+# So a phase that cannot even ASK its question calls `setup_fail`, which exits SETUP_EXIT (78,
+# sysexits.h EX_CONFIG) and prints a HARNESS/ENVIRONMENT verdict. Any other non-zero exit keeps the
+# old, correct, alarming product verdict. Deliberately NOT a classifier over phase output: guessing
+# a category from error text would produce a third failure mode, silent misclassification, which is
+# worse than the two it replaces. A call site knows which kind it is; only call sites decide.
+SETUP_EXIT=78
+
+# The two verdicts, each printed from exactly one place so they cannot drift apart.
+verdict_setup() {
   echo
-  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${ec}) !!!"
-  echo "    Elapsed: ${SECONDS}s. This means: DO NOT TAG THIS RELEASE."
-  # Timings so far are still the most useful thing a failed run can hand back.
+  echo "!!! RELEASE GATE COULD NOT RUN during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: HARNESS / ENVIRONMENT, not a product defect."
+  echo "    This says NOTHING about whether busbar is releasable: the gate never got far enough"
+  echo "    to ask. Fix the harness or the environment named above and re-run. Do NOT read this"
+  echo "    as a reason to tag, and do NOT read it as a reason not to."
+}
+verdict_product() {
+  echo
+  echo "!!! RELEASE GATE FAILED during phase: ${PHASE} (exit ${1}) !!!"
+  echo "    Elapsed: ${SECONDS}s."
+  echo "    CATEGORY: PRODUCT. A check ran and busbar did not do what it must do."
+  echo "    This means: DO NOT TAG THIS RELEASE."
+}
+# Timings so far are still the most useful thing a failed run can hand back.
+verdict_tail() {
   end_phase "FAILED" 2>/dev/null || true
   print_timing_summary 2>/dev/null || true
+}
+
+# setup_fail <message...> -- the gate could not run its check, as distinct from the check failing.
+# It prints its own verdict rather than relying on the ERR trap, because `exit` does NOT fire an ERR
+# trap in bash: only a command returning non-zero under `set -e` does. Routing this through the trap
+# would have printed no banner at all, which is how this was written the first time and why it is
+# worth the comment.
+setup_fail() {
+  echo
+  echo "  [SETUP] $*" >&2
+  verdict_setup "$SETUP_EXIT"
+  verdict_tail
+  exit "$SETUP_EXIT"
+}
+
+on_err() {
+  local ec=$?
+  # A propagated 78 (a helper or subshell that itself hit setup_fail) keeps the harness verdict.
+  if [ "$ec" = "$SETUP_EXIT" ]; then verdict_setup "$ec"; else verdict_product "$ec"; fi
+  verdict_tail
   exit "$ec"
 }
 trap on_err ERR
@@ -580,7 +632,7 @@ now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 case "$(uname -s)" in
   Darwin) LIBEXT="dylib"; LIBPREFIX="lib" ;;
   Linux)  LIBEXT="so";    LIBPREFIX="lib" ;;
-  *) echo "unsupported OS for local release-check: $(uname -s)" >&2; exit 1 ;;
+  *) setup_fail "unsupported OS for local release-check: $(uname -s)" ;;
 esac
 VER="$(grep -m1 '^version' crates/busbar/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')"
 note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
@@ -656,8 +708,8 @@ if any_selected_needs_binary; then
   phase "Phase 0: build busbar binary + busbar-plugin-pack (FIXED SETUP)"
   _setup_t0=$SECONDS
   cargo build --release -p busbar -p busbar-plugin-pack
-  [ -x "$BUSBAR_BIN" ] || { echo "busbar binary not found at $BUSBAR_BIN" >&2; exit 1; }
-  [ -x "$PACK_BIN" ] || { echo "busbar-plugin-pack not found at $PACK_BIN" >&2; exit 1; }
+  [ -x "$BUSBAR_BIN" ] || setup_fail "busbar binary not found at $BUSBAR_BIN: nothing was built to test."
+  [ -x "$PACK_BIN" ] || setup_fail "busbar-plugin-pack not found at $PACK_BIN: nothing was built to test."
   SETUP_SECS=$((SECONDS - _setup_t0))
   ok "busbar binary: $BUSBAR_BIN"
   ok "busbar-plugin-pack: $PACK_BIN"
