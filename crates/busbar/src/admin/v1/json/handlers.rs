@@ -2605,42 +2605,61 @@ pub(crate) async fn apply_config(
 /// partial-update semantics of `PUT /config/settings` — "raise the per-request fee" sends only
 /// `per_request_fee`, leaving every other override untouched. To CLEAR the whole root section, use
 /// `DELETE /overlay/root`.
+///
+/// DRIFT GUARD: the request is destructured EXHAUSTIVELY (no `..`), so a field added to
+/// `RootSettings` cannot be silently dropped from the merge — which would make a `PUT` naming it
+/// return 200 while storing nothing.
 fn merge_root_settings(
     mut base: crate::config::overlay::RootSettings,
     req: crate::config::overlay::RootSettings,
 ) -> crate::config::overlay::RootSettings {
+    let crate::config::overlay::RootSettings {
+        listen,
+        tls,
+        admin_listen,
+        admin_tls,
+        admin_require_mtls,
+        rate_card,
+        per_request_fee,
+        store,
+        security,
+        limits,
+        advanced,
+        health,
+        routing,
+    } = req;
     // WHOLE-VALUE sections: a listen address, a cert bundle, a store definition and a rate card are
     // atomic units, and `store.settings` is opaque plugin config busbar must not reinterpret.
-    if req.listen.is_some() {
-        base.listen = req.listen;
+    if listen.is_some() {
+        base.listen = listen;
     }
-    if req.tls.is_some() {
-        base.tls = req.tls;
+    if tls.is_some() {
+        base.tls = tls;
     }
-    if req.admin_listen.is_some() {
-        base.admin_listen = req.admin_listen;
+    if admin_listen.is_some() {
+        base.admin_listen = admin_listen;
     }
-    if req.admin_tls.is_some() {
-        base.admin_tls = req.admin_tls;
+    if admin_tls.is_some() {
+        base.admin_tls = admin_tls;
     }
-    if req.admin_require_mtls.is_some() {
-        base.admin_require_mtls = req.admin_require_mtls;
+    if admin_require_mtls.is_some() {
+        base.admin_require_mtls = admin_require_mtls;
     }
-    if req.rate_card.is_some() {
-        base.rate_card = req.rate_card;
+    if rate_card.is_some() {
+        base.rate_card = rate_card;
     }
-    if req.per_request_fee.is_some() {
-        base.per_request_fee = req.per_request_fee;
+    if per_request_fee.is_some() {
+        base.per_request_fee = per_request_fee;
     }
-    if req.store.is_some() {
-        base.store = req.store;
+    if store.is_some() {
+        base.store = store;
     }
     // PER-FIELD sections: successive PUTs to different fields of one section must accumulate. A
     // whole-slot swap here would make the second PUT drop the first one's fields from the overlay,
     // which is the same defect as the apply-side revert, one layer down.
     macro_rules! merge_section {
         ($($field:ident),+ $(,)?) => {$(
-            base.$field = match (req.$field, base.$field) {
+            base.$field = match ($field, base.$field) {
                 (Some(new), Some(old)) => Some(new.merge(old)),
                 (Some(new), None) => Some(new),
                 (None, old) => old,
@@ -2661,18 +2680,46 @@ fn merge_root_settings(
 /// `limits`/…) applies live on the swap. Keyed on the REQUEST (only fields the operator just changed
 /// are flagged), so a subsequent live-only edit does not re-flag an already-restart-pending bind.
 fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<String> {
+    // DRIFT GUARD, TOP LEVEL. Until 1.5.4 this function opened on a HAND-MAINTAINED list of six
+    // `req.<field>.is_some()` pushes with no destructure of `RootSettings` at all — precisely the
+    // bug class the nested `LimitsPatch`/`AdvancedPatch` guards below were added to close ("a
+    // boot-frozen field silently absent from a hand-maintained push list"), left open one level up.
+    // This is an EXHAUSTIVE destructure with NO `..`: a field added to `RootSettings` must be
+    // classified BOOT-FROZEN (pushed) or GENUINELY LIVE (bound `_`, with a one-line reason) before
+    // this crate builds. The compiler forces the decision instead of defaulting it to "live".
+    let crate::config::overlay::RootSettings {
+        // BOOT-FROZEN — bound to a socket / read once in `main()`; see this function's doc comment.
+        listen,
+        tls,
+        admin_listen,
+        admin_tls,
+        admin_require_mtls,
+        store,
+        // GENUINELY LIVE on the `Arc<App>` swap: the cost inputs are read per-request off the
+        // installed snapshot, and the SSRF/health/routing knobs are re-derived by `resolve` on every
+        // apply. Nothing here is captured at process start.
+        rate_card: _,
+        per_request_fee: _,
+        security: _,
+        health: _,
+        routing: _,
+        // MIXED — classified FIELD BY FIELD below, by their own exhaustive destructures, because
+        // each section has both boot-frozen and live members. Bound here and used there.
+        limits,
+        advanced,
+    } = req;
     let mut out = Vec::new();
     let mut push = |set: bool, name: &str| {
         if set {
             out.push(name.to_string());
         }
     };
-    push(req.listen.is_some(), "listen");
-    push(req.tls.is_some(), "tls");
-    push(req.admin_listen.is_some(), "admin_listen");
-    push(req.admin_tls.is_some(), "admin_tls");
-    push(req.admin_require_mtls.is_some(), "admin_require_mtls");
-    push(req.store.is_some(), "store");
+    push(listen.is_some(), "listen");
+    push(tls.is_some(), "tls");
+    push(admin_listen.is_some(), "admin_listen");
+    push(admin_tls.is_some(), "admin_tls");
+    push(admin_require_mtls.is_some(), "admin_require_mtls");
+    push(store.is_some(), "store");
     // Four `limits.*` fields are boot-frozen, via TWO independent mechanisms — flag them
     // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
     // `Option`) rather than the whole `limits` section, which would also mis-flag the
@@ -2697,7 +2744,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // exactly the bug class `max_inbound_concurrent` fell into: a boot-frozen field silently absent
     // from a hand-maintained push list. A new boot-frozen field can no longer go unflagged by
     // omission; the compiler forces a decision.
-    if let Some(limits) = req.limits.as_ref() {
+    if let Some(limits) = limits.as_ref() {
         let crate::config::patch::LimitsPatch {
             upstream_request_timeout_secs,
             pool_max_idle_per_host,
@@ -2753,7 +2800,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // `response_headers.route_policy` seeds a process-global `OnceLock`
     // (`proxy::configure_route_policy_headers`). DRIFT GUARD, same idiom as above: an EXHAUSTIVE
     // destructure of `AdvancedPatch` (no `..`).
-    if let Some(advanced) = req.advanced.as_ref() {
+    if let Some(advanced) = advanced.as_ref() {
         let crate::config::patch::AdvancedPatch {
             response_headers,
             // GENUINELY LIVE — read fresh on every call via the `INSTALLED` `LimitsResolved` snapshot
