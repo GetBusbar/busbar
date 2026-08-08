@@ -1150,7 +1150,11 @@ jobs:
   consumer-verification:
     name: consumer verification (PUBLIC, last step)
     needs: [plan, promote-release, notify-downstream]
-    if: ${{ !cancelled() && needs.promote-release.result == 'success' }}
+    # Bracket form, not `needs.promote-release.result`: `-` is the subtraction operator in a GitHub
+    # expression, and a hyphenated job id reached by dot access is at best relying on the lexer to
+    # guess. The index form is unambiguous. The clause itself is what stops the public sweep running
+    # against a release that was never promoted, which would fail on every channel and say nothing.
+    if: ${{ !cancelled() && needs['promote-release'].result == 'success' }}
     uses: ./.github/workflows/verify-deploy.yml
     with:
       version: ${{ needs.plan.outputs.version }}
