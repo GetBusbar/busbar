@@ -48,9 +48,23 @@ use std::time::{Duration, Instant};
 /// mock. The queue `max_ms` is generated ≤ 50ms, far below this.
 const FAILOVER_SECS: u64 = 2;
 
-/// Test-level slack ε for the ingress→disposition budget bound. Tighter than the in-code
-/// `debug_assert` ε (which guards against SECONDS-scale regressions) — this is the real, meaningful
-/// bound the property test enforces: disposition within `FAILOVER_SECS + ε`.
+/// Test-level slack ε for the ingress→disposition budget bound.
+///
+/// BE HONEST ABOUT WHAT THIS BUYS, because the previous wording ("the real, meaningful bound")
+/// claimed a precision it does not have. ε is 1500ms and the generated queue `max_ms` is 5..=50ms,
+/// so an assertion written as `elapsed <= max_ms + ε` is really `elapsed <= about 1550ms`. It cannot
+/// tell a queue that shed at its 46ms deadline from one that sat for 1.4 seconds.
+///
+/// What it CAN tell, and the only thing it should be read as proving, is that the request was shed
+/// on a bounded path rather than PARKED to the failover deadline (2000ms). That distinction is real
+/// and worth keeping: 1550 is comfortably below 2000. It is a growth-class assertion, not a
+/// stopwatch.
+///
+/// Verifying that `max_ms` itself was honoured is not possible against a wall clock on a shared
+/// machine at these magnitudes, and no ε can make it so: the noise floor of a loaded runner is
+/// larger than the quantity being measured. It needs a clock injected into the code under test so
+/// the deadline and the oracle share a time source, rather than both calling `now()` independently.
+/// Until then this asserts the coarse property and says so.
 const TEST_BUDGET_EPS: Duration = Duration::from_millis(1500);
 
 fn wlane(idx: usize) -> WeightedLane {
@@ -310,10 +324,24 @@ async fn run_world(world: World) -> Disposition {
     // Apply the generated breaker states. `force_open_in` seeds Open (future = active, past = expired);
     // an expired-Open cell driven once through `acquire_for_dispatch_in` wins its single-flight probe
     // and is left HalfOpen (probe in flight) — a real ProbeInFlight state, un-settable otherwise.
+    // OPEN_HORIZON_SECS, not 30. This seeds an ACTIVE-open breaker, and the oracle below classifies
+    // it against a SECOND `now()` taken later, with a live HTTP request in between. At 30s any stall
+    // longer than that silently reclassified an active-open breaker as EXPIRED, which does not merely
+    // change the timing, it changes THE ORACLE the property compares against: the test would then
+    // pass while asserting something other than what it was generated to assert. A pass-for-the-
+    // wrong-reason is the one outcome a property test must never produce, since its entire value is
+    // being adversarial. A day is longer than any stall that leaves a test process alive, so the
+    // classification is now stable across the whole body regardless of how loaded the machine is.
+    //
+    // This closes the ORACLE hazard only. It does not make the wall-clock BUDGET assertions below
+    // meaningful (see TEST_BUDGET_EPS): those still measure the machine as much as the code, and
+    // fixing that properly needs an injected clock shared by the code under test and the oracle,
+    // rather than both calling `now()` independently.
+    const OPEN_HORIZON_SECS: u64 = 86_400;
     let t = now();
     let apply = |pool: &str, idx: usize, b: Breaker| match b {
         Breaker::Closed => {}
-        Breaker::OpenActive => app.store.force_open_in(pool, idx, t + 30),
+        Breaker::OpenActive => app.store.force_open_in(pool, idx, t + OPEN_HORIZON_SECS),
         Breaker::OpenExpired => app.store.force_open_in(pool, idx, t.saturating_sub(1)),
         Breaker::HalfOpen => {
             app.store.force_open_in(pool, idx, t.saturating_sub(1));
@@ -458,10 +486,14 @@ async fn run_world(world: World) -> Disposition {
                     retry_after_secs(&resp).is_some(),
                     "a timed-out queue 503 must carry Retry-After"
                 );
+                // Reads as "bounded, not parked". ε (1500ms) dwarfs max_ms (5..=50ms), so this
+                // does NOT verify the max_ms deadline was honoured; it verifies the request did not
+                // park to the failover budget (2000ms). See TEST_BUDGET_EPS.
                 assert!(
                     elapsed <= Duration::from_millis(max_ms) + TEST_BUDGET_EPS,
-                    "queue waited {elapsed:?}, exceeding max_ms {max_ms} + ε — it must be bounded by \
-                     max_ms, not the failover budget"
+                    "queue waited {elapsed:?}, past max_ms {max_ms} + ε. At this ε that means it \
+                     parked toward the failover budget instead of shedding on the bounded queue \
+                     path; it does not mean the {max_ms}ms deadline was missed by a little"
                 );
                 Disposition::QueueShed
             }

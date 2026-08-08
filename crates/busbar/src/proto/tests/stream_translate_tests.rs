@@ -3039,16 +3039,14 @@ fn test_translate_same_protocol_is_none() {
     assert!(StreamTranslate::new("anthropic", "anthropic").is_none());
 }
 
-// Linear SSE drain: a single `feed` carrying MANY complete SSE frames at once must
-// translate ALL of them (the cursor advances frame-by-frame and reclaims the prefix in one shift —
-// no per-frame `drain` re-scan, no dropped/duplicated frames, no infinite loop). Large N here would
-// be quadratic under the old `drain(..end)`-per-frame reassembly; it must complete near-instantly.
-#[test]
-fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
+/// Drain `n` complete SSE frames through one `feed` and return (frames translated, time in the
+/// translator only). Blob construction is deliberately OUTSIDE the timed region: it is O(n) string
+/// work that would otherwise be counted as translator cost and dilute the very ratio being measured.
+#[cfg(test)]
+fn drain_frames_once(n: usize) -> (usize, std::time::Duration) {
     let mut t = StreamTranslate::new("openai", "anthropic").expect("translator");
-    const N: usize = 20_000;
-    let mut blob = String::with_capacity(N * 96);
-    for _ in 0..N {
+    let mut blob = String::with_capacity(n * 96);
+    for _ in 0..n {
         blob.push_str(
                 "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
             );
@@ -3056,17 +3054,71 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
     let start = std::time::Instant::now();
     let out = String::from_utf8(t.feed(blob.as_bytes())).expect("utf8");
     let elapsed = start.elapsed();
-    // Every frame translated exactly once: N openai content deltas out.
-    assert_eq!(
-        out.matches("\"content\":\"x\"").count(),
-        N,
-        "all {N} frames must translate exactly once"
-    );
-    // Generous ceiling — quadratic reassembly of 20k frames would blow well past this; linear
-    // completes in milliseconds. Guards against a regression to per-frame front-draining.
+    (out.matches("\"content\":\"x\"").count(), elapsed)
+}
+
+// Linear SSE drain: a single `feed` carrying MANY complete SSE frames at once must translate ALL of
+// them (the cursor advances frame-by-frame and reclaims the prefix in one shift — no per-frame
+// `drain` re-scan, no dropped/duplicated frames, no infinite loop), and it must do so in time that
+// grows LINEARLY in the frame count, not quadratically as the old `drain(..end)`-per-frame
+// reassembly did.
+//
+// A RATIO, NOT A CEILING. This used to assert `elapsed.as_secs() < 5`, an absolute wall-clock bound,
+// and that assertion is about the machine rather than the code: it passed for any implementation
+// merely not catastrophically slow, and it FAILED on a correct one when the machine was busy (seen
+// during the 1.5.4 work at 6.9s on a box running another job, against 0.51s idle, which blocked a
+// release-gating suite run for no reason).
+//
+// Doubling the input is the question the test actually wants to ask. Linear work doubles; quadratic
+// work quadruples. The threshold sits between those two, so it separates the two growth classes
+// while caring nothing for how fast the machine is: a uniformly slower machine scales both
+// measurements and leaves the ratio alone.
+//
+// TWO THINGS MAKE THE RATIO TRUSTWORTHY. The sizes are INTERLEAVED within each repetition, so a load
+// spike lands on both rather than on whichever ran second and inflating the ratio. And each size
+// keeps its FASTEST observation: the minimum is the estimator that strips scheduler noise, since
+// noise can only ever add time, never remove it.
+#[test]
+fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
+    const N: usize = 20_000;
+    const REPS: usize = 3;
+    // Linear doubles (2.0), quadratic quadruples (4.0). 3.0 is the midpoint, far enough from 2.0 to
+    // absorb constant-factor and allocator effects and far enough from 4.0 to catch a real
+    // regression to per-frame front-draining.
+    const MAX_GROWTH: f64 = 3.0;
+
+    let mut best_n = std::time::Duration::MAX;
+    let mut best_2n = std::time::Duration::MAX;
+    for _ in 0..REPS {
+        let (count_n, t_n) = drain_frames_once(N);
+        assert_eq!(count_n, N, "all {N} frames must translate exactly once");
+        best_n = best_n.min(t_n);
+
+        let (count_2n, t_2n) = drain_frames_once(2 * N);
+        assert_eq!(
+            count_2n,
+            2 * N,
+            "all {} frames must translate exactly once",
+            2 * N
+        );
+        best_2n = best_2n.min(t_2n);
+    }
+
+    // A ratio taken against an unmeasurably small denominator is noise wearing a number's clothes,
+    // and it would pass for ANY implementation. Fail loudly and say what to change, rather than
+    // reporting a meaningless verdict, if N ever becomes too small to time on a faster machine.
     assert!(
-        elapsed.as_secs() < 5,
-        "draining {N} frames must be linear; took {elapsed:?}"
+        best_n >= std::time::Duration::from_micros(500),
+        "the N={N} drain completed in {best_n:?}, too fast to time reliably, so the growth ratio \
+         below would be measuring clock noise rather than the translator. Raise N."
+    );
+
+    let growth = best_2n.as_secs_f64() / best_n.as_secs_f64();
+    assert!(
+        growth <= MAX_GROWTH,
+        "doubling the frame count multiplied the drain time by {growth:.2}x (N={N} took {best_n:?}, \
+         2N took {best_2n:?}). Linear reassembly doubles (about 2x); quadratic quadruples (about \
+         4x). Above {MAX_GROWTH:.1}x means the per-frame front-draining regression is back."
     );
 }
 
