@@ -310,10 +310,24 @@ async fn run_world(world: World) -> Disposition {
     // Apply the generated breaker states. `force_open_in` seeds Open (future = active, past = expired);
     // an expired-Open cell driven once through `acquire_for_dispatch_in` wins its single-flight probe
     // and is left HalfOpen (probe in flight) — a real ProbeInFlight state, un-settable otherwise.
+    // OPEN_HORIZON_SECS, not 30. This seeds an ACTIVE-open breaker, and the oracle below classifies
+    // it against a SECOND `now()` taken later, with a live HTTP request in between. At 30s any stall
+    // longer than that silently reclassified an active-open breaker as EXPIRED, which does not merely
+    // change the timing, it changes THE ORACLE the property compares against: the test would then
+    // pass while asserting something other than what it was generated to assert. A pass-for-the-
+    // wrong-reason is the one outcome a property test must never produce, since its entire value is
+    // being adversarial. A day is longer than any stall that leaves a test process alive, so the
+    // classification is now stable across the whole body regardless of how loaded the machine is.
+    //
+    // This closes the ORACLE hazard only. It does not make the wall-clock BUDGET assertions below
+    // meaningful (see TEST_BUDGET_EPS): those still measure the machine as much as the code, and
+    // fixing that properly needs an injected clock shared by the code under test and the oracle,
+    // rather than both calling `now()` independently.
+    const OPEN_HORIZON_SECS: u64 = 86_400;
     let t = now();
     let apply = |pool: &str, idx: usize, b: Breaker| match b {
         Breaker::Closed => {}
-        Breaker::OpenActive => app.store.force_open_in(pool, idx, t + 30),
+        Breaker::OpenActive => app.store.force_open_in(pool, idx, t + OPEN_HORIZON_SECS),
         Breaker::OpenExpired => app.store.force_open_in(pool, idx, t.saturating_sub(1)),
         Breaker::HalfOpen => {
             app.store.force_open_in(pool, idx, t.saturating_sub(1));
