@@ -86,22 +86,21 @@ Two honest notes. First, "supported" here means *reachable in its full native fi
 
 ## Local models: Ollama, LM Studio, llama.cpp, vLLM
 
-A local inference server is a provider like any other. It speaks the OpenAI protocol, so it needs a
-catalog entry and nothing else. The catalog ships four on their conventional ports:
+A local inference server speaks the OpenAI protocol, so it is a provider like any other. It needs an
+entry in **your own** `providers.yaml`, not the shipped catalog: busbar's shipped catalog is
+`https://` only by design, so a plaintext default can never arrive by surprise from an upgrade. Your
+own catalog carries no such restriction, which is exactly where a local upstream belongs.
 
-| Provider key | Server | Default `base_url` |
-| --- | --- | --- |
-| `ollama` | Ollama (`ollama serve`) | `http://localhost:11434/v1` |
-| `lmstudio` | LM Studio local server | `http://localhost:1234/v1` |
-| `llamacpp` | `llama-server` | `http://localhost:8080/v1` |
-| `vllm` | `vllm serve` | `http://localhost:8000/v1` |
+Add the entry to the `providers.yaml` you deploy:
 
-Busbar permits plain `http://` to loopback, RFC-1918 and CGNAT addresses precisely so a local server
-works with no flag, while still refusing plaintext to the public internet.
+```yaml
+ollama:
+  protocol: openai
+  base_url: http://localhost:11434/v1
+  error_map: {}
+```
 
-One wrinkle worth stating plainly: `api_key` is required on every provider, including one that does
-not want a credential. Point it at an environment variable and set that variable to anything. The
-value is sent to a server on your own machine that ignores it.
+Then use it from `config.yaml` as normal:
 
 ```yaml
 providers:
@@ -111,7 +110,7 @@ providers:
 models:
   llama-local:
     provider: ollama
-    upstream_model: llama3.1:8b
+    upstream_model: "llama3.1:8b"
 
 pools:
   default:
@@ -119,28 +118,30 @@ pools:
       - model: llama-local
 ```
 
-That is the whole config. Start `ollama serve`, point any SDK busbar speaks at busbar, and the
-request goes to your own machine.
+Conventional ports, for the entry's `base_url`:
+
+| Server | Port |
+| --- | --- |
+| Ollama (`ollama serve`) | 11434 |
+| LM Studio local server | 1234 |
+| `llama-server` (llama.cpp) | 8080, which collides with busbar's own default listen: change one |
+| vLLM (`vllm serve`) | 8000 |
+
+Two wrinkles worth stating plainly. `api_key` is required on every provider, including one that wants
+no credential, so point it at an environment variable and set that variable to anything: the value
+goes to a server on your own machine that ignores it. And busbar permits plain `http://` only to a
+LITERAL private or loopback address (`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
+`100.64/10`, link-local). It does not resolve names in order to classify them, because a name it
+cannot classify might point anywhere, so it fails closed. There is no opt-out field.
 
 ### Mixing local and hosted in one pool
 
-Local members sit in a pool beside hosted ones and take part in the same failover, breaker and
-policy machinery. A common shape is a local model first with a hosted model behind it:
+Local members sit in a pool beside hosted ones and take part in the same failover, breaker and policy
+machinery. Local members have no rate card, so they cost nothing in the spend ledger: that is
+correct, but it means a `cheapest` policy always prefers them. Use explicit weights when that is not
+what you want.
 
 ```yaml
-providers:
-  ollama:
-    api_key: { env: OLLAMA_KEY }
-  openai:
-    api_key: { env: OPENAI_KEY }
-
-models:
-  llama-local:
-    provider: ollama
-    upstream_model: llama3.1:8b
-  gpt-4o:
-    provider: openai
-
 pools:
   default:
     members:
@@ -150,59 +151,29 @@ pools:
         weight: 1
 ```
 
-Local members have no rate card, so they cost nothing in the spend ledger. That is correct, but it
-means a `cheapest` policy will always prefer them: use explicit weights when that is not what you
-want.
-
 ### Running busbar in Docker
 
-This is the trap worth stating plainly, because it costs people an afternoon.
+Two things change, and both cost people an afternoon.
 
-**Use a literal private IP, not a hostname.** Busbar permits plaintext `http://` only when the host
-is a LITERAL private or loopback address: `127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
-`100.64/10`, or link-local. It does not resolve names in order to classify them, because a name it
-cannot classify might point anywhere, so it fails closed. That means **`http://host.docker.internal:11434`
-is rejected**, and so is a compose service name like `http://ollama:11434`. There is no opt-out field.
-
-Pin the inference server to a static address on your Docker network and name that address here:
+**Use a literal private IP, not a hostname.** Per the rule above, `http://host.docker.internal:11434`
+is REJECTED, and so is a compose service name like `http://ollama:11434`. Pin the inference container
+to a static address on your Docker network and name that address in your `providers.yaml`:
 
 ```yaml
-providers:
-  ollama:
-    api_key: { env: OLLAMA_KEY }
-    base_url: http://172.18.0.5:11434/v1   # a LITERAL private IP, not a service name
+ollama:
+  protocol: openai
+  base_url: http://172.18.0.5:11434/v1
+  error_map: {}
 ```
 
-Two things follow. Give the inference container a static IP in your compose file rather than letting
-Docker assign one, and guard the pair, because nothing but your own deploy step couples the compose
-address to this config. A drift check in the deploy script is the usual answer.
+Nothing but your own deploy step couples that address to the compose file, so add a drift check there.
 
 **Bind the server to all interfaces.** Inside a container, `localhost` is the container. Ollama
 defaults to loopback only, so set `OLLAMA_HOST=0.0.0.0` before `ollama serve`. LM Studio has a
-"Serve on Local Network" toggle. If busbar reports a connection refused to a local model that is
-otherwise configured correctly, this is almost always why.
+"Serve on Local Network" toggle. A connection refused to an otherwise correct local model is almost
+always this.
 
-Running busbar directly on the host rather than in a container avoids both issues: `localhost` is
-accepted, and the catalog defaults work unchanged.
-
-### Pointing at another machine
-
-The same entries work against a LAN host by overriding `base_url`, for example a workstation with a
-GPU serving the rest of the team:
-
-```yaml
-providers:
-  lmstudio:
-    api_key: { env: LMSTUDIO_KEY }
-    base_url: http://192.168.1.50:1234/v1   # override the catalog default on the PROVIDER
-
-models:
-  llama-workstation:
-    provider: lmstudio
-    upstream_model: qwen2.5-coder-32b
-```
-
-RFC-1918 addresses are permitted over plain `http://` for exactly this case.
+Running busbar directly on the host avoids both issues.
 
 ## `error_map` and the breaker (why we vet)
 
