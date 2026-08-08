@@ -52,6 +52,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod a2a;
 mod admin;
 mod auth;
 mod auth_cache;
