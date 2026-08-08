@@ -650,7 +650,10 @@ fn keys_arm_verdict(
     let Some(gov) = gov else {
         return ChainVerdict::Denied;
     };
-    match gov.verify_token(token, now) {
+    // DATA PLANE: expected audience is `None`, so an audience-bound (MCP authorization-server)
+    // token is rejected here by the verifier itself - the 1.5.4 plane boundary. The MCP ingress
+    // is the ONE caller that passes its canonical URI instead.
+    match gov.verify_token(token, now, None) {
         Some(key) => ChainVerdict::Identified {
             module: crate::config::KEYS_MODULE.to_string(),
             principal: principal_from_vkey(&key),

@@ -625,7 +625,7 @@ async fn credential_submit_issues_via_shared_seam() {
         .governance
         .as_ref()
         .unwrap()
-        .verify_token(&key, crate::store::now())
+        .verify_token(&key, crate::store::now(), None)
         .is_some());
 }
 
@@ -686,11 +686,11 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
     let gov = app.governance.as_ref().unwrap();
     let now = crate::store::now();
     assert!(
-        gov.verify_token(&key1, now).is_none(),
+        gov.verify_token(&key1, now, None).is_none(),
         "the prior token must stop verifying after Refresh (rotation)"
     );
     assert!(
-        gov.verify_token(&key2, now).is_some(),
+        gov.verify_token(&key2, now, None).is_some(),
         "the new token verifies"
     );
 }
