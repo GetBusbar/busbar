@@ -519,3 +519,58 @@ jobs:
             fi
           done < .github/release-notify-targets.txt
           [ "$fail" = 0 ] || { echo "::error::one or more downstream dispatches failed (see warnings)"; exit 1; }
+
+  # -- THE LAST STEP: DOES THE THING WE JUST PUBLISHED ACTUALLY WORK FOR A USER? -------------------
+  #
+  # Everything above this line verifies what THIS WORKFLOW produced, from inside this workflow. The
+  # gate proves the tests passed. `verify-assets` proves the assets it uploaded are present and
+  # plausibly sized. `notify-downstream` proves the fan-out fired. Not one of them proves that
+  # `docker pull getbusbar/busbar`, `curl -fsSL https://getbusbar.com/install.sh | sh`, or
+  # `brew install getbusbar/busbar/busbar` gives a user this release. Those are different systems, in
+  # different repos, on different clocks.
+  #
+  # `verify-deploy.yml` already checked all of that, and thoroughly - but it fired on its OWN
+  # `release: published` trigger, BESIDE this workflow rather than as part of it. Nothing here waited
+  # on it and nothing reported its verdict as part of the release's status. So the release could be
+  # green while being unusable, with the only evidence a separate red run in a repo full of runs.
+  # That is not a hypothetical: 1.5.3 published five of its seven assets, `install.sh` returned 404
+  # on Apple Silicon, `docker pull getbusbar/busbar` served the previous release, and every one of
+  # those was found by a human checking by hand.
+  #
+  # Calling it as a job makes its failure THIS RUN's failure, on the release's own status page, with
+  # the failing check named in this run's own job list. That is what "last step" has to mean.
+  #
+  # IT CANNOT GATE PUBLICATION, AND DOES NOT PRETEND TO. Consumer verification is post-publication by
+  # nature: you cannot pull an image that was never pushed or brew-install a formula the tap has not
+  # bumped. Drafting the release and promoting it only after verification would gate the
+  # asset-completeness class of defect but STILL not this one, because every downstream channel it
+  # checks (the tap, the chart, the site, /releases/latest) only moves once the release is public.
+  # So the value here is the verdict being impossible to miss, not a block:
+  #   1. this job turns the RELEASE RUN red, and
+  #   2. verify-deploy.yml's `alert` job opens/updates a labelled GitHub issue naming the failing
+  #      check, its expected and observed values, and the run URL.
+  #
+  # `!cancelled()` FOR THE SAME REASON `verify-assets` HAS IT. A `needs:` on a failed job skips the
+  # dependent by default, so without this a failed `notify-downstream` (which fails outright while
+  # RELEASE_DISPATCH_TOKEN is unprovisioned - see its TODO) would SKIP consumer verification on every
+  # release. The one check that matters most must not be switched off by an unrelated red job
+  # upstream of it.
+  consumer-verification:
+    name: consumer verification (LAST STEP)
+    needs: [verify-assets, notify-downstream]
+    if: ${{ !cancelled() }}
+    # `./` resolves the reusable workflow AT THIS RUN'S REF, i.e. at the tag being released, so a
+    # release is verified by the verifier that shipped with it rather than by whatever is on the
+    # default branch today.
+    uses: ./.github/workflows/verify-deploy.yml
+    with:
+      version: ${{ github.ref_name }}
+    # Job-level permissions REPLACE the workflow-level block for a called workflow, and a called
+    # workflow can never exceed what it is granted here. `issues: write` is what lets the alert job
+    # file the issue; `actions: read` is what lets it read the failed job's log to quote the exact
+    # expected/observed values.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    secrets: inherit
