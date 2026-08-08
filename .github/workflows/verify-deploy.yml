@@ -777,22 +777,32 @@ jobs:
           # UNDER TEST over raw.githubusercontent, so the verifier and the release that produced the
           # assets cannot disagree about what was supposed to ship. Fetched rather than checked out
           # because this job deliberately checks nothing out.
-          mani="https://raw.githubusercontent.com/GetBusbar/busbar/${TAG}/.github/release-targets.json"
-          if ! curl -fsS --max-time 30 "$mani" -o /tmp/release-targets.json; then
-            # Tags cut BEFORE this manifest existed do not carry it. Falling back to main's copy is
-            # correct for them and honest about what it is doing: the platform set is what changes
-            # rarely, so main's list is the right answer for an old tag, and the alternative
-            # (hardcoding a list here) is the exact defect the manifest replaced. A release cut from
-            # now on always carries its own, so the fallback quietly stops being used.
-            echo "note: ${TAG} predates .github/release-targets.json; falling back to main's copy."
-            if ! curl -fsS --max-time 30 \
-              "https://raw.githubusercontent.com/GetBusbar/busbar/main/.github/release-targets.json" \
-              -o /tmp/release-targets.json; then
-              echo "FAIL: no release-target manifest at ${TAG} and none on main either."
-              echo "Without it this check cannot know which platforms ${TAG} owed, and guessing is"
-              echo "how a missing platform got waved through in the first place."
-              exit 1
+          # Tags cut BEFORE this manifest existed do not carry it, so the fetch degrades
+          # tag -> main -> dev. The dev leg is not hypothetical padding: the manifest was ADDED on
+          # dev and has not been promoted to main yet, so as written this check hard-failed on every
+          # run today with "no release-target manifest at v1.5.3 and none on main either" and every
+          # check after it in the job was skipped - a whole verifier taken out by a file being one
+          # branch away. Reading it from a branch is weaker than reading it at the tag (the platform
+          # set could have moved since), but it is the same trade the main fallback already made,
+          # the platform set changes rarely, and the alternative (hardcoding a list here) is the
+          # exact defect the manifest was introduced to remove. Releases cut from now on carry their
+          # own copy and the fallbacks quietly stop being used.
+          got_mani=0
+          for ref in "${TAG}" main dev; do
+            if curl -fsS --max-time 30 \
+                 "https://raw.githubusercontent.com/GetBusbar/busbar/${ref}/.github/release-targets.json" \
+                 -o /tmp/release-targets.json; then
+              [ "$ref" = "$TAG" ] || echo "note: ${TAG} does not carry .github/release-targets.json; using ${ref}'s copy."
+              got_mani=1
+              break
             fi
+          done
+          if [ "$got_mani" = 0 ]; then
+            echo "FAIL: no release-target manifest at ${TAG}, on main, or on dev."
+            echo "Without it this check cannot know which platforms ${TAG} owed, and guessing is"
+            echo "how a missing platform got waved through in the first place."
+            echo "::error::(c) .github/release-targets.json could not be fetched from ${TAG}, main or dev. release.yml's own \`targets\` job reads the same file, so if it is genuinely gone the release build matrix is broken too. Fix: restore it."
+            exit 1
           fi
           mapfile -t expected < <(python3 - "$TAG" <<'PY'
           import json, sys
