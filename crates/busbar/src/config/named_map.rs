@@ -106,6 +106,30 @@ impl NamedMapSection {
         }
     }
 
+    /// This section's CURRENT entry for `name`, projected back to a raw definition document, or
+    /// `None` when there is no such entry.
+    ///
+    /// The base half of the overlay's per-entry MERGE: an overlay entry is a PATCH
+    /// ([`crate::config::patch::merge_entry`]), so the thing being patched has to be a document. The
+    /// projection round-trips into the same struct it came from, so a field that survives the merge
+    /// untouched parses back to exactly the value it had.
+    pub(crate) fn entry_as_document(
+        self,
+        deploy: &DeployCfg,
+        name: &str,
+    ) -> Option<serde_json::Value> {
+        match self {
+            NamedMapSection::IdentityProviders => deploy
+                .identity_providers
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Export => deploy
+                .export
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+        }
+    }
+
     /// Parse a raw definition document into this section's typed config and insert it under `name`.
     /// The typed structs are `deny_unknown_fields`, so a typo'd key is rejected HERE — the API can
     /// never store a definition that config.yaml would refuse.
