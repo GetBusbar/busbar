@@ -10,7 +10,7 @@
 #
 # BRANCH MODEL: `dev` gets only the cheap per-push CI (ci.yml) — push there often. Promoting
 # dev→`qa` is what spends this real-money full-plugin gate; it is the pre-release soak. A green qa
-# is what earns a promotion qa→`main`, where tag-on-main.yml auto-cuts the release. This
+# is what earns a promotion qa→`main`, where release.yml cuts the release. This
 # intentionally does NOT run on `dev`, `main`, or PRs — `scripts/release-check.sh` documents itself
 # as a pre-release gate, not a per-commit one. `qa` is where that cost belongs: proving the promoted
 # commit is release-ready before it ever reaches `main`.
