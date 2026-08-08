@@ -84,6 +84,108 @@ Models are built by model makers; each maker's models are reached over a wire pr
 
 Two honest notes. First, "supported" here means *reachable in its full native fidelity over one of the six languages*: for open-weights and aggregator-served models, that's the host's endpoint rather than the maker's own. Second, the one first-party endpoint in that audit that speaks its own dialect (Inflection) is still one lane away through an `openai`-speaking host, so the lookup's answer is unchanged; a model would need to be served *exclusively* over a genuinely novel wire format to fall outside it, and we haven't found one.
 
+## Local models: Ollama, LM Studio, llama.cpp, vLLM
+
+A local inference server is a provider like any other. It speaks the OpenAI protocol, so it needs a
+catalog entry and nothing else. The catalog ships four on their conventional ports:
+
+| Provider key | Server | Default `base_url` |
+| --- | --- | --- |
+| `ollama` | Ollama (`ollama serve`) | `http://localhost:11434/v1` |
+| `lmstudio` | LM Studio local server | `http://localhost:1234/v1` |
+| `llamacpp` | `llama-server` | `http://localhost:8080/v1` |
+| `vllm` | `vllm serve` | `http://localhost:8000/v1` |
+
+Busbar permits plain `http://` to loopback, RFC-1918 and CGNAT addresses precisely so a local server
+works with no flag, while still refusing plaintext to the public internet.
+
+One wrinkle worth stating plainly: `api_key` is required on every provider, including one that does
+not want a credential. Point it at an environment variable and set that variable to anything. The
+value is sent to a server on your own machine that ignores it.
+
+```yaml
+providers:
+  ollama:
+    api_key: { env: OLLAMA_KEY }   # required, but unused: set OLLAMA_KEY=unused
+
+models:
+  llama-local:
+    provider: ollama
+    upstream_model: llama3.1:8b
+
+pools:
+  default:
+    members:
+      - model: llama-local
+```
+
+That is the whole config. Start `ollama serve`, point any SDK busbar speaks at busbar, and the
+request goes to your own machine.
+
+### Mixing local and hosted in one pool
+
+Local members sit in a pool beside hosted ones and take part in the same failover, breaker and
+policy machinery. A common shape is a local model first with a hosted model behind it:
+
+```yaml
+providers:
+  ollama:
+    api_key: { env: OLLAMA_KEY }
+  openai:
+    api_key: { env: OPENAI_KEY }
+
+models:
+  llama-local:
+    provider: ollama
+    upstream_model: llama3.1:8b
+  gpt-4o:
+    provider: openai
+
+pools:
+  default:
+    members:
+      - model: llama-local
+        weight: 10
+      - model: gpt-4o
+        weight: 1
+```
+
+Local members have no rate card, so they cost nothing in the spend ledger. That is correct, but it
+means a `cheapest` policy will always prefer them: use explicit weights when that is not what you
+want.
+
+### Running busbar in Docker
+
+This is the trap worth stating plainly, because it costs people an afternoon. Inside a container,
+`localhost` is the **container**, not your machine. Two things have to change:
+
+1. Point the `base_url` at the host: `http://host.docker.internal:11434/v1`. On Linux, add
+   `--add-host=host.docker.internal:host-gateway`, which Docker Desktop provides automatically.
+2. Start the inference server bound to all interfaces, not just loopback. Ollama defaults to
+   loopback only, so set `OLLAMA_HOST=0.0.0.0` before `ollama serve`. LM Studio has a
+   "Serve on Local Network" toggle.
+
+If busbar reports a connection refused to a local model, it is almost always the second one.
+
+### Pointing at another machine
+
+The same entries work against a LAN host by overriding `base_url`, for example a workstation with a
+GPU serving the rest of the team:
+
+```yaml
+providers:
+  lmstudio:
+    api_key: { env: LMSTUDIO_KEY }
+    base_url: http://192.168.1.50:1234/v1   # override the catalog default on the PROVIDER
+
+models:
+  llama-workstation:
+    provider: lmstudio
+    upstream_model: qwen2.5-coder-32b
+```
+
+RFC-1918 addresses are permitted over plain `http://` for exactly this case.
+
 ## `error_map` and the breaker (why we vet)
 
 HTTP-status failures (429, 5xx, 401, …) are classified by the circuit breaker automatically. But some providers signal **billing** or **rate-limit** conditions with their own JSON error codes: sometimes even inside a `200` body. `error_map` translates those codes into a disposition so the breaker reacts correctly: a `billing` failure becomes a sticky 30-minute hard-down, a `rate_limit` becomes a short transient cooldown.
