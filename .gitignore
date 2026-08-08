@@ -47,3 +47,9 @@ busbar-governance.db
 # working data, not source.
 mutants-report/
 mutants-report-live/
+
+# proptest writes a regression seed file here when a property fails. It is a debugging aid for the
+# person looking at the failure, not source, and CI now asserts the working tree is CLEAN after the
+# full suite. Untracked, a failing proptest would trip that assertion TOO, so one flake reports as
+# two failures and the second points at the wrong thing entirely.
+crates/*/proptest-regressions/
