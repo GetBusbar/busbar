@@ -171,6 +171,18 @@ jobs:
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
         run: scripts/blocking-ffi-lint.sh
+      # TEST-LOCALITY lint (1.5.4): tests live in their OWN FILE, never an inline
+      # `#[cfg(test)] mod X { ... }` body under crates/*/src. The rationale is measurement, not
+      # taste: a `wc -l` that silently means "code" in one file and "code + tests" in another is an
+      # instrument that lies, and it already corrupted one investigation (overlay.rs was compared
+      # against migrate.rs on line counts that were 60% tests). structure-lint.sh's own oversized-
+      # file ceiling is computed from exactly that measurement. A test-only HELPER module with no
+      # `#[test]` inside is machinery, not a suite, and is deliberately not flagged. Self-test runs
+      # FIRST (never trust the verdict before proving the scanner goes red on a planted violation).
+      - name: Test-locality lint self-test
+        run: scripts/test-locality-lint.sh --selftest
+      - name: Test-locality lint
+        run: scripts/test-locality-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
