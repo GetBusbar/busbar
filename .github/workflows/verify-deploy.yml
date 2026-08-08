@@ -246,6 +246,15 @@ jobs:
     steps:
       - name: Every default pointer must resolve to the newest published release
         id: sweep
+        # THE ONLY `${{ }}` IN THIS STEP LIVES HERE, AND IT HAS TO. A `run:` block containing any
+        # `${{ }}` is compiled as ONE expression, and GitHub caps an expression at 21000 characters
+        # - which this script comfortably exceeds, so the whole WORKFLOW fails to parse with
+        # "Exceeded max expression length" and cannot even be dispatched. Hoisting the interpolation
+        # into `env:` leaves the script as a plain literal with no length limit. It is also the safer
+        # shape regardless: an event-supplied value reaches the shell as an environment variable
+        # rather than being pasted into the script text.
+        env:
+          SUPPLIED_VERSION: ${{ inputs.version || github.event.release.tag_name || '' }}
         run: |
           set -uo pipefail   # deliberately NOT -e: every channel is checked and ALL failures are
                              # reported. A pointer sweep that stops at the first stale channel tells
@@ -312,8 +321,7 @@ jobs:
           }
 
           # -- Which busbar release is under test ------------------------------------------------
-          SUPPLIED="${{ inputs.version || github.event.release.tag_name || '' }}"
-          SUPPLIED="${SUPPLIED#v}"
+          SUPPLIED="${SUPPLIED_VERSION#v}"
           NEWEST="$(newest_tag GetBusbar/busbar)"
           if [ -z "${NEWEST:-}" ]; then
             echo "::error::could not enumerate GetBusbar/busbar's published releases; every pointer assertion below would be vacuous, so this fails rather than passes."
