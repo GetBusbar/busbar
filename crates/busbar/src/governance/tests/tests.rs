@@ -2559,6 +2559,45 @@ mod signed_token {
         }
     }
 
+    /// THE PLANE BOUNDARY end-to-end through `GovState` (1.5.4 P1): an audience-bound token whose
+    /// `sub` is a fully valid, enabled binding is STILL rejected by the data-plane
+    /// `verify_token(.., None)` - the boundary is a claims property enforced in the verifier, not
+    /// a binding property - while the SAME binding admits on the audience-checked plane, and the
+    /// sibling plain token keeps working on the data plane.
+    #[test]
+    fn audience_bound_token_is_confined_to_its_plane_through_govstate() {
+        use crate::governance::signing::TokenVerifier;
+
+        let g = gov();
+        let mcp = "https://busbar.example.com/mcp";
+        let (binding, plain) = g
+            .mint_signed(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000)
+            .expect("mint");
+
+        // Recover the binding generation from the plain token's claims (same signer key as
+        // `gov()`), then mint an audience-bound sibling for the SAME sub + generation.
+        let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+        let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+        let generation = verifier
+            .verify(&plain, 1_000, None)
+            .expect("plain claims")
+            .generation;
+        let bound = signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), mcp, None);
+
+        // The plain token admits on the data plane; the bound one must not.
+        assert!(g.verify_token(&plain, 1_000, None).is_some());
+        assert!(
+            g.verify_token(&bound, 1_000, None).is_none(),
+            "an audience-bound token must be rejected on the data plane even with a valid binding"
+        );
+        // The bound token admits exactly on its own plane; the plain one must not.
+        assert!(g.verify_token(&bound, 1_000, Some(mcp)).is_some());
+        assert!(
+            g.verify_token(&plain, 1_000, Some(mcp)).is_none(),
+            "a plain data-plane key must be rejected on an audience-checked ingress"
+        );
+    }
+
     /// Mint issues a signed token; verify resolves the binding by `sub`; the binding carries the
     /// group + pools and NO inline limits.
     #[test]
@@ -2576,7 +2615,7 @@ mod signed_token {
         assert_eq!(binding.group.as_deref(), Some("growth"));
         assert_eq!(binding.allowed_scopes, Some(vec![ScopeRef::pool("fast")]));
 
-        let resolved = g.verify_token(&token, 1_500).expect("verify");
+        let resolved = g.verify_token(&token, 1_500, None).expect("verify");
         assert_eq!(resolved.id, binding.id);
         assert_eq!(resolved.group.as_deref(), Some("growth"));
     }
@@ -2588,7 +2627,7 @@ mod signed_token {
         let (_b, token) = g
             .mint_signed(spec("free", None, None), 2_000, 1_000)
             .expect("mint");
-        let resolved = g.verify_token(&token, 1_500).expect("verify");
+        let resolved = g.verify_token(&token, 1_500, None).expect("verify");
         assert_eq!(resolved.group, None);
         // Omitted allowed_pools carries as None = all pools (intent intact in the binding).
         assert!(resolved.allowed_scopes.is_none());
@@ -2601,9 +2640,18 @@ mod signed_token {
         let (_b, token) = g
             .mint_signed(spec("bob", None, None), 1_000, 500)
             .expect("mint");
-        assert!(g.verify_token(&token, 999).is_some(), "valid before exp");
-        assert!(g.verify_token(&token, 1_000).is_none(), "rejected at exp");
-        assert!(g.verify_token(&token, 5_000).is_none(), "rejected past exp");
+        assert!(
+            g.verify_token(&token, 999, None).is_some(),
+            "valid before exp"
+        );
+        assert!(
+            g.verify_token(&token, 1_000, None).is_none(),
+            "rejected at exp"
+        );
+        assert!(
+            g.verify_token(&token, 5_000, None).is_none(),
+            "rejected past exp"
+        );
     }
 
     /// A TAMPERED token fails verify (signature check).
@@ -2618,7 +2666,7 @@ mod signed_token {
         let mid = chars.len() / 2;
         chars[mid] = if chars[mid] == 'A' { 'B' } else { 'A' };
         let tampered: String = chars.into_iter().collect();
-        assert!(g.verify_token(&tampered, 1_500).is_none());
+        assert!(g.verify_token(&tampered, 1_500, None).is_none());
     }
 
     /// REVOKE denylists the subject WITHOUT deleting the binding: verify now returns None, the
@@ -2629,12 +2677,12 @@ mod signed_token {
         let (binding, token) = g
             .mint_signed(spec("bob", None, None), 2_000, 1_000)
             .expect("mint");
-        assert!(g.verify_token(&token, 1_500).is_some());
+        assert!(g.verify_token(&token, 1_500, None).is_some());
         g.revoke(&binding.id, "test").expect("revoke");
         g.revoke(&binding.id, "again").expect("idempotent");
         assert!(g.is_revoked(&binding.id));
         assert!(
-            g.verify_token(&token, 1_500).is_none(),
+            g.verify_token(&token, 1_500, None).is_none(),
             "a revoked subject's token is rejected"
         );
         // The binding row still exists (revoke keeps history).
@@ -2661,7 +2709,7 @@ mod signed_token {
             Arc::new(GovState::new_with_signer(store, Some("t".into()), Some(signer2)).unwrap());
         assert!(g2.is_revoked(&binding.id), "denylist re-hydrated at boot");
         assert!(
-            g2.verify_token(&token, 1_500).is_none(),
+            g2.verify_token(&token, 1_500, None).is_none(),
             "the revoked token is still rejected after restart"
         );
     }
@@ -2692,7 +2740,7 @@ mod signed_token {
             GovState::new_with_signer(store_b.clone(), Some("t".into()), Some(key_b_same)).unwrap(),
         );
         assert!(
-            node_b.verify_token(&token, 1_500).is_some(),
+            node_b.verify_token(&token, 1_500, None).is_some(),
             "a token signed by the shared key verifies on another node"
         );
 
@@ -2702,7 +2750,7 @@ mod signed_token {
             GovState::new_with_signer(store_b, Some("t".into()), Some(key_b_rotated)).unwrap(),
         );
         assert!(
-            node_b2.verify_token(&token, 1_500).is_none(),
+            node_b2.verify_token(&token, 1_500, None).is_none(),
             "after rotation, a token signed by the old key is rejected (revoke-all)"
         );
     }
@@ -2757,14 +2805,14 @@ mod signed_token {
             .mint_signed(spec("bob", None, None), base + 10_000, base)
             .expect("mint");
         assert!(
-            g.verify_token(&token, base + 1).is_some(),
+            g.verify_token(&token, base + 1, None).is_some(),
             "admitted before the revoke"
         );
 
         g.revoke(&binding.id, "compromised").expect("revoke");
 
         assert!(
-            g.verify_token(&token, base + 1).is_none(),
+            g.verify_token(&token, base + 1, None).is_none(),
             "the very next signed-token check after a local revoke must reject — no window"
         );
         assert!(
@@ -2789,7 +2837,10 @@ mod signed_token {
         let (binding, token) = g
             .mint_signed(spec("bob", None, None), base + 10_000, base)
             .expect("mint");
-        assert!(g.verify_token(&token, base).is_some(), "admitted at mint");
+        assert!(
+            g.verify_token(&token, base, None).is_some(),
+            "admitted at mint"
+        );
 
         // THE PEER: another node revokes the subject. The write lands in the SHARED store only —
         // nothing touches this process's in-memory denylist.
@@ -2800,7 +2851,7 @@ mod signed_token {
         // Inside the window this node may still admit — that is the documented, bounded exposure.
         // (Asserted as a fact about the contract, not as a desirable property.)
         assert!(
-            g.verify_token(&token, base).is_some(),
+            g.verify_token(&token, base, None).is_some(),
             "inside the staleness window the cached set still governs (documented)"
         );
 
@@ -2808,7 +2859,7 @@ mod signed_token {
         // signed-token path and the `is_revoked` predicate.
         let past = base + REVOCATION_SYNC_TTL_SECS + 2;
         assert!(
-            g.verify_token(&token, past).is_none(),
+            g.verify_token(&token, past, None).is_none(),
             "a peer's revoke must be honoured within REVOCATION_SYNC_TTL_SECS ({REVOCATION_SYNC_TTL_SECS}s)"
         );
         assert!(
@@ -2833,7 +2884,10 @@ mod signed_token {
         let (binding, old_token) = g
             .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
             .expect("mint");
-        assert!(g.verify_token(&old_token, 1_500).is_some(), "valid at mint");
+        assert!(
+            g.verify_token(&old_token, 1_500, None).is_some(),
+            "valid at mint"
+        );
 
         let rotated = g
             .rotate_key(&binding.id, 9_000)
@@ -2851,11 +2905,11 @@ mod signed_token {
             "policy carries over untouched"
         );
         assert!(
-            g.verify_token(&old_token, 1_500).is_none(),
+            g.verify_token(&old_token, 1_500, None).is_none(),
             "the PRE-ROTATION token must be rejected immediately after rotate"
         );
         assert!(
-            g.verify_token(&token, 1_500).is_some(),
+            g.verify_token(&token, 1_500, None).is_some(),
             "the re-minted token authenticates"
         );
     }
@@ -3333,7 +3387,7 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
 
     // First issue: mints the one binding at epoch 0.
     let (first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
-    assert!(gov.verify_token(&first_token, now).is_some());
+    assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // Arm the failure: the NEXT `delete_key` call errors — that is `refresh_self`'s attempt to
     // tombstone the epoch-0 binding (it writes the new epoch-1 binding first, successfully, then
@@ -3380,7 +3434,7 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
 
     // The client's ORIGINAL token still verifies (it kept working through the failed refresh).
     assert!(
-        gov.verify_token(&first_token, now).is_some(),
+        gov.verify_token(&first_token, now, None).is_some(),
         "the prior token must remain valid after a rolled-back refresh"
     );
 }
@@ -3398,10 +3452,10 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
     let (second_binding, second_token) = gov.refresh_self(sub, None, now + 3600, now).unwrap();
 
     assert!(
-        gov.verify_token(&first_token, now).is_none(),
+        gov.verify_token(&first_token, now, None).is_none(),
         "the prior token must stop verifying after a successful refresh"
     );
-    assert!(gov.verify_token(&second_token, now).is_some());
+    assert!(gov.verify_token(&second_token, now, None).is_some());
     let surviving = self_binding_for(&gov, sub).expect("the new binding exists");
     assert_eq!(surviving.id, second_binding.id);
 }
@@ -3481,7 +3535,7 @@ fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
     let now = 1_700_000_000u64;
 
     let (_first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
-    assert!(gov.verify_token(&first_token, now).is_some());
+    assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // The tombstone succeeds (store-level), but the subsequent cache-reconcile `refresh()` fails.
     let err = gov
@@ -3496,7 +3550,7 @@ fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
     // THE FIX: even though the full refresh failed, the surgical eviction means the OLD token no
     // longer verifies — the exact hazard this fix closes.
     assert!(
-        gov.verify_token(&first_token, now).is_none(),
+        gov.verify_token(&first_token, now, None).is_none(),
         "the prior token must stop verifying even when the post-delete cache refresh fails"
     );
 }
@@ -3522,7 +3576,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
     )
     .await
     .expect("issue via the offloaded wrapper succeeds");
-    assert!(gov.verify_token(&issued_token, now).is_some());
+    assert!(gov.verify_token(&issued_token, now, None).is_some());
     assert_eq!(
         issued.group.as_deref(),
         Some(format!("user:{sub}").as_str())
@@ -3543,10 +3597,10 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         "refresh rotates to a new binding id"
     );
     assert!(
-        gov.verify_token(&issued_token, now).is_none(),
+        gov.verify_token(&issued_token, now, None).is_none(),
         "the offloaded refresh still tombstones the prior token"
     );
-    assert!(gov.verify_token(&refreshed_token, now).is_some());
+    assert!(gov.verify_token(&refreshed_token, now, None).is_some());
 }
 
 /// A `Store` that delegates everything to a `MemoryStore` except `put_key`, which PANICS. Used
@@ -3750,7 +3804,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
         )
         .expect("mint");
     assert!(
-        gov.verify_token(&token, 1_500).is_some(),
+        gov.verify_token(&token, 1_500, None).is_some(),
         "the original token verifies before the rotation"
     );
 
@@ -3763,7 +3817,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
     // (1) SAFETY: the store already holds the NEW generation, so the old token is durably dead —
     // the cache must not go on honouring it.
     assert!(
-        gov.verify_token(&token, 1_500).is_none(),
+        gov.verify_token(&token, 1_500, None).is_none(),
         "the PREVIOUS credential must stop verifying the moment the new generation is committed, \
          even when the cache refresh failed"
     );
@@ -4064,12 +4118,12 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
     let now = 1_700_000_000u64;
 
     let (first, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
-    assert!(gov.verify_token(&first_token, now).is_some());
+    assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // The admin revokes it, exactly as `DELETE /api/v1/admin/keys/{id}` would.
     gov.delete_key(&first.id).unwrap();
     assert!(
-        gov.verify_token(&first_token, now).is_none(),
+        gov.verify_token(&first_token, now, None).is_none(),
         "precondition: the deleted key's token must stop verifying"
     );
 
@@ -4092,11 +4146,11 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
         "the admin's deletion must still stand after the login: {tombstone:?}"
     );
     assert!(
-        gov.verify_token(&first_token, now).is_none(),
+        gov.verify_token(&first_token, now, None).is_none(),
         "the pre-deletion token must NOT come back to life"
     );
     assert!(
-        gov.verify_token(&second_token, now).is_some(),
+        gov.verify_token(&second_token, now, None).is_some(),
         "the freshly issued token must work"
     );
 }
@@ -4135,11 +4189,11 @@ fn a_rolled_back_refresh_can_still_be_retried() {
         "the retry must rotate away from the original binding"
     );
     assert!(
-        gov.verify_token(&retried_token, now).is_some(),
+        gov.verify_token(&retried_token, now, None).is_some(),
         "the retried refresh's token must verify"
     );
     assert!(
-        gov.verify_token(&first_token, now).is_none(),
+        gov.verify_token(&first_token, now, None).is_none(),
         "the original token must be dead once the retry succeeded"
     );
 
@@ -4195,7 +4249,7 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
         .issue_self(sub, None, now + 3600, now)
         .expect("a login after a long refresh history plus a deletion must still mint");
     assert!(
-        gov.verify_token(&issued_token, now).is_some(),
+        gov.verify_token(&issued_token, now, None).is_some(),
         "the freshly issued token must verify"
     );
     assert_ne!(
@@ -4206,7 +4260,7 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
     let (_refreshed, refreshed_token) = gov
         .refresh_self(sub, None, now + 3600, now)
         .expect("refresh must work too, not just issue");
-    assert!(gov.verify_token(&refreshed_token, now).is_some());
+    assert!(gov.verify_token(&refreshed_token, now, None).is_some());
 
     // The deleted binding stays deleted through all of it.
     let tombstone = gov.store().get_key(&live.id).unwrap().unwrap();
@@ -4256,7 +4310,7 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
         "a pools change must update the existing binding, never mint a parallel one"
     );
     assert!(
-        gov.verify_token(&token, now).is_some(),
+        gov.verify_token(&token, now, None).is_some(),
         "the token issued over the updated binding must verify"
     );
 

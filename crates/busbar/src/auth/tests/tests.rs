@@ -2116,6 +2116,351 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     handle.abort();
 }
 
+/// THE MCP PLANE BOUNDARY end-to-end through the real router + `auth_middleware` in GOVERNANCE
+/// mode (1.5.4 P1, `mcp-oauth-1.5.4-DESIGN.md` par. 4): an AUDIENCE-BOUND token whose `sub` is a
+/// fully valid enabled binding must be rejected 401 on the data plane - both a proxy ingress
+/// route (`/pa/v1/messages`) and a chain-verdict-only route (`/stats`, the par. 4.1 blast-radius
+/// example) - while the sibling PLAIN token for the same binding is admitted. Before the boundary,
+/// serde ignored the unknown `a` claim and the MCP token was silently a full data-plane key.
+/// (The full router-table-enumerated ratchet lands with the P2 core route-auth table, which is
+/// what makes every mounted route enumerable; these two routes pin the two admission shapes.)
+#[tokio::test]
+async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
+    use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    // No upstream call is expected on the 401 paths; the plain-token /stats control makes no
+    // upstream call either.
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (key, plain_token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "mcp-agent".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+
+    // Mint the audience-bound sibling for the SAME sub + generation with the same signer key.
+    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+    let generation = verifier
+        .verify(plain_token.as_str(), 1_000_000_000, None)
+        .expect("plain claims")
+        .generation;
+    let bound_token = signer.mint_for_audience(
+        &key.id,
+        2_000_000_000,
+        generation.as_deref(),
+        "https://busbar.example.com/mcp",
+        Some("client-1"),
+    );
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .keys_chain()
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // Audience-bound token on the proxy ingress: 401.
+    let r = client
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .header("authorization", format!("Bearer {bound_token}"))
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "audience-bound token must be rejected on the data-plane ingress"
+    );
+
+    // Audience-bound token on a chain-verdict-only route: 401.
+    let r = client
+        .get(format!("http://{addr}/stats"))
+        .header("authorization", format!("Bearer {bound_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "audience-bound token must be rejected on /stats (chain-verdict-only admission)"
+    );
+
+    // Control: the PLAIN sibling for the same binding is admitted on /stats.
+    let r = client
+        .get(format!("http://{addr}/stats"))
+        .header("authorization", format!("Bearer {}", plain_token.as_str()))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        r.status().as_u16(),
+        401,
+        "the plain data-plane sibling must still be admitted"
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// THE PLANE-BOUNDARY RATCHET (1.5.4 P2, `mcp-oauth-1.5.4-DESIGN.md` par. 4.4), driven by the
+/// ROUTER TABLE rather than by a hand-listed sample.
+///
+/// The rule (par. 4.2): an MCP access token is admissible on the MCP plane and nowhere else. A
+/// sampled test proves that of the paths someone remembered; this one walks
+/// `CoreRouteTable::routes()` — the table every core route is entered into at the moment it is
+/// mounted — plus `App::boot_route_paths` for the plugin surface, so a route added later JOINS the
+/// assertion instead of quietly joining the blast radius. There is no skip arm: a path whose shape
+/// this test cannot turn into a concrete request PANICS rather than passing.
+///
+/// `MCP_ADMISSIBLE` is empty because no MCP ingress is mounted yet; when it is, it goes in that set
+/// and nowhere else. `DECLARED_PUBLIC` is the mirror ratchet on the other axis: a route mounted
+/// `RouteAuth::None` answers everyone, so adding one must be a deliberate act that shows up here.
+#[tokio::test]
+async fn test_mcp_token_is_confined_to_the_mcp_plane() {
+    use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    /// The MCP ingress paths, the ONLY places an audience-bound token may be admitted. Empty until
+    /// the MCP ingress is mounted.
+    const MCP_ADMISSIBLE: &[&str] = &[];
+    /// Core routes declared `RouteAuth::None`: unauthenticated by design, so no token of any kind
+    /// is consulted there. `/healthz` is a liveness probe; `/auth/token` runs the auth chain in its
+    /// own handler.
+    const DECLARED_PUBLIC: &[&str] = &["/healthz", "/auth/token"];
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    // An UNRESTRICTED key: `allowed_scopes: None` is the wildcard (`store.rs`), so the only thing
+    // that can turn the audience-bound sibling away is the plane boundary itself, never a scope.
+    let (key, plain_token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "mcp-agent".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+    let generation = verifier
+        .verify(plain_token.as_str(), 1_000_000_000, None)
+        .expect("plain claims")
+        .generation;
+    let bound_token = signer.mint_for_audience(
+        &key.id,
+        2_000_000_000,
+        generation.as_deref(),
+        "https://busbar.example.com/mcp",
+        Some("client-1"),
+    );
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .keys_chain()
+        .governance(gov)
+        .build();
+
+    // The table the SERVED router was built from: same function, same plugin-route input, so the
+    // enumeration cannot describe a different surface than the one under test.
+    let core_routes = crate::base_data_router(&app.plugin_routes).1;
+    let boot_plugin_paths: Vec<String> = app.boot_route_paths.iter().cloned().collect();
+    assert!(
+        !core_routes.routes().is_empty(),
+        "an empty table would make every assertion below vacuous"
+    );
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // Turn an axum path PATTERN into one concrete request path. Every `{capture}` segment is a
+    // routing wildcard, so any non-empty segment matches; the values below are real names in this
+    // app so the request reaches the handler rather than dying earlier for an unrelated reason.
+    // A pattern shape this cannot render PANICS — that is the ratchet.
+    fn concrete(pattern: &str) -> String {
+        let mut out = String::new();
+        for seg in pattern.split('/').skip(1) {
+            out.push('/');
+            if seg.starts_with('{') && seg.ends_with('}') {
+                out.push_str(match seg {
+                    "{name}" => "pa",
+                    "{provider}" => "anthropic",
+                    "{model}" => "test-model",
+                    other => panic!(
+                        "route pattern segment {other} has no fixture value: give it one, never \
+                         skip the route"
+                    ),
+                });
+            } else {
+                out.push_str(seg);
+            }
+        }
+        if out.is_empty() {
+            "/".to_string()
+        } else {
+            out
+        }
+    }
+
+    let body = serde_json::json!({
+        "model": "pa",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 16
+    })
+    .to_string();
+
+    let mut checked = 0usize;
+    for route in core_routes.routes() {
+        let path = concrete(route.path);
+        if route.auth == busbar_plugin_loader::RouteAuth::None {
+            assert!(
+                DECLARED_PUBLIC.contains(&route.path),
+                "{} is mounted RouteAuth::None but is not in DECLARED_PUBLIC — an unauthenticated \
+                 core route must be a deliberate, reviewed act",
+                route.path
+            );
+            continue;
+        }
+        assert!(
+            !MCP_ADMISSIBLE.contains(&route.path),
+            "{} is in MCP_ADMISSIBLE but is a data-plane core route",
+            route.path
+        );
+        let method = reqwest::Method::from_bytes(route.method.as_str().as_bytes()).unwrap();
+        let url = format!("http://{addr}{path}");
+        // The denial BASELINE for this exact route: no credential at all. Auth failures are
+        // protocol-shaped (`auth_failure_status_and_kind` — Gemini answers 400, Bedrock 403), so a
+        // literal 401 would be a claim about the envelope rather than about admission. Comparing
+        // against the no-credential response asserts the thing that matters: the audience-bound
+        // token buys exactly nothing here.
+        let anon = client
+            .request(method.clone(), &url)
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap()
+            .status();
+        let bound = client
+            .request(method.clone(), &url)
+            .header("authorization", format!("Bearer {bound_token}"))
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            bound.status(),
+            anon,
+            "audience-bound MCP token must be treated as no credential on {} {}",
+            route.method.as_str(),
+            path
+        );
+        // Control on the SAME route: the plain sibling of the same unrestricted binding IS
+        // admitted, so the denial above is the plane boundary and not an unrelated rejection.
+        let plain = client
+            .request(method, &url)
+            .header("authorization", format!("Bearer {}", plain_token.as_str()))
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            plain.status(),
+            anon,
+            "the plain data-plane sibling must still be admitted on {} {}",
+            route.method.as_str(),
+            path
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 4,
+        "the walk covered only {checked} guarded core routes, which is fewer than the surface this \
+         binary mounts — the enumeration is not seeing the router"
+    );
+
+    // The plugin surface is enumerable through the same boot capture. This app loads no plugins,
+    // so the set is empty; the loop is here so a plugin route is covered the moment one exists.
+    for path in &boot_plugin_paths {
+        let url = format!("http://{addr}{path}");
+        let anon = client.get(&url).send().await.unwrap().status();
+        let bound = client
+            .get(&url)
+            .header("authorization", format!("Bearer {bound_token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            bound.status(),
+            anon,
+            "audience-bound MCP token must be treated as no credential on plugin route {path}"
+        );
+    }
+
+    handle.abort();
+    server.shutdown().await;
+}
+
 /// End-to-end through the real router + `auth_middleware` in GOVERNANCE mode, exercising the
 /// non-`Authorization` carriers (`x-goog-api-key`, `x-api-key`) into the virtual-key lookup.
 /// The existing governance test only uses `Authorization: Bearer`, and the multi-carrier test

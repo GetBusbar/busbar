@@ -616,7 +616,7 @@ pub(crate) struct OverlayDoc {
     pub(crate) plugin_versions: BTreeMap<String, String>,
     /// The `named_maps` section (1.5.3 universal named-DEFINITION pattern): API-applied entries of
     /// EVERY named map the generic admin CRUD serves, keyed `section key → entry name → the raw
-    /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.5.4/1.5.6).
+    /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.5.4/1.5.5).
     ///
     /// The definition is stored RAW (`serde_json::Value`) ON PURPOSE. It is re-parsed into its typed,
     /// `deny_unknown_fields` config struct on every apply
@@ -849,12 +849,25 @@ pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDo
         let Some(entries) = doc.named_maps.get(section.key()) else {
             continue;
         };
-        for (name, def) in entries {
-            if let Err(e) = section.insert(deploy, name, def) {
+        for (name, patch) in entries {
+            // PER-ENTRY MERGE, not replace. The stored entry is a PATCH over whatever base config
+            // says for this name, so recording one field never restates the rest of the entry, and
+            // a field the operator later changes in `config.yaml` keeps taking effect unless the
+            // patch names it. For a name base config does not define, the target is `null` and the
+            // merge degrades to exactly the replace this used to do, which is what makes the change
+            // safe over every overlay already on disk.
+            let mut merged = section
+                .entry_as_document(deploy, name)
+                .unwrap_or(serde_json::Value::Null);
+            crate::config::patch::merge_entry(&mut merged, patch);
+            // The MERGED document faces the one typed `deny_unknown_fields` parse, so the grammar
+            // did not move: a patch is judged by the same structs `config.yaml` is, and a patch that
+            // would produce an invalid entry is dropped WHOLE rather than half-applied.
+            if let Err(e) = section.insert(deploy, name, &merged) {
                 tracing::error!(
                     section = section.key(), entry = %name, error = %e,
-                    "config overlay holds a `{}` definition this binary cannot parse; it is NOT \
-                     applied (edit or remove it, then reload)",
+                    "config overlay holds a `{}` patch that does not produce a definition this \
+                     binary can parse; it is NOT applied (edit or remove it, then reload)",
                     section.key()
                 );
             }
@@ -884,8 +897,14 @@ pub(crate) struct UnparseableNamedDef {
 ///
 /// Derived at read time from the overlay file rather than remembered from the last apply, so it
 /// needs no diagnostics channel threaded through the seven rebuild sites and can never go stale
-/// against the overlay it describes. `parse_def` is the SAME parse the applier runs, so this
-/// reports exactly the set the applier drops.
+/// against the overlay it describes.
+///
+/// SCOPE, stated precisely now that an overlay entry is a PATCH: this validates the stored patch in
+/// ISOLATION, without the base entry it would be merged onto, so a partial patch fails here even
+/// though it applies perfectly well. That does not produce a false report, because both callers ask
+/// this only about names that are NOT live, and a patch that merged successfully IS live. What a
+/// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
+/// some other reason. The flag itself is correct either way.
 pub(crate) fn unparseable_named_map_entries(
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,

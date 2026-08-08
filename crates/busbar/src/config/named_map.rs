@@ -13,7 +13,7 @@
 //! kind: the admin router mounts its five routes in a loop, the OpenAPI generator emits its path
 //! items in a loop, the error taxonomy declares one set per route SHAPE, and the config overlay
 //! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.5.4 MCP) or
-//! `agents:` (1.5.6 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
+//! `agents:` (1.5.5 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
 //! new route handler, no new overlay type, no new taxonomy arm, and no breaking change to anything
 //! already shipped.
 //!
@@ -32,7 +32,7 @@ pub(crate) enum NamedMapSection {
     IdentityProviders,
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
-    // 1.5.4: `Tools` (MCP server registry). 1.5.6: `Agents` (A2A agent registry). Both land as one
+    // 1.5.4: `Tools` (MCP server registry). 1.5.5: `Agents` (A2A agent registry). Both land as one
     // variant each plus their arms in the `match`es below.
 }
 
@@ -103,6 +103,30 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
+        }
+    }
+
+    /// This section's CURRENT entry for `name`, projected back to a raw definition document, or
+    /// `None` when there is no such entry.
+    ///
+    /// The base half of the overlay's per-entry MERGE: an overlay entry is a PATCH
+    /// ([`crate::config::patch::merge_entry`]), so the thing being patched has to be a document. The
+    /// projection round-trips into the same struct it came from, so a field that survives the merge
+    /// untouched parses back to exactly the value it had.
+    pub(crate) fn entry_as_document(
+        self,
+        deploy: &DeployCfg,
+        name: &str,
+    ) -> Option<serde_json::Value> {
+        match self {
+            NamedMapSection::IdentityProviders => deploy
+                .identity_providers
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Export => deploy
+                .export
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
         }
     }
 
