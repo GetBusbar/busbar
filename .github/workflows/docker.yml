@@ -376,10 +376,16 @@ jobs:
           images: |
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
-          # version resolved → X.Y.Z + latest (exact pins only, no floating
-          # major/minor aliases — one consistent tag shape); bare dispatch → `test` only.
+          # version resolved -> X.Y.Z + latest (exact pins only, no floating major/minor aliases,
+          # one consistent tag shape); bare dispatch -> `test` only.
+          #
+          # `latest` is an EXPLICIT type=raw. It is not implied by type=semver, and this comment
+          # claimed the cascade produced it while the tag list did not: 1.5.3 published as an exact
+          # pin while `docker pull getbusbar/busbar` kept serving 1.5.2, because nothing had moved
+          # `latest` since someone last did it by hand. A comment is not a tag.
           tags: |
             type=semver,pattern={{version}},value=v${{ steps.ver.outputs.ver }},enable=${{ steps.ver.outputs.ver != '' }}
+            type=raw,value=latest,enable=${{ steps.ver.outputs.ver != '' }}
             type=raw,value=test,enable=${{ steps.ver.outputs.ver == '' }}
           labels: |
             org.opencontainers.image.title=busbar
