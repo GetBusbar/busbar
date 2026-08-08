@@ -277,7 +277,7 @@ impl VirtualKey {
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.6), an
+    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.5), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///
@@ -1133,7 +1133,7 @@ mod tests {
     /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
     ///
     /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-    /// matters because 1.5.4 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
+    /// matters because 1.5.4 adds `mcp_server` and 1.5.5 adds `agent`: under the fail-OPEN reading
     /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
     /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
     /// version bump.
@@ -1272,7 +1272,7 @@ mod tests {
     }
 
     /// A scope kind with no registered wire field is a HARD serialize error - never silently
-    /// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.6
+    /// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.5
     /// adds `agent`, this is the test that forces it to get its own named wire field before an
     /// `agent` grant can be persisted at all.
     #[test]

@@ -1518,7 +1518,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
 /// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
 /// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
-/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.4/1.5.6): reserve the same two
+/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.4/1.5.5): reserve the same two
 /// words in every plane section, even where a plane chooses not to implement one, so the word space is
 /// identical across planes.
 ///
@@ -1751,7 +1751,7 @@ pub(crate) enum HookStage {
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
 /// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
-/// MCP tool-invocation stage in 1.5.4 or an A2A delegation stage in 1.5.6 would retroactively make
+/// MCP tool-invocation stage in 1.5.4 or an A2A delegation stage in 1.5.5 would retroactively make
 /// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
 /// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
 /// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
