@@ -422,6 +422,15 @@ CHOKE_POINTS=(
   #         module's own code and fails on any plane noun in it.
   'F-trust-lifecycle|TRUST-PLANE-LEAK|crates/busbar/src/trust/mod.rs (Approval / TrustState / Drift, generic over PinnedArtifact)|crates/busbar/src/trust/tests/genericity_tests.rs::the_lifecycle_names_no_plane_in_its_code|keep the plane noun in the artifact, the capability name or the caller, never in the lifecycle|-|the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit'
 
+  # -- H -- the JSON-RPC wire: ONE parsing surface and ONE emitter. A second place that reads or
+  #         writes a `"jsonrpc"` envelope by hand is a second place that has to refuse a wrong
+  #         version, a notification carrying an id, a response carrying both outcomes and an id that
+  #         is neither a string nor an integer. Two readers of the same bytes that disagree about any
+  #         of those is the desync a protocol attack is made of, and the peer here is an untrusted
+  #         external upstream by definition. The two transports and both directions all drive the
+  #         same module instead.
+  'H-jsonrpc-wire|JSONRPC-BYPASS|crates/busbar/src/mcp/jsonrpc.rs (Message::parse and the to_frame emitters)|crates/busbar/src/mcp/tests/jsonrpc_tests.rs::the_wrong_jsonrpc_version_is_refused_including_the_absent_one|build and read JSON-RPC frames through crate::mcp::jsonrpc, never by hand|"jsonrpc">>a hand-rolled JSON-RPC envelope>>crates/busbar/src/mcp/jsonrpc.rs|a peer that gets two readers of ours to disagree about what a frame means has already won, so there is exactly one reader'
+
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 

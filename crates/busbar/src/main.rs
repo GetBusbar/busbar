@@ -78,6 +78,7 @@ mod ir;
 mod json;
 mod limits;
 mod lossless;
+mod mcp;
 mod media;
 mod metrics;
 mod net_guard;
