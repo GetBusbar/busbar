@@ -275,19 +275,18 @@ jobs:
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
-  # home directory, test-process narration or an authorship trailer in a shipped file does not
-  # conclude "untidy" — they conclude the product was assembled by a process they were not shown.
+  # home directory or test-process narration in a shipped file does not conclude "untidy" — they
+  # conclude the product was assembled by a process they were not shown.
   # That is a commercial fact about the product, so it gets a control rather than a sweep.
   #
   # Each of these is a TEXT class. A manual sweep removes instances; this removes the class, and
   # keeps it removed.
   #
-  # Twelve rules, each derived from text really found in this repo's history, each carrying its own
+  # Eleven rules, each derived from text really found in this repo's history, each carrying its own
   # RED fixture AND a GREEN twin. The false-positive controls are as load-bearing as the rules — the
-  # vendor names this gateway routes to (Anthropic, OpenAI, Claude, Gemini), a genuine human
-  # `Co-authored-by:` trailer, technical invariants like `fail closed`, and identifiers that merely
-  # contain a flagged word are all explicit GREEN controls — because a gate that cries wolf gets
-  # switched off, and then it protects nothing.
+  # vendor names this gateway routes to (Anthropic, OpenAI, Claude, Gemini), technical invariants
+  # like `fail closed`, and identifiers that merely contain a flagged word are all explicit GREEN
+  # controls — because a gate that cries wolf gets switched off, and then it protects nothing.
   #
   # No toolchain and no build: it is pure stdlib python over the file list `git ls-files` reports,
   # which is the exact definition of "what the public gets". Self-test FIRST, and a scan that

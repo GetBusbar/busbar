@@ -6,10 +6,10 @@ BUILT rather than what it DOES.
 
 WHY THIS IS A GATE AND NOT A CLEANUP. busbar is sold to enterprises, and the repo, the docs site and
 the generated `openapi.json` are all public. A reader who finds internal audit ids, a developer's
-home directory, a TDD narration or an authorship trailer in a shipped file does not conclude "untidy";
-they conclude the product was assembled by a process they were not shown. That is a commercial fact
-about the product, not a tidiness one, so it needs a control that holds forever rather than a sweep
-that holds until the next commit.
+home directory or a TDD narration in a shipped file does not conclude "untidy"; they conclude the
+product was assembled by a process they were not shown. That is a commercial fact about the product,
+not a tidiness one, so it needs a control that holds forever rather than a sweep that holds until
+the next commit.
 
 Three manual sweeps across the public repos found, all at once: an internal design mockup live and
 crawlable, a public README that was an internal design report, a developer home directory in two
@@ -17,21 +17,18 @@ public workflows, internal issue ids (`E-007`, `C6`, `self-service D2`) served i
 API docs, and a shipped comment in which the author described their own working constraints. Every
 one of those is a TEXT class. A sweep removes the instances; this removes the class.
 
-WHAT IT JUDGES. Twelve rules, each derived from text that was actually found in this repo's history
+WHAT IT JUDGES. Eleven rules, each derived from text that was actually found in this repo's history
 rather than from imagination — see RULES below, where every rule carries the reason it exists. Each
 rule is matched per LINE over the files a reader can actually get at, and each hit names the rule, so
 a failure is always actionable rather than a vibe.
 
 THE FALSE-POSITIVE CONTROLS ARE LOAD-BEARING. A gate that cries wolf gets switched off, and then it
-protects nothing at all. Four controls are therefore treated as first-class requirements, each with
+protects nothing at all. Three controls are therefore treated as first-class requirements, each with
 its own GREEN fixture in the self-test:
 
   * VENDOR AND PRODUCT NAMES. This is an LLM gateway: Anthropic, OpenAI, Claude, Claude Code and
     Gemini are things it ROUTES TO, and `Claude-on-Vertex` is a shipped feature name. No rule may fire
-    on a provider name. The AI-attribution rule matches ATTRIBUTION SHAPES only (`Co-authored-by:` with
-    a machine on the other side, `Generated with [Claude Code]`), never the bare name.
-  * A GENUINE HUMAN CO-AUTHOR TRAILER. There is a real one in this history from an outside
-    contributor and it must survive untouched; only a trailer naming a machine is a hit.
+    on a provider name.
   * TECHNICAL INVARIANTS. `MUST be a no-op`, `fail closed`, `do not touch the breaker` describe CODE.
     The editor-directed rule only fires on prose whose object is THE FILE ITSELF ("do not revert this",
     "whoever touches this next"), which is why "do not touch the breaker" is silent and safe.
@@ -673,8 +670,8 @@ def selftest(out=sys.stdout):
             out.write(f"  RED: {red_ok}/{len(RULES)} rules flagged their own planted fixture\n")
 
         # (3) GREEN — the twins are silent under EVERY rule, including the false-positive controls:
-        #     vendor/product names, a genuine human co-author trailer, technical invariants, and
-        #     identifiers that merely contain a flagged word.
+        #     vendor/product names, technical invariants, and identifiers that merely contain a
+        #     flagged word.
         loud = [(h.path, h.rule.id, h.excerpt) for h in hits if h.path.startswith("green/")]
         if loud:
             fail = 1
@@ -684,9 +681,9 @@ def selftest(out=sys.stdout):
         else:
             out.write(f"  GREEN: {len(RULES)} twins + {len(EXTRA_GREEN)} file-kind controls silent — "
                       "vendor names (Anthropic, OpenAI, Claude, Claude Code, Gemini, "
-                      "Claude-on-Vertex), a genuine human `Co-authored-by:` trailer, technical "
-                      "invariants (`MUST be a no-op`, `fail closed`, `do not touch the breaker`), "
-                      "identifiers/test names carrying a flagged word, CI RED/GREEN vocabulary, "
+                      "Claude-on-Vertex), technical invariants (`MUST be a no-op`, `fail closed`, "
+                      "`do not touch the breaker`), identifiers/test names carrying a flagged word, "
+                      "CI RED/GREEN vocabulary, "
                       "`hash & (N-1)`, `(ed25519)`, a doc citing its own §2 and a release bot's "
                       "git identity all stayed silent\n")
 
