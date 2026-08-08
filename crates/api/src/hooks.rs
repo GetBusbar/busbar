@@ -108,52 +108,6 @@ impl std::fmt::Debug for CallerIdentity {
     }
 }
 
-/// One routable member, with the metadata + live signals a policy ranks on. Projected from the
-/// engine's lane table + the pool member config + the store. `idx` is the stable handle the
-/// failover loop already speaks.
-#[derive(Debug, Clone)]
-pub struct Candidate<'a> {
-    /// Index into the engine's lane table — the failover loop's lingua franca.
-    pub idx: usize,
-    pub model: &'a str,
-    /// Upstream provider name. Projected to the hook wire so a hook can implement a
-    /// provider-preference strategy.
-    pub provider: &'a str,
-    /// The configured SWRR weight. Projected to the hook wire so an external hook can implement a
-    /// weighted-variant strategy (the signal the built-in `weighted` floor uses).
-    pub weight: u32,
-    /// Member context-window ceiling. Projected to the hook wire so a hook can route by context-fit.
-    pub context_max: Option<usize>,
-    // ── operator-declared member metadata (config) ───────────────────────────────────────────────
-    pub tier: Option<&'a str>,
-    pub cost_per_mtok: Option<f64>,
-    /// Free-form operator tags. Projected to the hook wire (omitted when empty).
-    pub tags: &'a [String],
-    // ── live signals (read per-request from the store at the seam) ───────────────────────────────
-    /// Rolling EWMA of recent end-to-end latency for this lane, in milliseconds. `None` until the
-    /// lane has served at least one request.
-    pub latency_ms: Option<f64>,
-    /// Currently-available concurrency permits on this lane's semaphore (free slots). A `least_busy`
-    /// policy prefers the lane with the most headroom.
-    pub available_concurrency: usize,
-    /// Per-lane lifetime request budget remaining (`None` = unlimited). The `usage` policy prefers
-    /// the lane with the most budget left; cheap (read from the store).
-    pub budget_remaining: Option<i64>,
-    /// Rate-limit HEADROOM as a fraction in `[0.0, 1.0]`: how much of the request's governance
-    /// rate budget (the tighter of the caller key's RPM / TPM limit) is still available this window —
-    /// `1.0` is fully-unused, `0.0` is at the cap. `None` when no rate limit applies (governance
-    /// disabled, or the key has neither RPM nor TPM set). The `usage` policy prefers the candidate
-    /// with the MOST headroom (furthest from a provider 429). Rate limits are per-KEY in busbar
-    /// today, so this value is currently the same across a request's candidates — `usage` then ranks
-    /// deterministically by `idx` — but the field is per-candidate so a future per-lane rate signal
-    /// drops in without a contract change.
-    pub rate_headroom: Option<f64>,
-    /// The declared-signal bag: candidate-phase [`crate::Signal`] entries a
-    /// consumer explicitly declared (e.g. `CandidateBreakerState`/`CandidateErrorRate`), computed
-    /// ONLY when declared. See [`RoutingRequest::signals`] for the full contract; identical here.
-    pub signals: crate::SignalBag,
-}
-
 /// One bucket of the request's BUDGET-CHAIN state, exposed read-only into the pre-forward routing
 /// seam so a policy can be budget-aware (e.g. downshift to a cheaper model/tier as a bucket nears
 /// its cap). Busbar builds only this READ surface - routing POLICY lives in the hook, never in
@@ -293,8 +247,16 @@ pub struct HookStatus {
 }
 
 /// THE transport-agnostic contract. webhook / socket / native all implement this.
+///
+/// Generic over the PLANE, because a hook is a hook is a hook: the same transport, the same verbs
+/// and the same reply contract serve whatever the pool routes to, and a plane that needed its own
+/// policy trait would be a plane that needed its own webhook, its own socket framing and its own
+/// copy of every shipped strategy. The parameter DEFAULTS to the LLM plane so every signature that
+/// already named `RoutingPolicy` keeps meaning what it meant on the frozen surface; a strategy that
+/// reads only neutral candidate fields is written `impl<P: Plane> RoutingPolicy<P>` and serves every
+/// plane at once, which is also the machine-check that it reads only neutral fields.
 #[async_trait::async_trait]
-pub trait RoutingPolicy: Send + Sync + 'static {
+pub trait RoutingPolicy<P: crate::Plane = crate::Llm>: Send + Sync + 'static {
     /// Rank candidates for this request. MUST be cancel-safe and SHOULD respect `budget` (a
     /// wall-clock deadline; the caller also wraps the call in a hard `timeout`). Returning `Err` or
     /// exceeding the deadline is handled by the caller per `on_error`; an impl SHOULD prefer
@@ -302,7 +264,7 @@ pub trait RoutingPolicy: Send + Sync + 'static {
     async fn decide(
         &self,
         req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[crate::Candidate<'_, P>],
         ctx: &RoutingContext<'_>,
         budget: std::time::Duration,
     ) -> PolicyResult;

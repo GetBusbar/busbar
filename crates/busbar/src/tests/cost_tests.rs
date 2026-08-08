@@ -184,7 +184,7 @@ fn derive_spend_cents_saturates_never_wraps_free() {
 }
 
 /// rate_card is the ONLY cost source - pool members carry no cost, and the routing
-/// scalar (`cheapest` / hook Candidate.cost_per_mtok) derives from a model's card entry as
+/// scalar (`cheapest` / the hook candidate's `cost`) derives from a model's card entry as
 /// the blended (input + output) / 2 in units/mtok.
 #[test]
 fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {

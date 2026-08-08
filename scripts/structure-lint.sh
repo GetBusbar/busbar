@@ -422,6 +422,14 @@ CHOKE_POINTS=(
   #         module's own code and fails on any plane noun in it.
   'F-trust-lifecycle|TRUST-PLANE-LEAK|crates/busbar/src/trust/mod.rs (Approval / TrustState / Drift, generic over PinnedArtifact)|crates/busbar/src/trust/tests/genericity_tests.rs::the_lifecycle_names_no_plane_in_its_code|keep the plane noun in the artifact, the capability name or the caller, never in the lifecycle|-|the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit'
 
+  # -- G -- the CANDIDATE PROJECTION's neutral core: one shape every plane fills identically, with
+  #         the plane's own facts as a type parameter. Enforced differently: the hazard is not a
+  #         call somebody hand-rolls, it is a plane's field being added to the neutral projection,
+  #         after which every other plane fills it with nothing forever and the shipped ranking
+  #         strategies stop being writable once. The class test reads the module's own code and
+  #         fails on any plane noun in it.
+  'G-candidate-projection|CANDIDATE-PLANE-LEAK|crates/api/src/candidate.rs (Candidate / Plane, generic over the plane facts)|crates/api/src/tests/candidate_genericity_tests.rs::the_neutral_candidate_names_no_plane_in_its_code|put the plane noun in that plane facts type, never on the neutral candidate|-|the split is made ahead of the second plane, so neutrality has to be a test rather than a review habit'
+
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 

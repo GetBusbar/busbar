@@ -9,7 +9,7 @@
 //! unchanged elsewhere — this file only covers the NEW substrate.
 
 use super::*;
-use crate::hooks::{Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
+use crate::hooks::{PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
 use crate::state::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{Signal, SignalValue};
@@ -25,7 +25,7 @@ impl RoutingPolicy for CapturingCandidatesPolicy {
     async fn decide(
         &self,
         _req: &crate::hooks::RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[busbar_api::LlmCandidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {

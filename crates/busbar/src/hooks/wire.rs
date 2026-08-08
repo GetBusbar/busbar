@@ -8,6 +8,7 @@
 //! append-only.
 
 use super::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+use busbar_api::Plane;
 use serde::{Deserialize, Serialize};
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
@@ -25,12 +26,13 @@ pub(crate) const OP_NOTIFY: &str = "notify";
 /// borrow prompt text and end-user identity, and a derived Debug would bypass the redacting
 /// impls on `PromptProjection`/`CallerIdentity`.
 #[derive(Serialize)]
-pub(crate) struct HookRequest<'a> {
+#[serde(bound(serialize = ""))]
+pub(crate) struct HookRequest<'a, 'f, P: Plane = busbar_api::Llm> {
     /// The message kind: `decide` (a gate's blocking decision), `transform` (a rewrite pass), or
     /// `notify` (a fire-and-forget tap — never answer it). See [`OP_DECIDE`].
     pub(crate) op: &'static str,
     pub(crate) request: HookReqProjection<'a>,
-    pub(crate) candidates: Vec<HookCandidate<'a>>,
+    pub(crate) candidates: Vec<HookCandidate<'f, P>>,
     pub(crate) context: HookContext<'a>,
     /// TAP observation-stage payload — present ONLY on stage taps (`at: candidate|routing|response`);
     /// absent on request-stage taps and every gate, so the pre-stages wire is byte-identical
@@ -139,26 +141,30 @@ pub(crate) struct HookUser<'a> {
 /// One candidate as seen by the hook. `idx` is the stable handle the hook echoes back in `order`;
 /// the rest are the live signals + operator metadata a policy ranks on. The contract projects
 /// EVERYTHING a built-in ranking strategy reads, so an external hook can implement any of them
-/// identically ("no hook is different"): `weight` (SWRR), `provider` (provider-preference),
-/// `context_max` (context-fit), plus the cost/latency/concurrency/headroom live signals.
+/// identically ("no hook is different"): `weight` (SWRR), plus the cost/latency/concurrency/headroom
+/// live signals, plus whatever the PLANE adds (on the LLM plane: `model`, `provider`, `context_max`
+/// and `tier`, for provider-preference and context-fit strategies).
+///
+/// Split the same way the projection is: the neutral fields below are the ones every plane fills
+/// identically, and the plane's own facts arrive FLATTENED so the object a hook parses is one flat
+/// candidate rather than a neutral shell with a plane-shaped lump in it.
 #[derive(Serialize)]
-pub(crate) struct HookCandidate<'a> {
+#[serde(bound(serialize = ""))]
+pub(crate) struct HookCandidate<'f, P: Plane = busbar_api::Llm> {
     pub(crate) idx: usize,
-    pub(crate) model: &'a str,
-    /// Upstream provider name — lets a hook prefer/avoid a provider (a provider-preference strategy).
-    pub(crate) provider: &'a str,
     /// The configured SWRR weight — lets an external hook implement a weighted-variant strategy (the
     /// signal the built-in `weighted` floor ranks on; projected so the contract is complete).
     pub(crate) weight: u32,
-    /// Member context-window ceiling — lets a hook route by context-fit. `None` if unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) context_max: Option<usize>,
     // Optional live signals — omitted when unset (ONE idiom across the wire: absent = unset,
     // never a mix of `null` and absence).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tier: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cost_per_mtok: Option<f64>,
+    /// The operator-declared COST of one unit on this lane, smaller being cheaper (the signal
+    /// `cheapest` ranks on). THE WIRE KEY IS FROZEN at the v1 spelling `cost_per_mtok`, which is the
+    /// LLM plane's unit written into a key that the append-only schema will not let us rename. The
+    /// VALUE is the plane-neutral cost, so a later plane fills this key with its own unit rather
+    /// than leaving a hook with no cost to rank on; a plane that needs the noun to be right spells
+    /// its own key in its facts, additively.
+    #[serde(rename = "cost_per_mtok", skip_serializing_if = "Option::is_none")]
+    pub(crate) cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latency_ms: Option<f64>,
     pub(crate) available_concurrency: usize,
@@ -170,7 +176,13 @@ pub(crate) struct HookCandidate<'a> {
     /// names, regions, compliance labels). Omitted when the member declares none, so untagged
     /// configs keep the exact pre-tags payload.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
-    pub(crate) tags: &'a [String],
+    pub(crate) tags: &'f [String],
+    /// The PLANE's own facts, FLATTENED so they render as top-level keys on this candidate's object
+    /// rather than nested under a plane-shaped lump. That is what keeps the split invisible on the
+    /// wire: the LLM plane's `model` / `provider` / `context_max` / `tier` sit exactly where they
+    /// always sat, and a hook written against the pre-split contract parses the identical keys.
+    #[serde(flatten)]
+    pub(crate) facts: P::Facts<'f>,
     /// The declared-signal bag — see [`HookReqProjection::signals`] for the
     /// full contract; identical here, flattened onto this candidate's own JSON object.
     #[serde(flatten)]
@@ -597,12 +609,17 @@ pub(crate) fn sanitize_reject_message(raw: &str) -> String {
 
 /// Build the wire projection from the live request/candidates/context. Borrows everywhere — the
 /// projection is serialized immediately by the transport, never stored.
-pub(crate) fn build<'a>(
+pub(crate) fn build<'a, 'f, P: Plane>(
     op: &'static str,
     req: &'a RoutingRequest<'_>,
-    candidates: &'a [Candidate<'_>],
+    // The CANDIDATES' borrow is its own lifetime, and the wire candidate carries that one rather than
+    // the projection's. A plane's facts are reached through an associated type, which the compiler
+    // must treat as invariant, so a facts value borrowed for `'f` cannot be narrowed to the shorter
+    // region the rest of the projection is built for. Nothing is copied to work around that: the
+    // wire candidate simply keeps `'f`, and the slice's own borrow is free to be anything.
+    candidates: &[Candidate<'f, P>],
     ctx: &'a RoutingContext<'_>,
-) -> HookRequest<'a> {
+) -> HookRequest<'a, 'f, P> {
     HookRequest {
         op,
         request: HookReqProjection {
@@ -638,17 +655,14 @@ pub(crate) fn build<'a>(
             .iter()
             .map(|c| HookCandidate {
                 idx: c.idx,
-                model: c.model,
-                provider: c.provider,
                 weight: c.weight,
-                context_max: c.context_max,
-                tier: c.tier,
-                cost_per_mtok: c.cost_per_mtok,
+                cost: c.cost,
                 latency_ms: c.latency_ms,
                 available_concurrency: c.available_concurrency,
                 budget_remaining: c.budget_remaining,
                 rate_headroom: c.rate_headroom,
                 tags: c.tags,
+                facts: c.facts.clone(),
                 signals: c.signals.clone(),
             })
             .collect(),
@@ -663,7 +677,10 @@ pub(crate) fn build<'a>(
 /// Normalize a parsed hook reply into a decision: `reject` (clamped + sanitized) wins over
 /// everything; then explicit abstain / absent order → `Abstain`; otherwise the shared liberal
 /// normalizer (drop unknown idxs, dedup, empty → Abstain). One normalization for every transport.
-pub(crate) fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> RoutingDecision {
+pub(crate) fn normalize<P: Plane>(
+    parsed: HookResponse,
+    candidates: &[Candidate<'_, P>],
+) -> RoutingDecision {
     // FAIL-CLOSED: any `reject` value except an explicit `false` is a rejection (see the field
     // doc). Details are extracted best-effort; anything missing or out-of-shape falls back to the
     // safe defaults rather than downgrading the verb.
@@ -827,21 +844,23 @@ mod tests {
     use super::*;
     use crate::hooks::{CallerIdentity, PromptProjection};
 
-    fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
+    fn cand(idx: usize, tags: &'static [String]) -> busbar_api::LlmCandidate<'static> {
         Candidate {
             idx,
-            model: "m",
-            provider: "p",
             weight: 1,
-            context_max: None,
-            tier: Some("large"),
-            cost_per_mtok: Some(3.0),
             tags,
+            cost: Some(3.0),
             latency_ms: Some(42.0),
             available_concurrency: 4,
             budget_remaining: Some(1000),
             rate_headroom: Some(0.75),
             signals: Default::default(),
+            facts: busbar_api::LlmFacts {
+                model: "m",
+                provider: "p",
+                context_max: None,
+                tier: Some("large"),
+            },
         }
     }
 
@@ -884,6 +903,58 @@ mod tests {
         for key in ["\"system\"", "\"messages\"", "\"user\"", "\"tags\""] {
             assert!(!json.contains(key), "default payload leaked {key}: {json}");
         }
+    }
+
+    /// THE FROZEN CANDIDATE WIRE, pinned key by key across the plane split.
+    ///
+    /// The split moved four of these keys out of the neutral projection and into the LLM plane's own
+    /// facts, and it is the FLATTENING that makes that invisible: a hook written against the
+    /// pre-split contract must see the identical object, not a neutral object with a `facts` lump
+    /// nested in it. So the assertion is on the exact key SET, both directions — nothing lost when
+    /// the plane facts moved out, nothing gained (no `facts`, no `plane`) when they came back in.
+    ///
+    /// `cost_per_mtok` is asserted deliberately. The neutral field behind it is `cost`; the WIRE key
+    /// is frozen at the LLM plane's v1 spelling, because the schema is append-only and renaming a
+    /// live key is not an additive change.
+    #[test]
+    fn the_llm_candidate_wire_key_set_is_frozen_across_the_plane_split() {
+        static TAGS: std::sync::LazyLock<Vec<String>> =
+            std::sync::LazyLock::new(|| vec!["eu".into()]);
+        let r = req();
+        let cands = [cand(0, TAGS.as_slice())];
+        let c = ctx();
+        let v: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&build(OP_DECIDE, &r, &cands, &c)).unwrap(),
+        )
+        .unwrap();
+        let obj = v["candidates"][0]
+            .as_object()
+            .expect("a candidate is a JSON object");
+        let mut got: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        got.sort_unstable();
+        // Every key the pre-split wire emitted for a fully-populated LLM candidate, and no other.
+        let mut want = vec![
+            "idx",
+            "model",
+            "provider",
+            "weight",
+            "tier",
+            "cost_per_mtok",
+            "latency_ms",
+            "available_concurrency",
+            "budget_remaining",
+            "rate_headroom",
+            "tags",
+        ];
+        want.sort_unstable();
+        assert_eq!(got, want, "the candidate wire key set moved: {v}");
+        // Spot-check that the plane's facts carry their VALUES through the flatten, not just their
+        // keys: a facts struct serialized to the right names with the wrong contents would pass a
+        // key-set assertion.
+        assert_eq!(v["candidates"][0]["model"], "m");
+        assert_eq!(v["candidates"][0]["provider"], "p");
+        assert_eq!(v["candidates"][0]["tier"], "large");
+        assert_eq!(v["candidates"][0]["cost_per_mtok"], 3.0);
     }
 
     /// With the opt-ins populated (as `forward` does behind `send_prompt`/`send_user`) and tags

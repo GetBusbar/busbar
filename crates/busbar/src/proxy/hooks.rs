@@ -992,7 +992,7 @@ pub(crate) async fn decide_policy_order(
     let requested = app.requested_signals;
     let now_ts = now();
 
-    let candidates: Vec<Candidate> = live
+    let candidates: Vec<busbar_api::LlmCandidate> = live
         .iter()
         .map(|wl| {
             let lane = &app.lanes[wl.idx];
@@ -1026,18 +1026,22 @@ pub(crate) async fn decide_policy_order(
             }
             Candidate {
                 idx: wl.idx,
-                model: &lane.model,
-                provider: &lane.provider,
                 weight: wl.weight,
-                context_max: lane.context_max,
-                tier: meta.and_then(|m| m.tier.as_deref()),
-                cost_per_mtok: meta.and_then(|m| m.cost_per_mtok),
                 tags: meta.map(|m| m.tags.as_slice()).unwrap_or(&[]),
+                cost: meta.and_then(|m| m.cost_per_mtok),
                 latency_ms: app.store.lane_latency_ms(wl.idx),
                 available_concurrency: app.store.available_permits(wl.idx),
                 budget_remaining: app.store.lane_budget_remaining(wl.idx),
                 rate_headroom,
                 signals,
+                // The LLM plane's own facts: what is at the end of this lane, said in this plane's
+                // vocabulary and carried nowhere near the neutral core.
+                facts: busbar_api::LlmFacts {
+                    model: &lane.model,
+                    provider: &lane.provider,
+                    context_max: lane.context_max,
+                    tier: meta.and_then(|m| m.tier.as_deref()),
+                },
             }
         })
         .collect();
@@ -1126,7 +1130,7 @@ pub(crate) async fn run_on_error_chain(
     chain: &[crate::hooks::FallbackHook],
     terminal: &crate::config::PolicyOnError,
     req: &crate::hooks::RoutingRequest<'_>,
-    candidates: &[crate::hooks::Candidate<'_>],
+    candidates: &[busbar_api::LlmCandidate<'_>],
     ctx: &crate::hooks::RoutingContext<'_>,
     failed_policy_name: &'static str,
     pool_name: &str,
@@ -1192,7 +1196,7 @@ pub(crate) async fn run_on_error_chain(
 pub(crate) fn map_decision(
     decision: crate::hooks::RoutingDecision,
     policy_name: &'static str,
-    candidates: &[crate::hooks::Candidate<'_>],
+    candidates: &[busbar_api::LlmCandidate<'_>],
     on_empty: &crate::config::PolicyOnError,
 ) -> PolicyOutcome {
     use crate::hooks::RoutingDecision;
@@ -1248,7 +1252,7 @@ pub(crate) fn map_decision(
 /// ⇒ a 503. `first` advertises the policy name so the degraded pick is still observable.
 pub(crate) fn coerce_on_error(
     on_error: &crate::config::PolicyOnError,
-    candidates: &[crate::hooks::Candidate<'_>],
+    candidates: &[busbar_api::LlmCandidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
     use crate::config::PolicyOnError;
@@ -1332,7 +1336,7 @@ pub(crate) fn fire_stage_taps(
     if taps.is_empty() {
         return;
     }
-    let hook_req = crate::hooks::wire::HookRequest {
+    let hook_req = crate::hooks::wire::HookRequest::<'_, '_, busbar_api::Llm> {
         op: crate::hooks::wire::OP_NOTIFY,
         request: crate::hooks::wire::HookReqProjection {
             request_id: shape.request_id,

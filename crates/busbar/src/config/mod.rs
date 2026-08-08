@@ -2140,7 +2140,8 @@ fn default_weight() -> u32 {
 }
 
 /// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
-/// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
+/// `cheapest` policy and the hook candidate's neutral `cost` signal (spelled `cost_per_mtok` on
+/// the wire, which is this plane's unit): the blended
 /// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
 pub(crate) fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
     (r.input_utok + r.output_utok) / 2.0

@@ -2502,10 +2502,13 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
+        // A request-stage tap carries no candidates; the empty slice still needs a PLANE, and this
+        // seam is the LLM one.
+        let no_candidates: [busbar_api::LlmCandidate<'_>; 0] = [];
         crate::json::to_vec(&crate::hooks::wire::build(
             crate::hooks::wire::OP_NOTIFY,
             &req,
-            &[],
+            &no_candidates,
             &ctx,
         ))
         .ok()

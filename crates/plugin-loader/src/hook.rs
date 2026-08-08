@@ -23,7 +23,7 @@
 
 use crate::{stage, wire_up_raw, RawPlugin};
 use busbar_api::{
-    Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingDecision,
+    Candidate, HookStatus, Plane, PolicyError, PolicyResult, RoutingContext, RoutingDecision,
     RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_abi::{
@@ -38,25 +38,32 @@ use std::time::Duration;
 /// context projections into the owned JSON `payload` the ABI carries — WITHOUT the loader depending on
 /// the engine's `hooks::wire`. The engine passes closures at resolution; the loader calls them per op.
 /// Kept as boxed fns so `DlopenPolicy` stays `Send + Sync + 'static`.
-pub struct HookProjectors {
+///
+/// Generic over the PLANE, defaulting to the LLM one, because a hook is a hook is a hook: the
+/// projection a hook receives differs between planes only in the plane's own facts, and those ride
+/// the candidate. Nothing in this transport reads them, which is exactly why it can serve every
+/// plane without a line added to it.
+pub struct HookProjectors<P: Plane = busbar_api::Llm> {
     /// Build the `decide` projection JSON from (request, candidates, context).
     #[allow(clippy::type_complexity)]
+    // Every lifetime here is INDEPENDENT and higher-ranked. A candidate's plane facts are reached
+    // through an associated type, which the compiler must treat as invariant, so tying the request,
+    // the candidates and the context to one region would demand they were all borrowed for the
+    // identical span. They are not, and there is no reason they should be: the projector reads all
+    // three and keeps none of them.
+    #[allow(clippy::type_complexity)]
     pub decide: Box<
-        dyn for<'a> Fn(
-                &RoutingRequest<'a>,
-                &[Candidate<'a>],
-                &RoutingContext<'a>,
-            ) -> serde_json::Value
+        dyn Fn(&RoutingRequest<'_>, &[Candidate<'_, P>], &RoutingContext<'_>) -> serde_json::Value
             + Send
             + Sync,
     >,
     /// Build the `transform` projection JSON from a request (no candidates).
     #[allow(clippy::type_complexity)]
-    pub transform: Box<dyn for<'a> Fn(&RoutingRequest<'a>) -> serde_json::Value + Send + Sync>,
+    pub transform: Box<dyn Fn(&RoutingRequest<'_>) -> serde_json::Value + Send + Sync>,
     /// Parse a `decide` reply Value into a decision (the engine's fail-closed normalizer).
     #[allow(clippy::type_complexity)]
     pub normalize:
-        Box<dyn for<'a> Fn(serde_json::Value, &[Candidate<'a>]) -> RoutingDecision + Send + Sync>,
+        Box<dyn Fn(serde_json::Value, &[Candidate<'_, P>]) -> RoutingDecision + Send + Sync>,
     /// Parse a `transform` reply Value into an outcome (reject > rewrite > abstain).
     pub transform_outcome: Box<dyn Fn(serde_json::Value) -> TransformOutcome + Send + Sync>,
     /// Parse a `status` reply Value into the engine's `HookStatus` (metrics validated/bounded).
@@ -68,9 +75,9 @@ pub struct HookProjectors {
 /// A `RoutingPolicy` loaded from a dynamic library over the kind-neutral ABI. Wraps a [`RawPlugin`]
 /// whose kind was bound to `hook` at load; every trait method serializes an op envelope, ships it
 /// across `busbar_call` on `spawn_blocking`, and hands the reply to the engine's parsers.
-pub struct DlopenPolicy {
+pub struct DlopenPolicy<P: Plane = busbar_api::Llm> {
     raw: Arc<RawPlugin>,
-    projectors: Arc<HookProjectors>,
+    projectors: Arc<HookProjectors<P>>,
     /// The hook's stable name (metrics / `x-busbar-route`). Leaked to `'static` (the C ABI can't
     /// return a `&'static str`) — a bounded one-per-plugin leak of a non-secret id.
     name: &'static str,
@@ -98,7 +105,7 @@ const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
 static HOOK_CALL_SLOTS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(MAX_INFLIGHT_HOOK_CALLS);
 
-impl DlopenPolicy {
+impl<P: Plane> DlopenPolicy<P> {
     /// The ONE blocking primitive: run `op` across `busbar_call` on a blocking thread, catching any
     /// panic that crosses the FFI boundary. Returns the [`HookReply`] or a `PolicyError` (coerced to
     /// the hook's `on_error` by the caller). Not bounded here — the caller wraps in a `timeout`.
@@ -151,11 +158,11 @@ impl DlopenPolicy {
 }
 
 #[async_trait::async_trait]
-impl RoutingPolicy for DlopenPolicy {
+impl<P: Plane> RoutingPolicy<P> for DlopenPolicy<P> {
     async fn decide(
         &self,
         req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_, P>],
         ctx: &RoutingContext<'_>,
         budget: Duration,
     ) -> PolicyResult {
@@ -249,7 +256,7 @@ impl RoutingPolicy for DlopenPolicy {
     }
 }
 
-impl std::fmt::Debug for DlopenPolicy {
+impl<P: Plane> std::fmt::Debug for DlopenPolicy<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DlopenPolicy")
             .field("name", &self.name)
@@ -263,14 +270,14 @@ impl std::fmt::Debug for DlopenPolicy {
 /// load error naming both), then `open`s it with `cfg_json` and wraps it as a [`DlopenPolicy`]. The
 /// `projectors` are the engine-supplied closures that build the wire projection and parse the reply
 /// through the engine's own fail-closed `hooks::wire` normalizers. `name` is the hook's registry name.
-pub fn load_hook_from_bytes(
+pub fn load_hook_from_bytes<P: Plane>(
     bytes: &[u8],
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
     name: &str,
-    projectors: Arc<HookProjectors>,
-) -> Result<Arc<dyn RoutingPolicy>, String> {
+    projectors: Arc<HookProjectors<P>>,
+) -> Result<Arc<dyn RoutingPolicy<P>>, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     let raw = wire_up_raw(
         lib,
@@ -339,7 +346,7 @@ mod tests {
 
     /// Minimal engine-side projectors for the test: build a projection carrying `request.messages`,
     /// and parse the reply with tiny fail-closed shims (the real engine wires `hooks::wire` here).
-    fn test_projectors() -> Arc<HookProjectors> {
+    fn test_projectors() -> Arc<HookProjectors<busbar_api::Llm>> {
         Arc::new(HookProjectors {
             decide: Box::new(|req, cands, _ctx| {
                 serde_json::json!({
@@ -465,21 +472,23 @@ mod tests {
         }
     }
 
-    fn cand(idx: usize) -> Candidate<'static> {
+    fn cand(idx: usize) -> busbar_api::LlmCandidate<'static> {
         Candidate {
             idx,
-            model: "m",
-            provider: "prov",
             weight: 1,
-            context_max: None,
-            tier: None,
-            cost_per_mtok: None,
             tags: &[],
+            cost: None,
             latency_ms: None,
             available_concurrency: 1,
             budget_remaining: None,
             rate_headroom: None,
             signals: Default::default(),
+            facts: busbar_api::LlmFacts {
+                model: "m",
+                provider: "prov",
+                context_max: None,
+                tier: None,
+            },
         }
     }
 

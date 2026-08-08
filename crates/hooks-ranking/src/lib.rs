@@ -18,9 +18,16 @@
 //!
 //! The native bodies + `native_policy` registry are live: `resolve_policy` looks a non-weighted name
 //! up here at config load, and `forward::decide_policy_order` invokes the resolved policy per request.
-
+//!
+//! ## Every native is written ONCE, for every plane
+//!
+//! Each `impl` below is `impl<P: Plane> RoutingPolicy<P>`, so one body serves the LLM plane and any
+//! plane that comes after it. That is not a convenience: it is the machine-check on the
+//! plane-neutral / plane-specific line. A native that reached for a plane-specific fact would fail
+//! to compile as a generic impl, and the failure lands on the native rather than on the plane, which
+//! is exactly where the question "is this signal really neutral?" belongs.
 use busbar_api::{
-    Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
+    Candidate, Plane, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use std::time::Duration;
 
@@ -42,11 +49,11 @@ const POLICY_NAME_USAGE: &str = "usage";
 struct WeightedPolicy;
 
 #[async_trait::async_trait]
-impl RoutingPolicy for WeightedPolicy {
+impl<P: Plane> RoutingPolicy<P> for WeightedPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        _candidates: &[Candidate<'_, P>],
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
@@ -62,9 +69,9 @@ impl RoutingPolicy for WeightedPolicy {
 /// `None` are demoted to the end (lowest preference) but still ranked among themselves by `idx` for
 /// determinism — never dropped, so a member with missing signal data is reachable, not stranded.
 /// Returns `Abstain` if EVERY candidate lacks the signal (no opinion → default SWRR).
-fn rank_ascending_by<K: PartialOrd + Copy>(
-    candidates: &[Candidate<'_>],
-    key: impl Fn(&Candidate<'_>) -> Option<K>,
+fn rank_ascending_by<P: Plane, K: PartialOrd + Copy>(
+    candidates: &[Candidate<'_, P>],
+    key: impl Fn(&Candidate<'_, P>) -> Option<K>,
 ) -> RoutingDecision {
     let mut keyed: Vec<(usize, Option<K>)> = candidates.iter().map(|c| (c.idx, key(c))).collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
@@ -87,9 +94,9 @@ fn rank_ascending_by<K: PartialOrd + Copy>(
 
 /// Rank descending (largest key first) — the same shape as `rank_ascending_by` but preferring the
 /// LARGEST signal (e.g. most free concurrency, most budget remaining).
-fn rank_descending_by<K: PartialOrd + Copy>(
-    candidates: &[Candidate<'_>],
-    key: impl Fn(&Candidate<'_>) -> Option<K>,
+fn rank_descending_by<P: Plane, K: PartialOrd + Copy>(
+    candidates: &[Candidate<'_, P>],
+    key: impl Fn(&Candidate<'_, P>) -> Option<K>,
 ) -> RoutingDecision {
     let mut keyed: Vec<(usize, Option<K>)> = candidates.iter().map(|c| (c.idx, key(c))).collect();
     if keyed.iter().all(|(_, k)| k.is_none()) {
@@ -107,20 +114,22 @@ fn rank_descending_by<K: PartialOrd + Copy>(
     RoutingDecision::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
-/// `cheapest` — prefer the lowest operator-declared `cost_per_mtok`. Members with no declared cost
-/// are demoted (but reachable). Proof-of-completeness for the `cost` signal.
+/// `cheapest` — prefer the lowest operator-declared `cost`. Members with no declared cost are
+/// demoted (but reachable). Proof-of-completeness for the `cost` signal, which is plane-neutral: the
+/// LLM plane spells it per million tokens, another plane spells it per call, and neither spelling
+/// reaches this sort.
 struct CheapestPolicy;
 
 #[async_trait::async_trait]
-impl RoutingPolicy for CheapestPolicy {
+impl<P: Plane> RoutingPolicy<P> for CheapestPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_, P>],
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
-        Ok(rank_ascending_by(candidates, |c| c.cost_per_mtok))
+        Ok(rank_ascending_by(candidates, |c| c.cost))
     }
     fn name(&self) -> &'static str {
         POLICY_NAME_CHEAPEST
@@ -132,11 +141,11 @@ impl RoutingPolicy for CheapestPolicy {
 struct FastestPolicy;
 
 #[async_trait::async_trait]
-impl RoutingPolicy for FastestPolicy {
+impl<P: Plane> RoutingPolicy<P> for FastestPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_, P>],
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
@@ -153,11 +162,11 @@ impl RoutingPolicy for FastestPolicy {
 struct LeastBusyPolicy;
 
 #[async_trait::async_trait]
-impl RoutingPolicy for LeastBusyPolicy {
+impl<P: Plane> RoutingPolicy<P> for LeastBusyPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_, P>],
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
@@ -179,11 +188,11 @@ impl RoutingPolicy for LeastBusyPolicy {
 struct UsagePolicy;
 
 #[async_trait::async_trait]
-impl RoutingPolicy for UsagePolicy {
+impl<P: Plane> RoutingPolicy<P> for UsagePolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_, P>],
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
@@ -196,7 +205,7 @@ impl RoutingPolicy for UsagePolicy {
 
 /// Resolve a native policy name to a boxed policy. `None` for an unknown name (rejected at startup
 /// validation). `weighted` returns the Abstaining default native.
-pub fn native_policy(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy>> {
+pub fn native_policy<P: Plane>(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy<P>>> {
     use std::sync::Arc;
     match name {
         POLICY_NAME_WEIGHTED => Some(Arc::new(WeightedPolicy)),
@@ -211,6 +220,7 @@ pub fn native_policy(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_api::{Llm, LlmCandidate, LlmFacts};
 
     fn cand(
         idx: usize,
@@ -218,7 +228,7 @@ mod tests {
         lat: Option<f64>,
         conc: usize,
         budget: Option<i64>,
-    ) -> Candidate<'static> {
+    ) -> LlmCandidate<'static> {
         // Most native tests don't exercise the `usage` signal; default `rate_headroom` to `None`.
         // The `usage` tests build candidates with `cand_rate` to set it explicitly.
         cand_rate(idx, cost, lat, conc, budget, None)
@@ -231,21 +241,23 @@ mod tests {
         conc: usize,
         budget: Option<i64>,
         rate: Option<f64>,
-    ) -> Candidate<'static> {
+    ) -> LlmCandidate<'static> {
         Candidate {
             idx,
-            model: "m",
-            provider: "p",
             weight: 1,
-            context_max: None,
-            tier: None,
-            cost_per_mtok: cost,
             tags: &[],
+            cost,
             latency_ms: lat,
             available_concurrency: conc,
             budget_remaining: budget,
             rate_headroom: rate,
             signals: Default::default(),
+            facts: LlmFacts {
+                model: "m",
+                provider: "p",
+                context_max: None,
+                tier: None,
+            },
         }
     }
 
@@ -375,14 +387,98 @@ mod tests {
         assert_eq!(d, RoutingDecision::Abstain);
     }
 
+    // -- The shipped natives serve a SECOND plane with no line added to them --------------------
+    //
+    // This is the claim that the shipped strategies read only plane-neutral signals, turned into
+    // something that can fail. A second plane is declared here, in a test, with facts that look
+    // nothing like the LLM plane's, and every shipped native is resolved and driven over it. Not one
+    // line above this module changes to make that work; if a native ever reaches for a plane fact,
+    // the generic `impl` stops compiling and this is where it shows up.
+
+    /// A deliberately un-LLM-shaped plane: its members are addressed by an opaque handle and carry a
+    /// verification posture rather than a model and a provider.
+    #[derive(Debug, Clone, Copy)]
+    struct Other;
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    struct OtherFacts<'a> {
+        handle: &'a str,
+        verified: bool,
+    }
+
+    impl busbar_api::Plane for Other {
+        const NAME: &'static str = "other";
+        type Facts<'a> = OtherFacts<'a>;
+    }
+
+    fn other_cand(
+        idx: usize,
+        cost: Option<f64>,
+        lat: Option<f64>,
+        conc: usize,
+    ) -> Candidate<'static, Other> {
+        Candidate {
+            idx,
+            weight: 1,
+            tags: &[],
+            cost,
+            latency_ms: lat,
+            available_concurrency: conc,
+            budget_remaining: None,
+            rate_headroom: Some(0.5),
+            signals: Default::default(),
+            facts: OtherFacts {
+                handle: "h",
+                verified: true,
+            },
+        }
+    }
+
+    /// EVERY shipped native resolves for the second plane, and each ranks it on the same neutral
+    /// signal it ranks the LLM plane on. `native_policy` instantiated at the second plane IS the
+    /// whole adapter: no registry entry, no second strategy, no branch.
+    #[tokio::test]
+    async fn every_shipped_native_serves_a_second_plane_unchanged() {
+        let cands = [
+            other_cand(0, Some(9.0), Some(120.0), 2),
+            other_cand(1, Some(2.0), Some(40.0), 9),
+            other_cand(2, None, None, 5),
+        ];
+        let expect = [
+            // cheapest and fastest both put idx 1 first and demote the signal-less idx 2.
+            (POLICY_NAME_CHEAPEST, RoutingDecision::Prefer(vec![1, 0, 2])),
+            (POLICY_NAME_FASTEST, RoutingDecision::Prefer(vec![1, 0, 2])),
+            // least_busy ranks on free permits: 9, 5, 2.
+            (
+                POLICY_NAME_LEAST_BUSY,
+                RoutingDecision::Prefer(vec![1, 2, 0]),
+            ),
+            // usage sees the same headroom on every candidate, so it ranks by idx.
+            (POLICY_NAME_USAGE, RoutingDecision::Prefer(vec![0, 1, 2])),
+            // weighted abstains here exactly as it does on the LLM plane.
+            (POLICY_NAME_WEIGHTED, RoutingDecision::Abstain),
+        ];
+        for (name, want) in expect {
+            let p = native_policy::<Other>(name).expect("the native resolves for any plane");
+            let d = p
+                .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
+                .await
+                .unwrap();
+            assert_eq!(
+                d, want,
+                "{name} must rank the second plane on neutral signals"
+            );
+        }
+    }
+
     #[test]
     fn native_registry_known_and_unknown() {
-        assert!(native_policy("weighted").is_some());
-        assert!(native_policy("cheapest").is_some());
-        assert!(native_policy("fastest").is_some());
-        assert!(native_policy("least_busy").is_some());
-        assert!(native_policy("usage").is_some());
-        assert!(native_policy("nonexistent").is_none());
+        assert!(native_policy::<Llm>("weighted").is_some());
+        assert!(native_policy::<Llm>("cheapest").is_some());
+        assert!(native_policy::<Llm>("fastest").is_some());
+        assert!(native_policy::<Llm>("least_busy").is_some());
+        assert!(native_policy::<Llm>("usage").is_some());
+        assert!(native_policy::<Llm>("nonexistent").is_none());
     }
 
     /// The registry round-trips each known name to a policy whose `name()` matches (not merely
@@ -390,7 +486,7 @@ mod tests {
     #[test]
     fn native_registry_names_round_trip() {
         for name in ["weighted", "cheapest", "fastest", "least_busy", "usage"] {
-            let p = native_policy(name).expect("known name must resolve");
+            let p = native_policy::<Llm>(name).expect("known name must resolve");
             assert_eq!(
                 p.name(),
                 name,
@@ -404,9 +500,9 @@ mod tests {
     /// An empty candidate pool yields `Abstain` for every native (no candidates → no opinion → SWRR).
     #[tokio::test]
     async fn all_natives_abstain_on_empty_pool() {
-        let empty: [Candidate<'_>; 0] = [];
+        let empty: [LlmCandidate<'_>; 0] = [];
         for name in ["weighted", "cheapest", "fastest", "least_busy", "usage"] {
-            let p = native_policy(name).unwrap();
+            let p = native_policy::<Llm>(name).unwrap();
             let d = p
                 .decide(&req(), &empty, &ctx(), Duration::from_millis(10))
                 .await

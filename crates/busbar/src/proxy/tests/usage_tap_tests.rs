@@ -149,7 +149,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 async fn apply_global_rewrites_chains_in_order() {
     use crate::hooks::wire::RewriteReply;
     use crate::hooks::{
-        Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
+        PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     };
 
     // A mock rewrite hook that replaces the (single) message content with a fixed marker.
@@ -159,7 +159,7 @@ async fn apply_global_rewrites_chains_in_order() {
         async fn decide(
             &self,
             _r: &RoutingRequest<'_>,
-            _c: &[Candidate<'_>],
+            _c: &[busbar_api::LlmCandidate<'_>],
             _x: &RoutingContext<'_>,
             _b: std::time::Duration,
         ) -> PolicyResult {

@@ -1470,21 +1470,23 @@ fn dreq(text: &str) -> RoutingRequest<'static> {
     }
 }
 
-fn dcand(idx: usize) -> Candidate<'static> {
+fn dcand(idx: usize) -> busbar_api::LlmCandidate<'static> {
     Candidate {
         idx,
-        model: "m",
-        provider: "prov",
         weight: 1,
-        context_max: None,
-        tier: None,
-        cost_per_mtok: None,
         tags: &[],
+        cost: None,
         latency_ms: None,
         available_concurrency: 1,
         budget_remaining: None,
         rate_headroom: None,
         signals: Default::default(),
+        facts: busbar_api::LlmFacts {
+            model: "m",
+            provider: "prov",
+            context_max: None,
+            tier: None,
+        },
     }
 }
 

@@ -4,8 +4,7 @@
 //! status → error-kind mapping and its dialect-native envelope.
 use super::*;
 use crate::hooks::{
-    Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
-    RoutingRequest,
+    PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use crate::state::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
@@ -36,7 +35,7 @@ impl RoutingPolicy for CapturingPolicy {
     async fn decide(
         &self,
         req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        _candidates: &[busbar_api::LlmCandidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
@@ -270,7 +269,7 @@ impl RoutingPolicy for CannedGate {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        _candidates: &[busbar_api::LlmCandidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
@@ -567,7 +566,7 @@ impl crate::hooks::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
         _req: &crate::hooks::RoutingRequest<'_>,
-        _cands: &[crate::hooks::Candidate<'_>],
+        _cands: &[busbar_api::LlmCandidate<'_>],
         _ctx: &crate::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> crate::hooks::PolicyResult {
@@ -810,7 +809,7 @@ impl RoutingPolicy for RewritingGate {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        _candidates: &[busbar_api::LlmCandidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
@@ -925,7 +924,7 @@ impl RoutingPolicy for ErroringPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        _candidates: &[busbar_api::LlmCandidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {

@@ -34,7 +34,7 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
         // transform: the request projection with no candidates (a rewrite gate reads the prompt, not
         // the candidate set), exactly as the socket transport's `transform` built it.
         transform: Box::new(|req| {
-            let empty: [super::Candidate<'_>; 0] = [];
+            let empty: [busbar_api::LlmCandidate<'_>; 0] = [];
             let ctx = super::RoutingContext {
                 pool: req.pool,
                 budget_remaining: None,

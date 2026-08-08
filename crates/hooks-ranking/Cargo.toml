@@ -15,3 +15,7 @@ async-trait = "0.1"
 # The native policies are sync; the async-trait wrapper still makes `decide` async, so the tests
 # need a (current-thread) runtime to drive it.
 tokio = { version = "1", features = ["rt", "macros"] }
+# A test declares a SECOND plane to prove every native serves it unchanged, and a plane's facts must
+# be serializable because they ride the hook wire. Test-only: the natives themselves serialize
+# nothing.
+serde = { version = "1", features = ["derive"] }
