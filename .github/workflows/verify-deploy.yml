@@ -256,10 +256,14 @@ jobs:
         env:
           SUPPLIED_VERSION: ${{ inputs.version || github.event.release.tag_name || '' }}
         run: |
-          set -uo pipefail   # deliberately NOT -e: every channel is checked and ALL failures are
-                             # reported. A pointer sweep that stops at the first stale channel tells
-                             # you about one of them and hides the rest, and "docker is stale" and
-                             # "docker AND homebrew AND helm are stale" are different incidents.
+          # `set +e` FIRST, AND IT IS LOAD-BEARING. GitHub runs every `run:` block as
+          # `bash -e {0}`, so errexit is ALREADY ON before the first line of the script: writing
+          # `set -uo pipefail` does not turn it off, it just leaves it on. Without the explicit
+          # `set +e` this sweep would abort at the first non-zero command and report ONE stale
+          # channel while hiding the rest, and "docker is stale" and "docker AND homebrew AND helm
+          # are stale" are different incidents. It cost the alert job a red run to find this.
+          set +e
+          set -uo pipefail
           fail=0
           : > /tmp/pointer-failures.md
 
@@ -1104,16 +1108,40 @@ jobs:
           # THE LIVE SCRIPT, not the repo working copy. A fix that is merged but never deployed to
           # getbusbar.com is still broken for every user, and reading ./install.sh from the checkout
           # would hide exactly that. (This job does not even check the repo out — on purpose.)
-          rm -rf /tmp/busbar-e2e
+          rm -rf /tmp/busbar-e2e /tmp/site-blocked
           mkdir -p /tmp/busbar-e2e/bin
           # --max-time bounds EACH of the 5 attempts, so the worst case is bounded at ~5*30s plus
           # the 4 inter-attempt delays rather than "one attempt hangs forever and --retry never
           # gets a turn". --retry alone does not imply any per-attempt timeout.
-          if ! curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
-               "https://getbusbar.com/install.sh" -o /tmp/busbar-e2e/install.sh; then
-            echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
-            exit 1
-          fi
+          code="$(curl -sSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
+            -o /tmp/busbar-e2e/install.sh -w '%{http_code}' \
+            "https://getbusbar.com/install.sh" 2>/dev/null || echo 000)"
+          # 403/429 IS A STATEMENT ABOUT US, NOT ABOUT THE SITE, and this check spent today
+          # asserting the opposite. getbusbar.com's edge challenges datacenter IPs, so a GitHub
+          # runner is refused while `curl -fsSL https://getbusbar.com/install.sh | sh` works
+          # perfectly from a laptop - yet the message below said "the documented one-liner in the
+          # README and on the site is dead. Fix: redeploy the marketing site". That is a fabrication
+          # about a healthy site, printed daily, and it is the single most effective way to teach
+          # everyone that red in this workflow means nothing. Which is how install.sh rotted under a
+          # green verifier in the first place.
+          #
+          # So: blocked is a VISIBLE SKIP that names the real blocker and the real fix; anything
+          # else non-200 stays the hard failure it should be, because a 404 or a 5xx here IS the
+          # documented one-liner being dead for everyone.
+          case "$code" in
+            403|429)
+              : > /tmp/site-blocked
+              echo "VISIBLE SKIP: https://getbusbar.com/install.sh returned HTTP ${code} to this runner, so checks (h) and (i) could NOT be evaluated at all. This is an edge/bot rule against GitHub's datacenter IPs; the one-liner works from a browser or a laptop."
+              echo "::warning::(h)(i) NOT EXERCISED: getbusbar.com returns HTTP ${code} to GitHub Actions runners, so the end-to-end install and the api.github.com dependency scan did not run. These are the two most valuable checks in this workflow and they are currently blind from CI. Fix is MARKETING-SIDE and should be treated as urgent: allow GitHub Actions egress through the Cloudflare bot rules for /install.sh and /providers.yaml, or serve them from a route exempt from the challenge."
+              { echo "### (h)(i) install.sh: NOT EXERCISED - getbusbar.com returns HTTP ${code} to GitHub runners"; } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            200) : ;;
+            *)
+              echo "::error::(h) https://getbusbar.com/install.sh returned HTTP ${code}. This is not a bot block (403/429) but a genuine failure to serve, so the documented one-liner in the README and on the site is dead for every user. Fix: redeploy the marketing site / restore the /install.sh route."
+              exit 1
+              ;;
+          esac
           [ -s /tmp/busbar-e2e/install.sh ] || {
             echo "::error::(h) https://getbusbar.com/install.sh served an EMPTY body. Fix: redeploy the marketing site."
             exit 1
@@ -1204,6 +1232,12 @@ jobs:
           # GitHub's own egress is not treated like a stranger's. A green run is therefore NOT
           # evidence. The only durable assertion is the ABSENCE of the fragile dependency in the
           # script we actually serve, which is IP-independent and cannot pass for the wrong reason.
+          # (h) already classified the response and left this marker if the runner is blocked.
+          # Re-deriving that here would be a second fetch to be told the same thing.
+          if [ -f /tmp/site-blocked ]; then
+            echo "VISIBLE SKIP: (i) cannot inspect the live install.sh because getbusbar.com refuses this runner (see (h)'s warning). The api.github.com dependency is therefore UNVERIFIED for this run, not verified-absent."
+            exit 0
+          fi
           curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
             "https://getbusbar.com/install.sh" -o /tmp/busbar-installsh-live || {
               echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it. Fix: redeploy the marketing site."
@@ -1335,6 +1369,16 @@ jobs:
             ep="$1"; keys="$2"; hint="$3"
             body="$(curl -sS -m 30 -o /tmp/api-body.json -w '%{http_code}' "https://getbusbar.com${ep}" || echo 000)"
             payload="$(cat /tmp/api-body.json 2>/dev/null || true)"
+            case "$body" in
+              403|429)
+                # Same distinction as (g)/(h): refused because of WHO is asking, not broken. A
+                # visitor's browser is served these endpoints normally, so calling them down here
+                # would be false, and a false red is how a gate stops being believed.
+                echo "VISIBLE SKIP: https://getbusbar.com${ep} returned HTTP ${body} to this runner (edge/bot rule against datacenter IPs), so it could not be evaluated."
+                echo "::warning::(k) NOT EXERCISED: getbusbar.com${ep} returns HTTP ${body} to GitHub Actions runners. Same marketing-side fix as (h): allow Actions egress through the bot rules."
+                return 0
+                ;;
+            esac
             if [ "$body" != "200" ]; then
               echo "FAIL: https://getbusbar.com${ep} returned HTTP ${body} (body: ${payload:-<empty>})"
               echo "::error::(k) https://getbusbar.com${ep} returns HTTP ${body}, body ${payload:-<empty>} — expected 200 with a numeric count. ${hint}"
@@ -1399,6 +1443,15 @@ jobs:
 
           # --- l.1: the binary quickstart from the README / getting-started, using the binary the
           # --- live install.sh produced in (h). Docs promise: `curl -s localhost:8080/healthz` -> ok
+          if [ -f /tmp/site-blocked ] || [ ! -x /tmp/busbar-e2e/bin/busbar ]; then
+            # l.1 runs the binary that (h) installed FROM THE LIVE install.sh, on purpose - it
+            # verifies the documented quickstart against the artifact a user actually ends up with.
+            # When (h) could not run (getbusbar.com refuses this runner) there is no such binary, and
+            # substituting one from the Release would quietly change what this check means. Skip it
+            # visibly; l.2, the docker one-liner, needs nothing from the site and still runs.
+            echo "VISIBLE SKIP: (l.1) the binary quickstart could not run - (h) never obtained a binary from the live install.sh (getbusbar.com refuses this runner). The docker one-liner half (l.2) DID run and is authoritative."
+            echo "::warning::(l) PARTIAL: the binary quickstart was not exercised because the live install.sh was unreachable from this runner. Same marketing-side fix as (h)."
+          else
           cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
           cp /tmp/busbar-e2e/bin/providers.yaml "$work/providers.yaml"
           pushd "$work" >/dev/null
@@ -1414,6 +1467,7 @@ jobs:
           fi
           kill "$bpid" 2>/dev/null || true
           for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          fi
 
           # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
           # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
@@ -1504,8 +1558,18 @@ jobs:
           # Docker pull count: authority is Docker Hub's own repository endpoint.
           hub="$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/getbusbar/busbar/" \
                  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("pull_count",-1))' || echo -1)"
-          site="$(curl -fsS --max-time 30 "https://getbusbar.com/api/pulls" \
-                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("pull_count", d.get("count",-1)))' || echo -1)"
+          # A 403 here is the runner being refused, NOT a frozen counter, and the two must not
+          # share a message: one is a marketing-side bot rule and the other is a Worker that is
+          # never deployed. Classify before comparing.
+          site_code="$(curl -sS --max-time 30 -o /tmp/n-pulls.json -w '%{http_code}' "https://getbusbar.com/api/pulls" || echo 000)"
+          case "$site_code" in
+            403|429)
+              echo "VISIBLE SKIP: (n) getbusbar.com/api/pulls returned HTTP ${site_code} to this runner, so the live-number comparison could not be made. This is the edge/bot rule against datacenter IPs, not a frozen counter."
+              echo "::warning::(n) NOT EXERCISED: getbusbar.com/api/* returns HTTP ${site_code} to GitHub Actions runners. Same marketing-side fix as (h)."
+              exit 0
+              ;;
+          esac
+          site="$(python3 -c 'import json,sys; d=json.load(open("/tmp/n-pulls.json")); print(d.get("pull_count", d.get("count",-1)))' 2>/dev/null || echo -1)"
           echo "docker pulls: hub=${hub} site-api=${site}"
           if [ "$hub" -lt 0 ] || [ "$site" -lt 0 ]; then
             echo "::error::(n) could not read the Docker pull count from both Docker Hub and getbusbar.com/api/pulls (hub=${hub}, site=${site}). The site advertises this number as live, so an endpoint that cannot answer is a broken promise to every visitor."
@@ -1596,6 +1660,7 @@ jobs:
       - name: Collect the failing checks, expected vs observed, from the failed jobs' own logs
         id: collect
         run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
           set -uo pipefail
           : > /tmp/findings.md
 
@@ -1653,6 +1718,7 @@ jobs:
 
       - name: Open or update the single open release-broken issue
         run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
           set -uo pipefail
           V="${VERSION:-unknown}"
           TITLE="[release-broken] Consumer verification FAILING for busbar v${V} -- users are getting a broken release"
@@ -1734,6 +1800,7 @@ jobs:
     steps:
       - name: Close any open release-broken issue
         run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
           set -uo pipefail
           # A pointer-only sweep (the 3-hourly cron, where `verify` is skipped) proves the pointers
           # are healthy but says nothing about install.sh, brew, attestation or the quickstart. It

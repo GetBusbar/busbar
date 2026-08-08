@@ -167,9 +167,12 @@ jobs:
       - name: Does what we published actually work?
         id: check
         run: |
-          set -uo pipefail   # NOT -e: every check runs and ALL failures are reported. "the bundle
-                             # does not boot" and "the bundle does not boot AND two archives are
-                             # missing" are different incidents and the first must not hide the second.
+          # `set +e` FIRST, AND IT IS LOAD-BEARING. GitHub runs every `run:` block as
+          # `bash -e {0}`, so errexit is ALREADY ON before line 1 and `set -uo pipefail` does not
+          # turn it off. Without this the job aborts at the first non-zero command, and "the bundle
+          # does not boot" would hide "the bundle does not boot AND two archives are missing".
+          set +e
+          set -uo pipefail
           fail=0
           : > /tmp/findings.md
 
@@ -455,6 +458,7 @@ jobs:
     steps:
       - name: Open or update the single open release-broken issue
         run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
           set -uo pipefail
           V="${VERSION:-unknown}"
           TITLE="[release-broken] Published v${V} does not work for a consumer"
@@ -537,6 +541,7 @@ jobs:
     steps:
       - name: Close any open release-broken issue
         run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
           set -uo pipefail
           existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
             --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
