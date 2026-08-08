@@ -616,7 +616,7 @@ pub(crate) struct OverlayDoc {
     pub(crate) plugin_versions: BTreeMap<String, String>,
     /// The `named_maps` section (1.5.3 universal named-DEFINITION pattern): API-applied entries of
     /// EVERY named map the generic admin CRUD serves, keyed `section key → entry name → the raw
-    /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.5.4/1.5.6).
+    /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.5.4/1.5.5).
     ///
     /// The definition is stored RAW (`serde_json::Value`) ON PURPOSE. It is re-parsed into its typed,
     /// `deny_unknown_fields` config struct on every apply

@@ -3,7 +3,7 @@
 
 //! The CORE route-auth table: every first-party route a router mounts, DECLARED as it is mounted.
 //!
-//! Plugin routes have carried their own declared [`RouteAuth`] since Wave 2.3
+//! Plugin routes have carried their own declared [`RouteAuth`] since 1.5.3
 //! ([`crate::plugin_routes::PluginRouteTable::declared_auth`]). Core routes did not: the auth
 //! middleware carried two hand-written path equalities (`path == "/healthz"`,
 //! `path == "/auth/token"`) that were a PROCESS-wide statement about a route only one ROUTER
