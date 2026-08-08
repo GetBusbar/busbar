@@ -13,9 +13,12 @@
 //!   complete configs). Only ONE directive shape ships here: `config`, a complete, standalone
 //!   config.yaml. Other shapes (`config-section=X`, `providers`, `settings-patch`,
 //!   `request=METHOD PATH`, `skip=reason`) are NOT implemented.
-//! - **No secrets required.** `--validate` uses `EnvSubst::Lenient` and never resolves `env`/`file`
-//!   secret refs to their real values (see `main.rs`'s `validate_secret_refs`), so every marked
-//!   example validates with zero environment setup, no flakiness risk in CI.
+//! - **Secrets are stood in for, not required.** `--validate` RESOLVES built-in `env`/`file` secret
+//!   references and fails when one cannot (see `main.rs`'s `validate_builtin_secrets_resolve`), so a
+//!   marked example naming a real-looking variable would otherwise fail on THIS MACHINE's
+//!   environment rather than on anything written in the doc. `run_validate` below extracts the names
+//!   the example references and gives each a placeholder, and points `file:` refs at a scratch file.
+//!   The gate therefore still needs zero environment setup, and still tests only the config's shape.
 //! - **Anti-vacuity floor.** Only 3 examples are marked today (getting-started.md's minimal config
 //!   AND its Step-5 two-provider-one-pool config, and configuration.md's "Minimal working
 //!   example"). The floor below is sized to that set (>= 3). Raise both together when more
@@ -88,7 +91,21 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     let rewritten = {
         let text = std::fs::read_to_string(config_path).unwrap_or_default();
         if text.contains("file:") {
-            let dir = config_path.parent().unwrap_or(Path::new("."));
+            // Scratch, NOT `config_path.parent()`. The documents under test are the SHIPPED files,
+            // so their parent is the repo itself: writing the stand-in and the patched copy there
+            // left four generated artifacts in the working tree, and two of them carried the
+            // absolute home-directory path of the machine that ran the test. The public-hygiene
+            // gate caught it. Nothing this test writes belongs anywhere a commit can reach.
+            let dir = std::env::temp_dir().join(format!(
+                "busbar-doc-gate-{}-{}",
+                std::process::id(),
+                config_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().replace(['.', '/'], "_"))
+                    .unwrap_or_default()
+            ));
+            std::fs::create_dir_all(&dir).expect("create doc-gate scratch dir");
+            let dir = dir.as_path();
             let stand_in = dir.join("doc-gate-secret");
             std::fs::write(
                 &stand_in,
