@@ -6,7 +6,7 @@ The branch model is **dev → qa → main**, and each arrow means one thing:
 |---|---|---|
 | **`dev`** | `ci.yml` — fmt, clippy, `cargo test` | cheap; push often |
 | **`qa`** | `qa-gate.yml` — `release-check.sh`, the real all-plugins end-to-end gate | ~2h; the pre-release soak |
-| **`main`** | `tag-on-main.yml` — auto-tags `crates/busbar/Cargo.toml`'s version → the release | the BOOM |
+| **`main`** | `release.yml` — the whole release, gated: green-branch check, build, stage, verify, THEN tag | the BOOM |
 
 `dev` is always release-ready because every push is fully CI'd. Promoting to `qa` proves the exact
 commit works against every plugin together. Promoting to `main` **is** the release.
@@ -27,17 +27,46 @@ to "Maintenance and dependency updates."
    **not** tag.
 2. **Promote `dev` → `qa`.** The ~2h `qa-gate.yml` full-plugin gate runs. A green run means the
    bumped commit is release-ready.
-3. **Promote `qa` → `main`.** Landing on `main` runs `tag-on-main.yml`, which tags `vX.Y.Z` (the
-   version now in `Cargo.toml`) — and that tag is the sign-off. It is **idempotent**: if the tag
-   already exists (e.g. a docs hotfix landing on main without a version bump), it is a safe no-op,
-   so only a *new* version cuts a release.
+3. **Promote `qa` → `main`.** Landing on `main` runs `release.yml`, which reads `vX.Y.Z` from
+   `Cargo.toml` and runs the whole release. It is **idempotent**: if that version is already
+   released (e.g. a docs hotfix landing on main without a version bump) it is a safe no-op, so
+   only a *new* version cuts a release.
 
-## What the tag triggers (automatic)
+## What landing on `main` runs (automatic)
 
-- **`release.yml`** — cross-compiles the 5 target binaries, SBOM, the OpenAPI asset, and the
-  build-provenance **attestation** (verify with `--repo GetBusbar/busbar`).
-- **`docker.yml`** — builds + pushes `getbusbar/busbar:X.Y.Z` + `latest` to Docker Hub and
-  `ghcr.io/getbusbar/busbar`, cosign-signed.
+**The tag is the LAST thing that happens, not the first.** Nothing carries a user-facing name until
+a consumer has proved it works, because Docker Hub tag immutability makes a published `X.Y.Z`
+impossible to overwrite: a broken one is permanent. `release.yml` runs, in order:
+
+1. **`plan`** — read the version from `Cargo.toml`. No-op if it is already released. Refuse if
+   `getbusbar/busbar:X.Y.Z` already exists on Docker Hub, since that name could never be corrected.
+2. **`branch-green`** — refuse to release from a red commit. Waits for every check on the commit
+   to conclude and requires every one of them green. **There is no override, no waiver and no
+   exception list**, and a status that cannot be determined counts as RED.
+3. **`gate`** — fmt, clippy, build, test on the exact commit, with live Postgres and Valkey.
+4. **`draft`** — create the GitHub Release as a **draft**: real, downloadable assets, but it is
+   not listed, does not resolve as `releases/latest`, and creates no git tag.
+5. **build + attach** — the target binaries, SBOM, OpenAPI asset and build-provenance
+   **attestation** (verify with `--repo GetBusbar/busbar`), all onto the draft.
+6. **`stage-image`** — `docker.yml` pushes the multi-arch image under `staging-<sha>` and nothing
+   else. Really pullable, really runnable, and no user is looking at that name.
+7. **`verify-staged`** — the gate. `verify-deploy.yml` in staging mode: pull the image FRESH
+   (`docker rmi` first), boot it, download and EXECUTE the release binary, check `--version`, run
+   the documented quickstart both ways, verify the attestation, verify every asset downloads.
+8. **`promote-image`** — only on green. Manifest-only retag of the exact verified digest to
+   `X.Y.Z` then `latest` on Docker Hub and GHCR. No rebuild.
+9. **`promote-release`** — push the git tag, publish the draft, then re-derive the git tag, the
+   draft flag, the latest flag and the `/releases/latest` redirect from outside and fail loud if
+   any one of them did not move.
+10. **`notify-downstream`** then **`consumer-verification`** — the fan-out and the full public
+    sweep (Homebrew, helm, the site, install.sh, both registries).
+
+**If anything before step 8 fails, nothing is public**: no git tag, no listed release, no container
+version tag, no fan-out, and `latest` has not moved. The next attempt is a clean re-run of the
+workflow, not a recovery. Re-running is safe: every step is idempotent.
+
+`docker.yml` is no longer triggered by a tag and emits no version tag of its own. Its `promote` job
+is the only thing in the repository that creates `getbusbar/busbar:X.Y.Z`.
 
 ## Downstream (self-healing, no action needed)
 

@@ -133,6 +133,21 @@ jobs:
         run: scripts/release-script-lint.sh --selftest
       - name: Release-script lint
         run: scripts/release-script-lint.sh
+      # RELEASE-ORDER lint: nothing may be tagged until it has been verified from the consumer side,
+      # and nothing may be cut from a red commit. Both of those live in the SHAPE of the workflow
+      # graph (which job depends on which), which is edited by people in a hurry during an incident
+      # and has no other place to be asserted. Self-test runs FIRST, and it earns its place: it
+      # caught this lint's own `--draft` rule passing against a release that had had `--draft`
+      # deleted, because `--draft=false` elsewhere in the file contained the substring.
+      - name: Release-order lint self-test
+        run: python3 scripts/release-order-lint.py --selftest
+      - name: Release-order lint
+        run: python3 scripts/release-order-lint.py --root .
+      # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
+      # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
+      # public", so that property is re-proven on every push rather than argued once in a comment.
+      - name: Release-order proof (a failure leaves nothing public)
+        run: python3 scripts/release-order-lint.py --prove
       # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
