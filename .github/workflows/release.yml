@@ -218,6 +218,27 @@ jobs:
       # vacuous-pass trap: no runs found reads as "nothing is red". These names are asserted
       # PRESENT, so a commit that CI never saw is refused rather than waved through.
       REQUIRED_WORKFLOWS: "CI"
+      # WORKFLOWS THAT ARE NOT CHECKS OF THIS COMMIT, AND THIS IS NOT AN EXCEPTION LIST.
+      #
+      # The distinction is structural, not a judgement about which reds matter. `branch-green` asks
+      # ONE question: is this COMMIT's code green. Both names below answer a different question and
+      # including them makes the gate incoherent rather than strict:
+      #
+      #   Release       is THIS run. A job cannot wait for the run it is part of, and a re-run must
+      #                 not be failed by an earlier attempt's conclusion.
+      #   Verify deploy verifies the LIVE, PUBLISHED world - Docker Hub's `latest`, the Homebrew
+      #                 tap, the Helm chart, getbusbar.com, the site's counters. On this commit's
+      #                 SHA it can only run AFTER the release publishes (its `release: published`
+      #                 and `workflow_run` triggers), so requiring it green BEFORE publishing is
+      #                 circular: on a first run it does not exist, and on a re-run it reports on
+      #                 the state of production rather than on the code being released.
+      #
+      # ITS RED IS NOT IGNORED, IT IS JUDGED AT THE RIGHT POINT. verify-deploy runs inside this
+      # release graph twice: as `verify-staged`, which GATES the promote, and as
+      # `consumer-verification`, which turns this run red and opens an issue. So a broken channel
+      # still stops or flags a release. What it does not do is block a fix from being released
+      # because production is currently broken, which would be the exact opposite of useful.
+      NOT_COMMIT_CHECKS: "Release,Verify deploy"
     steps:
       - name: Every check on this commit must have concluded, and every conclusion must be green
         shell: bash
@@ -248,10 +269,12 @@ jobs:
             # Exclude THIS run (it is in progress by definition) and every other run of THIS
             # workflow (a re-run of the release must not deadlock waiting on itself or judge itself
             # by an older attempt's conclusion).
-            echo "$runs" | jq -s '[.[] | .workflow_runs[]?]
-              | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and .name != "Release"))
-              | unique_by(.name)
-              | map({name, status, conclusion, url: .html_url})' > /tmp/runs.json
+            echo "$runs" | jq -s --arg skip "$NOT_COMMIT_CHECKS" '
+                ($skip | split(",")) as $not
+                | [.[] | .workflow_runs[]?]
+                | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))
+                | unique_by(.name)
+                | map({name, status, conclusion, url: .html_url})' > /tmp/runs.json
             total="$(jq 'length' /tmp/runs.json)"
             pending="$(jq '[.[] | select(.status != "completed")] | length' /tmp/runs.json)"
             echo "checks on ${SHA:0:7}: ${total} workflow(s), ${pending} still running"
@@ -961,8 +984,10 @@ jobs:
             echo "::error::REFUSING TO TAG: the Actions API could not be read, so the CI status of ${SHA} is UNKNOWN right now. Unknown is not green. No tag was pushed and the release is still a draft; re-run this workflow."
             exit 1
           fi
-          red="$(echo "$runs" | jq -r -s '[.[] | .workflow_runs[]?]
-            | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and .name != "Release"))
+          red="$(echo "$runs" | jq -r -s --arg skip "Release,Verify deploy" '
+            ($skip | split(",")) as $not
+            | [.[] | .workflow_runs[]?]
+            | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))
             | unique_by(.name)
             | .[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
             | "\(.name) -> \(.conclusion // "still running") \(.html_url)"')"
