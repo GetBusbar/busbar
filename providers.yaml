@@ -373,36 +373,6 @@ ollama-cloud:
   base_url: https://ollama.com
   error_map: {}
 
-# Local inference servers. These run on your own machine or LAN, so they need no credential: leave
-# the pool member's key unset. busbar permits plain `http://` to loopback, RFC-1918 and CGNAT hosts
-# precisely so these work with no flag, while still refusing plaintext to the public internet.
-# In Docker, `localhost` is the CONTAINER, so use `http://host.docker.internal:<port>` and start the
-# server bound to `0.0.0.0` rather than the default loopback-only bind.
-
-# Ollama, running locally (`ollama serve`). Default port 11434.
-ollama:
-  protocol: openai
-  base_url: http://localhost:11434/v1
-  error_map: {}
-
-# LM Studio's local server. Default port 1234.
-lmstudio:
-  protocol: openai
-  base_url: http://localhost:1234/v1
-  error_map: {}
-
-# llama.cpp's `llama-server`. Default port 8080.
-llamacpp:
-  protocol: openai
-  base_url: http://localhost:8080/v1
-  error_map: {}
-
-# vLLM's OpenAI-compatible server (`vllm serve`). Default port 8000.
-vllm:
-  protocol: openai
-  base_url: http://localhost:8000/v1
-  error_map: {}
-
 # Inception Labs (Mercury diffusion LLMs).
 inception:
   protocol: openai
