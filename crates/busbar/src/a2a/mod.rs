@@ -32,4 +32,5 @@
 
 pub(crate) mod canonical;
 pub(crate) mod card;
+pub(crate) mod jws;
 pub(crate) mod pin;

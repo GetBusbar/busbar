@@ -32,6 +32,7 @@
 //! second-class would be teaching it one plane's vocabulary, and the sibling plane would inherit a
 //! rule it never asked for.
 
+use super::{card, jws};
 use crate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
@@ -171,6 +172,31 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
         Sighting::Seen(o) => o.pin.clone(),
         _ => None,
     }
+}
+
+/// THE SANCTIONED WAY TO PRODUCE A SIGNED PIN: verify first, then pin what verified.
+///
+/// The ordering is the whole point. A fingerprint taken before verification is a fingerprint of
+/// whatever arrived, and pinning it would record "the operator approved this card" about a document
+/// nobody authenticated. So the signature is checked against the operator's out-of-band key FIRST,
+/// and the fingerprint is only computed on the document that passed.
+///
+/// `issuer_key_spki` travels into the pin verbatim, as the operator wrote it, because that string is
+/// what an operator compares against the value their vendor published out of band. Re-rendering it
+/// from the parsed key would produce a value that is correct and that they cannot check by eye.
+pub(crate) fn pin_a_signed_card(
+    card: &serde_json::Value,
+    issuer_key_spki: &str,
+) -> Result<(CardPin, jws::Verified), jws::JwsError> {
+    let issuer = jws::IssuerKey::from_spki_base64(issuer_key_spki)?;
+    let verified = jws::verify_card(card, &issuer)?;
+    Ok((
+        CardPin::JwsIssuerKey {
+            issuer_key: issuer_key_spki.trim().to_string(),
+            card_fingerprint: card::fingerprint(card)?,
+        },
+        verified,
+    ))
 }
 
 #[cfg(test)]

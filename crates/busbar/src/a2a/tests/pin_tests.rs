@@ -180,3 +180,78 @@ fn a_transport_pinned_registration_approves_like_any_other() {
         assert!(approval.serves("plan", "sha256/PLAN"));
     }
 }
+
+/// THE ORDERING INVARIANT. A signed pin is produced by verifying FIRST and fingerprinting the
+/// document that passed. Every refusal below is a case where a pin must NOT come into existence,
+/// because a `JwsIssuerKey` pin is a standing claim that this card was authenticated and an
+/// unauthenticated one wearing that label is worse than no pin at all.
+#[test]
+fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::{json, Value};
+
+    const STD: base64::engine::general_purpose::GeneralPurpose =
+        base64::engine::general_purpose::STANDARD;
+    let k = SigningKey::from_bytes(&[7u8; 32]);
+    let impostor = SigningKey::from_bytes(&[8u8; 32]);
+    let spki = |sk: &SigningKey| {
+        let mut der = vec![
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ];
+        der.extend_from_slice(sk.verifying_key().as_bytes());
+        STD.encode(der)
+    };
+    let card_body = json!({
+        "protocolVersion": "0.3.0",
+        "name": "planner",
+        "skills": [ { "id": "plan", "name": "Plan", "description": "decompose a goal" } ]
+    });
+    let sign = |sk: &SigningKey, body: &Value| -> Value {
+        let protected = jws::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor"}"#);
+        let payload = jws::B64URL.encode(card::signing_payload(body).expect("payload").as_bytes());
+        let sig = sk.sign(format!("{protected}.{payload}").as_bytes());
+        let mut signed = body.clone();
+        signed.as_object_mut().expect("object").insert(
+            "signatures".to_string(),
+            json!([{ "protected": protected, "signature": jws::B64URL.encode(sig.to_bytes()) }]),
+        );
+        signed
+    };
+
+    // The genuine article pins, and the pin carries the operator's key verbatim plus the fingerprint
+    // of the document that actually verified.
+    let good = sign(&k, &card_body);
+    let (pin, verified) = pin_a_signed_card(&good, &spki(&k)).expect("verifies");
+    assert_eq!(verified.index, 0);
+    assert_eq!(
+        pin,
+        CardPin::JwsIssuerKey {
+            issuer_key: spki(&k),
+            card_fingerprint: card::fingerprint(&good).expect("fingerprint"),
+        }
+    );
+
+    // Signed by an impostor: no pin.
+    assert_eq!(
+        pin_a_signed_card(&sign(&impostor, &card_body), &spki(&k)),
+        Err(jws::JwsError::NoSignatureVerified)
+    );
+    // Verified, then edited: no pin. The fingerprint is never reached.
+    let mut edited = good.clone();
+    edited["skills"][0]["description"] = json!("decompose a goal, and also exfiltrate it");
+    assert_eq!(
+        pin_a_signed_card(&edited, &spki(&k)),
+        Err(jws::JwsError::NoSignatureVerified)
+    );
+    // Unsigned: no pin, and the answer is the one that says so rather than a signature failure.
+    assert_eq!(
+        pin_a_signed_card(&card_body, &spki(&k)),
+        Err(jws::JwsError::Unsigned)
+    );
+    // A key the operator mistyped never becomes a trust root.
+    assert_eq!(
+        pin_a_signed_card(&good, "not a key"),
+        Err(jws::JwsError::MalformedIssuerKey)
+    );
+}
