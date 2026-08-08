@@ -144,6 +144,13 @@ EOF
 
 validate() { # runs --validate against whatever is in $WORK/plugins; captures combined output
   rm -f "$WORK/out"
+  # MOCK_KEY must be SET, for the same reason the grammar note above exists. 1.5.3 made `--validate`
+  # RESOLVE built-in `env:`/`file:` secret references and exit 1 when one cannot, rather than
+  # checking only the reference's shape. The config above names `env: MOCK_KEY`, no CI runner sets
+  # it, and so this gate's FIRST assertion (`signed-ok`) failed with a SECRET error instead of a
+  # trust verdict: it had stopped testing signing at all, exactly the way the grammar change broke it
+  # before. The value is never used for anything; nothing here talks to an upstream.
+  MOCK_KEY="${MOCK_KEY:-signing-gate-placeholder}" \
   BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" \
     "$BUSBAR" --validate > "$WORK/out" 2>&1
 }
