@@ -96,6 +96,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/plugin-registry-check.sh
+      # OAUTH-AS ISOLATION gate: crates/oauth-as is a standalone OAuth 2.1 AS library destined for
+      # extraction to its own repository unchanged, so it may NEVER depend on (or even name) a
+      # busbar crate: no `path` dependency in any dependencies section, no busbar reference in any
+      # of its files outside copyright attribution. Self-test runs FIRST (never trust the gate's
+      # verdict before proving both scanners still catch real violations), then it scans the crate.
+      - name: oauth-as isolation gate self-test
+        run: scripts/oauth-as-isolation-gate.sh --selftest
+      - name: oauth-as isolation gate
+        run: scripts/oauth-as-isolation-gate.sh
       # QA-GATE SEGMENTATION self-test. qa/segments.toml is the umbrella's single
       # source of truth (registry-driven fan-out, mirroring plugins.yaml). This self-test proves the
       # manifest's SHAPE before any segment is trusted to run: it lists both active and reserved
@@ -186,6 +195,27 @@ jobs:
             exit 1
           fi
           echo "working tree clean after the full test suite"
+
+  # OAUTH-AS CONFORMANCE: independent verification of the embedded OAuth 2.1 Authorization Server
+  # crate, as its own required job so a conformance regression is named at the check level rather
+  # than buried in the workspace test wall. Three independent oracles, all hermetic (no network):
+  # the third-party `oauth2` CLIENT crate (pinned =5.0.0) driven against the AS as a black box
+  # through its pluggable HTTP seam, where the client's own RFC 8628 poll loop and strict response types
+  # judge our wire bodies; JSON Schemas transcribed clause-by-clause from RFC 6749 sections 5.1/5.2
+  # and RFC 8628 sections 3.2/3.5 validated with the `jsonschema` crate over every body the AS
+  # emits; and the RFC 7636 appendix B PKCE vector verbatim. Each harness carries its own red-proof
+  # tests (deliberately corrupted bodies MUST be rejected), the same never-trust-an-unproven-gate
+  # discipline as the lint self-tests above. These tests also run inside `check`'s workspace suite;
+  # this job exists so the conformance verdict is individually visible and individually required.
+  oauth-as-conformance:
+    name: oauth-as conformance (third-party client · RFC schemas · RFC vectors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Conformance suites
+        run: cargo test -p oauth-as --locked --verbose
 
   # OpenAPI schema gate (CI-ONLY `openapi-schema` feature). `openapi_doc()` derives typed response
   # schemas via schemars — a dependency deliberately kept OUT of the shipped binary (the `check` job
