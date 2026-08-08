@@ -65,6 +65,12 @@ models:
 fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
+        // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .output()
@@ -692,6 +698,12 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
+        // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("BUSBAR_CONFIG_OVERLAY", overlay)

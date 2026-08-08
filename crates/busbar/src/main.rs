@@ -321,6 +321,14 @@ fn validate_config_command() -> i32 {
             return 1;
         }
     };
+
+    // STRICT SECRETS, `--validate` only. The pre-flight above is shared with boot and admin apply,
+    // where an unresolvable secret WARNS by design. Here the operator is asking whether the config
+    // is good, so an env var that is not set is an answer, not a footnote.
+    if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
+        eprintln!("[error] {e}");
+        return 1;
+    }
     println!(
         "ok: config valid — {} provider(s), {} model(s), {} pool(s)\n  config:    {}\n  providers: {}",
         cfg.providers.len(),
@@ -2435,6 +2443,35 @@ fn validate_secret_refs(
                     r.module, r.module
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
+///
+/// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the
+/// file is readable, because it runs before anything touches the environment. Without this,
+/// `--validate` reported a config VALID while boot would warn and then serve a gateway whose every
+/// upstream request fails on a missing credential: success reported for something that cannot work.
+///
+/// DELIBERATELY NOT IN `preflight_plugins_and_secrets`. That pre-flight is SHARED with boot and with
+/// the admin apply/reload path, where an unresolvable secret is a WARNING by design, not a refusal
+/// (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects` pins that). A live
+/// config change must not be rejected for a secret that may resolve on the next deploy. The operator
+/// asking `--validate` is asking a different question, and deserves the strict answer.
+///
+/// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
+fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
+    let builtins = config::secret::SecretResolver::builtins_only();
+    for (what, r) in config_validate::secret_refs(cfg) {
+        if r.module != config::secret::SECRET_MODULE_ENV
+            && r.module != config::secret::SECRET_MODULE_FILE
+        {
+            continue; // plugin-backed: the plugin may not be loadable here, and preflight covers it
+        }
+        if let Err(e) = builtins.resolve(r) {
+            return Err(format!("{what}: {e}"));
         }
     }
     Ok(())

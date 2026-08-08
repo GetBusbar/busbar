@@ -60,12 +60,77 @@ fn fixture_dir(tag: &str) -> PathBuf {
 /// Run the real busbar binary's `--validate` against `config_path`, with `providers_path` as the
 /// companion catalog. Returns (exit_code, stdout, stderr).
 fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
-        .arg("--validate")
-        .env("BUSBAR_CONFIG", config_path)
-        .env("BUSBAR_PROVIDERS", providers_path)
-        .output()
-        .expect("run busbar --validate");
+    // `--validate` RESOLVES built-in (`env`/`file`) secret references, so a documented example
+    // naming an env var fails unless that var is set. Docs name real-looking vars on purpose, and
+    // enumerating them here would drift the moment a doc adds one. Instead: extract every
+    // `{ env: NAME }` the example references and set each to a placeholder, so the gate tests the
+    // config's SHAPE (what it is for) rather than this machine's environment.
+    let referenced: Vec<String> = {
+        let text = std::fs::read_to_string(config_path).unwrap_or_default();
+        let mut v: Vec<String> = Vec::new();
+        for (i, _) in text.match_indices("env:") {
+            let rest = &text[i + 4..];
+            let name: String = rest
+                .chars()
+                .skip_while(|c| c.is_whitespace())
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() && !v.contains(&name) {
+                v.push(name);
+            }
+        }
+        v
+    };
+    // `file:` references are the same problem with no env-var escape: a shipped artifact names a
+    // PRODUCTION path (`/var/lib/busbar/signing.key`) that cannot exist in CI. Rewrite the copy
+    // under test to point at a real temp file, so the gate still checks the config's shape without
+    // asserting anything about this machine's filesystem layout.
+    let rewritten = {
+        let text = std::fs::read_to_string(config_path).unwrap_or_default();
+        if text.contains("file:") {
+            let dir = config_path.parent().unwrap_or(Path::new("."));
+            let stand_in = dir.join("doc-gate-secret");
+            std::fs::write(
+                &stand_in,
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            )
+            .unwrap();
+            let mut out = String::with_capacity(text.len());
+            for line in text.lines() {
+                if let Some(i) = line.find("file:") {
+                    let (head, tail) = line.split_at(i);
+                    let close = tail.find('}').map(|j| &tail[j..]).unwrap_or("");
+                    out.push_str(head);
+                    out.push_str("file: ");
+                    out.push_str(&stand_in.display().to_string());
+                    out.push_str(close);
+                    out.push('\n');
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            let patched = dir.join("doc-gate-config.yaml");
+            std::fs::write(&patched, out).unwrap();
+            Some(patched)
+        } else {
+            None
+        }
+    };
+    let effective = rewritten.as_deref().unwrap_or(config_path);
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    cmd.arg("--validate")
+        .env("BUSBAR_CONFIG", effective)
+        .env("BUSBAR_PROVIDERS", providers_path);
+    for name in &referenced {
+        // 64 hex chars: valid for `auth.signing_key`, and harmless as any other secret's value.
+        cmd.env(
+            name,
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        );
+    }
+    let out = cmd.output().expect("run busbar --validate");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
