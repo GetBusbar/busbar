@@ -111,6 +111,19 @@ concurrency:
 env:
   BUILD_ARTIFACT: qa-gate-target-${{ github.run_id }}
   TARBALL: /tmp/busbar-target.tzst
+  # A PHASE THAT DID NOT RUN IS NOT A PHASE THAT PASSED. release-check.sh records `sibling-missing`
+  # when a sibling checkout is absent and used to end with an unconditional "RELEASE GATE PASSED"
+  # banner anyway, so a green qa-gate did not prove those phases executed. The clone step above
+  # warns and continues on failure, which is what makes this reachable rather than theoretical: one
+  # failed clone silently removed a repo from the gate. busbar-admin is the sharpest case, because
+  # its integration.sh is the ONLY cross-repo behavioural check on the widest mirror of busbar's
+  # wire shapes in the fleet.
+  #
+  # Set HERE and not in the script's default because the two contexts want different answers.
+  # Locally a missing sibling is a fact of life and should inform, not block. On the pre-release
+  # soak it is a hole in the evidence a release is about to be cut on, and must stop the run.
+  # By-design segment skips are unaffected: `not-in-segment` is not a coverage gap.
+  BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS: "1"
 
 jobs:
   # ── fast: cheap tier + the matrix that drives the fan-out. Sibling of `build`, never in front of
