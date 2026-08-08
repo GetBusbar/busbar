@@ -21,7 +21,7 @@
 //! artifact as a type parameter; this plane supplies an artifact ([`pin::CardPin`]) and nothing else.
 //! `tests/reuse_tests.rs` drives one transition table over this plane's REAL artifact and a
 //! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
-//! generalised is a test over production code rather than a note in a design document.
+//! generalised is a test over production code rather than an assertion nobody can check.
 
 // NO PRODUCTION CALLER YET, and deliberately so, matching the posture of the lifecycle this plane
 // parameterises. The canonical form and the identity pin are what a wire reader, a registry section
