@@ -139,11 +139,42 @@ jobs:
         with:
           path: plugin
 
+      # RESOLVE THE SIBLING REF BEFORE CHECKING IT OUT, because the ref every caller passes is
+      # frequently one that does not exist in busbar, and the resulting failure is unreadable.
+      #
+      # THE BUG THIS FIXES, and it is the reason several plugin repos have never merged a PR. Most
+      # callers pass `busbar_ref: ${{ github.ref_name }}`, meaning "test against the same-named
+      # busbar branch" - dev against dev, main against main. On a `pull_request` event
+      # `github.ref_name` is not a branch name at all: it is `<number>/merge`. So EVERY pull request
+      # to those repos asked busbar for a branch called `5/merge`, and `actions/checkout` retried
+      # and died with "The process '/usr/bin/git' failed with exit code 1" and no explanation of
+      # which ref it wanted or why. The check has been red on every PR, for a reason the log does
+      # not state, which is indistinguishable from the repo's tests being broken. That is enough to
+      # stop a review culture forming.
+      #
+      # The same hole swallows feature-branch pushes: `ci/whatever` exists in the plugin repo and
+      # not in busbar. Fixed once here rather than in ten callers, which is what this file is for.
+      # A caller passing a REAL ref (a sha, `main`, `dev`) is unaffected; only unresolvable refs
+      # fall back, and the fallback announces itself.
+      - name: Resolve which busbar ref to check out
+        id: busbarref
+        run: |
+          set -euo pipefail
+          want="${{ inputs.busbar_ref }}"
+          if git ls-remote --exit-code --heads --tags https://github.com/GetBusbar/busbar.git "$want" >/dev/null 2>&1 \
+             || printf '%s' "$want" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "ref=$want" >> "$GITHUB_OUTPUT"
+            echo "Building against busbar@${want}."
+          else
+            echo "ref=dev" >> "$GITHUB_OUTPUT"
+            echo "::warning::busbar has no ref '${want}', so this build used busbar@dev instead. On a pull_request, \`github.ref_name\` is '<number>/merge' rather than a branch name, which is the usual cause - pass \`busbar_ref: \${{ github.base_ref || github.ref_name }}\` from the caller to say what you meant. Falling back is deliberate: an unresolvable sibling ref used to fail the checkout with an unreadable git error and no mention of the ref, which read like the plugin's own tests were broken."
+          fi
+
       - name: Checkout busbar (sibling path dependency)
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
-          ref: ${{ inputs.busbar_ref }}
+          ref: ${{ steps.busbarref.outputs.ref }}
           path: busbarAI
 
       - uses: dtolnay/rust-toolchain@stable
