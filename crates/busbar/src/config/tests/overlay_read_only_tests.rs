@@ -26,7 +26,11 @@
 //! mutable config) still refuses.
 
 use crate::config::overlay::resolve_backend;
-use crate::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
+// NOTE: `OverlayBackend` is deliberately NOT imported here. It is used by exactly one test, and that
+// test is `#[cfg(unix)]` (it needs a directory whose write bit can be dropped), so a top-level import
+// is an UNUSED IMPORT on Windows, which `-D warnings` turns into a build failure on that leg alone.
+// The test names the type by full path instead.
+use crate::config::{ConfigMgmtCfg, OverlayCfg};
 
 /// A scratch directory that this test owns outright.
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -145,7 +149,7 @@ fn d_an_explicit_overlay_path_in_an_unwritable_dir_degrades_too() {
 
     let cfg = ConfigMgmtCfg {
         locked: false,
-        overlay: Some(OverlayCfg::Backend(OverlayBackend {
+        overlay: Some(OverlayCfg::Backend(crate::config::OverlayBackend {
             file: Some(ro.join("overlay.json").to_string_lossy().into_owned()),
         })),
     };
