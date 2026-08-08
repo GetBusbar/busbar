@@ -18,6 +18,7 @@ members = [
     "crates/export-example-plugin",
     "crates/hooks-ranking",
     "crates/store-memory",
+    "crates/oauth-as-conformance",
 ]
 
 [profile.release]
