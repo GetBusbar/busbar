@@ -20,6 +20,13 @@ every section on a single page, and [the 1.5 migration guide](docs/migration-1.5
 
 ### Breaking changes
 
+- **`busbar --validate` now resolves `env:` and `file:` secret references, and exits 1 when one of
+  them cannot be resolved.** It previously checked only that the reference was well formed and exited
+  0, so a config naming an unset variable reported "ok: config valid". A CI job that runs `--validate`
+  without production secrets in its environment will now go red: give that job the environment
+  variables and files your config names, or point it at a config whose references resolve there. Boot
+  is unchanged, an unresolvable reference still logs a warning and Busbar still serves. See
+  [the operations guide](docs/operations.md#validating-configuration-busbar---validate).
 - **The Redis-protocol store plugin is now Valkey.** Change `store.module: redis` to `valkey` and
   install the `busbar-store-valkey` artifact. Your connection URL does not change. Re-pin any plugin
   version pin under the new name, and delete the old plugin file from your plugin directory.
@@ -55,6 +62,14 @@ every section on a single page, and [the 1.5 migration guide](docs/migration-1.5
 - Config changes made through the admin API now survive a restart out of the box. Set `config.locked: true`
   to make the file the only way to change configuration.
 - Plugins can serve their own HTTP endpoints.
+- A plugin's own log lines now reach your log sink. Store, auth, hook and secret plugins previously had
+  their logging discarded or written straight to stderr, so lines like a failed token-signature check or
+  an ambiguous directory match never appeared. They now arrive through Busbar's logging with their level
+  and structured fields intact, named by plugin, and are filtered by `RUST_LOG` like everything else.
+  Existing signed plugin artifacts keep loading unchanged.
+- A guide to pointing Busbar at a local inference server (Ollama, LM Studio, llama.cpp, vLLM): what to
+  put in your own `providers.yaml`, how local members mix with hosted ones in a pool, and what changes
+  when Busbar runs in Docker. See [the providers guide](docs/providers.md).
 
 ### Changed
 
@@ -65,6 +80,12 @@ every section on a single page, and [the 1.5 migration guide](docs/migration-1.5
 - The `persist` field on admin config calls is ignored: durability is now a property of the deployment.
 - The admin hooks API calls the field `module` rather than `plugin`, matching the config file. `plugin` is
   still accepted.
+- Every durable store now answers the same way for the same request, where the answer used to depend on
+  which store you had deployed. Deleting a key that never existed is an error rather than a silent
+  success, deleting one already deleted stays a success, revoking an already-revoked credential is a
+  success while revoking an unknown one is an error, and an audit write that lands on an occupied
+  position is a success only if the record is identical and an error if it differs. Tooling that read a
+  lenient backend's silent success as confirmation should be checked.
 
 ### Fixed
 
@@ -72,6 +93,25 @@ every section on a single page, and [the 1.5 migration guide](docs/migration-1.5
   or a store password. They now return only the setting names.
 - Deleting or rotating a key could return an error while the key went on working, and flushing the
   authentication cache could return success without revoking anything.
+- An admin deletion of a user's self-serve key survived only until that user's next login, which
+  silently recreated the deleted credential and put every token minted before the deletion back into
+  service. The deletion now stands.
+- Rotating a user's self-serve key and then changing their group's pools left the user holding two
+  valid keys at once, each metering and enforcing budget separately, so spend was counted against two
+  buckets and neither reflected the real total.
+- A hook that could not reach its own dependency had no way to say so, so it read as "no opinion" and
+  a gate configured with `on_error: reject` admitted the request instead of refusing it. A hook can now
+  report the failure and `on_error` applies. See [the hooks guide](docs/hooks.md).
+- Busbar sent an empty `client_secret` when exchanging a code for a public identity-provider client.
+  An identity provider is entitled to read an empty secret as a wrong one and answer `invalid_client`,
+  so browser login against a public client could fail outright. The parameter is now omitted when
+  there is no secret; a confidential client is unaffected.
+- The SSRF guard on an OTLP export sink checked only the literal text of the collector endpoint, so
+  `https://169.254.169.254/v1/traces` was blocked while a hostname resolving to that same cloud
+  metadata address was allowed through. Span data carries key ids, pool names and governance
+  decisions, so the endpoint is now resolved and every resulting address is checked. A collector whose
+  DNS is briefly unavailable is not treated as a rejection. See
+  [the observability guide](docs/observability.md).
 - Budget accounting could allow spend it should have blocked: an exhausted lifetime budget on a group with
   an email-shaped name reset to zero on restart, deleting one principal could reclaim another's budget, and
   deleted groups left budget entries behind that no admin call could see.

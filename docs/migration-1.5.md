@@ -550,3 +550,49 @@ container layer), the default overlay path is not writable, so an unconfigured m
    ```
 
 Either resolves the boot refusal. Busbar never silently falls back to the old lose-on-restart behavior.
+
+## 1.5.3 behavior change: `busbar --validate` resolves secret references
+
+**What changed.** Through 1.5.2, `--validate` checked that a secret reference was well FORMED and
+stopped there: a config saying `api_key: { env: ANTHROPIC_KEY }` with `ANTHROPIC_KEY` unset printed
+`ok: config valid` and exited `0`. From 1.5.3 it RESOLVES every built-in `env:` and `file:`
+reference and exits `1` naming the first one that fails.
+
+**Why.** Exit `0` meant "this config is good", and it was being returned for a config that cannot
+serve a single request. Every provider lane in it fails upstream on a missing credential. A gate
+whose green result does not distinguish a working deployment from a broken one is not a gate.
+
+**Scope.** Only `--validate` changed.
+
+- BOOT is unchanged. An unresolvable reference still logs a warning and Busbar still serves, so no
+  running deployment starts failing on upgrade and no restart turns into an outage.
+- The admin apply/reload path is unchanged, and still WARNS rather than rejecting. A live config
+  change must not be refused for a secret that will resolve on the next deploy.
+- References served by a secret PLUGIN are not resolved by `--validate`. Only the built-in `env:`
+  and `file:` modules are.
+
+**Upgrade action.** If a CI pipeline runs `busbar --validate` without production secrets present, it
+will go red on the first upgraded run. Pick one:
+
+1. **Give the job the references it needs.** This is the honest fix and it is usually cheap, because
+   `--validate` only needs the values to EXIST, never for them to be correct. Dummy values are fine:
+
+   ```sh
+   # CI: satisfy the references the config names, without shipping real secrets to CI
+   export ANTHROPIC_KEY=ci-placeholder
+   export OPENAI_KEY=ci-placeholder
+   busbar --validate
+   ```
+
+   For a `{ file: /path }` reference, write a stand-in at that path, or point the config at one.
+
+2. **Validate a config whose references resolve in CI.** Keep the production config for the deploy
+   step and validate a CI variant whose `env:` names are ones your runner sets. This is the right
+   shape when the pipeline validates on a runner that legitimately has no access to production
+   secret material.
+
+3. **Real secrets in the job** if your CI already has them (an OIDC-federated secrets manager, for
+   example). Nothing about `--validate` requires this, but it makes the gate cover the most.
+
+Do NOT work around it by dropping `--validate` from the pipeline. The exit code is now telling you
+something true that it used to hide.

@@ -96,7 +96,7 @@ Busbar reads two YAML files:
 
 **Important: keys are never written into config.** `api_key: { env: VAR }` is a secret REFERENCE naming the *environment variable* that holds a provider's key; Busbar resolves it at startup (a `{ file: /path }` reference or a secret plugin work the same way). (Separately, `${VAR}` tokens elsewhere in `config.yaml` are expanded from the environment at load time.)
 
-**An unset referenced variable does NOT stop Busbar.** It logs a warning at boot and starts anyway, so the gateway serves and every request to that provider fails upstream on a missing credential. `--validate` does not catch it either: it checks the shape of the reference, not whether the variable resolves, and exits 0. Check your environment before you conclude a config is good, and read the boot log for `api_key did not resolve`.
+**An unset referenced variable does NOT stop Busbar.** It logs a warning at boot and starts anyway, so the gateway serves and every request to that provider fails upstream on a missing credential. `--validate` does catch it: it resolves every `env:` and `file:` reference and exits `1` naming the first one that fails, so run it with the same environment the deployment will have. Read the boot log for `api_key did not resolve`.
 
 ### Minimal `config.yaml` (one provider, one model, no auth)
 
@@ -410,7 +410,7 @@ Before taking Busbar out of dev mode:
 - [ ] Enable inbound TLS: add a `tls` block (`cert` + `key` secret references) so the client-to-Busbar hop is encrypted, and, for zero-trust deployments, set `client_ca` to require client certs (mTLS). See [`docs/operations.md#inbound-tls--mutual-tls-mtls`](operations.md#inbound-tls--mutual-tls-mtls)
 - [ ] Consider setting `max_concurrent` on models where you want to cap in-flight load to your provider tier (optional; omitted = unbounded)
 - [ ] Set `max_requests` to `-1` (unlimited lifetime budget) or a finite positive budget per model
-- [ ] Run `busbar --validate` (in CI and before every deploy/reload): parses and validates both YAML files with no server, no network, and no secrets required. Exit `0` = valid, `1` = errors. See [`operations.md#validating-configuration-busbar---validate`](operations.md#validating-configuration-busbar---validate)
+- [ ] Run `busbar --validate` (in CI and before every deploy/reload): parses and validates both YAML files with no server and no network. It resolves every `env:`/`file:` secret reference, so give the job the same secrets the deployment has. Exit `0` = valid, `1` = errors. See [`operations.md#validating-configuration-busbar---validate`](operations.md#validating-configuration-busbar---validate)
 - [ ] Verify `/healthz` returns `200` and `/stats` shows all lanes `usable: true` before routing production traffic
 - [ ] Consider `health.mode: dead` on providers you care about (re-probes tripped lanes so they recover faster after an outage clears)
 - [ ] Set `RUST_LOG=info` (the default); increase to `debug` only temporarily for diagnostics

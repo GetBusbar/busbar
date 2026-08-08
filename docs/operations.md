@@ -79,8 +79,9 @@ The HTTP client uses a 300s request timeout and pools up to 1024 idle keep-alive
 
 `busbar --validate` runs the exact load → resolve → validate pipeline the gateway runs at boot,
 then exits, **without** starting the server. It binds no port, writes nothing to disk, spawns no
-tasks, opens no TLS material, and makes no network call, so it is safe to run anywhere, including
-in CI and against a config edited on a live host before you reload it.
+tasks, and makes no network call, so it is safe to run anywhere, including in CI and against a config
+edited on a live host before you reload it. It does read the files your `file:` secret references
+name, because since 1.5.3 it resolves those references rather than only checking their shape.
 
 ```sh
 BUSBAR_CONFIG=./config.yaml BUSBAR_PROVIDERS=./providers.yaml busbar --validate
@@ -88,14 +89,48 @@ BUSBAR_CONFIG=./config.yaml BUSBAR_PROVIDERS=./providers.yaml busbar --validate
 #   note: 1 env var(s) referenced but unset here — required at runtime: BUSBAR_CLIENT_TOKEN
 ```
 
+Two different mechanisms read the environment, and `--validate` treats them differently. Read both of
+the middle bullets before you wire this into CI.
+
 - **Exit `0`** = valid; **`1`** = errors (same diagnostics boot prints: invalid YAML, removed keys,
   dangling pool/lane references, malformed auth chains, cert-file and `base_url`/`path` SSRF violations).
   Use it as a CI gate: `busbar --validate && deploy`.
-- **Secrets are not required.** It checks *structure*, not upstream reachability, so a `${VAR}` unset
-  in your shell is reported in a `note:` ("required at runtime") rather than failing, you can validate
-  in CI without production secrets. (At real boot an unset `${VAR}` is still a hard error.)
+- **`${VAR}` interpolation is lenient, and needs no value.** A `${VAR}` token anywhere in
+  `config.yaml` that is unset in your shell is reported in a `note:` ("required at runtime") rather
+  than failing. (At real boot an unset `${VAR}` is still a hard error.)
+- **`env:` and `file:` secret REFERENCES are resolved, and one that cannot resolve fails the run.**
+  A secret reference is the `{ env: VAR }` / `{ file: /path }` form on `providers.*.api_key`,
+  `tls.cert` / `tls.key` / `tls.client_ca` (and the `admin_tls` equivalents), `auth.signing_key`, and
+  the `admin-tokens` token. Since 1.5.3 `--validate` reads each one and exits `1` naming the first
+  that fails, where it previously checked only the shape and exited `0`. So a CI job needs the same
+  variables and files the deployment has, or a config whose references resolve in that environment.
+  A reference served by a secret PLUGIN is not resolved here, since the plugin may not be loadable.
+  Boot is unchanged: an unresolvable reference logs a warning and Busbar serves, with every request
+  to that provider failing upstream. It checks *structure* and secret resolution, never upstream
+  reachability.
 - Honors `BUSBAR_CONFIG`, `BUSBAR_PROVIDERS`, and `--safe-mode` exactly as boot does. Because it reuses
   the boot path, a clean `--validate` means a clean boot.
+
+### Inspecting the SSRF denylist (`busbar --print-metadata-blocklist`)
+
+Provider `base_url` values are checked against a cloud-metadata denylist, so a compromised or
+mistyped config cannot turn Busbar into a reader of your instance credentials. The list the running
+binary actually enforces is the built-in set plus whatever you added under
+`security.blocked_metadata_hosts`, which means it is not something you can read off the config file
+alone. This flag prints it, one entry per line, and exits `0`:
+
+```sh
+BUSBAR_CONFIG=./config.yaml busbar --print-metadata-blocklist
+```
+
+- The built-in set always prints, so the flag works before a deployment is wired up.
+- Your `security.blocked_metadata_hosts` entries are appended when `BUSBAR_CONFIG` points at a config
+  that reads and parses. If it does not, the flag prints the built-in set alone and says so on stderr
+  rather than handing you a silently incomplete list. Run Busbar normally to see the parse error.
+- It does NOT subtract the allow-overrides. `security.allow_metadata_hosts`, a provider's own
+  `allow_metadata_hosts`, and `allow_all_metadata` still win at request time, so a host printed here
+  can still be reachable if you unblocked it. See
+  [the configuration reference](configuration.md#security) for how the two sides combine.
 
 ## Inbound TLS & mutual-TLS (mTLS)
 
