@@ -409,6 +409,13 @@ CHOKE_POINTS=(
   #         declaration omits. The v1 router's recording layer PANICS on that under-claim at the
   #         moment of emission, and the class test fails on the mirror-image over-claim.
   'D-openapi-taxonomy|TAXONOMY-BYPASS|crates/busbar/src/admin/v1/contract/taxonomy.rs (declared_errors)|crates/busbar/src/admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit|declare the ErrKind in contract::taxonomy::declared_errors|-|openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list'
+
+  # ── E ── core route admission: one table, declared AT the mount. Enforced differently — there is
+  #         no pattern to ban, because the hazard is a route mounted with no declared bar, and
+  #         `CoreRouter::route` is the only way core routes reach a router and it cannot be called
+  #         without one. The class test walks the resulting table and asserts the property over
+  #         EVERY route, so a new route joins the assertion instead of escaping it.
+  'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 
 # Candidate set, computed once: every crate .rs outside a tests/ dir. (Built with a read loop rather
