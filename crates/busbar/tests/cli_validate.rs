@@ -766,3 +766,45 @@ fn validate_ok_on_valid_root_overlay() {
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// B1 END-TO-END: a secret reference that CANNOT resolve must fail `--validate` (exit 1), for
+/// EVERY secret-bearing field in the config - not just the ones someone remembered to list.
+///
+/// `identity-providers.<name>.browser_login.client_secret:` is a real `SecretRef`: the core resolves
+/// it at hosted-login build time (`auth::token`) and injects the plaintext into the OAuth
+/// token-exchange hop. Before the `secret_refs` walk became a compiler-enforced exhaustive
+/// destructure of `RootCfg`, that field was absent from the hand-written list, so this exact config
+/// (with `BUSBAR_TEST_UNSET_CLIENT_SECRET` unset) printed `ok: config valid` and exited 0. The
+/// operator was told a config was good whose IdP login is guaranteed to fail at first use.
+///
+/// WHAT WOULD MAKE THIS FAIL: dropping a field out of the `secret_refs` destructure, or reverting it
+/// to a hand-maintained list that omits `browser_login.client_secret`.
+#[test]
+fn validate_fails_when_browser_login_client_secret_is_unresolvable() {
+    let dir = fixture_dir("bl-secret-unset");
+    write_configs(
+        &dir,
+        "public_url: \"https://busbar.example\"\n\
+         identity-providers:\n  \
+           corp:\n    \
+             module: admin-tokens\n    \
+             token: { env: BUSBAR_SIGNING_KEY }\n    \
+             browser_login:\n      \
+               client_id: busbar\n      \
+               client_secret: { env: BUSBAR_TEST_UNSET_CLIENT_SECRET }\n\
+         auth:\n  admin_auth:\n    - corp\n",
+    );
+    // Belt and braces: the fixture var must genuinely be unset in this process' child env.
+    assert!(std::env::var_os("BUSBAR_TEST_UNSET_CLIENT_SECRET").is_none());
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "an unresolvable browser_login.client_secret must fail --validate: stdout={stdout} \
+         stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("browser_login.client_secret"),
+        "the error must NAME the field so it is actionable: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
