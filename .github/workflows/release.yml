@@ -81,15 +81,60 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # THE BODY NAMES WHAT CHANGED. `--generate-notes` alone produced a one-line compare link, so
+      # v1.5.3's published body did not mention that `--validate` now RESOLVES `env:`/`file:` secret
+      # references and exits 1 when one cannot resolve (boot behaviour unchanged). An operator
+      # deciding whether to take a config-affecting release could not learn that from the release.
+      # The CHANGELOG section for the version being cut is already written, already reviewed, and
+      # already the canonical answer, so the release body is now that section followed by the
+      # auto-generated commit/contributor notes rather than the notes alone.
+      #
+      # FAIL-SOFT, DELIBERATELY: a missing or unparseable CHANGELOG section must never block a
+      # release that is otherwise good. It degrades to the previous behaviour and says so in the log.
+      - name: Extract this version's CHANGELOG section for the release body
+        id: notes
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          python3 - "$V" > /tmp/relnotes.md <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          try:
+              text = open("CHANGELOG.md", encoding="utf-8").read()
+          except OSError:
+              sys.exit(0)
+          # Headings look like `## [1.5.3], 2026-08-08`. Capture through to the next `## `.
+          m = re.search(
+              r"^##\s*\[%s\][^\n]*\n(.*?)(?=^##\s|\Z)" % re.escape(version),
+              text, re.M | re.S)
+          if m:
+              sys.stdout.write(m.group(1).strip() + "\n")
+          PY
+          if [ -s /tmp/relnotes.md ]; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            echo "CHANGELOG section for ${V} ($(wc -l < /tmp/relnotes.md) lines) will lead the release body."
+          else
+            echo "found=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::No CHANGELOG section found for ${V}; falling back to generated notes only." \
+                 "The release will still publish, but its body will not say what changed."
+          fi
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "busbar ${GITHUB_REF_NAME}" \
-            --verify-tag --generate-notes \
-          || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
+          if [ "${{ steps.notes.outputs.found }}" = "1" ]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "busbar ${GITHUB_REF_NAME}" \
+              --verify-tag --generate-notes --notes-file /tmp/relnotes.md \
+            || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "busbar ${GITHUB_REF_NAME}" \
+              --verify-tag --generate-notes \
+            || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
+          fi
 
   # Generate a CycloneDX Software Bill of Materials (every dependency + version +
   # license) and attach it to the Release. Lets downstream users answer "is the
@@ -152,32 +197,54 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" "${GITHUB_WORKSPACE}/busbar-openapi-${GITHUB_REF_NAME}.json" \
             --repo "${GITHUB_REPOSITORY}" --clobber
 
+  # THE PLATFORM LIST, IN EXACTLY ONE PLACE. This job emits the build matrix AND the exact set of
+  # asset filenames that matrix is contractually obliged to produce, from one literal. `upload-assets`
+  # consumes the first; `verify-assets` consumes the second.
+  #
+  # WHY IT IS A JOB AND NOT A LITERAL MATRIX. v1.5.3 published with FIVE assets where seven were
+  # expected: `busbar-aarch64-apple-darwin.tar.gz` and `busbar-x86_64-unknown-linux-gnu.tar.gz` were
+  # both missing, which is Apple Silicon Mac and x86_64 Linux, the two most common platforms there
+  # are. `curl -fsSL https://getbusbar.com/install.sh | sh` returned a 404 on Apple Silicon (the
+  # documented one-line install, dead on the most common developer machine) and two of five download
+  # links on the live /download/ page 404'd. The guard below asserted `assets != 0`, which a
+  # five-asset release passes comfortably. A count can never see a MISSING platform; only a name can.
+  #
+  # Deriving both lists here means adding a platform is one edit and its verification comes along
+  # automatically. A hardcoded expected-names list in the verifier would be a second place to forget,
+  # which is the same defect one level up.
+  targets:
+    name: release target matrix (single source of truth)
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+      assets: ${{ steps.emit.outputs.assets }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Emit the target matrix and the asset names it must produce
+        id: emit
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          spec = json.load(open(".github/release-targets.json"))
+          tag = os.environ["TAG"]
+          inc = [{k: t[k] for k in ("target", "os", "pgo")} for t in spec["targets"]]
+          assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in spec["targets"]]
+          assets += [a.replace("{tag}", tag) for a in spec["metadata_assets"]]
+          print("matrix=" + json.dumps({"include": inc}))
+          print("assets=" + json.dumps(assets))
+          PY
+          cat "$GITHUB_OUTPUT"
+
   upload-assets:
-    needs: create-release
+    needs: [create-release, targets]
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        # `pgo: true` routes a HOST-NATIVE target through scripts/pgo-build.sh (PGO is MANDATORY for
-        # release: the same fail-closed build docker.yml ships). PGO needs the instrumented binary
-        # to run ON THE RUNNER to train, so only the targets whose arch matches the runner's are
-        # PGO'd: x86_64-linux on the x86_64 ubuntu runner, and aarch64-darwin on the arm64 macos
-        # runner. The cross targets (aarch64-linux built on an x86_64 host, x86_64-darwin on an arm64
-        # host) and windows cannot self-train, so they keep the plain --release build.
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            pgo: true
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            pgo: true
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -320,26 +387,83 @@ jobs:
   # matrix but does NOT inherit its fail-fast:false — one green target is enough to have assets, but
   # zero across the board must hard-fail here.
   verify-assets:
-    needs: [upload-assets]
+    needs: [targets, upload-assets, sbom, openapi]
     runs-on: ubuntu-latest
+    # `!cancelled()` IS THE POINT OF THIS LINE, and it is the second half of the 1.5.3 defect.
+    # `upload-assets` runs `fail-fast: false`, so when two of its five legs failed the JOB failed --
+    # and a `needs:` on a failed job SKIPS the dependent by default. So the one guard that existed to
+    # notice a broken release was skipped precisely because the release was broken, and
+    # `notify-downstream` was skipped with it. A verifier that only runs when everything already
+    # worked is not a verifier. This one runs whenever the run was not cancelled, so a partial matrix
+    # produces a RED verify-assets naming the platforms that are missing, instead of a grey one
+    # naming nothing.
+    if: ${{ !cancelled() }}
     steps:
-      - name: Assert the Release has at least one asset
+      - name: Assert the Release carries every asset the matrix owes it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED: ${{ needs.targets.outputs.assets }}
         run: |
           set -euo pipefail
-          count="$(gh release view "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json assets --jq '.assets | length')"
-          echo "Release ${GITHUB_REF_NAME} has ${count} asset(s)."
-          if [ "${count}" -eq 0 ]; then
-            echo "::error::PHANTOM RELEASE: ${GITHUB_REF_NAME} was published with 0 assets." \
-                 "Every build/pack target failed to upload a tarball. Failing the release run so this" \
-                 "tag is not mistaken for a real release by busbar's plugin-registry-gate. Fix the" \
-                 "build (check Cargo.lock freshness vs --locked and the plugin cdylib build step)," \
-                 "delete this tag+release, and re-cut." >&2
-            exit 1
-          fi
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets[] | "\(.name)\t\(.size)"' > /tmp/got.tsv || : > /tmp/got.tsv
+          echo "Release ${GITHUB_REF_NAME} published these assets:"
+          cat /tmp/got.tsv
+          python3 - <<'PY'
+          import json, os, sys
+          expected = json.loads(os.environ["EXPECTED"])
+          got = {}
+          for line in open("/tmp/got.tsv"):
+              line = line.rstrip("\n")
+              if not line:
+                  continue
+              name, _, size = line.partition("\t")
+              got[name] = int(size or 0)
+
+          missing = [a for a in expected if a not in got]
+          # A NAME IN THE ASSET LIST IS NOT A USABLE ARTIFACT: GitHub creates the row as soon as the
+          # upload starts, so a 0-byte or truncated upload lists identically to a good one. 1 KiB is
+          # far below any real busbar tarball and far above an empty or header-only file.
+          empty = [a for a in expected if a in got and got[a] < 1024]
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = ["### Release asset verification", "", "| asset | bytes | verdict |", "| --- | --- | --- |"]
+          for a in expected:
+              if a not in got:
+                  lines.append("| `%s` | - | MISSING |" % a)
+              elif got[a] < 1024:
+                  lines.append("| `%s` | %d | TOO SMALL |" % (a, got[a]))
+              else:
+                  lines.append("| `%s` | %d | ok |" % (a, got[a]))
+          extra = sorted(set(got) - set(expected))
+          if extra:
+              lines += ["", "Also present (not required): " + ", ".join("`%s`" % e for e in extra)]
+          if summary:
+              open(summary, "a").write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+
+          if not got:
+              print("::error::PHANTOM RELEASE: %s was published with 0 assets. Every build/pack "
+                    "target failed to upload. Failing the release run so this tag is not mistaken "
+                    "for a real release by busbar's plugin-registry-gate. Fix the build (check "
+                    "Cargo.lock freshness vs --locked and the plugin cdylib build step), delete "
+                    "this tag+release, and re-cut." % os.environ["GITHUB_REF_NAME"], file=sys.stderr)
+              sys.exit(1)
+          if missing or empty:
+              if missing:
+                  print("::error::INCOMPLETE RELEASE: %s is missing %d of %d required asset(s): %s. "
+                        "Each missing name is a platform whose users get a 404 from install.sh and "
+                        "from the /download/ page. Find that target's leg in `upload-assets`, fix "
+                        "it, then delete this tag+release and re-cut." %
+                        (os.environ["GITHUB_REF_NAME"], len(missing), len(expected),
+                         ", ".join(missing)), file=sys.stderr)
+              if empty:
+                  print("::error::TRUNCATED RELEASE: %s uploaded these assets at under 1 KiB, which "
+                        "means the upload was cut short: %s" %
+                        (os.environ["GITHUB_REF_NAME"], ", ".join(empty)), file=sys.stderr)
+              sys.exit(1)
+          print("All %d required assets present and plausibly sized." % len(expected))
+          PY
 
   # ── Fan out an instant "a real release just happened" signal to every downstream repo that
   #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
