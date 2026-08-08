@@ -67,10 +67,26 @@ selftest() {
 {
   "_meta": {"frozen_at": "1.5.3"},
   "types": {
-    "Root": {"kind": "struct", "fields": {
+    "Root": {"kind": "struct", "deny_unknown_fields": false, "fields": {
       "keep":     {"type": "String", "optional": false},
       "opt":      {"type": "String", "optional": true}
     }},
+    "Strict": {"kind": "struct", "deny_unknown_fields": true, "fields": {
+      "s":        {"type": "String", "optional": true}
+    }},
+    "Legacy": {"kind": "struct", "fields": {
+      "l":        {"type": "String", "optional": true}
+    }},
+    "SecretRef": {"kind": "struct", "deserialize": "manual", "deny_unknown_fields": false,
+      "fields": {
+        "module":               {"type": "<manual>",  "optional": true},
+        "settings":             {"type": "<manual>",  "optional": true},
+        "env":                  {"type": "<manual>",  "optional": true},
+        "file":                 {"type": "<manual>",  "optional": true},
+        "<<visit:visit_str>>":  {"type": "<visitor>", "optional": true},
+        "<<visit:visit_map>>":  {"type": "<visitor>", "optional": true}
+    }},
+    "UpstreamCreds": {"kind": "enum", "variants": ["own", "passthrough"]},
     "HookStage": {"kind": "enum", "variants": ["request", "response"]},
     "type HookDefs": {"kind": "alias", "target": "indexmap::IndexMap<String, HookDefCfg>"}
   }
@@ -123,6 +139,32 @@ PY
   # Retargeting a map alias to a list breaks every config using the map form.
   run_case "breaking: def-map alias RETARGET is RED"      3 'd["types"]["type HookDefs"]["target"]="Vec<HookDefCfg>"'
   run_case "additive: NEW def-map alias is GREEN"         0 'd["types"]["type ExportDefs"]={"kind":"alias","target":"indexmap::IndexMap<String, ExportDefCfg>"}'
+
+  # ── 1.5.4 COVERAGE EXTENSION: the four holes closed this release. Each case names the real
+  # breaking change it catches; each was PROVEN to pass GREEN before the fix and RED after.
+  #
+  # (a) SecretRef -- the grammar of every secret reference in the config -- lived outside the
+  #     generator's glob, so its shape was never fingerprinted. Retiring a sugar form is a hard
+  #     break (`api_key: { file: /run/secrets/key }` stops parsing) that passed green.
+  run_case "1.5.4: SecretRef sugar-form DROP is RED"      3 'del d["types"]["SecretRef"]["fields"]["file"]'
+  run_case "1.5.4: SecretRef new sugar form is GREEN"     0 'd["types"]["SecretRef"]["fields"]["vault"]={"type":"<manual>","optional":True}'
+  # (b) Losing `visit_str` means a BARE STRING becomes acceptable where a reference is required --
+  #     i.e. an inline literal secret parses. The node-kind markers make that a field removal.
+  run_case "1.5.4: SecretRef visitor DROP is RED"         3 'del d["types"]["SecretRef"]["fields"]["<<visit:visit_str>>"]'
+  # (c) UpstreamCreds is the grammar of `pools.upstream_credentials:`; it lived in auth/mod.rs.
+  run_case "1.5.4: UpstreamCreds variant DROP is RED"     3 'd["types"]["UpstreamCreds"]["variants"]=["own"]'
+  # (d) deny_unknown_fields was parsed and DISCARDED. Adding it to an existing section turns every
+  #     config carrying an extra key there into a hard parse failure.
+  run_case "1.5.4: deny_unknown_fields ADDED is RED"      3 'd["types"]["Root"]["deny_unknown_fields"]=True'
+  run_case "1.5.4: deny_unknown_fields REMOVED is GREEN"  0 'd["types"]["Strict"]["deny_unknown_fields"]=False'
+  # The RATCHET: a PRE-1.5.4 baseline node has no `deny_unknown_fields` key at all. Comparing that
+  # absence against a freshly-emitted `true` must stay silent, or the commit that introduces the
+  # dimension turns every already-strict section red at once. `Legacy` has no key in base.json.
+  run_case "1.5.4: deny ratchet (absent baseline) GREEN"  0 'd["types"]["Legacy"]["deny_unknown_fields"]=True'
+  # (e) container rename_all was applied to enum variants but NEVER to struct fields, so
+  #     `rename_all = "kebab-case"` on a config struct renamed every wire key with ZERO delta.
+  #     Applied at the generator; the classifier sees it as what it is -- a rename.
+  run_case "1.5.4: struct field RENAME is RED"            3 'd["types"]["Root"]["fields"]["max-admin-scope"]=d["types"]["Root"]["fields"].pop("keep")'
 
   # ── anti-launder: a snapshot "refresh" must NOT launder a break. The classifier's baseline
   # is the git-ref fingerprint (here base.json), independent of any working-tree snapshot rewrite:

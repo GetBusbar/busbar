@@ -147,6 +147,85 @@ _RENAME_ALL = {
 }
 
 
+# ── COVERAGE HOLE (1.5.4): config-grammar types that live OUTSIDE crates/busbar/src/config ────────
+#
+# `gen` globs `crates/busbar/src/config/*.rs`. Anything defined elsewhere was INVISIBLE: it appeared
+# in the snapshot only as the STRING in a field slot (`"type": "SecretRef"`), so its own shape was
+# never fingerprinted, and a BREAKING change to it passed the additive-only gate GREEN. Proven, not
+# assumed: deleting the whole `{ file: <path> }` sugar form from `SecretRef` -- which makes every
+# `api_key: { file: /run/secrets/key }` config fail to parse -- produced "no schema delta".
+#
+# This is an EXPLICIT ALLOWLIST, not a wider glob, and deliberately so: `auth/mod.rs` is a large
+# engine module whose other types are NOT config grammar, and dragging them in would fill the
+# snapshot with internal churn that trains reviewers to ignore it. Each entry names the file and the
+# exact type names in it that ARE config grammar.
+#
+# Adding a row here is how a future out-of-config config type gets covered.
+EXTERNAL_SOURCES = (
+    # The grammar of EVERY secret reference in the config (`api_key:`, `tls.cert:`,
+    # `auth.signing_key:`, `identity-providers.<n>.token:`, `browser_login.client_secret:`).
+    ("crates/secret-ref/src/lib.rs", ("SecretRef",)),
+    # The grammar of `pools.upstream_credentials:` and each pool's own `upstream_credentials:`.
+    ("crates/busbar/src/auth/mod.rs", ("UpstreamCreds",)),
+)
+
+
+def repo_root_from(src_dir: str) -> Path:
+    """Locate the repository root by walking UP from the config source dir.
+
+    HARD ERROR if not found, never a silent skip. The external-source rows above are real gate
+    coverage; quietly dropping them because a path lookup failed would hand anyone the exact bypass
+    this function exists to close (the same posture as the gate's unresolvable-baseline-ref rule).
+    """
+    p = Path(src_dir).resolve()
+    for cand in (p, *p.parents):
+        if (cand / "crates").is_dir() and (cand / "scripts").is_dir():
+            return cand
+    raise SystemExit(
+        f"config-schema: cannot locate the repo root above {src_dir!r} (looked for a directory "
+        "containing both `crates/` and `scripts/`). The EXTERNAL_SOURCES coverage cannot be "
+        "resolved, and skipping it silently would be a free gate bypass."
+    )
+
+
+# The `match key.as_str() { "module" => ..., ... }` arms inside a hand-written `visit_map`: the
+# AUTHORITATIVE list of wire keys such a type accepts.
+MANUAL_KEY_RE = re.compile(r'^\s*"(?P<key>[A-Za-z0-9_.-]+)"\s*=>', re.MULTILINE)
+# `fn visit_str` / `fn visit_map` / ... on the visitor: WHICH YAML node kinds the type accepts at
+# all. `SecretRef` deliberately implements `visit_str` only to REJECT a bare string (an inline
+# literal secret); losing that rejection is a security regression, and losing `visit_map` would
+# retire the map form outright. Both are grammar, so both are fingerprinted.
+MANUAL_VISIT_RE = re.compile(r"^\s*fn\s+(?P<v>visit_[a-z0-9_]+)\s*<", re.MULTILINE)
+
+
+def parse_manual_de(src: str, name: str, impl_start: int) -> dict:
+    """Fingerprint a HAND-WRITTEN `impl<'de> Deserialize<'de> for X` by its ACCEPTED WIRE KEYS.
+
+    Before 1.5.4 these were recorded as an opaque sentinel (`{"fields": {}}`), which caught the type
+    DISAPPEARING and nothing else. That is not enough for `SecretRef`: its accepted keys ARE the
+    grammar of every secret reference in the config, and dropping one (retiring the `{ file: ... }`
+    sugar) is a breaking change that the sentinel passed green.
+
+    Every key is recorded OPTIONAL, because in a hand-written visitor the required/optional decision
+    lives in imperative code that no regex can read. That is the right bias: a DROPPED key is still a
+    field-removal (BREAKING, which is the case that matters), while a NEW accepted key is an additive
+    widening -- exactly the classification each deserves.
+
+    WHAT THIS STILL CANNOT SEE (stated, not papered over): the VALUE type behind a key. `{ env: VAR }`
+    taking a String vs a map is invisible here, because the value type is only implied by a
+    `next_value()?` inference site. Key-set changes and node-kind changes are covered; value-type
+    changes on a hand-written impl are not.
+    """
+    end = match_block(src, src.index("{", impl_start))
+    body = src[impl_start:end]
+    fields = {}
+    for m in MANUAL_KEY_RE.finditer(body):
+        fields[m.group("key")] = {"type": "<manual>", "optional": True}
+    for m in MANUAL_VISIT_RE.finditer(body):
+        fields[f"<<visit:{m.group('v')}>>"] = {"type": "<visitor>", "optional": True}
+    return {"kind": "struct", "fields": fields, "deserialize": "manual"}
+
+
 def container_serde(attrs: str) -> dict:
     """Extract container-level serde knobs we care about: rename_all, deny_unknown_fields, plus
     whether the type derives Deserialize at all (gate for inclusion)."""
@@ -214,6 +293,18 @@ def split_top(body: str):
 
 def parse_struct(body: str, csd: dict) -> dict:
     fields = {}
+    # ── HOLE (1.5.4): container `rename_all` was applied to enum VARIANTS but never to struct
+    # FIELDS. `#[serde(rename_all = "kebab-case")]` on a config struct renames EVERY wire key it
+    # carries -- `max_admin_scope:` becomes `max-admin-scope:`, breaking every config that sets the
+    # old spelling -- and the snapshot showed ZERO delta, because field names were emitted as the
+    # Rust identifiers. The wire key is what the gate must freeze, so the rename is applied here,
+    # exactly as `parse_enum` already does for variants.
+    rename_fn = _RENAME_ALL.get(csd.get("rename_all") or "PascalCase", lambda s: s)
+    if (csd.get("rename_all") or "PascalCase") == "PascalCase":
+        # PascalCase on a struct field is serde's identity-ish case for our purposes: Rust fields are
+        # already snake_case and serde does not touch them without an explicit rename_all. Keep the
+        # identity so adding this dimension does not rewrite every existing field name.
+        rename_fn = lambda s: s  # noqa: E731
     # Pull leading attribute clusters attached to each field. We walk the body linearly, buffering
     # `#[...]` attrs until a field decl consumes them.
     # First, split off attribute lines vs field decls by scanning tokens.
@@ -254,9 +345,19 @@ def parse_struct(body: str, csd: dict) -> dict:
             # change to WHICH type is flattened is caught, without needing cross-type resolution.
             fields[f"<<flatten:{inner}>>"] = {"type": inner, "optional": True}
             continue
-        serde_name = rename or name
+        # An explicit per-field `#[serde(rename = "...")]` WINS over container rename_all (serde's
+        # own precedence); otherwise the container rule renames the Rust identifier.
+        serde_name = rename or rename_fn(name)
         fields[serde_name] = {"type": inner, "optional": bool(opt or has_default)}
-    return {"kind": "struct", "fields": fields}
+    # ── HOLE (1.5.4): `deny_unknown_fields` was PARSED by container_serde and then DISCARDED, so
+    # adding it to an existing section -- which turns every config carrying an extra key from
+    # "accepted, ignored" into a HARD PARSE FAILURE -- was invisible to the gate. It is a property of
+    # the wire grammar, so it belongs in the fingerprint.
+    return {
+        "kind": "struct",
+        "fields": fields,
+        "deny_unknown_fields": bool(csd.get("deny_unknown_fields")),
+    }
 
 
 def parse_enum(body: str, csd: dict) -> dict:
@@ -327,7 +428,9 @@ def extract(src_dir: str) -> dict:
         # caught RED. `custom` is a marker, not a field, so it never produces field-level noise.
         for m in MANUAL_DE_RE.finditer(src):
             name = m.group("name")
-            types.setdefault(name, {"kind": "struct", "fields": {}, "deserialize": "manual"})
+            if name in types:
+                continue
+            types[name] = parse_manual_de(src, name, m.end())
 
         # ── HOLE 2: `pub type HookDefs = IndexMap<String, HookDefCfg>;` — the named-DEFINITION-map
         # aliases are the shape of `hooks:`/`export:`/`identity-providers:` themselves.
@@ -344,6 +447,53 @@ def extract(src_dir: str) -> dict:
                 "kind": "alias",
                 "target": target,
             }
+
+    # ── EXTERNAL SOURCES: config-grammar types defined outside crates/busbar/src/config. See
+    # EXTERNAL_SOURCES for why this is an allowlist rather than a wider glob.
+    root = repo_root_from(src_dir)
+    for rel, wanted in EXTERNAL_SOURCES:
+        path = root / rel
+        if not path.is_file():
+            # HARD ERROR, never a skip: a moved/renamed file must fail loudly, or the coverage this
+            # row buys evaporates silently on the commit that moves it.
+            raise SystemExit(
+                f"config-schema: EXTERNAL_SOURCES names {rel!r}, which does not exist. Update the "
+                "row (or delete it, if the type is genuinely gone) -- skipping it would silently "
+                f"drop {', '.join(wanted)} out of the frozen-grammar gate."
+            )
+        src = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+        found = set()
+        for m in ITEM_RE.finditer(src):
+            name = m.group("name")
+            if name not in wanted:
+                continue
+            csd = container_serde(m.group("attrs") or "")
+            if m.group("open") == ";":
+                types[name] = {"kind": "struct", "fields": {}, "deny_unknown_fields": False}
+                found.add(name)
+                continue
+            open_idx = m.start("open")
+            end = match_block(src, open_idx)
+            body = src[open_idx + 1 : end - 1]
+            if m.group("kw") == "enum":
+                types[name] = parse_enum(body, csd)
+            else:
+                types[name] = parse_struct(body, csd)
+            found.add(name)
+        # A hand-written Deserialize (SecretRef) has no derive, so ITEM_RE's derive gate skips it.
+        for m in MANUAL_DE_RE.finditer(src):
+            name = m.group("name")
+            if name in wanted:
+                types[name] = parse_manual_de(src, name, m.end())
+                found.add(name)
+        missing = sorted(set(wanted) - found)
+        if missing:
+            raise SystemExit(
+                f"config-schema: EXTERNAL_SOURCES row {rel!r} names {missing} but no such "
+                "Deserialize type was found in it. A renamed/removed config-grammar type must fail "
+                "the generator, not silently shrink the gate's coverage."
+            )
+
     return {
         "_meta": {
             "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, "
@@ -413,6 +563,37 @@ def classify(baseline: dict, fresh: dict):
                 )
             continue
         if b["kind"] == "struct":
+            # ── deny_unknown_fields (1.5.4). ADDING it to an existing section turns every config
+            # that carries an extra key under it from "accepted and ignored" into a HARD PARSE
+            # FAILURE, so it is BREAKING. REMOVING it only widens what parses, so it is additive.
+            #
+            # RATCHET, deliberately: the comparison runs only when the BASELINE already carries the
+            # key. Snapshots committed before 1.5.4 have no `deny_unknown_fields` at all, and
+            # comparing `None` against a freshly-emitted `True` would fire a BREAKING finding on
+            # every already-strict section the moment this dimension is introduced -- a wall of
+            # false red on the very commit that adds the coverage. `None` means "this baseline
+            # predates the dimension", not "it was false". From the next commit on, every baseline
+            # carries the key and the rule is fully live. Self-extinguishing, like the gate's
+            # one-time snapshot bootstrap.
+            if "deny_unknown_fields" in b:
+                bd, fd = b.get("deny_unknown_fields"), f.get("deny_unknown_fields")
+                if fd and not bd:
+                    findings.append(
+                        (
+                            "BREAKING",
+                            f"{tname}.<deny_unknown_fields>",
+                            "deny_unknown_fields ADDED (a config carrying any extra key under this "
+                            "section now fails to parse instead of being accepted)",
+                        )
+                    )
+                elif bd and not fd:
+                    findings.append(
+                        (
+                            "ADDITIVE",
+                            f"{tname}.<deny_unknown_fields>",
+                            "deny_unknown_fields removed (widens the accepted set)",
+                        )
+                    )
             bf, ff = b.get("fields", {}), f.get("fields", {})
             for fld in sorted(set(bf) | set(ff)):
                 path = f"{tname}.{fld}"
