@@ -19,14 +19,16 @@
 //! - The RFC 8628 device authorization grant, as a full state machine: `authorization_pending`,
 //!   `slow_down` (with the mandated 5 second interval increase), `expired_token`, `access_denied`,
 //!   single-use redemption, and user-code normalization per RFC 8628 section 6.1.
+//! - The RFC 6749 section 4.1 authorization-code grant with mandatory PKCE (`S256` only), as
+//!   host-driven machinery: [`server::AuthorizationServer::authorize`] validates the request and
+//!   issues the single-use code once the HOST has authenticated the user and gathered consent
+//!   (login pages and redirects stay host-owned), and the token endpoint redeems it with RFC 7636
+//!   section 4.6 verifier checking, single use enforced through the same atomic `take_*` seam as
+//!   the device grant.
 //! - Refresh-token rotation (single use, absolute lifetime), the OAuth 2.1 stance.
 //! - PKCE S256 primitives ([`pkce`]), verified against the RFC 7636 appendix B vector.
 //! - A storage seam ([`store::Storage`]) the HOST implements, plus [`store::MemoryStorage`] for
 //!   tests and single-process embedding. This crate never assumes what the host's store looks like.
-//!
-//! The interactive authorization-code endpoint machine (login page, redirects) is a later pass;
-//! its request/response types are already pinned in [`authorization`] so the wire shape cannot
-//! drift when it lands.
 //!
 //! # Zero cost until enabled
 //!
@@ -56,7 +58,8 @@ pub mod store;
 pub mod token;
 
 pub use authorization::{
-    AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, ResponseType,
+    AuthorizationCodeRecord, AuthorizationGrant, AuthorizationRequest, AuthorizationResponse,
+    AuthorizeParams, AuthorizeRejection, CodeChallengeMethod, ResponseType,
 };
 pub use client::{Client, ClientAuth, ClientId};
 pub use device::{DeviceAuthorizationResponse, DeviceGrant, DeviceGrantState};

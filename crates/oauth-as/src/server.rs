@@ -9,6 +9,10 @@
 
 use std::time::{Duration, SystemTime};
 
+use crate::authorization::{
+    AuthorizationCodeRecord, AuthorizationGrant, AuthorizationResponse, AuthorizeParams,
+    AuthorizeRejection,
+};
 use crate::client::{Client, ClientId};
 use crate::device::{
     normalize_user_code, DeviceAuthorizationResponse, DeviceGrant, DeviceGrantState,
@@ -64,6 +68,10 @@ pub struct ServerConfig {
     /// User code length in symbols, excluding the display hyphen. Default 8 (about 34 bits over
     /// the 20-symbol alphabet, the RFC 8628 section 6.1 example shape).
     pub user_code_length: usize,
+    /// Authorization code lifetime. Default 60 seconds, well inside the 10-minute maximum RFC
+    /// 6749 section 4.1.2 recommends; a code is redeemed by an immediate back-channel call, so a
+    /// short life costs nothing and shrinks the interception window.
+    pub authorization_code_ttl: Duration,
 }
 
 impl ServerConfig {
@@ -81,6 +89,7 @@ impl ServerConfig {
             issue_refresh_tokens: true,
             refresh_token_ttl: None,
             user_code_length: 8,
+            authorization_code_ttl: Duration::from_secs(60),
         }
     }
 }
@@ -89,6 +98,21 @@ impl ServerConfig {
 /// `Authorization` header into this; `client_secret` is `None` for public clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenRequest {
+    /// RFC 6749 section 4.1.3: `grant_type=authorization_code`, with the RFC 7636 section 4.5
+    /// `code_verifier` (REQUIRED here: this server never issues a code without a challenge).
+    AuthorizationCode {
+        /// The redeeming client.
+        client_id: ClientId,
+        /// The client secret, when the client is confidential.
+        client_secret: Option<String>,
+        /// The single-use authorization code.
+        code: String,
+        /// The `redirect_uri`, REQUIRED and identical when the authorization request carried one
+        /// explicitly (RFC 6749 section 4.1.3).
+        redirect_uri: Option<String>,
+        /// The PKCE verifier (RFC 7636 section 4.5).
+        code_verifier: Option<String>,
+    },
     /// RFC 8628 section 3.4: `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
     DeviceCode {
         /// The polling client.
@@ -264,6 +288,173 @@ impl<S: Storage, C: Clock> AuthorizationServer<S, C> {
         }
     }
 
+    /// RFC 6749 section 4.1.1/4.1.2 with the OAuth 2.1 constraints: validate an authorization
+    /// request and, the host having authenticated `subject` and obtained consent, issue the
+    /// single-use code.
+    ///
+    /// Validation order follows RFC 6749 section 4.1.2.1: the client identity and redirection
+    /// target are judged FIRST, and until both hold the user agent is never redirected
+    /// ([`AuthorizeRejection::Unredirectable`]). Every later failure is delivered to the
+    /// validated redirect URI with `state` echoed ([`AuthorizeRejection::Redirect`]).
+    ///
+    /// PKCE is REQUIRED (OAuth 2.1; RFC 7636 section 4.4.1 makes a missing `code_challenge`
+    /// `error=invalid_request`), and only `S256` is accepted; an absent
+    /// `code_challenge_method` would default to `plain` (RFC 7636 section 4.3), which this
+    /// server does not implement.
+    pub async fn authorize(
+        &self,
+        params: &AuthorizeParams,
+        subject: impl Into<String>,
+    ) -> Result<AuthorizationGrant, AuthorizeRejection> {
+        use AuthorizeRejection::Unredirectable;
+
+        // Client identity first: no redirect until the client is real.
+        let client_id = match params.client_id.as_deref() {
+            Some(id) if !id.is_empty() => ClientId::new(id),
+            _ => {
+                return Err(Unredirectable(
+                    ErrorResponse::new(ErrorCode::InvalidRequest)
+                        .with_description("client_id is required"),
+                ))
+            }
+        };
+        let client = self
+            .store
+            .get_client(&client_id)
+            .await
+            .map_err(|e| Unredirectable(storage_error(e)))?
+            .ok_or_else(|| {
+                Unredirectable(
+                    ErrorResponse::new(ErrorCode::InvalidRequest)
+                        .with_description("unknown client_id"),
+                )
+            })?;
+
+        // Redirection target second: exact string match against the registration (OAuth 2.1
+        // requires exact matching; no wildcard, no prefix). An absent redirect_uri is only
+        // acceptable when the registration is unambiguous (RFC 6749 section 3.1.2.3).
+        let redirect_uri = match params.redirect_uri.as_deref() {
+            Some(uri) => {
+                if !client.redirect_uris.iter().any(|r| r == uri) {
+                    return Err(Unredirectable(
+                        ErrorResponse::new(ErrorCode::InvalidRequest)
+                            .with_description("redirect_uri does not match a registered URI"),
+                    ));
+                }
+                uri.to_string()
+            }
+            None => match client.redirect_uris.as_slice() {
+                [only] => only.clone(),
+                _ => {
+                    return Err(Unredirectable(
+                        ErrorResponse::new(ErrorCode::InvalidRequest).with_description(
+                            "redirect_uri is required when the registration is not exactly one",
+                        ),
+                    ))
+                }
+            },
+        };
+        let state = params.state.clone();
+        let redirect = |error: ErrorResponse| AuthorizeRejection::Redirect {
+            redirect_uri: redirect_uri.clone(),
+            state: state.clone(),
+            error,
+        };
+
+        // From here on the error goes back to the client via the redirect URI.
+        match params.response_type.as_deref() {
+            Some("code") => {}
+            Some(_) => {
+                return Err(redirect(
+                    ErrorResponse::new(ErrorCode::UnsupportedResponseType).with_description(
+                        "response_type must be code; OAuth 2.1 removes every other value",
+                    ),
+                ))
+            }
+            None => {
+                return Err(redirect(
+                    ErrorResponse::new(ErrorCode::InvalidRequest)
+                        .with_description("response_type is required"),
+                ))
+            }
+        }
+        if !client.allows_grant(GrantType::AuthorizationCode) {
+            return Err(redirect(
+                ErrorResponse::new(ErrorCode::UnauthorizedClient).with_description(
+                    "client registration does not include the authorization_code grant",
+                ),
+            ));
+        }
+        let code_challenge = match params.code_challenge.as_deref() {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => {
+                return Err(redirect(
+                    ErrorResponse::new(ErrorCode::InvalidRequest)
+                        .with_description("code_challenge is required (RFC 7636 section 4.4.1)"),
+                ))
+            }
+        };
+        // RFC 7636 appendix A grammar: 43..=128 characters of the unreserved set. An S256
+        // challenge is always exactly 43, but the grammar is the published contract.
+        let challenge_grammar_ok = (43..=128).contains(&code_challenge.len())
+            && code_challenge
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+        if !challenge_grammar_ok {
+            return Err(redirect(
+                ErrorResponse::new(ErrorCode::InvalidRequest)
+                    .with_description("code_challenge is not a valid challenge string"),
+            ));
+        }
+        match params.code_challenge_method.as_deref() {
+            Some("S256") => {}
+            _ => {
+                return Err(redirect(
+                    ErrorResponse::new(ErrorCode::InvalidRequest).with_description(
+                        "code_challenge_method must be S256; plain is not implemented",
+                    ),
+                ))
+            }
+        }
+        let scope = match params.scope.as_deref() {
+            None => None,
+            Some(raw) => match ScopeSet::parse(raw) {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    return Err(redirect(
+                        ErrorResponse::new(ErrorCode::InvalidScope)
+                            .with_description("scope is not a valid scope string"),
+                    ))
+                }
+            },
+        };
+        let scope = match Self::resolve_scope(&client, scope.as_ref()) {
+            Ok(s) => s,
+            Err(e) => return Err(redirect(e)),
+        };
+
+        let now = self.clock.now();
+        let code = random_hex(32);
+        self.store
+            .put_authorization_code(AuthorizationCodeRecord {
+                code: code.clone(),
+                client_id: client.client_id.clone(),
+                redirect_uri: params.redirect_uri.clone(),
+                scope,
+                code_challenge,
+                subject: subject.into(),
+                state: state.clone(),
+                expires_at: now + self.config.authorization_code_ttl,
+            })
+            .await
+            .map_err(|e| redirect(storage_error(e)))?;
+
+        Ok(AuthorizationGrant {
+            redirect_uri,
+            response: AuthorizationResponse { code, state },
+        })
+    }
+
     /// RFC 8628 section 3.1/3.2: start a device authorization.
     pub async fn device_authorization(
         &self,
@@ -365,6 +556,22 @@ impl<S: Storage, C: Clock> AuthorizationServer<S, C> {
     /// The token endpoint (RFC 6749 section 3.2; device grant per RFC 8628 section 3.4/3.5).
     pub async fn token(&self, request: TokenRequest) -> Result<TokenResponse, ErrorResponse> {
         match request {
+            TokenRequest::AuthorizationCode {
+                client_id,
+                client_secret,
+                code,
+                redirect_uri,
+                code_verifier,
+            } => {
+                self.authorization_code_token(
+                    &client_id,
+                    client_secret.as_deref(),
+                    &code,
+                    redirect_uri.as_deref(),
+                    code_verifier.as_deref(),
+                )
+                .await
+            }
             TokenRequest::DeviceCode {
                 client_id,
                 client_secret,
@@ -388,6 +595,66 @@ impl<S: Storage, C: Clock> AuthorizationServer<S, C> {
                 .await
             }
         }
+    }
+
+    /// RFC 6749 section 4.1.3 + RFC 7636 section 4.6: redeem an authorization code.
+    async fn authorization_code_token(
+        &self,
+        client_id: &ClientId,
+        client_secret: Option<&str>,
+        code: &str,
+        redirect_uri: Option<&str>,
+        code_verifier: Option<&str>,
+    ) -> Result<TokenResponse, ErrorResponse> {
+        let client = self.authenticate_client(client_id, client_secret).await?;
+        if !client.allows_grant(GrantType::AuthorizationCode) {
+            return Err(ErrorResponse::new(ErrorCode::UnauthorizedClient));
+        }
+
+        // The verifier's own shape is judged before the code is consumed: a malformed request
+        // (RFC 6749 section 5.2 `invalid_request`) must stay retryable with the same code.
+        let verifier = code_verifier.ok_or_else(|| {
+            ErrorResponse::new(ErrorCode::InvalidRequest)
+                .with_description("code_verifier is required (RFC 7636 section 4.5)")
+        })?;
+        if !crate::pkce::verifier_is_valid(verifier) {
+            return Err(ErrorResponse::new(ErrorCode::InvalidRequest)
+                .with_description("code_verifier is not a valid verifier string"));
+        }
+
+        // Consume first (atomic take): a code is single use, and every judgment below that
+        // rejects a CONSUMED code deliberately leaves it dead (RFC 6749 section 4.1.2 directs
+        // revocation on a second use; destroying on the first suspicious presentation is the
+        // conservative reading and the one RFC 7636 section 4.6 verification demands anyway).
+        let record = self
+            .store
+            .take_authorization_code(code)
+            .await
+            .map_err(storage_error)?
+            .ok_or_else(|| ErrorResponse::new(ErrorCode::InvalidGrant))?;
+        if record.client_id != client.client_id {
+            return Err(ErrorResponse::new(ErrorCode::InvalidGrant));
+        }
+        if self.clock.now() >= record.expires_at {
+            return Err(ErrorResponse::new(ErrorCode::InvalidGrant)
+                .with_description("authorization code expired"));
+        }
+        // RFC 6749 section 4.1.3: when the authorization request carried redirect_uri
+        // explicitly, the token request must present the identical value.
+        if let Some(bound) = record.redirect_uri.as_deref() {
+            if redirect_uri != Some(bound) {
+                return Err(ErrorResponse::new(ErrorCode::InvalidGrant)
+                    .with_description("redirect_uri does not match the authorization request"));
+            }
+        }
+        // RFC 7636 section 4.6: recompute S256 over the presented verifier and compare.
+        if !crate::pkce::verify_s256(verifier, &record.code_challenge) {
+            return Err(ErrorResponse::new(ErrorCode::InvalidGrant)
+                .with_description("code_verifier does not match the code_challenge"));
+        }
+
+        self.issue(&client, Some(record.subject), record.scope, None)
+            .await
     }
 
     /// RFC 8628 sections 3.4/3.5: one device-token poll.

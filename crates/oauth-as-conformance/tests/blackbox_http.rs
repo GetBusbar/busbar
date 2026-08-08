@@ -360,11 +360,24 @@ async fn authorization_without_pkce_is_rejected() {
 }
 
 /// Authorization-code negatives driven manually: wrong verifier is invalid_grant; a good code
-/// redeems exactly once and its replay is invalid_grant; the issued access token is a
-/// conformant RFC 9068 JWT, signature-verified against the advertised jwks_uri.
+/// redeems exactly once and its replay is invalid_grant; and WHEN the AS issues structured
+/// (JWT) access tokens, they must be conformant RFC 9068 JWTs, signature-verified against the
+/// advertised jwks_uri.
+///
+/// HARNESS ASSUMPTION CORRECTED (first run against the real AS, 2026-08-08): this test
+/// originally REQUIRED every access token to be an RFC 9068 JWT. That was this harness's
+/// assumption, not an RFC requirement: RFC 6749 s1.4 leaves the access token "usually opaque
+/// to the client" with its format explicitly out of the protocol's scope, and RFC 9068's own
+/// abstract scopes it as "a profile for issuing OAuth 2.0 access tokens in JWT format", i.e.
+/// an opt-in profile, not a MUST for an OAuth 2.1 AS. An AS that issues opaque tokens and
+/// answers for them via introspection (RFC 7662) is fully conformant. So the RFC 9068 leg now
+/// applies exactly when the AS opts into the profile, detected by the token's own shape (a
+/// three-part compact JWS, RFC 7515 s3.1); a JWT-shaped token is then held to the FULL bar,
+/// including a mandatory jwks_uri and signature verification. An opaque token makes RFC 9068
+/// out of scope, and the test says which branch ran rather than skipping silently.
 #[tokio::test]
 #[ignore = "black-box: needs the live AS; run via scripts/oauth-conformance.sh"]
-async fn auth_code_pkce_negatives_replay_and_rfc9068_token() {
+async fn auth_code_pkce_negatives_replay_and_access_token_profile() {
     let http = no_redirect_client();
     let meta = metadata(&http).await;
     let authz_ep = endpoint(&meta, "authorization_endpoint");
@@ -429,29 +442,40 @@ async fn auth_code_pkce_negatives_replay_and_rfc9068_token() {
         "RFC 6749 s5.1 violations: {violations:#?}"
     );
 
-    // RFC 9068: the access token must be a structurally conformant JWT access token.
+    // Access-token profile (see the doc comment): a JWT-shaped token opts into RFC 9068 and is
+    // held to all of it; an opaque token is spec-legal (RFC 6749 s1.4) and RFC 9068 is out of
+    // scope for it.
     let access_token = body["access_token"].as_str().unwrap();
-    let violations = conf::validate_rfc9068_access_token(access_token);
-    assert!(
-        violations.is_empty(),
-        "RFC 9068 violations: {violations:#?}"
-    );
+    let is_jwt_shaped = access_token.split('.').count() == 3;
+    if is_jwt_shaped {
+        println!("access token is JWT-shaped: holding it to the full RFC 9068 profile");
+        let violations = conf::validate_rfc9068_access_token(access_token);
+        assert!(
+            violations.is_empty(),
+            "RFC 9068 violations: {violations:#?}"
+        );
 
-    // And its signature must verify against the advertised jwks_uri (RFC 9068 s4).
-    let jwks_uri = meta
-        .get("jwks_uri")
-        .and_then(Value::as_str)
-        .expect("an RFC 9068 AS must advertise jwks_uri so RSes can verify tokens");
-    let jwks: Value = http
-        .get(jwks_uri)
-        .send()
-        .await
-        .expect("GET jwks")
-        .json()
-        .await
-        .expect("jwks");
-    conf::verify_jwt_against_jwks(access_token, &jwks)
-        .expect("access token signature must verify against the advertised JWKS");
+        // And its signature must verify against the advertised jwks_uri (RFC 9068 s4).
+        let jwks_uri = meta
+            .get("jwks_uri")
+            .and_then(Value::as_str)
+            .expect("an RFC 9068 AS must advertise jwks_uri so RSes can verify tokens");
+        let jwks: Value = http
+            .get(jwks_uri)
+            .send()
+            .await
+            .expect("GET jwks")
+            .json()
+            .await
+            .expect("jwks");
+        conf::verify_jwt_against_jwks(access_token, &jwks)
+            .expect("access token signature must verify against the advertised JWKS");
+    } else {
+        println!(
+            "access token is opaque (not a compact JWS): RFC 9068 not opted into; format is \
+             out of protocol scope per RFC 6749 s1.4, so no structural claims apply"
+        );
+    }
 
     // REPLAY code 2: must be invalid_grant (RFC 6749 s4.1.2 / s10.5).
     let resp = http

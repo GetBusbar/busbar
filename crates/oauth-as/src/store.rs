@@ -20,6 +20,7 @@ use std::fmt;
 use std::future::Future;
 use std::sync::Mutex;
 
+use crate::authorization::AuthorizationCodeRecord;
 use crate::client::{Client, ClientId};
 use crate::device::DeviceGrant;
 use crate::token::{IssuedToken, RefreshTokenRecord};
@@ -82,6 +83,20 @@ pub trait Storage: Send + Sync {
         device_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send;
 
+    /// Persist a pending authorization code, keyed by `code`.
+    fn put_authorization_code(
+        &self,
+        record: AuthorizationCodeRecord,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+
+    /// Atomically remove and return an authorization code record. Single-use redemption, same
+    /// contract as [`Storage::take_device_grant`]: under concurrent redemption exactly one
+    /// caller receives the record (RFC 6749 section 4.1.2 makes codes single use).
+    fn take_authorization_code(
+        &self,
+        code: &str,
+    ) -> impl Future<Output = Result<Option<AuthorizationCodeRecord>, StorageError>> + Send;
+
     /// Persist an issued access token.
     fn put_token(
         &self,
@@ -115,6 +130,7 @@ struct MemoryInner {
     device_by_code: HashMap<String, DeviceGrant>,
     /// normalized user code -> device_code
     user_code_index: HashMap<String, String>,
+    auth_codes: HashMap<String, AuthorizationCodeRecord>,
     tokens: HashMap<String, IssuedToken>,
     refresh: HashMap<String, RefreshTokenRecord>,
 }
@@ -190,6 +206,21 @@ impl Storage for MemoryStorage {
             g.user_code_index.remove(&normalized);
         }
         Ok(grant)
+    }
+
+    async fn put_authorization_code(
+        &self,
+        record: AuthorizationCodeRecord,
+    ) -> Result<(), StorageError> {
+        self.lock().auth_codes.insert(record.code.clone(), record);
+        Ok(())
+    }
+
+    async fn take_authorization_code(
+        &self,
+        code: &str,
+    ) -> Result<Option<AuthorizationCodeRecord>, StorageError> {
+        Ok(self.lock().auth_codes.remove(code))
     }
 
     async fn put_token(&self, token: IssuedToken) -> Result<(), StorageError> {
