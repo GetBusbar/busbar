@@ -18,7 +18,10 @@
 //! ## What this plane does NOT rebuild
 //!
 //! The trust lifecycle. [`crate::trust`] is the plane-neutral machine, written with the pinned
-//! artifact as a type parameter; this plane supplies an artifact and nothing else.
+//! artifact as a type parameter; this plane supplies an artifact ([`pin::CardPin`]) and nothing else.
+//! `tests/reuse_tests.rs` drives one transition table over this plane's REAL artifact and a
+//! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
+//! generalised is a test over production code rather than a note in a design document.
 
 // NO PRODUCTION CALLER YET, and deliberately so, matching the posture of the lifecycle this plane
 // parameterises. The canonical form and the identity pin are what a wire reader, a registry section
@@ -28,3 +31,5 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod canonical;
+pub(crate) mod card;
+pub(crate) mod pin;
