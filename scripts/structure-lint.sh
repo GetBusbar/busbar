@@ -415,6 +415,13 @@ CHOKE_POINTS=(
   #         `CoreRouter::route` is the only way core routes reach a router and it cannot be called
   #         without one. The class test walks the resulting table and asserts the property over
   #         EVERY route, so a new route joins the assertion instead of escaping it.
+  # ── F ── the trusted-upstream trust LIFECYCLE: one plane-neutral machine, the pinned artifact a
+  #         type parameter. Enforced differently — the hazard is not a call somebody hand-rolls, it
+  #         is a plane's VOCABULARY leaking into the machine, after which the sibling plane can no
+  #         longer parameterise it and writes a parallel copy instead. The class test reads the
+  #         module's own code and fails on any plane noun in it.
+  'F-trust-lifecycle|TRUST-PLANE-LEAK|crates/busbar/src/trust/mod.rs (Approval / TrustState / Drift, generic over PinnedArtifact)|crates/busbar/src/trust/tests/genericity_tests.rs::the_lifecycle_names_no_plane_in_its_code|keep the plane noun in the artifact, the capability name or the caller, never in the lifecycle|-|the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit'
+
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 

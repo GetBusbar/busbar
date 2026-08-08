@@ -94,6 +94,7 @@ mod telemetry;
 #[cfg(test)]
 mod test_support;
 mod tls;
+mod trust;
 
 use std::collections::HashMap;
 use std::sync::Arc;
