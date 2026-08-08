@@ -59,6 +59,7 @@ mod billing;
 mod breaker;
 mod config;
 mod config_validate;
+mod core_routes;
 mod cost;
 // The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
@@ -93,12 +94,13 @@ mod telemetry;
 #[cfg(test)]
 mod test_support;
 mod tls;
+mod trust;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{routing::get, routing::post, Router};
+use axum::Router;
 
 use auth::AuthMiddleware;
 
@@ -3759,10 +3761,12 @@ fn build_router_with_limits(
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let router = admin::transport::mount(base_data_router(&plugin_routes), &admin::JsonV1);
+    let (router, core_routes) = base_data_router(&plugin_routes);
+    let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
+        core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
@@ -3779,10 +3783,25 @@ fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
-) -> Router<std::sync::Arc<state::AppHandle>> {
-    let router = Router::new()
-        .route("/stats", get(endpoints::stats))
-        .route("/healthz", get(endpoints::healthz));
+) -> (
+    Router<std::sync::Arc<state::AppHandle>>,
+    crate::core_routes::CoreRouteTable,
+) {
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
+    // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
+    // not a thing this function can produce.
+    let router = crate::core_routes::CoreRouter::new()
+        .route("/stats", RouteMethod::Get, RouteAuth::Key, endpoints::stats)
+        // The liveness probe is the one always-open core route: a probe must not require a caller
+        // token. Declared here rather than asserted by the middleware, so the openness belongs to
+        // the route and travels with whichever router mounts it.
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::healthz,
+        );
     // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
     // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
     // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
@@ -3794,7 +3813,12 @@ fn base_data_router(
         // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
         // an external dashboard built against a hook repoints here and just works.
         // Stale-while-revalidate; never blocks on a hook socket.
-        router.route("/metrics/hooks", get(crate::hooks::scrape::handler))
+        router.route(
+            "/metrics/hooks",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            crate::hooks::scrape::handler,
+        )
     } else {
         router
     };
@@ -3804,31 +3828,71 @@ fn base_data_router(
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
         // Governance-scoped like /stats (restricted keys see only their reachable names).
         // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
-        // only; the auth middleware bypasses this exact path (the handler runs the chain itself).
+        // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
+        // needs the identified principal to self-scope the minted key). The declaration is what
+        // confines that bypass to this router: the admin plane, which does not mount the route,
+        // does not inherit its bypass.
         .route(
             crate::auth::exchange::AUTH_TOKEN_PATH,
-            get(crate::auth::token::browser).post(crate::auth::exchange::exchange),
+            RouteMethod::Get,
+            RouteAuth::None,
+            crate::auth::token::browser,
         )
-        .route("/v1/models", get(endpoints::list_models))
-        .route("/v1beta/models", get(endpoints::list_models_v1beta))
-        .route("/{name}/v1/messages", post(ingress::named))
-        .route("/{provider}/{model}/v1/messages", post(ingress::adhoc));
+        .route(
+            crate::auth::exchange::AUTH_TOKEN_PATH,
+            RouteMethod::Post,
+            RouteAuth::None,
+            crate::auth::exchange::exchange,
+        )
+        .route(
+            "/v1/models",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            endpoints::list_models,
+        )
+        .route(
+            "/v1beta/models",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            endpoints::list_models_v1beta,
+        )
+        .route(
+            "/{name}/v1/messages",
+            RouteMethod::Post,
+            RouteAuth::Key,
+            ingress::named,
+        )
+        .route(
+            "/{provider}/{model}/v1/messages",
+            RouteMethod::Post,
+            RouteAuth::Key,
+            ingress::adhoc,
+        );
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
     // route wired after it would never match. The admin-auth routes are mounted on the admin listener
     // instead (see `build_split_routers_with_limits`), physically absent from this data plane.
-    let router = crate::plugin_routes::mount_plugin_routes(router, plugin_routes, false);
+    // They carry their OWN declared auth (`plugin_routes::PluginRouteTable`), so they are outside
+    // the core table by construction rather than by omission.
+    let router =
+        router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
     router
-        // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows through the
-        // catch-all: Router (dumb protocol ID from path+headers) → that protocol's RequestHandler
-        // (reads path+body, decides the operation) → its OperationHandler cell. Adding a protocol or
-        // an operation never touches this file. Unknown paths / wrong methods keep the pre-collapse
-        // native-envelope 404/405 shaping (no bare-proxy tells).
-        .fallback(ingress::protocol_dispatch)
-        // Wrong-method hits on a VALID path (axum's built-in 405) get the same native-envelope
-        // treatment as the 404 fallback above.
-        .method_not_allowed_fallback(method_not_allowed_handler)
+        .map_router(|r| {
+            r
+                // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows
+                // through the catch-all: Router (dumb protocol ID from path+headers) → that
+                // protocol's RequestHandler (reads path+body, decides the operation) → its
+                // OperationHandler cell. Adding a protocol or an operation never touches this file.
+                // Unknown paths / wrong methods keep the pre-collapse native-envelope 404/405
+                // shaping (no bare-proxy tells). A fallback claims no path, so it declares no route:
+                // it takes the normal data-plane bar like any unclaimed path always has.
+                .fallback(ingress::protocol_dispatch)
+                // Wrong-method hits on a VALID path (axum's built-in 405) get the same
+                // native-envelope treatment as the 404 fallback above.
+                .method_not_allowed_fallback(method_not_allowed_handler)
+        })
+        .into_parts()
 }
 
 /// Apply the shared middleware stack — auth chain, request-body cap, 413 reshaping, server-timing —
@@ -3837,6 +3901,7 @@ fn base_data_router(
 /// hot-swaps (they share one `handle`).
 fn apply_common_layers(
     router: Router<std::sync::Arc<state::AppHandle>>,
+    core_routes: crate::core_routes::CoreRouteTable,
     handle: &std::sync::Arc<state::AppHandle>,
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
@@ -3849,6 +3914,12 @@ fn apply_common_layers(
             handle.clone(),
             auth::auth_middleware,
         ))
+        // THIS ROUTER's core route-auth table, handed to the auth middleware. Applied AFTER the
+        // auth layer, which in axum means OUTSIDE it, so the extension is present by the time the
+        // middleware extracts it. Per-router (not per-process) on purpose: the data plane and the
+        // admin plane mount different core routes, and a route's bypass belongs to the plane that
+        // serves it.
+        .layer(axum::Extension(std::sync::Arc::new(core_routes)))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
         // (`limits::translate_body_max_bytes`) — both read the SAME knob so an accepted request is
@@ -3895,8 +3966,10 @@ fn build_split_routers_with_limits(
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
+    let (data, data_core_routes) = base_data_router(&plugin_routes);
     let data = apply_common_layers(
-        base_data_router(&plugin_routes),
+        data,
+        data_core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
@@ -3906,13 +3979,19 @@ fn build_split_routers_with_limits(
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
     // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route
     // stays behind the admin auth chain.
-    let admin = admin::transport::mount(
-        Router::new().route("/healthz", get(endpoints::healthz)),
-        &admin::JsonV1,
-    );
+    let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            busbar_plugin_loader::RouteMethod::Get,
+            busbar_plugin_loader::RouteAuth::None,
+            endpoints::healthz,
+        )
+        .into_parts();
+    let admin = admin::transport::mount(admin, &admin::JsonV1);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,
+        admin_core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,

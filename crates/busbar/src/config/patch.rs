@@ -19,6 +19,83 @@
 
 use serde::{Deserialize, Serialize};
 
+/// THE RAW PER-ENTRY MERGE PATCH (RFC 7386), the sibling half of the typed section patches above.
+///
+/// The typed half works because a root section is a FIXED struct with a known field list, so an
+/// all-`Option` twin can mirror it and the merge is infallible. A named-map ENTRY is not that: the
+/// overlay stores it as an opaque document on purpose ([`crate::config::overlay::OverlayDoc`]'s
+/// `named_maps`), so that a new section needs no new overlay field and so that the bytes a restart
+/// replays are the bytes the operator wrote. There is no struct to mirror, so the patch has to be
+/// as raw as the thing it patches.
+///
+/// What this buys, and it is the reason ruling 3 of the 1.5.4 design calls the overlay's missing
+/// per-entry merge a limitation to FIX rather than to route around: recording ONE field of an entry
+/// currently means restating the whole entry, so any process that writes back a derived fact — an
+/// approval recording a pinned hash, say — rewrites every operator-authored field beside it. With a
+/// merge patch the overlay records only what changed, and everything else keeps whatever the base
+/// config says, including values that change later in `config.yaml`.
+///
+/// SEMANTICS, RFC 7386 exactly, and each rule is load-bearing rather than inherited:
+/// - An object patch merges RECURSIVELY into an object target, so a nested leaf is reachable
+///   without restating its siblings.
+/// - `null` REMOVES a key. Without a remove spelling a patch overlay can only ever grow a document,
+///   so a field set in the file could never be unset at runtime.
+/// - Any NON-object patch REPLACES the target. Whole-entry replace is therefore a special case of
+///   patching, not a second code path that can disagree with it.
+/// - An ARRAY is replaced wholesale, never element-merged. Config lists are ordered, meaningful
+///   wholes (`hooks: [a, b]` is a pipeline, not a set), and index-wise merging would invent an
+///   ordering nobody wrote.
+/// - A patch onto a non-object target REPLACES it, so an entry can be built from `null`.
+///
+/// The operation is IDEMPOTENT: applying a patch twice equals applying it once. The overlay replays
+/// its patches on every boot and every rebuild, so anything else would make the effective config
+/// depend on how many times busbar had reloaded.
+///
+/// Infallible, like the typed half and for the same reason: it is called from boot, `--validate`,
+/// reload, apply and reset, none of which can take a merge error. The fallible step stays where it
+/// already is — the `deny_unknown_fields` typed parse of the MERGED document
+/// ([`crate::config::named_map::NamedMapSection::parse_def`]), which is the one grammar both the
+/// API and the file are judged by.
+///
+/// NOT YET CALLED FROM PRODUCTION, and deliberately landed ahead of its caller: the named-map patch
+/// verb that consumes it is the next increment, and the semantics above are the part worth settling
+/// and pinning first. It is NOT wired into `PATCH <section>/{name}/settings`, whose contract is
+/// REPLACE the whole settings bag — merging there would quietly turn a documented replace into a
+/// merge on a frozen wire, which is the opposite of what this primitive is for.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn merge_entry(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    let serde_json::Value::Object(patch_obj) = patch else {
+        // A non-object patch replaces outright. This is the whole-entry-replace case.
+        *target = patch.clone();
+        return;
+    };
+    // A patch onto a non-object builds an object, so "there is no base entry yet" needs no special
+    // arm at the call site: start from `null`.
+    if !target.is_object() {
+        *target = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let Some(target_obj) = target.as_object_mut() else {
+        return;
+    };
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            target_obj.remove(key);
+            continue;
+        }
+        match target_obj.get_mut(key) {
+            Some(existing) => merge_entry(existing, value),
+            None => {
+                // The key is new to the target. Recursing into a fresh `null` (rather than cloning
+                // `value`) is what makes a patch carrying a nested `null` land WITHOUT materializing
+                // a null-valued key: the removal of an absent key is a no-op either way.
+                let mut fresh = serde_json::Value::Null;
+                merge_entry(&mut fresh, value);
+                target_obj.insert(key.clone(), fresh);
+            }
+        }
+    }
+}
+
 /// Build a section patch: an all-`Option` twin, its per-field `apply`, and its accumulate-across-
 /// PUTs `merge`.
 macro_rules! section_patch {
@@ -107,6 +184,10 @@ section_patch!(
         default_policy_timeout_ms: u64,
     }
 );
+
+#[cfg(test)]
+#[path = "tests/entry_patch_tests.rs"]
+mod entry_patch_tests;
 
 #[cfg(test)]
 mod tests {

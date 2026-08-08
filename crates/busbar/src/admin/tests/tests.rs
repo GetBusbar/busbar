@@ -2225,7 +2225,8 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "rotation must not arm a legacy bearer secret on a signed-token key"
     );
     assert!(
-        gov.verify_token(&new_token, crate::store::now()).is_some(),
+        gov.verify_token(&new_token, crate::store::now(), None)
+            .is_some(),
         "the re-minted token authenticates"
     );
 
@@ -8050,7 +8051,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     // The token resolves its binding right after mint.
     let now = crate::store::now();
     let resolved = gov
-        .verify_token(&token, now)
+        .verify_token(&token, now, None)
         .expect("a fresh token verifies");
     assert_eq!(
         resolved.id, id,
@@ -8068,7 +8069,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     assert_eq!(del.status().as_u16(), 204, "delete is a 204");
     assert!(gov.is_revoked(&id), "delete denylists the subject");
     assert!(
-        gov.verify_token(&token, now).is_none(),
+        gov.verify_token(&token, now, None).is_none(),
         "a deleted key's token no longer verifies"
     );
 
@@ -8101,7 +8102,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     let token = created["token"].as_str().unwrap().to_string();
     let now = crate::store::now();
     assert!(
-        gov.verify_token(&token, now).is_some(),
+        gov.verify_token(&token, now, None).is_some(),
         "verifies before revoke"
     );
 
@@ -8129,7 +8130,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     // …but the subject is denylisted, so the token no longer verifies.
     assert!(gov.is_revoked(&id), "the subject is denylisted");
     assert!(
-        gov.verify_token(&token, now).is_none(),
+        gov.verify_token(&token, now, None).is_none(),
         "a revoked subject's token no longer verifies"
     );
 

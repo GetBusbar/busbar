@@ -58,7 +58,7 @@
 # umbrella's union is a SUPERSET of today's gate.
 #
 # Reserved -> release map:
-#   mcp-integrity -> 1.5.4    a2a -> 1.5.6    smart-router -> 1.5.5
+#   mcp-integrity -> 1.5.4    a2a -> 1.5.5    smart-router -> 1.5.5
 
 # ── ACTIVE (green-on-completion) ─────────────────────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ run    = "cargo test -p busbar --test qa_mcp_integrity"
 
 [[segment]]
 id     = "a2a"
-status = "reserved"   # -> active in 1.5.6 (A2A)
+status = "reserved"   # -> active in 1.5.5 (A2A)
 tier   = "live-mock"
 run    = "cargo test -p busbar --test qa_a2a"
 

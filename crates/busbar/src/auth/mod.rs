@@ -25,8 +25,9 @@ const X_GOOG_API_KEY: &str = "x-goog-api-key";
 pub(crate) const X_ADMIN_TOKEN: &str = "x-admin-token";
 /// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
 const AUTH_SCHEME_BEARER: &str = "bearer";
-/// The liveness-probe path that bypasses auth entirely.
-const HEALTHZ_PATH: &str = "/healthz";
+/// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
+/// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
+pub(crate) const HEALTHZ_PATH: &str = "/healthz";
 /// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
 /// see `admin::v1::contract::API_ROOT`).
 const ADMIN_PATH: &str = "/api";
@@ -650,7 +651,10 @@ fn keys_arm_verdict(
     let Some(gov) = gov else {
         return ChainVerdict::Denied;
     };
-    match gov.verify_token(token, now) {
+    // DATA PLANE: expected audience is `None`, so an audience-bound (MCP authorization-server)
+    // token is rejected here by the verifier itself - the 1.5.4 plane boundary. The MCP ingress
+    // is the ONE caller that passes its canonical URI instead.
+    match gov.verify_token(token, now, None) {
         Some(key) => ChainVerdict::Identified {
             module: crate::config::KEYS_MODULE.to_string(),
             principal: principal_from_vkey(&key),
@@ -1197,30 +1201,41 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
 /// Axum middleware layer that validates auth before routing.
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
+    axum::Extension(core_routes): axum::Extension<
+        std::sync::Arc<crate::core_routes::CoreRouteTable>,
+    >,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
-    // /healthz is always open: liveness probes must not require a caller token. /metrics is NOT
-    // exempted — Prometheus telemetry (lane/pool topology, per-protocol counters, error rates) is a
-    // fingerprinting / information-disclosure surface, so it goes through the same auth check as any
-    // other route. Operators scraping from a localhost sidecar use a configured token (or run under
-    // `none`/`passthrough` mode, where `validate_token` admits unconditionally). Clone the path so
-    // no immutable borrow of `req` is held while we later mutate its extensions.
+    // Clone the path so no immutable borrow of `req` is held while we later mutate its extensions.
     // Stage timer for the middleware's OWN work; taken (recording) before every `next.run` below so
     // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
-    if path == HEALTHZ_PATH {
-        drop(_mw.take());
-        return Ok(next.run(req).await);
-    }
-    // The token-exchange route runs the auth chain ITSELF (it needs the identified principal to
-    // self-scope the minted key), so the middleware must NOT admit/deny it. EXACT match only — never
-    // a prefix — so nothing else rides this bypass. Mounted on the DATA router only (a test asserts
-    // it is absent from the admin router); `/metrics` and every other path stay gated.
-    if path == crate::auth::exchange::AUTH_TOKEN_PATH {
-        drop(_mw.take());
-        return Ok(next.run(req).await);
+
+    // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
+    // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
+    // table is THIS router's, not the process's: `/healthz` is open wherever it is mounted because
+    // it declares itself open (a liveness probe must not require a caller token), and
+    // `/auth/token` bypasses on the data plane because the handler runs the auth chain ITSELF (it
+    // needs the identified principal to self-scope the minted key) — on the admin plane, which does
+    // not mount it, there is no declaration and therefore no bypass.
+    //
+    // EXACT path + method match, never a prefix, so nothing else rides a bypass. `/metrics` is NOT
+    // exempted anywhere — Prometheus telemetry (lane/pool topology, per-protocol counters, error
+    // rates) is a fingerprinting / information-disclosure surface, so it goes through the same auth
+    // check as any other route. Operators scraping from a localhost sidecar use a configured token
+    // (or run under `none`/`passthrough` mode, where `validate_token` admits unconditionally).
+    let mut declared_admin = false;
+    if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
+        match auth {
+            busbar_plugin_loader::RouteAuth::None => {
+                drop(_mw.take());
+                return Ok(next.run(req).await);
+            }
+            busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
+            busbar_plugin_loader::RouteAuth::Key => {}
+        }
     }
 
     // PLUGIN HTTP ROUTES: a registered plugin route carries its OWN declared auth level,
@@ -1228,14 +1243,13 @@ pub(crate) async fn auth_middleware(
     // chain below; `key` needs no special handling (it flows through the normal client-token check).
     // Consulted off the LIVE snapshot so a hot-swap that changes a route's auth takes effect at once.
     // `declared_auth` returns `None` for every non-plugin path, so this is a no-op on the hot path.
-    let mut plugin_admin = false;
     if let Some(auth) = app.plugin_routes.declared_auth(&path, req.method()) {
         match auth {
             busbar_plugin_loader::RouteAuth::None => {
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_plugin_loader::RouteAuth::Admin => plugin_admin = true,
+            busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
             busbar_plugin_loader::RouteAuth::Key => {}
         }
     }
@@ -1249,7 +1263,7 @@ pub(crate) async fn auth_middleware(
     // `CallerToken` extension a non-admin handler requires — yielding a 500 MissingExtension and
     // leaking that the path was treated as admin-protected. Require either the exact `/api` segment
     // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
-    let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX) || plugin_admin;
+    let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX) || declared_admin;
     let admin_header_token = extract_admin_header_token(&req);
     // The busbar client token, taken from whichever carrier the SDK used (Authorization: Bearer,
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
