@@ -627,7 +627,10 @@ key it expects) in that plugin's `settings:`, and let the plugin validate it on 
 may be a `SecretRef`, in which case the core resolves it against the secret backend **before** the
 settings cross the ABI, so a raw key never has to sit in plaintext config, is never logged, and is
 never written back to the overlay (only the reference is persisted). An unresolvable ref fails the
-load fail-closed. See [ADR-0010](adr/0010-plugin-licensing.md) for the full model.
+load fail-closed. See
+[ADR-0010](https://github.com/GetBusbar/busbar/blob/main/docs/adr/0010-plugin-licensing.md) for the
+full model. The link is absolute because `docs/adr/` is a repository-only record and is not synced to
+the published docs site, so a relative path resolves in a checkout and 404s for a reader on the web.
 
 ## Inspecting and validating
 
