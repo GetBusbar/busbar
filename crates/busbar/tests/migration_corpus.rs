@@ -158,12 +158,60 @@ fn providers_for(corpus_file: &Path) -> PathBuf {
 
 fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
     std::fs::write(tmp, yaml).map_err(|e| format!("write temp config: {e}"))?;
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
-        .arg("--validate")
+    // `--validate` RESOLVES built-in secret references, so every env var a corpus config names must
+    // be set or the gate fails on this machine's environment rather than on the migration. The
+    // corpus spans every shipped release, so enumerating the names here would rot; extract them
+    // from the config under test instead.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    cmd.arg("--validate")
         .env("BUSBAR_CONFIG", tmp)
         .env("BUSBAR_PROVIDERS", providers)
         .env("BUSBAR_TEST_SIGNING_KEY", "a".repeat(64))
-        .env("BUSBAR_TEST_ADMIN_TOKEN", "corpus-admin-token")
+        .env("BUSBAR_TEST_ADMIN_TOKEN", "corpus-admin-token");
+    // `file:` refs name PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI.
+    // Point the copy under test at a real temp file so the gate checks the migration, not this
+    // machine's filesystem layout.
+    let yaml = if yaml.contains("file:") {
+        let dir = tmp.parent().unwrap_or(Path::new("."));
+        let stand_in = dir.join("corpus-secret");
+        std::fs::write(&stand_in, "a".repeat(64)).map_err(|e| format!("write stand-in: {e}"))?;
+        let mut out = String::with_capacity(yaml.len());
+        for line in yaml.lines() {
+            match line.find("file:") {
+                Some(i) => {
+                    let (head, tail) = line.split_at(i);
+                    let close = tail.find('}').map(|j| &tail[j..]).unwrap_or("");
+                    out.push_str(head);
+                    out.push_str("file: ");
+                    out.push_str(&stand_in.display().to_string());
+                    out.push_str(close);
+                    out.push('\n');
+                }
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        std::fs::write(tmp, &out).map_err(|e| format!("rewrite temp config: {e}"))?;
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(yaml)
+    };
+    let yaml: &str = &yaml;
+
+    for (i, _) in yaml.match_indices("env:") {
+        let name: String = yaml[i + 4..]
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            // 64 hex: valid wherever a signing key is expected, harmless elsewhere.
+            cmd.env(&name, "a".repeat(64));
+        }
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("could not run busbar --validate: {e}"))?;
     if out.status.success() {
