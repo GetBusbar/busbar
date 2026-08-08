@@ -116,7 +116,7 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 
 | Endpoint | Returns |
 |---|---|
-| `GET /hooks` | The hook registry: each hook's `kind` (tap/gate), transport, access grants (`prompt`/`user`), `priority`, `at` (tap stage), `on_error`, `timeout_ms`, `settings`, and whether it's globally wired |
+| `GET /hooks` | The hook registry: each hook's `kind` (tap/gate), transport, access grants (`prompt`/`user`), `priority`, `on_error`, `timeout_ms`, `settings`, whether it's globally wired, and its SELECTION scope: `groups` (which callers, empty = all) and the stage pair below |
 | `GET /hooks/{name}` | One hook's definition |
 | `GET /hooks/{name}/health` | Best-effort reachability of a forwarding hook's sidecar (a short-timeout connect probe against its configured `settings.url`; `reachable` is `null` for an in-process `kind: hook` plugin with no external endpoint, with a `detail` note). Never fires the hook |
 | `GET /hooks/{name}/schema` | The hook's **self-described settings schema** (the `describe` wire message, proxied verbatim; `{"name", "schema": null}` when the hook doesn't answer) |
@@ -128,6 +128,20 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 | `POST /agents/{name}/approve` | **Lock a registered agent to the card fingerprint the operator has SEEN.** Body: `{"fingerprint": "…"}`, exactly as `connect` reported it. The card is re-fetched and re-verified on this call and the two must agree, so an approval is always a statement about a document a human actually read — an approve that adopted whatever the endpoint happened to be serving would be trust-on-first-use with a button on it. A registration whose `pin.mechanism` is `unpinned` has no authenticity root and is refused: registrable, inspectable, never approvable. This is the ONLY way a registration leaves `pending`, and therefore the only way a fronted agent serves. `full` scope, audited, config-class rate budget |
 | `GET /plugins?type=auth\|hooks\|store\|secret` | The plugin catalog for one type (required parameter — there is no unified cross-kind list; a UI makes up to four calls to build a full picture). `hooks`: compiled-in ranking policies plus configured hook-registry entries (name/target only). `auth`: compiled-in auth modules plus every `kind: auth` plugin currently wired into the chain (`active: true`), PLUS a manifest-backed row for every `kind: auth` tarball installed in `plugins.dir` (the same rich shape `store`/`secret` carry). `store`: the compiled-in `memory` head plus every `kind: store` tarball in `plugins.dir`. `secret`: every `kind: secret` tarball in `plugins.dir` (no compiled-in default — `env`/`file` are handled inline by the engine, not as plugins). Every dynamic-library row carries `name`, `file` (the artifact filename — the `{file}` key `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` take; `null` for compiled-in/external rows, which have no backing artifact), `has_schema` (boolean, `true` iff `GET /plugins/{file}/schema` would return a non-null schema — equivalent to `schema_url != null`, spares a fetch-per-row when rendering a catalog), `version`, `publisher`, `interface_version`, a re-evaluated trust verdict (`trusted` / `unverified` / `rejected`), and `schema_url`/`schema_error` (below). MANIFEST-ONLY: listing never `dlopen`s anything, so an untrusted plugin's code cannot run from inspection |
 | `POST /plugins/inspect` | STATELESS preview of a candidate plugin tarball (`read-only` scope — its own `plugin-inspect` rate bucket, see above). Body: same shape as `POST /plugins` (`{file, tarball_b64}`; `file` unused — nothing is written). Verifies the signature, parses the manifest, and returns the SAME response shape as `GET /plugins/{file}/schema` plus `name`/`version`: `{name, version, kind, schema, schema_error, trust, source: "manifest", restart_required_default}`. `trust` may be `"rejected"` — an untrusted candidate is REPORTED, not refused (the point is previewing what a not-yet-trusted plugin would need without ever installing or executing it). Never writes to `plugins.dir`, never conflict-checks against the installed set — call this before `POST /plugins` to preview, or after downloading a candidate from a third-party release page before deciding whether to trust it |
+
+**Which stages a hook fires at: read `fires_at`, not `at`.** A hook's stage scoping has two config
+spellings and one meaning, so the read carries all three fields:
+
+| Field | What it is |
+|---|---|
+| `at` | The LEGACY single-valued tap stage. **`null` for essentially every hook a running deployment has**: a hook defined in the current top-level `hooks:` map never carries `at:`, and `--migrate-config` rewrites a legacy `at:` into `phase:`. `null` here does **not** mean "a gate" and does **not** mean "unscoped" |
+| `phase` | The `phase:` list exactly as configured, `[]` when unset. A literal echo for diffing what you wrote against what Busbar parsed. Ambiguous alone: `[]` means "fall back", and what it falls back TO depends on `at` |
+| `fires_at` | **The answer.** The resolved stage set, in pipeline order, never empty. Computed through the same predicate the firing path uses, so it cannot disagree with what Busbar actually does |
+
+The precedence `fires_at` resolves, frozen: a non-empty `phase:` wins outright; otherwise the legacy
+single `at:`; otherwise the hook fires at the four core stages (`request`, `candidate`, `routing`,
+`response`) **and only those**, never "every stage that will ever exist", so a stage added by a later
+release can never retroactively widen a hook you already deployed.
 
 No hook read ever includes a secret. A hook's `settings:` bag is a `SecretRef` carrier by design
 (Busbar resolves it before every `configure` push) and an operator may also write a literal

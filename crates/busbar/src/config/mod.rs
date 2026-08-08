@@ -1295,7 +1295,11 @@ pub(crate) struct HookDefCfg {
     #[serde(default)]
     pub(crate) groups: Vec<String>,
     /// PHASE: the pipeline stages this hook fires at (generalizes the single tap `at:` to a list).
-    /// Omit = all stages (falls back to the legacy single-stage default at resolution).
+    /// Omit = THE FOUR CORE STAGES and only those, never "every stage that will ever exist" (the
+    /// frozen meaning of an omitted `phase:`, see the FREEZE BLOCKER on [`CORE_HOOK_PHASES`]; this
+    /// doc line used to say "all stages", which is the reading that note exists to rule out).
+    /// A named definition never carries the legacy `at:`, so the resolved set is readable over the
+    /// admin API as `fires_at` (see [`HookCfg::resolved_stages`]).
     #[serde(default)]
     pub(crate) phase: Vec<HookStage>,
     /// The hook's MODE: `gate` (fire-and-wait) or `tap` (fire-and-forget). Default `gate` (a named
@@ -1773,6 +1777,41 @@ pub(crate) enum HookStage {
     Response,
 }
 
+impl HookStage {
+    /// The ONE wire spelling of a stage, shared by every surface that names one: the serde
+    /// representation above, the admin read projection's `at`/`phase`/`fires_at`, and any
+    /// diagnostic. Kept as a method rather than re-matched per call site because the admin
+    /// projection used to carry its own copy of this mapping, which is exactly how a wire
+    /// vocabulary drifts from the one the parser accepts.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            HookStage::Request => "request",
+            HookStage::Candidate => "candidate",
+            HookStage::Routing => "routing",
+            HookStage::Response => "response",
+        }
+    }
+}
+
+/// EVERY stage this build knows, in pipeline order: the domain [`HookCfg::fires_at_stage`] is asked
+/// about when resolving a hook's actual stage set.
+///
+/// Deliberately a SEPARATE constant from [`CORE_HOOK_PHASES`], not an alias for it, even though the
+/// two are byte-identical today. They answer different questions and are frozen to DIVERGE: this one
+/// is "which stages exist", which grows with every release that adds one; `CORE_HOOK_PHASES` is
+/// "which stages an omitted `phase:` means", which is FROZEN at the four and must never grow (see its
+/// FREEZE BLOCKER). Collapsing them would re-introduce the precise defect that freeze note exists to
+/// prevent: an added stage would silently join the default set and widen every already-deployed
+/// unscoped hook.
+///
+/// Pinned by `all_hook_stages_lists_every_stage_variant` in the admin hook-stage projection tests.
+pub(crate) const ALL_HOOK_STAGES: &[HookStage] = &[
+    HookStage::Request,
+    HookStage::Candidate,
+    HookStage::Routing,
+    HookStage::Response,
+];
+
 /// # FREEZE BLOCKER: THE FROZEN MEANING OF AN OMITTED `phase:`
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
@@ -2076,6 +2115,26 @@ impl HookCfg {
             Some(at) => at == stage,
             None => CORE_HOOK_PHASES.contains(&stage),
         }
+    }
+
+    /// The RESOLVED stage set: every stage this hook ACTUALLY fires at, in pipeline order.
+    ///
+    /// This is the honest answer to the only question an operator asks about stage scoping, and
+    /// neither `phase:` nor `at:` answers it alone. Reading `phase:` back tells you which of the two
+    /// spellings happened to be used, not what it resolves to: an EMPTY `phase:` is ambiguous between
+    /// "falls back to `at:`" and "falls back to the four core stages", and `at:` is `None` for every
+    /// hook written in the current (1.5.3 named-definition) grammar, because `hook_cfg_from_def`
+    /// never sets it. So the admin read projects this alongside both spellings.
+    ///
+    /// Computed by asking [`Self::fires_at_stage`], the SAME predicate the firing path consults,
+    /// once per stage, so the read cannot drift from the behavior it describes. A future stage is
+    /// picked up here for free the moment it joins [`ALL_HOOK_STAGES`].
+    pub(crate) fn resolved_stages(&self) -> Vec<HookStage> {
+        ALL_HOOK_STAGES
+            .iter()
+            .copied()
+            .filter(|stage| self.fires_at_stage(*stage))
+            .collect()
     }
 }
 
