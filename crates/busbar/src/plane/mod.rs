@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE PLANE SPINE: which planes exist, what each one is called wherever it is named, and which
+//! plane an inbound request belongs to.
+//!
+//! `plane-layering.md`, in code. The shape it describes is:
+//!
+//! ```text
+//!     wire protocols
+//!           |
+//!        PLANE DISPATCH        <- decides which plane an inbound request belongs to
+//!        /      |      \
+//!      LLM     MCP     A2A     <- each plane owns ONE canonical type
+//!       |
+//!      IR                      <- only LLM has a superset IR, because only LLM needs one
+//!       |
+//!     wire protocols
+//! ```
+//!
+//! ## Why this is one type and not three constants scattered per plane
+//!
+//! A plane is named in at least four places: its config section, its scope-grant kinds, its ingress
+//! mount, and its audit resources. Those strings have to agree, and two of them agreeing by
+//! coincidence is how one plane's grant ends up admitting another plane's traffic. So they are
+//! stated once, per plane, and a test asserts they never collide across planes.
+//!
+//! ## The superset-IR rule is COMPUTED, not asserted
+//!
+//! An IR exists to solve N x M translation. Six protocols in and six out turns 30 conversions into
+//! 12, and that is its entire justification. A plane with ONE wire format in and one out would have
+//! an "IR" with exactly one protocol on each side, which is a data model wearing a costume, plus a
+//! second thing to keep lossless and a second place for a translation bug in a product whose
+//! headline claim is lossless translation.
+//!
+//! So [`Plane::has_superset_ir`] is derived from [`Plane::wire_formats`] rather than written as
+//! `matches!(self, Plane::Llm)`. That makes it a RULE rather than a fact about today's planes: the
+//! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
+//! LLM count is read off the real protocol registry, so a seventh dialect does not depend on
+//! anyone remembering to bump a literal here.
+//!
+//! A TRANSPORT IS NOT A WIRE FORMAT. MCP runs over stdio, streamable HTTP and SSE, and every one of
+//! them carries the same JSON-RPC message shape. Counting transports would hand MCP an IR it has
+//! not earned.
+//!
+//! ## Each plane still owns ONE canonical type
+//!
+//! Even without a superset, every plane has one canonical internal type, so the architecture reads
+//! the same everywhere: protocol in, canonical type, protocol out. For a single-wire-format plane
+//! that canonical type IS the protocol's own model, MIRRORED IN OUR STRUCTS rather than adopted
+//! from a third party's generated ones. MCP is versioned and moving; if the internal representation
+//! were somebody's generated types, a spec revision would ripple through the engine, the registry,
+//! the catalogue cache and the audit records instead of staying contained to the reader and writer
+//! at the edge.
+
+// NO PRODUCTION CALLER YET. This is the spine the next two items are built on: the candidate
+// projection keys its per-plane payload by `Plane`, and the shared pools/tools/agents container
+// keys its sections by `Plane::config_section` and refuses a cross-plane reference using
+// `Plane::scope_kinds`. Landing the spine first is what stops those two inventing a second, subtly
+// different notion of what a plane is. Same posture as the trust lifecycle and the entry merge
+// patch on this branch.
+#![cfg_attr(not(test), allow(dead_code))]
+
+/// One governance plane. The variant set is the only thing a new plane adds here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Plane {
+    /// Model traffic. The residual ingress, and the only plane with a superset IR.
+    Llm,
+    /// Tool traffic.
+    Mcp,
+    /// Agent traffic.
+    A2a,
+}
+
+impl Plane {
+    /// Every plane, in layering order. Iterated by dispatch, the config validator and the candidate
+    /// projection, so a plane absent from here is a plane that silently does not exist.
+    pub(crate) const ALL: &'static [Plane] = &[Plane::Llm, Plane::Mcp, Plane::A2a];
+
+    /// The plane's short stable name, for logs, metrics labels and audit resources.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Plane::Llm => "llm",
+            Plane::Mcp => "mcp",
+            Plane::A2a => "a2a",
+        }
+    }
+
+    /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. The three are
+    /// siblings of one shape, never cross-referencing sections.
+    pub(crate) fn config_section(self) -> &'static str {
+        match self {
+            Plane::Llm => "pools",
+            Plane::Mcp => "tools",
+            Plane::A2a => "agents",
+        }
+    }
+
+    /// The `ScopeRef` kinds that grant access ON this plane, gated through `scope_allowed`.
+    ///
+    /// A slice rather than one string because a plane may grant at more than one granularity: MCP
+    /// grants a whole server or a single tool. Cross-kind matching is fail-closed in the store, so
+    /// these sets are what keep one plane's grant from admitting another plane's traffic.
+    pub(crate) fn scope_kinds(self) -> &'static [&'static str] {
+        match self {
+            Plane::Llm => &["pool"],
+            Plane::Mcp => &["mcp_server", "mcp_tool"],
+            Plane::A2a => &["agent"],
+        }
+    }
+
+    /// How many distinct WIRE FORMATS this plane translates between. Not transports.
+    pub(crate) fn wire_formats(self) -> usize {
+        match self {
+            // Read off the real registry: the dialects busbar actually speaks are what earn this
+            // plane its IR, so adding one cannot silently leave the rule behind.
+            Plane::Llm => crate::proto::KNOWN_PROTOCOLS.len(),
+            // JSON-RPC 2.0, over any of three transports.
+            Plane::Mcp => 1,
+            // One wire format today.
+            Plane::A2a => 1,
+        }
+    }
+
+    /// Whether this plane has EARNED a superset intermediate representation. See the module header:
+    /// the threshold is two wire formats, and nothing else.
+    pub(crate) fn has_superset_ir(self) -> bool {
+        self.wire_formats() >= 2
+    }
+}
+
+/// PLANE DISPATCH: which plane an inbound request belongs to.
+///
+/// The LLM plane is the RESIDUAL and is never mounted. That mirrors the router, where the protocol
+/// catch-all claims every unclaimed path by construction, and it means there is exactly one door
+/// per plane rather than a precedence question with no good answer.
+///
+/// A non-LLM plane claims a path only when the operator has MOUNTED it. A deployment that never
+/// enabled MCP cannot have a request routed onto the MCP plane by URL shape alone: a plane exists
+/// because it is configured, not because its name appears in a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlaneDispatch {
+    mcp: Option<String>,
+    a2a: Option<String>,
+}
+
+impl PlaneDispatch {
+    /// Mount `plane` at `path`. Mounting [`Plane::Llm`] is a no-op: it is the residual.
+    ///
+    /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
+    /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
+    /// answers nothing because of a trailing slash.
+    pub(crate) fn mount(mut self, plane: Plane, path: &str) -> Self {
+        let normalised = normalise_mount(path);
+        if normalised.is_empty() {
+            return self;
+        }
+        match plane {
+            Plane::Llm => {}
+            Plane::Mcp => self.mcp = Some(normalised),
+            Plane::A2a => self.a2a = Some(normalised),
+        }
+        self
+    }
+
+    /// This plane's mount, or `None` when it is not mounted (always `None` for the residual LLM
+    /// plane). Read by the router to mount the right handler, and by an inbound audience check that
+    /// needs to know its own canonical path.
+    pub(crate) fn mount_of(&self, plane: Plane) -> Option<&str> {
+        match plane {
+            Plane::Llm => None,
+            Plane::Mcp => self.mcp.as_deref(),
+            Plane::A2a => self.a2a.as_deref(),
+        }
+    }
+
+    /// The plane `path` belongs to, falling back to the residual LLM plane.
+    ///
+    /// Matching is on a SEGMENT BOUNDARY, never a bare prefix: a mount at `/mcp` claims `/mcp` and
+    /// `/mcp/...` but not `/mcpx`. This is the same over-match the admin `/api` check guards, and
+    /// getting it wrong here would hand a sibling path to a plane whose grants are meant to be
+    /// inadmissible everywhere else.
+    pub(crate) fn plane_of(&self, path: &str) -> Plane {
+        for plane in [Plane::Mcp, Plane::A2a] {
+            if let Some(mount) = self.mount_of(plane) {
+                if path_is_under(path, mount) {
+                    return plane;
+                }
+            }
+        }
+        Plane::Llm
+    }
+}
+
+/// `/mcp/` -> `/mcp`, `mcp` -> `/mcp`, `/` -> `` (which mounts nothing).
+fn normalise_mount(path: &str) -> String {
+    let trimmed = path.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    format!("/{trimmed}")
+}
+
+/// `path` is `mount` exactly, or lies beneath it at a SEGMENT boundary.
+fn path_is_under(path: &str, mount: &str) -> bool {
+    match path.strip_prefix(mount) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('/'),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/plane_tests.rs"]
+mod plane_tests;
