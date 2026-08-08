@@ -511,7 +511,12 @@ pub(crate) struct TlsCfg {
 /// The built-in `keys` (data-plane signed-key verifier) and `admin-tokens` (operator credential)
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. `admin-tokens` carrying its `token:` secret ref).
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+// `Serialize` is required by the overlay's per-entry MERGE (`config::patch::merge_entry`): an
+// overlay entry is a PATCH, so the base entry has to be projected back to JSON in order to be
+// patched. The projection is config-internal and round-trips straight back into this same struct;
+// it reaches no reader and no HTTP response, which is the distinction the settings-leak lint's
+// category (c) turns on.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
 pub(crate) struct IdentityProviderCfg {
     /// The module backing this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth`
@@ -554,7 +559,9 @@ pub(crate) struct IdentityProviderCfg {
     // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     // `settings:` the operator WROTE. Every admin read of it serves
     // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
+    // `service::redact_settings_bags` first. The struct now derives `Serialize`, and that
+    // serialization has exactly ONE consumer: the overlay's per-entry merge, which projects the
+    // base entry to JSON, patches it, and parses it straight back into this same struct.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -629,7 +636,9 @@ pub(crate) type RoleBindings =
 /// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
 /// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
 /// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+// `Serialize` for the same single reason `IdentityProviderCfg` has it: it is a nested field of one,
+// so the overlay's per-entry merge projection needs it. Config-internal, never a reader-facing view.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BrowserLoginCfg {
     /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
@@ -4314,3 +4323,7 @@ pub(crate) fn resolve(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/named_map_merge_tests.rs"]
+mod named_map_merge_tests;

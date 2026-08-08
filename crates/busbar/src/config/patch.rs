@@ -57,12 +57,10 @@ use serde::{Deserialize, Serialize};
 /// ([`crate::config::named_map::NamedMapSection::parse_def`]), which is the one grammar both the
 /// API and the file are judged by.
 ///
-/// NOT YET CALLED FROM PRODUCTION, and deliberately landed ahead of its caller: the named-map patch
-/// verb that consumes it is the next increment, and the semantics above are the part worth settling
-/// and pinning first. It is NOT wired into `PATCH <section>/{name}/settings`, whose contract is
-/// REPLACE the whole settings bag — merging there would quietly turn a documented replace into a
-/// merge on a frozen wire, which is the opposite of what this primitive is for.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Its production caller is [`crate::config::overlay::apply_named_maps_to_deploy`], which merges a
+/// stored overlay entry onto the base entry of the same name. It is deliberately NOT wired into
+/// `PATCH <section>/{name}/settings`, whose contract is REPLACE the whole settings bag — merging
+/// there would quietly turn a documented replace into a merge on a frozen wire.
 pub(crate) fn merge_entry(target: &mut serde_json::Value, patch: &serde_json::Value) {
     let serde_json::Value::Object(patch_obj) = patch else {
         // A non-object patch replaces outright. This is the whole-entry-replace case.
