@@ -220,24 +220,47 @@ jobs:
       REQUIRED_WORKFLOWS: "CI"
       # WORKFLOWS THAT ARE NOT CHECKS OF THIS COMMIT, AND THIS IS NOT AN EXCEPTION LIST.
       #
-      # The distinction is structural, not a judgement about which reds matter. `branch-green` asks
-      # ONE question: is this COMMIT's code green. Both names below answer a different question and
-      # including them makes the gate incoherent rather than strict:
+      # THE ONLY ARGUMENT FOR EITHER NAME BELOW IS THAT IT DOES NOT ANSWER THIS GATE'S QUESTION.
+      # `branch-green` asks ONE thing: is this COMMIT's code green. Neither of these reports on the
+      # commit, so including them makes the gate incoherent rather than stricter. Read this list as
+      # covering exactly that and nothing more.
       #
       #   Release       is THIS run. A job cannot wait for the run it is part of, and a re-run must
       #                 not be failed by an earlier attempt's conclusion.
-      #   Verify deploy verifies the LIVE, PUBLISHED world - Docker Hub's `latest`, the Homebrew
-      #                 tap, the Helm chart, getbusbar.com, the site's counters. On this commit's
-      #                 SHA it can only run AFTER the release publishes (its `release: published`
-      #                 and `workflow_run` triggers), so requiring it green BEFORE publishing is
-      #                 circular: on a first run it does not exist, and on a re-run it reports on
-      #                 the state of production rather than on the code being released.
       #
-      # ITS RED IS NOT IGNORED, IT IS JUDGED AT THE RIGHT POINT. verify-deploy runs inside this
-      # release graph twice: as `verify-staged`, which GATES the promote, and as
-      # `consumer-verification`, which turns this run red and opens an issue. So a broken channel
-      # still stops or flags a release. What it does not do is block a fix from being released
-      # because production is currently broken, which would be the exact opposite of useful.
+      #   Verify deploy verifies the LIVE, PUBLISHED world: Docker Hub's `latest`, the Homebrew tap,
+      #                 the Helm chart, getbusbar.com, the site's counters. Every way it can carry
+      #                 this commit's SHA is incoherent as a pre-publication gate, and there are two:
+      #
+      #                   * `release: published` and `workflow_run` fire only AFTER this release
+      #                     publishes. On a first run no such run exists, so requiring it is either
+      #                     vacuous or a deadlock; on a re-run it is a report on the state of
+      #                     production at the previous attempt.
+      #                   * the daily and 3-hourly `schedule` runs carry the DEFAULT BRANCH's head
+      #                     SHA, which on release day is this very commit -- while the version they
+      #                     resolve and verify comes from the live `/releases/latest` redirect, i.e.
+      #                     the PREVIOUS release. Requiring that green would gate release N on the
+      #                     channel health of release N-1, attributed to release N's commit. It is
+      #                     not a weaker check of this commit; it is a check of something else
+      #                     wearing this commit's SHA.
+      #
+      # NOTHING ABOUT A CURRENT PRODUCTION RED JUSTIFIES THIS ENTRY, AND THAT IS SAID EXPLICITLY
+      # BECAUSE AN EARLIER DRAFT OF THIS CHANGE LEANED ON ONE. It cited verify-deploy's check (n),
+      # the live-counters assertion, as permanently red until the marketing counts Worker was
+      # deployed. That was true when written and is not true now: GetBusbar/marketing#2 fixed the
+      # Worker's hourly refresh (a Docker Hub login failure thrown outside any try block aborted the
+      # whole handler), put both Workers on deploy-from-main, and added an hourly live guard so
+      # staleness has its own red. Check (n) was re-run verbatim against production on 2026-08-08
+      # and PASSES: pulls 27187 hub vs 27174 served (delta 13, tolerance 271) and stars 106 vs 106
+      # (delta 0, tolerance 2). So that half of the reasoning is struck, not merely outdated, and
+      # this entry stands on the structural argument above ALONE. "A check is currently red" must
+      # never be a reason to stop asking it -- that is the permission-to-ignore mechanism this whole
+      # gate exists to remove.
+      #
+      # ITS VERDICT IS NOT IGNORED, IT IS TAKEN AT THE POINT WHERE IT MEANS SOMETHING. verify-deploy
+      # runs inside this release graph twice, both times against the artifact actually being cut:
+      # as `verify-staged`, which GATES the promote, and as `consumer-verification`, which turns
+      # this run red and opens a labelled issue.
       NOT_COMMIT_CHECKS: "Release,Verify deploy"
     steps:
       - name: Every check on this commit must have concluded, and every conclusion must be green
@@ -363,8 +386,34 @@ jobs:
     needs: [plan, branch-green]
     runs-on: ubuntu-latest
     services:
+      # PINNED BY DIGEST, NOT BY TAG. `postgres:16` and `valkey/valkey:8` are MOVING tags: Docker Hub
+      # re-points them at every patch, so the same commit gets different bytes on different days and
+      # a store-roundtrip failure could be caused by a database nobody in this repository changed.
+      # These service containers are load-bearing (without them the Postgres/Valkey roundtrip tests
+      # hard-fail rather than skip, which is deliberate), so what they resolve to has to be a fact
+      # about this commit, not about the calendar.
+      #
+      # WHAT A DIGEST PIN DOES NOT FIX, SAID PLAINLY SO NOBODY THINKS THE HOLE IS CLOSED: it does
+      # nothing about Docker Hub RATE LIMITS. The pull still goes to Docker Hub and an anonymous
+      # runner still gets the anonymous quota. The pin buys reproducibility; authentication is what
+      # buys quota. See the `credentials:` block below (release.yml) and the note in ci.yml.
+      #
+      # RE-PINNING: `docker buildx imagetools inspect postgres:16` prints the current digest. These
+      # are ordinary dependencies and should move on the same cadence as the rest -- if they go
+      # stale enough to matter, re-pin in the monthly-refresh PR.
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        # AUTHENTICATED PULL, WHICH IS THE PART THAT ACTUALLY ADDRESSES RATE LIMITS. Docker Hub's
+        # anonymous quota is per source IP and GitHub's runner IPs are shared, so an anonymous pull
+        # can be throttled for reasons that have nothing to do with busbar -- and under the
+        # no-waiver rule that would be a red nobody can clear by fixing the software. These are the
+        # same credentials docker.yml already uses. Safe to reference unconditionally HERE because
+        # this workflow only triggers on a push to `main` and on workflow_dispatch, never on
+        # `pull_request`, so the secrets are always present; ci.yml cannot do the same without
+        # breaking fork PRs, where secrets are withheld.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
@@ -377,7 +426,18 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        # AUTHENTICATED PULL, WHICH IS THE PART THAT ACTUALLY ADDRESSES RATE LIMITS. Docker Hub's
+        # anonymous quota is per source IP and GitHub's runner IPs are shared, so an anonymous pull
+        # can be throttled for reasons that have nothing to do with busbar -- and under the
+        # no-waiver rule that would be a red nobody can clear by fixing the software. These are the
+        # same credentials docker.yml already uses. Safe to reference unconditionally HERE because
+        # this workflow only triggers on a push to `main` and on workflow_dispatch, never on
+        # `pull_request`, so the secrets are always present; ci.yml cannot do the same without
+        # breaking fork PRs, where secrets are withheld.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         ports:
           - 6379:6379
         options: >-
