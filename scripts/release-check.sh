@@ -84,8 +84,9 @@
 #     `../webrequest-hook`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
-#     skipped loudly and does not fail the gate (documented — matches the task's explicit
-#     instruction not to fail the whole run over a missing sibling).
+#     recorded as a COVERAGE GAP: the verdict banner changes, names it, and says it did not run.
+#     Non-fatal by default (a missing sibling is a fact of local life), fatal under
+#     --require-siblings, which the pre-release path sets.
 #
 # USAGE
 #   scripts/release-check.sh                # run every phase
@@ -96,6 +97,18 @@
 #   scripts/release-check.sh --check-coverage # assert every partition's segments EXACTLY tile the
 #                                             # phase set (no hole, no overlap); exit 1 on either
 #   scripts/release-check.sh --segment <id>  # run ONLY that segment's phases (see SEGMENTATION)
+#   scripts/release-check.sh --require-siblings # a phase that DID NOT RUN fails the run (see below)
+#   scripts/release-check.sh --selftest      # prove the verdict accounting, offline, seconds
+#
+# A PHASE THAT DID NOT RUN IS NOT A PHASE THAT PASSED
+#   A phase whose sibling checkout is absent records `sibling-missing`, and the run used to end with
+#   an unconditional "RELEASE GATE PASSED" banner regardless. So a green release-check did not prove
+#   the phase RAN, only that it did not fail, and those are different claims. The verdict is now
+#   COMPUTED: a coverage gap changes the banner text, NAMES every phase that did not run and why,
+#   and is FATAL under --require-siblings (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1, which
+#   qa-gate.yml sets, because a release must never be signed off by a run that tested less).
+#   A by-design `not-in-segment` skip is NOT a gap: --check-coverage already proves the segments
+#   tile the phase set exactly.
 #
 # SEGMENTATION
 #   The gate is a set of independently-runnable PHASES. `--list-phases` emits their ids; the ids
@@ -146,12 +159,30 @@ SEGMENT=""
 LIST_PHASES=0
 LIST_SEGMENTS=0
 CHECK_COVERAGE=0
+# REQUIRE_SIBLINGS: turn a coverage GAP into a hard failure.
+#
+# WHY THIS EXISTS. A phase whose sibling checkout is absent records `sibling-missing` and the run
+# still ended with an unconditional "RELEASE GATE PASSED" banner. So a green release-check did not
+# prove the phase RAN, only that it did not fail, and those two are not the same claim. The
+# busbar-admin phase is the sharpest case: busbar-admin is a separate repo holding its own copy of
+# busbar's wire shapes, its `integration.sh` is the ONLY cross-repo behavioural check on that mirror,
+# and qa-gate-run.sh's `clone_sibling` warns and continues when the clone fails. One failed clone
+# and the widest mirror in the fleet went completely unverified under a green banner.
+#
+# The fix is two-part and both parts matter. Unconditionally, the verdict banner now NAMES the gaps
+# and reads differently from a clean pass, so the two can never be confused by a human. And with
+# this flag (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1) a gap is fatal, which is what an automated
+# release path wants: nothing should sign off a release on a run that quietly tested less.
+REQUIRE_SIBLINGS="${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-0}"
+SELFTEST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --skip-docker) SKIP_DOCKER=1 ;;
     --list-phases) LIST_PHASES=1 ;;
     --list-segments) LIST_SEGMENTS=1 ;;
     --check-coverage) CHECK_COVERAGE=1 ;;
+    --require-siblings) REQUIRE_SIBLINGS=1 ;;
+    --selftest) SELFTEST=1 ;;
     --segment) shift; SEGMENT="${1:-}" ;;
     --segment=*) SEGMENT="${1#--segment=}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -552,6 +583,145 @@ record_phase_skip() {
   PHASE_RUN_SECS+=(0)
   PHASE_RUN_STATUS+=("${2:-skipped}")
 }
+
+# --- A SKIP THAT READS AS A PASS -----------------------------------------------------------------
+#
+# There are two entirely different reasons a phase did not run, and conflating them is what let a
+# green release-check mean nothing:
+#
+#   BY DESIGN     `not-in-segment`. This invocation was asked to run one segment of a partition;
+#                 the other segments' phases are another job's business. --check-coverage already
+#                 proves the segments tile the phase set exactly, so nothing is lost.
+#   A COVERAGE GAP `sibling-missing`, `skip-docker`. The phase WAS in scope for this run and did not
+#                 execute. Its subject is untested. Nothing about the run supports a claim that it
+#                 works, and the previous unconditional "RELEASE GATE PASSED" banner asserted
+#                 exactly that claim.
+#
+# This is derived from the SAME bookkeeping every phase already writes, deliberately, rather than
+# from per-family ad-hoc variables (SUITE_SKIPPED, SQLITE_SKIPPED, and the hand-written
+# busbar-admin note each did their own version of this and each had to be remembered). A phase added
+# later that calls record_phase_skip with a gap status is counted here with no further edit.
+GAP_STATUSES="sibling-missing skip-docker"
+
+is_gap_status() {
+  local s
+  for s in $GAP_STATUSES; do [ "$1" = "$s" ] && return 0; done
+  return 1
+}
+
+# Print "<phase-id> <status>" for every phase that did not run for a coverage-gap reason.
+gap_phases() {
+  local i=0
+  while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
+    if is_gap_status "${PHASE_RUN_STATUS[$i]}"; then
+      printf '%s %s\n' "${PHASE_RUN_IDS[$i]}" "${PHASE_RUN_STATUS[$i]}"
+    fi
+    i=$((i + 1))
+  done
+}
+
+# The verdict. Exits non-zero when gaps exist AND the caller asked for them to be fatal.
+print_verdict() {
+  local gaps n
+  gaps="$(gap_phases)"
+  n="$(printf '%s' "$gaps" | grep -c . || true)"
+
+  if [ "$n" -eq 0 ]; then
+    phase "RELEASE GATE PASSED${SEGMENT:+ (segment: ${SEGMENT})}"
+    echo "Every phase in scope for this run EXECUTED. No coverage gaps."
+    return 0
+  fi
+
+  if [ "$REQUIRE_SIBLINGS" = "1" ]; then
+    phase "RELEASE GATE INCOMPLETE${SEGMENT:+ (segment: ${SEGMENT})}: ${n} PHASE(S) DID NOT RUN"
+  else
+    phase "RELEASE GATE PASSED WITH GAPS${SEGMENT:+ (segment: ${SEGMENT})}: ${n} PHASE(S) DID NOT RUN"
+  fi
+  echo
+  echo "NOT A CLEAN PASS. Nothing below failed, but nothing below ran either, so this run says"
+  echo "NOTHING about whether these work. Do not read the banner above as a green gate."
+  echo
+  printf '%s\n' "$gaps" | while read -r p s; do
+    [ -n "$p" ] || continue
+    case "$s" in
+      sibling-missing) printf '  DID NOT RUN  %-34s no sibling checkout on this machine\n' "$p" ;;
+      skip-docker)     printf '  DID NOT RUN  %-34s --skip-docker suppressed its service container\n' "$p" ;;
+      *)               printf '  DID NOT RUN  %-34s %s\n' "$p" "$s" ;;
+    esac
+  done
+  echo
+  echo "To close a sibling-missing gap, clone the sibling repo next to this one and re-run."
+  echo "To close a skip-docker gap, start Docker and re-run without --skip-docker."
+  echo
+
+  if [ "$REQUIRE_SIBLINGS" = "1" ]; then
+    echo "--require-siblings (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1) is set, so a gap is fatal."
+    echo "This is the release path: a release must never be signed off by a run that tested less."
+    return 1
+  fi
+  echo "Gaps are non-fatal in this mode. Pass --require-siblings to make them fatal, which the"
+  echo "release path does."
+  return 0
+}
+
+# --- SELFTEST: prove the verdict distinguishes a clean pass from a gap ---------------------------
+# The whole defect was a gap that READ AS a pass, so the thing that must be proven is precisely that
+# these two produce different output and different exit codes. Cheap, offline, no gate run.
+run_selftest() {
+  local fails=0 out rc
+  echo "release-check.sh --selftest: verdict accounting"
+
+  check() {
+    if [ "$2" = "$3" ]; then echo "  [ok] $1"
+    else echo "  [FAIL] $1"; echo "         want: $2"; echo "         got : $3"; fails=$((fails + 1)); fi
+  }
+
+  # 1. No gaps: a clean pass, exit 0, and the banner does NOT carry a gap qualifier.
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 2); PHASE_RUN_STATUS=(ran ran)
+  REQUIRE_SIBLINGS=0
+  out="$(print_verdict)"; rc=$?
+  check "a clean run exits 0" "0" "$rc"
+  check "a clean run says PASSED with no qualifier" "yes" \
+    "$(case "$out" in *"RELEASE GATE PASSED WITH GAPS"*) echo no ;; *"RELEASE GATE PASSED"*) echo yes ;; *) echo no ;; esac)"
+
+  # 2. not-in-segment is BY DESIGN and must NOT be counted as a gap, or every segmented job would
+  #    report gaps and the signal would be worthless within a day.
+  PHASE_RUN_IDS=(a b); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran not-in-segment)
+  out="$(print_verdict)"
+  check "not-in-segment is not a coverage gap" "yes" \
+    "$(case "$out" in *"WITH GAPS"*) echo no ;; *) echo yes ;; esac)"
+
+  # 3. THE DEFECT. A missing sibling must be visibly different from a pass, and must NAME the phase.
+  PHASE_RUN_IDS=(a phase-admin-cli); PHASE_RUN_SECS=(1 0); PHASE_RUN_STATUS=(ran sibling-missing)
+  out="$(print_verdict)"; rc=$?
+  check "a missing sibling still exits 0 by default" "0" "$rc"
+  check "a missing sibling does NOT read as a clean pass" "yes" \
+    "$(case "$out" in *"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+  check "the gap banner names the phase that did not run" "yes" \
+    "$(case "$out" in *"DID NOT RUN"*phase-admin-cli*) echo yes ;; *) echo no ;; esac)"
+
+  # 4. Under --require-siblings the same state is FATAL.
+  REQUIRE_SIBLINGS=1
+  out="$(print_verdict)" && rc=0 || rc=1
+  check "a missing sibling is fatal under --require-siblings" "1" "$rc"
+  check "the fatal banner says INCOMPLETE, not PASSED" "yes" \
+    "$(case "$out" in *"RELEASE GATE INCOMPLETE"*) echo yes ;; *) echo no ;; esac)"
+
+  # 5. skip-docker is a coverage gap too: a suite phase whose real service never booted tested
+  #    nothing about that backend.
+  REQUIRE_SIBLINGS=0
+  PHASE_RUN_IDS=(phase-2-suite-store-postgres); PHASE_RUN_SECS=(0); PHASE_RUN_STATUS=(skip-docker)
+  out="$(print_verdict)"
+  check "skip-docker counts as a coverage gap" "yes" \
+    "$(case "$out" in *"WITH GAPS"*) echo yes ;; *) echo no ;; esac)"
+
+  echo
+  if [ "$fails" -ne 0 ]; then echo "release-check.sh --selftest FAILED (${fails} case(s))"; return 1; fi
+  echo "release-check.sh --selftest passed"
+}
+
+# --selftest exits here: it proves the verdict accounting and must not run the gate.
+if [ "$SELFTEST" = "1" ]; then run_selftest; exit $?; fi
 
 print_timing_summary() {
   local i=0 total=0
@@ -1547,7 +1717,12 @@ else
   end_phase ran
 fi
 
-phase "RELEASE GATE PASSED${SEGMENT:+ (segment: ${SEGMENT})}"
+# The verdict is COMPUTED, not asserted. See print_verdict: a phase that did not run for a coverage
+# reason changes the banner, names itself, and is fatal under --require-siblings. `|| VERDICT_RC=$?`
+# rather than a bare call so the timing summary below still prints on the fatal path: a run that
+# ends because coverage was incomplete is exactly a run whose accounting you want to read.
+VERDICT_RC=0
+print_verdict || VERDICT_RC=$?
 echo "Total elapsed: ${SECONDS}s"
 if [ -n "$SEGMENT" ]; then
   echo "This run covered ONLY segment '${SEGMENT}'. It is NOT the full gate on its own —"
@@ -1579,3 +1754,5 @@ if phase_selected phase-5-smoke-headroom || phase_selected phase-5-smoke-webrequ
 fi
 
 print_timing_summary
+
+exit "$VERDICT_RC"
