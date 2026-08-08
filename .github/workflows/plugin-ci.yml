@@ -5,9 +5,13 @@
 # file exists so every plugin repo's CI is the SAME file, not a fork of it.
 #
 # Standard stages every plugin gets, in this order:
-#   1. Checkout the plugin + a sibling checkout of busbar (this repo) at BUSBAR_REF — the same
-#      interim local-path-dependency pattern every plugin's Cargo.toml already uses. Update
-#      BUSBAR_REF's default below once 1.5.0 ships and plugins can track `main` again.
+#   0. RESOLVE WHICH BUSBAR. Every stage below runs ONCE PER LEG of a matrix with two legs: the
+#      PINNED busbar from the caller's own `.busbar-ref` (what that repo's release will actually
+#      build against) and the MOVING busbar from `busbar_ref` (the engine branch it tracks). Either
+#      leg red is red. The two collapse to one leg when they are the same commit. See the `refs`
+#      job for why running only one of them loses real coverage.
+#   1. Checkout the plugin + a sibling checkout of busbar (this repo) at that leg's commit: the
+#      same interim local-path-dependency pattern every plugin's Cargo.toml already uses.
 #   2. Optionally boot a real backend service container (`postgres:16` / `valkey/valkey:8` /
 #      `hashicorp/vault` dev-mode) — never a mock. `pg_isready`/the image's own Docker healthcheck
 #      (or, for vault, a `wget` against its own `/v1/sys/health` endpoint) gates every later step so
@@ -60,11 +64,82 @@ on:
         # main since v1.5.0 shipped (2026-08-02): plugins build against the released engine by
         # default, per the header's own "update once 1.5.0 ships" note. Pass busbar_ref: dev
         # explicitly to test a plugin against unreleased engine work.
+        #
+        # NOTE this is now only the MOVING leg of a two-leg matrix. See the `refs` job below: the
+        # PINNED leg is derived from the caller's own `.busbar-ref` and is not configurable, because
+        # it is not an opinion. It is whatever that repo's release will actually build against.
         default: "main"
 
 jobs:
+  # === WHICH BUSBAR DOES A PLUGIN'S CI ACTUALLY PROVE ANYTHING ABOUT ===
+  #
+  # THE DEFECT THIS JOB EXISTS TO CLOSE. Until now a plugin's CI and a plugin's RELEASE built against
+  # two different busbars, and nothing anywhere compared them:
+  #   - CI  built against `inputs.busbar_ref`, which every caller sets to `github.ref_name` (or
+  #     leaves at `main`). That is the MOVING engine: whatever busbar's branch holds right now.
+  #   - RELEASE builds against field 1 of the plugin repo's own `.busbar-ref`, a PINNED SHA that
+  #     `release-on-upstream.yml` rewrites only when it cuts. That is the engine the shipped
+  #     artifact is actually compiled and linked against.
+  # So a green CI proved the plugin worked against a busbar its release would never build, and an
+  # API or config-grammar break between the two refs stayed INVISIBLE UNTIL RELEASE DAY. That is not
+  # hypothetical: it is why the 1.5.3 fixture breaks were latent across a long list of first-party
+  # repos whose CI was green the whole time they were writing configs 1.5.3 had already retired.
+  #
+  # WHY NOT SIMPLY UNIFY ON THE PIN. Because both refs are load-bearing and they answer different
+  # questions, and dropping either one loses real coverage:
+  #   PINNED  is the only ref whose green is load-bearing for SHIPPING. If this is red, the release
+  #           is broken today. Nothing may be green without it.
+  #   MOVING  is the early warning. Testing only the pin makes a ratchet that never turns: a plugin
+  #           stays green forever while drifting arbitrarily far from the engine, and the break
+  #           finally lands inside `release-on-upstream.yml`, which re-pins `.busbar-ref` AND cuts
+  #           the tag in one workflow. Discovering it there is discovering it too late.
+  # So: run BOTH, fail on EITHER. The cost is bounded, because when the pin and the moving ref
+  # resolve to the SAME COMMIT this job emits ONE leg, not two, and says so. On a plugin that is
+  # up to date with the engine (the steady state) this is free.
+  refs:
+    name: resolve the busbar refs this plugin must be proven against
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Checkout the plugin (for .busbar-ref only)
+        uses: actions/checkout@v7
+        with:
+          path: plugin
+
+      # The sibling busbar checkout is what OWNS the decision logic, in a script with a --selftest,
+      # rather than inline YAML nobody can run. `dev` deliberately, not the leg refs being resolved:
+      # this step is what decides those, so it cannot depend on them.
+      - name: Checkout busbar (for the resolver script)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/busbar
+          ref: dev
+          path: busbarAI
+
+      - name: Ref resolver SELF-TEST (prove the decisions before trusting the verdict)
+        # A gate nobody watched fail is not a gate. This covers the dedupe, the hard failure on an
+        # unresolvable `.busbar-ref` pin, and the `<number>/merge` pull_request fallback, offline.
+        run: bash busbarAI/scripts/plugin-ci-refs.sh --selftest
+
+      - name: Build the ref matrix
+        id: build
+        run: |
+          bash busbarAI/scripts/plugin-ci-refs.sh \
+            --plugin-root plugin \
+            --moving-ref "${{ inputs.busbar_ref }}" >> "$GITHUB_OUTPUT"
+
+
   build-test-signoff:
-    name: build, test, clippy, fmt, signoff
+    name: build, test, clippy, fmt, signoff [busbar ${{ matrix.label }}]
+    needs: refs
+    strategy:
+      # fail-fast off ON PURPOSE. When the pinned leg and the moving leg disagree, the single most
+      # useful fact is WHICH ONE broke: pinned-red means the release is broken now, moving-red means
+      # the engine has moved out from under this plugin and the next re-pin will break it. Cancelling
+      # the sibling leg on the first failure destroys exactly that signal.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -139,48 +214,44 @@ jobs:
         with:
           path: plugin
 
-      # RESOLVE THE SIBLING REF BEFORE CHECKING IT OUT, because the ref every caller passes is
-      # frequently one that does not exist in busbar, and the resulting failure is unreadable.
-      #
-      # THE BUG THIS FIXES, and it is the reason several plugin repos have never merged a PR. Most
-      # callers pass `busbar_ref: ${{ github.ref_name }}`, meaning "test against the same-named
-      # busbar branch" - dev against dev, main against main. On a `pull_request` event
-      # `github.ref_name` is not a branch name at all: it is `<number>/merge`. So EVERY pull request
-      # to those repos asked busbar for a branch called `5/merge`, and `actions/checkout` retried
-      # and died with "The process '/usr/bin/git' failed with exit code 1" and no explanation of
-      # which ref it wanted or why. The check has been red on every PR, for a reason the log does
-      # not state, which is indistinguishable from the repo's tests being broken. That is enough to
-      # stop a review culture forming.
-      #
-      # The same hole swallows feature-branch pushes: `ci/whatever` exists in the plugin repo and
-      # not in busbar. Fixed once here rather than in ten callers, which is what this file is for.
-      # A caller passing a REAL ref (a sha, `main`, `dev`) is unaffected; only unresolvable refs
-      # fall back, and the fallback announces itself.
-      - name: Resolve which busbar ref to check out
-        id: busbarref
-        run: |
-          set -euo pipefail
-          want="${{ inputs.busbar_ref }}"
-          if git ls-remote --exit-code --heads --tags https://github.com/GetBusbar/busbar.git "$want" >/dev/null 2>&1 \
-             || printf '%s' "$want" | grep -qE '^[0-9a-f]{40}$'; then
-            echo "ref=$want" >> "$GITHUB_OUTPUT"
-            echo "Building against busbar@${want}."
-          else
-            echo "ref=dev" >> "$GITHUB_OUTPUT"
-            echo "::warning::busbar has no ref '${want}', so this build used busbar@dev instead. On a pull_request, \`github.ref_name\` is '<number>/merge' rather than a branch name, which is the usual cause - pass \`busbar_ref: \${{ github.base_ref || github.ref_name }}\` from the caller to say what you meant. Falling back is deliberate: an unresolvable sibling ref used to fail the checkout with an unreadable git error and no mention of the ref, which read like the plugin's own tests were broken."
-          fi
+      # The ref was resolved to a COMMIT SHA by the `refs` job above (which also owns the
+      # `<number>/merge` fallback and the pinned-vs-moving decision). Checking out a sha rather than
+      # a branch name also removes a race: the two matrix legs cannot silently pick up different
+      # commits of the same branch if busbar is pushed mid-run.
+      - name: Announce which busbar this leg proves the plugin against
+        run: echo "This leg builds against busbar ${{ matrix.ref }} -- ${{ matrix.label }}."
 
       - name: Checkout busbar (sibling path dependency)
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
-          ref: ${{ steps.busbarref.outputs.ref }}
+          ref: ${{ matrix.ref }}
           path: busbarAI
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # `workspaces:` IS REQUIRED HERE and its absence was a silent, total cache miss. The action
+          # defaults to a single workspace at `$GITHUB_WORKSPACE`, and NOTHING is checked out there:
+          # both checkouts above use `path:`, so the two Cargo workspaces live at `plugin/` and
+          # `busbarAI/`. With no `workspaces:` the action looked for a Cargo.toml at the checkout
+          # root, did not find one, printed "could not find Cargo.toml", and carried on WITHOUT
+          # FAILING -- so every plugin repo rebuilt busbar and its whole dependency graph from
+          # scratch on every single run while the log said the cache step succeeded.
+          #
+          # Both entries are needed, not just the plugin: this workflow builds busbar-plugin-pack and
+          # a full `cargo build --release --bin busbar` out of busbarAI/, which is by far the larger
+          # of the two.
+          #
+          # The key must also separate the matrix legs. Two legs build DIFFERENT busbar commits into
+          # the same `busbarAI/target`; sharing one cache entry between them means each leg restores
+          # the other's artifacts and immediately invalidates them, which is worse than no cache.
+          workspaces: |
+            plugin
+            busbarAI
+          key: busbar-${{ matrix.ref }}
 
       - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
         # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
