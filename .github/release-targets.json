@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "THE PLATFORM LIST, IN EXACTLY ONE PLACE. Every consumer derives from this file; nothing",
+    "hardcodes a parallel copy.",
+    "",
+    "  release.yml  `targets` job reads it to build the upload matrix AND to compute the exact set",
+    "               of asset filenames that matrix owes the Release. `verify-assets` then asserts",
+    "               every one of those names is present and plausibly sized.",
+    "  verify-deploy.yml  fetches it over raw.githubusercontent AT THE TAG UNDER TEST (it checks out",
+    "               nothing on purpose) and derives the same expected names, so the post-deploy",
+    "               verifier and the release that produced the assets can never disagree about what",
+    "               was supposed to ship.",
+    "",
+    "WHY IT IS A FILE AND NOT A LITERAL IN EACH WORKFLOW. v1.5.3 published FIVE assets where seven",
+    "were expected: aarch64-apple-darwin and x86_64-unknown-linux-gnu were both missing, which is",
+    "Apple Silicon Mac and x86_64 Linux. install.sh 404'd on Apple Silicon and two of five links on",
+    "the live /download/ page were dead. The guard in place asserted `assets != 0`, which five assets",
+    "pass comfortably: a COUNT can never see a missing platform, only a NAME can. Fixing that by",
+    "writing an expected-names list into the verifier would have created a second place to forget a",
+    "platform, which is the same defect one level up.",
+    "",
+    "Adding a platform is one entry here. Its build leg and both of its verifications follow.",
+    "",
+    "`pgo: true` routes a HOST-NATIVE target through scripts/pgo-build.sh (PGO is MANDATORY for",
+    "release: the same fail-closed build docker.yml ships). PGO needs the instrumented binary to run",
+    "ON THE RUNNER to train, so only targets whose arch matches the runner's are PGO'd. The cross",
+    "targets (aarch64-linux on an x86_64 host, x86_64-darwin on an arm64 host) and windows cannot",
+    "self-train, so they keep the plain --release build.",
+    "",
+    "`archive` is the extension the packaging step produces: the PGO path tars by hand, the plain",
+    "path hands `archive: busbar-$target` to upload-rust-binary-action, which emits .tar.gz on unix",
+    "and .zip on windows. Same base name either way."
+  ],
+  "targets": [
+    { "target": "x86_64-unknown-linux-gnu",  "os": "ubuntu-latest",  "pgo": true,  "archive": "tar.gz" },
+    { "target": "aarch64-unknown-linux-gnu", "os": "ubuntu-latest",  "pgo": false, "archive": "tar.gz" },
+    { "target": "x86_64-apple-darwin",       "os": "macos-latest",   "pgo": false, "archive": "tar.gz" },
+    { "target": "aarch64-apple-darwin",      "os": "macos-latest",   "pgo": true,  "archive": "tar.gz" },
+    { "target": "x86_64-pc-windows-msvc",    "os": "windows-latest", "pgo": false, "archive": "zip" }
+  ],
+  "metadata_assets": [
+    "busbar-{tag}.cdx.json",
+    "busbar-openapi-{tag}.json"
+  ]
+}

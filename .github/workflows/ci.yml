@@ -1,13 +1,51 @@
 name: CI
 
+# TWO TIERS, AND WHY.
+#
+# This workflow used to trigger on `push` to main/dev/qa ONLY, plus `pull_request`. That left every
+# feature branch COMPLETELY UNGATED until someone opened a PR. During 1.5.4 development two work
+# items were reported green from local runs and had never been CI-verified at all; the gap was only
+# discovered when the PR was opened, days of work later. "It passed locally" is not a CI result, and
+# a branch nobody has opened a PR for is exactly where that mistake is cheapest to make and most
+# expensive to discover.
+#
+# So: `branches: ['**']`, and EVERY branch push now runs CI. But the full set is 12 jobs including a
+# Windows runner, a release-mode timing gate, a loom model and a full-history migration corpus, and
+# paying all of that on every intermediate commit of a long-lived feature branch is real money for
+# very little marginal signal. So pushes to NON-PROMOTION branches run the FAST TIER:
+#
+#   FAST TIER (every branch push)   structure lint, fmt/clippy/build/test, config-stability,
+#                                   public-hygiene. This answers the only questions that matter
+#                                   mid-feature: does it build, does it lint, do the tests pass, is
+#                                   the layout/config-grammar/public-prose still clean.
+#   FULL TIER (dev, qa, main, and   everything above PLUS openapi-schema, migration-corpus,
+#   EVERY pull request, and         executable-config, no-default-features, no-plugins-gate,
+#   workflow_dispatch)              txn-guards, timing, windows.
+#
+# THE TRADEOFF, STATED PLAINLY: a Windows-only or featureless-build-only regression is now caught at
+# PR time rather than at push time. That is exactly where it was caught before this change, so the
+# fast tier costs nothing anyone had; it is pure addition. The cost paid is that a branch with an
+# open PR runs the fast tier (push) alongside the full tier (pull_request) for the same commit. The
+# two events land in DIFFERENT concurrency groups (`github.ref` is `refs/heads/<branch>` for push and
+# `refs/pull/N/merge` for pull_request) and they are deliberately NOT unified: a shared group would
+# let the cheap push run cancel the full PR run that the required checks depend on. Four duplicated
+# jobs is the accepted price of never again shipping an unverified branch.
+#
+# ESCAPE HATCH: `workflow_dispatch` forces the FULL tier on any ref, so a feature branch can buy the
+# whole gate before opening a PR without waiting for one:
+#   gh workflow run ci.yml -R GetBusbar/busbar --ref feat/my-branch
+#
+# `branches:` never matches tag pushes, so the release tag (v1.5.3 et al) still does not run CI here.
 on:
   push:
-    branches: [main, dev, qa]
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
 
 # Without this, every push queues a fully independent run that competes for the same runners
 # instead of cancelling the one it superseded -- qa-gate.yml already has this; ci.yml never did,
 # so a burst of rapid pushes (e.g. iterating on a CI fix) pays for N full runs instead of 1.
+# Doubly load-bearing now that every branch push triggers a run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +55,54 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # WHICH TIER RAN, SAID OUT LOUD. A green check mark is read as "the gate passed", and after this
+  # change a green check on a feature branch means something WEAKER than a green check on a PR.
+  # An operator who cannot see the difference will assume the strong one, which is the precise
+  # mistake this workflow's two tiers otherwise re-introduce in a new place. So every run states its
+  # own tier in the job summary and names the jobs it did NOT run. Costs one echo; buys the run's
+  # verdict being self-describing instead of needing someone to remember the rule.
+  gate-tier:
+    name: gate tier (what this run actually proved)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Declare the tier
+        # Ref and event come in as ENV, not as `${{ }}` spliced into the script text. A branch name
+        # is attacker-influenced data (anyone who can open a PR picks it) and GitHub allows plenty of
+        # shell metacharacters in one; splicing it into a `[ ... ]` test is a script-injection seam
+        # that happens to be quiet until someone names a branch to exploit it.
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "push" ] || \
+             [ "$REF" = "refs/heads/main" ] || \
+             [ "$REF" = "refs/heads/dev" ] || \
+             [ "$REF" = "refs/heads/qa" ]; then
+            {
+              echo "### CI tier: FULL"
+              echo ""
+              echo "Every CI job ran. Event \`$EVENT\`, ref \`$REF\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### CI tier: FAST"
+              echo ""
+              echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
+              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene."
+              echo ""
+              echo "It did NOT run: openapi-schema, migration-corpus, executable-config,"
+              echo "no-default-features, no-plugins-gate, txn-guards, timing, windows."
+              echo ""
+              echo "Those run on every pull request, on dev/qa/main, and on demand via"
+              echo "\`gh workflow run ci.yml -R GetBusbar/busbar --ref $REF_NAME\`."
+              echo ""
+              echo "A green check here is NOT the full gate. Do not promote on it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat "$GITHUB_STEP_SUMMARY"
+
   # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
   # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
   # test ran, and the `Test` step is the only place BUSBAR_TEST_POSTGRES_URL / VALKEY_URL are set
@@ -198,6 +284,9 @@ jobs:
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -230,6 +319,9 @@ jobs:
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -321,6 +413,9 @@ jobs:
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
@@ -350,6 +445,9 @@ jobs:
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -385,6 +483,9 @@ jobs:
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -402,6 +503,9 @@ jobs:
   txn-guards:
     name: txn compile fence · loom model
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -418,6 +522,9 @@ jobs:
   timing:
     name: timing gate (release)
     runs-on: ubuntu-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -429,6 +536,9 @@ jobs:
   windows:
     name: windows build · test
     runs-on: windows-latest
+    # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
+    # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

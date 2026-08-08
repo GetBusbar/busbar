@@ -1882,21 +1882,63 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     handle.abort();
 }
 
-/// A `Store` wrapper that sleeps on the FIRST `put_key` only, then runs at full speed — a stand-in
-/// for a slow durable store's write round-trip, used to widen the window between "the mint has been
-/// handed to the uncancellable blocking task" and "the mint actually lands" so a client disconnect
-/// can be landed deterministically inside it.
-struct SlowKeyStore {
+/// A `Store` wrapper that PARKS the FIRST `put_key` on a rendezvous until the test explicitly
+/// releases it, then runs at full speed. It stands in for a slow durable store's write round-trip,
+/// but unlike a `sleep` it does not race a clock: it makes the window between "the mint has been
+/// handed to the uncancellable blocking task" and "the mint actually lands" as wide as the test
+/// needs and not one microsecond wider, and it tells the test EXACTLY when each edge is crossed.
+///
+/// WHY NOT A SLEEP. The predecessor slept 500ms here and the test raced a 100ms client timeout
+/// against it. Both the client's timer and the server's whole request path live on the SAME
+/// single-threaded `#[tokio::test]` runtime, so one OS-level deschedule of that single worker
+/// thread longer than the client's budget makes tokio observe the timeout as expired BEFORE it ever
+/// polls the server far enough to reach `put_key`. The client errors, `first.is_err()` is satisfied
+/// for entirely the wrong reason, and NOTHING is ever minted -- so no amount of polling afterwards
+/// can observe a write that never started. That is what failed on a contended Windows runner during
+/// the 1.5.3 release while the identical SHA passed on the same job minutes earlier. Reproduced
+/// locally by shrinking the client budget under heavy CPU oversubscription; it fails with precisely
+/// the old "never landed" message. The repair is not a longer timeout, which only makes the same
+/// race rarer and slower. It is to stop having a race at all.
+///
+/// THREE SIGNALS, no clocks in the happy path:
+///   `entered` (store -> test)  the mint is INSIDE `put_key` and has not written yet.
+///   `release` (test -> store)  the test is done arranging the disconnect; finish the write.
+///   `landed`  (store -> test)  the write has committed.
+///
+/// `release` blocks a BLOCKING-POOL thread, never a runtime worker: `put_key` is only ever reached
+/// from inside the mint's `spawn_blocking` closure. If that ever stopped being true this would
+/// block a runtime worker instead, which is itself the invariant this test exists to defend.
+///
+/// The `recv_timeout` on `release` is a DEADLOCK BACKSTOP, not synchronisation. The mint holds the
+/// process-wide `EXISTENCE_GATE` across this park, so a test that panicked between `entered` and
+/// `release` would otherwise wedge every other key-mutating test in the binary forever. The backstop
+/// turns that into a bounded, legible failure instead of a hung suite. Nothing in a passing run ever
+/// waits on it.
+struct GatedKeyStore {
     inner: Arc<dyn crate::governance::Store>,
-    delay: std::time::Duration,
+    entered: tokio::sync::mpsc::Sender<()>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    landed: tokio::sync::mpsc::Sender<()>,
     fired: std::sync::atomic::AtomicBool,
 }
-impl crate::governance::Store for SlowKeyStore {
+impl crate::governance::Store for GatedKeyStore {
     fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
-        if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(self.delay);
+        if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return self.inner.put_key(key);
         }
-        self.inner.put_key(key)
+        // FIRST `put_key` only: this is the mint the test wants to catch in flight.
+        let _ = self.entered.try_send(());
+        if let Some(rx) = self
+            .release
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
+        }
+        let out = self.inner.put_key(key);
+        let _ = self.landed.try_send(());
+        out
     }
     fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
@@ -1992,91 +2034,139 @@ impl crate::governance::Store for SlowNthPutKeyStore {
     }
 }
 
-/// The double-mint reachable via an ordinary client-side timeout shorter than a slow store's write:
-/// the handler future is DROPPED mid-`config_transaction` (a client disconnect/timeout), but the
-/// mint keeps running to completion on the uncancellable blocking task and DOES write the key. A
-/// retry with the same `Idempotency-Key` must see the reservation still held (not an empty slot it
-/// can double-mint into).
+/// The double-mint reachable when a client goes away mid-mint: the handler future is DROPPED
+/// mid-`config_transaction` (a client disconnect, whether from a timeout, a ^C or a closed laptop),
+/// but the mint keeps running to completion on the uncancellable blocking task and DOES write the
+/// key. A retry with the same `Idempotency-Key` must see the reservation still held (not an empty
+/// slot it can double-mint into).
+///
+/// FULLY DETERMINISTIC. Every ordering this test depends on is established by a rendezvous with
+/// `GatedKeyStore` (see its doc comment for the wall-clock race this replaced), never by racing one
+/// duration against another:
+///   1. the mint is provably INSIDE `put_key` before the client is taken away,
+///   2. the client is provably gone before the write is allowed to proceed,
+///   3. the write has provably committed before the retry is issued.
+/// Step 2 also lets the test ASSERT the write had not landed yet, which the timeout-racing version
+/// could not do: it had no way to tell a disconnect mid-mint from a disconnect after one.
 #[tokio::test]
 async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     crate::metrics::init();
     let inner = Arc::new(MemoryStore::new());
-    let slow_store: Arc<dyn crate::governance::Store> = Arc::new(SlowKeyStore {
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let gated_store: Arc<dyn crate::governance::Store> = Arc::new(GatedKeyStore {
         inner,
-        delay: std::time::Duration::from_millis(500),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(Some(release_rx)),
+        landed: landed_tx,
         fired: std::sync::atomic::AtomicBool::new(false),
     });
-    let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
+    let gov = gov_with_signer(gated_store, Some("admintok".to_string()));
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    // A short client-side timeout (100ms) vs. the store's 500ms write — a 5x margin, both real
-    // sleeps.
-    let short_timeout_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(100))
-        .build()
-        .unwrap();
-    let post = |client: &reqwest::Client| {
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+    let post = |client: &reqwest::Client, url: &str| {
         client
-            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .post(url)
             .header("x-admin-token", "admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "dc-1")
             .body(r#"{"name": "disconnector"}"#)
             .send()
     };
+    let count_disconnector = |v: &serde_json::Value| -> usize {
+        v["items"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|k| k["name"].as_str() == Some("disconnector"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
 
-    // First request: the client times out and errors BEFORE the 500ms store write completes,
-    // dropping the server-side handler future mid-mint.
-    let first = post(&short_timeout_client).await;
-    assert!(first.is_err(), "the short client timeout must fire first");
+    // The request that will be abandoned. NO client timeout: the disconnect below is caused
+    // deliberately, so nothing here depends on a clock.
+    let doomed_url = keys_url.clone();
+    let doomed = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        post(&client, &doomed_url).await
+    });
 
-    // Wait for the (uncancellable) blocking mint to actually land. POLL, do not sleep a fixed
-    // amount: a flat 800ms against a 500ms store write leaves only 300ms of slack, and a contended
-    // Windows runner eats that (observed: this test failed on `qa` with `got: []` while the SAME
-    // commit passed on `dev`). Polling keeps the assertion exact while making the WAIT adaptive, so
-    // a slow runner costs time instead of a false red.
-    {
-        let probe = reqwest::Client::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
-            let landed = probe
-                .get(format!("http://{addr}/api/v1/admin/keys"))
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .ok();
-            if let Some(resp) = landed {
-                if let Ok(v) = resp.json::<serde_json::Value>().await {
-                    let n = v["items"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter(|k| k["name"].as_str() == Some("disconnector"))
-                                .count()
-                        })
-                        .unwrap_or(0);
-                    // Stop as soon as the mint is observable. If a SECOND key ever appears the
-                    // assertions below still catch it, so this loop cannot mask the real defect.
-                    if n >= 1 {
-                        break;
-                    }
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the mid-mint blocking write never landed within 20s"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
+    // RENDEZVOUS 1: the mint is inside the store's `put_key` and has not written yet.
+    //
+    // THE `timeout` IS A LIVENESS BACKSTOP, NOT THE SYNCHRONISATION. The ordering this test needs is
+    // established by the rendezvous itself; the timeout only bounds how long a BROKEN harness may
+    // hang. It has to be here: if the mint never reaches `put_key`, the sender is still alive (the
+    // store outlives the test body), so `recv()` would block forever and the run would burn the CI
+    // job's whole timeout while saying nothing at all. The bound is deliberately enormous relative
+    // to the microseconds the happy path takes, so no amount of runner contention can reach it --
+    // that asymmetry is exactly what the 500ms-sleep-versus-100ms-timeout version did not have.
+    // Every backstop below states what it was waiting for and what it saw instead.
+    const RENDEZVOUS_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(60);
+    tokio::time::timeout(RENDEZVOUS_BACKSTOP, entered_rx.recv())
+        .await
+        .expect(
+            "waited 60s for the mint to enter the store's put_key and it never did. The request \
+             did not get as far as the blocking mint, so there is no mid-mint window to disconnect \
+             inside and this test would be asserting nothing.",
+        )
+        .expect("the gated store was dropped before the mint entered put_key");
 
-    // Retry with the SAME Idempotency-Key, no timeout this time.
+    // THE DISCONNECT. Dropping the in-flight request closes the connection, which is precisely what
+    // a client-side timeout does to the server, minus the race. The handler future is dropped; the
+    // already-scheduled `spawn_blocking` mint is not.
+    doomed.abort();
+    let joined = doomed.await;
+    assert!(
+        joined.as_ref().is_err_and(|e| e.is_cancelled()),
+        "the doomed request must have been cancelled mid-flight; it instead completed, which means \
+         the store gate did not hold the mint open and there was no mid-mint disconnect: {:?}",
+        joined.map(|r| r.map(|resp| resp.status()))
+    );
+
+    // A full probe round trip: it forces the runtime to poll the server task (reaping the closed
+    // connection) AND proves the write really has not landed yet, i.e. the disconnect above was
+    // genuinely mid-mint rather than after it. Note this read does not take `EXISTENCE_GATE`, which
+    // the parked mint is holding, so it cannot deadlock against it.
+    let probe = reqwest::Client::new();
+    let mid: serde_json::Value = probe
+        .get(&keys_url)
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        count_disconnector(&mid),
+        0,
+        "the mint must still be parked in put_key at this point, so no key should exist yet; \
+         found one already committed, so the disconnect was not mid-mint: {mid:?}"
+    );
+
+    // RENDEZVOUS 2 and 3: let the abandoned mint finish, and wait for it to actually commit.
+    release_tx
+        .send(())
+        .expect("the parked mint hung up on its release channel");
+    tokio::time::timeout(RENDEZVOUS_BACKSTOP, landed_rx.recv())
+        .await
+        .expect(
+            "waited 60s after releasing the parked mint and its write never committed. A mint \
+             whose client disconnected must still run to completion on the uncancellable blocking \
+             task; observed instead: released, then silence.",
+        )
+        .expect("the gated store was dropped before the released mint could commit");
+
+    // Retry with the SAME Idempotency-Key.
     let normal_client = reqwest::Client::new();
-    let retry = post(&normal_client).await.unwrap();
+    let retry = post(&normal_client, &keys_url).await.unwrap();
     // Either outcome is correct under the fix: a 409 "already in flight" (if `dc-1`'s TTL window is
     // still open and the reservation was never cleared) or — since the mint already landed and the
     // cache slot may have been replaced by the real committed body before this retry runs — a replay

@@ -53,6 +53,20 @@ name: Verify deploy
 #       these back the live numbers on getbusbar.com and are currently unmonitored.
 #   (l) the DOCUMENTED quickstart actually runs: both the binary quickstart and the docker
 #       one-liner from docs/getting-started.md boot and answer on /healthz.
+#   (m) `gh attestation verify <asset> --repo GetBusbar/busbar` -- the exact command the docs tell
+#       users to run before trusting a download -- passes on real downloaded bytes. Previously "the
+#       release is attested" meant a workflow step exited 0, never that a user could verify it.
+#   (n) numbers getbusbar.com presents as LIVE actually track their authority (Docker pull count vs
+#       Docker Hub, star count vs GitHub). The download page served a pull count baked into static
+#       HTML at build time, beside a working Worker nothing called, so it aged until a redeploy.
+#
+# THE PATTERN THESE LAST TWO EXIST FOR. Three defects in the 1.5.3 release were one shape: something
+# DECLARED a behaviour and nothing CHECKED it. docker.yml's comment claimed a `latest` tag its tag
+# list never emitted, so `docker pull getbusbar/busbar` served 1.5.2 for the whole release. The site
+# claimed a live pull count that was a build-time snapshot. A "zero broken links" claim turned out
+# to be unreproducible, and there is still no link checker anywhere. Check (a) already guards the
+# first of those; (n) guards the second. A claim with no assertion behind it decays invisibly, which
+# is worse than not making it.
 #
 # Triggers:
 #   - workflow_run: fires when release.yml ("Release") or docker.yml ("Docker") completes on a tag
@@ -73,7 +87,45 @@ name: Verify deploy
 # instead of just killing the job, and the job carries an overall `timeout-minutes: 60`. This
 # matters more on the daily schedule than on release: a 6-hour hung run would still be "in
 # progress" when the next day's run fires.
+#
+# WHEN THIS RUNS, AND THE HOLE THAT WAS IN IT. The `workflow_run` trigger below is gated on the
+# triggering run having SUCCEEDED. During the 1.5.3 release the Release workflow FAILED (two of five
+# build legs died), so this verifier never ran at all -- on precisely the release that most needed
+# verifying. Every defect it exists to catch was then found BY HAND: install.sh 404ing on Apple
+# Silicon, two dead links on the live /download/ page, `docker pull getbusbar/busbar` serving the
+# previous version. A verifier that only runs when the build already went well is not a verifier.
+#
+# THE `workflow_run` DEFAULT-BRANCH TRAP, AND WHY THIS FILE DOES NOT NEED A DISPATCHER.
+# `workflow_run` ALWAYS loads the workflow YAML from the repository's DEFAULT BRANCH, whatever
+# branch the triggering run was on. That bit qa-gate.yml hard: `main` was over a hundred commits
+# behind, so every auto-fired gate ran stale logic, and the repair was to rewrite it as a thin
+# DISPATCHER that checks out the triggering SHA and runs the gate scripts from THAT checkout.
+#
+# This workflow is structurally IMMUNE to the same trap, and the reason is worth stating so nobody
+# has to re-derive it or "fix" it by adding a checkout:
+#   * It has ZERO `uses:` steps, therefore NO `actions/checkout` at all, therefore no working copy
+#     that could be stale. That is deliberate, and check (h) depends on it: reading ./install.sh
+#     from a checkout would hide a fix that merged but never deployed.
+#   * It reads NO repository file. Every path it touches is either created on the runner (the
+#     digest helper, the quickstart config, both written inline here) or fetched over HTTPS. The one
+#     repository file it consults, .github/release-targets.json, is fetched from raw.githubusercontent
+#     AT THE TAG UNDER TEST, not read from a checkout, precisely so it tracks the release rather
+#     than the default branch.
+#   * The VERSION under test comes from the event payload (`release.tag_name` /
+#     `workflow_run.head_branch`) or, on the schedule, from the live /releases/latest redirect. It
+#     never comes from crates/busbar/Cargo.toml, so a stale default branch cannot make it verify the
+#     wrong version.
+# So the only thing loaded from `main` is this file's own text, and this file's own text has no
+# repo-state dependency to go stale against. A dispatcher would add a checkout whose entire purpose
+# is to be read, in a workflow whose entire purpose is to read nothing local.
+#
+# So `release: [published]` is now a trigger in its own right. `create-release` publishes the Release
+# object BEFORE the build matrix runs, and that event fires regardless of what the rest of the run
+# does, which is exactly the property needed: if a release object exists in public, it gets verified,
+# whether or not the workflow that made it finished happy.
 on:
+  release:
+    types: [published]
   workflow_run:
     workflows: ["Release", "Docker"]
     types: [completed]
@@ -106,6 +158,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
+      github.event_name == 'release' ||
       (github.event.workflow_run.conclusion == 'success' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     env:
@@ -135,6 +188,9 @@ jobs:
                 exit 1
                 ;;
             esac
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            V="${{ github.event.release.tag_name }}"
+            V="${V#v}"
           else
             V="${{ github.event.workflow_run.head_branch }}"
             V="${V#v}"
@@ -243,15 +299,55 @@ jobs:
             exit 1
           fi
           echo "PASS: GitHub Release ${TAG} exists"
-          expected=(
-            "busbar-x86_64-unknown-linux-gnu.tar.gz"
-            "busbar-aarch64-unknown-linux-gnu.tar.gz"
-            "busbar-x86_64-apple-darwin.tar.gz"
-            "busbar-aarch64-apple-darwin.tar.gz"
-            "busbar-x86_64-pc-windows-msvc.zip"
-            "busbar-${TAG}.cdx.json"
-            "busbar-openapi-${TAG}.json"
+          # THE EXPECTED NAMES ARE DERIVED, NOT TYPED. This list used to be five platform names
+          # written out by hand here, a second copy of the list release.yml builds from. Two copies
+          # of a platform list is one place to forget a platform, and forgetting it here means the
+          # verifier cheerfully passes a release that is missing exactly the platform nobody
+          # remembered. `.github/release-targets.json` is the single source of truth; release.yml's
+          # `targets` job builds the upload matrix from it and this fetches the SAME file AT THE TAG
+          # UNDER TEST over raw.githubusercontent, so the verifier and the release that produced the
+          # assets cannot disagree about what was supposed to ship. Fetched rather than checked out
+          # because this job deliberately checks nothing out.
+          mani="https://raw.githubusercontent.com/GetBusbar/busbar/${TAG}/.github/release-targets.json"
+          if ! curl -fsS --max-time 30 "$mani" -o /tmp/release-targets.json; then
+            # Tags cut BEFORE this manifest existed do not carry it. Falling back to main's copy is
+            # correct for them and honest about what it is doing: the platform set is what changes
+            # rarely, so main's list is the right answer for an old tag, and the alternative
+            # (hardcoding a list here) is the exact defect the manifest replaced. A release cut from
+            # now on always carries its own, so the fallback quietly stops being used.
+            echo "note: ${TAG} predates .github/release-targets.json; falling back to main's copy."
+            if ! curl -fsS --max-time 30 \
+              "https://raw.githubusercontent.com/GetBusbar/busbar/main/.github/release-targets.json" \
+              -o /tmp/release-targets.json; then
+              echo "FAIL: no release-target manifest at ${TAG} and none on main either."
+              echo "Without it this check cannot know which platforms ${TAG} owed, and guessing is"
+              echo "how a missing platform got waved through in the first place."
+              exit 1
+            fi
+          fi
+          mapfile -t expected < <(python3 - "$TAG" <<'PY'
+          import json, sys
+          tag = sys.argv[1]
+          spec = json.load(open("/tmp/release-targets.json"))
+          for t in spec["targets"]:
+              print("busbar-%s.%s" % (t["target"], t["archive"]))
+          for a in spec["metadata_assets"]:
+              print(a.replace("{tag}", tag))
+          PY
           )
+          # A `mapfile` whose process substitution died leaves an EMPTY array and does not trip
+          # `set -e`, so the loop below would iterate over nothing and this whole check would PASS
+          # vacuously. That is the same shape as a gate that has quietly stopped gating, which is
+          # the failure this check exists to prevent, so it is asserted rather than assumed. The
+          # floor is 5 because busbar has never shipped fewer platform archives than that plus its
+          # two metadata assets; a manifest that produced fewer means the manifest is wrong.
+          if [ "${#expected[@]}" -lt 5 ]; then
+            echo "FAIL: derived only ${#expected[@]} expected asset name(s) from the manifest."
+            echo "Refusing to 'verify' a release against an empty or truncated expectation list:"
+            echo "that passes for any release at all, including one that published nothing."
+            exit 1
+          fi
+          echo "manifest at ${TAG} requires ${#expected[@]} asset(s): ${expected[*]}"
           # A NAME IN THE ASSET LIST IS NOT A USABLE ARTIFACT. GitHub lists an asset as soon as the
           # upload row is created, so a 0-byte or truncated upload appears here exactly like a good
           # one. install.sh (check (h)) only ever exercises the ONE tarball matching the runner's
@@ -789,4 +885,121 @@ jobs:
             fail=1
           fi
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          [ "$fail" = 0 ]
+
+      # (m) BUILD PROVENANCE ACTUALLY VERIFIES. release.yml records a keyless Sigstore attestation
+      # for every archive, and docs tell users to check it with `gh attestation verify`. Nothing has
+      # ever run that command against a published asset, so "the release is attested" was a claim
+      # about a workflow step succeeding, not about what a user can verify. A user who runs the
+      # documented command and gets a failure concludes the artifact is tampered with; that has to
+      # be tested from the outside, on the real downloaded bytes, like everything else here.
+      - name: (m) the documented attestation check passes on the real published assets
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"; TAG="${{ steps.ver.outputs.tag }}"
+          fail=0
+          work="$(mktemp -d)"
+          # Two platforms rather than all five: attestation is a property of the release run, not of
+          # the target, so a second one is a cheap independent sample and five is just slower.
+          for a in "busbar-x86_64-unknown-linux-gnu.tar.gz" "busbar-aarch64-apple-darwin.tar.gz"; do
+            if ! gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$work" --clobber; then
+              echo "FAIL: (m) could not download $a to verify its attestation"
+              fail=1; continue
+            fi
+            if gh attestation verify "$work/$a" --repo GetBusbar/busbar; then
+              echo "PASS: (m) $a verifies against its build provenance"
+            else
+              echo "::error::(m) 'gh attestation verify $a --repo GetBusbar/busbar' FAILED for ${TAG}. This is the exact command the docs tell users to run before trusting a download, so every user who follows that advice sees a tamper warning. Fix: confirm release.yml's attest-build-provenance step ran for this target and that the uploaded bytes are the attested ones (a re-upload after attestation breaks the digest binding)."
+              fail=1
+            fi
+          done
+          rm -rf "$work"
+          [ "$fail" = 0 ]
+
+      # (n) NUMBERS THE SITE PRESENTS AS LIVE MUST BE LIVE. Four defects in the 1.5.3 release were
+      # the same shape: something DECLARED a behaviour and nothing CHECKED it.
+      #   * docker.yml's comment claimed a `latest` tag its tag list never emitted, so
+      #     `docker pull getbusbar/busbar` served 1.5.2 through the whole release.
+      #   * The download page presented a Docker pull count baked into static HTML at BUILD time.
+      #   * "Zero broken links" was unreproducible, and one was broken in production.
+      #   * And the sharpest one: the Cloudflare Worker behind /api/pulls and /api/stars has a
+      #     COMMITTED fix for staleness -- its own commit subject says the stars stop going
+      #     stale -- that was never deployed. marketing's deploy.yml runs `wrangler pages deploy`,
+      #     which is Pages ONLY; the Worker needs a separate `wrangler deploy` that lives in a
+      #     README as a MANUAL step and
+      #     runs in no CI anywhere. The code that keeps these numbers fresh has been sitting in git
+      #     while the deployed Worker serves frozen values.
+      #
+      # THE GENERALISATION, which is the reason this check is worth its runtime: WHAT IS DEPLOYED IS
+      # NOT WHAT IS COMMITTED unless something proves it. A green build, a merged fix and a passing
+      # test suite all say things about the repository. None of them says anything about production.
+      #
+      # This asserts it from the DATA side, which is what can be checked from outside without the
+      # Worker's cooperation. The stronger form is to have the Worker expose its build marker on a
+      # health route and compare that to the commit under test; when it grows one, add that here as
+      # a direct deployed-equals-committed assertion and this becomes the backstop rather than the
+      # primary. Deliberately not stubbed in now: a check that can only go green once another repo
+      # ships a feature nobody has scheduled is a known-red gate with no owner, which is how gates
+      # get switched off.
+      #
+      # TOLERANCES ARE TIGHT ON PURPOSE. An earlier revision of this check used 20%, calibrated so it
+      # would be green on the day it was written, on the assumption the ~10% gap was a legitimate
+      # cache TTL. That assumption was wrong and the calibration was the mistake: the counter is not
+      # lagging, it is FROZEN, and a frozen counter's gap grows without bound. A tolerance wide
+      # enough to pass a permanently frozen number is a guard that will never fire. These are set to
+      # catch a frozen number and nothing looser. Expect this check to be RED until the Worker is
+      # actually deployed. That is the check doing its job, not a miscalibration.
+      - name: (n) the live numbers on getbusbar.com really are live
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          fail=0
+          # Docker pull count: authority is Docker Hub's own repository endpoint.
+          hub="$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/getbusbar/busbar/" \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("pull_count",-1))' || echo -1)"
+          site="$(curl -fsS --max-time 30 "https://getbusbar.com/api/pulls" \
+                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("pull_count", d.get("count",-1)))' || echo -1)"
+          echo "docker pulls: hub=${hub} site-api=${site}"
+          if [ "$hub" -lt 0 ] || [ "$site" -lt 0 ]; then
+            echo "::error::(n) could not read the Docker pull count from both Docker Hub and getbusbar.com/api/pulls (hub=${hub}, site=${site}). The site advertises this number as live, so an endpoint that cannot answer is a broken promise to every visitor."
+            fail=1
+          else
+            # 1% or 250, whichever is larger: comfortably absorbs a real cache TTL (the Worker's
+            # own refresh is hourly) while a frozen counter blows past it within a day.
+            tol=$(( hub / 100 )); [ "$tol" -lt 250 ] && tol=250
+            d=$(( hub > site ? hub - site : site - hub ))
+            if [ "$d" -gt "$tol" ]; then
+              echo "::error::(n) the Docker pull count getbusbar.com/api/pulls serves (${site}) is ${d} away from Docker Hub's actual count (${hub}), exceeding the ${tol} tolerance. This is a FROZEN counter, not a stale cache: the gap only grows. Root cause: the Cloudflare Worker that refreshes these values is deployed by nobody. marketing/.github/workflows/deploy.yml runs 'wrangler pages deploy', which is Pages only; the Worker needs a separate 'wrangler deploy' documented in website/workers/README.md as a MANUAL step that no CI runs. The committed Worker source already contains the staleness fix. Fix: add a gated 'wrangler deploy' step for website/workers/** to that workflow so what is committed is what is deployed."
+              fail=1
+            else
+              echo "PASS: (n) the served Docker pull count tracks Docker Hub (delta ${d} <= ${tol})"
+            fi
+          fi
+          # GitHub star count: authority is the repo's own API.
+          gh_stars="$(gh api repos/GetBusbar/busbar --jq .stargazers_count 2>/dev/null || echo -1)"
+          site_stars="$(curl -fsS --max-time 30 "https://getbusbar.com/api/stars" \
+                        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("stargazers_count", d.get("stars", d.get("count",-1))))' || echo -1)"
+          echo "stars: github=${gh_stars} site-api=${site_stars}"
+          if [ "$gh_stars" -lt 0 ] || [ "$site_stars" -lt 0 ]; then
+            echo "::error::(n) could not read the star count from both api.github.com and getbusbar.com/api/stars (github=${gh_stars}, site=${site_stars})."
+            fail=1
+          else
+            # Stars: a LIVE read equals the truth. 2 absorbs a genuine sub-minute race and nothing
+            # else. And a served value that EXCEEDS GitHub's is decisive on its own -- it can only
+            # be a value captured before someone unstarred, which is a frozen snapshot by
+            # definition, so it is called out separately below.
+            stol=2
+            sd=$(( gh_stars > site_stars ? gh_stars - site_stars : site_stars - gh_stars ))
+            if [ "$sd" -gt "$stol" ]; then
+              if [ "$site_stars" -gt "$gh_stars" ]; then
+                echo "::error::(n) getbusbar.com/api/stars serves ${site_stars} while GitHub reports ${gh_stars}. A live read CANNOT exceed the truth: this value was captured before someone unstarred and has not been rewritten since, which is proof the refresh is dead rather than merely lagging. Same root cause as the pull count: the Worker is never deployed by CI (marketing deploy.yml runs 'wrangler pages deploy' only; the Worker's 'wrangler deploy' is a manual step in website/workers/README.md)."
+              else
+                echo "::error::(n) the star count getbusbar.com serves (${site_stars}) is ${sd} away from GitHub's (${gh_stars}), exceeding the ${stol} tolerance. Same failure shape as the Docker pull count: a number presented as live that is not."
+              fi
+              fail=1
+            else
+              echo "PASS: (n) the served star count tracks GitHub (delta ${sd} <= ${stol})"
+            fi
+          fi
           [ "$fail" = 0 ]
