@@ -78,6 +78,7 @@ mod ir;
 mod json;
 mod limits;
 mod lossless;
+mod mcp_oauth;
 mod media;
 mod metrics;
 mod net_guard;
@@ -3611,7 +3612,30 @@ pub(crate) fn build_app_from_config(
         |p| p.boot_route_paths.clone(),
     );
 
+    // The MCP OAuth resource server, built ONCE at boot from `mcp:`. Every failure here is a BOOT
+    // failure with a named cause rather than a runtime surprise: a resource server that came up with
+    // an unusable key set or a canonical URI that does not agree with its own metadata path would
+    // answer 401 to every legitimate caller, which looks exactly like an attack and is exactly not
+    // one. Absent `mcp:` ⇒ `None`, and the MCP plane's routes are never mounted.
+    let mcp = match cfg.mcp.as_ref() {
+        None => None,
+        Some(mcp_cfg) => {
+            let mut servers = Vec::with_capacity(mcp_cfg.authorization_servers.len());
+            for as_cfg in &mcp_cfg.authorization_servers {
+                let document = secret_resolver.resolve_string(&as_cfg.jwks).map_err(|e| {
+                    format!("mcp.authorization_servers[{}].jwks: {e}", as_cfg.issuer)
+                })?;
+                servers.push((as_cfg.issuer.clone(), document));
+            }
+            Some(Arc::new(crate::mcp_oauth::ResourceServer::build(
+                &mcp_cfg.canonical_uri,
+                servers,
+            )?))
+        }
+    };
+
     let app = App {
+        mcp,
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
@@ -3757,12 +3781,16 @@ fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle (both planes mount from it).
     let plugin_routes = app.plugin_routes.clone();
+    // Whether the MCP plane is configured, read BEFORE `app` moves into the handle. The MCP routes
+    // are mounted once, at boot, exactly like every other route: a later config apply that enables
+    // `mcp:` is a restart, which is what `boot_route_paths` already reports for plugin routes.
+    let mcp_enabled = app.mcp.is_some();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes);
+    let (router, core_routes) = base_data_router(&plugin_routes, mcp_enabled);
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -3784,6 +3812,7 @@ fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
+    mcp_enabled: bool,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -3869,6 +3898,48 @@ fn base_data_router(
             RouteAuth::Key,
             ingress::adhoc,
         );
+    // THE MCP PLANE, mounted only when `mcp:` is configured — a deployment that does not use MCP
+    // carries no reachable MCP surface at all, so there is nothing to probe and nothing to get
+    // wrong. See `crate::mcp_oauth`.
+    //
+    // The two metadata paths declare `RouteAuth::None` because RFC 9728 discovery MUST work before a
+    // caller holds any credential; that is the entire point of the 401-then-discover flow, and the
+    // document is built to be public (three members, no inventory of anything).
+    //
+    // The MCP mount itself declares `RouteAuth::Key` and NEVER reaches that bar: the middleware's
+    // MCP arm claims the path first and admits on the audience-checked resource-server path instead.
+    // `Key` is the fail-closed value for the case that arm ever stops claiming it — the route would
+    // then demand an ordinary busbar credential rather than becoming open. Declaring it `None` would
+    // make that same slip an unauthenticated MCP endpoint.
+    let router = if mcp_enabled {
+        router
+            .route(
+                crate::mcp_oauth::PROTECTED_RESOURCE_METADATA_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                crate::mcp_oauth::http::protected_resource_metadata,
+            )
+            .route(
+                crate::mcp_oauth::PROTECTED_RESOURCE_METADATA_ROOT_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                crate::mcp_oauth::http::protected_resource_metadata,
+            )
+            .route(
+                crate::mcp_oauth::MCP_MOUNT_PATH,
+                RouteMethod::Post,
+                RouteAuth::Key,
+                crate::mcp_oauth::http::mount_placeholder,
+            )
+            .route(
+                crate::mcp_oauth::MCP_MOUNT_PATH,
+                RouteMethod::Get,
+                RouteAuth::Key,
+                crate::mcp_oauth::http::mount_placeholder,
+            )
+    } else {
+        router
+    };
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -3964,10 +4035,12 @@ fn build_split_routers_with_limits(
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
+    // See `build_router_with_limits`: mount-time fact, read before `app` moves into the handle.
+    let mcp_enabled = app.mcp.is_some();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(&plugin_routes);
+    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp_enabled);
     let data = apply_common_layers(
         data,
         data_core_routes,

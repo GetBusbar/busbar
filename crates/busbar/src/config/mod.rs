@@ -465,6 +465,9 @@ pub(crate) struct RootCfg {
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub(crate) export_defs: ExportDefs,
+    /// The `mcp:` section (1.5.5), RESOURCE-SERVER half only. Absent ⇒ the MCP plane is not enabled
+    /// and none of its routes are mounted. See [`McpCfg`].
+    pub(crate) mcp: Option<McpCfg>,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -2573,6 +2576,59 @@ pub(crate) struct ProviderDeploy {
     pub(crate) health: Option<HealthCfg>,
 }
 
+/// The `mcp:` section — 1.5.5, the RESOURCE-SERVER half of MCP authorization and nothing else.
+///
+/// busbar validates tokens; it does not issue them. The authorization server is the operator's own
+/// IdP, named here by its issuer identifier, and a busbar-hosted authorization server is separate,
+/// deferred, plugin-shaped work (`mcp-design.md` §11 ruling 7). Nothing in this section configures
+/// issuance, and a key named here that starts to would belong somewhere else.
+///
+/// ```yaml
+/// mcp:
+///   canonical_uri: "https://busbar.acme.com/mcp"
+///   authorization_servers:
+///     - issuer: "https://acme.okta.com/oauth2/default"
+///       jwks: { file: /etc/busbar/okta-jwks.json }
+/// ```
+///
+/// `deny_unknown_fields`, like every other security-relevant block: a typo'd `canonical_url:` must
+/// be a loud boot failure, because the same typo silently ignored would leave busbar enforcing an
+/// audience the operator never chose.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct McpCfg {
+    /// busbar's OWN canonical resource identifier: the RFC 8707 `resource` value advertised in the
+    /// protected-resource metadata document AND the audience every inbound token must carry. Its own
+    /// key, deliberately NOT derived from `public_url:` — `public_url` is presentation, this is a
+    /// security identifier compared byte-for-byte, and collapsing the two would let a cosmetic change
+    /// silently change what busbar accepts. Must end in `/mcp` (busbar's MCP mount), because the
+    /// metadata document's path is derived from it.
+    pub(crate) canonical_uri: String,
+    /// The authorization servers whose tokens busbar accepts. A LIST from day one because RFC 9728's
+    /// field is an array; publishing a scalar and widening later is exactly the re-type this codebase
+    /// locks keys early to avoid. At least one entry is required when the section is present: an MCP
+    /// endpoint with nowhere to send a caller for a token can never be authenticated.
+    #[serde(default)]
+    pub(crate) authorization_servers: Vec<AuthorizationServerCfg>,
+}
+
+/// One authorization server busbar accepts tokens from.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuthorizationServerCfg {
+    /// The issuer identifier (RFC 8414 §2: an https URL, no query, no fragment). Advertised verbatim
+    /// in the public metadata document, and matched byte-for-byte against a token's `iss` to select
+    /// which key set may have signed it.
+    pub(crate) issuer: String,
+    /// This server's JWKS document, as a secret reference (`{file: …}`, `{env: …}`, or a secret
+    /// plugin) so the key set can be delivered by whatever mechanism the deployment already uses for
+    /// material. Public keys are not confidential, but they ARE integrity-critical: the whole
+    /// signature check is only as good as the provenance of this document, which is why it arrives
+    /// out of band rather than being fetched from a `jwks_uri` at runtime (see
+    /// [`crate::mcp_oauth`] for the full reasoning).
+    pub(crate) jwks: SecretRef,
+}
+
 /// Deployment configuration - operator-owned config.yaml structure.
 // deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
 // loud startup error, not a silently-ignored block - the fail-closed posture every nested
@@ -2681,6 +2737,10 @@ pub(crate) struct DeployCfg {
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
     pub(crate) plugins: PluginsCfg,
+    /// The `mcp:` section (1.5.5). Absent ⇒ the MCP plane is OFF and none of its routes are mounted,
+    /// so a deployment that does not use MCP carries no reachable MCP surface at all. See [`McpCfg`].
+    #[serde(default)]
+    pub(crate) mcp: Option<McpCfg>,
     /// Optional security controls. Today this carries only `blocked_metadata_hosts`, the operator
     /// extension to the hardcoded cloud-metadata SSRF denylist. Absent ⇒ only the hardcoded denylist
     /// applies.
@@ -4314,6 +4374,7 @@ pub(crate) fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
+            mcp: deploy.mcp.clone(),
         })
     } else {
         Err(errors)

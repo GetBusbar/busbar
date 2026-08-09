@@ -513,6 +513,12 @@ pub(crate) struct App {
     /// mutation tell the operator "restart required" instead of silently no-opping
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
+    /// The MCP OAuth RESOURCE SERVER, present only when `mcp:` is configured. `None` is the default
+    /// and means the MCP plane is off: no metadata route, no MCP mount, and the auth middleware's
+    /// MCP arm is never entered. Present, it is the single authority on which tokens may act on the
+    /// MCP plane — see [`crate::mcp_oauth`], and note in particular that its audience check is the
+    /// confused-deputy defence the whole surface exists for.
+    pub(crate) mcp: Option<Arc<crate::mcp_oauth::ResourceServer>>,
 }
 
 impl App {

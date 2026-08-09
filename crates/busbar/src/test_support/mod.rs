@@ -719,6 +719,10 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
 
 #[allow(dead_code)]
 pub(crate) struct TestApp {
+    /// The MCP OAuth resource server for the built App. `None` (the default) leaves the MCP plane
+    /// OFF, exactly as an absent `mcp:` section does in production — so every test that does not ask
+    /// for MCP gets a router with no MCP surface on it at all.
+    mcp: Option<std::sync::Arc<crate::mcp_oauth::ResourceServer>>,
     lanes: Vec<LaneSpec>,
     pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
@@ -771,6 +775,7 @@ pub(crate) struct TestApp {
 impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
+            mcp: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
@@ -964,6 +969,15 @@ impl TestApp {
         self
     }
 
+    /// Turn the MCP plane ON for the built App, with `rs` as its resource server. Absent (the
+    /// default) the plane is off and none of its routes are mounted — the same switch production
+    /// gets from an absent `mcp:` section, so a test that forgets to call this exercises the
+    /// MCP-disabled deployment rather than a half-configured one.
+    pub(crate) fn mcp(mut self, rs: crate::mcp_oauth::ResourceServer) -> Self {
+        self.mcp = Some(std::sync::Arc::new(rs));
+        self
+    }
+
     /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
     /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
     /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
@@ -1098,7 +1112,9 @@ impl TestApp {
         // A test App is a BOOT App (production seeds this only when `prior` is `None`), so the rule is
         // production's verbatim: whatever this table declares is what the router mounted.
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
+        let mcp = self.mcp.clone();
         let app = std::sync::Arc::new(crate::state::App {
+            mcp,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,

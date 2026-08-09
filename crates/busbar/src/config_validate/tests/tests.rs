@@ -8,6 +8,7 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
+        mcp: None,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,
         tls: None,

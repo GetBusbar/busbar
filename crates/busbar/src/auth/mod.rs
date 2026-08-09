@@ -1226,6 +1226,20 @@ pub(crate) async fn auth_middleware(
     // rates) is a fingerprinting / information-disclosure surface, so it goes through the same auth
     // check as any other route. Operators scraping from a localhost sidecar use a configured token
     // (or run under `none`/`passthrough` mode, where `validate_token` admits unconditionally).
+    // THE MCP PLANE, claimed BEFORE the core-route table so the MCP mount can never fall through to
+    // the busbar-key bar. Its credential is an OAuth access token from the operator's IdP, validated
+    // by the resource server — whose audience check is the confused-deputy defence — and its refusal
+    // carries the RFC 9728 challenge that starts the discovery flow. See `crate::mcp_oauth`.
+    //
+    // `app.mcp` is `None` unless `mcp:` is configured, in which case this is a single `Option` test
+    // on the hot path and the MCP routes are not mounted either.
+    if let Some(rs) = app.mcp.clone() {
+        if rs.owns_path(&path) {
+            drop(_mw.take());
+            return Ok(crate::mcp_oauth::http::admission(&rs, req, next).await);
+        }
+    }
+
     let mut declared_admin = false;
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {

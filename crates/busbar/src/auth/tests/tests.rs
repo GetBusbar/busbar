@@ -2321,7 +2321,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
 
     // The table the SERVED router was built from: same function, same plugin-route input, so the
     // enumeration cannot describe a different surface than the one under test.
-    let core_routes = crate::base_data_router(&app.plugin_routes).1;
+    let core_routes = crate::base_data_router(&app.plugin_routes, app.mcp.is_some()).1;
     let boot_plugin_paths: Vec<String> = app.boot_route_paths.iter().cloned().collect();
     assert!(
         !core_routes.routes().is_empty(),
