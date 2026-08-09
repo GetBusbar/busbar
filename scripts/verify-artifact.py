@@ -33,7 +33,7 @@ with no row is a check nobody can see.
 
 THERE IS NO SKIP, NO WAIVER AND NO EXCEPTION LIST. A row either applies to a target (via the row's
 `applies_when`, matched against that target's own declaration in .github/release-targets.json) or it
-does not. `--rows` exists for local red-before-green work only: it reports the verdict PARTIAL and
+does not. `--rows` restricts a run to named rows for local diagnosis: it reports the verdict PARTIAL and
 exits 2, never 0, so a partial run can never be mistaken for a green one and cannot be wired into
 CI as a pass.
 
