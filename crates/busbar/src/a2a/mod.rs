@@ -23,11 +23,20 @@
 //! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
 //! generalised is a test over production code rather than an assertion nobody can check.
 
-// NO PRODUCTION CALLER YET, and deliberately so, matching the posture of the lifecycle this plane
-// parameterises. The canonical form and the identity pin are what a wire reader, a registry section
-// and an admin verb are each built ON TOP of, and they are the parts worth settling first: a
-// fingerprint whose definition moves after an operator has approved one invalidates every approval
-// in the deployment.
+// PART OF THIS PLANE NOW HAS A PRODUCTION CALLER AND PART OF IT STILL DOES NOT, and the attribute
+// below is what keeps the second half honest rather than hidden.
+//
+// [`plane`] and [`scheduler`] are DRIVEN: `main` lowers `agents:` into a registry and spawns the
+// re-verification job, so `verify::reverify_once`, `reverify::due`, `reverify::settle`,
+// `registry::apply_anomaly_breaker`, `anomaly::evaluate`, `fetch`, `jws` and `pin` are all reached
+// by a running deployment rather than by tests alone.
+//
+// The RECEIVING hot path is not: `serve`, `inbound`, `catalogue`, `meter`, `task`, `taskstore`,
+// `provenance`, `pushnotify` and `verbs` are decisions with no router calling them. They are not
+// dead code that nobody wants — they are the parts a wire reader is built ON TOP of, and settling
+// them first is deliberate, because a fingerprint whose definition moves after an operator has
+// approved one invalidates every approval in the deployment. The attribute stays until the last of
+// them is mounted, and shrinking rather than deleting it is how the remaining gap stays visible.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod anomaly;
@@ -41,10 +50,12 @@ pub(crate) mod inbound;
 pub(crate) mod jws;
 pub(crate) mod meter;
 pub(crate) mod pin;
+pub(crate) mod plane;
 pub(crate) mod provenance;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
 pub(crate) mod reverify;
+pub(crate) mod scheduler;
 pub(crate) mod serve;
 pub(crate) mod task;
 pub(crate) mod taskstore;

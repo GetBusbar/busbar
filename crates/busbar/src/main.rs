@@ -1085,6 +1085,26 @@ async fn run() {
         ));
     }
 
+    // THE A2A RE-VERIFICATION JOB. An approval is a statement about a document at a moment and
+    // nothing keeps it true; the pin catches a change only when somebody looks, and this is what
+    // makes somebody look. Spawned only when `agents:` defines a plane — a deployment that fronts
+    // no agents starts no job — and spawned once here rather than on apply, for the same reason the
+    // flusher is: a second job against the same registry would double every fetch and race every
+    // ledger stamp.
+    if let Some(plane) = app_handle.load().a2a.clone() {
+        tracing::info!(
+            agents = plane.len(),
+            tick_secs = crate::a2a::scheduler::REVERIFY_TICK.as_secs(),
+            "a2a: re-verification job started"
+        );
+        // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
+        // lifetime and exits its own loop on the shutdown broadcast.
+        std::mem::drop(crate::a2a::scheduler::spawn_reverifier(
+            plane,
+            shutdown_tx.subscribe(),
+        ));
+    }
+
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with
     // its own TLS/mTLS. `tokio::join!` returns only once BOTH have drained.
     let data_listener = bind_listener(&listen).await;
@@ -3713,6 +3733,12 @@ pub(crate) fn build_app_from_config(
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
         agent_defs: cfg.agent_defs.clone(),
+        // THE A2A PLANE, built only when `agents:` defines one. A deployment that fronts no agents
+        // gets `None` here and nothing downstream: no registry, no re-verification job. Built from
+        // THIS generation's config on every apply, deliberately — a registration an operator
+        // removed must stop being re-verified, and one whose pin they changed must be judged
+        // against the pin they now declare.
+        a2a: crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref()),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),

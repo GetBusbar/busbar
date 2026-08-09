@@ -22,6 +22,8 @@ fn test_query_has_alt_sse() {
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
         agent_defs: Default::default(),
+        // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.
+        a2a: None,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(

@@ -109,7 +109,7 @@ impl AgentRegistration {
             approval: Approval::registered(),
             reverify: reverify::Policy {
                 ttl_ms: 6 * 60 * 60 * 1_000,
-                recovery_backoff_ms: 15 * 60 * 1_000,
+                recovery_backoff_ms: super::config::DEFAULT_RECOVERY_BACKOFF_MS,
             },
             thresholds: anomaly::Thresholds::default(),
             egress_scopes: Vec::new(),

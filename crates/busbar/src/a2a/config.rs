@@ -51,6 +51,19 @@ pub(crate) const RESERVED_AGENTS_SECTION_KEYS: &[&str] = &["hooks", "upstream_cr
 /// per period and is nowhere near any budget. An operator who wants tighter says so per agent.
 pub(crate) const DEFAULT_REVERIFY_TTL: &str = "6h";
 
+/// THE DEPLOYMENT-WIDE RECOVERY BACKOFF a registration gets when it spells no `recovery_backoff:`.
+///
+/// The RECOVERY half of the cadence, and the only half that has a default at all — there is
+/// deliberately no deployment-wide knob for detection or demotion, because both would be a window an
+/// upstream could open for itself by flapping. Fifteen minutes is long enough that an alternating
+/// upstream collapses into one persistent quarantine rather than a demotion storm, and short enough
+/// that a genuine recovery is believed within one operator's attention span.
+///
+/// Non-zero on purpose: zero is a legitimate PER-AGENT setting for an upstream an operator knows to
+/// be flaky for boring reasons, but the boring explanation and the hostile one look identical from
+/// here, so it is not what an unconfigured deployment gets.
+pub(crate) const DEFAULT_RECOVERY_BACKOFF_MS: u64 = 15 * 60 * 1_000;
+
 /// THE REFUSAL FOR `upstream_credentials: passthrough` ON THIS PLANE, written once so the per-entry
 /// and section-level paths cannot say different things about the same rule.
 ///

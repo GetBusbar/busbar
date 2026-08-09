@@ -359,6 +359,16 @@ pub(crate) struct App {
     /// a registered agent (observed cards, the drift queue, anomaly counters, task rows) is store
     /// state and is deliberately not reachable from a config snapshot.
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
+    /// THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything that has
+    /// accumulated against it. `None` when no agent is configured, and that absence is the gate:
+    /// no plane means no re-verification job and no routes, so "is this deployment an A2A plane?"
+    /// is answered by what is mounted rather than by a flag.
+    ///
+    /// Distinct from `agent_defs` in the same way a resolved pool is distinct from `pools:`:
+    /// `agent_defs` is operator INTENT and is what the admin API serves; this is ACCUMULATION and is
+    /// what the job mutates. Rebuilt on every apply, so a removed agent's observations are dropped
+    /// with it rather than outliving the registration.
+    pub(crate) a2a: Option<Arc<crate::a2a::plane::A2aPlane>>,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,

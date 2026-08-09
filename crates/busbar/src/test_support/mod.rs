@@ -1107,6 +1107,12 @@ impl TestApp {
         // production's verbatim: whatever this table declares is what the router mounted.
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
         let app = std::sync::Arc::new(crate::state::App {
+            // Built from the SAME lowering production uses, so a test that configures agents gets
+            // the same registry a deployment would and one that configures none gets no plane.
+            a2a: crate::a2a::plane::A2aPlane::from_config(
+                &self.agent_defs,
+                self.public_url.as_deref(),
+            ),
             agent_defs: self.agent_defs,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
