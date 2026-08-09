@@ -425,7 +425,10 @@ async fn the_method_table_is_reachable_through_the_real_mounted_route() {
         "jsonrpc": "2.0",
         "id": 7,
         "method": "tools/list",
-        "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": version } },
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": version,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        } },
     });
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
@@ -448,13 +451,16 @@ async fn the_method_table_is_reachable_through_the_real_mounted_route() {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 8,
-        "method": "completion/complete",
-        "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": version } },
+        "method": "logging/setLevel",
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": version,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        } },
     });
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
         .header("mcp-protocol-version", version)
-        .header("mcp-method", "completion/complete")
+        .header("mcp-method", "logging/setLevel")
         .json(&body)
         .send()
         .await

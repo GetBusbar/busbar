@@ -62,7 +62,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::client::catalogue::TransportPin;
+use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolsCfg, NAMESPACE_SEP};
 use crate::trust::Approval;
 
@@ -236,6 +236,11 @@ pub(crate) enum DispatchRefusal {
     NotApproved(String),
     /// The server has no locked pin, so it is `pending` in the trust sense and cannot serve traffic.
     NotPinned(String),
+    /// The LAST LIVE TOOL LIST disagrees with what the operator approved, so this server is
+    /// demoted and serves nothing until the change is worked. THIS IS THE RUG-PULL REFUSAL: an
+    /// upstream that re-serves an approved tool name under a changed schema or description lands
+    /// here, and it is the arm that cannot be reached by comparing config against itself.
+    Quarantined { tool: String, why: &'static str },
     /// The caller's grant does not reach this tool. Kept distinct from `UnknownTool` deliberately:
     /// the CATALOGUE hides what a caller may not see, so a caller who names a tool it cannot see
     /// gets the same shape of answer either way — but the AUDIT record must be able to tell the
@@ -265,6 +270,11 @@ impl std::fmt::Display for DispatchRefusal {
                 "MCP server `{s}` has no locked identity pin, so it is pending and cannot serve \
                  traffic"
             ),
+            DispatchRefusal::Quarantined { tool, why } => write!(
+                f,
+                "`{tool}` is not served: {why}. The upstream's current tool list no longer matches \
+                 what an operator approved, so this server is demoted until the change is reviewed."
+            ),
             DispatchRefusal::NotGranted(t) => {
                 write!(f, "`{t}` is not a tool this server exposes")
             }
@@ -281,6 +291,7 @@ impl DispatchRefusal {
             DispatchRefusal::UnknownTool(_) => "unknown_tool",
             DispatchRefusal::NotApproved(_) => "not_approved",
             DispatchRefusal::NotPinned(_) => "not_pinned",
+            DispatchRefusal::Quarantined { .. } => "quarantined",
             DispatchRefusal::NotGranted(_) => "not_granted",
         }
     }
@@ -429,6 +440,7 @@ impl Catalogue {
     pub(crate) fn resolve(
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
+        live: LiveSightings<'_>,
         namespaced_name: &str,
     ) -> Result<&ToolEntry, DispatchRefusal> {
         let Some(entry) = self.tools.get(namespaced_name) else {
@@ -441,11 +453,26 @@ impl Catalogue {
             .servers
             .get(&entry.server)
             .ok_or_else(|| DispatchRefusal::UnknownTool(namespaced_name.to_string()))?;
+        // THE DIGEST BEING DISPATCHED AGAINST. When a live tool list has been taken it is what the
+        // UPSTREAM is serving right now; with no sighting it is the hash the operator wrote. That
+        // choice is the whole rug-pull defence: comparing the approved hash against the configured
+        // hash is comparing the operator's intent with itself and cannot, by construction, notice
+        // an upstream changing its schema underneath.
+        let observed = match live.digest_for(&entry.server, &entry.tool, &server.approval) {
+            LiveDigest::Unsighted => entry.dispatch_digest().to_string(),
+            LiveDigest::At(digest) => digest,
+            LiveDigest::Quarantined(why) => {
+                return Err(DispatchRefusal::Quarantined {
+                    tool: entry.namespaced.clone(),
+                    why,
+                })
+            }
+        };
         // THE GATE, and the only one. It is not "is the registration pinned, and is a hash
         // configured" restated here; it is the shared lifecycle's own comparison, so the answer
         // dispatch gets is by construction the answer the operator's trust surfaces are computed
         // from.
-        if !server.approval.serves(&entry.tool, entry.dispatch_digest()) {
+        if !server.approval.serves(&entry.tool, &observed) {
             return Err(refusal_reason(server, entry));
         }
         Ok(entry)
@@ -466,9 +493,14 @@ impl Catalogue {
     ///    while the generation check is sufficient, and kept because "the generation is the only
     ///    check" is exactly the assumption a future caller that plumbs the generation wrongly would
     ///    silently rely on.
+    ///
+    /// The live sightings are re-read by the caller and passed in here too, so a refresh that
+    /// landed a drifted tool list BETWEEN admission and dispatch is caught on the same request
+    /// rather than on the next one.
     pub(crate) fn revalidate(
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
+        sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,
     ) -> Result<(), DispatchRefusal> {
@@ -478,7 +510,7 @@ impl Catalogue {
                 live: self.generation,
             });
         }
-        let live = self.resolve(grant, &selected.namespaced)?;
+        let live = self.resolve(grant, sightings, &selected.namespaced)?;
         if live.schema_hash != selected.schema_hash {
             return Err(DispatchRefusal::NotApproved(selected.namespaced.clone()));
         }

@@ -13,11 +13,17 @@ name: MCP conformance
 # org rule (public → `ubuntu-latest`, private → `busbar-selfhosted`) and it is why nothing here
 # needs provisioning.
 #
+# THERE IS NO SECRET ANYWHERE IN THIS FILE, and that is load-bearing rather than incidental. The
+# in-house battery used to be cloned from a private repository on an internal Gitea host
+# with NO route from a GitHub-hosted runner: reaching it needed a secret AND a reachable private
+# host, and the moment a control leg depends on either, "the control legs run ALWAYS" is
+# aspirational. So the battery was moved into `testing/mcp-conformance/` in this repository
+# (DECISION 2), exactly as the sibling A2A workflow had already done and for the same reason. A
+# battery that contains no product knowledge by construction loses nothing by being readable.
+#
 # INDEPENDENCE IS A PROPERTY OF AUTHORSHIP, NOT OF LOCATION. The official suite is written and
 # maintained by the people who write the MCP specification and shares none of busbar's code; running
-# it from busbar's CI does not make it ours. What WOULD compromise it is letting product knowledge
-# into the harness, which is why the governance tier (budget, policy, rate limits, tool-list hash
-# pinning, abuse detection) is deliberately NOT run from here.
+# it from busbar's CI does not make it ours.
 #
 # THE TWO-LEG RULE, which is the whole shape of this file:
 #
@@ -25,20 +31,24 @@ name: MCP conformance
 #   to judge ours. A red control leg is a finding about the harness, the pin or the runner — never
 #   about busbar — and it must be visible BEFORE any subject verdict is believed.
 #
-#   SUBJECT SKIPS until armed by one repository variable naming a running busbar MCP endpoint. It
-#   does NOT fail. A job that is red today for a reason that is not a defect is how red stops meaning
-#   defect. The counterweight is in the script: once armed, a run that executes fewer than the full
-#   required scenario set is a HARD failure, because "armed but vacuous" is the state a skip rots
-#   into.
+#   SUBJECT IS ARMED OR RED. This is a REVERSAL of the previous policy and it is the point of this
+#   whole file. The subject legs used to SKIP until armed, and the argument was good: a job that is
+#   red today for a reason that is not a defect is how red stops meaning defect. It stopped being
+#   good the moment the release claim became "busbar implements MCP", because a disarmed subject leg
+#   proves the SUITE works and proves NOTHING about busbar — while rendering as the identical green
+#   tick a leg that judged busbar and passed would produce. `NOT ARMED, SO NOT RUN` is therefore a
+#   RED state, the transition is exercised by `mcp-conformance.sh --selftest` rather than asserted,
+#   and each subject job publishes its arm state as a JOB OUTPUT because an all-steps-skipped job
+#   reports `success` and the aggregator would otherwise be unable to tell the two apart.
+#
+# AND `verdict` IS NOT OPTIONAL. Ten green ticks mean nothing if one of them is green because it
+# never ran. The last job asserts, per leg BY NAME, that the leg reached `success`; skipped or
+# cancelled is RED there. Its `needs:` list is held to SET EQUALITY with the workflow's job set by
+# `testing/verdict-covers-every-leg.py`, because a `needs:` list is exactly the kind of
+# hand-maintained enumeration that stops covering whatever is added after it.
 #
 # This is a separate workflow rather than a job in ci.yml on purpose: the control leg builds a
 # 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
-#
-# `branches: ['**']` matches the sibling A2A conformance workflow and ci.yml. A workflow that only
-# runs on the promotion branches cannot be seen to work on the branch that introduces it, and during
-# 1.5.4 two work items were reported green from local runs and had never been CI-verified at all.
-# The control leg's third-party build is cached on its pin, so the expensive half is paid once per
-# pin rather than once per push.
 on:
   push:
     branches: ['**']
@@ -55,13 +65,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       # FIRST, and separately from any verdict. The same discipline structure-lint and
       # no-plugins-gate follow: never trust a gate's verdict before proving the gate still works.
-      # The self-test plants three runs that MUST be refused (no results at all; a run missing a
-      # required scenario; an empty requirement set) and two that must be accepted, so a green below
-      # cannot be produced by an assertion that refuses everything or accepts everything.
-      - name: Prove the anti-vacuity assertion bites
+      # The self-test plants runs that MUST be refused (no results at all; a run missing a required
+      # scenario; an empty requirement set) and runs that must be accepted, so a green below cannot
+      # be produced by an assertion that refuses everything or accepts everything. It also drives
+      # the ARM-STATE TRANSITION in both directions, because a rule whose enforcement is only ever
+      # exercised by the real thing is a rule nobody has watched work.
+      - name: Prove the anti-vacuity and arm-state assertions bite
         run: ./scripts/mcp-conformance.sh --selftest
+
+      - name: Prove the verdict-coverage lint bites
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 testing/verdict-covers-every-leg.py --selftest
+
+      # The aggregator's `needs:` list is itself a hand-maintained enumeration, and the last
+      # enumeration in this tree that stopped covering what came after it did so silently.
+      - name: The verdict must depend on, and judge, every leg
+        run: python3 testing/verdict-covers-every-leg.py
+
+      - name: Prove the fixture-absence gate bites
+        run: ./scripts/mcp-fixture-absence-gate.sh --selftest
 
   official-control:
     name: official suite · CONTROL (pinned reference SDK)
@@ -98,31 +127,104 @@ jobs:
           if-no-files-found: warn
 
   official-subject:
-    name: official suite · SUBJECT (busbar, skips until armed)
+    name: official suite · SUBJECT (busbar — ARMED OR RED)
     needs: official-control
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
+    # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the aggregator
+    # cannot tell "armed and passed" from "unarmed and did nothing" by reading the job result --
+    # which is precisely the shape of false green this workflow exists to refuse. The arm state is
+    # therefore an explicit output the verdict reads, and the verdict treats `false` as RED.
+    outputs:
+      armed: ${{ steps.arm.outputs.armed }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      # `vars`, not `secrets`: an endpoint URL is not a credential, and putting it in `secrets` would
-      # mask it out of the very logs someone debugging an armed run needs to read.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean
+      # something. It used to be armed from `vars.MCP_CONFORMANCE_SUBJECT_URL` -- an externally
+      # deployed busbar -- which made a RELEASE GATE depend on a deployment being up, reachable and
+      # correctly configured at the moment CI happened to run. Both verdicts were then unreadable: a
+      # green meant "that deployment was fine yesterday" and a red meant "somebody redeployed", and
+      # neither is a statement about the commit under test. The sibling A2A workflow settled the
+      # equivalent question the same way, by booting its peer in the job with no secret.
+      #
+      # `CARGO_INCREMENTAL=0`: incremental artifacts are worthless on a fresh runner and a partially
+      # populated incremental cache has produced spurious "unable to copy ... No such file or
+      # directory" build failures, which is a red that is not a defect.
+      - name: Build the subject from this commit
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: cargo build --bin busbar
+
+      # This step RECORDS the arm state and does not judge it; the `Judge busbar` step below fails
+      # on its own when unarmed, and the verdict fails independently on the output. Two mechanisms
+      # for one fact, deliberately: the step can be re-run in isolation and still be honest, and the
+      # verdict still catches a job that was cancelled before this step ever ran.
+      #
+      # NO SECRET AND NO REPOSITORY VARIABLE ARMS THIS ANY MORE. The arm is a FILE this job just
+      # built, so the leg cannot silently disarm because somebody deleted a variable or let a
+      # deployment lapse -- it can only disarm by the build failing, which is itself red.
+      - name: Record the arm state
+        id: arm
+        run: |
+          set -euo pipefail
+          if [ -x target/debug/busbar ]; then
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### MCP official-suite subject leg: NOT ARMED — this is RED"
+              echo ""
+              echo "The build produced no busbar binary, so the official suite could only have run"
+              echo "against its pinned third-party control. That proves the SUITE works. It proves"
+              echo "nothing about busbar."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # NOT conditional on the arm state. Unarmed, this step FAILS, and that is the transition this
+      # goal is about. The script boots busbar on loopback, mints a REAL audience-bound credential
+      # for it with the signing key this job generated, and PROVES the plane boundary is still
+      # intact (no credential / no audience / wrong audience / flipped signature must all be 401,
+      # and the right token must be 200) before it lets the suite start -- because a leg that
+      # authenticated itself by weakening the thing under test would be green about a busbar nobody
+      # runs, which is worse than leaving it unarmed. The anti-vacuity assertion then holds the run
+      # to SET EQUALITY with the revision's required scenario set -- never a count, because a floor
+      # of 30 is satisfied by any 30 of 37.
       - name: Judge busbar
         env:
-          MCP_CONFORMANCE_SUBJECT_URL: ${{ vars.MCP_CONFORMANCE_SUBJECT_URL }}
+          MCP_SUBJECT_BUSBAR_BIN: target/debug/busbar
         run: ./scripts/mcp-conformance.sh --official-subject
+
+      # THE OPTIONAL EXTRA LEG. If an operator also wants a real deployment judged, setting the
+      # variable adds a second, STRICT run against it -- it is never a substitute for the booted
+      # subject above, and it is never soft: a run that happens must pass. Absent, nothing here
+      # runs and nothing above depends on it.
+      - name: Also judge an external deployment, if one is configured
+        if: ${{ vars.MCP_CONFORMANCE_SUBJECT_URL != '' }}
+        env:
+          MCP_CONFORMANCE_SUBJECT_URL: ${{ vars.MCP_CONFORMANCE_SUBJECT_URL }}
+          MCP_SUBJECT_OUT: .mcp-conformance/subject-external
+        run: ./scripts/mcp-conformance.sh --official-subject
+
+      # BOTH result sets, and the booted one is never overwritten by the optional one -- a verdict
+      # standing over another run's artifact is unreadable evidence.
       - name: Publish the subject results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: mcp-official-subject
-          path: .mcp-conformance/subject
+          path: |
+            .mcp-conformance/subject
+            .mcp-conformance/subject-external
           if-no-files-found: ignore
 
-  battery:
-    name: in-house battery · CONTROL + SUBJECT (skips until available)
+  battery-control:
+    name: in-house battery · CONTROL (pinned python reference peer)
     needs: gate-selftest
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -134,34 +236,185 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      # THE HONEST GAP, stated here rather than hidden in a green check: the in-house adversarial
-      # and seam battery is not part of this repository, so this job cannot run it by default and
-      # skips. That is a weaker position than the official legs above, which depend on nothing
-      # beyond this repository and therefore always run. The sibling A2A conformance workflow
-      # resolved the same question by bringing its battery in alongside the code it judges, which is
-      # what should happen here too: a battery that contains no product knowledge by construction
-      # loses nothing by being readable, and gains a gate that cannot silently stop running.
-      - name: Fetch the in-house battery, if reachable
-        id: battery
-        continue-on-error: true
-        env:
-          BATTERY_REPO: ${{ secrets.BUSBAR_PRIVATE_REPO_URL }}
-          BATTERY_REF: ${{ vars.BUSBAR_PRIVATE_REF }}
+      # No fetch, no clone, no secret. The battery is `testing/mcp-conformance/` in this checkout.
+      - name: Judge the pinned control peer
+        run: ./scripts/mcp-conformance.sh --battery-control
+
+  battery-negative-control:
+    name: in-house battery · NEGATIVE control (a broken peer MUST be red)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      # A battery that only ever runs against a good implementation says nothing about its own
+      # sensitivity. This drives deliberately broken fake peers and requires the battery to catch
+      # each one. Without it, "the control leg is green" is equally consistent with a battery that
+      # cannot fail.
+      - name: Deliberately broken peers must be caught
+        working-directory: testing/mcp-conformance
         run: |
           set -euo pipefail
-          if [ -z "${BATTERY_REPO:-}" ]; then
-            echo "BUSBAR_PRIVATE_REPO_URL is not set; the in-house battery will be skipped."
-            exit 0
+          out="$(./scripts/negative-control.sh)"
+          printf '%s\n' "$out"
+          # The `honest` row must have zero failures and every broken row must have at least one.
+          # Asserted on the OUTPUT, per row, rather than on an exit code the script does not set.
+          # Piped rather than heredoc'd: `python3 - <<'PY' <<<"$out"` has TWO stdin redirections and
+          # the last one wins, so the script would never be read at all and the step would pass
+          # having asserted nothing.
+          printf '%s\n' "$out" | python3 -c '
+          import re, sys
+          rows = [l for l in sys.stdin.read().splitlines() if l.strip()][1:]
+          if len(rows) < 7:
+              sys.exit("negative control produced %d rows; it did not run." % len(rows))
+          bad = []
+          for row in rows:
+              mode = row.split()[0]
+              m = re.search(r"(\d+) fail", row)
+              if m is None:
+                  bad.append("unreadable row (no fail count): %s" % row)
+                  continue
+              caught = int(m.group(1)) > 0
+              if mode == "honest" and caught:
+                  bad.append("the HONEST peer was rejected: %s" % row)
+              if mode != "honest" and not caught:
+                  bad.append("a BROKEN peer (%s) was blessed: %s" % (mode, row))
+          if bad:
+              sys.exit("\n".join(bad))
+          print("negative control behaved: %d rows, every broken peer caught." % len(rows))
+          '
+
+  battery-subject:
+    name: in-house battery · SUBJECT (busbar — ARMED OR RED)
+    needs: battery-control
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      armed: ${{ steps.arm.outputs.armed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Record the arm state
+        id: arm
+        env:
+          SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
+          CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVER_CMD:-}${CLIENT_CMD:-}" ]; then
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=true" >> "$GITHUB_OUTPUT"
           fi
-          git clone --filter=blob:none "$BATTERY_REPO" /tmp/busbar-private
-          git -C /tmp/busbar-private checkout "${BATTERY_REF:-HEAD}"
-          echo "dir=/tmp/busbar-private/testing/mcp-conformance" >> "$GITHUB_OUTPUT"
-      - name: Control leg
+      # MCP_NO_SKIPS=1 is set inside the script for this leg: a skipping test is not a passing test.
+      # It makes the six `pr`-tier SEAM tests RED while busbar has no MCP CLIENT direction able to
+      # mount the battery's fake server as an upstream. That is the correct answer and not a
+      # nuisance: the seam is the one property that is meaningless with only one direction built --
+      # inbound audience validation defends nothing without an inbound surface, and outbound
+      # down-scoping means nothing without upstreams -- so a green there before the client direction
+      # lands would be a lie about exactly the property that matters most.
+      - name: Judge busbar
         env:
-          MCP_BATTERY_DIR: ${{ steps.battery.outputs.dir }}
-        run: ./scripts/mcp-conformance.sh --battery-control
-      - name: Subject leg
-        env:
-          MCP_BATTERY_DIR: ${{ steps.battery.outputs.dir }}
           MCP_SUBJECT_SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
+          MCP_SUBJECT_CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
+          MCP_SUBJECT_UPSTREAM_CONFIG_CMD: ${{ vars.MCP_SUBJECT_UPSTREAM_CONFIG_CMD }}
         run: ./scripts/mcp-conformance.sh --battery-subject
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mcp-battery-subject
+          path: testing/mcp-conformance/reports/
+          if-no-files-found: ignore
+
+  fixture-absence:
+    name: the test fixtures are absent from a real build (both axes)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Two axes, because a fixture can survive into a shipped build two independent ways and
+      # neither axis sees the other's. See the script's header.
+      - name: Both axes
+        run: ./scripts/mcp-fixture-absence-gate.sh --run
+
+  verdict:
+    name: MCP conformance verdict
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - gate-selftest
+      - official-control
+      - official-subject
+      - battery-control
+      - battery-negative-control
+      - battery-subject
+      - fixture-absence
+    steps:
+      # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. Every leg above is required to have reached
+      # `success`. `skipped` and `cancelled` are failures here, because the failure mode this whole
+      # workflow exists to prevent is a tick over a job that executed nothing.
+      #
+      # THE SUBJECT LEGS ARE NOT EXEMPT. In the sibling A2A workflow the subject leg is allowed to
+      # be unarmed, named explicitly so that arming it moves it into the strict set. Here that
+      # exemption is DELETED: GOAL-1.5.5 §A.3 requires that `NOT ARMED, SO NOT RUN` be a red state,
+      # so an `armed=false` output fails this job. The arm state is read from the job's own
+      # published OUTPUT and not from its result, because an all-steps-skipped job reports
+      # `success` and would otherwise be indistinguishable from a leg that judged busbar.
+      - name: Every leg must have EXECUTED, and every subject leg must have been ARMED
+        env:
+          SELFTEST: ${{ needs.gate-selftest.result }}
+          OFFICIAL_CONTROL: ${{ needs.official-control.result }}
+          OFFICIAL_SUBJECT: ${{ needs.official-subject.result }}
+          OFFICIAL_SUBJECT_ARMED: ${{ needs.official-subject.outputs.armed }}
+          BATTERY_CONTROL: ${{ needs.battery-control.result }}
+          BATTERY_NEGATIVE_CONTROL: ${{ needs.battery-negative-control.result }}
+          BATTERY_SUBJECT: ${{ needs.battery-subject.result }}
+          BATTERY_SUBJECT_ARMED: ${{ needs.battery-subject.outputs.armed }}
+          FIXTURE_ABSENCE: ${{ needs.fixture-absence.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          strict () {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2). A leg that did not EXECUTE is red, not skipped."
+              fail=1
+            else
+              echo "  ok    $1"
+            fi
+          }
+          # `armed <name> <result> <armed-output>`: a subject leg must have BOTH succeeded and
+          # published `armed=true`. An empty output means the job never reached its own arming
+          # step, so whether busbar was tested is unknown -- and unknown is red.
+          armed () {
+            case "${3:-}" in
+              true)  strict "$1" "$2" ;;
+              false)
+                echo "::error::$1 published armed=false. NOT ARMED, SO NOT RUN is a RED state: the controls proved the instruments, not busbar. Set the repository variable that arms it."
+                fail=1 ;;
+              *)
+                echo "::error::$1 published no arm state (result: $2, armed: '${3:-}'). The leg did not reach its own arming check, so whether busbar was tested is unknown -- and unknown is red."
+                fail=1 ;;
+            esac
+          }
+          strict gate-selftest             "$SELFTEST"
+          strict official-control          "$OFFICIAL_CONTROL"
+          strict battery-control           "$BATTERY_CONTROL"
+          strict battery-negative-control  "$BATTERY_NEGATIVE_CONTROL"
+          strict fixture-absence           "$FIXTURE_ABSENCE"
+          armed  official-subject          "$OFFICIAL_SUBJECT" "$OFFICIAL_SUBJECT_ARMED"
+          armed  battery-subject           "$BATTERY_SUBJECT"  "$BATTERY_SUBJECT_ARMED"
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo
+          echo "MCP conformance verdict: every leg executed, and both subject legs judged busbar."

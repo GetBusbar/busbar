@@ -48,6 +48,8 @@
 //!   a header that disagrees with the body is `400` with JSON-RPC code `-32020` — because a proxy
 //!   routing on the header while the server executes the body is a request-smuggling primitive.
 //! - `MCP-Protocol-Version` must equal the body `_meta` protocol version, same `-32020` on mismatch.
+//!   A `_meta` that is ABSENT or incomplete is a different failure and answers `-32602` with `400`:
+//!   that is a defect in the request's own params, not two readings of one request disagreeing.
 //! - An unknown method is `404` with JSON-RPC `-32601`, NOT a `200` carrying an error object.
 //! - `Origin` validation is a MUST, `403` on an invalid one — the DNS-rebinding defence for a
 //!   gateway that may be reachable from a browser context.
@@ -55,24 +57,37 @@
 //! ## The rooms behind the door
 //!
 //! The JSON-RPC method surface — the CATALOGUE (`tools/list`, `prompts/list`, `resources/list`,
-//! `server/discover`) and DISPATCH (`tools/call`, `prompts/get`, `resources/read`) — lives in
-//! [`method`], computed over the versioned snapshot in [`catalogue`], scoped by the caller's key
-//! grants, sanitised by [`sanitize`] and bounded by [`inputreq`]. A method absent from that table
-//! still takes the `404` / `-32601` arm, which was never a placeholder: it is the correct answer for
-//! an unimplemented method and it stayed correct unchanged when the table gained entries.
+//! `resources/templates/list`, `server/discover`) and DISPATCH (`tools/call`, `prompts/get`,
+//! `resources/read`) — lives in [`method`], computed over the versioned snapshot in [`catalogue`],
+//! scoped by the caller's key grants, sanitised by [`sanitize`] and bounded by [`inputreq`]. A
+//! method absent from that table still takes the `404` / `-32601` arm, which was never a
+//! placeholder: it is the correct answer for an unimplemented method and it stayed correct unchanged
+//! when the table gained entries.
 //!
 //! The registry those answers are computed from is the `tools:` config block ([`config`]), which is
 //! the MCP plane in the same sense `pools:` is the LLM plane.
 //!
+//! ## The other direction, which is also here
+//!
+//! busbar calling OUT is [`client`], and a `tools/call` is a real round trip to the registered
+//! upstream: SSRF-checked, address-pinned, connection-pooled, and carrying a credential
+//! [`upstream::authorise`] selected under the INBOUND caller's grant. That binding is the
+//! confused-deputy defence for this direction, and it is what the whole plane's authorization model
+//! rests on — which is why an `mcp:` block with an empty `auth.chain` is refused at boot rather than
+//! served: with no inbound principal there is no grant to bind to, and none to narrow the catalogue
+//! by either, so both properties go vacuous at once.
+//!
 //! ## What is deliberately NOT here
 //!
-//! The CLIENT direction — busbar calling OUT. Nothing in this module opens a connection to an
-//! upstream MCP server, so a `tools/call` runs every governance check and then fails at the round
-//! trip with a busbar-attributed error. That is stated in [`method::dispatch_upstream`] rather than
-//! papered over with a stub result, because a fake result makes every check above it pass for the
-//! wrong reason.
+//! An upstream's ASK — `elicitation/create`, `sampling/createMessage`, `roots/list` arriving as an
+//! `input_required` result — TERMINATES at busbar. It is never proxied onward to the caller, so
+//! busbar never emits an `input_required` result of its own and every result it returns is
+//! `complete`. Proxying one would ask the caller to grant, on the upstream's behalf, authority
+//! busbar itself has just declined to spend.
 
 pub(crate) mod admin_view;
+/// THE MCP TRUST VERBS on the admin API — `connect`, `changes`, `health`.
+pub(crate) mod adminverbs;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
 /// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
 /// module header.
@@ -83,6 +98,10 @@ pub(crate) mod catalogue;
 /// lifecycle, same scope kinds, opposite initiator.
 pub(crate) mod client;
 pub(crate) mod config;
+/// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
+/// trust lifecycle — the missing right-hand side of the rug-pull comparison.
+pub(crate) mod connect;
+
 pub(crate) mod ingress;
 pub(crate) mod inputreq;
 pub(crate) mod method;

@@ -44,23 +44,19 @@
 //! than per server, deliberately: a coarser generation can only cause a spurious refusal and a retry,
 //! where a per-server one gives every future caller a chance to pick the wrong counter.
 
-// ── NO PRODUCTION CALLER YET, AND THAT IS A GAP WORTH SEEING ────────────────────────────────────
+// ── THIS MODULE IS NOW ON THE DISPATCH PATH ─────────────────────────────────────────────────────
 //
-// `tools/call` reaches an upstream through `mcp::upstream`, which composes this module's PARTS
-// directly: `egress` (the grant gate and credential plan), `identity` (the bound name), `jsonrpc`,
-// `pool`, `ssrf`, `transport`, `argguard`. Those all have production callers and are on the
-// dispatch path.
+// `crate::mcp::connect` fetches a live `tools/list`, re-hashes it here through
+// [`ServerCatalogue::observe`], and publishes it into the [`CatalogueCache`] that rides the `App`.
+// `crate::mcp::catalogue::Catalogue::resolve` then asks [`LiveSightings::digest_for`] for the digest
+// the upstream is CURRENTLY serving and hands THAT to the trust lifecycle's own comparison — so a
+// schema an upstream changed under a live cache is refused rather than dispatched. Previously the
+// gate compared the approved digest against the schema hash the operator wrote in config, which
+// proved the served tool matched what was approved and could not by construction notice the
+// upstream moving underneath it.
 //
-// THIS FILE IS THE DRIFT DETECTOR, and it is not. The live gate in `mcp::catalogue` compares an
-// approved digest against `ToolEntry::dispatch_digest()`, which is the schema hash the OPERATOR
-// WROTE IN CONFIG — so it proves the served tool matches what was approved, and cannot by
-// construction notice that the UPSTREAM changed its schema underneath. Detecting that needs a live
-// `tools/list` fetched and compared, which is the `connect`/refresh path, which does not exist yet.
-//
-// So the rug-pull defence is built and adversarially tested here, and is NOT yet defending the hot
-// path. Inventing a caller to satisfy the linter would hide precisely that. The allow is scoped to
-// this module alone, so anything else in `client/` losing its caller still breaks the build.
-#![allow(dead_code)]
+// A small number of items here are still uncalled and they are named individually rather than
+// blanket-allowed, so anything else losing its caller still breaks the build.
 
 use super::identity::{BoundIdentity, ServerId, ToolKey};
 use crate::trust::{Approval, Observation, PinnedArtifact, Sighting, TrustState};
@@ -166,6 +162,11 @@ impl TransportPin {
     /// to when an upstream offers no signature of its own, which for MCP is the common case: there
     /// is no MCP-native manifest signature to verify. Still a real network-layer authenticity root,
     /// and still not trust-on-first-use, because the operator supplies the value out of band.
+    // STILL UNWIRED, and narrowly so: the shared HTTP client does not surface the peer's
+    // certificate to this layer, so no code path observes an SPKI to construct one from. See
+    // `crate::mcp::connect`'s stated gap. `declared` — the operator's out-of-band value — IS wired
+    // and is what the registration builds.
+    #[allow(dead_code)]
     pub(crate) fn cert_spki(value: &str) -> Self {
         Self {
             mechanism: "cert_spki",
@@ -174,6 +175,8 @@ impl TransportPin {
     }
 
     /// A pin on a client-certificate-authenticated (mTLS) binding.
+    // Unwired for the same reason as `cert_spki`: nothing observes a peer identity yet.
+    #[allow(dead_code)]
     pub(crate) fn mtls(value: &str) -> Self {
         Self {
             mechanism: "mtls",
@@ -234,6 +237,23 @@ impl ServerCatalogue {
         }
     }
 
+    /// A cache entry seeded with the operator's STANDING approval, so the operator-facing views
+    /// computed off this entry (its derived state, its changes queue) are computed against the same
+    /// intent the dispatch gate is.
+    ///
+    /// It is a CONTAINER constructor and not a transition: the approval is handed in already built
+    /// by whoever owns the intent, and nothing here approves, rejects or pins anything. The dispatch
+    /// gate deliberately does NOT read this copy — it reads the LIVE config approval beside the
+    /// sighting, so an approval edited after the last refresh bites without a re-fetch.
+    pub(crate) fn seeded(id: ServerId, approval: Approval<TransportPin>) -> Self {
+        Self {
+            id,
+            approval,
+            sighting: Sighting::Never,
+            observed: BTreeMap::new(),
+        }
+    }
+
     /// Record a `tools/list` result: the presented identity and the tools it offered, hashed.
     ///
     /// This is the ONLY way an observation enters the cache, and it always re-hashes from the
@@ -264,6 +284,10 @@ impl ServerCatalogue {
 
     /// The changes queue for the last observation: what an operator has to work before this server
     /// serves again.
+    // The operator-facing changes queue is derived from the LIVE config approval beside this
+    // entry's sighting (see `crate::mcp::connect::changes`), not from the cached copy of the intent
+    // — so this convenience reader has no production caller and deliberately keeps none.
+    #[allow(dead_code)]
     pub(crate) fn drift(&self) -> crate::trust::Drift {
         self.approval.drift(&self.sighting)
     }
@@ -315,6 +339,10 @@ impl CatalogueSnapshot {
         self.servers.get(id.as_str())
     }
 
+    // No caller: every production read is keyed by server id, because the surfaces that show more
+    // than one server iterate the REGISTRY (operator intent) and join, rather than iterating the
+    // sightings (accumulated evidence) and hoping every registration has one.
+    #[allow(dead_code)]
     pub(crate) fn servers(&self) -> impl Iterator<Item = &ServerCatalogue> {
         self.servers.values()
     }
@@ -399,6 +427,100 @@ impl CatalogueCache {
     }
 }
 
+/// THE DIGEST THE UPSTREAM IS CURRENTLY SERVING, as the dispatch gate sees it.
+///
+/// Three answers and not two, because "we have never looked" and "we looked and it moved" are
+/// different facts with different correct outcomes, and collapsing them is how a drift gate ends up
+/// either refusing every declaratively-approved deployment or admitting every drifted one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LiveDigest {
+    /// No successful `tools/list` has ever been taken for this server. The operator's declarative
+    /// approval stands on its own and the config-written hash is what dispatch compares — which is
+    /// the pre-existing behaviour, preserved deliberately: a deployment that never runs `connect`
+    /// must keep serving exactly as it did.
+    Unsighted,
+    /// The last observation DISAGREES with the standing approval on some axis — a changed schema,
+    /// a capability that vanished, an identity that moved, a failed contact, a suspension. Dispatch
+    /// is refused until an operator works the change. The word is for the operator.
+    Quarantined(&'static str),
+    /// The upstream is currently serving this capability at this digest. Handed to the trust
+    /// lifecycle's own comparison, which decides whether it is the approved one.
+    At(String),
+}
+
+/// THE LIVE TOOL-LIST OBSERVATIONS, as a read-only view the dispatch gate can be handed.
+///
+/// A borrowed wrapper rather than a raw `Option<&CatalogueSnapshot>` so the SERVER direction's
+/// catalogue never has to know the cache's internals, and so a call site that has no cache at all
+/// has to say so out loud ([`LiveSightings::unsighted`]) rather than by passing a value that happens
+/// to be empty.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LiveSightings<'a>(Option<&'a CatalogueSnapshot>);
+
+impl<'a> LiveSightings<'a> {
+    /// No live cache is consulted: every lookup answers [`LiveDigest::Unsighted`].
+    // Production always has a cache to consult (it rides the `App`), so this is the shape used by
+    // callers that legitimately have none — the catalogue's own unit batteries, which pin the
+    // no-sighting fallback that a declarative deployment depends on.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn unsighted() -> Self {
+        Self(None)
+    }
+
+    /// Consult this snapshot.
+    pub(crate) fn of(snapshot: &'a CatalogueSnapshot) -> Self {
+        Self(Some(snapshot))
+    }
+
+    /// What `server`'s `tool` is CURRENTLY observed at, judged against the operator's LIVE standing
+    /// approval.
+    ///
+    /// `approval` is passed in rather than read off the cached entry deliberately. The cached copy
+    /// is whatever the intent was at the last refresh; the operator may have approved a new digest
+    /// since, and a gate that consulted the stale copy would keep refusing a change the operator has
+    /// already worked. The state and the drift are the lifecycle's own derivations, so there is no
+    /// second opinion about what "quarantined" means.
+    pub(crate) fn digest_for(
+        &self,
+        server: &str,
+        tool: &str,
+        approval: &Approval<TransportPin>,
+    ) -> LiveDigest {
+        let Some(entry) = self.0.and_then(|s| s.servers.get(server)) else {
+            return LiveDigest::Unsighted;
+        };
+        let sighting = &entry.sighting;
+        if matches!(sighting, Sighting::Never) {
+            return LiveDigest::Unsighted;
+        }
+        match approval.state(sighting) {
+            TrustState::Approved => {}
+            TrustState::Quarantined => {
+                return LiveDigest::Quarantined("the last refresh disagrees with what was approved")
+            }
+            TrustState::Error => {
+                return LiveDigest::Quarantined("the last refresh could not reach this server")
+            }
+            TrustState::Suspended => return LiveDigest::Quarantined("this server is suspended"),
+            TrustState::Pending => {
+                return LiveDigest::Quarantined("this server has no locked identity pin")
+            }
+        }
+        match sighting {
+            Sighting::Seen(observation) => match observation.capabilities.get(tool) {
+                Some(digest) => LiveDigest::At(digest.clone()),
+                // Approved-and-no-longer-offered is `removed` drift and is already caught above, so
+                // reaching here means a tool that was never approved either. Refusing rather than
+                // falling back to the config hash is the fail-closed answer: the fallback is for a
+                // server nobody has looked at, not for a tool nobody saw.
+                None => LiveDigest::Quarantined("this tool is not in the last observed tool list"),
+            },
+            // `Never` returned above; `Failed` is `TrustState::Error` and returned above.
+            _ => LiveDigest::Quarantined("there is no successful observation to dispatch against"),
+        }
+    }
+}
+
 /// THE REFRESH TRIGGER GATE: an upstream may ASK for a re-pull and may not have one on demand.
 ///
 /// `notifications/tools/list_changed` is attacker-controlled in both timing and content. This gate
@@ -408,6 +530,12 @@ impl CatalogueCache {
 /// Deliberately NOT a token bucket. A bucket lets a burst through, and the thing being rationed is
 /// "how recently did we re-pull", where a burst has no value: two re-pulls a millisecond apart
 /// return the same list. A hard floor between accepted triggers is the honest shape.
+// STILL UNWIRED: nothing handles `notifications/tools/list_changed`. Refreshes are operator-driven
+// through the `connect` verb, which needs no rate limit because it is already behind admin auth and
+// the config-class mutation budget. This gate is what an upstream-triggered refresh would have to
+// pass, and it is kept rather than deleted because deleting it is how the next increment adds the
+// notification handler with no rate limit at all.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RefreshGate {
     min_interval_ms: u64,
@@ -417,6 +545,7 @@ pub(crate) struct RefreshGate {
     rejected: AtomicU64,
 }
 
+#[allow(dead_code)]
 impl RefreshGate {
     pub(crate) fn new(min_interval_ms: u64) -> Self {
         Self {

@@ -1211,6 +1211,45 @@ pub(crate) fn validate_with_unset(
         }
     }
 
+    // AN MCP DEPLOYMENT MAY NOT HAVE AN OPEN FRONT DOOR. Refused at BOOT, in one place, because
+    // the alternative — a check on the request path — is a second opinion about admission on a
+    // plane that already has exactly one owner.
+    //
+    // What goes wrong is worse than "the endpoint is unauthenticated", and both halves go at once.
+    // An empty `auth.chain` is the open front door: `run_chain` returns `Open`, admitting with NO
+    // principal. The MCP plane's ENTIRE authorization model is that a caller sees and may call only
+    // what its key's grant permits — `tools_for(&grant)`, `resolve(&grant, …)` — and a request that
+    // carries no key is never NARROWED by one, so the grant predicate answers `true` for every
+    // (kind, value) pair it is asked about. That is not "no access", it is WILDCARD access: every
+    // registered server, every approved tool, to anyone who can reach the port.
+    //
+    // The second half is the transitive one. `upstream::authorise` binds the OUTBOUND credential
+    // busbar spends to the INBOUND principal's grant — that binding is the confused-deputy defence
+    // for the client direction. With no inbound principal there is no grant to bind to, so the
+    // defence has nothing to hold onto and busbar will spend its own upstream credentials on behalf
+    // of an anonymous caller.
+    //
+    // Both properties are therefore vacuous in exactly the configuration where nobody is watching,
+    // and neither failure is visible from the outside: the deployment answers every request
+    // perfectly, which is the problem. So `mcp:` present and no data-plane chain is a config ERROR
+    // and the process does not start.
+    //
+    // NOT "serve anonymous callers an empty catalogue". That looks safe and is not: it is safe only
+    // for as long as nothing ever grants by default, and the day a default grant is introduced —
+    // for any reason, anywhere else — an anonymous caller silently inherits it. The refusal is
+    // about the CONFIGURATION being unstatable, which does not decay.
+    if cfg.mcp.is_some() && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty()) {
+        errors.push(
+            "mcp: is configured but auth.chain is empty, which serves the MCP endpoint to \
+             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
+             runs with WILDCARD grants over every registered server and every approved tool. It \
+             also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound \
+             credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth \
+             plugin), or remove the `mcp:` block if this deployment is not an MCP server."
+                .to_string(),
+        );
+    }
+
     // Rule 5: Validate auth-block semantics. `auth.chain` is an ordered list of MODULE ENTRIES +
     // `upstream_credentials` a snake_case enum. `AuthCfg` is `deny_unknown_fields`, so the removed
     // 1.4.x keys (`client_tokens:`, `modules:`) fail AT PARSE with serde's "unknown field" - a

@@ -20,10 +20,17 @@
 //! 1. `Origin`, because it is about who is allowed to speak at all, and it costs one header lookup.
 //! 2. Body parse, because everything after it reads the body.
 //! 3. Envelope shape (`jsonrpc`, `method`), because the header checks compare AGAINST the body.
-//! 4. Mirrored headers, all of which fail as `HeaderMismatch` (`-32020`, `400`).
-//! 5. Protocol version support (`-32022`, `400`), only once we know the request was well formed —
+//! 4. `params._meta`'s REQUIRED MEMBERS, which fail as invalid params (`-32602`, `400`). This is a
+//!    statement about the request's own PARAMS — the schema makes `params._meta` required and makes
+//!    `protocolVersion` and `clientCapabilities` required inside it — so it is settled before any
+//!    header is consulted. It has to be: a header check compares the header against the body, and
+//!    "the body has nothing to compare against" is not a disagreement between two readings, it is
+//!    one reading that is incomplete. Answering `-32020` there told a client its HEADERS were wrong
+//!    when its PARAMS were, which sends an operator to fix the one thing that was right.
+//! 5. Mirrored headers, all of which fail as `HeaderMismatch` (`-32020`, `400`).
+//! 6. Protocol version support (`-32022`, `400`), only once we know the request was well formed —
 //!    telling a malformed request which versions we speak answers a question it did not ask.
-//! 6. Method dispatch, whose miss is `-32601` with `404`.
+//! 7. Method dispatch, whose miss is `-32601` with `404`.
 //!
 //! ## What this module does NOT do
 //!
@@ -66,12 +73,15 @@ const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 
 /// The `_meta` key carrying the client's capabilities for THIS request.
 ///
-/// Absent is treated as the EMPTY capability set, not as an error. The schema lists it as required,
-/// but the security-relevant direction is one-way: a server must never INFER a capability the client
-/// did not declare (the spec says so explicitly, because there is no handshake to have learned one
-/// from). Treating absent as empty errs towards doing less on the client's behalf, which is the safe
-/// side; refusing the request outright would err towards turning conforming-enough clients away for
-/// no gain in authority.
+/// REQUIRED, and absent is a refusal rather than the empty capability set. An earlier reading of
+/// this treated absent as empty on the grounds that the security-relevant direction is one-way — a
+/// server must never INFER a capability the client did not declare — and that much is still true.
+/// What it missed is that "declared nothing" and "declared the empty set" are different statements
+/// under a protocol with NO HANDSHAKE. With no `initialize` there is no earlier message this could
+/// have been stated in, so a request that omits it has never stated its capabilities at all, and a
+/// server that fills the gap in has decided on the client's behalf what the client can do. The
+/// schema makes it required for exactly that reason, and both this repository's own battery
+/// (`SRV.META.MISSING-CAPABILITIES`) and the official suite read the omission as `-32602`.
 const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 
 /// The header mirroring the body's `method`. REQUIRED on every request.
@@ -91,6 +101,14 @@ mod code {
     pub(super) const INVALID_REQUEST: i64 = -32600;
     /// JSON-RPC standard: the method is not implemented. MCP pairs it with `404`, not `200`.
     pub(super) const METHOD_NOT_FOUND: i64 = -32601;
+    /// JSON-RPC standard: the params were structurally wrong. What a missing or incomplete
+    /// `params._meta` is, and what this revision requires for it — `400`, never `200`.
+    ///
+    /// Deliberately the JSON-RPC standard code and not an MCP extension: `_meta` is a member of
+    /// `params`, so its absence is the ordinary "invalid params" the base protocol already has a
+    /// code for. Reaching for `-32020` here (as this module once did) borrowed the HEADER
+    /// vocabulary for a body defect.
+    pub(super) const INVALID_PARAMS: i64 = -32602;
     /// MCP `HeaderMismatchError`: an HTTP header disagreed with the body. Always `400`.
     pub(super) const HEADER_MISMATCH: i64 = -32020;
     /// MCP `UnsupportedProtocolVersionError`: carries `data.requested` and `data.supported`. Always
@@ -218,33 +236,52 @@ pub(crate) async fn rpc(
         );
     };
 
-    // (4) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
+    // (4) `params._meta` AND ITS REQUIRED MEMBERS. A body defect, answered in the body's own
+    // vocabulary: `-32602`, `400`. See the module header for why this precedes the header checks.
+    //
+    // `params._meta`, per the schema. See META_PROTOCOL_VERSION for why this is not the top level.
+    let Some(meta) = obj.get("params").and_then(|p| p.get("_meta")) else {
+        return invalid_params(
+            id,
+            "`params._meta` is required on every request. This revision has no handshake, so each \
+             request states its own protocol version and client capabilities there.",
+        );
+    };
+    let body_version = meta
+        .get(META_PROTOCOL_VERSION)
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty());
+    let Some(body_version) = body_version else {
+        return invalid_params(
+            id,
+            "`params._meta` must carry `io.modelcontextprotocol/protocolVersion`; this revision \
+             negotiates per request, so the version cannot be inferred.",
+        );
+    };
+    // Bound here rather than at the point of use so the one place capabilities enter the server is
+    // visible in the envelope check, next to the version they are negotiated alongside. Its
+    // ABSENCE is a refusal — see META_CLIENT_CAPABILITIES.
+    if meta.get(META_CLIENT_CAPABILITIES).is_none() {
+        return invalid_params(
+            id,
+            "`params._meta` must carry `io.modelcontextprotocol/clientCapabilities`. With no \
+             handshake there is no earlier message it could have been declared in, and this server \
+             will not decide on a client's behalf what that client can do; send `{}` to declare \
+             none.",
+        );
+    }
+
+    // (5) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
     // disagreeing about what this request is — so they share one code and one status.
     //
     // Header NAMES are case-insensitive (axum lower-cases them for us); header VALUES, including
     // method names, are case-sensitive. Comparing values case-insensitively here would let
     // `Mcp-Method: TOOLS/CALL` mirror `tools/call`, which is precisely a disagreement dressed as a
     // match.
-    // `params._meta`, per the schema. See META_PROTOCOL_VERSION for why this is not the top level.
-    let meta = obj.get("params").and_then(|p| p.get("_meta"));
-    let body_version = meta
-        .and_then(|m| m.get(META_PROTOCOL_VERSION))
-        .and_then(|v| v.as_str());
-    // Read but not required — see META_CLIENT_CAPABILITIES. Bound here rather than at the point of
-    // use so the one place capabilities enter the server is visible in the envelope check, next to
-    // the version they are negotiated alongside.
-    let _client_capabilities = meta.and_then(|m| m.get(META_CLIENT_CAPABILITIES));
     let Some(header_version) = header_str(&headers, H_PROTOCOL_VERSION) else {
         return header_mismatch(
             id,
             "Every POST to the MCP endpoint must carry an `MCP-Protocol-Version` header.",
-        );
-    };
-    let Some(body_version) = body_version else {
-        return header_mismatch(
-            id,
-            "`params._meta` must carry `io.modelcontextprotocol/protocolVersion`; this revision \
-             negotiates per request, so the version cannot be inferred.",
         );
     };
     if header_version != body_version {
@@ -294,7 +331,7 @@ pub(crate) async fn rpc(
         }
     }
 
-    // (5) VERSION SUPPORT. Only now, with a well-formed request in hand: `data.supported` is an
+    // (6) VERSION SUPPORT. Only now, with a well-formed request in hand: `data.supported` is an
     // invitation to retry, and inviting a malformed request to retry teaches a client the wrong
     // lesson about why it failed.
     if !SUPPORTED_PROTOCOL_VERSIONS.contains(&body_version) {
@@ -310,7 +347,7 @@ pub(crate) async fn rpc(
         );
     }
 
-    // (6) DISPATCH. The method table owns everything from here: the CATALOGUE reads and the
+    // (7) DISPATCH. The method table owns everything from here: the CATALOGUE reads and the
     // DISPATCH path, both computed under the caller's grant. A method the table does not carry falls
     // through to `404` + `-32601`, which was always the correct answer for an unimplemented method
     // and did not have to change when the table gained entries.
@@ -408,6 +445,17 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
+/// The `InvalidParams` shorthand for a `params._meta` defect: always `400`, always `-32602`.
+fn invalid_params(id: Option<serde_json::Value>, description: &str) -> Response {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        id,
+        code::INVALID_PARAMS,
+        description,
+        None,
+    )
+}
+
 /// The `HeaderMismatchError` shorthand: always `400`, always `-32020`.
 fn header_mismatch(id: Option<serde_json::Value>, description: &str) -> Response {
     error_response(
@@ -451,3 +499,7 @@ pub(super) fn error_response(
 #[cfg(test)]
 #[path = "tests/ingress_tests.rs"]
 mod ingress_tests;
+
+#[cfg(test)]
+#[path = "tests/request_meta_tests.rs"]
+mod request_meta_tests;

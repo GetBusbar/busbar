@@ -306,7 +306,10 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         "params": {
             "name": "fs_read",
             "arguments": { "path": "/etc/hosts" },
-            "_meta": { "io.modelcontextprotocol/protocolVersion": version },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": version,
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
         },
     });
     let resp = reqwest::Client::new()

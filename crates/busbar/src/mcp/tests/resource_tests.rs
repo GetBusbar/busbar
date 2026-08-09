@@ -247,6 +247,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion":
                     crate::mcp::ingress::PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
             },
         },
     });

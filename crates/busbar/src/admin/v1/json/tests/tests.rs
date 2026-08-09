@@ -194,10 +194,16 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    // 76 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
-    // (1.5.5 MCP) and `agents:` (1.5.6 A2A). The count is a FLOOR-and-CEILING on purpose: a
-    // route added without a stable `operationId`, and a route silently removed, both land here.
-    assert_eq!(checked, 76, "expected exactly 76 admin operations");
+    // 79 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
+    // (1.5.5 MCP) and `agents:` (1.5.6 A2A) + the THREE MCP trust verbs on `tools:`
+    // (`POST .../connect`, `GET .../changes`, `GET .../health`), which are specific to that
+    // section rather than part of the generic named-map shape. The count is a FLOOR-and-CEILING
+    // on purpose: a route added without a stable `operationId`, and a route silently removed,
+    // both land here.
+    //
+    // This assertion is why the two planes could not land on `dev` independently without one of
+    // them noticing the other: 76 was correct for either plane alone and wrong for both together.
+    assert_eq!(checked, 79, "expected exactly 79 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -583,6 +589,11 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         ("delete", "/api/v1/admin/export/{name}"),
         ("delete", "/api/v1/admin/tools/{name}"),
         ("delete", "/api/v1/admin/agents/{name}"),
+        // The MCP trust verb. It is a pure command in the same sense as the deletes above: the
+        // server to re-observe rides the path, and the handler takes `State`, `Extension` and
+        // `Path` — no body extractor. There is nothing a caller could put in a body that would
+        // change what it does, so documenting one would describe a parameter that does not exist.
+        ("post", "/api/v1/admin/tools/{name}/connect"),
     ];
 
     let doc = openapi_doc();
