@@ -6,6 +6,28 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Busbar can be an MCP server, and agents log into it exactly as they log into anything else.**
+  Add an `mcp:` block naming your endpoint's canonical URI and your identity provider, and Busbar
+  mounts an MCP endpoint plus the OAuth 2.1 discovery surface that lets an agent find its way in with
+  no prior configuration: it connects with no credential, receives a `401` whose
+  `WWW-Authenticate` header points at an RFC 9728 protected-resource metadata document, follows that
+  to your IdP, does ordinary OAuth, and comes back with a token. Busbar then checks the token's
+  audience is Busbar itself (RFC 8707) before anything else happens — which is what stops a token
+  your IdP legitimately issued for some other service being spent against Busbar's pools and budget.
+  Tokens are minted by your existing IdP; Busbar issues none.
+
+  Without an `mcp:` block nothing changes: no endpoint, no metadata document, no new routes.
+
+  The endpoint speaks MCP revision `2026-07-28` (the stateless streamable-HTTP revision — no
+  handshake, no sessions, no resumable stream) and enforces its transport rules: mirrored
+  `Mcp-Method` / `Mcp-Name` headers must agree with the request body, `GET` and `DELETE` answer
+  `405`, an unknown method answers `404`, and an unlisted browser `Origin` answers `403`. The tool
+  surface itself — `tools/list`, `tools/call` — is not part of this change; every method currently
+  answers "not implemented".
+
+
 ## [1.5.3], 2026-08-08
 
 This release reshapes the config file, so give yourself a few minutes for the upgrade.

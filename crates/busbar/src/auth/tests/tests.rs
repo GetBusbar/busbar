@@ -2261,13 +2261,24 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
 
     crate::metrics::init();
 
-    /// The MCP ingress paths, the ONLY places an audience-bound token may be admitted. Empty until
-    /// the MCP ingress is mounted.
-    const MCP_ADMISSIBLE: &[&str] = &[];
+    /// The MCP ingress paths, the ONLY places an audience-bound token may be admitted. The app
+    /// below MOUNTS the plane, so this list is exercised in both directions: an audience-bound
+    /// token is admitted here and nowhere else, and a plain data-plane token is admitted everywhere
+    /// else and not here.
+    const MCP_ADMISSIBLE: &[&str] = &["/mcp"];
     /// Core routes declared `RouteAuth::None`: unauthenticated by design, so no token of any kind
     /// is consulted there. `/healthz` is a liveness probe; `/auth/token` runs the auth chain in its
-    /// own handler.
-    const DECLARED_PUBLIC: &[&str] = &["/healthz", "/auth/token"];
+    /// own handler; the RFC 9728 metadata document must be readable by a caller that has no token
+    /// yet, because that caller is the entire population the document exists for.
+    const DECLARED_PUBLIC: &[&str] = &[
+        "/healthz",
+        "/auth/token",
+        "/.well-known/oauth-protected-resource/mcp",
+    ];
+    /// The canonical URI of the MCP plane in this test. It is BOTH the audience minted into
+    /// `bound_token` below AND the `mcp.canonical_uri` the app is built with — one string, used
+    /// twice, because a test in which they differed would prove only that two spellings disagree.
+    const MCP_CANONICAL: &str = "https://busbar.example.com/mcp";
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -2317,11 +2328,26 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
+        .mcp(&crate::mcp::McpCfg {
+            canonical_uri: MCP_CANONICAL.to_string(),
+            authorization_servers: vec!["https://login.example.com".to_string()],
+            scopes_supported: Vec::new(),
+            allowed_origins: Vec::new(),
+        })
         .build();
 
-    // The table the SERVED router was built from: same function, same plugin-route input, so the
-    // enumeration cannot describe a different surface than the one under test.
-    let core_routes = crate::base_data_router(&app.plugin_routes).1;
+    // The table the SERVED router was built from: same function, same plugin-route input, same MCP
+    // resource, so the enumeration cannot describe a different surface than the one under test.
+    let core_routes = crate::base_data_router(&app.plugin_routes, app.mcp.as_deref()).1;
+    // FLOOR ON THE DISCOVERED SET, in the one dimension that matters here: the walk below is only a
+    // plane-boundary test if the router actually mounted the plane. Without this, deleting the MCP
+    // mount would leave every assertion below trivially satisfied and the test would still pass.
+    for admissible in MCP_ADMISSIBLE {
+        assert!(
+            core_routes.routes().iter().any(|r| r.path == *admissible),
+            "{admissible} is declared MCP-admissible but no core route mounts it — the walk would              assert nothing about the plane it is named for"
+        );
+    }
     let boot_plugin_paths: Vec<String> = app.boot_route_paths.iter().cloned().collect();
     assert!(
         !core_routes.routes().is_empty(),
@@ -2371,23 +2397,84 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     .to_string();
 
     let mut checked = 0usize;
+    let mut mcp_checked = 0usize;
     for route in core_routes.routes() {
-        let path = concrete(route.path);
+        let path = concrete(&route.path);
         if route.auth == busbar_plugin_loader::RouteAuth::None {
             assert!(
-                DECLARED_PUBLIC.contains(&route.path),
+                DECLARED_PUBLIC.contains(&route.path.as_str()),
                 "{} is mounted RouteAuth::None but is not in DECLARED_PUBLIC — an unauthenticated \
                  core route must be a deliberate, reviewed act",
                 route.path
             );
             continue;
         }
-        assert!(
-            !MCP_ADMISSIBLE.contains(&route.path),
-            "{} is in MCP_ADMISSIBLE but is a data-plane core route",
-            route.path
-        );
         let method = reqwest::Method::from_bytes(route.method.as_str().as_bytes()).unwrap();
+        // THE MCP ARM, and it is the reciprocal of the data-plane arm below rather than a weaker
+        // version of it: on this plane the audience-bound token is the one that WORKS and the plain
+        // data-plane token is the one that must buy nothing. Asserting only the first half would
+        // pass against a server that admitted both, which is the failure mode the boundary exists
+        // to prevent.
+        if MCP_ADMISSIBLE.contains(&route.path.as_str()) {
+            let url = format!("http://{addr}{path}");
+            let anon = client
+                .request(method.clone(), &url)
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                anon.status(),
+                401,
+                "an unauthenticated caller on the MCP plane must get 401, not a vendor-shaped \
+                 envelope, on {} {}",
+                route.method.as_str(),
+                path
+            );
+            assert!(
+                anon.headers()
+                    .get("www-authenticate")
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.starts_with("Bearer ") && v.contains("resource_metadata=")),
+                "a 401 on an OAuth protected resource must carry a Bearer challenge naming its \
+                 resource_metadata — without it the client has no way to find the authorization \
+                 server, on {} {}",
+                route.method.as_str(),
+                path
+            );
+            let bound = client
+                .request(method.clone(), &url)
+                .header("authorization", format!("Bearer {bound_token}"))
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(
+                bound.status(),
+                401,
+                "the audience-bound token is minted for exactly this resource and must be admitted \
+                 on {} {}",
+                route.method.as_str(),
+                path
+            );
+            let plain = client
+                .request(method.clone(), &url)
+                .header("authorization", format!("Bearer {}", plain_token.as_str()))
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                plain.status(),
+                401,
+                "a plain data-plane key carries no audience and must be inadmissible on the MCP \
+                 plane, on {} {}",
+                route.method.as_str(),
+                path
+            );
+            mcp_checked += 1;
+            continue;
+        }
         let url = format!("http://{addr}{path}");
         // The denial BASELINE for this exact route: no credential at all. Auth failures are
         // protocol-shaped (`auth_failure_status_and_kind` — Gemini answers 400, Bedrock 403), so a
@@ -2433,6 +2520,20 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
         );
         checked += 1;
     }
+    assert_eq!(
+        mcp_checked,
+        core_routes
+            .routes()
+            .iter()
+            .filter(|r| MCP_ADMISSIBLE.contains(&r.path.as_str()))
+            .count(),
+        "every MCP-admissible mounted route must have been walked; a mismatch means a route named \
+         in MCP_ADMISSIBLE was mounted with an auth level that skipped the arm"
+    );
+    assert!(
+        mcp_checked > 0,
+        "no MCP route was walked, so the reciprocal half of the boundary was never asserted"
+    );
     assert!(
         checked >= 4,
         "the walk covered only {checked} guarded core routes, which is fewer than the surface this \
@@ -4368,7 +4469,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     let cache = crate::auth_cache::CredentialCache::new();
     let now = crate::store::now();
-    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov));
+    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov), None);
     assert!(
         matches!(
             verdict,

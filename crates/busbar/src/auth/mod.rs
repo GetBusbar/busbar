@@ -311,6 +311,15 @@ impl AuthMiddleware {
                 "test-groups-module" => {
                     chain.push((entry.name.clone(), Box::new(TestGroupsModule)))
                 }
+                // TEST-ONLY stand-in for a real OIDC auth plugin: it verifies (here, pretends to
+                // verify) an issuer's signature and identifies the bearer. It is deliberately
+                // AUDIENCE-BLIND, because that is what the module ABI makes every such plugin —
+                // `AuthOutcome` has no shape for "and it was minted for you". Without a module of
+                // this shape in the tree, no test can tell an audience check that runs from one
+                // that does not: a keys-only chain refuses a foreign token anyway, for a different
+                // reason, and every assertion about the plane boundary passes vacuously.
+                #[cfg(test)]
+                "test-idp-module" => chain.push((entry.name.clone(), Box::new(TestIdpModule))),
                 other => {
                     // A `kind: auth` PLUGIN: resolve + open over the signed hybrid ABI (same trust
                     // posture, same loader as store/secret). The `settings:` map is the plugin's
@@ -382,7 +391,7 @@ impl AuthMiddleware {
     /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
     /// within each module; the loop order is config order.
     pub(crate) fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_cached(candidate, None, None)
+        self.run_chain_cached(candidate, None, None, None)
     }
 
     /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module.
@@ -390,11 +399,17 @@ impl AuthMiddleware {
     /// intersection is applied AFTER retrieval, so a config change to the caps takes effect
     /// immediately even for cached identities. In-process modules report `cacheable() == false`
     /// and never touch the cache (caching a microsecond compare only widens revocation).
+    /// `expected_aud` is the AUDIENCE the plane this request arrived on requires of a busbar-signed
+    /// token — `None` for the residual data plane (which rejects any token that carries one), and
+    /// `Some(uri)` for an audience-bound ingress (which rejects a token whose audience is absent or
+    /// different). It is threaded here rather than read from a handler because the check belongs to
+    /// the VERIFIER: a route added to an audience-bound plane later inherits it and cannot forget.
     pub(crate) fn run_chain_cached(
         &self,
         candidate: Option<&str>,
         cache: Option<&crate::auth_cache::CredentialCache>,
         gov: Option<&crate::governance::GovState>,
+        expected_aud: Option<&str>,
     ) -> ChainVerdict {
         // The OPEN front door: no boxed chain modules AND no built-in `keys` engine arm → admit
         // anonymously. `keys_in_chain` (an engine arm, not a boxed module) keeps the door CLOSED
@@ -475,7 +490,7 @@ impl AuthMiddleware {
         // per-request `verify_token` + a short denylist sync; caching a vkey verdict would widen the
         // revocation window to the cache TTL).
         if self.keys_in_chain {
-            return keys_arm_verdict(gov, candidate, now);
+            return keys_arm_verdict(gov, candidate, now, expected_aud);
         }
         ChainVerdict::Denied
     }
@@ -505,6 +520,7 @@ impl AuthMiddleware {
         cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
         candidate: Option<String>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
+        expected_aud: Option<String>,
     ) -> ChainVerdict {
         // Open ONLY when there are no boxed modules AND no `keys` engine arm (see `run_chain_cached`).
         if auth.chain.is_empty() && !auth.keys_in_chain {
@@ -521,7 +537,12 @@ impl AuthMiddleware {
             // `keys_in_chain` (the engine-side signed-key verifier, a constant-time compare) or
             // pushes the `#[cfg(test)]` in-process stand-in. So `!has_plugin_module` means the chain
             // holds no dlopened module at all.
-            return auth.run_chain_cached(candidate.as_deref(), Some(cache), gov.as_deref());
+            return auth.run_chain_cached(
+                candidate.as_deref(),
+                Some(cache),
+                gov.as_deref(),
+                expected_aud.as_deref(),
+            );
         }
         let permit =
             match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire()).await {
@@ -539,7 +560,12 @@ impl AuthMiddleware {
             };
         let (auth, cache) = (auth.clone(), cache.clone());
         let joined = tokio::task::spawn_blocking(move || {
-            let verdict = auth.run_chain_cached(candidate.as_deref(), Some(&cache), gov.as_deref());
+            let verdict = auth.run_chain_cached(
+                candidate.as_deref(),
+                Some(&cache),
+                gov.as_deref(),
+                expected_aud.as_deref(),
+            );
             // The permit is released when the blocking work is DONE, not when the awaiting future
             // is dropped — a cancelled request must not hand its slot to another request while the
             // plugin thread it started is still wedged.
@@ -644,6 +670,7 @@ fn keys_arm_verdict(
     gov: Option<&crate::governance::GovState>,
     candidate: Option<&str>,
     now: u64,
+    expected_aud: Option<&str>,
 ) -> ChainVerdict {
     let Some(token) = candidate.filter(|t| !t.is_empty()) else {
         return ChainVerdict::Denied;
@@ -651,10 +678,13 @@ fn keys_arm_verdict(
     let Some(gov) = gov else {
         return ChainVerdict::Denied;
     };
-    // DATA PLANE: expected audience is `None`, so an audience-bound (MCP authorization-server)
-    // token is rejected here by the verifier itself - the 1.5.5 plane boundary. The MCP ingress
-    // is the ONE caller that passes its canonical URI instead.
-    match gov.verify_token(token, now, None) {
+    // THE PLANE BOUNDARY, enforced in the verifier (1.5.5 P1). `expected_aud` is `None` on the
+    // residual data plane, and the verifier then rejects any token that CARRIES an audience — an
+    // MCP token is inadmissible on the LLM plane. On an audience-bound ingress it is that plane's
+    // canonical URI, and the verifier rejects a token whose audience is absent or different: the
+    // RFC 8707 confused-deputy defence, which is what stops a token an agent legitimately obtained
+    // for some other resource from being spendable against busbar's pools and budget.
+    match gov.verify_token(token, now, expected_aud) {
         Some(key) => ChainVerdict::Identified {
             module: crate::config::KEYS_MODULE.to_string(),
             principal: principal_from_vkey(&key),
@@ -829,6 +859,25 @@ impl AuthModule for TestGroupsModule {
                 p.roles = vec![group.to_string()];
                 AuthOutcome::Identify(p)
             }
+            None => AuthOutcome::Pass,
+        }
+    }
+}
+
+/// TEST-ONLY data-plane module standing in for an operator's OIDC auth plugin: it identifies ANY
+/// non-empty credential and asks nothing about audience, exactly as the plugin ABI forces a real one
+/// to. See the `test-idp-module` chain arm for why the tree needs one.
+#[cfg(test)]
+struct TestIdpModule;
+
+#[cfg(test)]
+impl AuthModule for TestIdpModule {
+    fn name(&self) -> &'static str {
+        "test-idp-module"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+        match candidate.filter(|c| !c.is_empty()) {
+            Some(_) => AuthOutcome::Identify(Principal::from_id("idp:subject".to_string())),
             None => AuthOutcome::Pass,
         }
     }
@@ -1279,6 +1328,13 @@ pub(crate) async fn auth_middleware(
     req.extensions_mut()
         .insert(CallerToken(client_token.clone()));
 
+    // THE PLANE'S ADMISSION FACTS. `None` for every path on the residual LLM plane, which is every
+    // path in a deployment that is not also an MCP server — one `Option` test, then nothing below
+    // this point costs anything. `Some` means this path is an OAuth 2.1 protected resource: a token
+    // presented here must be bound to this resource's canonical URI, and a refusal owes the caller
+    // a machine-readable challenge naming where to go and get one.
+    let admission = app.planes.admission_for(&path).cloned();
+
     // the /admin management API is gated by the ADMIN AUTH CHAIN (`admin_auth:`, default
     // `[admin-tokens]` — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
     // and NOT the vendor-SDK carriers (admin is a busbar operator surface, not a native SDK
@@ -1448,7 +1504,16 @@ pub(crate) async fn auth_middleware(
     let ingress_uses_sigv4 = crate::proto::protocol_for(proto_for_path(&path))
         .map(|p| p.reader().uses_sigv4_ingress_auth())
         .unwrap_or(false);
-    let verdict = if app.auth.keys_in_chain && ingress_uses_sigv4 && has_sigv4_authorization(&req) {
+    // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
+    // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
+    // secret and produces an identity with no audience anywhere in it, so allowing it here would be
+    // a second door into the MCP plane that the RFC 8707 check does not stand behind. MCP has no
+    // SigV4 dialect to be compatible with, so nothing is lost by closing it.
+    let verdict = if admission.is_none()
+        && app.auth.keys_in_chain
+        && ingress_uses_sigv4
+        && has_sigv4_authorization(&req)
+    {
         // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
         // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
         // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
@@ -1516,11 +1581,40 @@ pub(crate) async fn auth_middleware(
         // `keys` engine arm (inside the chain run) needs the governance handle to verify a
         // busbar-signed key; pass `app.governance` in PER-REQUEST (governance is built AFTER
         // `AuthMiddleware::new`, so the arm takes it as a call parameter, never a struct field).
+        // THE AUDIENCE PRE-FILTER, for credentials busbar did not mint. The chain's plugin modules
+        // verify an operator IdP's signature and cannot be asked about RFC 8707 — the module ABI
+        // has no shape for it — so core establishes the binding itself, BEFORE the chain runs, and
+        // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
+        // chain, so this can narrow what is admitted and can never widen it.
+        if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
+            match audience::inspect_bearer(tok, &adm.audience) {
+                // A busbar-signed token: the verifier below has the claims and the signature, and
+                // does the real check. Pre-judging it here would refuse every valid one.
+                audience::Binding::Deferred | audience::Binding::Bound => {}
+                audience::Binding::Mismatch => {
+                    return Err(challenge::refuse(
+                        challenge::ChallengeError::InvalidToken,
+                        &adm.resource_metadata,
+                        "The access token's audience does not identify this resource. Request a                          token whose `resource` (RFC 8707) is this server's canonical URI.",
+                        None,
+                    ))
+                }
+                audience::Binding::Opaque => {
+                    return Err(challenge::refuse(
+                        challenge::ChallengeError::InvalidToken,
+                        &adm.resource_metadata,
+                        "This credential carries no readable audience, so it cannot be shown to                          have been issued for this resource. A JWT access token is required here.",
+                        None,
+                    ))
+                }
+            }
+        }
         AuthMiddleware::run_chain_on_request_path(
             &app.auth,
             &app.credential_cache,
             client_token.clone(),
             app.governance.clone(),
+            admission.as_ref().map(|a| a.audience.clone()),
         )
         .await
     };
@@ -1537,7 +1631,27 @@ pub(crate) async fn auth_middleware(
             req.extensions_mut()
                 .insert(crate::governance::GovCtx::default());
         }
-        ChainVerdict::Denied => return Err(unauthorized_with_completion_taps(&app, &path)),
+        ChainVerdict::Denied => {
+            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a vendor-shaped
+            // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
+            // place the discovery loop's next step was ever going to come from. `Absent` (no
+            // credential at all) and `invalid_token` (one was presented and failed) are different
+            // signals and clients branch on the difference, so they are not collapsed.
+            if let Some(adm) = admission.as_ref() {
+                let kind = if client_token.is_none() {
+                    challenge::ChallengeError::Absent
+                } else {
+                    challenge::ChallengeError::InvalidToken
+                };
+                return Err(challenge::refuse(
+                    kind,
+                    &adm.resource_metadata,
+                    "Authentication is required for this resource.",
+                    None,
+                ));
+            }
+            return Err(unauthorized_with_completion_taps(&app, &path));
+        }
         ChainVerdict::Identified {
             module,
             principal,
@@ -1564,6 +1678,14 @@ pub(crate) async fn auth_middleware(
             // ROLELESS principal never trips the guard. So the spec's "gov_key may be None → still
             // inserted" holds except where an operator's configured bindings deny this principal.
             if gov_key.is_none() && !principal.roles.is_empty() && bindings.is_some() {
+                if let Some(adm) = admission.as_ref() {
+                    return Err(challenge::refuse(
+                        challenge::ChallengeError::InsufficientScope,
+                        &adm.resource_metadata,
+                        "The authenticated principal carries no grant on this resource.",
+                        None,
+                    ));
+                }
                 return Err(unauthorized_with_completion_taps(&app, &path));
             }
             req.extensions_mut().insert(AuthPrincipal(Some(principal)));
@@ -1829,6 +1951,14 @@ impl AuthMiddleware {
         }
     }
 }
+
+/// RFC 8707 audience binding for credentials busbar did not mint — the confused-deputy defence for
+/// the operator-IdP deployment shape, where an auth plugin verifies the signature and core still has
+/// to decide whether the token was minted for THIS resource.
+pub(crate) mod audience;
+
+/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
+pub(crate) mod challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
 /// GovState-backed impl, and the verdict→mint decision the `POST /auth/token` handler drives.

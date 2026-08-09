@@ -392,6 +392,16 @@ pub(crate) struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
+    /// The validated MCP resource (`mcp:`, 1.5.5), or `None` when this deployment is not an MCP
+    /// server. Read by the MCP ingress and the RFC 9728 metadata handler; both take the audience and
+    /// the mount path from this ONE object, so the value advertised to clients and the value the
+    /// verifier compares against cannot be two different strings.
+    pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
+    /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
+    /// an audience-bound plane — what a token presented there must carry and where a refused caller
+    /// is told to go. Consulted by the auth middleware on every request, which is why it is a
+    /// prebuilt table rather than a per-request derivation.
+    pub(crate) planes: Arc<crate::plane::PlaneDispatch>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,

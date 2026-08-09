@@ -390,6 +390,10 @@ pub(crate) struct RootCfg {
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
     pub(crate) public_url: Option<String>,
+    /// The VALIDATED MCP resource (`mcp:`), or `None` when this deployment is not an MCP server.
+    /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
+    /// re-parses the canonical URI or re-derives the mount path.
+    pub(crate) mcp: Option<crate::mcp::McpResource>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -2607,6 +2611,12 @@ pub(crate) struct DeployCfg {
     /// shippable catalog that config.yaml's `providers:` map references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
+    /// The top-level `mcp:` block (1.5.5): busbar's own MCP endpoint, as an OAuth 2.1 resource
+    /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
+    /// ingress and no `.well-known` document, and nothing joins the route table. See
+    /// [`crate::mcp::McpCfg`].
+    #[serde(default)]
+    pub(crate) mcp: Option<crate::mcp::McpCfg>,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
@@ -4260,10 +4270,25 @@ pub(crate) fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
+    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: an MCP plane
+    // whose canonical URI is malformed would advertise one audience in its metadata document and
+    // expect another in its verifier, and every correctly-behaved client in the world would obtain a
+    // token this server then refuses. A boot refusal names the field and what to type; a runtime one
+    // is discovered by an agent that cannot connect and cannot say why.
+    let mcp = match deploy.mcp.as_ref().map(crate::mcp::McpResource::from_cfg) {
+        None => None,
+        Some(Ok(resource)) => Some(resource),
+        Some(Err(e)) => {
+            errors.push(e.to_string());
+            None
+        }
+    };
+
     if errors.is_empty() {
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
+            mcp,
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),

@@ -1175,6 +1175,8 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
+        // Not an MCP server.
+        mcp: None,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,

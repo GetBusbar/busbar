@@ -42,6 +42,8 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         listen: DEFAULT_LISTEN_ADDR.into(),
+        // Not an MCP server.
+        mcp: None,
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),

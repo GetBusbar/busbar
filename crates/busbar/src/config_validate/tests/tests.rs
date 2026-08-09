@@ -9,6 +9,8 @@ fn make_root_cfg(
 ) -> RootCfg {
     config::RootCfg {
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        // Not an MCP server.
+        mcp: None,
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),

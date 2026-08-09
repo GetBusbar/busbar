@@ -21,6 +21,10 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
+        // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
+        // path in this fixture is asserted against.
+        mcp: None,
+        planes: Arc::new(crate::plane::PlaneDispatch::default()),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(

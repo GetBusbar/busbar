@@ -266,6 +266,44 @@ pools:
       base_cooldown_secs: 5      # quick first probe-back…
       max_cooldown_secs: 60      # …backing off exponentially up to a minute
 
+# ── MCP: busbar as an MCP server (optional; ABSENT by default) ───────────────────────────────────
+# Presence of this block is what makes this deployment an MCP server. Absent, busbar mounts no MCP
+# ingress and no `.well-known` document at all — a gateway that is not an MCP server does not answer
+# as one.
+#
+# WHAT AN AGENT DOES, end to end, with no prior configuration:
+#   1. It POSTs to the endpoint with no credential and gets `401` with
+#      `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`.
+#   2. It fetches that document (RFC 9728) and learns which authorization servers may mint tokens
+#      for this resource, and what this resource calls itself.
+#   3. It does ordinary OAuth against your IdP, asking for a token whose audience is `canonical_uri`.
+#   4. It comes back, and busbar checks the token's audience is ITSELF before anything else happens.
+#
+# busbar is the RESOURCE SERVER here, never the authorization server: the tokens are minted by your
+# existing IdP (Okta, Entra, Auth0) and nothing in busbar issues one.
+#
+# mcp:
+#   # The RFC 8707 resource indicator. This is THE audience every inbound token must carry, compared
+#   # for exact equality — and the endpoint's mount path is DERIVED from it (`/mcp` here), so the
+#   # path a client posts to and the identifier its token is bound to cannot drift apart. It is
+#   # configured rather than taken from the request's Host header on purpose: deriving it from the
+#   # request would let a caller choose its own audience, which is the whole defence, undone.
+#   canonical_uri: "https://gateway.example.com/mcp"
+#
+#   # Your IdP's issuer(s), advertised in the metadata document. At least one is REQUIRED: it is the
+#   # entire content of the answer a client with no credential came here for.
+#   authorization_servers:
+#     - "https://login.example.com"
+#
+#   # Advisory metadata. Authorization is decided by the caller's grant, never by this list.
+#   scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
+#
+#   # Browser origins accepted on the ingress (the DNS-rebinding defence). EMPTY IS THE DEFAULT and
+#   # it means no browser origin is accepted. Agents send no `Origin` at all and are unaffected;
+#   # loopback origins are always accepted, because a browser only sends one for a document served
+#   # from loopback, which the rebinding attacker's page never is.
+#   allowed_origins: []
+
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
 # ALL telemetry egress is the single `export:` NAMED map (1.5.3): `<name>: { module, settings }`,
 # presence = the switch. Zero-config default: collection is inert. The four built-in modules:

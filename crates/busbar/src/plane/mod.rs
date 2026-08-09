@@ -142,9 +142,69 @@ impl Plane {
 pub(crate) struct PlaneDispatch {
     mcp: Option<String>,
     a2a: Option<String>,
+    mcp_admission: Option<PlaneAdmission>,
+    a2a_admission: Option<PlaneAdmission>,
+}
+
+/// What a bearer token presented on a mounted plane must be BOUND to, and where a refused caller is
+/// told to go and get one that is.
+///
+/// Both fields are RFC values, not busbar inventions, and neither names a plane — which is the
+/// point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
+/// MCP is merely the first plane to mount one, and A2A will mount a second with different strings
+/// and no new code here.
+///
+/// ## Why the audience lives beside the mount rather than in the handler
+///
+/// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
+/// here". If that check sat in a handler, a route added to this plane later would be admitted by the
+/// middleware before anyone thought about it. Keeping it beside the MOUNT means the check is a
+/// property of the door, so every path behind that door inherits it and a new handler cannot forget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaneAdmission {
+    /// RFC 8707 resource indicator: the exact `aud` an admitted token must carry. Compared for
+    /// EQUALITY, never prefix or suffix — a resource indicator is an opaque identifier, and treating
+    /// it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for
+    /// `https://gw.example.com/mcp-staging`.
+    pub(crate) audience: String,
+    /// The absolute URL of this resource's RFC 9728 protected-resource metadata document, quoted
+    /// verbatim in the `resource_metadata` parameter of the `WWW-Authenticate` challenge. This is
+    /// the whole of an MCP client's discovery story: it arrives with no credential, reads this URL
+    /// out of the `401`, and follows it to the operator's authorization server.
+    pub(crate) resource_metadata: String,
 }
 
 impl PlaneDispatch {
+    /// Declare the admission facts for `plane`. Independent of [`Self::mount`] so the two can be set
+    /// in either order, but WITHOUT a mount this is inert: [`Self::admission_for`] resolves a path
+    /// through the mount first, so admission facts alone never claim a path.
+    ///
+    /// The residual LLM plane takes none. It is not an audience-bound resource: a plain data-plane
+    /// busbar key carries no audience at all, and the verifier rejects any token that does
+    /// (`governance::signing`, the 1.5.5 plane boundary). Handing the residual an audience here
+    /// would quietly make every unclaimed path an OAuth resource server.
+    pub(crate) fn admit(mut self, plane: Plane, admission: PlaneAdmission) -> Self {
+        match plane {
+            Plane::Llm => {}
+            Plane::Mcp => self.mcp_admission = Some(admission),
+            Plane::A2a => self.a2a_admission = Some(admission),
+        }
+        self
+    }
+
+    /// The admission facts governing `path`, or `None` when `path` is not under an audience-bound
+    /// mount — which includes every path on the residual LLM plane.
+    ///
+    /// Resolved through [`Self::plane_of`], so it inherits the segment-boundary match: `/mcpx` is
+    /// NOT under a `/mcp` mount and therefore is not audience-checked. That is deliberate in both
+    /// directions — a sibling path must neither inherit the plane's grants nor its refusals.
+    pub(crate) fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
+        match self.plane_of(path) {
+            Plane::Llm => None,
+            Plane::Mcp => self.mcp_admission.as_ref(),
+            Plane::A2a => self.a2a_admission.as_ref(),
+        }
+    }
     /// Mount `plane` at `path`. Mounting [`Plane::Llm`] is a no-op: it is the residual.
     ///
     /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`

@@ -789,8 +789,14 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
         .expect("runtime");
 
     rt.spawn(async move {
-        let _ = AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("tok".into()), None)
-            .await;
+        let _ = AuthMiddleware::run_chain_on_request_path(
+            &auth,
+            &cache,
+            Some("tok".into()),
+            None,
+            None,
+        )
+        .await;
     });
     entered
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -833,8 +839,14 @@ fn an_in_process_chain_is_not_offloaded() {
     // offload, the verdict would still arrive, but the point is that it resolves synchronously
     // within one poll of the future.
     let verdict = rt.block_on(async {
-        AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("grp:admins".into()), None)
-            .await
+        AuthMiddleware::run_chain_on_request_path(
+            &auth,
+            &cache,
+            Some("grp:admins".into()),
+            None,
+            None,
+        )
+        .await
     });
     assert!(
         matches!(verdict, ChainVerdict::Identified { .. }),
@@ -916,7 +928,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None);
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -947,7 +959,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None);
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -990,7 +1002,7 @@ fn pass_churn_cannot_evict_an_identity() {
 
     for i in 0..4096u64 {
         let junk = format!("junk-{i}");
-        let _ = auth.run_chain_cached(Some(&junk), Some(&cache), None);
+        let _ = auth.run_chain_cached(Some(&junk), Some(&cache), None, None);
     }
 
     assert!(
@@ -1024,7 +1036,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None);
+    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None, None);
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(

@@ -217,6 +217,10 @@
           "optional": true,
           "type": "String"
         },
+        "mcp": {
+          "optional": true,
+          "type": "crate::mcp::McpCfg"
+        },
         "models": {
           "optional": false,
           "type": "HashMap<String, ModelCfg>"

@@ -40,7 +40,15 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CoreRoute {
     /// The axum path pattern this route is mounted at (`/stats`, `/{name}/v1/messages`, …).
-    pub(crate) path: &'static str,
+    ///
+    /// OWNED rather than `&'static str`, because not every core route's path is a literal: the MCP
+    /// ingress mounts at the path component of the operator's `mcp.canonical_uri`, and its RFC 9728
+    /// metadata document at `/.well-known/oauth-protected-resource` with that path appended. Those
+    /// are knowable at mount time and nowhere earlier. The alternative — leaking a `String` to get a
+    /// `'static` — would leak once per config apply, forever, to satisfy a lifetime nothing needs;
+    /// the alternative to THAT (a prefix exemption under `/.well-known/`) would hand a free pass to
+    /// every path beneath it, which is exactly the discipline this table exists to hold.
+    pub(crate) path: String,
     /// The declared method. HEAD is not a separate entry: it resolves onto `Get` on lookup, exactly
     /// as axum resolves a HEAD request onto the GET arm.
     pub(crate) method: RouteMethod,
@@ -106,7 +114,7 @@ impl CoreRouter {
     /// 405 rather than the catch-all.
     pub(crate) fn route<H, T>(
         mut self,
-        path: &'static str,
+        path: impl Into<String>,
         method: RouteMethod,
         auth: RouteAuth,
         handler: H,
@@ -115,9 +123,10 @@ impl CoreRouter {
         H: axum::handler::Handler<T, Arc<AppHandle>>,
         T: 'static,
     {
-        self.table.routes.push(CoreRoute { path, method, auth });
+        let path = path.into();
         let mr: MethodRouter<Arc<AppHandle>> = on(method_filter_of(method), handler);
-        self.router = self.router.route(path, mr);
+        self.router = self.router.route(&path, mr);
+        self.table.routes.push(CoreRoute { path, method, auth });
         self
     }
 
