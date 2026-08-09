@@ -217,3 +217,59 @@ fn default_ports_are_derived_from_the_scheme() {
     let (https, _, port, path) = precheck("http://a.internal", private_ok()).unwrap();
     assert!(!https && port == 80 && path == "/");
 }
+
+// ── THE IPv6-EMBEDDED METADATA BYPASS ────────────────────────────────────────────────────────────
+//
+// `net_guard.rs` documents this exact hazard and names this exact literal, then says why it uses
+// `to_ipv4()` and not `to_ipv4_mapped()`: the former is the SUPERSET that also covers the
+// IPv4-COMPATIBLE form. This module imported three atoms from `net_guard` and kept its own
+// composite, and the composite used the narrower call — so `[::169.254.169.254]` matched no v6
+// mask, unwrapped to nothing, and was connected to. Unconditionally: not gated on `allow_private`,
+// because the cloud-metadata arm is supposed to refuse before `allow_private` is ever consulted.
+//
+// These assert the PROPERTY, not the implementation, so they keep biting if the composite ever
+// comes back.
+#[test]
+fn the_ipv4_compatible_form_of_imds_is_refused() {
+    let addr: SocketAddr = "[::169.254.169.254]:80".parse().unwrap();
+    let err = check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: false })
+        .expect_err("[::169.254.169.254] is the AWS IMDS endpoint wearing a v6 costume");
+    assert!(
+        matches!(err, SsrfRefusal::CloudMetadata { .. }),
+        "must be refused AS METADATA, not merely as internal: {err:?}"
+    );
+}
+
+#[test]
+fn the_ipv4_compatible_imds_form_is_refused_even_with_allow_private() {
+    let addr: SocketAddr = "[::169.254.169.254]:80".parse().unwrap();
+    check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: true })
+        .expect_err("cloud metadata is refused unconditionally, `allow_private` or not");
+}
+
+#[test]
+fn the_ipv4_mapped_form_of_imds_is_refused() {
+    let addr: SocketAddr = "[::ffff:169.254.169.254]:80".parse().unwrap();
+    check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: true })
+        .expect_err("the mapped form is the same endpoint");
+}
+
+/// Azure WireServer and OCI IMDS are ORDINARY-LOOKING addresses in no reserved range, so a guard
+/// built from range predicates misses them entirely. `net_guard::ipv4_is_internal` names both.
+#[test]
+fn azure_wireserver_and_oci_imds_are_refused() {
+    for lit in ["168.63.129.16:80", "192.0.0.192:80"] {
+        let addr: SocketAddr = lit.parse().unwrap();
+        check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: false })
+            .unwrap_err_or_else_msg(lit);
+    }
+}
+
+trait UnwrapErrMsg {
+    fn unwrap_err_or_else_msg(self, lit: &str);
+}
+impl UnwrapErrMsg for Result<(), SsrfRefusal> {
+    fn unwrap_err_or_else_msg(self, lit: &str) {
+        assert!(self.is_err(), "{lit} is a cloud-metadata endpoint and must be refused");
+    }
+}
