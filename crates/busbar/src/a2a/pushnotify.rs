@@ -36,11 +36,12 @@
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
 
-// NO PRODUCTION CALLER YET, and this attribute names exactly which module that is true of rather
-// than sheltering a whole plane. `taskstore::set_push_callback` stores a callback without
-// validating it, deliberately: validation needs the RESOLVED addresses, and the resolver belongs
-// to the delivery path that will call `validate` here and then connect to the pinned addresses it
-// returns. Nothing delivers a push notification yet, so nothing calls this yet.
+// PARTLY MOUNTED. `host_of` and `validate` are on the hot path: `ingress::rpc` guards every
+// caller-supplied `pushNotificationConfig.url` through them before `taskstore::set_push_callback`
+// stores it, which is why that function still does not validate — the decision lives here, once.
+// `revalidate` is the DELIVERY path's half, and nothing delivers a push notification yet: a durable
+// callback can outlive the DNS answer that was checked when it was written, so the fresh-resolution
+// check belongs to the code that is about to connect rather than to the code that stored it.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::net::IpAddr;
@@ -206,6 +207,15 @@ fn split_url(url: &str) -> Result<(String, String), PushNotifyError> {
         return Err(PushNotifyError::NoHost);
     }
     Ok((scheme.to_ascii_lowercase(), host.to_ascii_lowercase()))
+}
+
+/// THE HOST a callback URL names, read by the SAME strict parser [`validate`] uses.
+///
+/// Exposed so a caller that has to RESOLVE the host before it can validate does not need a second,
+/// more permissive parser to find out what to resolve. Two parsers is two readings of one URL, and
+/// the gap between them is where `https://metadata.internal@example.com/` lives.
+pub(crate) fn host_of(url: &str) -> Result<String, PushNotifyError> {
+    split_url(url).map(|(_scheme, host)| host)
 }
 
 /// VALIDATE a caller-supplied (or busbar-registered) callback URL against the addresses it resolves

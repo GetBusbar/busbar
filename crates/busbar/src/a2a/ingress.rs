@@ -124,6 +124,14 @@ fn not_found() -> Response {
 struct Admitted {
     dispatch: Dispatch,
     matched_skill: Option<String>,
+    /// The registration's OUTBOUND CREDENTIAL HANDLE, cloned out under the same registry read that
+    /// authorised the call. A handle and its lease policy, never a secret: the secret is resolved at
+    /// relay time by [`super::creds::mint_from`], whose signature has no parameter an inbound
+    /// caller's credential could arrive through.
+    ///
+    /// Cloned rather than re-read because a second acquisition could straddle a config apply and
+    /// mint a credential for a registration that is not the one this call was authorised against.
+    outbound_cred: Option<super::creds::OutboundCredential>,
 }
 
 /// THE ADMISSION SEQUENCE, steps 2 and 3, under one registry read.
@@ -157,11 +165,16 @@ fn admit(
             .into_iter()
             .find(|c| c.registration.agent_id == dispatch.agent_id)
             .map(|c| c.matched_skill.clone());
+        let outbound_cred = regs
+            .iter()
+            .find(|r| r.agent_id == dispatch.agent_id)
+            .and_then(|r| r.outbound_cred.clone());
 
         match matched {
             Some(matched_skill) => Ok(Admitted {
                 dispatch,
                 matched_skill,
+                outbound_cred,
             }),
             None => {
                 // The catalogue excluded it. `explain` re-derives WHY for the one registration,
@@ -299,9 +312,12 @@ fn no_receiving_side() -> Response {
 
 /// THE INBOUND CALL — `POST /a2a/agents/{agent_id}`.
 ///
-/// Admits, catalogues, opens a durable task, meters the call against the presenting key and audits
-/// it. What it does NOT do is relay the body to the backend: see the module's own note in
-/// `a2a/mod.rs` about which half of this plane is mounted.
+/// Admits, catalogues, authorises the EGRESS, guards the caller's push callback, opens (or RESUMES)
+/// a durable task, meters the hop against the presenting key, audits it, AND RELAYS IT TO THE
+/// BACKEND AGENT — then carries the backend's reply back under busbar's own task identity, as one
+/// answer or as a stream of them, or answers a busbar-attributed error and ends the task.
+///
+/// The handler deliberately does NOT extract a `HeaderMap`. See step 7 below.
 pub(crate) async fn rpc(
     CurrentApp(app): CurrentApp,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
@@ -366,19 +382,102 @@ pub(crate) async fn rpc(
         }
     };
 
+    // ── THE EGRESS GATE (`creds::authorise_egress`). ────────────────────────────────────────────
+    //
+    // Run BEFORE any task row exists, because it is a statement about the caller rather than about
+    // the work: a caller that may not cause busbar to spend a credential on this agent must be
+    // refused without a task being opened and billed for it.
+    //
+    // It asks the same `scope_allowed("agent", …)` question `authorize` already asked, and that is
+    // deliberate rather than redundant. `authorize` answers "may this caller INVOKE this fronted
+    // agent"; this answers "may busbar's OWN credential be spent on this backend on this caller's
+    // behalf" — the transitive confused deputy, which only exists because busbar is both directions
+    // at once. The grant it returns is the ONLY way to reach `creds::mint_from`, so a delegating
+    // call site that skips it does not compile.
+    let grant = match super::creds::authorise_egress(key, &admitted.dispatch.agent_id, now) {
+        Ok(g) => g,
+        Err(e) => {
+            crate::admin::audit::AUDIT.record_by(
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": { "code": "refused", "message": e.to_string() }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // ── THE CALLER'S PUSH-NOTIFICATION CALLBACK, SSRF-GUARDED BEFORE IT IS STORED. ─────────────
+    //
+    // A caller-supplied URL that busbar's own process will fetch is the textbook SSRF primitive, so
+    // it is validated against the addresses it resolves to RIGHT NOW and refused as the CALLER's
+    // fault (400) rather than the backend's. Stored only after it passes; `taskstore` deliberately
+    // does not validate, so this is the one place the decision is made.
+    let callback = match callback_of(&envelope) {
+        None => None,
+        Some(url) => {
+            let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
+                return not_found();
+            };
+            match validate_callback(url, seam).await {
+                Ok(pinned) => Some(pinned),
+                Err(message) => {
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!({
+                            "error": { "code": "invalid_request", "message": message }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    // ── RESUME, OR OPEN. ───────────────────────────────────────────────────────────────────────
+    //
+    // A2A is asynchronous by design and an interrupt is its NORMAL path, not an edge case. A
+    // follow-up message on a `contextId` that already has an INTERRUPTED task of this caller's on
+    // this agent RESUMES that task rather than opening a second one. Opening a second would give
+    // the caller a new handle for work that is already half done, orphan the first row forever, and
+    // bill the same piece of work twice.
+    let resumed = if context_id.is_empty() {
+        None
+    } else {
+        resumable_task(
+            &admitted.dispatch.billed_key_id,
+            context_id,
+            &admitted.dispatch.agent_id,
+        )
+    };
+
+    let (task_id, context_id, is_resume) = match &resumed {
+        Some(t) => (t.task_id.clone(), t.context_id.clone(), true),
+        None => {
+            let id = format!(
+                "a2a-{}-{}",
+                admitted.dispatch.agent_id,
+                uuid_like(&body, now)
+            );
+            let ctx = if context_id.is_empty() {
+                id.clone()
+            } else {
+                context_id.to_string()
+            };
+            (id, ctx, false)
+        }
+    };
+    let request_id = task_id.clone();
+
     // WHO IS BILLED, recorded as this plane's own statement rather than inferred later. Receiving
     // covers the downstream L2 spend this call causes and never the callee's internal spend — a
     // distinction `Attribution` makes unconstructible rather than documented.
-    let task_id = format!(
-        "a2a-{}-{}",
-        admitted.dispatch.agent_id,
-        uuid_like(&body, now)
-    );
-    let context_id = if context_id.is_empty() {
-        task_id.clone()
-    } else {
-        context_id.to_string()
-    };
     let attribution = super::meter::Attribution::receiving(
         &admitted.dispatch.billed_key_id,
         &admitted.dispatch.agent_id,
@@ -386,42 +485,83 @@ pub(crate) async fn rpc(
         &task_id,
     );
 
-    // 4. DISPATCH, recorded durably. The task and its provenance chain are opened BEFORE the
-    //    outcome is known, which is the point: a task that ends by the process dying still has a
-    //    row saying it was submitted and to whom it was dispatched.
-    let request_id = task_id.clone();
-    let task = match super::task::Task::submitted(
-        &task_id,
-        &context_id,
-        &attribution.billed_key_id,
-        super::task::Direction::Inbound,
-        now,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(error = ?e, "a2a: could not open an inbound task");
-            return not_found();
-        }
-    };
-    if let Err(e) = super::taskstore::TASKS.submit(&task, &request_id) {
-        tracing::error!(error = %e, "a2a: the inbound task could not be recorded");
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({
-                "error": { "code": "unavailable", "message": "the task could not be recorded" }
-            })),
-        )
-            .into_response();
-    }
-    let _ = super::taskstore::TASKS.record_dispatch(
-        &task_id,
+    // THE HOP'S OWN ATTRIBUTION, and it is a different statement from the one above. busbar meters
+    // THE HOP IT MADE — who delegated, to which registered agent, under which `contextId`, with
+    // what terminal state — and NOT the callee's internal tool and model spend, which never touches
+    // busbar's plane. `covers_callee_internal_spend` is `false` here and on the receiving arm, with
+    // no constructor anywhere that can set it true, so "the hop, not the black box behind it" is a
+    // property of the type rather than a sentence somebody has to remember.
+    let hop = super::meter::Attribution::delegating(
+        &admitted.dispatch.billed_key_id,
+        &agent_id,
         &admitted.dispatch.agent_id,
-        now,
-        &request_id,
+        &context_id,
+        &task_id,
     );
 
+    if is_resume {
+        // BACK TO `working`, which chains a `task.resumed` provenance event. The transition table
+        // refuses this from a terminal state, so a caller cannot resurrect finished work by
+        // re-using its `contextId`.
+        if let Err(e) = super::taskstore::TASKS.transition(
+            &task_id,
+            super::task::TaskState::Working,
+            now,
+            &request_id,
+        ) {
+            tracing::error!(task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
+            return (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({
+                    "error": { "code": "conflict", "message": "this task cannot be resumed" }
+                })),
+            )
+                .into_response();
+        }
+    } else {
+        // 4. DISPATCH, recorded durably. The task and its provenance chain are opened BEFORE the
+        //    outcome is known, which is the point: a task that ends by the process dying still has a
+        //    row saying it was submitted and to whom it was dispatched.
+        let task = match super::task::Task::submitted(
+            &task_id,
+            &context_id,
+            &attribution.billed_key_id,
+            super::task::Direction::Inbound,
+            now,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = ?e, "a2a: could not open an inbound task");
+                return not_found();
+            }
+        };
+        if let Err(e) = super::taskstore::TASKS.submit(&task, &request_id) {
+            tracing::error!(error = %e, "a2a: the inbound task could not be recorded");
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": { "code": "unavailable", "message": "the task could not be recorded" }
+                })),
+            )
+                .into_response();
+        }
+        // THE PER-TASK HASH-CHAIN EVENT FOR THE HOP: who delegated, to which registered agent,
+        // recorded BEFORE the socket rather than after it, so a hop that never returns still left a
+        // chained record saying it was made.
+        let _ = super::taskstore::TASKS.record_dispatch(
+            &task_id,
+            hop.target_agent_id.as_deref().unwrap_or(&agent_id),
+            now,
+            &request_id,
+        );
+    }
+
+    if let Some(pinned) = callback.as_ref() {
+        let _ = super::taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now);
+    }
+
     gov_state.record_metering(
-        &attribution.billed_key_id,
+        &hop.billed_key_id,
         &resource,
         crate::plane::Plane::A2a.key(),
         None,
@@ -436,21 +576,450 @@ pub(crate) async fn rpc(
         &actor,
     );
 
+    // 7. RELAY. Everything above this line DECIDED; this is the line that reaches the backend.
+    //
+    // The caller's request headers are NOT read here and are not in scope: the handler does not
+    // extract a `HeaderMap` at all, so there is nothing on this path to accidentally forward. The
+    // first draft did extract one, and the credential the caller authenticated with went straight
+    // out on the hop — masked, in the configured-credential case, by the leased header overwriting
+    // it, which is why the no-credential twin exists in `tests/relay_tests.rs`.
+    //
+    // Milliseconds, because a lease is minted and checked in milliseconds while `crate::store::now`
+    // counts seconds. Converted once, here, rather than at each of the call sites that would
+    // otherwise each have to remember.
+    let now_ms = now.saturating_mul(1_000);
+    let Some(plane) = plane_of(&app) else {
+        return not_found();
+    };
+    let seam = plane.relay_seam();
+    let gate: Arc<dyn super::relay::DelegationGate> =
+        Arc::new(super::plane::LiveGate(Arc::clone(&plane)));
+
+    // BUSBAR'S OWN CREDENTIAL FOR THIS BACKEND, or none — and it can only be minted against the
+    // grant obtained above. A configured credential that will not resolve is a REFUSAL and not a
+    // quiet unauthenticated hop: an operator who configured one meant the backend to see one.
+    let lease = match admitted.outbound_cred.as_ref() {
+        Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
+            Ok(lease) => Some(lease),
+            Err(e) => {
+                tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
+                return fail_task(&task_id, &request_id, now, 502, "upstream_error");
+            }
+        },
+        None => None,
+    };
+
+    let hop_ctx = HopContext {
+        agent_id: admitted.dispatch.agent_id.clone(),
+        backend_url: admitted.dispatch.backend_url.clone(),
+        task_id: task_id.clone(),
+        context_id: context_id.clone(),
+        matched_skill: admitted.matched_skill.clone(),
+        request_id,
+        now,
+        now_ms,
+        rpc_id: envelope
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    };
+
+    if shape.requires_streaming {
+        stream_hop(hop_ctx, seam, gate, lease, body.to_vec()).await
+    } else {
+        unary_hop(hop_ctx, seam, gate, lease, body.to_vec()).await
+    }
+}
+
+/// Everything one hop needs that is neither a seam nor a secret. One struct because the two hop
+/// shapes need the same eleven facts and an eleven-argument function is a function whose arguments
+/// get transposed.
+struct HopContext {
+    agent_id: String,
+    backend_url: String,
+    task_id: String,
+    context_id: String,
+    matched_skill: Option<String>,
+    request_id: String,
+    now: u64,
+    now_ms: u64,
+    rpc_id: serde_json::Value,
+}
+
+/// The plane, if this deployment has one.
+fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
+    app.a2a.as_ref().map(Arc::clone)
+}
+
+/// THE UNARY HOP: one submission, one answer.
+///
+/// ON A BLOCKING THREAD. The relay seam is synchronous — it is the card fetch's transport, and that
+/// transport blocks a thread per hop by design. Calling it inline here would block an axum worker
+/// for the whole of a backend agent's think time, which on this plane is the one call that can
+/// legitimately take a minute.
+async fn unary_hop(
+    ctx: HopContext,
+    seam: Arc<dyn super::relay::RelaySeam>,
+    gate: Arc<dyn super::relay::DelegationGate>,
+    lease: Option<super::creds::Lease>,
+    body: Vec<u8>,
+) -> Response {
+    let agent_id = ctx.agent_id.clone();
+    let backend_url = ctx.backend_url.clone();
+    let now_ms = ctx.now_ms;
+    let relayed = tokio::task::spawn_blocking(move || {
+        super::relay::relay(
+            &super::relay::RelayCall {
+                agent_id: &agent_id,
+                backend_url: &backend_url,
+                lease: lease.as_ref(),
+                gate: gate.as_ref(),
+                body: &body,
+            },
+            seam.as_ref(),
+            now_ms,
+        )
+    })
+    .await;
+
+    let reply = match relayed {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(refusal)) => return refuse_hop(&ctx, &refusal),
+        Err(join) => {
+            tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
+            return fail_task(
+                &ctx.task_id,
+                &ctx.request_id,
+                ctx.now,
+                502,
+                "upstream_error",
+            );
+        }
+    };
+
+    record_state(&ctx, reply.reported_state);
+
+    // THE REPLY, UNDER BUSBAR'S IDENTITY. The backend's `id`/`contextId` are ITS names for this
+    // work; the caller's later reads resolve against busbar's store. Everything else is passed
+    // through untouched, because busbar is content-blind on this plane.
+    let mut result = reply.result;
+    super::relay::rewrite_identity(
+        &mut result,
+        &ctx.task_id,
+        &ctx.context_id,
+        ctx.matched_skill.as_deref(),
+    );
     (
         axum::http::StatusCode::OK,
         axum::Json(serde_json::json!({
             "jsonrpc": "2.0",
-            "id": envelope.get("id").cloned().unwrap_or(serde_json::Value::Null),
-            "result": {
-                "id": task_id,
-                "contextId": context_id,
-                "status": { "state": super::task::TaskState::Submitted.as_str() },
-                "kind": "task",
-                "skill": admitted.matched_skill,
+            "id": ctx.rpc_id,
+            "result": result,
+        })),
+    )
+        .into_response()
+}
+
+/// THE STREAMING HOP: the backend's events, re-framed under busbar's identity, written to
+/// the caller as they arrive.
+///
+/// The head decision cannot be deferred. Once a byte has been written to the caller the response
+/// status is spent, so this waits for the FIRST event before committing to a `200 text/event-stream`
+/// — and every failure that can happen before that first event (the guard, the gate, the lease, a
+/// non-2xx, a backend that answered a document rather than a stream) is still a status this handler
+/// gets to choose.
+async fn stream_hop(
+    ctx: HopContext,
+    seam: Arc<dyn super::relay::RelaySeam>,
+    gate: Arc<dyn super::relay::DelegationGate>,
+    lease: Option<super::creds::Lease>,
+    body: Vec<u8>,
+) -> Response {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+
+    let task_id = ctx.task_id.clone();
+    let context_id = ctx.context_id.clone();
+    let matched_skill = ctx.matched_skill.clone();
+    let request_id = ctx.request_id.clone();
+    let agent_id = ctx.agent_id.clone();
+    let backend_url = ctx.backend_url.clone();
+    let now = ctx.now;
+    let now_ms = ctx.now_ms;
+
+    // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
+    // at zero would spend the first N advances re-asserting a position the store already holds —
+    // harmless, because the store refuses to rewind, but it would make the cursor stop counting
+    // this stream's chunks and start counting from scratch, which is the number a resubscribe reads.
+    let mut cursor: u64 = super::taskstore::TASKS
+        .get_unscoped(&ctx.task_id)
+        .map_or(0, |t| t.artifact_cursor);
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
+            // THE TASK'S STATE MOVES AS THE STREAM MOVES, not once at the end. A stream that ends
+            // by the process dying must leave the last state it actually reported, not `submitted`.
+            if let Some(state) = ev.state {
+                let _ = super::taskstore::TASKS.transition(&task_id, state, now, &request_id);
+            }
+            if ev.artifact {
+                cursor = cursor.saturating_add(1);
+                // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
+                // so a duplicate delivery cannot rewind it.
+                let _ = super::taskstore::TASKS.advance_cursor(&task_id, cursor, now, &request_id);
+            }
+            // A caller that has gone away closes the receiver, and the hop stops there rather than
+            // draining an upstream into a channel nobody is reading.
+            if tx.blocking_send(ev.sse).is_err() {
+                return super::relay::ChunkFlow::Stop;
+            }
+            super::relay::ChunkFlow::Continue
+        };
+        super::relay::relay_stream(
+            &super::relay::RelayCall {
+                agent_id: &agent_id,
+                backend_url: &backend_url,
+                lease: lease.as_ref(),
+                gate: gate.as_ref(),
+                body: &body,
+            },
+            seam.as_ref(),
+            &task_id,
+            &context_id,
+            matched_skill.as_deref(),
+            now_ms,
+            &mut sink,
+        )
+    });
+
+    // THE FIRST EVENT IS THE COMMITMENT. Nothing before it has been written to the caller, so a
+    // refusal is still expressible; after it, the answer is a stream and a failure can only be a
+    // truncated one plus a log line and a `failed` task.
+    let Some(first) = rx.recv().await else {
+        return match handle.await {
+            Ok(Ok(super::relay::RelayStream::Unary(reply))) => {
+                // The backend answered a single document to a streaming request, which is legal for
+                // a task it finished immediately. The caller gets the unary shape rather than a
+                // one-event stream busbar invented.
+                record_state(&ctx, reply.reported_state);
+                let mut result = reply.result;
+                super::relay::rewrite_identity(
+                    &mut result,
+                    &ctx.task_id,
+                    &ctx.context_id,
+                    ctx.matched_skill.as_deref(),
+                );
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": ctx.rpc_id,
+                        "result": result,
+                    })),
+                )
+                    .into_response()
+            }
+            // A stream that produced no event at all is not a served task. Reported as a hop
+            // failure rather than as an empty 200, which would tell the caller the work was done.
+            Ok(Ok(super::relay::RelayStream::Streamed)) => {
+                tracing::warn!(task = %ctx.task_id, "a2a: the backend's stream carried no event");
+                fail_task(
+                    &ctx.task_id,
+                    &ctx.request_id,
+                    ctx.now,
+                    502,
+                    "upstream_error",
+                )
+            }
+            Ok(Err(refusal)) => refuse_hop(&ctx, &refusal),
+            Err(join) => {
+                tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
+                fail_task(
+                    &ctx.task_id,
+                    &ctx.request_id,
+                    ctx.now,
+                    502,
+                    "upstream_error",
+                )
+            }
+        };
+    };
+
+    // COMMITTED. What is left of the hop is watched on a detached task purely so its outcome is
+    // LOGGED and a broken stream ends the task rather than leaving it live forever.
+    let watched_task = ctx.task_id.clone();
+    let watched_request = ctx.request_id.clone();
+    let watched_now = ctx.now;
+    tokio::spawn(async move {
+        match handle.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(refusal)) => {
+                tracing::warn!(task = %watched_task, error = %refusal, "a2a: the relayed stream ended in a refusal");
+                let _ = super::taskstore::TASKS.transition(
+                    &watched_task,
+                    super::task::TaskState::Failed,
+                    watched_now,
+                    &watched_request,
+                );
+            }
+            Err(join) => {
+                tracing::error!(task = %watched_task, error = %join, "a2a: the streaming relay thread did not complete");
+            }
+        }
+    });
+
+    // `futures::stream::unfold` rather than a macro crate: the workspace already depends on
+    // `futures`, and a new dependency for six lines of state machine is a new dependency.
+    let stream = futures::stream::unfold((Some(first), rx), |(pending, mut rx)| async move {
+        if let Some(first) = pending {
+            return Some((
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(first)),
+                (None, rx),
+            ));
+        }
+        let chunk = rx.recv().await?;
+        Some((Ok(axum::body::Bytes::from(chunk)), (None, rx)))
+    });
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            super::relay::SSE_CONTENT_TYPE,
+        )
+        .header(axum::http::header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap_or_else(|_| not_found())
+}
+
+/// RECORD WHAT THE BACKEND SAID THE TASK IS NOW.
+///
+/// `Submitted` is skipped: it is where the task already is, and the transition table refuses a move
+/// to it, so recording it would log an error for a hop that behaved.
+fn record_state(ctx: &HopContext, state: super::task::TaskState) {
+    if state == super::task::TaskState::Submitted {
+        return;
+    }
+    if let Err(e) =
+        super::taskstore::TASKS.transition(&ctx.task_id, state, ctx.now, &ctx.request_id)
+    {
+        // Reported, never fatal: the hop SUCCEEDED and the caller is owed its answer. A store that
+        // refused the transition is an operator problem, not a reason to discard a completed piece
+        // of work the caller has already been billed for.
+        tracing::error!(task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+    }
+}
+
+/// RENDER A HOP REFUSAL. The refusal's own words go to the LOG, where they name the backend and the
+/// reason; the caller gets a busbar-attributed status and the id of the task busbar recorded.
+///
+/// A DEMOTED registration does NOT fail the task. The work never started, the agent is what changed,
+/// and burning the caller's task row for an operator's suspension would make a resume impossible
+/// once the agent is restored.
+fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
+    tracing::warn!(agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
+    match refusal {
+        super::relay::RelayRefusal::Demoted(_) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "code": "unavailable",
+                    "message": "this agent is not currently serving",
+                    "taskId": ctx.task_id,
+                }
+            })),
+        )
+            .into_response(),
+        _ => fail_task(
+            &ctx.task_id,
+            &ctx.request_id,
+            ctx.now,
+            refusal.status(),
+            "upstream_error",
+        ),
+    }
+}
+
+/// END THE TASK AS `failed` AND ANSWER A BUSBAR-ATTRIBUTED ERROR.
+///
+/// Two acts that must not come apart. Answering the error without ending the task leaves a row
+/// claiming work is in flight that nothing will ever finish; ending the task without answering the
+/// error hands the caller a Task envelope for work that never started. The refusal names the TASK
+/// so the caller can correlate it with the record busbar kept, and never the backend, because
+/// publishing the backend is publishing the way around every control busbar applies.
+fn fail_task(
+    task_id: &str,
+    request_id: &str,
+    now: u64,
+    status: u16,
+    code: &'static str,
+) -> Response {
+    if let Err(e) =
+        super::taskstore::TASKS.transition(task_id, super::task::TaskState::Failed, now, request_id)
+    {
+        tracing::error!(task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+    }
+    (
+        axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+        axum::Json(serde_json::json!({
+            "error": {
+                "code": code,
+                "message": "the backend agent did not complete this task",
+                "taskId": task_id,
             }
         })),
     )
         .into_response()
+}
+
+/// THE CALLER'S PUSH-NOTIFICATION CALLBACK URL, if it registered one.
+fn callback_of(envelope: &serde_json::Value) -> Option<String> {
+    envelope
+        .pointer("/params/configuration/pushNotificationConfig/url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// SSRF-VALIDATE ONE CALLBACK against the addresses it resolves to right now.
+///
+/// The resolution goes through the RELAY SEAM's resolver rather than a second one, so the answer
+/// this guard judges comes from the same place every other outbound decision on this plane reads —
+/// and so a test can install one resolver and have it govern both.
+///
+/// ON A BLOCKING THREAD, because `Resolver` is a synchronous seam and the production one performs a
+/// real name lookup. A lookup inline here would hold an axum worker for as long as a nameserver
+/// feels like taking, which a caller chooses by choosing the host.
+async fn validate_callback(
+    url: String,
+    seam: Arc<dyn super::relay::RelaySeam>,
+) -> Result<super::pushnotify::PinnedCallback, String> {
+    tokio::task::spawn_blocking(move || {
+        let host = super::pushnotify::host_of(&url).map_err(|e| e.to_string())?;
+        // The literal case never needs a resolver and must not be made to depend on one;
+        // `validate` judges a literal on its own and ignores what is passed here.
+        let resolved = if host.parse::<std::net::IpAddr>().is_ok() {
+            Vec::new()
+        } else {
+            seam.resolver().resolve(&host).unwrap_or_default()
+        };
+        super::pushnotify::validate(&url, &resolved, false).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|_| Err("the push callback could not be validated".to_string()))
+}
+
+/// AN INTERRUPTED TASK OF THIS CALLER'S, ON THIS AGENT, UNDER THIS `contextId` — the resume target.
+///
+/// Scoped to the PRINCIPAL through `list_scoped`, so a caller cannot resume somebody else's task by
+/// guessing a `contextId`. The most recently updated one wins where a context somehow has two, which
+/// is the only ordering that cannot resume a task that has since been superseded.
+fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
+    let mut candidates: Vec<super::task::Task> = super::taskstore::TASKS
+        .list_scoped(principal)
+        .into_iter()
+        .filter(|t| {
+            t.context_id == context_id && t.agent_id == agent_id && t.state.is_interrupted()
+        })
+        .collect();
+    candidates.sort_by_key(|t| t.updated_at);
+    candidates.pop()
 }
 
 /// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it.
@@ -491,10 +1060,25 @@ fn shape_of(envelope: &serde_json::Value) -> super::catalogue::TaskShape {
 /// a dependency for a value nothing outside this process interprets.
 fn uuid_like(body: &[u8], now: u64) -> String {
     use std::hash::{Hash, Hasher};
+    // A PROCESS-WIDE MONOTONIC COUNTER, and it is the only ingredient that guarantees anything.
+    //
+    // The body and the clock are DERIVED from the request, so two callers submitting the same
+    // envelope in the same second derive the same id — and the second `submit` then replaces the
+    // first caller's row, which is a task quietly ceasing to exist and, on a shared `contextId`,
+    // one principal being handed another's task handle. That was not hypothetical: the relay's
+    // resume tests found it, because they are the first tests to submit twice.
+    //
+    // The stack address that used to stand in for entropy did not: it is the address of a temporary
+    // in this frame, and two calls at the same stack depth get the same one.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     body.hash(&mut h);
     now.hash(&mut h);
-    std::sync::atomic::AtomicU64::new(0).as_ptr().hash(&mut h);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .hash(&mut h);
+    // The process's own identity, so two processes writing to ONE durable store do not collide on
+    // a counter that each of them starts at zero.
+    std::process::id().hash(&mut h);
     format!("{:016x}", h.finish())
 }
 

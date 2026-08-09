@@ -56,6 +56,46 @@ pub(crate) struct A2aPlane {
     /// them, and a reader that saw a half-applied sweep would be reading a registry state that
     /// never existed at any instant.
     registrations: RwLock<Vec<AgentRegistration>>,
+    /// THE RELAY SEAM: the resolver, the POST transport and the fetch policy the hot path submits a
+    /// task through, held as ONE object so a caller cannot pair a real transport with a fixture
+    /// resolver — the same reason [`super::transport::LiveCardFetch`] exists.
+    ///
+    /// Held on the plane rather than constructed per request so that the object a request relays
+    /// through is the object this deployment was built with, and so a test can drive the real
+    /// ingress against a recording seam without the ingress growing a test-shaped argument.
+    relay: RwLock<Arc<dyn super::relay::RelaySeam>>,
+}
+
+/// THE LIVE TRUST DECISION, read off THE PLANE'S OWN REGISTRY at the moment it is asked.
+///
+/// This is what makes a mid-flight demotion take effect on the request that is already in flight.
+/// It holds an `Arc` to the plane rather than a copy of a registration, because a copy is a decision
+/// that was true when it was copied — which is precisely the staleness the gate exists to close.
+pub(crate) struct LiveGate(pub(crate) Arc<A2aPlane>);
+
+impl super::relay::DelegationGate for LiveGate {
+    fn still_delegable(&self, agent_id: &str) -> Result<(), super::relay::NotDelegable> {
+        self.0.with_registrations(|regs| {
+            match regs.iter().find(|r| r.agent_id == agent_id) {
+                // The SAME predicate `authorize` and the catalogue ask. This gate can only ever be
+                // more closed than they were, never differently closed.
+                Some(reg) if reg.is_delegable() => Ok(()),
+                Some(reg) => Err(super::relay::NotDelegable {
+                    agent_id: agent_id.to_string(),
+                    state: reg.trust_state(),
+                    reason: reg.suspension_reason().map(str::to_string),
+                }),
+                // The registration was REMOVED by a config apply between admission and the socket.
+                // Not a state the trust machine has a name for, so it is reported as the fail-closed
+                // floor a fresh registration starts at rather than invented as something else.
+                None => Err(super::relay::NotDelegable {
+                    agent_id: agent_id.to_string(),
+                    state: crate::trust::TrustState::Pending,
+                    reason: Some("the registration no longer exists on this plane".to_string()),
+                }),
+            }
+        })
+    }
 }
 
 impl A2aPlane {
@@ -98,12 +138,29 @@ impl A2aPlane {
             pins.insert(name.clone(), def.pin.clone());
             registrations.push(reg);
         }
+        let fetch_policy = FetchPolicy::default();
         Some(Arc::new(Self {
+            relay: RwLock::new(Arc::new(super::transport::LiveCardFetch::new(
+                fetch_policy.clone(),
+            ))),
             public_url: public_url.map(str::to_string),
-            fetch_policy: FetchPolicy::default(),
+            fetch_policy,
             pins,
             registrations: RwLock::new(registrations),
         }))
+    }
+
+    /// THE RELAY SEAM this deployment submits relayed tasks through. The LIVE one, always, in a
+    /// production build: the only other setter is `#[cfg(test)]`.
+    pub(crate) fn relay_seam(&self) -> Arc<dyn super::relay::RelaySeam> {
+        Arc::clone(&self.relay.read().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Swap the relay seam. TEST ONLY, and compiled out of every release binary — a production
+    /// build has exactly one way to obtain a seam, which is the constructor above.
+    #[cfg(test)]
+    pub(crate) fn set_relay_seam(&self, seam: Arc<dyn super::relay::RelaySeam>) {
+        *self.relay.write().unwrap_or_else(|e| e.into_inner()) = seam;
     }
 
     /// busbar's public base origin, as the card-serving path reads it.
