@@ -85,6 +85,22 @@ fn the_caller_context_carries_the_busbar_key_so_its_absence_downstream_means_som
 }
 
 /// Crash DETECTION: `exited` is the non-blocking observation that drives the `crashed` transition.
+// ── THE SPAWNING TEST BELOW NEEDS A POSIX SHELL, SO IT IS UNIX-ONLY ─────────────────────────────
+//
+// The fixture is `/bin/sh -c 'read line; printf ...'` — a one-line JSON-RPC server that keeps the
+// test's child out of the build graph. A comment here used to claim `sh` is present on every
+// platform this crate builds for. It is not: Windows is a CI target, `/bin/sh` does not exist
+// there, and the full tier caught it on a merge the branch tier had passed.
+//
+// WHAT WINDOWS THEREFORE DOES NOT COVER, stated rather than left to be discovered: the spawn, the
+// pipe plumbing and the `Spawning -> Ready -> Draining -> Dead` transitions are proven on unix
+// only. The transport itself is not unix-only — an operator on Windows configures a Windows
+// command and the same machine drives it — so this is a TEST-COVERAGE gap, not a capability one.
+// Closing it properly means a portable child (re-invoking the test binary through
+// `std::env::current_exe()` with an env var, rather than a shell), which is a real change and is
+// tracked separately. `cfg(unix)` is the honest interim: it says Windows is uncovered here instead
+// of pretending a `cmd.exe` rewrite exercises the same thing.
+#[cfg(unix)]
 #[tokio::test]
 async fn an_exited_child_is_observed_without_blocking() {
     let mut child = StdioChild::spawn(

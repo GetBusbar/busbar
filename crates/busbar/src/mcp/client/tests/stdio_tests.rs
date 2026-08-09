@@ -159,10 +159,26 @@ fn only_an_explicit_reset_reopens_the_breaker() {
 
 /// A REAL SPAWN, a real pipe, a real JSON-RPC round trip. The state machine above is the policy; this
 /// is the proof that the process half works at all.
+// ── THE THREE SPAWNING TESTS BELOW NEED A POSIX SHELL, SO THEY ARE UNIX-ONLY ────────────────────
+//
+// The fixture is `/bin/sh -c 'read line; printf ...'` — a one-line JSON-RPC server that keeps the
+// test's child out of the build graph. A comment here used to claim `sh` is present on every
+// platform this crate builds for. It is not: Windows is a CI target, `/bin/sh` does not exist
+// there, and the full tier caught it on a merge the branch tier had passed.
+//
+// WHAT WINDOWS THEREFORE DOES NOT COVER, stated rather than left to be discovered: the spawn, the
+// pipe plumbing and the `Spawning -> Ready -> Draining -> Dead` transitions are proven on unix
+// only. The transport itself is not unix-only — an operator on Windows configures a Windows
+// command and the same machine drives it — so this is a TEST-COVERAGE gap, not a capability one.
+// Closing it properly means a portable child (re-invoking the test binary through
+// `std::env::current_exe()` with an env var, rather than a shell), which is a real change and is
+// tracked separately. `cfg(unix)` is the honest interim: it says Windows is uncovered here instead
+// of pretending a `cmd.exe` rewrite exercises the same thing.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_real_child_is_spawned_and_answers_one_request() {
-    // A one-line JSON-RPC server: read a line, ignore it, answer. `sh` is present on every platform
-    // this crate builds for CI on, and using it keeps the fixture out of the build graph.
+    // A one-line JSON-RPC server: read a line, ignore it, answer. Using `sh` keeps the fixture out
+    // of the build graph, at the cost of the unix-only gate explained above.
     let mut child = StdioChild::spawn(
         "/bin/sh",
         &[
@@ -197,6 +213,7 @@ async fn a_real_child_is_spawned_and_answers_one_request() {
 }
 
 /// A child that closes its stdout is an ERROR, not a hang and not an empty success.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_child_that_says_nothing_is_an_error_rather_than_a_hang() {
     let mut child = StdioChild::spawn(
@@ -219,6 +236,7 @@ async fn a_child_that_says_nothing_is_an_error_rather_than_a_hang() {
 
 /// The timeout is bounded and it BITES. A child that stops answering is indistinguishable from a
 /// child that is slow, and the only safe reading of that ambiguity on a dispatch path is bounded.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_silent_child_hits_the_timeout() {
     let mut child = StdioChild::spawn(

@@ -8053,7 +8053,8 @@
                 "plugin_versions",
                 "identity-providers",
                 "export",
-                "tools"
+                "tools",
+                "agents"
               ],
               "type": "string"
             }
@@ -8087,7 +8088,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
+            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, `agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -8148,7 +8149,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools|agents). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
       }
     },
