@@ -161,6 +161,25 @@ fn the_pending_table_is_bounded_so_a_hung_peer_cannot_grow_it_without_end() {
 }
 
 #[test]
+fn an_exhausted_id_counter_refuses_to_issue_rather_than_handing_out_a_number_twice() {
+    // Not a reachable state on a real connection, and pinned anyway, because the failure mode if it
+    // ever WERE reached is the one thing this type must never do: hand out an id that is already in
+    // flight, so the next reply is delivered to the wrong request. The counter saturates rather than
+    // wrapping, and saturating means repeating, so the last value has to be refused explicitly.
+    let mut c = Correlator::at_last_id(8, 1_000);
+    let last = c
+        .issue("ping", None, 0)
+        .expect("the final id is still usable");
+    assert_eq!(last.id, Id::Number(i64::MAX));
+    assert_eq!(
+        c.issue("ping", None, 0).expect_err("refused"),
+        CorrelationError::IdsExhausted
+    );
+    // And the one that WAS issued still resolves: exhaustion is not a reason to lose a live request.
+    assert!(c.resolve(Response::ok(last.id, json!({}))).is_ok());
+}
+
+#[test]
 fn issued_ids_are_numeric_and_strictly_increasing() {
     let mut c = Correlator::new(64, 1_000);
     let mut last = None;

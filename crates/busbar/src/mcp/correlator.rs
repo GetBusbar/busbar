@@ -57,6 +57,10 @@ pub(crate) enum CorrelationError {
     UnknownId(Id),
     /// The pending table is full. The caller backs off; it does not get an unbounded table.
     TooManyInFlight { limit: usize },
+    /// The id counter has no unused value left. Not reachable on a real connection, and refused
+    /// explicitly anyway: the counter saturates rather than wrapping, and saturating means the last
+    /// value would otherwise be handed out over and over.
+    IdsExhausted,
 }
 
 impl std::fmt::Display for CorrelationError {
@@ -68,6 +72,9 @@ impl std::fmt::Display for CorrelationError {
             CorrelationError::TooManyInFlight { limit } => {
                 write!(f, "already {limit} requests in flight to this peer")
             }
+            CorrelationError::IdsExhausted => {
+                write!(f, "this connection has no unused correlation id left")
+            }
         }
     }
 }
@@ -77,6 +84,8 @@ pub(crate) struct Correlator {
     /// The next id to hand out. Only ever increases, which is what makes an expired id
     /// unreachable rather than merely unlikely.
     next: i64,
+    /// Set once `next` has been handed out at its last value, so it is never handed out twice.
+    exhausted: bool,
     inflight: BTreeMap<Id, InFlight>,
     max_inflight: usize,
     timeout_ms: u64,
@@ -86,9 +95,20 @@ impl Correlator {
     pub(crate) fn new(max_inflight: usize, timeout_ms: u64) -> Self {
         Correlator {
             next: 1,
+            exhausted: false,
             inflight: BTreeMap::new(),
             max_inflight,
             timeout_ms,
+        }
+    }
+
+    /// A correlator whose counter is on its LAST value, so the exhaustion boundary can be driven
+    /// without issuing i64::MAX requests to reach it.
+    #[cfg(test)]
+    pub(crate) fn at_last_id(max_inflight: usize, timeout_ms: u64) -> Self {
+        Correlator {
+            next: i64::MAX,
+            ..Correlator::new(max_inflight, timeout_ms)
         }
     }
 
@@ -110,11 +130,20 @@ impl Correlator {
                 limit: self.max_inflight,
             });
         }
+        // The counter SATURATES rather than wrapping, because a wrapping one starts handing out ids
+        // that are still in flight, which is the one thing this type must never do. Saturating means
+        // the last value would repeat instead, so it is refused here rather than repeated. Reaching
+        // this is not a reachable state on a real connection; it is pinned because the failure mode
+        // if it ever were reached is a reply delivered to the wrong request.
+        if self.exhausted {
+            return Err(CorrelationError::IdsExhausted);
+        }
         let id = Id::Number(self.next);
-        // Saturating rather than wrapping: an id counter that wraps starts handing out ids that are
-        // still in flight, which is the one thing this type must never do. Reaching i64::MAX on one
-        // connection is not a reachable state, and if it were, refusing to issue is the safe end.
-        self.next = self.next.saturating_add(1);
+        if self.next == i64::MAX {
+            self.exhausted = true;
+        } else {
+            self.next += 1;
+        }
         self.inflight.insert(
             id.clone(),
             InFlight {
