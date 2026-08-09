@@ -148,6 +148,19 @@ jobs:
       # public", so that property is re-proven on every push rather than argued once in a comment.
       - name: Release-order proof (a failure leaves nothing public)
         run: python3 scripts/release-order-lint.py --prove
+      # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
+      # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
+      # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and
+      # `tracing` were each declared two different ways and agreed purely by luck. It sits in the
+      # FAST tier deliberately: a manifest can drift on any branch push, and this costs one python
+      # process. Self-test runs FIRST and covers dev-dependencies and
+      # `[target.'cfg(...)'.dependencies]` explicitly, because a rule enforced only on
+      # `[dependencies]` is a rule scoped to where the bug was first seen — and the jemalloc pins,
+      # the ones that differ per shipped target, live in a target table.
+      - name: Workspace-deps lint self-test
+        run: python3 scripts/workspace-deps-lint.py --selftest
+      - name: Workspace-deps lint
+        run: python3 scripts/workspace-deps-lint.py --root .
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the
