@@ -15,8 +15,8 @@
 //! | `PATCH  <section>/{name}/settings`  | `full`      | replace only the opaque settings bag |
 //! | `DELETE <section>/{name}`           | `full`      | remove |
 //!
-//! `<section>` is `/identity-providers` or `/export` today. **Adding `tools:` (1.5.4 MCP) or
-//! `agents:` (1.5.5 A2A) is ONE variant on [`NamedMapSection`]** — [`routes`] mounts from
+//! `<section>` is `/identity-providers` or `/export` today. **Adding `tools:` (1.5.5 MCP) or
+//! `agents:` (1.5.6 A2A) is ONE variant on [`NamedMapSection`]** — [`routes`] mounts from
 //! `NamedMapSection::ALL`, `openapi_paths` emits from it, and the error taxonomy declares per route
 //! SHAPE — so a new section is purely additive and BREAKS NOTHING already shipped.
 //!

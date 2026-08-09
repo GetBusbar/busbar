@@ -3275,8 +3275,8 @@ fn reserved_hook_names_are_frozen() {
 
 /// FREEZE BLOCKER — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
 ///
-/// If omission meant "all stages", an MCP tool-invocation stage added in 1.5.4 (or an A2A delegation
-/// stage in 1.5.5) would retroactively make every already-deployed unscoped hook start firing at
+/// If omission meant "all stages", an MCP tool-invocation stage added in 1.5.5 (or an A2A delegation
+/// stage in 1.5.6) would retroactively make every already-deployed unscoped hook start firing at
 /// brand-new points in a brand-new plane — a silent widening of what the operator signed off on, with
 /// no config change and no diagnostic. Pinning the default to a FROZEN list makes a later stage
 /// strictly additive: to fire there, a hook must NAME it.

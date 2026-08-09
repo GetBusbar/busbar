@@ -1162,7 +1162,7 @@ async fn auth_token_absent_from_admin_router() {
     dh.abort();
 }
 
-/// THE BYPASS IS PER-ROUTER, NOT PER-PROCESS (1.5.4 P2, `mcp-oauth-1.5.4-DESIGN.md` par. 5.2).
+/// THE BYPASS IS PER-ROUTER, NOT PER-PROCESS (1.5.5 P2, `mcp-oauth-1.5.5-DESIGN.md` par. 5.2).
 /// `/auth/token` is mounted on the DATA router only (`auth_token_absent_from_admin_router` pins
 /// that). Its auth bypass must be equally absent from the admin plane: a bypass declared by the
 /// PROCESS rather than by the ROUTER that mounted the route means the admin listener waves through
@@ -1211,8 +1211,8 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
     ah.abort();
 }
 
-/// NEAR-MISS MATRIX for the core route-auth table (1.5.4 P2,
-/// `mcp-oauth-1.5.4-DESIGN.md` par. 5.3). A bypass is worth exactly as much as its exactness: a
+/// NEAR-MISS MATRIX for the core route-auth table (1.5.5 P2,
+/// `mcp-oauth-1.5.5-DESIGN.md` par. 5.3). A bypass is worth exactly as much as its exactness: a
 /// declaration that matched a prefix, a trailing slash, a case fold, or any method would hand every
 /// neighbouring path the same free pass, which is how an authorization server's public metadata
 /// route ends up opening the routes beside it.

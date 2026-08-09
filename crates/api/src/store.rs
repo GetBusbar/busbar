@@ -33,7 +33,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_server"` scope (1.5.4) - grants a caller access to a registered MCP
+    /// Build a `kind: "mcp_server"` scope (1.5.5) - grants a caller access to a registered MCP
     /// server as a whole. Carried on the wire by its OWN named field (`allowed_mcp_servers`),
     /// never mixed into `allowed_pools`.
     pub fn mcp_server(value: impl Into<String>) -> Self {
@@ -43,7 +43,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_tool"` scope (1.5.4) - grants a caller access to one namespaced
+    /// Build a `kind: "mcp_tool"` scope (1.5.5) - grants a caller access to one namespaced
     /// `{server}_{tool}` bound identity. Carried on the wire by its OWN named field
     /// (`allowed_mcp_tools`), never mixed into `allowed_pools`.
     pub fn mcp_tool(value: impl Into<String>) -> Self {
@@ -54,8 +54,8 @@ impl ScopeRef {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.4 P0,
-/// `mcp-oauth-1.5.4-DESIGN.md` §6.2): each registered scope kind gets its OWN named wire field -
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.5 P0,
+/// `mcp-oauth-1.5.5-DESIGN.md` §6.2): each registered scope kind gets its OWN named wire field -
 /// `allowed_pools` (kind `pool`), `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools`
 /// (kind `mcp_tool`) - each a plain array of bare value strings, never a `{kind, value}` object.
 /// The in-memory `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read.
@@ -63,7 +63,7 @@ impl ScopeRef {
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
 ///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
-///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.5.4 row/reader never
+///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.5.5 row/reader never
 ///   sees them;
 /// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
 ///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
@@ -222,7 +222,7 @@ mod virtual_key_wire {
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
 /// so policy is mutable in config/store without re-issuing the credential.
 /// Serde note: `Serialize`/`Deserialize` are HAND-IMPLEMENTED in [`virtual_key_wire`] (the
-/// kind-partitioned scope wire, 1.5.4 P0) - keep the wire mirror struct's fields/defaults in
+/// kind-partitioned scope wire, 1.5.5 P0) - keep the wire mirror struct's fields/defaults in
 /// lockstep with this struct when adding a field.
 #[derive(Clone, PartialEq)]
 pub struct VirtualKey {
@@ -277,7 +277,7 @@ impl VirtualKey {
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.5), an
+    /// When a later release introduces a new kind (`mcp_server` in 1.5.5, `agent` in 1.5.6), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///
@@ -1133,7 +1133,7 @@ mod tests {
     /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
     ///
     /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-    /// matters because 1.5.4 adds `mcp_server` and 1.5.5 adds `agent`: under the fail-OPEN reading
+    /// matters because 1.5.5 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
     /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
     /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
     /// version bump.
@@ -1240,7 +1240,7 @@ mod tests {
         );
     }
 
-    /// 1.5.4 P0 (`mcp-oauth-1.5.4-DESIGN.md` §6.2): scope KINDS survive a store wire round-trip.
+    /// 1.5.5 P0 (`mcp-oauth-1.5.5-DESIGN.md` §6.2): scope KINDS survive a store wire round-trip.
     ///
     /// Before the kind-partitioned wire fields existed, `allowed_scopes_wire` serialized every
     /// entry's bare `value` under `allowed_pools` and deserialized every one back as
@@ -1272,7 +1272,7 @@ mod tests {
     }
 
     /// A scope kind with no registered wire field is a HARD serialize error - never silently
-    /// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.5
+    /// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.6
     /// adds `agent`, this is the test that forces it to get its own named wire field before an
     /// `agent` grant can be persisted at all.
     #[test]
@@ -1290,7 +1290,7 @@ mod tests {
     }
 
     /// The MCP wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
-    /// pre-1.5.4 byte-identity contract holds), and readable when present. An explicit-empty
+    /// pre-1.5.5 byte-identity contract holds), and readable when present. An explicit-empty
     /// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
     #[test]
     fn mcp_scope_wire_fields_are_additive() {

@@ -12,8 +12,8 @@
 //! Everything that serves the pattern is parameterized by [`NamedMapSection`] rather than written per
 //! kind: the admin router mounts its five routes in a loop, the OpenAPI generator emits its path
 //! items in a loop, the error taxonomy declares one set per route SHAPE, and the config overlay
-//! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.5.4 MCP) or
-//! `agents:` (1.5.5 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
+//! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.5.5 MCP) or
+//! `agents:` (1.5.6 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
 //! new route handler, no new overlay type, no new taxonomy arm, and no breaking change to anything
 //! already shipped.
 //!
@@ -32,7 +32,7 @@ pub(crate) enum NamedMapSection {
     IdentityProviders,
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
-    // 1.5.4: `Tools` (MCP server registry). 1.5.5: `Agents` (A2A agent registry). Both land as one
+    // 1.5.5: `Tools` (MCP server registry). 1.5.6: `Agents` (A2A agent registry). Both land as one
     // variant each plus their arms in the `match`es below.
 }
 

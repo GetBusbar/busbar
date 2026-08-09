@@ -52,9 +52,9 @@ pub(crate) struct TokenClaims {
     /// `GovState::binding_generation_matches`), never against a rotated one.
     #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
     pub(crate) generation: Option<String>,
-    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.4 P1: the MCP plane boundary
-    /// (`mcp-oauth-1.5.4-DESIGN.md` par. 4). `None` = a plain data-plane busbar key (every token
-    /// minted before 1.5.4, and every `/auth/token` key after it). `Some(uri)` = an MCP
+    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.5 P1: the MCP plane boundary
+    /// (`mcp-oauth-1.5.5-DESIGN.md` par. 4). `None` = a plain data-plane busbar key (every token
+    /// minted before 1.5.5, and every `/auth/token` key after it). `Some(uri)` = an MCP
     /// authorization-server access token bound to the operator-configured canonical MCP URI.
     /// Enforcement lives in the VERIFIER ([`TokenVerifier::verify`]), never in a handler, so a
     /// route added later cannot forget it: the data plane verifies with expected-audience `None`
@@ -64,7 +64,7 @@ pub(crate) struct TokenClaims {
     #[serde(default, rename = "a", skip_serializing_if = "Option::is_none")]
     pub(crate) aud: Option<String>,
     /// The OAuth CLIENT id this token was minted through (wire name `cid`), for per-client
-    /// attribution (`mcp-oauth-1.5.4-DESIGN.md` par. 8.9). Attribution strength is stated by
+    /// attribution (`mcp-oauth-1.5.5-DESIGN.md` par. 8.9). Attribution strength is stated by
     /// client class there: cryptographically attributable for confidential clients, self-asserted
     /// for public (PKCE-only) clients. Carried, never an admission input on the data plane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,7 +85,7 @@ pub(crate) enum VerifyError {
     Expired,
     /// The token's audience claim does not match the plane it was presented on: an
     /// audience-bound (MCP) token on the plain data plane, a plain token on an audience-checked
-    /// (MCP) ingress, or a different audience URI. The 1.5.4 plane boundary; fail-closed.
+    /// (MCP) ingress, or a different audience URI. The 1.5.5 plane boundary; fail-closed.
     AudienceMismatch,
 }
 
@@ -171,7 +171,7 @@ impl TokenSigner {
         })
     }
 
-    /// Mint an AUDIENCE-BOUND token (1.5.4, the MCP authorization-server mint): identical to
+    /// Mint an AUDIENCE-BOUND token (1.5.5, the MCP authorization-server mint): identical to
     /// [`Self::mint`] plus the `aud` plane-boundary claim and the optional `cid` client
     /// attribution. Such a token verifies ONLY where the verifier expects exactly this audience
     /// (the MCP ingress); the plain data-plane verify rejects it (see [`TokenClaims::aud`]).
@@ -230,8 +230,8 @@ impl TokenVerifier {
     /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
     /// testable and the revocation read is the only state touched). `now` is Unix seconds.
     ///
-    /// `expected_aud` is the PLANE the token is being presented on (1.5.4 P1,
-    /// `mcp-oauth-1.5.4-DESIGN.md` par. 4): `None` = the plain data plane, which rejects a token
+    /// `expected_aud` is the PLANE the token is being presented on (1.5.5 P1,
+    /// `mcp-oauth-1.5.5-DESIGN.md` par. 4): `None` = the plain data plane, which rejects a token
     /// carrying ANY audience; `Some(uri)` = an audience-checked ingress (the MCP endpoint), which
     /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not
     /// per handler, so a route added later cannot forget the boundary.
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(claims.kid, DEFAULT_KID);
     }
 
-    /// THE PLANE BOUNDARY (1.5.4 P1, `mcp-oauth-1.5.4-DESIGN.md` par. 4): an AUDIENCE-BOUND token
+    /// THE PLANE BOUNDARY (1.5.5 P1, `mcp-oauth-1.5.5-DESIGN.md` par. 4): an AUDIENCE-BOUND token
     /// (the shape the MCP authorization server mints, wire claim `a`) must be REJECTED by the
     /// plain data-plane verify. Before the boundary existed, serde ignored the unknown claim and
     /// the token verified everywhere a busbar key does (`/stats`, `/v1/models`, every
@@ -348,7 +348,7 @@ mod tests {
         );
     }
 
-    /// The full audience matrix, fail-closed on every mismatch arm (1.5.4 P1). The two accept
+    /// The full audience matrix, fail-closed on every mismatch arm (1.5.5 P1). The two accept
     /// arms are exact: plain token on the plain plane, and matching audience on the
     /// audience-checked plane. Everything else is `AudienceMismatch`.
     #[test]
@@ -391,7 +391,7 @@ mod tests {
     fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
         let s = signer();
         let v = verifier(&s);
-        // The pre-1.5.4 payload shape, hand-crafted: {sub, exp, kid} only.
+        // The pre-1.5.5 payload shape, hand-crafted: {sub, exp, kid} only.
         let payload = serde_json::to_vec(&serde_json::json!({
             "sub": "vk_old",
             "exp": 2000u64,

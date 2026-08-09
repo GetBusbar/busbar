@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// replays are the bytes the operator wrote. There is no struct to mirror, so the patch has to be
 /// as raw as the thing it patches.
 ///
-/// What this buys, and it is the reason ruling 3 of the 1.5.4 design calls the overlay's missing
+/// What this buys, and it is the reason ruling 3 of the 1.5.5 design calls the overlay's missing
 /// per-entry merge a limitation to FIX rather than to route around: recording ONE field of an entry
 /// currently means restating the whole entry, so any process that writes back a derived fact — an
 /// approval recording a pinned hash, say — rewrites every operator-authored field beside it. With a
