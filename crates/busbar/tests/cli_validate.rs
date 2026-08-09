@@ -782,17 +782,23 @@ fn validate_ok_on_valid_root_overlay() {
 #[test]
 fn validate_fails_when_browser_login_client_secret_is_unresolvable() {
     let dir = fixture_dir("bl-secret-unset");
+    // FEATURE-INDEPENDENT ON PURPOSE. An earlier version of this fixture backed `corp` with
+    // `module: admin-tokens` and a `token:`, and named it in `auth.admin_auth:`. That made the test
+    // pass for the WRONG REASON under `--no-default-features`: without the `auth-admin-tokens`
+    // feature, `--validate` still exits 1, but on the earlier "an admin-tokens token is configured
+    // but this binary was built WITHOUT the feature" error, never reaching the secret walk. A
+    // definition alone exercises exactly what is under test -- `secret_refs` walks
+    // `RootCfg.identity_providers` directly, independently of any chain -- and depends on no
+    // feature.
     write_configs(
         &dir,
         "public_url: \"https://busbar.example\"\n\
          identity-providers:\n  \
            corp:\n    \
-             module: admin-tokens\n    \
-             token: { env: BUSBAR_SIGNING_KEY }\n    \
+             module: keys\n    \
              browser_login:\n      \
                client_id: busbar\n      \
-               client_secret: { env: BUSBAR_TEST_UNSET_CLIENT_SECRET }\n\
-         auth:\n  admin_auth:\n    - corp\n",
+               client_secret: { env: BUSBAR_TEST_UNSET_CLIENT_SECRET }\n",
     );
     // Belt and braces: the fixture var must genuinely be unset in this process' child env.
     assert!(std::env::var_os("BUSBAR_TEST_UNSET_CLIENT_SECRET").is_none());
