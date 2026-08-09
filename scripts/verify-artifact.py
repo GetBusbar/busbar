@@ -479,6 +479,126 @@ def row_pgo_applied(ctx) -> str:
     )
 
 
+
+# =================================================================================================
+# THE IMAGE ROWS
+#
+# The image is a DIFFERENT ARTIFACT CLASS from the release tarballs, and it is the one that has
+# actually broken in production. busbar 1.5.3's image did not boot under ANY documented invocation
+# (issue #50): `USER 65532:65532` against a root-owned `/etc/busbar` in a `FROM scratch` image, so
+# the overlay backend was unwritable and boot refused. Every gate was green, because nothing ran the
+# image. These rows run it.
+#
+# ADDRESSED BY DIGEST, NEVER BY TAG. A tag is a moving pointer; verifying `:1.5.4` proves something
+# about whatever that name meant at the moment of the pull, which is exactly the property an
+# immutable-tag policy exists to stop us relying on. The digest is the artifact.
+# =================================================================================================
+
+
+def _image_ref(ctx) -> str:
+    """The digest-pinned reference for the platform under test, or a hard failure."""
+    if not getattr(ctx, "image", ""):
+        raise AssertionError(
+            "no image reference was passed to the verifier (--image), so the image rows could not "
+            "run. A row that cannot run is RED, never skipped: these are the rows that would have "
+            "caught issue #50, where the shipped image did not boot at all."
+        )
+    return ctx.image
+
+
+def _docker(ctx, args: list, timeout: int = 120):
+    cmd = ["docker", "run", "--rm", "--platform", ctx.spec["platform"]] + args
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def row_image_boots_documented_quickstart(ctx) -> str:
+    """Run the image the way the docs tell a user to run it, and require it to serve."""
+    ref = _image_ref(ctx)
+    # Run it as a SERVER, which is what the quickstart tells a user to do. An earlier draft of this
+    # row ran `--version` and PASSED against the 1.5.3 image -- the very artifact issue #50 says
+    # cannot boot. `--version` prints and exits before the config is loaded, so it proves the binary
+    # executes and nothing more. The defect lives in the boot path, so the row has to reach it.
+    out = _docker(
+        ctx,
+        ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", "-e", "ANTHROPIC_KEY=verify-artifact-probe", ref],
+        timeout=90,
+    )
+    blob = ((out.stdout or "") + (out.stderr or "")).strip()
+    # REACHING `listening` is the property, and it is the ONLY thing this row asserts.
+    #
+    # An earlier draft also failed on any `[error]` line, which was wrong in both directions. busbar
+    # logs a legitimate `[error] auth is DISABLED ... OPEN RELAY` warning on a config that still
+    # boots and serves, so that draft failed a working image. And a refusal exits the container
+    # while `docker run` can still surface 0, so the exit code alone cannot carry the verdict
+    # either. "Did it get to serving?" is the question a user's quickstart actually asks.
+    if "listening" not in blob.lower():
+        raise AssertionError(
+            "the image never reported listening, so it did not reach the serving state the "
+            "quickstart tells a user to expect. This is issue #50: 1.5.3's image refused every "
+            "documented form because the overlay backend was unwritable for the non-root UID it "
+            "ships.\n  exit=%d\n  %s" % (out.returncode, blob[:600])
+        )
+    return "boots and listens under the documented invocation"
+
+
+def row_image_runs_as_nonroot(ctx) -> str:
+    """The image must not run as root.
+
+    Stated as its own row because the OBVIOUS repair for a boot failure is to run as root, which
+    would turn this contract green while trading a boot bug for a privilege regression. Read from
+    the image config rather than from the Dockerfile: the Dockerfile is the intent, the config is
+    what ships.
+    """
+    ref = _image_ref(ctx)
+    out = run(["docker", "image", "inspect", "--format", "{{.Config.User}}", ref])
+    user = (out.stdout or "").strip()
+    if out.returncode != 0:
+        raise AssertionError("could not inspect the image config: %s" % (out.stderr or "").strip()[:300])
+    if user in ("", "root", "0", "0:0"):
+        raise AssertionError(
+            "the image runs as %r. It ships a non-root UID deliberately, and restoring boot by "
+            "running as root would look identical in CI while removing that property."
+            % (user or "<unset, which means root>")
+        )
+    return "runs as %s" % user
+
+
+def row_image_release_pubkey(ctx) -> str:
+    """The image carries its OWN musl build, so the tarballs' key proves nothing about it."""
+    ref = _image_ref(ctx)
+    if not ctx.pubkey:
+        raise AssertionError("no --pubkey was supplied, so this row could not run. Unknown is not green.")
+    out = _docker(ctx, ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", ref, "--list-plugins"])
+    blob = (out.stdout or "") + (out.stderr or "")
+    if "embeds no busbar release key" in blob:
+        raise AssertionError(
+            "the image's binary embeds NO release public key, so it refuses every correctly-signed "
+            "first-party plugin. `option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time "
+            "and fails silently to None: the image build must carry the variable. This is the "
+            "aarch64 defect, in the other artifact class."
+        )
+    if out.returncode != 0:
+        raise AssertionError(
+            "could not read the plugin surface from the image: exit=%d %s"
+            % (out.returncode, blob.strip()[:300])
+        )
+    return "the image's binary carries a release key"
+
+
+def row_image_version_anchored(ctx) -> str:
+    """Read the version from the RUNNING image, anchored, so 1.5.4 is not satisfied by 1.5.40."""
+    ref = _image_ref(ctx)
+    out = _docker(ctx, ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", ref, "--version"])
+    text = ((out.stdout or "") + (out.stderr or "")).strip()
+    if not re.search(r"(?<![0-9.])%s(?![0-9.])" % re.escape(ctx.version), text):
+        raise AssertionError(
+            "the image reports %r, which does not contain the anchored version %r. Anchored so a "
+            "1.5.4 release cannot be satisfied by a 1.5.40 binary."
+            % (text[:200], ctx.version)
+        )
+    return "reports %s" % ctx.version
+
+
 CHECKS = {
     "archive_shape": row_archive_shape,
     "binary_format": row_binary_format,
@@ -489,6 +609,10 @@ CHECKS = {
     "attestation": row_attestation,
     "build_evidence": row_build_evidence,
     "pgo_applied": row_pgo_applied,
+    "image_boots_documented_quickstart": row_image_boots_documented_quickstart,
+    "image_runs_as_nonroot": row_image_runs_as_nonroot,
+    "image_release_pubkey": row_image_release_pubkey,
+    "image_version_anchored": row_image_version_anchored,
 }
 
 
@@ -652,11 +776,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--selftest", action="store_true",
                     help="prove the contract-wholeness guards discriminate, then exit")
-    ap.add_argument("--archive", required=True, help="the artifact AS DOWNLOADED FROM THE RELEASE")
+    ap.add_argument("--archive", default="", help="the artifact AS DOWNLOADED FROM THE RELEASE")
     ap.add_argument("--target", required=True)
     ap.add_argument("--version", required=True)
     ap.add_argument("--pubkey", default=os.environ.get("BUSBAR_RELEASE_PUBKEY", ""))
     ap.add_argument("--plugin", default="", help="the signed first-party plugin tarball for this target")
+    ap.add_argument("--image", default="",
+                    help="DIGEST-PINNED image reference for an image target. A tag is a moving "
+                         "pointer, so verifying one proves something about whatever that name meant "
+                         "at the moment of the pull; the digest is the artifact.")
     ap.add_argument("--evidence", default="", help="directory holding this build's evidence files")
     ap.add_argument("--repo", default="GetBusbar/busbar")
     ap.add_argument("--repo-root", default=ROOT)
@@ -697,6 +825,7 @@ def main(argv=None) -> int:
     ctx.archive, ctx.target, ctx.version = os.path.abspath(a.archive), a.target, a.version
     ctx.pubkey, ctx.repo, ctx.spec, ctx.targets = a.pubkey, a.repo, spec, targets
     ctx.plugin = os.path.abspath(a.plugin) if a.plugin else ""
+    ctx.image = a.image
     ctx.evidence = os.path.abspath(a.evidence) if a.evidence else ""
     ctx.repo_root, ctx.work = os.path.abspath(a.repo_root), work
 
@@ -710,10 +839,16 @@ def main(argv=None) -> int:
     unpack = os.path.join(work, "unpack")
     os.makedirs(unpack, exist_ok=True)
     ctx.members, unpack_error = [], None
-    try:
-        ctx.members = extract_archive(ctx.archive, unpack)
-    except (RowFailure, tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
-        unpack_error = "the archive could not be unpacked: %s" % exc
+    # An IMAGE has no archive to unpack: its rows address it by digest and run it. Guarding on the
+    # target's own declared `kind` rather than on "did an --archive happen to be passed" keeps the
+    # decision in release-targets.json, where every other per-class difference already lives.
+    if spec.get("kind") == "image":
+        pass
+    else:
+        try:
+            ctx.members = extract_archive(ctx.archive, unpack)
+        except (RowFailure, tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
+            unpack_error = "the archive could not be unpacked: %s" % exc
     ctx.exe = os.path.join(unpack, spec["exe"])
     if os.path.exists(ctx.exe):
         os.chmod(ctx.exe, 0o755)

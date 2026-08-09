@@ -33,7 +33,7 @@
     "without executing: an empty or truncated contract file would otherwise verify every artifact",
     "against nothing and report green."
   ],
-  "min_rows": 9,
+  "min_rows": 13,
   "rows": [
     {
       "id": "archive_shape",
@@ -44,7 +44,10 @@
         "lists identically to a good one, and an archive that unpacks to the wrong name (or to a",
         "directory) breaks install.sh and the documented `tar -xzf && ./busbar` in the same silent",
         "way a missing asset does. Assert the members, not the presence."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "binary_format",
@@ -58,7 +61,10 @@
         "The linkage half folds in docker.yml's hard failure on a dynamically-linked binary where a",
         "static one was intended (FROM scratch has no loader): linkage is now a declared property of",
         "the target and a row that applies to every artifact, not an `ldd | grep` in one workflow."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "release_pubkey",
@@ -72,7 +78,10 @@
         "the requirement off rather than trusting first-party selectively.",
         "This row is the cheap static half: the 64-hex public key must appear verbatim in the binary.",
         "`first_party_plugin` is the half that proves it is the RIGHT key and that it works."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "first_party_plugin",
@@ -90,7 +99,10 @@
         "because --list-plugins falls back to the DEFAULT plugins block with a mere [warn] when the",
         "config is unreadable, and a naive check would then read `no plugin tarballs found` and see",
         "no failure text at all."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "version_anchored",
@@ -100,7 +112,10 @@
         "ANCHORED on both ends. A substring or prefix match lets `1.5.4` be satisfied by `1.5.40`,",
         "and lets a stale binary from a previous matrix leg pass while claiming to be this release.",
         "The bytes must run and identify themselves as this exact version, nothing more."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "quickstart_boots",
@@ -113,7 +128,10 @@
         "ONE platform -- verify-deploy.yml hardcodes busbar-x86_64-unknown-linux-gnu.tar.gz -- which",
         "is the same shape of gap as the missing key: a property established on one artifact and",
         "assumed for the rest."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "attestation",
@@ -125,7 +143,10 @@
         "release, not on a local copy of the file the build step happened to still have. An",
         "attestation that covers a different digest than the asset a user downloads is worse than",
         "none, because it looks like provenance."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "build_evidence",
@@ -136,13 +157,19 @@
         "equals the digest of the archive that was actually downloaded from the release. Without it",
         "every evidence-based row below is unanchored: a build could report a verified PGO profile",
         "for bytes that never reached the release, which is a certificate for the wrong artifact."
-      ]
+      ],
+      "applies_when": {
+        "kind": "binary"
+      }
     },
     {
       "id": "pgo_applied",
       "title": "PGO really was applied where the target declares it",
       "exec": false,
-      "applies_when": { "pgo": true },
+      "applies_when": {
+        "pgo": true,
+        "kind": "binary"
+      },
       "why": [
         "scripts/pgo-build.sh writes its proof marker ONLY after a non-empty merged profile fed a",
         "successful -Cprofile-use build. This row turns that marker into a contract row rather than",
@@ -154,6 +181,34 @@
         "`pgo_floor` scripts/tests/test_release_contract.py enforces, so a target cannot quietly flip `pgo` to false to",
         "make this row stop applying to it."
       ]
+    },
+    {
+      "id": "image_boots_documented_quickstart",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "busbar 1.5.3's image did NOT boot under any documented invocation (issue #50): USER 65532:65532 against a root-owned /etc/busbar. The build was green and nothing ran the image. This row runs it."
+    },
+    {
+      "id": "image_runs_as_nonroot",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "the image ships a non-root UID deliberately; a fix that restores boot by running as root would trade a boot failure for a privilege regression and look identical in CI."
+    },
+    {
+      "id": "image_release_pubkey",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "the same embedded-key property the binaries owe. The image carries its own musl build, so a key present in the tarballs proves nothing about it."
+    },
+    {
+      "id": "image_version_anchored",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": "anchored so 1.5.4 cannot be satisfied by 1.5.40, and read from the running image rather than from the tag that labels it."
     }
   ]
 }

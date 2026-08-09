@@ -80,7 +80,8 @@
       "arch": "x86_64",
       "format": "elf",
       "linkage": "dynamic",
-      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-unknown-linux-gnu.tar.gz"
+      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-unknown-linux-gnu.tar.gz",
+      "kind": "binary"
     },
     {
       "target": "aarch64-unknown-linux-gnu",
@@ -91,7 +92,8 @@
       "arch": "aarch64",
       "format": "elf",
       "linkage": "dynamic",
-      "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz"
+      "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz",
+      "kind": "binary"
     },
     {
       "target": "x86_64-apple-darwin",
@@ -102,7 +104,8 @@
       "arch": "x86_64",
       "format": "macho",
       "linkage": "dynamic",
-      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-apple-darwin.tar.gz"
+      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-apple-darwin.tar.gz",
+      "kind": "binary"
     },
     {
       "target": "aarch64-apple-darwin",
@@ -113,7 +116,8 @@
       "arch": "aarch64",
       "format": "macho",
       "linkage": "dynamic",
-      "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-apple-darwin.tar.gz"
+      "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-apple-darwin.tar.gz",
+      "kind": "binary"
     },
     {
       "_pgo_comment": [
@@ -134,7 +138,34 @@
       "arch": "x86_64",
       "format": "pe",
       "linkage": "dynamic",
-      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-pc-windows-msvc.tar.gz"
+      "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-pc-windows-msvc.tar.gz",
+      "kind": "binary"
+    },
+    {
+      "target": "image-linux-amd64",
+      "kind": "image",
+      "platform": "linux/amd64",
+      "runner": "ubuntu-latest",
+      "arch": "x86_64",
+      "pgo": true,
+      "exe": "busbar",
+      "format": "elf",
+      "linkage": "static",
+      "archive": "oci",
+      "plugin_asset": ""
+    },
+    {
+      "target": "image-linux-arm64",
+      "kind": "image",
+      "platform": "linux/arm64",
+      "runner": "ubuntu-24.04-arm",
+      "arch": "aarch64",
+      "pgo": true,
+      "exe": "busbar",
+      "format": "elf",
+      "linkage": "static",
+      "archive": "oci",
+      "plugin_asset": ""
     }
   ],
   "metadata_assets": [
