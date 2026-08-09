@@ -42,7 +42,7 @@ pub use redacted::Redacted;
 pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens,
-    TierTokensDelta, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
+    ModelTokens, ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult,
+    TierTokens, TierTokensDelta, UsageDelta, UsageLedger, VirtualKey,
 };
