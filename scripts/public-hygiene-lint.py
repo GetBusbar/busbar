@@ -206,6 +206,21 @@ RULES = [
             Pat(r"\bENGINE-BUGS\.md\b"),
             Pat(r"[A-Za-z0-9_-]+-SPEC\.md\b"),
             Pat(r"\bbusbarAI-private\b|\b_handoffs\b"),
+            # PRIVATE DESIGN DOCUMENTS, BY NAME. These have to be listed explicitly, and the reason
+            # is a false negative this rule carried until 2026-08-09: the `§` pattern below EXEMPTS
+            # any line containing `.md`, because naming a real in-repo doc beside a section number is
+            # exactly the citation we want people to keep writing. The exemption could not tell a
+            # PUBLIC doc from a PRIVATE one, so `mcp-design.md §5.1` sailed through while a bare
+            # `§5.1` was caught — handing the reader the precise filename of a document they cannot
+            # open, which is a WORSE leak than the dangling reference the rule does catch.
+            Pat(r"\b(?:mcp|a2a|smart-router|config-redesign)-design\.md\b"),
+            Pat(r"\baudit-decisions[A-Za-z0-9_.-]*\.md\b"),
+            Pat(r"\b\d+\.\d+\.\d+-(?:design|dev|brief|DECISIONS)[A-Za-z0-9_.-]*\.md\b"),
+            # A DANGLING THREAT-CATALOGUE ROW. `threat 17` is a row of the private threat→defence
+            # table, cited the same way a `§` is and leaking the same way, in a shape the section
+            # pattern does not match. `threat model` / `threat surface` as prose is fine and is not
+            # matched: this is specifically a NUMBERED row.
+            Pat(r"\bthreat\s+\d+\b", forbid=r"THREAT_MODEL\.md\b|\bdocs/"),
             # A DANGLING section reference: `§9.1` with nothing on the line saying which document. A
             # line that names a real in-repo doc, a docs/ path or an RFC is exactly the citation we
             # want people to keep writing, so it is excluded — and so is every prose file, where a
@@ -536,10 +551,21 @@ FIXTURES = {
     "private-doc-reference": (
         "// See the companion design's section on projections, and design doc section 5.\n"
         "// Filed in busbar-ui/docs/ENGINE-BUGS.md and plugin-settings-schema-SPEC.md.\n"
-        "// The ceiling rule is stated at §9.1.\n",
+        "// The ceiling rule is stated at §9.1.\n"
+        # The false negative this rule carried until 2026-08-09. Naming the private document is a
+        # WORSE leak than a dangling `§`, and the `.md` exemption used to wave it through.
+        "// `mcp-design.md` §5.1 locks the config block as `tools:`.\n"
+        "// The trust lifecycle is a2a-design.md §6.1's contract, parameterised.\n"
+        "// Recorded in audit-decisions-1.5.3.md as the resolved reading.\n"
+        "// The rationale is 1.5.4-design.md §3, which this mirrors.\n"
+        # A numbered row of the private threat catalogue, leaking the same way a `§` does.
+        "// This fallback IS threat 17: the caller's own credential, silently substituted.\n",
         "// See docs/admin-api.md §5 for the projection rules this implements.\n"
         "// RFC 7231 §5.2 defines the negotiation this follows.\n"
-        "// For the MULTI-VALUED array form, OIDC Core 1.0 §3.1.3.7 is the governing rule.\n",
+        "// For the MULTI-VALUED array form, OIDC Core 1.0 §3.1.3.7 is the governing rule.\n"
+        # `threat` as prose, and the PUBLISHED threat model, must both keep working.
+        "// The threat model for this path is the confused deputy, not replay.\n"
+        "// THREAT_MODEL.md numbers this threat 3; the defence is the audience check.\n",
     ),
     "phase-plan": (
         "/// The Feature-2 decision-observability catalog; 1.5.3 unit G covers the gate.\n"
