@@ -13940,6 +13940,32 @@ async fn drive_named_map_errors() {
             "a dangling delete is a terminal conflict: {parsed}"
         );
         assert_eq!(parsed["error"]["code"], "conflict");
+
+        // ...and the BULK twin, on the same fixture (the refused per-entry delete above left
+        // `corp-ad` in place, which is exactly the state a dangling reset needs).
+        //
+        // This drives `DELETE /overlay/{section}`'s `Conflict/StillReferenced`. It has a test of
+        // its own (`test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference`), and that
+        // was not enough: the gate calls these drivers precisely SO THAT its verdict does not
+        // depend on whether some other test ran, so a condition witnessed only by a sibling test is
+        // witnessed nowhere as far as the gate is concerned. It read as an OVER-CLAIM — a
+        // documented 409 nothing could produce — while the guard, and a passing test for it, were
+        // both sitting right there. A driver that covers the per-entry case and skips its bulk twin
+        // is the same "scoped to where the bug was first seen" shape the whole taxonomy exists to
+        // catch.
+        let r = admin(client.delete(format!(
+            "http://{addr}/api/v1/admin/overlay/identity-providers"
+        )))
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        let parsed: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            status, 409,
+            "a bulk reset that would dangle a reference is a terminal conflict: {parsed}"
+        );
+        assert_eq!(parsed["error"]["code"], "conflict");
         handle.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
