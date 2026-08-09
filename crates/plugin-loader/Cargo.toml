@@ -11,33 +11,33 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-plugin-abi = { path = "../plugin-abi" }
 busbar-plugin-sign = { path = "../plugin-sign" }
-libloading = "0.9"
+libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
 # the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
 # — no runtime is started in this crate.
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "time", "sync"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # Structured logging for the auth seam's fail-closed rejections (a misbehaving auth plugin is logged,
 # never admitted). Already the workspace's logging facade; adds no new external crate to the tree.
-tracing = "0.1"
+tracing = { workspace = true }
 # Tarball packaging/unpacking for the one-file-per-plugin `.tar.gz` format. flate2 with its
 # pure-Rust backend (miniz_oxide) so static musl release builds need no C zlib.
-tar = "0.4"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { workspace = true }
+flate2 = { workspace = true }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
-getrandom = "0.3"
+getrandom = { workspace = true }
 
 [dev-dependencies]
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
-libc = "0.2"
+libc = { workspace = true }
 
 # NOTE: the end-to-end tests load real plugin cdylibs (busbar-secret-example-plugin and
 # busbar-store-sqlite-plugin — the latter built from a sibling ../store-sqlite checkout, since

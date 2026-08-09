@@ -8,14 +8,14 @@ description = "The busbar engine's plugin contracts: the auth-module trait, the 
 license = "Apache-2.0"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
-sha2 = "0.11.0"
-hex = "0.4.3"
-zeroize = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
 # The decision-observability signal catalog's per-projection signal bag
 # (`SignalBag`): inline capacity for the common 0-4-declared-signals case so the default
 # (nothing declared) path never touches the heap. Already a transitive dependency of the
 # workspace (pulled in via tokio et al.), so this adds no new crate to the tree.
-smallvec = "1"
+smallvec = { workspace = true }

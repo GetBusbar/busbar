@@ -231,7 +231,16 @@ impl Cond {
                 "this process has no shutdown channel, so it cannot restart itself"
             }
             Cond::UnknownSection => {
-                "unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`)"
+                // DERIVED, never restated: the hand-written four-name list here outlived the
+                // arrival of the `named_maps` overlay section, so the API's own error taxonomy
+                // asserted `export` was not a section while it was becoming one.
+                static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+                    format!(
+                        "unknown overlay section (expected one of {})",
+                        crate::config::overlay::OverlaySection::valid_names()
+                    )
+                });
+                PROSE.as_str()
             }
             Cond::InvalidLabels => {
                 "invalid mint-time `labels`: a reserved or non-Prometheus label name, or too \
@@ -480,6 +489,9 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / MalformedIfMatch,
             Validation / NoDiskBase,
             Validation / InvalidConfig,
+            // A named-map section reset that would leave base config.yaml naming a definition it
+            // removes. The bulk twin of the per-entry DELETE's dangling guard.
+            Conflict / StillReferenced,
             VersionConflict / StaleIfMatch,
         ],
         (Get, "/config/diff") => de![

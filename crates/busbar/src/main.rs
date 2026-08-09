@@ -781,6 +781,7 @@ async fn run() {
         providers_path,
         overlay_path,
         config_locked,
+        config_read_only,
         overlay_doc,
         unset_env_vars: _,
     } = loaded;
@@ -854,6 +855,15 @@ async fn run() {
         tracing::info!(
             overlay = %p.display(),
             "config is mutable; admin-API changes persist to the overlay backend (durable across restart)"
+        );
+    } else if config_read_only {
+        // MUTABLE by declaration, but the overlay backend is not writable (a read-only config mount).
+        // `resolve_backend` already warned with the remediation; repeat the posture here so the one
+        // line an operator greps for ("config is ...") never claims a durability busbar does not have.
+        tracing::warn!(
+            "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
+             normally, but admin-API config mutations are refused. Set `config.locked: true` to \
+             declare this deliberately, or give `config.overlay.file` a writable path."
         );
     }
     // Stamp process start for the `GET /api/v1/admin/info` uptime read.
@@ -1482,11 +1492,19 @@ pub(crate) struct LoadedConfig {
     /// config. Carried so callers display / re-use the same file across a reload.
     pub(crate) providers_path: std::path::PathBuf,
     /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
-    /// config); `None` = the config is LOCKED (`config.locked: true`). The boot invariant guarantees
-    /// `config_locked == overlay_path.is_none()` for a config that resolved without error.
+    /// config); `None` = either the config is LOCKED (`config.locked: true`) or its backend is not
+    /// writable (a read-only config mount — busbar boots and serves, but refuses config mutations).
+    /// The boot invariant guarantees `overlay_path.is_none()` whenever busbar cannot durably persist,
+    /// so a `Some` path is always one that was probed writable.
     pub(crate) overlay_path: Option<std::path::PathBuf>,
     /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
     pub(crate) config_locked: bool,
+    /// `true` ⇒ the config did NOT declare `config.locked: true`, but its overlay backend is not
+    /// writable (the read-only config mount the documented Docker quickstart creates). Busbar boots
+    /// and serves; admin-API config mutations are refused because they could not be persisted.
+    /// Distinguished from `config_locked` so the boot log can tell the operator which of the two
+    /// postures they are in — one they chose, one the filesystem chose for them.
+    pub(crate) config_read_only: bool,
     /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
     /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
     /// synthesized there, so the overlay merges post-resolve. `None` = absent / safe mode.
@@ -1671,6 +1689,7 @@ pub(crate) fn load_config_from_disk(
     )?;
     let overlay_path = resolution.path;
     let config_locked = resolution.locked;
+    let config_read_only = resolution.read_only_backend;
 
     if safe_mode {
         // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
@@ -1686,6 +1705,7 @@ pub(crate) fn load_config_from_disk(
             providers_path,
             overlay_path,
             config_locked,
+            config_read_only,
             overlay_doc: None,
             unset_env_vars,
         });
@@ -1721,6 +1741,7 @@ pub(crate) fn load_config_from_disk(
         providers_path,
         overlay_path,
         config_locked,
+        config_read_only,
         overlay_doc,
         unset_env_vars,
     })

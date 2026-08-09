@@ -454,9 +454,23 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         fm["usable"], false,
         "the tripped pool's OWN cell must report unusable: {fast}"
     );
-    assert_eq!(
-        fm["cooldown_remaining_seconds"], 300,
-        "the tripped pool must report its own cell's cooldown: {fast}"
+    // A RANGE, not an equality, and the reason is a real failure: this asserted exactly 300 and
+    // went red in CI. The test seeds the cell with `now + 300` from one `now()`, and the handler
+    // computes the remainder from a SECOND `now()` taken when the request arrives. Between them sit
+    // a router build, a TCP bind, a task spawn and a real HTTP round trip — so on a loaded runner
+    // the wall clock ticks and the answer is 299, which is correct behaviour reported as a failure.
+    //
+    // The property worth asserting is that the cell reports ITS OWN cooldown rather than a
+    // neighbour's or a default, and a couple of seconds of slack proves that just as well while
+    // being independent of how busy the machine is. Kept tight enough that a genuinely wrong value
+    // (0, or the other pool's) still fails.
+    let remaining = fm["cooldown_remaining_seconds"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("cooldown_remaining_seconds must be a number: {fast}"));
+    assert!(
+        (295..=300).contains(&remaining),
+        "the tripped pool must report its own cell's cooldown (~300s, allowing for the wall clock \
+         advancing between seeding the cell and serving the request); got {remaining}: {fast}"
     );
 
     let cheap: serde_json::Value = client
@@ -9060,6 +9074,160 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
     handle.abort();
 }
 
+/// RESET a NAMED-MAP section (`DELETE /overlay/export`): every API-applied exporter definition is
+/// discarded and the section reverts to base `config.yaml` truth, exactly as `groups`/`hooks`/`root`
+/// already did.
+///
+/// `named_maps` was in NONE of `OverlaySection`'s variants, so there was no way to revert
+/// API-applied identity-provider or export definitions to config.yaml at all: the endpoint answered
+/// `400 unknown overlay section`. Every other durable overlay section had a revert and this one did
+/// not, while the docs listed the four-value set as COMPLETE.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
+    let (dir, overlay, addr, handle) = named_map_app("resetnamedmap", false).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // An API-applied exporter, alongside the fixture's base-config `base-metrics`.
+    let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/runtime-sink")))
+        .body(
+            serde_json::json!({
+                "module": "request-log-file",
+                "settings": {"path": dir.join("req.jsonl").to_string_lossy()}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    assert!(
+        crate::config::overlay::read(&overlay)
+            .expect("overlay written")
+            .named_maps
+            .get("export")
+            .is_some_and(|e| e.contains_key("runtime-sink")),
+        "the definition is in the overlay before the reset"
+    );
+
+    // RESET the section.
+    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/export")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
+    let body: serde_json::Value = reset.json().await.unwrap();
+    assert_eq!(body["reset"], "export");
+    assert_eq!(body["changed"], true, "the reset discarded a mutation");
+
+    // The API-applied exporter is gone; the base-config one is untouched.
+    let gone = admin(client.get(format!("http://{addr}/api/v1/admin/export/runtime-sink")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        gone.status().as_u16(),
+        404,
+        "the API-applied definition reverted to base"
+    );
+    let base = admin(client.get(format!("http://{addr}/api/v1/admin/export/base-metrics")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        base.status().as_u16(),
+        200,
+        "a base config.yaml definition is NOT what a reset removes"
+    );
+    // The durable half: the section is cleared on disk, so the revert survives a restart.
+    assert!(
+        crate::config::overlay::read(&overlay).is_none_or(|d| !d.named_maps.contains_key("export")),
+        "the overlay `export` section is cleared on disk"
+    );
+    // A SIBLING named-map section is untouched by another section's reset.
+    let idp = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/base-idp"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(idp.status().as_u16(), 200, "sibling sections survive");
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REFERENTIAL INTEGRITY on a BULK reset: a section reset that would leave another config site
+/// naming a definition that no longer exists is refused as a terminal `conflict` NAMING both the
+/// entry and its referent, and nothing changes.
+///
+/// This is the guard the per-entry `DELETE /identity-providers/{name}` already had, applied to the
+/// bulk path. Without it a reset would be accepted, the rebuild would fail deeper down with the far
+/// less actionable "references X, which is not defined", and the operator would be left guessing
+/// which of the definitions they just discarded was the one still in use.
+#[tokio::test]
+async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
+    let (dir, _overlay, addr, handle) = named_map_app("resetdangling", true).await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| {
+        r.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    // The fixture's base `auth.admin_auth:` names `corp-ad`; this PUT is the only definition of it.
+    let r = admin(client.put(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .body(
+        serde_json::json!({
+            "module": "admin-tokens",
+            "token": {"file": dir.join("corp.token").to_string_lossy()}
+        })
+        .to_string(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+
+    let reset = admin(client.delete(format!(
+        "http://{addr}/api/v1/admin/overlay/identity-providers"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        reset.status().as_u16(),
+        409,
+        "a reset that would dangle a reference is refused"
+    );
+    let body: serde_json::Value = reset.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("corp-ad") && msg.contains("auth.admin_auth"),
+        "the refusal names the entry AND the referent so an operator knows what to fix: {body}"
+    );
+
+    // NOTHING changed: the definition is still live and still on disk.
+    let after = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        after.status().as_u16(),
+        200,
+        "the refused reset changed nothing"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── /config/settings — 1.5.0 full-config coverage (the overlay `root` section) ──────────────────────
 
 /// Build an overlay-backed app wired to on-disk config files (the `write_reset_fixture` truth), spin
@@ -12136,6 +12304,72 @@ fn rate_limit_doc_table_matches_classifier() {
     );
 }
 
+/// `docs/admin-api.md`'s `DELETE /overlay/{section}` row names the valid section set by hand, and
+/// it called that set COMPLETE while it was not: `named_maps` shipped as a durable, API-writable
+/// overlay section with no reset at all, and the reference documentation asserted the resulting
+/// functional gap did not exist. Prose that describes a gap as a closed set is worse than prose that
+/// says nothing, because it stops the reader from looking.
+///
+/// So the row is parsed out of the committed file and required to equal `OverlaySection::all()`
+/// EXACTLY, in both directions: a section live in the code but missing from the doc fails, and a
+/// section the doc claims but the parser rejects fails too.
+#[test]
+fn overlay_reset_doc_row_matches_the_section_set() {
+    use crate::config::overlay::OverlaySection;
+
+    let doc = include_str!("../../../../../docs/admin-api.md");
+    let row = doc
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("| `DELETE /overlay/{section}` |")
+        })
+        .expect("docs/admin-api.md has a `DELETE /overlay/{section}` row");
+    // The set is spelled `(`section` ∈ `a` \| `b` \| …)`. Take the backticked tokens between the
+    // marker and the closing paren, which is the only place the row enumerates section names.
+    let (_, after) = row
+        .split_once("(`section` ∈ ")
+        .expect("the row states the section set as \"(`section` ∈ …)\"");
+    let enumerated = after
+        .split_once(')')
+        .expect("the section set is parenthesised")
+        .0;
+    let doc_sections: std::collections::BTreeSet<&str> =
+        enumerated.split('`').skip(1).step_by(2).collect();
+    assert!(
+        doc_sections.len() >= 4,
+        "only parsed {} section names out of the doc row; the parser is broken and this test must \
+         not report a pass on an empty set: {enumerated:?}",
+        doc_sections.len()
+    );
+
+    let all = OverlaySection::all();
+    let code_sections: std::collections::BTreeSet<&str> = all.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        code_sections.len(),
+        all.len(),
+        "OverlaySection::all() yields a duplicate wire name"
+    );
+    let missing_from_doc: Vec<_> = code_sections.difference(&doc_sections).collect();
+    let missing_from_code: Vec<_> = doc_sections.difference(&code_sections).collect();
+    assert!(
+        missing_from_doc.is_empty() && missing_from_code.is_empty(),
+        "docs/admin-api.md's `DELETE /overlay/{{section}}` row has drifted from \
+         OverlaySection::all().\nLive in the code but absent from the doc (an operator is told the \
+         section does not exist): {missing_from_doc:?}\nClaimed by the doc but rejected by \
+         `OverlaySection::parse` (an operator is told to call something that 400s): \
+         {missing_from_code:?}"
+    );
+
+    // Every name the doc lists really is accepted by the parser, not merely present in the enum.
+    for name in &doc_sections {
+        assert!(
+            OverlaySection::parse(name).is_some(),
+            "the doc lists section `{name}` but `OverlaySection::parse` rejects it"
+        );
+    }
+}
+
 /// `POST /api/v1/admin/restart` is how the restart-scoped settings get applied without an SSH
 /// session, so its refusals matter as much as its success: exiting is only a RESTART if something
 /// restarts the process, and a test binary has no shutdown channel at all.
@@ -13730,6 +13964,32 @@ async fn drive_named_map_errors() {
         assert_eq!(
             status, 409,
             "a dangling delete is a terminal conflict: {parsed}"
+        );
+        assert_eq!(parsed["error"]["code"], "conflict");
+
+        // ...and the BULK twin, on the same fixture (the refused per-entry delete above left
+        // `corp-ad` in place, which is exactly the state a dangling reset needs).
+        //
+        // This drives `DELETE /overlay/{section}`'s `Conflict/StillReferenced`. It has a test of
+        // its own (`test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference`), and that
+        // was not enough: the gate calls these drivers precisely SO THAT its verdict does not
+        // depend on whether some other test ran, so a condition witnessed only by a sibling test is
+        // witnessed nowhere as far as the gate is concerned. It read as an OVER-CLAIM — a
+        // documented 409 nothing could produce — while the guard, and a passing test for it, were
+        // both sitting right there. A driver that covers the per-entry case and skips its bulk twin
+        // is the same "scoped to where the bug was first seen" shape the whole taxonomy exists to
+        // catch.
+        let r = admin(client.delete(format!(
+            "http://{addr}/api/v1/admin/overlay/identity-providers"
+        )))
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        let parsed: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            status, 409,
+            "a bulk reset that would dangle a reference is a terminal conflict: {parsed}"
         );
         assert_eq!(parsed["error"]["code"], "conflict");
         handle.abort();

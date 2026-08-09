@@ -718,7 +718,7 @@ pub(crate) async fn push_configure(
             name,
             &resolved,
             settings_version,
-            std::time::Duration::from_millis(CONFIGURE_TIMEOUT_MS),
+            applied_deadline(CONFIGURE_TIMEOUT_MS),
         )
         .await
         .map_err(|e| e.to_string())
@@ -729,25 +729,46 @@ pub(crate) async fn push_configure(
 /// CALLER, not the work. A timed-out `spawn_blocking` thread is abandoned (bounded at one per hook
 /// by the scrape's `InFlight` claim) — the alternative is a control-plane request that never returns
 /// and a `/metrics/hooks` slot that is never freed for the life of the process.
-#[cfg(not(test))]
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
 
-/// The same bound, relaxed FOR THE TEST BINARY ONLY.
+/// EVERY control-plane deadline in this module goes through here, and this is A MITIGATION, NOT A
+/// FIX. Say so plainly, because the next person will otherwise read it as solved.
 ///
-/// 5s is the right production number: staging a cdylib, `dlopen`ing it and running its constructor
-/// is milliseconds on a machine doing normal work. But the test binary runs ~2900 tests in parallel
-/// on every `cargo test`, and fifteen of them each do that same staging and dlopen while the rest
-/// saturate the CPU. The deadline then elapses for reasons that say nothing about the code, and the
-/// caller reports "hook plugin unresolvable" — observed as `dlopen_configure_acks_exact_version` and
-/// `dlopen_status_and_schema_reads` failing roughly one run in three under `--workspace`, while both
-/// pass in isolation in under two seconds.
+/// WHAT IT DOES. In production it applies the caller's deadline verbatim. In the TEST BINARY ONLY it
+/// applies a far larger one. 5s is the right production number: staging a cdylib, `dlopen`ing it and
+/// running its constructor is milliseconds on a machine doing normal work. But the test binary runs
+/// ~2900 tests in parallel on every `cargo test`, and several of them do that same staging and
+/// dlopen while the rest saturate the CPU. The deadline then elapses for reasons that say nothing
+/// about the code, and the caller reports "hook plugin unresolvable" — observed as
+/// `dlopen_configure_acks_exact_version` and `dlopen_status_and_schema_reads` failing roughly one
+/// run in three under `--workspace`, while both pass in isolation in under two seconds.
 ///
-/// Raising it under `cfg(test)` keeps the PRODUCTION guarantee exactly as it was (that constant is
-/// what ships) while removing a false failure from the suite. The alternative — relaxing the real
-/// deadline — would weaken a bound that protects a control-plane request from hanging forever, to
-/// fix a problem that only exists because the test harness oversubscribes the machine.
+/// WHY IT IS A FUNNEL AND NOT A SECOND CONSTANT. The previous shape relaxed `TRANSPORT_RESOLVE_
+/// TIMEOUT_MS` under `cfg(test)` and left `CONFIGURE_TIMEOUT_MS` alone. But `push_configure` awaits
+/// BOTH deadlines in sequence, so the same tests stayed exposed on the second one and kept failing
+/// under load — a half-finished mitigation reads exactly like a finished one. Routing all four call
+/// sites through a single function makes "one relaxed, one forgotten" structurally impossible rather
+/// than a thing to remember.
+///
+/// WHY IT WEAKENS NOTHING. No test asserts on either constant's value, and the timeout ARM itself is
+/// tested elsewhere by handing `offload_bounded_with_deadline` an explicit short deadline, so it
+/// stays deterministic and fast regardless of what this returns. The production constants below are
+/// what ships, untouched.
+///
+/// WHY IT IS STILL NOT THE FIX. A bigger number makes a wall-clock failure rarer, not impossible; a
+/// sufficiently loaded machine still trips 60s, and nothing here tests the bound it names. The
+/// actual repair is to make the deadline an injected PARAMETER (from `HookEnv`/config, defaulting to
+/// `CONFIGURE_TIMEOUT_MS`) so each test states its own bound explicitly and no constant forks
+/// between test and production builds. That is a real refactor across `push_configure`, `status`,
+/// `describe` and their call sites, and it is deliberately not done here.
+#[cfg(not(test))]
+fn applied_deadline(ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(ms)
+}
 #[cfg(test)]
-const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = 60_000;
+fn applied_deadline(_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(60_000)
+}
 
 /// Run a blocking closure with a deadline, collapsing "ran out of time" and "panicked" into the same
 /// `None` the caller already treats as "unresolvable" — but LOGGING each distinctly first, so a
@@ -758,12 +779,7 @@ async fn offload_bounded<T: Send + 'static>(
     what: &str,
     f: impl FnOnce() -> Option<T> + Send + 'static,
 ) -> Option<T> {
-    offload_bounded_with_deadline(
-        what,
-        std::time::Duration::from_millis(TRANSPORT_RESOLVE_TIMEOUT_MS),
-        f,
-    )
-    .await
+    offload_bounded_with_deadline(what, applied_deadline(TRANSPORT_RESOLVE_TIMEOUT_MS), f).await
 }
 
 /// The testable core of [`offload_bounded`]: `spawn_blocking` runs the closure on a REAL OS thread,
@@ -836,7 +852,7 @@ pub(crate) async fn fetch_status(
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
     transport
-        .status(std::time::Duration::from_millis(CONFIGURE_TIMEOUT_MS))
+        .status(applied_deadline(CONFIGURE_TIMEOUT_MS))
         .await
 }
 
@@ -911,7 +927,7 @@ pub(crate) async fn fetch_schema(
     // SINGLE nest (the endpoint adds its own {name, schema} wrapper). No schema member (incl. the
     // `{}` unsupported reply) = no schema (the endpoint reports null).
     transport
-        .describe(std::time::Duration::from_millis(CONFIGURE_TIMEOUT_MS))
+        .describe(applied_deadline(CONFIGURE_TIMEOUT_MS))
         .await
 }
 

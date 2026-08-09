@@ -63,9 +63,12 @@
 #   - `dev`: push often; only the cheap per-push CI (ci.yml) runs there. Nothing here.
 #   - `qa`: promoting dev→qa is what spends THIS gate — qa-gate.yml runs release-check.sh on every
 #     qa push (the pre-release soak). A green qa is what earns promotion to main.
-#   - `main`: tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version when it lands on main,
-#     which cuts the release (release.yml binaries/downstream cascade + docker.yml). Prep the bump
-#     on dev with prepare-release.yml before promoting.
+#   - `main`: release.yml runs on the push and cuts the release from crates/busbar/Cargo.toml's
+#     version. THE TAG IS THE LAST THING THAT HAPPENS, NOT THE FIRST: it refuses a red commit,
+#     builds, drafts the release, stages the image under a throwaway tag, verifies all of that from
+#     the consumer side, and only then tags, promotes and fans out. A failure before the promote
+#     leaves no tag, no listed release and no container version tag, so a re-run is a clean retry.
+#     Prep the bump on dev with prepare-release.yml before promoting. See RELEASE.md.
 #
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).

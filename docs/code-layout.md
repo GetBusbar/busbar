@@ -43,19 +43,45 @@ anti-pattern this kills: the key handlers now live at `admin/keys.rs`, not stran
 
 ## 2. Tests live in one predictable place, mirroring the impl
 
-Impl at `foo/X.rs` → its tests at `foo/tests/X.rs`. Always. A hub (`mod.rs`) carries **no inline test
-body**, but it *may* carry the one-line `#[path]` **declaration** that keeps the test module a direct
-child (so `use super::*` still reaches private items). The body always lives in `tests/`:
+Impl at `foo/X.rs` → its tests at `foo/tests/X_tests.rs`. **Always.** No implementation file carries
+an inline test body: not a hub (`mod.rs`), not a leaf, not a small one. What the impl file keeps is
+the one-line `#[path]` **declaration**, which leaves the test module a direct child so `use super::*`
+still reaches private items:
 
 ```rust
-// in foo/mod.rs (or foo/X.rs)
+// at the bottom of foo/X.rs (or foo/mod.rs)
 #[cfg(test)]
 #[path = "tests/x_behaviour.rs"]
 mod x_behaviour;   // file lives in foo/tests/, still a direct child → super::* unchanged
 ```
 
-A small leaf file (`bar.rs`, under the size cap, no folder) may keep a single inline test module at
-the bottom; that's the one allowed exception.
+**Why there is no "small leaf file" exception any more.** The rule earns its keep by making a file's
+length mean one thing. `config/overlay.rs` used to read as 2,111 lines; a reviewer compared it with
+`config/migrate.rs` at 2,379 and drew a conclusion about the pair. The real implementation figure was
+607 lines, and nothing in either file said so. Two sizes that measure different things cannot be
+compared, and the reader has no way to tell which is which. So: the declaration stays, the body
+moves.
+
+Because the declaration keeps the module a direct child, **moving a test never costs it private
+access** — `use super::*` behaves identically before and after. That is why the tree has no test
+that "has to" stay inline.
+
+Two shapes are deliberately *not* violations, because neither is a test:
+
+- the `#[path]` declaration above (it is brace-less, and gates only its own line);
+- a `#[cfg(test)]` **support** item that declares no test — a log tap, a serialising mutex, a probe
+  method on a production type. Those are production-side hooks with no own-file to move to.
+
+If a test genuinely cannot move, the marker that permits it must **name its reason**:
+
+```rust
+// structure-lint: allow inline-test: <why this body cannot move>
+```
+
+A bare `// structure-lint: allow inline-test` is its own lint failure (`ALLOW-WITHOUT-REASON`). An
+allow with no reason is the permission-to-ignore mechanism this project banned outright, and it may
+not be a quieter pass than the thing it suppresses. There are currently **zero** such markers in the
+tree.
 
 ## 3. Objective size trigger, not vibes
 
@@ -97,6 +123,19 @@ scripts/structure-lint.sh
 
 Non-zero exit on any violation, with the offending path and the fix. It runs in CI (the `check` job),
 so a PR that reintroduces a giant file or a hybrid module fails before merge — and likewise a PR that
+leaves a test body inline (`INLINE-TEST`), silences one without saying why (`ALLOW-WITHOUT-REASON`),
 hand-rolls a durable write, a plugin export, or a config swap outside its choke point
 (`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), or deletes a choke point's class-level
 test (`MISSING-CLASS-TEST`). See [testing.md](testing.md#the-remediation-contract).
+
+The scanner that decides "is this line test code?" is itself guarded:
+
+```
+scripts/structure-lint.sh --selftest
+```
+
+It runs the real scanners over a fixture corpus whose every shape is a known way to lie about being
+test code, with each fixture declaring the verdict it must get — including fixtures that must **miss**
+(a legitimately test-only file, the correct `#[path]` shape, a support module with no tests). It
+fails if zero cases execute and it fails if a fixture does not reach disk, because a self-test that
+skipped to green would report exactly what a passing one reports.

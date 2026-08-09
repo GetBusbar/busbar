@@ -142,31 +142,8 @@ pub(crate) fn parse_duration_secs(s: &str) -> Result<u64, String> {
 }
 
 #[cfg(test)]
-mod parse_duration_secs_tests {
-    use super::parse_duration_secs;
-
-    /// Unit multiplication is correct for each accepted suffix.
-    #[test]
-    fn each_unit_multiplies_correctly() {
-        assert_eq!(parse_duration_secs("30s"), Ok(30));
-        assert_eq!(parse_duration_secs("5m"), Ok(300));
-        assert_eq!(parse_duration_secs("2h"), Ok(7200));
-        assert_eq!(parse_duration_secs("3d"), Ok(259_200));
-    }
-
-    /// The max-duration bound is exactly 10 * 365 * 86_400 seconds (3650 days) — the boundary
-    /// itself must be accepted, and one day past it must be rejected. A mutated bound (e.g.
-    /// `10 + 365 * 86_400` instead of `10 * 365 * 86_400`) would reject values far below the real
-    /// 10-year limit, or accept values far above it, depending on the mutation.
-    #[test]
-    fn max_duration_boundary_is_exactly_ten_years() {
-        assert_eq!(parse_duration_secs("3650d"), Ok(10 * 365 * 86_400));
-        assert!(
-            parse_duration_secs("3651d").is_err(),
-            "one day past the 10-year bound must be rejected"
-        );
-    }
-}
+#[path = "tests/parse_duration_secs_tests.rs"]
+mod parse_duration_secs_tests;
 
 /// Error-type taxonomy strings shared with the forward/OpenAI-family DATA-plane vocabulary, aliased
 /// from their canonical home in `proto::openai_family` so the banks cannot drift. `main.rs`
@@ -240,29 +217,8 @@ fn validate_mint_labels(labels: &std::collections::BTreeMap<String, String>) -> 
 }
 
 #[cfg(test)]
-mod validate_mint_labels_tests {
-    use super::{validate_mint_labels, MAX_LABEL_COUNT};
-
-    /// The count boundary is exact: `MAX_LABEL_COUNT` labels is fine; one more is rejected. A
-    /// mutated `>` → `>=` would reject the boundary count itself as "too many".
-    #[test]
-    fn label_count_boundary_is_exact() {
-        let at_cap: std::collections::BTreeMap<String, String> = (0..MAX_LABEL_COUNT)
-            .map(|i| (format!("l{i}"), "v".to_string()))
-            .collect();
-        assert!(
-            validate_mint_labels(&at_cap).is_ok(),
-            "exactly MAX_LABEL_COUNT labels must be accepted"
-        );
-
-        let mut over_cap = at_cap;
-        over_cap.insert("one_more".to_string(), "v".to_string());
-        assert!(
-            validate_mint_labels(&over_cap).is_err(),
-            "MAX_LABEL_COUNT + 1 labels must be rejected"
-        );
-    }
-}
+#[path = "tests/validate_mint_labels_tests.rs"]
+mod validate_mint_labels_tests;
 
 /// A valid Prometheus label name: `^[a-zA-Z_][a-zA-Z0-9_]*$` (non-empty, ASCII-alnum + underscore,
 /// never leading with a digit). Hand-rolled to avoid a regex dependency on the mint path.
@@ -364,33 +320,8 @@ fn internal_error(op: &str, e: &crate::governance::StoreError) -> Response {
 }
 
 #[cfg(test)]
-mod internal_error_tests {
-    use super::internal_error;
-    use crate::governance::StoreError;
-
-    /// `internal_error` must project `AdminError::Internal` onto the real error envelope — a 500
-    /// with the frozen `{"error":{"code":"internal",...}}` body — never `Response::default()`
-    /// (which axum resolves to a bare `200 OK` with an EMPTY body, disguising a store failure as a
-    /// success to the client).
-    #[tokio::test]
-    async fn projects_a_500_internal_error_envelope() {
-        let resp = internal_error("test_op", &StoreError("boom".to_string()));
-        assert_eq!(
-            resp.status(),
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "a store failure must answer 500, not the 200 `Response::default()` would give"
-        );
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert!(
-            !body.is_empty(),
-            "the body must carry the error envelope, not be empty like `Response::default()`"
-        );
-        let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON body");
-        assert_eq!(v["error"]["code"], "internal");
-    }
-}
+#[path = "tests/internal_error_tests.rs"]
+mod internal_error_tests;
 
 // ── Admin API (the FROZEN surface — /api/v1/admin/*) ─────────────────────────────────────────────────
 //
@@ -550,28 +481,8 @@ fn reject_overlong_id(who: KeyAudit<'_>, id: &str) -> Option<Response> {
 }
 
 #[cfg(test)]
-mod reject_overlong_id_tests {
-    use super::{reject_overlong_id, KeyAudit, MAX_KEY_ID_LEN};
-
-    /// The bound is exact: an id of exactly `MAX_KEY_ID_LEN` chars is acceptable (`None`); one char
-    /// past it is rejected (`Some`). A mutated `>` → `>=` would reject the boundary length itself,
-    /// which a real minted id (`vk_` + 16 hex = 19 chars) never reaches but a caller passing exactly
-    /// the documented max legitimately could.
-    #[test]
-    fn id_length_boundary_is_exact() {
-        let at_max = "a".repeat(MAX_KEY_ID_LEN);
-        assert!(
-            reject_overlong_id(KeyAudit::Read, &at_max).is_none(),
-            "an id of exactly MAX_KEY_ID_LEN chars must be accepted"
-        );
-
-        let over_max = "a".repeat(MAX_KEY_ID_LEN + 1);
-        assert!(
-            reject_overlong_id(KeyAudit::Read, &over_max).is_some(),
-            "an id one char past MAX_KEY_ID_LEN must be rejected"
-        );
-    }
-}
+#[path = "tests/reject_overlong_id_tests.rs"]
+mod reject_overlong_id_tests;
 
 /// 500 for a `spawn_blocking` task that failed to run to completion (cancelled or panicked). The
 /// blocking store closures here don't panic in normal operation, but a `JoinError` must NOT
@@ -2008,126 +1919,8 @@ pub(crate) async fn delete_key(
 /// a key to a principal's bucket — the mint and the rebind — asks `check_key_cap`, so these cases
 /// pin the shared predicate rather than one call site.
 #[cfg(test)]
-mod key_cap_tests {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    use std::sync::Arc;
-
-    fn gov() -> Arc<GovState> {
-        Arc::new(GovState::new(Arc::new(MemoryStore::new()), Some("t".into())).unwrap())
-    }
-
-    fn mint(gov: &GovState, name: &str, group: Option<&str>) -> crate::governance::VirtualKey {
-        gov.create_key(
-            NewKeySpec {
-                name: name.into(),
-                allowed_pools: None,
-                group: group.map(str::to_string),
-                labels: Default::default(),
-            },
-            0,
-        )
-        .expect("mint")
-        .0
-    }
-
-    /// `cap == 0` is unlimited, and a bucket under its ceiling admits.
-    #[test]
-    fn zero_cap_is_unlimited_and_under_cap_admits() {
-        let g = gov();
-        for i in 0..5 {
-            mint(&g, &format!("k{i}"), Some("team"));
-        }
-        assert!(super::check_key_cap(&g, 0, Some("team"), None)
-            .unwrap()
-            .is_none());
-        assert!(super::check_key_cap(&g, 6, Some("team"), None)
-            .unwrap()
-            .is_none());
-        let hit = super::check_key_cap(&g, 5, Some("team"), None)
-            .unwrap()
-            .expect("at cap");
-        assert_eq!(hit, ("team".to_string(), 5));
-    }
-
-    /// The cap counts LIVE keys only. A revoked or disabled key holds no usable credential, so
-    /// counting it forever made the ceiling a ONE-WAY RATCHET — and made the rejection's own advice
-    /// ("revoke or delete an existing key") false for `revoke`.
-    #[test]
-    fn revoked_and_disabled_keys_do_not_hold_a_cap_slot() {
-        let g = gov();
-        let a = mint(&g, "a", Some("team"));
-        let b = mint(&g, "b", Some("team"));
-        mint(&g, "c", Some("team"));
-        assert!(
-            super::check_key_cap(&g, 3, Some("team"), None)
-                .unwrap()
-                .is_some(),
-            "three live keys fill a cap of 3"
-        );
-
-        // REVOKE one: its credential is dead, so its slot must come back.
-        g.revoke(&a.id, "test").expect("revoke");
-        assert!(
-            super::check_key_cap(&g, 3, Some("team"), None)
-                .unwrap()
-                .is_none(),
-            "a revoked key must not hold a cap slot forever"
-        );
-
-        // DISABLE another: same reasoning.
-        g.update_key(&b.id, Some(false), None).expect("disable");
-        assert!(
-            super::check_key_cap(&g, 2, Some("team"), None)
-                .unwrap()
-                .is_none(),
-            "a disabled key must not hold a cap slot"
-        );
-    }
-
-    /// The UNBOUND bucket is capped too. A groupless key escapes the limit tree entirely, so
-    /// exempting it from the key-count ceiling made the ceiling evadable by omitting one field.
-    #[test]
-    fn the_unbound_bucket_is_counted_too() {
-        let g = gov();
-        mint(&g, "a", None);
-        mint(&g, "b", None);
-        let hit = super::check_key_cap(&g, 2, None, None)
-            .unwrap()
-            .expect("the no-group bucket is capped");
-        assert_eq!(hit, (super::UNBOUND_BUCKET_LABEL.to_string(), 2));
-        // Bound keys live in their own bucket and do not spend the unbound one's slots.
-        mint(&g, "c", Some("team"));
-        assert_eq!(
-            super::check_key_cap(&g, 2, None, None).unwrap(),
-            Some((super::UNBOUND_BUCKET_LABEL.to_string(), 2)),
-            "buckets are independent"
-        );
-    }
-
-    /// The REBIND path excludes the key being MOVED, so re-PATCHing a key onto the group it
-    /// is already bound to is not spuriously refused — while a genuine move into a full bucket is.
-    #[test]
-    fn rebind_excludes_the_mover_but_still_refuses_a_full_target() {
-        let g = gov();
-        let a = mint(&g, "a", Some("team"));
-        mint(&g, "b", Some("team"));
-        // `a` re-bound onto its OWN group: excluding the mover leaves 1 < 2, so it admits.
-        assert!(
-            super::check_key_cap(&g, 2, Some("team"), Some(&a.id))
-                .unwrap()
-                .is_none(),
-            "a no-op rebind of an at-cap bucket onto itself must not 409"
-        );
-        // A key from elsewhere moving IN sees 2 >= 2 and is refused.
-        let outsider = mint(&g, "c", None);
-        assert!(
-            super::check_key_cap(&g, 2, Some("team"), Some(&outsider.id))
-                .unwrap()
-                .is_some(),
-            "a rebind must not walk a principal past its ceiling"
-        );
-    }
-}
+#[path = "tests/key_cap_tests.rs"]
+mod key_cap_tests;
 
 // The admin-surface e2e tests authenticate through the `admin-tokens` module; a
 // `--no-default-features` binary compiles it OUT, which DISABLES the admin API wholesale (the

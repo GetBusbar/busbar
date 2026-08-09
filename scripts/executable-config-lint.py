@@ -977,6 +977,16 @@ def main():
     ap.add_argument("--root", default=".", help="tree to scan (default: cwd)")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="only print failures")
+    ap.add_argument(
+        "--min-docs",
+        type=int,
+        default=1,
+        help="floor on the number of extracted documents; below it the run FAILS. "
+             "This gate is 'for each executable config, assert it validates', which is "
+             "VACUOUSLY TRUE over zero configs — an extractor that stops matching (a "
+             "renamed workflows dir, a heredoc style change, a moved examples/) makes it "
+             "pass forever having validated nothing. Core passes --min-docs 40 (50 today).",
+    )
     a = ap.parse_args()
 
     busbar = os.path.abspath(a.busbar)
@@ -998,6 +1008,20 @@ def main():
         print("    CI/shell heredocs, Rust test literals, examples/ and docker/ yaml.")
         print("  Fix the config text at the origin above; `busbar --migrate-config <file>` rewrites")
         print("  a retired 1.x block, and `busbar --validate` reproduces the verdict on a real file.")
+        return 1
+    # ── EXTRACTION FLOOR — checked AFTER `bad`, so a real invalid config is still reported first.
+    # Everything above is "for each extracted document, assert it validates", which is VACUOUSLY
+    # TRUE over zero documents. All four extractors are DISCOVERY-based (a workflows dir, heredoc
+    # syntax, Rust string literals, a yaml glob); any of them can quietly stop matching, and the
+    # gate then prints "0 documents — 0 FAILED / passed" and exits 0 forever while invalid configs
+    # a machine actually runs sail through unvalidated.
+    if len(docs) < a.min_docs:
+        print("  executable-config-lint FAILED — EXTRACTION FLOOR NOT MET")
+        print(f"  extracted {len(docs)} document(s), expected >= {a.min_docs}.")
+        print("  This gate validated (almost) nothing, so its verdict is meaningless — NOT a pass.")
+        print("  An extractor has stopped matching: check the workflows dir, the heredoc styles,")
+        print("  the Rust test trees and the examples/ + docker/ globs. If the corpus legitimately")
+        print("  shrank, lower --min-docs in the SAME commit that removes the documents.")
         return 1
     print("  executable-config-lint passed")
     return 0

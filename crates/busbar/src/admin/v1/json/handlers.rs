@@ -1509,9 +1509,12 @@ pub(crate) async fn reset_overlay_section(
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     let Some(section) = OverlaySection::parse(&section) else {
+        // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
+        // hand-written version of this sentence outlived the addition of the `named_maps` section
+        // and told operators `export` was not a section for a whole release.
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, `root`, or \
-             `plugin_versions`"
+            "unknown overlay section `{section}`: expected one of {}",
+            OverlaySection::valid_names()
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -1583,12 +1586,55 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let built = crate::load_config_from_disk(
+            let loaded_base = crate::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
                 crate::config::EnvSubst::Strict,
             )
+            .map_err(AdminError::Validation)?;
+            // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
+            // named-map reset removes MANY definitions at once, and a config site that still names
+            // one of them would otherwise fail deep inside the rebuild with "references X, which is
+            // not defined" — true, but it does not say WHICH of the definitions the operator just
+            // discarded was the one in use. Refused as a terminal `conflict` naming every offender
+            // and its referents, before anything is cleared, persisted or swapped.
+            //
+            // `loaded_base.deploy` is base `config.yaml` truth with NO overlay applied, which is
+            // exactly the state a reset of this map produces, so the question it answers is the
+            // right one: after the reset, is this name still defined anywhere, and does anything
+            // still point at it? (`contains` is the belt to the braces: the write path already
+            // refuses to shadow a base-defined entry, so an overlay name that base also defines
+            // should not exist. If that invariant ever changes, this guard stays correct.)
+            if let OverlaySection::NamedMap(nm) = section {
+                let dangling: Vec<String> = loaded_base
+                    .overlay_doc
+                    .as_ref()
+                    .and_then(|doc| doc.named_maps.get(nm.key()))
+                    .map(|entries| {
+                        entries
+                            .keys()
+                            .filter(|name| !nm.contains(&loaded_base.deploy, name))
+                            .filter_map(|name| {
+                                let referents = nm.referents(&loaded_base.deploy, name);
+                                (!referents.is_empty())
+                                    .then(|| format!("`{name}` (still referenced by {})", referents.join(", ")))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !dangling.is_empty() {
+                    return Err(AdminError::Conflict(format!(
+                        "cannot reset the `{}` overlay section: base config.yaml would be left \
+                         naming {} that the reset removes — {}. Remove the reference(s) from \
+                         config.yaml first, or delete the definitions individually.",
+                        nm.key(),
+                        nm.singular(),
+                        dangling.join("; ")
+                    )));
+                }
+            }
+            let built = Ok(loaded_base)
             .and_then(|mut loaded| {
                 // CLEAR the target section from the persisted overlay FIRST — that slice reverts to
                 // base, the other slices stay live. The clear happens before both merge halves so a
@@ -1706,7 +1752,20 @@ pub(crate) async fn reset_overlay_section(
         }
         Err(e) => {
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
+            // TAGGED with its condition where one is declared. The taxonomy test witnesses
+            // emissions at `(route, method, kind, cond)` granularity, and this arm rendered every
+            // failure as a bare kind — so `DELETE /overlay/{section}`'s declared
+            // `Conflict/StillReferenced` had NO witness and the gate correctly called it an
+            // OVER-CLAIM: a documented error nothing could be seen to produce. The dangling-
+            // reference guard was implemented AND had a test asserting 409; only the condition
+            // label was missing. That is precisely the gap a witness-backed taxonomy exists to
+            // surface, and it would have shipped as a documented error nobody could trigger.
+            match &e {
+                AdminError::Conflict(m) if m.contains("would be left naming") => {
+                    err_json_cond(&e, Cond::StillReferenced)
+                }
+                _ => err_json(&e),
+            }
         }
     }
 }
@@ -2605,42 +2664,61 @@ pub(crate) async fn apply_config(
 /// partial-update semantics of `PUT /config/settings` — "raise the per-request fee" sends only
 /// `per_request_fee`, leaving every other override untouched. To CLEAR the whole root section, use
 /// `DELETE /overlay/root`.
+///
+/// DRIFT GUARD: the request is destructured EXHAUSTIVELY (no `..`), so a field added to
+/// `RootSettings` cannot be silently dropped from the merge — which would make a `PUT` naming it
+/// return 200 while storing nothing.
 fn merge_root_settings(
     mut base: crate::config::overlay::RootSettings,
     req: crate::config::overlay::RootSettings,
 ) -> crate::config::overlay::RootSettings {
+    let crate::config::overlay::RootSettings {
+        listen,
+        tls,
+        admin_listen,
+        admin_tls,
+        admin_require_mtls,
+        rate_card,
+        per_request_fee,
+        store,
+        security,
+        limits,
+        advanced,
+        health,
+        routing,
+    } = req;
     // WHOLE-VALUE sections: a listen address, a cert bundle, a store definition and a rate card are
     // atomic units, and `store.settings` is opaque plugin config busbar must not reinterpret.
-    if req.listen.is_some() {
-        base.listen = req.listen;
+    if listen.is_some() {
+        base.listen = listen;
     }
-    if req.tls.is_some() {
-        base.tls = req.tls;
+    if tls.is_some() {
+        base.tls = tls;
     }
-    if req.admin_listen.is_some() {
-        base.admin_listen = req.admin_listen;
+    if admin_listen.is_some() {
+        base.admin_listen = admin_listen;
     }
-    if req.admin_tls.is_some() {
-        base.admin_tls = req.admin_tls;
+    if admin_tls.is_some() {
+        base.admin_tls = admin_tls;
     }
-    if req.admin_require_mtls.is_some() {
-        base.admin_require_mtls = req.admin_require_mtls;
+    if admin_require_mtls.is_some() {
+        base.admin_require_mtls = admin_require_mtls;
     }
-    if req.rate_card.is_some() {
-        base.rate_card = req.rate_card;
+    if rate_card.is_some() {
+        base.rate_card = rate_card;
     }
-    if req.per_request_fee.is_some() {
-        base.per_request_fee = req.per_request_fee;
+    if per_request_fee.is_some() {
+        base.per_request_fee = per_request_fee;
     }
-    if req.store.is_some() {
-        base.store = req.store;
+    if store.is_some() {
+        base.store = store;
     }
     // PER-FIELD sections: successive PUTs to different fields of one section must accumulate. A
     // whole-slot swap here would make the second PUT drop the first one's fields from the overlay,
     // which is the same defect as the apply-side revert, one layer down.
     macro_rules! merge_section {
         ($($field:ident),+ $(,)?) => {$(
-            base.$field = match (req.$field, base.$field) {
+            base.$field = match ($field, base.$field) {
                 (Some(new), Some(old)) => Some(new.merge(old)),
                 (Some(new), None) => Some(new),
                 (None, old) => old,
@@ -2661,18 +2739,46 @@ fn merge_root_settings(
 /// `limits`/…) applies live on the swap. Keyed on the REQUEST (only fields the operator just changed
 /// are flagged), so a subsequent live-only edit does not re-flag an already-restart-pending bind.
 fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<String> {
+    // DRIFT GUARD, TOP LEVEL. Until 1.5.4 this function opened on a HAND-MAINTAINED list of six
+    // `req.<field>.is_some()` pushes with no destructure of `RootSettings` at all — precisely the
+    // bug class the nested `LimitsPatch`/`AdvancedPatch` guards below were added to close ("a
+    // boot-frozen field silently absent from a hand-maintained push list"), left open one level up.
+    // This is an EXHAUSTIVE destructure with NO `..`: a field added to `RootSettings` must be
+    // classified BOOT-FROZEN (pushed) or GENUINELY LIVE (bound `_`, with a one-line reason) before
+    // this crate builds. The compiler forces the decision instead of defaulting it to "live".
+    let crate::config::overlay::RootSettings {
+        // BOOT-FROZEN — bound to a socket / read once in `main()`; see this function's doc comment.
+        listen,
+        tls,
+        admin_listen,
+        admin_tls,
+        admin_require_mtls,
+        store,
+        // GENUINELY LIVE on the `Arc<App>` swap: the cost inputs are read per-request off the
+        // installed snapshot, and the SSRF/health/routing knobs are re-derived by `resolve` on every
+        // apply. Nothing here is captured at process start.
+        rate_card: _,
+        per_request_fee: _,
+        security: _,
+        health: _,
+        routing: _,
+        // MIXED — classified FIELD BY FIELD below, by their own exhaustive destructures, because
+        // each section has both boot-frozen and live members. Bound here and used there.
+        limits,
+        advanced,
+    } = req;
     let mut out = Vec::new();
     let mut push = |set: bool, name: &str| {
         if set {
             out.push(name.to_string());
         }
     };
-    push(req.listen.is_some(), "listen");
-    push(req.tls.is_some(), "tls");
-    push(req.admin_listen.is_some(), "admin_listen");
-    push(req.admin_tls.is_some(), "admin_tls");
-    push(req.admin_require_mtls.is_some(), "admin_require_mtls");
-    push(req.store.is_some(), "store");
+    push(listen.is_some(), "listen");
+    push(tls.is_some(), "tls");
+    push(admin_listen.is_some(), "admin_listen");
+    push(admin_tls.is_some(), "admin_tls");
+    push(admin_require_mtls.is_some(), "admin_require_mtls");
+    push(store.is_some(), "store");
     // Four `limits.*` fields are boot-frozen, via TWO independent mechanisms — flag them
     // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
     // `Option`) rather than the whole `limits` section, which would also mis-flag the
@@ -2697,7 +2803,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // exactly the bug class `max_inbound_concurrent` fell into: a boot-frozen field silently absent
     // from a hand-maintained push list. A new boot-frozen field can no longer go unflagged by
     // omission; the compiler forces a decision.
-    if let Some(limits) = req.limits.as_ref() {
+    if let Some(limits) = limits.as_ref() {
         let crate::config::patch::LimitsPatch {
             upstream_request_timeout_secs,
             pool_max_idle_per_host,
@@ -2753,7 +2859,7 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // `response_headers.route_policy` seeds a process-global `OnceLock`
     // (`proxy::configure_route_policy_headers`). DRIFT GUARD, same idiom as above: an EXHAUSTIVE
     // destructure of `AdvancedPatch` (no `..`).
-    if let Some(advanced) = req.advanced.as_ref() {
+    if let Some(advanced) = advanced.as_ref() {
         let crate::config::patch::AdvancedPatch {
             response_headers,
             // GENUINELY LIVE — read fresh on every call via the `INSTALLED` `LimitsResolved` snapshot
@@ -3992,13 +4098,20 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
+    // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
+    // reference documentation asserted a shipped functional gap was not one.
+    let overlay_section_names: Vec<&'static str> = crate::config::overlay::OverlaySection::all()
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     paths.insert(
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)", overlay_section_names.join("|")),
                 "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
+                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": overlay_section_names}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
                 }
@@ -4969,68 +5082,5 @@ pub(crate) async fn validate_config(
 }
 
 #[cfg(test)]
-mod patch_tests {
-    use super::merge_group_patch;
-    use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
-    use crate::config::{GroupCfg, LimitCfg};
-
-    fn budget(cents: u64) -> LimitCfg {
-        LimitCfg {
-            metric: LimitMetric::Budget,
-            amount: cents,
-            per: Some(LimitWindow::Month),
-            scope: None,
-            on_exhaust: None,
-            downgrade_to: None,
-        }
-    }
-
-    /// The raise-a-budget path: patching only `limits` replaces them and PRESERVES parent + enabled.
-    #[test]
-    fn patch_limits_preserves_other_fields() {
-        let base = GroupCfg {
-            parent: Some("team".into()),
-            enabled: true,
-            limits: vec![budget(3_000)],
-            child_default: None,
-        };
-        let out = merge_group_patch(base, None, None, Some(vec![budget(5_000)]), None);
-        assert_eq!(out.parent.as_deref(), Some("team"));
-        assert!(out.enabled);
-        assert_eq!(out.limits.len(), 1);
-        assert_eq!(out.limits[0].amount, 5_000);
-        assert!(out.child_default.is_none());
-    }
-
-    /// Freezing a group: patching only `enabled` flips it, leaving limits + parent intact.
-    #[test]
-    fn patch_enabled_only_freezes_without_touching_limits() {
-        let base = GroupCfg {
-            parent: Some("team".into()),
-            enabled: true,
-            limits: vec![budget(3_000)],
-            child_default: Some(ChildDefault {
-                limits: vec![budget(500)],
-            }),
-        };
-        let out = merge_group_patch(base, None, Some(false), None, None);
-        assert!(!out.enabled);
-        assert_eq!(out.limits[0].amount, 3_000);
-        assert_eq!(out.parent.as_deref(), Some("team"));
-        let cd = out.child_default.expect("child_default preserved");
-        assert_eq!(cd.limits[0].amount, 500);
-    }
-
-    /// An empty patch (all None) is an identity: nothing changes.
-    #[test]
-    fn empty_patch_is_identity() {
-        let base = GroupCfg {
-            parent: Some("p".into()),
-            enabled: false,
-            limits: vec![budget(1)],
-            child_default: None,
-        };
-        let out = merge_group_patch(base.clone(), None, None, None, None);
-        assert_eq!(out, base);
-    }
-}
+#[path = "tests/patch_tests.rs"]
+mod patch_tests;

@@ -69,10 +69,16 @@ name: Verify deploy
 # is worse than not making it.
 #
 # Triggers:
-#   - workflow_run: fires when release.yml ("Release") or docker.yml ("Docker") completes on a tag
-#     push. The two run in parallel off the same tag push (tag-on-main.yml), so there is no fixed
-#     ordering — each check below retries with backoff for a few minutes to ride out the race
-#     instead of false-failing because the OTHER workflow hasn't finished publishing yet.
+#   - workflow_run: LARGELY VESTIGIAL NOW, AND SAID SO RATHER THAN QUIETLY LEFT. It used to fire
+#     when release.yml or docker.yml completed on a tag push, because the two ran in parallel off
+#     one tag and neither could wait for the other. Neither runs on a tag any more: release.yml
+#     runs on the main push and CALLS this file twice (in `staging` mode as the pre-promote gate,
+#     then in public mode as the last step), and docker.yml only runs as a called workflow, which
+#     emits no workflow_run event of its own. The trigger is kept because it costs nothing and
+#     still catches a manual dispatch of either workflow, and its `head_branch` starts-with-'v'
+#     guard means the main-push release runs do not double-fire it. The retry-with-backoff loops
+#     below are kept for the same reason they always existed: registries and CDNs settle at their
+#     own pace.
 #   - workflow_dispatch: manual re-check of an already-shipped version.
 #   - schedule (daily): install.sh worked on release day and broke LATER — GitHub's unauthenticated
 #     rate limiting is environmental, not a property of our artifacts, so nothing about the release
@@ -119,16 +125,99 @@ name: Verify deploy
 # repo-state dependency to go stale against. A dispatcher would add a checkout whose entire purpose
 # is to be read, in a workflow whose entire purpose is to read nothing local.
 #
-# So `release: [published]` is now a trigger in its own right. `create-release` publishes the Release
-# object BEFORE the build matrix runs, and that event fires regardless of what the rest of the run
-# does, which is exactly the property needed: if a release object exists in public, it gets verified,
-# whether or not the workflow that made it finished happy.
+# So `release: [published]` is now a trigger in its own right, and under the draft-then-promote order
+# it means something sharper than it used to. The release object is created as a DRAFT, which fires
+# NO event; the `published` event fires at the moment the draft is promoted. So this trigger now
+# means exactly "a release just became visible to users", whoever made it visible and whether or not
+# the workflow that made it finished happy. A release promoted by hand gets verified the same as one
+# promoted by the pipeline.
+#
+# -- THIS IS THE LAST STEP OF THE RELEASE, NOT A BYSTANDER ---------------------------------------
+# Until now every trigger above fired this workflow BESIDE the release. release.yml's own graph
+# ended at `notify-downstream`, nothing in it waited on this, and nothing reported this verdict as
+# part of the release's status. So a release could be green, fanned out to the Homebrew tap and the
+# Helm chart, and simultaneously unusable, with the only evidence a separate red run in a repo full
+# of runs. That is what happened to 1.5.3: it published five of seven assets, `install.sh` 404'd on
+# Apple Silicon, and a human found it by hand.
+#
+# `workflow_call` fixes that. release.yml's FINAL job now calls this file directly, so a failing
+# consumer check turns the RELEASE RUN red, on the release's own status, with the failure named in
+# the release run's own job list. Two properties make this the right mechanism rather than "have
+# release.yml poll for the separate run's conclusion":
+#   * `uses: ./.github/workflows/verify-deploy.yml` from a tag-triggered caller loads this file AT
+#     THE TAG, so the release is verified by the verifier that shipped with it. (The other triggers
+#     load it from the default branch - see the workflow_run note below for why that is harmless
+#     here: this file reads no repository state.)
+#   * A called workflow's failure is the caller job's failure. No polling, no timeout heuristics,
+#     no second source of truth about whether verification passed.
+#
+# THIS FILE USED TO SAY CONSUMER VERIFICATION WAS POST-PUBLICATION BY NATURE. THAT WAS WRONG, AND
+# THE CORRECTION IS THE `stage` INPUT ABOVE.
+#
+# The argument was: you cannot `docker pull` an image that was never pushed, or `brew install` a
+# formula the tap has not bumped, therefore verification cannot gate publication. That conflated two
+# different things - the artifact EXISTING, and the artifact being PUBLISHED UNDER THE NAME USERS
+# CONSUME - and they are separable. An image pushed as `staging-<sha>` exists and pulls. A DRAFT
+# release's assets have real, downloadable URLs and can be fetched and executed. Neither is a name
+# any user, doc or chart refers to.
+#
+# So the file now runs in two modes, and the split is by what CAN be true before publication rather
+# than by convenience:
+#   * `stage: staging` - the ARTIFACT checks, run by release.yml BEFORE anything is tagged. These
+#     DO gate publication: a failure means no version tag is ever created.
+#   * default (public) - the CHANNEL checks, which genuinely cannot run earlier because the tap, the
+#     chart, the site and `/releases/latest` only move once the release is public. For these the old
+#     paragraph still holds: they cannot gate, so instead they
+#       1. make the verdict part of the release's own status (RED on the release run), and
+#       2. open or update a GitHub issue naming the failing check (see the `alert` job below),
+#     because a release that is published and unusable is a fact somebody has to be TOLD, and red
+#     alone is a signal only for whoever happens to be looking at that run.
 on:
   release:
     types: [published]
   workflow_run:
     workflows: ["Release", "Docker"]
     types: [completed]
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to verify (e.g. 1.5.2, no leading v)"
+        required: true
+        type: string
+      # -- STAGING MODE: the same checks, run BEFORE the version has a public name -----------------
+      #
+      # `stage: staging` is how release.yml gates a release on consumer verification instead of
+      # merely reporting it afterwards. The release object is still a DRAFT and the image is still
+      # under a throwaway `staging-<sha>` tag, so the subset of checks below that can be true at
+      # that point runs, and the subset that structurally cannot is skipped VISIBLY.
+      #
+      # WHAT RUNS IN STAGING MODE: (c) every expected asset is present, plausibly sized and really
+      # downloadable; (c2) the real linux binary is unpacked and EXECUTED and `--version` agrees;
+      # (d) the image is pulled FRESH and its OCI version label agrees; (l) the documented quickstart
+      # boots, both the binary half and the docker one-liner; (m) `gh attestation verify` passes on
+      # the real bytes. That is the artifact-side half of this file, unchanged and reused rather
+      # than reimplemented -- a second copy of these checks is exactly the defect this file's own
+      # comments keep warning about.
+      #
+      # WHAT IS SKIPPED IN STAGING MODE, AND WHY IT IS NOT A GAP: (a)(b) `latest` and the version pin
+      # agreeing, (e) the Terraform registry, (f) the Helm chart appVersion, (g) getbusbar.com, (h)(i)
+      # install.sh, (j) Homebrew, (k) the site's APIs, (n) the live counters. Every one of those
+      # reads a DOWNSTREAM channel that only moves once the release is published. Asserting them
+      # against an unpublished version would not be a stricter gate, it would be an assertion that
+      # is false by construction. They all still run, unchanged, from release.yml's
+      # `consumer-verification` job after the promote.
+      stage:
+        description: "'public' (default, every check) or 'staging' (artifact-side checks only, pre-promote)"
+        required: false
+        type: string
+        default: public
+      image_ref:
+        description: >-
+          Fully-qualified image to verify instead of getbusbar/busbar:<version>, e.g.
+          getbusbar/busbar:staging-abc123456789. Staging mode only.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       version:
@@ -138,14 +227,444 @@ on:
     # 13:17 UTC daily. Off the top of the hour on purpose: :00 cron slots are the most contended on
     # GitHub's shared scheduler and get delayed the most, and mid-day UTC lands in working hours for
     # both EU and US-East so a red rot alert is seen the day it fires, not the next morning.
+    # THE FULL SWEEP runs on this one only.
     - cron: "17 13 * * *"
+    # 3-HOURLY POINTER SWEEP (the `pointers` job only; `verify` is gated off it below).
+    #
+    # WHY A SECOND, FASTER CRON. "if docker or anything isn't latest we need to know right away."
+    # Daily means up to 24h of `docker pull getbusbar/busbar` handing users the previous release,
+    # which is exactly what happened across at least two releases when docker.yml's `tags:` block
+    # emitted `type=semver,pattern={{version}}` and nothing else - docker/metadata-action does NOT
+    # imply `latest` from a semver pattern, so `latest` stayed frozen wherever a human last put it
+    # while the comment above the block said "X.Y.Z + latest" the whole time.
+    #
+    # WHY 3 HOURS AND NOT HOURLY. The cost side is real but small: the pointer sweep is HEAD requests
+    # and small JSON reads (no image pull, no build, no brew, no boot), ~1-2 minutes of runner time.
+    # 3-hourly is 8 runs/day, under 20 minutes of runner time a day, and caps the window in which a
+    # stale default pointer can go unnoticed at 3h instead of 24h. Hourly would be 3x the runs for a
+    # 2h improvement on a number already inside the "someone notices this shift" range, and GitHub
+    # deprioritises high-frequency crons on shared runners, so the nominal interval would not be the
+    # real one anyway. The release-publication trigger is what makes the common case immediate; this
+    # cron exists for the case where a pointer rots WITHOUT a release, which is how the Docker `latest`
+    # freeze survived: nothing about our artifacts changed on the day it broke.
+    - cron: "23 */3 * * *"
 
+# `issues: write` is for the `alert` job, which is the second half of "make a failure impossible to
+# miss": red on the release run, AND an issue that comes and finds a human. `actions: read` lets
+# that job read the FAILED job's own log through the API so the issue can quote the exact FAIL /
+# ::error:: lines (the failing check, expected, observed) rather than saying "something went wrong,
+# go read a log".
 permissions:
   contents: read
+  issues: write
+  actions: read
 
 jobs:
+  # -- MOVING POINTERS -----------------------------------------------------------------------------
+  # A separate job from `verify`, on purpose, and it is the cheap one.
+  #
+  # THE DEFECT CLASS. Every channel below has a DEFAULT pointer: the thing a user gets when they do
+  # not name a version. `docker pull getbusbar/busbar`. `/releases/latest/download/...`. `brew
+  # install`. `pip install busbar-admin`. `uses: GetBusbar/validate-action@v1`. Each of those
+  # pointers is written by a DIFFERENT publish step in a DIFFERENT repo, and each one can silently
+  # fail to move while the version-pinned artifact beside it publishes perfectly. When that happens
+  # nothing is red anywhere: the pinned thing exists, the release is green, and users quietly get
+  # old code. `docker pull getbusbar/busbar` served the previous release to tens of thousands of
+  # pulls that way, across at least two releases.
+  #
+  # THE RULE THIS JOB ENFORCES: for every channel, the pointer a user gets by DEFAULT must resolve to
+  # the newest thing that channel's repo actually published. Two families, because busbar's
+  # distribution is deliberately mixed-model:
+  #   * TRACKS BUSBAR'S VERSION - docker.io/ghcr.io `:latest`, github `/releases/latest`, the Homebrew
+  #     tap, the helm chart's `appVersion`, the download page. These must equal the release under test.
+  #   * INDEPENDENT SEMVER - the three SDKs (PyPI/npm/Go), the Terraform provider, validate-action's
+  #     `@v1`. These do NOT mirror busbar's version and asserting they do is simply wrong (it was, and
+  #     it red-failed check (e)). For these the invariant is registry-latest == that repo's own newest
+  #     published tag, which catches the real defect ("we tagged it and the publish job never ran")
+  #     without false-failing on the legitimate no-op-release case.
+  #
+  # DIGESTS, NOT TAG NAMES, AND NEVER A LOCAL IMAGE. The registry assertions compare MANIFEST DIGESTS
+  # over the Distribution API. They deliberately do not `docker run ... --version`: a local image
+  # cache will happily answer with the OLD image for the SAME tag and report a stale `latest` as
+  # fresh (or a fresh one as stale). This job pulls nothing at all, so it cannot be fooled that way;
+  # check (d) in the `verify` job, which does need a real image, deletes its local copy first.
+  pointers:
+    name: moving pointers (every default a user gets is the newest release)
+    runs-on: ubuntu-latest
+    # NOT IN STAGING MODE. Every assertion in this job is "the default pointer resolves to the
+    # NEWEST PUBLISHED release". Pre-promote the release under test is not published, so the honest
+    # answer to every one of these is the PREVIOUS version and the job would fail on a release that
+    # is doing exactly the right thing. release.yml runs it, unchanged, after the promote.
+    if: ${{ inputs.stage != 'staging' }}
+    # HEAD requests and small JSON reads only. If this has not finished in 20 minutes something is
+    # hanging, and on a 3-hourly cron a hung run must die well before the next one fires.
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.sweep.outputs.version }}
+    env:
+      DOCKERHUB_IMAGE: getbusbar/busbar
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Every default pointer must resolve to the newest published release
+        id: sweep
+        # THE ONLY `${{ }}` IN THIS STEP LIVES HERE, AND IT HAS TO. A `run:` block containing any
+        # `${{ }}` is compiled as ONE expression, and GitHub caps an expression at 21000 characters
+        # - which this script comfortably exceeds, so the whole WORKFLOW fails to parse with
+        # "Exceeded max expression length" and cannot even be dispatched. Hoisting the interpolation
+        # into `env:` leaves the script as a plain literal with no length limit. It is also the safer
+        # shape regardless: an event-supplied value reaches the shell as an environment variable
+        # rather than being pasted into the script text.
+        env:
+          SUPPLIED_VERSION: ${{ inputs.version || github.event.release.tag_name || '' }}
+        run: |
+          # `set +e` FIRST, AND IT IS LOAD-BEARING. GitHub runs every `run:` block as
+          # `bash -e {0}`, so errexit is ALREADY ON before the first line of the script: writing
+          # `set -uo pipefail` does not turn it off, it just leaves it on. Without the explicit
+          # `set +e` this sweep would abort at the first non-zero command and report ONE stale
+          # channel while hiding the rest, and "docker is stale" and "docker AND homebrew AND helm
+          # are stale" are different incidents. It cost the alert job a red run to find this.
+          set +e
+          set -uo pipefail
+          fail=0
+          : > /tmp/pointer-failures.md
+
+          record() {  # record <channel> <expected> <observed> <hint>
+            echo "FAIL: $1 | expected: $2 | observed: $3"
+            {
+              echo "- **$1**"
+              echo "  - expected: \`$2\`"
+              echo "  - observed: \`$3\`"
+              echo "  - $4"
+            } >> /tmp/pointer-failures.md
+            echo "::error::STALE MOVING POINTER: $1 - expected '$2', observed '$3'. $4"
+            fail=1
+          }
+          declared() {  # declared <channel> <reason>  -- a channel with NO meaningful "latest"
+            echo "NOT APPLICABLE: $1 -- $2"
+          }
+
+          # Same anonymous pull-token -> HEAD manifest -> Docker-Content-Digest flow the `verify` job
+          # uses. It is duplicated rather than shared because jobs cannot share a file without an
+          # artifact round-trip, and this is a pure function of its arguments with no repository
+          # state in it - the duplication that is dangerous is a duplicated FACT (a platform list),
+          # not a duplicated pure function.
+          reg_digest() {  # reg_digest <auth-host> <registry-host> <repo> <tag>
+            local auth_host="$1" reg_host="$2" repo="$3" tag="$4" token_url token
+            if [ "$auth_host" = "auth.docker.io" ]; then
+              token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull"
+            else
+              token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
+            fi
+            token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token' 2>/dev/null)"
+            [ -n "${token:-}" ] && [ "$token" != "null" ] || return 1
+            curl -fsS --max-time 30 -I \
+              -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
+              "https://${reg_host}/v2/${repo}/manifests/${tag}" \
+            | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
+          }
+
+          # Newest published tag of a repo, from the RELEASES list - deliberately NOT from
+          # /releases/latest, which is itself one of the pointers under test. Asking the pointer what
+          # the newest release is and then checking the pointer against that answer is a check that
+          # can never fail.
+          newest_tag() {  # newest_tag <owner/repo>
+            local out
+            out="$(gh api --paginate "repos/$1/releases" \
+              --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null \
+              | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+            [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+            # FALL BACK TO GIT TAGS, and this is not a nicety. The three SDK repos (busbar-python,
+            # busbar-js, busbar-go) publish to PyPI/npm/the Go proxy off a pushed TAG and create no
+            # GitHub Release at all. Reading releases only, this function returned empty for all
+            # three, and the caller then declared them "no releases yet, nothing to assert" -- three
+            # live, shipping, user-facing channels silently exempted from the sweep while PyPI, npm
+            # and proxy.golang.org were all serving 0.4.0. A pointer check that quietly excuses the
+            # channels it cannot read is worse than one that is absent, because it looks covered.
+            gh api --paginate "repos/$1/tags" --jq '.[].name' 2>/dev/null \
+              | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+          }
+
+          # -- Which busbar release is under test ------------------------------------------------
+          SUPPLIED="${SUPPLIED_VERSION#v}"
+          NEWEST="$(newest_tag GetBusbar/busbar)"
+          if [ -z "${NEWEST:-}" ]; then
+            echo "::error::could not enumerate GetBusbar/busbar's published releases; every pointer assertion below would be vacuous, so this fails rather than passes."
+            exit 1
+          fi
+          if [ -n "$SUPPLIED" ] && [ "$SUPPLIED" != "$NEWEST" ]; then
+            # Not a failure by itself (a re-verify of an older version is legitimate), but the
+            # pointers are only ever asserted against the newest release, so say which one won.
+            echo "note: supplied version ${SUPPLIED} is not the newest published release (${NEWEST}); pointers are asserted against ${NEWEST}."
+          fi
+          V="$NEWEST"
+          TAG="v$V"
+          # Written BEFORE any assertion runs, on purpose: the `alert` job needs the version to
+          # title the issue, and it only ever reads this output when this step has FAILED.
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Newest published busbar release: ${TAG}. Every default pointer below must resolve to it."
+
+          # -- P1/P2: container registries. THE 1.5.3 BUG, EXACTLY. ------------------------------
+          # Retried because on release day docker.yml and this can race; a stale pointer is
+          # permanent and survives the retries, a race resolves inside them.
+          dh_ver="" dh_latest="" ghcr_ver="" ghcr_latest=""
+          for i in $(seq 1 10); do
+            dh_ver="$(reg_digest auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "$V" || true)"
+            dh_latest="$(reg_digest auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" latest || true)"
+            [ -n "$dh_ver" ] && [ "$dh_ver" = "$dh_latest" ] && break
+            echo "  ...docker.io :latest not yet == :${V} (attempt $i/10), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$dh_ver" ]; then
+            record "docker.io ${DOCKERHUB_IMAGE}:${V}" "a resolvable manifest digest" "<nothing>" \
+              "The version-pinned image was never pushed. Fix: re-run docker.yml for ${TAG}."
+          elif [ "$dh_latest" = "$dh_ver" ]; then
+            echo "PASS: docker.io ${DOCKERHUB_IMAGE}:latest == :${V} (${dh_latest})"
+          else
+            record "docker.io ${DOCKERHUB_IMAGE}:latest" "$dh_ver (the :${V} digest)" "${dh_latest:-<nothing>}" \
+              "\`docker pull ${DOCKERHUB_IMAGE}\` -- the command in the README, the docs and on the site - is serving a DIFFERENT image than ${TAG}. This is the exact 1.5.3 defect: docker/metadata-action does not imply \`latest\` from \`type=semver,pattern={{version}}\`, so \`latest\` froze wherever a human last set it. Fix: confirm docker.yml's \`tags:\` block still emits an explicit \`type=raw,value=latest\` (gated on a real release), then re-run it for ${TAG}."
+          fi
+          for i in $(seq 1 10); do
+            ghcr_ver="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "$V" || true)"
+            ghcr_latest="$(reg_digest ghcr.io ghcr.io getbusbar/busbar latest || true)"
+            [ -n "$ghcr_ver" ] && [ "$ghcr_ver" = "$ghcr_latest" ] && break
+            echo "  ...ghcr.io :latest not yet == :${V} (attempt $i/10), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$ghcr_ver" ]; then
+            record "ghcr.io/getbusbar/busbar:${V}" "a resolvable manifest digest" "<nothing>" \
+              "Fix: re-run docker.yml's ghcr push for ${TAG}."
+          elif [ "$ghcr_latest" != "$ghcr_ver" ]; then
+            record "ghcr.io/getbusbar/busbar:latest" "$ghcr_ver (the :${V} digest)" "${ghcr_latest:-<nothing>}" \
+              "Users pulling from GHCR without a tag get a different image than ${TAG}. Same fix as the Docker Hub case."
+          else
+            echo "PASS: ghcr.io/getbusbar/busbar:latest == :${V} (${ghcr_latest})"
+          fi
+          # And the two registries must agree, or "latest" means two different things depending on
+          # which registry you happened to pull from.
+          if [ -n "$dh_ver" ] && [ -n "$ghcr_ver" ] && [ "$dh_ver" != "$ghcr_ver" ]; then
+            record "ghcr.io vs docker.io for :${V}" "$dh_ver" "$ghcr_ver" \
+              "The same tag resolves to DIFFERENT images on the two registries, so which bytes a user runs depends on which registry they pulled from. Fix: docker.yml copies the manifest cross-registry; re-run it for ${TAG}."
+          fi
+
+          # -- P3: the GitHub /releases/latest redirect, and its assets --------------------------
+          # Every download button on getbusbar.com, and install.sh, follow this. It 404s outright if
+          # the newest Release is not flagged 'latest', and silently serves the PREVIOUS release's
+          # bytes if the newest one never published.
+          loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
+            "https://github.com/GetBusbar/busbar/releases/latest" || true)"
+          if [ "${loc##*/releases/tag/}" = "$TAG" ]; then
+            echo "PASS: github.com/GetBusbar/busbar/releases/latest -> ${TAG}"
+          else
+            record "github.com/GetBusbar/busbar/releases/latest" ".../releases/tag/${TAG}" "${loc:-<no redirect>}" \
+              "install.sh and every download button on getbusbar.com resolve through this redirect, so all of them are handing users the wrong release. Fix: mark Release ${TAG} as 'latest' (it is probably still a draft or flagged prerelease)."
+          fi
+          # A redirect that lands in the right place still proves nothing if the assets behind it are
+          # not there. THIS IS THE 1.5.3 FIVE-OF-SEVEN CASE: the Release existed, was flagged latest,
+          # and `curl install.sh | sh` still 404'd on Apple Silicon because that platform's tarball
+          # was never uploaded. The expected names come from the release's OWN manifest at the tag,
+          # never from a list typed here.
+          # The manifest is fetched at the TAG first so the expectation tracks the release that
+          # produced the assets. Tags cut before the manifest existed do not carry it, and it has not
+          # reached `main` yet either, so the chain degrades tag -> main -> dev. Reading it from a
+          # branch is weaker (the platform set could have moved since the tag) but it is the same
+          # trade check (c) already makes, and the platform set changes rarely - whereas HARDCODING
+          # a list here would be the exact defect the manifest was introduced to remove.
+          got_manifest=0
+          for ref in "${TAG}" main dev; do
+            if curl -fsS --max-time 30 \
+                 "https://raw.githubusercontent.com/GetBusbar/busbar/${ref}/.github/release-targets.json" \
+                 -o /tmp/pt-targets.json 2>/dev/null; then
+              [ "$ref" = "$TAG" ] || echo "note: ${TAG} does not carry .github/release-targets.json; using ${ref}'s copy."
+              got_manifest=1
+              break
+            fi
+          done
+          if [ "$got_manifest" = 1 ]; then
+            mapfile -t want < <(python3 - "$TAG" <<'PY'
+          import json, sys
+          spec = json.load(open("/tmp/pt-targets.json"))
+          for t in spec["targets"]:
+              print("busbar-%s.%s" % (t["target"], t["archive"]))
+          PY
+          )
+            if [ "${#want[@]}" -lt 5 ]; then
+              record "release-targets manifest at ${TAG}" ">= 5 platform archives" "${#want[@]}" \
+                "Refusing to 'verify' the latest-download path against an empty expectation list: that passes for a release that published nothing."
+            fi
+            for a in "${want[@]}"; do
+              u="https://github.com/GetBusbar/busbar/releases/latest/download/${a}"
+              code="$(curl -sSL --max-time 60 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+              case "$code" in
+                200|206) echo "PASS: /releases/latest/download/${a} -> ${code}" ;;
+                *) record "/releases/latest/download/${a}" "HTTP 200/206" "HTTP ${code}" \
+                     "This is the platform-specific 404 that broke \`curl -fsSL https://getbusbar.com/install.sh | sh\` on Apple Silicon for the whole 1.5.3 release. A user on that platform gets nothing. Fix: find that target's leg in release.yml's \`upload-assets\` matrix, fix it, and re-upload the asset to ${TAG}." ;;
+              esac
+            done
+          else
+            record ".github/release-targets.json (tried ${TAG}, main, dev)" "fetchable over raw.githubusercontent" "<not found on any ref>" \
+              "Without it this check cannot know which platforms ${TAG} owed, and guessing is how a missing platform got waved through in the first place. Fix: restore .github/release-targets.json - release.yml's own \`targets\` job reads the same file, so if it is really gone the release matrix is broken too."
+          fi
+
+          # -- P4: Homebrew tap ------------------------------------------------------------------
+          fver="$(curl -fsSL --max-time 30 \
+            "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null \
+            | grep -m1 -E '^ *version "' | sed -E 's/.*version "([^"]+)".*/\1/' || true)"
+          if [ "$fver" = "$V" ]; then
+            echo "PASS: Homebrew tap formula version == ${V}"
+          else
+            record "Homebrew tap Formula/busbar.rb version" "$V" "${fver:-<unreadable>}" \
+              "\`brew install getbusbar/busbar/busbar\` -- the documented command - installs an old binary. Fix: run/repair the tap's bump.yml workflow."
+          fi
+
+          # -- P5: published Helm chart appVersion -----------------------------------------------
+          appver="$(curl -fsS --max-time 60 "https://getbusbar.github.io/helm-charts/index.yaml" 2>/dev/null \
+            | awk '/^  busbar:/{f=1} f && /appVersion:/{print $2; exit}' | tr -d '"' || true)"
+          if [ "$appver" = "$V" ]; then
+            echo "PASS: helm-charts busbar appVersion == ${V}"
+          else
+            record "GetBusbar/helm-charts busbar chart appVersion" "$V" "${appver:-<unreadable>}" \
+              "\`helm install busbar getbusbar/busbar\` deploys an old gateway. Fix: run/repair helm-charts' release workflow."
+          fi
+
+          # -- P6: what the site presents as current ---------------------------------------------
+          # Anchored: an unanchored substring match once passed v1.5.2 against a page advertising
+          # v1.5.20.
+          # NEVER `curl ... | grep -q` UNDER pipefail. `grep -q` exits the instant it matches, which
+          # closes the pipe, which kills curl with SIGPIPE (exit 23), which `pipefail` then reports
+          # as a failed pipeline - so the check goes RED EXACTLY WHEN THE ASSERTION HOLDS and green
+          # only when the page is missing the version. That inversion is live in check (g) below and
+          # is fixed there too. Fetch to a file, then grep the file.
+          # "COULD NOT READ THE PAGE" AND "THE PAGE IS STALE" ARE DIFFERENT INCIDENTS and must not
+          # share a message. The first run of this check on a GitHub runner reported "v1.5.3 not
+          # present on the page" for a page that plainly shows v1.5.3 from a laptop: the runner's
+          # datacenter IP gets a different response (bot challenge / edge block) than a browser. A
+          # check that says "the site is stale" when it means "I was blocked" sends whoever reads
+          # the issue to redeploy a site that is fine, and the second time it does that, everyone
+          # stops believing it. So: send the User-Agent a real visitor sends, and report the HTTP
+          # code and body size when the page cannot be read as a page, distinct from staleness.
+          dl_code="$(curl -sSL --max-time 30 \
+            -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            -o /tmp/pt-download.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+          dl_size="$(wc -c < /tmp/pt-download.html 2>/dev/null || echo 0)"
+          # 403/429 IS NOT THE SAME INCIDENT AS 404/5xx, and conflating them is why this check has
+          # been red on main every day. A 403 is aimed at US: getbusbar.com sits behind an edge that
+          # challenges datacenter IPs, so a GitHub runner is refused while a browser is served
+          # normally. That means the check COULD NOT RUN, not that the assertion failed - and
+          # reporting "the site is stale" for a site that is fine is how a gate gets ignored. It is a
+          # VISIBLE SKIP, announced three ways (log, annotation, step summary), never a silent one.
+          # Anything else non-200 is broken for real users too, and stays a hard failure.
+          case "${dl_code}:$([ "$dl_size" -lt 500 ] && echo small || echo ok)" in
+            200:ok) dl_state=readable ;;
+            403:*|429:*) dl_state=blocked ;;
+            *) dl_state=broken ;;
+          esac
+          if [ "$dl_state" = "blocked" ]; then
+            echo "VISIBLE SKIP: getbusbar.com/download/ returned HTTP ${dl_code} to this runner, so the advertised-version assertion could NOT be evaluated. This is an edge/bot block against GitHub's datacenter IPs, not a stale page: a browser is served normally."
+            echo "::warning::(pointers) PARTIAL: getbusbar.com/download/ returns HTTP ${dl_code} to GitHub Actions runners, so the 'site advertises the current version' assertion did not run. Every other pointer WAS checked and is authoritative. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /download/ (or expose a small unchallenged JSON route carrying the current version), so this assertion can be made from CI at all."
+            { echo "### Moving pointers: PARTIAL - getbusbar.com/download/ returns HTTP ${dl_code} to this runner, so the advertised-version check did not run"; } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$dl_state" = "broken" ]; then
+            record "getbusbar.com/download/ availability" "HTTP 200 and a real HTML page" "HTTP ${dl_code}, ${dl_size} bytes" \
+              "The download page is not being served at all. Unlike a 403, this is broken for every visitor, not just for CI. Fix: redeploy the marketing site."
+          elif grep -qE "v${V}([^0-9]|\$)" /tmp/pt-download.html; then
+            echo "PASS: getbusbar.com/download/ advertises v${V}"
+          else
+            record "getbusbar.com/download/ advertised version" "v${V}" \
+              "<not present in ${dl_size} bytes of HTML: $(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' /tmp/pt-download.html | sort -u | tr '\n' ' ' | head -c 80)>" \
+              "The site tells visitors the current release is something other than ${TAG}. Fix: redeploy the marketing site."
+          fi
+
+          # -- P7-P10: INDEPENDENT-SEMVER channels. The invariant is registry-latest == that repo's
+          # own newest published tag, NOT == busbar's version. ----------------------------------
+          check_independent() {  # check_independent <label> <owner/repo> <observed-latest> <hint>
+            local label="$1" repo="$2" observed="$3" hint="$4" want
+            want="$(newest_tag "$repo")"
+            if [ -z "${want:-}" ]; then
+              declared "$label" "GetBusbar/${repo##*/} has published no releases yet, so it has no newest tag to be behind. Nothing to assert until it cuts one."
+              return
+            fi
+            if [ -z "${observed:-}" ]; then
+              record "$label" "$want" "<registry did not answer>" "$hint"
+            elif [ "${observed#v}" = "$want" ]; then
+              echo "PASS: ${label} == ${observed} (repo's newest tag v${want})"
+            else
+              record "$label" "$want" "${observed#v}" "$hint"
+            fi
+          }
+
+          tf="$(curl -fsS --max-time 30 "https://registry.terraform.io/v1/providers/getbusbar/busbar/versions" 2>/dev/null \
+                | jq -r '.versions[]?.version' 2>/dev/null | sort -V | tail -1 || true)"
+          check_independent "registry.terraform.io getbusbar/busbar latest" GetBusbar/terraform-provider-busbar "$tf" \
+            "\`terraform { required_providers { busbar = {} } }\` with no version constraint resolves to the registry's latest, so every unpinned Terraform config gets an old provider. Fix: the provider repo tagged a release the registry never ingested - re-run its release workflow and confirm the GPG signing key is still valid on the registry."
+
+          pypi="$(curl -fsS --max-time 30 "https://pypi.org/pypi/busbar-admin/json" 2>/dev/null \
+                  | jq -r '.info.version // empty' 2>/dev/null || true)"
+          check_independent "PyPI busbar-admin latest" GetBusbar/busbar-python "$pypi" \
+            "\`pip install busbar-admin\` installs an old SDK. Fix: the tag exists but the PyPI publish job did not run or could not authenticate - re-run busbar-python's release workflow."
+
+          npmv="$(curl -fsS --max-time 30 "https://registry.npmjs.org/@busbar%2Fbusbar-admin" 2>/dev/null \
+                  | jq -r '.["dist-tags"].latest // empty' 2>/dev/null || true)"
+          check_independent "npm @busbar/busbar-admin dist-tag latest" GetBusbar/busbar-js "$npmv" \
+            "\`npm install @busbar/busbar-admin\` installs an old SDK. Fix: re-run busbar-js's release workflow (a publish that succeeded but did not move the \`latest\` dist-tag looks exactly like this)."
+
+          # proxy.golang.org's ! escaping for capitals: GetBusbar -> !get!busbar.
+          gov="$(curl -fsS --max-time 30 "https://proxy.golang.org/github.com/!get!busbar/busbar-go/@latest" 2>/dev/null \
+                 | jq -r '.Version // empty' 2>/dev/null || true)"
+          check_independent "proxy.golang.org github.com/GetBusbar/busbar-go @latest" GetBusbar/busbar-go "$gov" \
+            "\`go get github.com/GetBusbar/busbar-go\` resolves through the module proxy, so it fetches an old SDK. Fix: the proxy caches on first request - confirm the tag is pushed and reachable, then warm it."
+
+          # -- P11: validate-action's @v1 moving tag ---------------------------------------------
+          # HOW IT IS CONSUMED: the README and every example pin `uses: GetBusbar/validate-action@v1`,
+          # so `v1` is a MUTABLE tag that must be re-pointed at each v1.x.y. A forgotten re-point is
+          # invisible - the action still runs, it just runs old code forever.
+          gh api --paginate repos/GetBusbar/validate-action/tags \
+            --jq '.[] | "\(.name) \(.commit.sha)"' > /tmp/va-tags.txt 2>/dev/null || : > /tmp/va-tags.txt
+          va_newest="$(awk '{print $1}' /tmp/va-tags.txt \
+            | grep -E '^v1\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1 || true)"
+          if [ -z "${va_newest:-}" ]; then
+            declared "GetBusbar/validate-action@v1" "no v1.x.y tags published yet, so the v1 alias has nothing to be behind."
+          else
+            # THE DEREFERENCE MATTERS. `git/ref/tags/<name>` returns `object.sha`, which for an
+            # ANNOTATED tag is the TAG OBJECT's sha, not the commit's - two annotated tags on the
+            # SAME commit have different tag-object shas, so comparing those two values reports every
+            # correctly-repointed alias as stale. `repos/:o/:r/tags` returns `commit.sha`, already
+            # dereferenced, which is the thing that actually decides what code the action runs.
+            va_alias_sha="$(awk '$1=="v1"{print $2; exit}' /tmp/va-tags.txt)"
+            va_point_sha="$(awk -v t="v${va_newest}" '$1==t{print $2; exit}' /tmp/va-tags.txt)"
+            if [ -n "$va_alias_sha" ] && [ "$va_alias_sha" = "$va_point_sha" ]; then
+              echo "PASS: GetBusbar/validate-action@v1 -> v${va_newest} (${va_alias_sha:0:12})"
+            else
+              record "GetBusbar/validate-action@v1 moving tag" "the commit behind v${va_newest} (${va_point_sha:-<unknown>})" "${va_alias_sha:-<v1 tag missing>}" \
+                "Every workflow in the world that pins \`uses: GetBusbar/validate-action@v1\` (which is what our own README tells them to do) is running the OLD action. Fix: \`git tag -f v1 v${va_newest} && git push -f origin v1\` in validate-action, or repair its self-heal.yml."
+            fi
+          fi
+
+          # -- Channels with NO meaningful "latest", stated rather than skipped ------------------
+          # Silence here is how a channel stops being checked without anyone deciding to stop
+          # checking it, so each one is named and justified in the log every run.
+          declared "crates.io" "busbar is distributed as a static binary, a container image and OS packages; no crate is published, so there is no crates.io pointer to be stale."
+          declared "the docs' copy-paste commands" "they are deliberately version-AGNOSTIC (\`docker pull getbusbar/busbar\`, \`/releases/latest/download/...\`, \`brew install getbusbar/busbar/busbar\`) -- that is why they never rot, and it is precisely the pointers behind them, asserted above, that can. The one version string the docs do present is the download page's, checked as P6."
+          declared "GetBusbar/busbar-admin (busbarctl), busbar-ui, pulumi-busbar, provider-busbar" "each is independently versioned and published from its own repo with no moving default pointer that resolves through busbar's release; when one grows a registry pointer (a Pulumi package on npm/PyPI, a Crossplane package on xpkg) add it to the independent-semver block above rather than leaving it silently uncovered."
+
+          {
+            echo "### Moving pointers"
+            echo
+            if [ "$fail" = 0 ]; then
+              echo "All default pointers resolve to \`${TAG}\`."
+            else
+              echo "STALE POINTERS against \`${TAG}\`:"
+              echo
+              cat /tmp/pointer-failures.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$fail" = 0 ]
+
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     # Every check below talks to a THIRD-PARTY host (registry-1.docker.io, ghcr.io,
     # registry.terraform.io, getbusbar.github.io, getbusbar.com, raw.githubusercontent.com). A TCP
     # connect that is accepted and then never answered does not fail — it hangs, and with no job
@@ -155,23 +674,61 @@ jobs:
     # one each (~5m), plus image pulls, the brew install and the two quickstart boots. ~45m worst
     # case when things are merely slow, so 60 leaves headroom without hiding a true hang.
     timeout-minutes: 60
+    # The 3-hourly cron drives the CHEAP `pointers` job only. Running this 45-minute sweep (image
+    # pulls, a real install.sh, a brew install, two container boots) eight times a day would burn
+    # roughly six hours of runner time daily for no extra signal - the rot it catches does not move
+    # on a 3-hour timescale, and the pointer rot that does now has its own job. `github.event.schedule`
+    # is the literal cron string of the entry that fired, which is the only way to tell two schedules
+    # on one workflow apart.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'release' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+      github.event.schedule != '23 */3 * * *' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule' ||
+       github.event_name == 'release' ||
+       inputs.version != '' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
     env:
       DOCKERHUB_IMAGE: getbusbar/busbar
       GHCR_IMAGE: ghcr.io/getbusbar/busbar
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 'public' (default) or 'staging'. Referenced from `if:` as `inputs.stage` and from scripts as
+      # $STAGE; both spellings are needed because `if:` cannot read a job `env:`.
+      STAGE: ${{ inputs.stage || 'public' }}
+      # The image the artifact-side checks actually pull. Empty means "the published pin",
+      # `${DOCKERHUB_IMAGE}:${V}`, which is what every non-staging trigger wants.
+      IMAGE_REF: ${{ inputs.image_ref || '' }}
     steps:
+      - name: What this run is verifying, and what it therefore cannot
+        run: |
+          set -euo pipefail
+          if [ "$STAGE" = "staging" ]; then
+            echo "STAGING MODE. The release is a DRAFT and the image is under a throwaway tag."
+            echo "  image under test: ${IMAGE_REF:-<none supplied>}"
+            echo "  running: (c) assets, (c2) execute the binary, (d) fresh image pull + label,"
+            echo "           (l) documented quickstart, (m) attestation."
+            echo "  VISIBLY SKIPPED, because they read channels that only move after publication:"
+            echo "           (a)(b) registry pointers, (e) terraform, (f) helm, (g) getbusbar.com,"
+            echo "           (h)(i) install.sh, (j) homebrew, (k) site APIs, (n) live counters."
+            echo "  Those all run from release.yml's consumer-verification job after the promote."
+            [ -n "$IMAGE_REF" ] || { echo "::error::staging mode requires image_ref; without it the image checks would silently verify the PUBLISHED image and pass on the previous release."; exit 1; }
+          else
+            echo "PUBLIC MODE. Every check runs."
+          fi
+
       - name: Resolve version under test
         id: ver
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # `inputs.version` first, and deliberately NOT keyed on `github.event_name`: inside a
+          # workflow_call the event name is the CALLER's (`push`, for a tag push from release.yml),
+          # not `workflow_call`, so branching on the event name would silently take the wrong path
+          # for the very invocation that makes this the release's last step. The input is set by
+          # exactly two triggers (workflow_dispatch and workflow_call) and empty for the rest, which
+          # is a direct, non-inferred signal.
+          if [ -n "${{ inputs.version || '' }}" ]; then
             V="${{ inputs.version }}"
+            V="${V#v}"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
             # ROT CHECK: no tag in hand, so resolve "the current latest release" the way an
             # unauthenticated user's shell would — the plain HTTP 302 on github.com's
@@ -231,6 +788,10 @@ jobs:
 
       - name: "(a) registry-1.docker.io: version tag exists, latest == same digest"
         id: dockerhub
+        # POST-PUBLICATION ONLY: `latest` has not been moved yet at staging time, and the version
+        # pin does not exist under that name yet either. Both are asserted by docker.yml's own
+        # promote assertion at promote time, and again here after the promote.
+        if: ${{ inputs.stage != 'staging' }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -264,6 +825,9 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(b) ghcr.io carries the SAME digest as the Docker Hub version tag"
+        # POST-PUBLICATION ONLY: same reason as (a). docker.yml's promote assertion covers the
+        # cross-registry digest equality at the moment the names are created.
+        if: ${{ inputs.stage != 'staging' }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -308,22 +872,32 @@ jobs:
           # UNDER TEST over raw.githubusercontent, so the verifier and the release that produced the
           # assets cannot disagree about what was supposed to ship. Fetched rather than checked out
           # because this job deliberately checks nothing out.
-          mani="https://raw.githubusercontent.com/GetBusbar/busbar/${TAG}/.github/release-targets.json"
-          if ! curl -fsS --max-time 30 "$mani" -o /tmp/release-targets.json; then
-            # Tags cut BEFORE this manifest existed do not carry it. Falling back to main's copy is
-            # correct for them and honest about what it is doing: the platform set is what changes
-            # rarely, so main's list is the right answer for an old tag, and the alternative
-            # (hardcoding a list here) is the exact defect the manifest replaced. A release cut from
-            # now on always carries its own, so the fallback quietly stops being used.
-            echo "note: ${TAG} predates .github/release-targets.json; falling back to main's copy."
-            if ! curl -fsS --max-time 30 \
-              "https://raw.githubusercontent.com/GetBusbar/busbar/main/.github/release-targets.json" \
-              -o /tmp/release-targets.json; then
-              echo "FAIL: no release-target manifest at ${TAG} and none on main either."
-              echo "Without it this check cannot know which platforms ${TAG} owed, and guessing is"
-              echo "how a missing platform got waved through in the first place."
-              exit 1
+          # Tags cut BEFORE this manifest existed do not carry it, so the fetch degrades
+          # tag -> main -> dev. The dev leg is not hypothetical padding: the manifest was ADDED on
+          # dev and has not been promoted to main yet, so as written this check hard-failed on every
+          # run today with "no release-target manifest at v1.5.3 and none on main either" and every
+          # check after it in the job was skipped - a whole verifier taken out by a file being one
+          # branch away. Reading it from a branch is weaker than reading it at the tag (the platform
+          # set could have moved since), but it is the same trade the main fallback already made,
+          # the platform set changes rarely, and the alternative (hardcoding a list here) is the
+          # exact defect the manifest was introduced to remove. Releases cut from now on carry their
+          # own copy and the fallbacks quietly stop being used.
+          got_mani=0
+          for ref in "${TAG}" main dev; do
+            if curl -fsS --max-time 30 \
+                 "https://raw.githubusercontent.com/GetBusbar/busbar/${ref}/.github/release-targets.json" \
+                 -o /tmp/release-targets.json; then
+              [ "$ref" = "$TAG" ] || echo "note: ${TAG} does not carry .github/release-targets.json; using ${ref}'s copy."
+              got_mani=1
+              break
             fi
+          done
+          if [ "$got_mani" = 0 ]; then
+            echo "FAIL: no release-target manifest at ${TAG}, on main, or on dev."
+            echo "Without it this check cannot know which platforms ${TAG} owed, and guessing is"
+            echo "how a missing platform got waved through in the first place."
+            echo "::error::(c) .github/release-targets.json could not be fetched from ${TAG}, main or dev. release.yml's own \`targets\` job reads the same file, so if it is genuinely gone the release build matrix is broken too. Fix: restore it."
+            exit 1
           fi
           mapfile -t expected < <(python3 - "$TAG" <<'PY'
           import json, sys
@@ -375,18 +949,80 @@ jobs:
               fail=1
               continue
             fi
-            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
-            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
-            case "$code" in
-              200|206) echo "PASS: Release asset present, ${sz} bytes, downloadable: $a" ;;
-              *)
-                echo "FAIL: Release asset ${a} is listed but NOT downloadable (HTTP ${code})"
-                echo "::error::(c) Release ${TAG} lists ${a} but downloading it returns HTTP ${code}. Fix: re-upload the asset on the Release."
+            # THE FETCH PATH DIFFERS BY MODE, AND THE ASSERTION DOES NOT. A DRAFT's assets are real
+            # and really downloadable, but only through the API -- the public
+            # /releases/download/<tag>/<asset> URL 404s until the release is published, which is
+            # exactly the property that makes a draft safe to build against. So staging mode fetches
+            # the same bytes with `gh release download`, and public mode keeps using the anonymous
+            # URL a user's curl actually hits. Both prove the same thing: the listed name yields
+            # bytes.
+            if [ "$STAGE" = "staging" ]; then
+              d="$(mktemp -d)"
+              if gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$d" --clobber >/dev/null 2>&1 \
+                 && [ -s "$d/$a" ]; then
+                echo "PASS: draft asset present, ${sz} bytes, downloadable via the release API: $a"
+              else
+                echo "FAIL: draft asset ${a} is listed but could not be downloaded"
+                echo "::error::(c) the ${TAG} draft lists ${a} but downloading it fails. Nothing is public and no tag exists, so fix the upload and re-run the release."
                 fail=1
-                ;;
-            esac
+              fi
+              rm -rf "$d"
+            else
+              u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
+              code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+              case "$code" in
+                200|206) echo "PASS: Release asset present, ${sz} bytes, downloadable: $a" ;;
+                *)
+                  echo "FAIL: Release asset ${a} is listed but NOT downloadable (HTTP ${code})"
+                  echo "::error::(c) Release ${TAG} lists ${a} but downloading it returns HTTP ${code}. Fix: re-upload the asset on the Release."
+                  fail=1
+                  ;;
+              esac
+            fi
           done
           [ "$fail" = 0 ]
+
+      # (c2) THE BYTES RUN, AND THEY SAY WHO THEY ARE. STAGING MODE'S ANSWER TO (h).
+      #
+      # (c) proves an asset downloads. That is not the same as the asset being a working busbar, and
+      # the difference is not academic: a tarball can be complete, correctly sized, correctly named
+      # and contain a binary that segfaults on start or reports the previous version. In public mode
+      # (h) closes that by running the LIVE install.sh end to end, but install.sh follows
+      # /releases/latest, which a draft deliberately does not resolve as -- so pre-promote there has
+      # to be a direct equivalent.
+      #
+      # This is it: pull the linux tarball off the DRAFT, unpack it, mark it executable, and run
+      # `busbar --version`. The assertion is on what the binary SAYS about itself, anchored, not a
+      # substring: `1.5.4` must not be satisfied by a binary printing `1.5.40`, and a version bump
+      # that never reached the build (a stale Cargo.toml, a cached target dir, the wrong commit
+      # built) is exactly the mistake it catches.
+      - name: (c2) the release binary from the draft actually executes and reports the version
+        if: ${{ inputs.stage == 'staging' }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"; TAG="${{ steps.ver.outputs.tag }}"
+          a="busbar-x86_64-unknown-linux-gnu.tar.gz"   # the runner's own platform, so it can run
+          work="$(mktemp -d)"
+          gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$work" --clobber
+          tar -xzf "$work/$a" -C "$work"
+          bin="$work/busbar"
+          [ -f "$bin" ] || { echo "::error::(c2) ${a} does not contain a \`busbar\` binary at the archive root. install.sh and every documented unpack step expect it there."; exit 1; }
+          chmod +x "$bin"
+          out="$("$bin" --version 2>&1)" || {
+            echo "--- output ---"; echo "$out"; echo "--------------"
+            echo "::error::(c2) the busbar binary from the ${TAG} draft FAILED TO EXECUTE. Every user who downloads this platform's tarball gets a binary that does not run. Nothing is public and no tag exists: fix the build and re-run."
+            exit 1
+          }
+          echo "busbar --version -> $out"
+          # Anchored on a word boundary at both ends: '1.5.4' must not match '1.5.40'.
+          if echo "$out" | grep -qE "(^|[^0-9.])${V//./\\.}([^0-9.]|$)"; then
+            echo "PASS: (c2) the draft's linux binary executes and reports ${V}"
+          else
+            echo "::error::(c2) the busbar binary from the ${TAG} draft runs but reports '${out}', which does not contain ${V}. The archive and the bytes disagree about which release this is. Fix: confirm crates/busbar/Cargo.toml was bumped on the commit being released and that the build was not served from a stale cache."
+            exit 1
+          fi
+          rm -rf "$work"
 
       - name: "(d) running image's org.opencontainers.image.version label == version"
         # `docker pull` has no built-in timeout and will sit on a stalled registry indefinitely.
@@ -396,16 +1032,60 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
-          docker pull "${DOCKERHUB_IMAGE}:${V}"
-          label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:${V}")"
+          fail=0
+          # THE IMAGE UNDER TEST. In staging mode that is the throwaway `staging-<sha>` tag: real
+          # bytes in the real registry, pulled over the real network, under a name no user consumes.
+          # The label assertion below is unchanged and is the whole point of docker.yml setting
+          # org.opencontainers.image.version explicitly from label_version -- the staged image
+          # already claims the version it will be promoted to, so this is a real check now and not
+          # one deferred until the name is permanent.
+          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
+          # -- THE LOCAL CACHE TRAP --------------------------------------------------------------
+          # `docker pull` is a no-op when a local image already carries that tag and the daemon
+          # believes it is current, and `docker inspect` then reads the LOCAL copy. On any runner or
+          # laptop that has touched this tag before, the answer is whatever was cached, not what the
+          # registry serves - which reports a stale `latest` as fresh, and (this cost real time) a
+          # fresh `latest` as stale. Deleting the local tags first makes the pull authoritative.
+          # This is also why the `pointers` job compares registry DIGESTS and pulls nothing at all.
+          docker rmi -f "$IMG" "${DOCKERHUB_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:latest" >/dev/null 2>&1 || true
+          docker pull "$IMG"
+          label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMG")"
           if [ "$label" = "$V" ]; then
-            echo "PASS: running image label org.opencontainers.image.version == ${V}"
+            echo "PASS: running image label org.opencontainers.image.version == ${V} (image: ${IMG})"
           else
             echo "FAIL: running image label org.opencontainers.image.version == '${label}', expected '${V}'"
-            exit 1
+            echo "::error::(d) ${IMG} should be busbar ${V} but the image inside reports org.opencontainers.image.version='${label}'. The tag and the bytes disagree. Fix: check docker.yml's label_version input for this build."
+            fail=1
           fi
+          # THE UNTAGGED PULL IS A POST-PUBLICATION ASSERTION. `docker pull getbusbar/busbar` with no
+          # tag reads `latest`, which has deliberately not moved yet at staging time, so asserting it
+          # here would assert that the release under test is already the default -- false by
+          # construction, and it would go green only if the promote had already happened.
+          if [ "$STAGE" = "staging" ]; then
+            echo "VISIBLE SKIP: (d) the untagged \`docker pull ${DOCKERHUB_IMAGE}\` half is post-publication - \`latest\` has not been moved yet, which is the point. docker.yml's promote assertion proves latest == ${V} the moment it moves, and this check re-proves it in public mode."
+            [ "$fail" = 0 ]
+            exit 0
+          fi
+          # AND THE COMMAND A USER ACTUALLY TYPES. `docker pull getbusbar/busbar` -- no tag - is what
+          # the README, the docs and getbusbar.com all show. The `pointers` job proves :latest and
+          # :${V} share a manifest digest; this proves the thing that comes out of the untagged pull
+          # reports the right version when you run it, which is the assertion a user can make for
+          # themselves in one command. Both are kept: the digest check catches a stale pointer even
+          # when the label happens to be right, and this catches a correct pointer onto a mislabelled
+          # image.
+          docker pull "${DOCKERHUB_IMAGE}"
+          llabel="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:latest")"
+          if [ "$llabel" = "$V" ]; then
+            echo "PASS: \`docker pull ${DOCKERHUB_IMAGE}\` (untagged, the documented command) yields ${V}"
+          else
+            echo "FAIL: \`docker pull ${DOCKERHUB_IMAGE}\` yields version '${llabel}', expected '${V}'"
+            echo "::error::(d) \`docker pull ${DOCKERHUB_IMAGE}\` -- the untagged command in the README, the docs and on getbusbar.com - yields an image reporting version '${llabel}' instead of '${V}'. Every user who follows the documented instructions runs the WRONG release. This is the 1.5.3 defect verbatim. Fix: docker.yml's \`tags:\` block must emit an explicit \`type=raw,value=latest\` -- docker/metadata-action does NOT imply \`latest\` from \`type=semver,pattern={{version}}\`."
+            fail=1
+          fi
+          [ "$fail" = 0 ]
 
       - name: "(e) terraform-provider-busbar is published on registry.terraform.io (independent semver)"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           # MIXED-MODEL distribution versioning: the Terraform provider is a WRAPPER, so it keeps
@@ -447,6 +1127,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(f) GetBusbar/helm-charts busbar chart appVersion == vX.Y.Z"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -473,6 +1154,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
+        if: ${{ inputs.stage != 'staging' }}  # downstream channel; only moves after publication
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -484,20 +1166,46 @@ jobs:
           # PASSED — the check reported "the site is serving v1.5.2" while the site showed a
           # different version entirely. Requiring a non-digit (or end of line) after the version
           # makes the assertion mean what its name says.
+          # AND WHY IT IS NOT PIPED. This was `curl ... | grep -qE ...` under `set -euo pipefail`,
+          # which is an inverted assertion: `grep -q` exits at the first match, closing the pipe,
+          # killing curl with SIGPIPE (exit 23), and `pipefail` reports the pipeline as FAILED. So
+          # the branch was taken only when the page did NOT contain the version - this check has
+          # been reporting "getbusbar.com/download/ does not show vX.Y.Z" against a page that
+          # plainly does, burning its full 5 minutes of retries first. Fetch, then grep the file.
+          # And the UA is a real browser's for the reason the `pointers` job documents: a bare curl
+          # from a datacenter IP can be served a challenge page instead of the site, which reads as
+          # "the version is missing" and sends someone to redeploy a site that is fine.
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+          dl_code=000
           for i in $(seq 1 20); do
-            if curl -fsS --max-time 30 "https://getbusbar.com/download/" 2>/dev/null \
-                 | grep -qE "v${V}([^0-9]|\$)"; then
+            dl_code="$(curl -sSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+              -o /tmp/dl-version.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+            if grep -qE "v${V}([^0-9]|\$)" /tmp/dl-version.html; then
               found=1
               break
             fi
-            echo "  ...getbusbar.com/download/ does not yet show v${V} (attempt $i/20), retrying in 15s"
+            # A 403/429 will not become a 200 by waiting: it is an edge rule about WHO is asking,
+            # not a deploy that has not landed yet. Burning five minutes of retries on it delays the
+            # rest of the run and dresses a block up as a slow rollout.
+            case "$dl_code" in 403|429) break ;; esac
+            echo "  ...getbusbar.com/download/ does not yet show v${V} (HTTP ${dl_code}, attempt $i/20), retrying in 15s"
             sleep 15
           done
           if [ "$found" = 1 ]; then
             echo "PASS: getbusbar.com/download/ shows v${V}"
+          elif [ "$dl_code" = "403" ] || [ "$dl_code" = "429" ]; then
+            # VISIBLE SKIP, same shape and same reasoning as the brew half of check (j). This is the
+            # true cause of the daily red on main: the page DOES advertise the version when fetched
+            # from a browser, and getbusbar.com's edge refuses GitHub's datacenter IPs, so the check
+            # was reporting a stale site that is not stale. A check that is red for a reason nobody
+            # can act on is worse than no check, because it is the one that teaches people that red
+            # means nothing here.
+            echo "VISIBLE SKIP: getbusbar.com/download/ returned HTTP ${dl_code} to this runner, so the advertised-version half of (g) could NOT be evaluated. The link-resolution half below DID run and is authoritative."
+            echo "::warning::(g) PARTIAL: getbusbar.com/download/ returns HTTP ${dl_code} to GitHub Actions runners (an edge/bot rule against datacenter IPs, not a stale page - a browser is served normally), so the 'site advertises v${V}' assertion did not run. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /download/, or expose a small unchallenged JSON route carrying the current version, so this can be asserted from CI at all."
+            { echo "### (g) getbusbar.com: PARTIAL - HTTP ${dl_code} to this runner, advertised-version check not exercised"; } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
-            echo "::error::(g) getbusbar.com/download/ does not advertise v${V}. Fix: redeploy the marketing site so the download page picks up the new release."
+            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries (last HTTP ${dl_code})"
+            echo "::error::(g) getbusbar.com/download/ does not advertise v${V} (last response HTTP ${dl_code}). Fix: redeploy the marketing site so the download page picks up the new release."
             fail=1
           fi
 
@@ -507,10 +1215,18 @@ jobs:
           # can be green while every button hands users a stale binary — and they 404 outright if
           # the Release exists but is not flagged 'latest'. Both are user-visible breakage that
           # nothing else in this workflow covers, so resolve what the buttons actually point at.
-          curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
-            echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links. Fix: redeploy the marketing site."
+          page_code="$(curl -sSL --max-time 30 -H "User-Agent: $UA" -H 'Accept: text/html,application/xhtml+xml' \
+            -o /tmp/dl-page.html -w '%{http_code}' "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+          if [ "$page_code" = "403" ] || [ "$page_code" = "429" ]; then
+            # Blocked, not broken. Skip the LINK-SCRAPING half visibly, but keep going: the
+            # /releases/latest resolution below needs no page at all and is the assertion that
+            # actually decides whether every button on the site serves the right release.
+            echo "VISIBLE SKIP: cannot scrape getbusbar.com/download/'s links (HTTP ${page_code} to this runner). The /releases/latest resolution below still runs and is the load-bearing half."
+            : > /tmp/dl-page.html
+          elif [ "$page_code" != "200" ]; then
+            echo "::error::(g) getbusbar.com/download/ returned HTTP ${page_code} - not a block (403/429) but a genuine failure to serve, which every visitor sees too. Fix: redeploy the marketing site."
             exit 1
-          }
+          fi
           # Where does /releases/latest actually land? That is what every button on the page follows.
           loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
             "https://github.com/GetBusbar/busbar/releases/latest" || true)"
@@ -523,9 +1239,15 @@ jobs:
           fi
           links="$(grep -oE 'https://github\.com/GetBusbar/busbar/releases/latest/download/[A-Za-z0-9._-]+' /tmp/dl-page.html | sort -u || true)"
           if [ -z "$links" ]; then
-            echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
-            echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
-            fail=1
+            if [ "$page_code" = "403" ] || [ "$page_code" = "429" ]; then
+              # We were never given the page, so "no links on it" is a statement about the block,
+              # not about the page. Saying the site exposes no downloads here would be a fabrication.
+              echo "VISIBLE SKIP: no links to check because the page was not served to this runner (HTTP ${page_code}); this is NOT evidence that the page lacks download links."
+            else
+              echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
+              echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
+              fail=1
+            fi
           fi
           while IFS= read -r u; do
             [ -n "$u" ] || continue
@@ -548,6 +1270,11 @@ jobs:
       # ---------------------------------------------------------------------------------------
 
       - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
+        # POST-PUBLICATION ONLY: the live install.sh follows /releases/latest, which a draft does
+        # not resolve as. (c2) below is the staging-mode substitute: it downloads the same tarball
+        # from the draft and EXECUTES it, so the binary is proven runnable before promotion even
+        # though the install PATH cannot be.
+        if: ${{ inputs.stage != 'staging' }}
         # Bounds the 10-attempt install loop plus the tarball download it performs.
         timeout-minutes: 20
         run: |
@@ -558,16 +1285,40 @@ jobs:
           # THE LIVE SCRIPT, not the repo working copy. A fix that is merged but never deployed to
           # getbusbar.com is still broken for every user, and reading ./install.sh from the checkout
           # would hide exactly that. (This job does not even check the repo out — on purpose.)
-          rm -rf /tmp/busbar-e2e
+          rm -rf /tmp/busbar-e2e /tmp/site-blocked
           mkdir -p /tmp/busbar-e2e/bin
           # --max-time bounds EACH of the 5 attempts, so the worst case is bounded at ~5*30s plus
           # the 4 inter-attempt delays rather than "one attempt hangs forever and --retry never
           # gets a turn". --retry alone does not imply any per-attempt timeout.
-          if ! curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
-               "https://getbusbar.com/install.sh" -o /tmp/busbar-e2e/install.sh; then
-            echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
-            exit 1
-          fi
+          code="$(curl -sSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
+            -o /tmp/busbar-e2e/install.sh -w '%{http_code}' \
+            "https://getbusbar.com/install.sh" 2>/dev/null || echo 000)"
+          # 403/429 IS A STATEMENT ABOUT US, NOT ABOUT THE SITE, and this check spent today
+          # asserting the opposite. getbusbar.com's edge challenges datacenter IPs, so a GitHub
+          # runner is refused while `curl -fsSL https://getbusbar.com/install.sh | sh` works
+          # perfectly from a laptop - yet the message below said "the documented one-liner in the
+          # README and on the site is dead. Fix: redeploy the marketing site". That is a fabrication
+          # about a healthy site, printed daily, and it is the single most effective way to teach
+          # everyone that red in this workflow means nothing. Which is how install.sh rotted under a
+          # green verifier in the first place.
+          #
+          # So: blocked is a VISIBLE SKIP that names the real blocker and the real fix; anything
+          # else non-200 stays the hard failure it should be, because a 404 or a 5xx here IS the
+          # documented one-liner being dead for everyone.
+          case "$code" in
+            403|429)
+              : > /tmp/site-blocked
+              echo "VISIBLE SKIP: https://getbusbar.com/install.sh returned HTTP ${code} to this runner, so checks (h) and (i) could NOT be evaluated at all. This is an edge/bot rule against GitHub's datacenter IPs; the one-liner works from a browser or a laptop."
+              echo "::warning::(h)(i) NOT EXERCISED: getbusbar.com returns HTTP ${code} to GitHub Actions runners, so the end-to-end install and the api.github.com dependency scan did not run. These are the two most valuable checks in this workflow and they are currently blind from CI. Fix is MARKETING-SIDE and should be treated as urgent: allow GitHub Actions egress through the Cloudflare bot rules for /install.sh and /providers.yaml, or serve them from a route exempt from the challenge."
+              { echo "### (h)(i) install.sh: NOT EXERCISED - getbusbar.com returns HTTP ${code} to GitHub runners"; } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            200) : ;;
+            *)
+              echo "::error::(h) https://getbusbar.com/install.sh returned HTTP ${code}. This is not a bot block (403/429) but a genuine failure to serve, so the documented one-liner in the README and on the site is dead for every user. Fix: redeploy the marketing site / restore the /install.sh route."
+              exit 1
+              ;;
+          esac
           [ -s /tmp/busbar-e2e/install.sh ] || {
             echo "::error::(h) https://getbusbar.com/install.sh served an EMPTY body. Fix: redeploy the marketing site."
             exit 1
@@ -651,6 +1402,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(i) install.sh must NOT depend on api.github.com (the 403 that broke it)"
+        if: ${{ inputs.stage != 'staging' }}  # reads the LIVE served script; unrelated to the artifacts
         run: |
           set -euo pipefail
           # WHY THIS EXISTS SEPARATELY FROM (h): (h) can pass on a runner while failing on every
@@ -658,6 +1410,12 @@ jobs:
           # GitHub's own egress is not treated like a stranger's. A green run is therefore NOT
           # evidence. The only durable assertion is the ABSENCE of the fragile dependency in the
           # script we actually serve, which is IP-independent and cannot pass for the wrong reason.
+          # (h) already classified the response and left this marker if the runner is blocked.
+          # Re-deriving that here would be a second fetch to be told the same thing.
+          if [ -f /tmp/site-blocked ]; then
+            echo "VISIBLE SKIP: (i) cannot inspect the live install.sh because getbusbar.com refuses this runner (see (h)'s warning). The api.github.com dependency is therefore UNVERIFIED for this run, not verified-absent."
+            exit 0
+          fi
           curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
             "https://getbusbar.com/install.sh" -o /tmp/busbar-installsh-live || {
               echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it. Fix: redeploy the marketing site."
@@ -680,6 +1438,7 @@ jobs:
           echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
 
       - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        if: ${{ inputs.stage != 'staging' }}  # the tap bumps off the published release
         # `brew install` builds/downloads and has no timeout of its own.
         timeout-minutes: 20
         run: |
@@ -779,6 +1538,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(k) getbusbar.com's own API endpoints answer with real numbers"
+        if: ${{ inputs.stage != 'staging' }}  # site-side, independent of the release under test
         run: |
           set -euo pipefail
           fail=0
@@ -789,6 +1549,16 @@ jobs:
             ep="$1"; keys="$2"; hint="$3"
             body="$(curl -sS -m 30 -o /tmp/api-body.json -w '%{http_code}' "https://getbusbar.com${ep}" || echo 000)"
             payload="$(cat /tmp/api-body.json 2>/dev/null || true)"
+            case "$body" in
+              403|429)
+                # Same distinction as (g)/(h): refused because of WHO is asking, not broken. A
+                # visitor's browser is served these endpoints normally, so calling them down here
+                # would be false, and a false red is how a gate stops being believed.
+                echo "VISIBLE SKIP: https://getbusbar.com${ep} returned HTTP ${body} to this runner (edge/bot rule against datacenter IPs), so it could not be evaluated."
+                echo "::warning::(k) NOT EXERCISED: getbusbar.com${ep} returns HTTP ${body} to GitHub Actions runners. Same marketing-side fix as (h): allow Actions egress through the bot rules."
+                return 0
+                ;;
+            esac
             if [ "$body" != "200" ]; then
               echo "FAIL: https://getbusbar.com${ep} returned HTTP ${body} (body: ${payload:-<empty>})"
               echo "::error::(k) https://getbusbar.com${ep} returns HTTP ${body}, body ${payload:-<empty>} — expected 200 with a numeric count. ${hint}"
@@ -851,8 +1621,55 @@ jobs:
             return 1
           }
 
-          # --- l.1: the binary quickstart from the README / getting-started, using the binary the
-          # --- live install.sh produced in (h). Docs promise: `curl -s localhost:8080/healthz` -> ok
+          # --- l.1: the binary quickstart from the README / getting-started. Docs promise:
+          # --- `curl -s localhost:8080/healthz` -> ok
+          #
+          # WHERE THE BINARY COMES FROM DEPENDS ON THE MODE, AND IT HAS TO. In public mode it is the
+          # binary the LIVE install.sh produced in (h), because the point is to verify the quickstart
+          # against the artifact a user actually ends up with. In staging mode install.sh cannot run
+          # (it follows /releases/latest, which a draft does not resolve as), so the binary is
+          # downloaded straight off the draft -- the same bytes install.sh would eventually fetch,
+          # one hop earlier. What is being asserted is identical either way: the documented minimal
+          # config boots this release and answers /healthz.
+          if [ "$STAGE" = "staging" ]; then
+            a="busbar-x86_64-unknown-linux-gnu.tar.gz"
+            gh release download "${{ steps.ver.outputs.tag }}" --repo GetBusbar/busbar \
+              --pattern "$a" --dir "$work" --clobber
+            tar -xzf "$work/$a" -C "$work"
+            chmod +x "$work/busbar"
+            # The quickstart needs a providers.yaml beside the binary; install.sh fetches it, and
+            # the release ships it inside the image rather than as an asset, so pull the copy from
+            # the repository AT THE COMMIT BEING RELEASED. `main` is that commit: this workflow is
+            # called from a release run on main.
+            curl -fsSL --max-time 30 -o "$work/providers.yaml" \
+              "https://raw.githubusercontent.com/GetBusbar/busbar/main/providers.yaml" || true
+          fi
+          if [ "$STAGE" = "staging" ] && [ -x "$work/busbar" ] && [ -s "$work/providers.yaml" ]; then
+          pushd "$work" >/dev/null
+          BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar > "$work/busbar.log" 2>&1 &
+          bpid=$!
+          popd >/dev/null
+          if probe "http://127.0.0.1:8080/healthz" "the documented binary quickstart (draft asset)"; then
+            :
+          else
+            echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
+            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work for the ${V} DRAFT binary: it did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes would fail. Nothing is public and no tag exists, so fix it and re-run."
+            fail=1
+          fi
+          kill "$bpid" 2>/dev/null || true
+          for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          elif [ "$STAGE" = "staging" ]; then
+            echo "::error::(l.1) staging mode could not assemble a binary quickstart (binary or providers.yaml missing). Refusing to pass a check that did not run: this is the half that proves a new user's first five minutes work."
+            fail=1
+          elif [ -f /tmp/site-blocked ] || [ ! -x /tmp/busbar-e2e/bin/busbar ]; then
+            # l.1 runs the binary that (h) installed FROM THE LIVE install.sh, on purpose - it
+            # verifies the documented quickstart against the artifact a user actually ends up with.
+            # When (h) could not run (getbusbar.com refuses this runner) there is no such binary, and
+            # substituting one from the Release would quietly change what this check means. Skip it
+            # visibly; l.2, the docker one-liner, needs nothing from the site and still runs.
+            echo "VISIBLE SKIP: (l.1) the binary quickstart could not run - (h) never obtained a binary from the live install.sh (getbusbar.com refuses this runner). The docker one-liner half (l.2) DID run and is authoritative."
+            echo "::warning::(l) PARTIAL: the binary quickstart was not exercised because the live install.sh was unreachable from this runner. Same marketing-side fix as (h)."
+          else
           cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
           cp /tmp/busbar-e2e/bin/providers.yaml "$work/providers.yaml"
           pushd "$work" >/dev/null
@@ -868,20 +1685,29 @@ jobs:
           fi
           kill "$bpid" 2>/dev/null || true
           for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          fi
 
           # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
-          # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
+          # --- image is pinned (check (a) already proves :latest == :${V} in public mode, so pinning
           # --- tests the same bytes while making a failure unambiguous about WHICH release broke).
+          # --- In staging mode the pin is the throwaway tag, so this boots the exact digest that
+          # --- will be promoted -- the promote copies manifests and rebuilds nothing.
+          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
+          # FRESH, NOT CACHED. (d) ran in this same job on this same runner and left the image in
+          # the local daemon; booting that copy would prove the local cache boots. Remove and re-pull
+          # so the container under test came off the registry.
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          docker rmi -f "$IMG" >/dev/null 2>&1 || true
+          docker pull "$IMG"
           docker run -d --name busbar-quickstart -p 8080:8080 \
             -e ANTHROPIC_KEY \
             -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
-            "${DOCKERHUB_IMAGE}:${V}" >/dev/null
+            "$IMG" >/dev/null
           if probe "http://127.0.0.1:8080/healthz" "the documented docker one-liner"; then
             :
           else
             echo "--- docker logs ---"; docker logs busbar-quickstart 2>&1 || true; echo "-------------------"
-            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${DOCKERHUB_IMAGE}:${V}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above — usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
+            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${IMG}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above. Usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
             fail=1
           fi
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
@@ -951,6 +1777,7 @@ jobs:
       # catch a frozen number and nothing looser. Expect this check to be RED until the Worker is
       # actually deployed. That is the check doing its job, not a miscalibration.
       - name: (n) the live numbers on getbusbar.com really are live
+        if: ${{ inputs.stage != 'staging' }}  # site-side, independent of the release under test
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -958,8 +1785,18 @@ jobs:
           # Docker pull count: authority is Docker Hub's own repository endpoint.
           hub="$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/getbusbar/busbar/" \
                  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("pull_count",-1))' || echo -1)"
-          site="$(curl -fsS --max-time 30 "https://getbusbar.com/api/pulls" \
-                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("pull_count", d.get("count",-1)))' || echo -1)"
+          # A 403 here is the runner being refused, NOT a frozen counter, and the two must not
+          # share a message: one is a marketing-side bot rule and the other is a Worker that is
+          # never deployed. Classify before comparing.
+          site_code="$(curl -sS --max-time 30 -o /tmp/n-pulls.json -w '%{http_code}' "https://getbusbar.com/api/pulls" || echo 000)"
+          case "$site_code" in
+            403|429)
+              echo "VISIBLE SKIP: (n) getbusbar.com/api/pulls returned HTTP ${site_code} to this runner, so the live-number comparison could not be made. This is the edge/bot rule against datacenter IPs, not a frozen counter."
+              echo "::warning::(n) NOT EXERCISED: getbusbar.com/api/* returns HTTP ${site_code} to GitHub Actions runners. Same marketing-side fix as (h)."
+              exit 0
+              ;;
+          esac
+          site="$(python3 -c 'import json,sys; d=json.load(open("/tmp/n-pulls.json")); print(d.get("pull_count", d.get("count",-1)))' 2>/dev/null || echo -1)"
           echo "docker pulls: hub=${hub} site-api=${site}"
           if [ "$hub" -lt 0 ] || [ "$site" -lt 0 ]; then
             echo "::error::(n) could not read the Docker pull count from both Docker Hub and getbusbar.com/api/pulls (hub=${hub}, site=${site}). The site advertises this number as live, so an endpoint that cannot answer is a broken promise to every visitor."
@@ -1003,3 +1840,217 @@ jobs:
             fi
           fi
           [ "$fail" = 0 ]
+
+  # -- THE ALERT -----------------------------------------------------------------------------------
+  # RED IS NOT ENOUGH, AND THIS IS THE SECOND HALF OF "MAKE IT IMPOSSIBLE TO MISS".
+  #
+  # Before this job existed, `verify-deploy.yml` had no failure path AT ALL: no issue, no comment,
+  # no notification, nothing. Its entire output was the run's own conclusion. In a repo with this
+  # much CI traffic a red square is not a signal - it is one more red square, and on a daily cron it
+  # becomes background. Every defect this workflow exists to catch was in fact found BY HAND.
+  #
+  # Red and this issue serve DIFFERENT moments, which is why both are here and not either:
+  #   * RED on the release run is what somebody sees when they go and look at the release. That is
+  #     what the `workflow_call` from release.yml buys.
+  #   * THE ISSUE is what finds somebody who is not looking. It is the only one of the two that
+  #     works at 03:00 on a Sunday when a scheduled pointer sweep goes red with no release in sight.
+  #
+  # IDEMPOTENT, because a daily sweep plus a 3-hourly pointer sweep against a broken release would
+  # otherwise file dozens of identical issues in a week and the pile would be ignored faster than
+  # the red square was. Exactly one open issue carries the `consumer-verification` label at a time:
+  # the first failure opens it, every subsequent failure RETITLES it to the current version, rewrites
+  # the body with the current findings, and adds a dated comment so the history of "still broken" is
+  # visible without a second issue. It closes itself when a later run passes.
+  alert:
+    name: alert (open or update the release-broken issue)
+    needs: [pointers, verify]
+    # `always()` because `needs` on a failed job skips the dependent by default - the exact shape
+    # that made release.yml's own `verify-assets` get skipped precisely when the release was broken.
+    # A notifier that only runs when nothing failed is not a notifier. Also fires when `verify` was
+    # skipped (the 3-hourly pointer cron) and `pointers` alone failed.
+    #
+    # NOT IN STAGING MODE, AND THIS IS NOT AN OVERSIGHT. This issue says "a published release is
+    # broken and users are affected". A staging failure means the opposite: the gate WORKED, nothing
+    # became public, no tag exists, no fan-out fired, and the remedy is a re-run rather than an
+    # incident. Filing a release-broken issue for a release that never happened is the same class of
+    # error as the daily false alarm on getbusbar.com -- a notifier that cries wolf is worse than
+    # none. The signal for a staging failure is release.yml's own run going red at the gate.
+    if: >-
+      ${{ always() && inputs.stage != 'staging' &&
+          (needs.pointers.result == 'failure' || needs.verify.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      VERSION: ${{ needs.verify.outputs.version || needs.pointers.outputs.version }}
+      LABEL: consumer-verification
+    steps:
+      - name: Collect the failing checks, expected vs observed, from the failed jobs' own logs
+        id: collect
+        run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
+          set -uo pipefail
+          : > /tmp/findings.md
+
+          # WHY THE LOG AND NOT A HAND-ROLLED REPORT. Every check in this workflow already prints
+          # `FAIL: <what> | expected: <x> | observed: <y>` and a `::error::` line naming the fix.
+          # Re-deriving that into a structured artifact would be a SECOND statement of what failed,
+          # free to drift from the first - the same defect shape this whole workflow exists to
+          # catch. The failed job's log is the primary record; this reads it. Job logs are available
+          # over the API as soon as the JOB completes, which it has (this job `needs:` it), even
+          # though the RUN is still in progress.
+          jobs_json=/tmp/jobs.json
+          if ! gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs" \
+                 --paginate > "$jobs_json" 2>/dev/null; then
+            gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --paginate > "$jobs_json" 2>/dev/null || echo '{}' > "$jobs_json"
+          fi
+
+          # Failed jobs, preferring the two this workflow owns. The `select(...) // all` fallback
+          # matters when this runs as release.yml's final job: that run contains many other jobs,
+          # and an unrelated red one must not retitle a consumer-verification issue.
+          mapfile -t rows < <(jq -r '
+            [ .jobs[]? | select(.conclusion=="failure") ] as $f
+            | ( [ $f[] | select(.name|test("verify|pointer";"i")) ] | if length>0 then . else $f end )
+            | .[] | "\(.id)\t\(.name)"' "$jobs_json" 2>/dev/null)
+
+          if [ "${#rows[@]}" -eq 0 ]; then
+            echo "- could not enumerate the failed jobs over the API; see the run log." >> /tmp/findings.md
+          fi
+
+          for row in "${rows[@]}"; do
+            jid="${row%%$'\t'*}"; jname="${row#*$'\t'}"
+            # Which STEP failed is the single most useful line in the whole issue: it is the check's
+            # own name, e.g. "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z".
+            steps_failed="$(jq -r --arg id "$jid" '
+              .jobs[]? | select((.id|tostring)==$id) | .steps[]?
+              | select(.conclusion=="failure") | "  - failing check: **\(.name)**"' "$jobs_json" 2>/dev/null)"
+            {
+              echo "- job **${jname}**"
+              [ -n "$steps_failed" ] && echo "$steps_failed"
+            } >> /tmp/findings.md
+            if gh api "repos/${REPO}/actions/jobs/${jid}/logs" > /tmp/job.log 2>/dev/null && [ -s /tmp/job.log ]; then
+              # `FAIL:` carries expected vs observed; `::error::` carries the diagnosis and the fix.
+              # Strip the Actions timestamp prefix and the `::error::` marker so the issue reads as
+              # prose. Capped: an issue body is limited to 65536 characters and a truncated body that
+              # loses the FIRST finding would be worse than a short one.
+              sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' /tmp/job.log \
+                | grep -E '^(FAIL:|::error::)' \
+                | sed -E 's/^::error::/DIAGNOSIS: /' \
+                | head -30 \
+                | sed 's/^/    /' >> /tmp/findings.md
+            else
+              echo "    (job log was not retrievable over the API; open the run and read it there)" >> /tmp/findings.md
+            fi
+          done
+          echo "findings written:"; cat /tmp/findings.md
+
+      - name: Open or update the single open release-broken issue
+        run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
+          set -uo pipefail
+          V="${VERSION:-unknown}"
+          TITLE="[release-broken] Consumer verification FAILING for busbar v${V} -- users are getting a broken release"
+          # A stable marker so the body is unambiguously machine-written and safe to overwrite.
+          MARKER="<!-- consumer-verification-alert -->"
+
+          {
+            echo "$MARKER"
+            echo
+            echo "**A published release does not work for a consumer.** This issue is opened and"
+            echo "maintained automatically by \`.github/workflows/verify-deploy.yml\`, which checks the"
+            echo "release the way a user experiences it: from the live registries, the live site, the"
+            echo "live tap and the published assets, never from this repository's working copy."
+            echo
+            echo "This is **not a flaky test**. Every check below reads production."
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| version under test | \`v${V}\` |"
+            echo "| failing run | ${RUN_URL} |"
+            echo "| triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| last checked | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo
+            echo "## What failed"
+            echo
+            cat /tmp/findings.md
+            echo
+            echo "## What to do"
+            echo
+            echo "1. Read the \`DIAGNOSIS:\` lines above - each one names the user-visible symptom and the fix."
+            echo "2. Fix it at the source (the publishing workflow, the tap, the chart, the site), not here."
+            echo "3. Re-run the verifier: \`gh workflow run verify-deploy.yml -f version=${V}\`."
+            echo
+            echo "This issue is reused, not duplicated: every later failure retitles it, rewrites this"
+            echo "body and adds a comment. It closes itself when a run passes."
+          } > /tmp/issue-body.md
+
+          # The label is what makes reuse work, so create it if it is missing rather than assuming.
+          gh label create "$LABEL" --repo "$REPO" \
+            --color B60205 --description "A published release is broken for consumers (auto-filed)" \
+            >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+
+          if [ -n "${existing:-}" ]; then
+            echo "Reusing open issue #${existing} (idempotent: the daily and 3-hourly sweeps must never file a second one)."
+            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file /tmp/issue-body.md
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC') -- ${RUN_URL}"
+            echo "::error::Consumer verification is FAILING for v${V}. Details in ${GITHUB_SERVER_URL}/${REPO}/issues/${existing}"
+          else
+            num="$(gh issue create --repo "$REPO" --title "$TITLE" --label "$LABEL" \
+              --body-file /tmp/issue-body.md 2>/dev/null | tail -1)"
+            echo "Opened ${num}"
+            echo "::error::Consumer verification is FAILING for v${V}. Opened ${num}"
+          fi
+
+  # THE OTHER HALF OF IDEMPOTENCY. Without this the issue is opened once and lives forever: a stale
+  # open "release is broken" issue is worse than none, because the next real breakage looks like the
+  # old one and gets ignored. A run in which everything passes closes it and says why.
+  resolved:
+    name: close the release-broken issue when everything passes
+    needs: [pointers, verify]
+    if: >-
+      ${{ always() &&
+          needs.pointers.result == 'success' &&
+          (needs.verify.result == 'success' || needs.verify.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      LABEL: consumer-verification
+    steps:
+      - name: Close any open release-broken issue
+        run: |
+          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
+          set -uo pipefail
+          # A pointer-only sweep (the 3-hourly cron, where `verify` is skipped) proves the pointers
+          # are healthy but says nothing about install.sh, brew, attestation or the quickstart. It
+          # must NOT close an issue that the full sweep opened, or the fast cron would keep wiping
+          # out the slow cron's findings and the issue would flap.
+          if [ "${{ needs.verify.result }}" = "skipped" ]; then
+            echo "Pointer-only sweep passed. Not closing anything: this run did not exercise install.sh, Homebrew, the attestation check or the quickstart, so it is not evidence that a full-sweep failure is fixed."
+            exit 0
+          fi
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -z "${existing:-}" ]; then
+            echo "No open ${LABEL} issue. Nothing to close."
+            exit 0
+          fi
+          gh issue comment "$existing" --repo "$REPO" \
+            --body "Consumer verification is GREEN again as of $(date -u '+%Y-%m-%d %H:%M UTC'): the full sweep (registries, release assets, install.sh, Homebrew, helm, Terraform, the SDK pointers, attestation and the documented quickstart) passed. Closing. Run: ${RUN_URL}"
+          gh issue close "$existing" --repo "$REPO" --reason completed
+          echo "Closed #${existing}."

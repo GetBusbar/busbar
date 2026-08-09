@@ -23,13 +23,36 @@ use std::path::{Path, PathBuf};
 /// Locate the hermetic static-auth plugin cdylib in the build's target dir (like the sqlite store
 /// tests). Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure,
 /// never a silent skip; locally a missing cdylib skips cleanly.
+///
+/// Checks BOTH the uplifted profile dir AND `target/deps`, newest wins. Cargo only uplifts a cdylib
+/// to the top-level profile dir for the build that requested it: a SCOPED build (`cargo test -p
+/// busbar`, which is what one runs while working on auth) leaves the artifact in `target/deps`
+/// ALONE. Checking only `profile_dir` therefore found nothing even though the cdylib really was
+/// built, and all seven cdylib-gated tests in this file silently returned and reported `ok` — the
+/// suite printed the same "16 passed" as a real run, only faster (3.0s vs 26.5s). What got skipped
+/// is not incidental: `untrusted_auth_plugin_fails_closed_not_open` and
+/// `missing_auth_plugin_is_loud_boot_failure` are the front-door fail-closed guarantees.
+///
+/// This is the SAME defect, and the same fix, as `hooks::tests::hook_cdylib` (see its note) and the
+/// `plugin_path()` helpers in auth-oidc / store-postgres / webrequest-hook. This helper was missed
+/// when that fix was propagated.
 fn static_auth_cdylib() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
         let name = busbar_plugin_loader::plugin_library_filename("busbar_auth_static_plugin");
-        let candidate = profile_dir.join(&name);
-        candidate.exists().then_some(candidate)
+        let uplifted = profile_dir.join(&name);
+        let raw = profile_dir.join("deps").join(&name);
+        [uplifted, raw]
+            .into_iter()
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
     })();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(

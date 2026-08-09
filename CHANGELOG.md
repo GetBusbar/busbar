@@ -6,6 +6,18 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`busbar --validate` now checks every secret reference in the config, including the ones it used
+  to walk straight past.** 1.5.3 made `--validate` resolve `env:` and `file:` references and exit 1
+  when one could not resolve, but the set of references it knew about was a hand-written list of
+  config paths, and `identity-providers.<name>.browser_login.client_secret` was not on it. A config
+  whose OAuth confidential-client secret named an unset variable was reported as `ok: config valid`
+  and then failed every hosted login at runtime. Every secret reference on the typed config surface
+  is enumerated now, and each is named by its full config path in the error. If your `--validate` job
+  goes red on an identity provider after this upgrade, the credential it names genuinely could not be
+  resolved in that environment; that is the answer 1.5.3 intended to give you.
+
 ## [1.5.3], 2026-08-08
 
 This release reshapes the config file, so give yourself a few minutes for the upgrade.

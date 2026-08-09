@@ -1085,63 +1085,8 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod rewrite_frame_strip_usage_tests {
-    use super::rewrite_frame_strip_usage;
-
-    /// Byte-stripper fallback indistinguishability: when the fast byte-splice path declines and
-    /// the fallback is taken (here forced by a `data_str` that is NOT a verbatim substring of the raw
-    /// frame, mirroring a multi-`data:`-line frame), the reframed frame must NOT introduce a wire-shape
-    /// tell: JSON key ORDER is preserved and the ORIGINAL CRLF terminator is preserved. Only the
-    /// top-level `usage` key is removed.
-    #[test]
-    fn fallback_preserves_key_order_and_crlf() {
-        // A CRLF-terminated frame. Keys are in a DELIBERATELY non-sorted order (id, object, choices,
-        // usage) so that any BTreeMap/Value round-trip (which would sort to choices, id, object, usage)
-        // is detectable. `usage` sits in the MIDDLE, so a correct strip must keep the surrounding order.
-        let payload = r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}],"usage":null}"#;
-        // Force the fallback deterministically: hand a frame whose bytes do NOT contain `payload`
-        // verbatim (mirroring a multi-`data:`-line frame whose extracted join differs from the raw
-        // bytes), with a CRLF terminator. The fast splice's verbatim-find fails, so the fallback runs.
-        let raw_frame = b"data: <multiline-join-not-verbatim>\r\n\r\n";
-        let out = rewrite_frame_strip_usage(raw_frame, payload);
-        let out_str = std::str::from_utf8(&out).unwrap();
-
-        // CRLF terminator preserved.
-        assert!(
-            out_str.ends_with("\r\n\r\n"),
-            "CRLF terminator must be preserved, got {out_str:?}"
-        );
-        // The `usage` key is gone.
-        assert!(
-            !out_str.contains("usage"),
-            "usage must be stripped: {out_str:?}"
-        );
-        // Remaining keys keep their ORIGINAL order: id before object before choices. A sorted
-        // reserialize would put `choices` first.
-        let id_at = out_str.find("\"id\"").expect("id present");
-        let object_at = out_str.find("\"object\"").expect("object present");
-        let choices_at = out_str.find("\"choices\"").expect("choices present");
-        assert!(
-            id_at < object_at && object_at < choices_at,
-            "original key order (id, object, choices) must be preserved, got {out_str:?}"
-        );
-    }
-
-    /// The fallback keeps an LF-only terminator as LF (it must not upgrade LF to CRLF either).
-    #[test]
-    fn fallback_preserves_lf_terminator() {
-        let payload = r#"{"id":"x","object":"chat.completion.chunk","usage":null,"choices":[]}"#;
-        let raw_frame = b"data: <not-verbatim>\n\n";
-        let out = rewrite_frame_strip_usage(raw_frame, payload);
-        let out_str = std::str::from_utf8(&out).unwrap();
-        assert!(
-            out_str.ends_with("\n\n"),
-            "LF terminator preserved: {out_str:?}"
-        );
-        assert!(!out_str.contains("\r"), "no CR introduced: {out_str:?}");
-        assert!(!out_str.contains("usage"), "usage stripped: {out_str:?}");
-    }
-}
+#[path = "tests/rewrite_frame_strip_usage_tests.rs"]
+mod rewrite_frame_strip_usage_tests;
 
 /// Merge a trailing usage-only chunk's token counts into the deferred terminal usage (SSE
 /// terminal-usage fold). Mirrors the `last_usage` accumulation rule: a non-zero/`Some` field in the
@@ -1164,56 +1109,5 @@ fn merge_trailing_usage(acc: &mut crate::ir::IrUsage, trailing: &crate::ir::IrUs
 }
 
 #[cfg(test)]
-mod merge_trailing_usage_tests {
-    use super::merge_trailing_usage;
-    use crate::ir::IrUsage;
-
-    fn usage(i: u64, o: u64, cc: Option<u64>, cr: Option<u64>) -> IrUsage {
-        IrUsage {
-            input_tokens: i,
-            output_tokens: o,
-            cache_creation_input_tokens: cc,
-            cache_read_input_tokens: cr,
-        }
-    }
-
-    // 1.4.0 (streaming-billing): the terminal-usage fold merges a trailing usage-only chunk into
-    // the deferred terminal delta. A non-zero/Some trailing field OVERRIDES; a zero/None trailing field
-    // LEAVES the accumulator intact so a protocol that already carried usage on its terminal delta is
-    // never clobbered by an absent trailing chunk. (Billing reads the merged accumulator.)
-    #[test]
-    fn trailing_nonzero_overrides_zero_leaves_intact() {
-        // A terminal delta that carried zeros gets the real counts from the trailing usage chunk.
-        let mut acc = usage(0, 0, None, None);
-        merge_trailing_usage(&mut acc, &usage(120, 45, Some(7), Some(9)));
-        assert_eq!((acc.input_tokens, acc.output_tokens), (120, 45));
-        assert_eq!(acc.cache_creation_input_tokens, Some(7));
-        assert_eq!(acc.cache_read_input_tokens, Some(9));
-
-        // A terminal delta that ALREADY carried usage is NOT clobbered by an absent/zero trailing chunk.
-        let mut acc = usage(200, 80, Some(3), Some(5));
-        merge_trailing_usage(&mut acc, &usage(0, 0, None, None));
-        assert_eq!((acc.input_tokens, acc.output_tokens), (200, 80));
-        assert_eq!(acc.cache_creation_input_tokens, Some(3));
-        assert_eq!(acc.cache_read_input_tokens, Some(5));
-
-        // Field-by-field: only the non-zero/Some trailing fields win; the rest are preserved.
-        let mut acc = usage(200, 0, Some(3), None);
-        merge_trailing_usage(&mut acc, &usage(0, 90, None, Some(11)));
-        assert_eq!(
-            acc.input_tokens, 200,
-            "zero trailing input preserves the accumulator"
-        );
-        assert_eq!(acc.output_tokens, 90, "non-zero trailing output overrides");
-        assert_eq!(
-            acc.cache_creation_input_tokens,
-            Some(3),
-            "None trailing preserves Some"
-        );
-        assert_eq!(
-            acc.cache_read_input_tokens,
-            Some(11),
-            "Some trailing overrides None"
-        );
-    }
-}
+#[path = "tests/merge_trailing_usage_tests.rs"]
+mod merge_trailing_usage_tests;
