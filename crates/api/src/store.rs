@@ -713,6 +713,84 @@ pub struct AuditRecord {
     pub hash: String,
 }
 
+/// ONE A2A TASK, as it crosses the store seam for DURABLE persistence. The engine's canonical
+/// `a2a::task::Task` mirrors this field-for-field; this side of the seam is plain data with the
+/// enums flattened to their stable wire tokens, for exactly the reason [`AuditRecord`] is: a store
+/// plugin compiled against an older engine must not fail to deserialize a row because a new task
+/// state was added to a Rust enum it does not have.
+///
+/// Carries no secret. `principal` is a busbar key id, never key material; `agent_id` is a
+/// busbar-local registration id, never the backend URL (which is server-side only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRow {
+    /// Protocol task id — unique, and the row's primary key.
+    pub task_id: String,
+    /// The A2A `contextId` grouping related tasks into a session. The metering, provenance AND
+    /// resume key: a follow-up supplying required input arrives on this id, not on `task_id`.
+    pub context_id: String,
+    /// The busbar key id this task is attributed to and billed against. Also the authorization key
+    /// for reads: a caller may only ever see its own tasks.
+    pub principal: String,
+    /// `inbound` (busbar is the server) or `outbound` (busbar is the client). Stored because the
+    /// two directions resume differently after a restart — one re-establishes a relay to a caller,
+    /// the other re-subscribes to a remote agent.
+    pub direction: String,
+    /// The canonical task-state token (`submitted`, `working`, `input-required`, `auth-required`,
+    /// `completed`, `failed`, `canceled`, `rejected`).
+    pub state: String,
+    /// The chosen (outbound) or fronted (inbound) agent's busbar-local id. Empty before dispatch.
+    pub agent_id: String,
+    /// The LAST ARTIFACT CURSOR: how many artifact chunks have been durably relayed. A resubscribe
+    /// after a restart resumes from here instead of replaying from zero or silently losing the gap.
+    pub artifact_cursor: u64,
+    /// The push-notification callback URL registered for this task, or empty for none. Persisted
+    /// with the task because a completion that lands after a restart still has to be delivered.
+    pub push_callback: String,
+    /// Unix seconds the task was first recorded.
+    pub created_at: u64,
+    /// Unix seconds of the most recent state change. The retention sweep's age key.
+    pub updated_at: u64,
+}
+
+/// ONE PER-TASK PROVENANCE EVENT, as it crosses the store seam. Hash-chained WITHIN a task:
+/// `hash = sha256(prev_hash | task_id | seq | ts | kind | context_id | principal | agent_id |
+/// state)`, and `prev_hash` is the preceding event's `hash` (empty for `seq` 1).
+///
+/// Per-TASK rather than one global chain, and that is a decision rather than an implementation
+/// detail: tasks are concurrent and long-lived, so a single global chain would serialise every task
+/// transition behind one lock and would make a single task's provenance unverifiable without
+/// possessing every other tenant's events. A per-task chain is independently verifiable and
+/// independently exportable to the caller whose task it is.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskEventRow {
+    /// The task this event belongs to — the chain's scope.
+    pub task_id: String,
+    /// 1-based sequence WITHIN this task. Gaps and reordering are detectable, which is the point.
+    pub seq: u64,
+    /// Unix seconds the event was emitted.
+    pub ts: u64,
+    /// The event kind (`task.submitted`, `task.working`, `task.interrupted`, `task.resumed`,
+    /// `task.delegated`, `task.completed`, …). Stable tokens; tooling branches on them.
+    pub kind: String,
+    /// The session id (see [`TaskRow::context_id`]).
+    pub context_id: String,
+    /// The attributed busbar key id.
+    pub principal: String,
+    /// The agent this event concerns, or empty.
+    pub agent_id: String,
+    /// The task state AFTER this event.
+    pub state: String,
+    /// The correlation id joining this event to the downstream L2 records it caused. Not chained
+    /// into the digest: it is a join key supplied by the request spine, and a missing one must not
+    /// make an otherwise-intact chain unverifiable.
+    pub request_id: String,
+    /// The preceding event's `hash` (empty for `seq` 1).
+    pub prev_hash: String,
+    /// The tamper-evidence digest over this event's chained fields (computed + verified
+    /// engine-side; a store persists it verbatim).
+    pub hash: String,
+}
+
 /// The result type every `Store` method returns.
 pub type StoreResult<T> = Result<T, StoreError>;
 
@@ -1068,6 +1146,75 @@ pub trait Store: Send + Sync + 'static {
             all.drain(0..all.len() - limit);
         }
         Ok(all)
+    }
+
+    // ── A2A TASK STATE (the durable task store) ──────────────────────────────────────────────
+    //
+    // A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted waiting on a human, and can
+    // outlive the process that started it. An in-memory task table therefore loses every in-flight
+    // task on restart, which is the difference between a `suspend`/resume that is real and one that
+    // is nominal. These rows are WHAT ACCUMULATES, so they are store, never config overlay.
+
+    /// UPSERT `task` by `task.task_id`. The engine writes through on every state transition, so a
+    /// backend must replace the row rather than append a second one for the same id.
+    ///
+    /// DEFAULTED to a no-op for the same backward-compatibility reason [`Store::append_audit`] is:
+    /// an already-signed store plugin that predates this method keeps working and simply provides no
+    /// durable tasks — the RAM default's documented behaviour. A backend that wants in-flight tasks
+    /// to survive a restart overrides this plus [`Store::get_task`] and [`Store::list_tasks`].
+    ///
+    /// A NO-OP DEFAULT IS THE HONEST ONE, and the alternative was considered and rejected: making
+    /// this an error would turn every task submission on the RAM default into a failure, and making
+    /// the RAM default persist would silently change the documented "`store: memory` is genuinely
+    /// EPHEMERAL" product contract that `main.rs`'s boot-restore path and `docs/configuration.md`
+    /// both rely on. The engine tells the two apart by READING BACK, never by the write's return.
+    fn put_task(&self, _task: &TaskRow) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// The task row for `task_id`, or `None` when this store holds none.
+    ///
+    /// The caller-scoping rule of the design (a caller may never name or read another tenant's
+    /// task) is deliberately NOT enforced here: a store is a dumb durable sink, and an authorization
+    /// check that lives in the backend is one an unauthorized reader bypasses by configuring a
+    /// different backend. The engine gates on `principal` before it ever calls this.
+    fn get_task(&self, _task_id: &str) -> StoreResult<Option<TaskRow>> {
+        Ok(None)
+    }
+
+    /// EVERY persisted task row, terminal ones included — deliberately UNFILTERED, exactly as
+    /// [`Store::list_keys`] is. The boot rehydrate wants the ACTIVE ones, the retention sweep wants
+    /// the TERMINAL ones, and the scoped listing wants one principal's; a store that pre-filtered
+    /// for any one of those would break the other two, so the filtering lives at each call site.
+    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+        Ok(Vec::new())
+    }
+
+    /// RETENTION: drop TERMINAL task rows whose `updated_at` is strictly older than `before`,
+    /// returning how many were removed. Active and interrupted tasks are never dropped by this call
+    /// no matter how old — an interrupt waiting on a human is exactly the row that legitimately sits
+    /// still for a long time, and compacting it is losing the work, not reclaiming space.
+    ///
+    /// DEFAULTED to `Ok(0)` (nothing retained, so nothing to purge).
+    fn purge_tasks_before(&self, _before: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+
+    /// Append one PER-TASK PROVENANCE event. Rows are keyed by `(task_id, seq)` and a backend must
+    /// upsert on that pair — the write-through is idempotent on replay, and rejecting or duplicating
+    /// a replayed `seq` breaks the chain the engine will verify on read.
+    ///
+    /// The store NEVER computes or recomputes `hash`/`prev_hash`; it persists them verbatim and
+    /// returns them verbatim. A digest a store could recompute is a digest a compromised store could
+    /// forge consistently, which is the whole point of chaining engine-side.
+    fn append_task_event(&self, _event: &TaskEventRow) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// Every persisted provenance event for `task_id`, oldest-first by `seq` — the input the
+    /// engine's chain verifier reads. DEFAULTED to empty.
+    fn list_task_events(&self, _task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        Ok(Vec::new())
     }
 }
 

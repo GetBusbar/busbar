@@ -662,3 +662,121 @@ fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
     // limit above the total count: everything is kept, no panic on the subtraction.
     assert_eq!(s.list_audit_tail(100).unwrap().len(), 5);
 }
+
+/// THE TASK-STORE DEFAULTS ARE BACKWARD-COMPATIBLE AND SILENT, and both halves matter.
+///
+/// A store plugin is a SIGNED ARTIFACT that can predate this trait method by releases. If the task
+/// methods had no default, every existing backend would fail to compile against the new contract; if
+/// they defaulted to an ERROR, every task submission on such a backend would fail at runtime. So
+/// they default to "accepted, and nothing kept" — the RAM default's documented behaviour — and the
+/// engine learns whether a deployment actually has durability by READING A TASK BACK, never by
+/// trusting the write's return value. This test pins that, because a future change of the defaults
+/// to something louder would silently break every deployed plugin.
+#[test]
+fn the_task_store_methods_default_to_accepting_and_keeping_nothing() {
+    /// A backend written before the task methods existed: it implements the six REQUIRED methods
+    /// and nothing else. That it compiles at all is half the assertion.
+    struct PreTaskBackend;
+    impl Store for PreTaskBackend {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(Vec::new())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    let s = PreTaskBackend;
+    let task = TaskRow {
+        task_id: "t-1".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        direction: "inbound".to_string(),
+        state: "working".to_string(),
+        agent_id: "planner".to_string(),
+        artifact_cursor: 3,
+        push_callback: String::new(),
+        created_at: 10,
+        updated_at: 11,
+    };
+    let event = TaskEventRow {
+        task_id: "t-1".to_string(),
+        seq: 1,
+        ts: 10,
+        kind: "task.submitted".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        agent_id: String::new(),
+        state: "submitted".to_string(),
+        request_id: "req-1".to_string(),
+        prev_hash: String::new(),
+        hash: "deadbeef".to_string(),
+    };
+
+    // The writes are ACCEPTED — a legacy backend must not fail a task submission.
+    assert!(s.put_task(&task).is_ok());
+    assert!(s.append_task_event(&event).is_ok());
+    // And nothing is kept. This is the assertion the durability layer is built on: the only honest
+    // way to know a deployment is durable is to read back, and here the read-back is empty.
+    assert_eq!(s.get_task("t-1").unwrap(), None);
+    assert!(s.list_tasks().unwrap().is_empty());
+    assert!(s.list_task_events("t-1").unwrap().is_empty());
+    assert_eq!(s.purge_tasks_before(u64::MAX).unwrap(), 0);
+}
+
+/// The task rows round-trip through serde unchanged. They cross a plugin ABI, so a field whose
+/// serialized name drifts is a field a backend silently stops persisting.
+#[test]
+fn task_rows_round_trip_through_the_store_seam_encoding() {
+    let task = TaskRow {
+        task_id: "t-1".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        direction: "outbound".to_string(),
+        state: "auth-required".to_string(),
+        agent_id: "planner".to_string(),
+        artifact_cursor: 7,
+        push_callback: "https://caller.example/cb".to_string(),
+        created_at: 10,
+        updated_at: 20,
+    };
+    let json = serde_json::to_string(&task).unwrap();
+    assert_eq!(serde_json::from_str::<TaskRow>(&json).unwrap(), task);
+    // The wire names are the field names, spelled out here so a rename is a visible diff rather
+    // than a silent data loss on the next deploy of an older backend.
+    for field in [
+        "task_id",
+        "context_id",
+        "principal",
+        "direction",
+        "state",
+        "agent_id",
+        "artifact_cursor",
+        "push_callback",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(
+            json.contains(field),
+            "`{field}` must be on the wire: {json}"
+        );
+    }
+}
