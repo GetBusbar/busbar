@@ -169,7 +169,9 @@ pub(crate) struct ConfigRollbackView {
 /// an idempotent no-op).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct OverlayResetView {
-    /// The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
+    /// The section that was reset. This endpoint's `section` path parameter enumerates the valid
+    /// set; it is deliberately not restated here, because the hand-written copy that used to sit on
+    /// this line went stale the moment a section was added.
     pub(crate) reset: String,
     pub(crate) config_version: u64,
     /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.

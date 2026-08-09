@@ -133,6 +133,63 @@ jobs:
         run: scripts/release-script-lint.sh --selftest
       - name: Release-script lint
         run: scripts/release-script-lint.sh
+      # RELEASE-ORDER lint: nothing may be tagged until it has been verified from the consumer side,
+      # and nothing may be cut from a red commit. Both of those live in the SHAPE of the workflow
+      # graph (which job depends on which), which is edited by people in a hurry during an incident
+      # and has no other place to be asserted. Self-test runs FIRST, and it earns its place: it
+      # caught this lint's own `--draft` rule passing against a release that had had `--draft`
+      # deleted, because `--draft=false` elsewhere in the file contained the substring.
+      - name: Release-order lint self-test
+        run: python3 scripts/release-order-lint.py --selftest
+      - name: Release-order lint
+        run: python3 scripts/release-order-lint.py --root .
+      # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
+      # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
+      # public", so that property is re-proven on every push rather than argued once in a comment.
+      - name: Release-order proof (a failure leaves nothing public)
+        run: python3 scripts/release-order-lint.py --prove
+      # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
+      # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
+      # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and
+      # `tracing` were each declared two different ways and agreed purely by luck. It sits in the
+      # FAST tier deliberately: a manifest can drift on any branch push, and this costs one python
+      # process. Self-test runs FIRST and covers dev-dependencies and
+      # `[target.'cfg(...)'.dependencies]` explicitly, because a rule enforced only on
+      # `[dependencies]` is a rule scoped to where the bug was first seen — and the jemalloc pins,
+      # the ones that differ per shipped target, live in a target table.
+      - name: Workspace-deps lint self-test
+        run: python3 scripts/workspace-deps-lint.py --selftest
+      - name: Workspace-deps lint
+        run: python3 scripts/workspace-deps-lint.py --root .
+      # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
+      # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
+      # promoted commit's. That has already cost a silent green: measured on qa c736177 the
+      # auto-fired gate ran ONE job while the segmentation umbrella sat unused, and the run passed
+      # having done far less than anyone believed. Gate LOGIC now rides the commit (the dispatcher
+      # checks out the triggering SHA and runs scripts/qa-gate-run.sh from there), but everything
+      # GitHub reads BEFORE a checkout exists — `on:`, concurrency, permissions, the needs/if graph,
+      # the matrix expression — still comes from `main` and cannot.
+      #
+      # This compares the PARSED structure, not the bytes, so comments drift freely while the run
+      # graph may not. That split is what stops the check deadlocking: `main` only moves at a
+      # release, so a byte-identical rule would make every prose edit red until the very release it
+      # is meant to gate. Self-test first, as everywhere else here.
+      - name: qa-gate dispatcher drift self-test
+        run: python3 scripts/qa-gate-dispatch-lint.py --selftest
+      # `fetch-depth: 0` is not set on this job's checkout, so origin/main may be absent; fetch it
+      # explicitly rather than letting the lint fail closed for a reason that is not drift.
+      - name: Fetch the default branch (the dispatcher that will actually fire)
+        run: git fetch --no-tags --depth=1 origin main
+      - name: qa-gate dispatcher drift
+        run: python3 scripts/qa-gate-dispatch-lint.py
+      # ARTIFACT CONTRACT wholeness. The contract is data (.github/artifact-contract.json) and the
+      # verifier implements it, so the two can drift: a row declared with no implementation is a
+      # property everybody believes is checked and nobody checks, and a check outside the contract is
+      # invisible to anyone reading it. The guard asserts SET EQUALITY both ways plus a row floor,
+      # and this self-test proves that guard still discriminates rather than merely returning the
+      # rows unchanged. Its eight cases each construct one malformation and require it be refused.
+      - name: Artifact-contract wholeness self-test
+        run: python3 scripts/verify-artifact.py --selftest
       # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
@@ -200,8 +257,23 @@ jobs:
     # / VALKEY_URL (set on the Test step below) and, because `CI` is set in Actions, HARD-FAIL rather
     # than silently skip if a service is misconfigured - so this coverage cannot vanish unnoticed.
     services:
+      # PINNED BY DIGEST for the same reason as release.yml's gate: `postgres:16` and
+      # `valkey/valkey:8` are moving tags, and these containers are load-bearing (without them the
+      # store roundtrip tests hard-fail rather than skip). What they resolve to must be a fact about
+      # the commit, not about the day. Re-pin with `docker buildx imagetools inspect <tag>`; the
+      # monthly-refresh PR is the natural place.
+      #
+      # NO `credentials:` HERE, DELIBERATELY, AND IT LEAVES HALF THE HOLE OPEN. Authenticating would
+      # raise Docker Hub's anonymous per-IP rate limit, which is the half a digest pin cannot fix --
+      # but this workflow runs on `pull_request`, where secrets are withheld from fork runs, so an
+      # unconditional `credentials:` block would hand every fork PR empty credentials. release.yml's
+      # gate (push to main only) IS authenticated. Closing this half properly means either
+      # restricting the credentials to non-fork events, which GitHub does not allow on a service
+      # container, or mirroring both images into GHCR and pulling from there. Written down rather
+      # than quietly left, because `branch-green` requires this workflow green: a throttled pull
+      # here stops a release.
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
         env:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
@@ -215,7 +287,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
         ports:
           - 6379:6379
         options: >-
@@ -296,7 +368,21 @@ jobs:
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
-        run: cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `openapi` is a SUBSTRING filter; a filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
+          # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
+          # that quietly collapsed to a single surviving test would still be a coverage hole.
+          out="$(cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
+          if [ "$n" -lt 8 ]; then
+            echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
+            echo "::error::A zero/low-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter"
+            echo "::error::(or lower this floor deliberately, in the same commit that removes tests)."
+            exit 1
+          fi
+          echo "OpenAPI suite: ${n} tests ran (floor 8)"
 
   # CONFIG-STABILITY gate. 1.5.3 is the LAST config-breaking release; after
   # it the config grammar is FROZEN and every future feature may add only NEW OPTIONAL keys/sections/
@@ -429,7 +515,9 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 scripts/executable-config-lint.py --busbar target/debug/busbar --selftest
       - name: Executable-config gate
-        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root .
+        # --min-docs: the gate is vacuously green over an empty extraction set. 50 documents are
+        # found today; the floor is 40 so genuine churn passes and a collapsed extractor cannot.
+        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root . --min-docs 40
 
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in auth plugin
   # COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that provably
@@ -530,7 +618,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Hot-path timing gate
-        run: cargo test --release --locked timing_gate -- --ignored
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `timing_gate` is a SUBSTRING filter and these tests are
+          # `#[ignore]`d, so this job is their ONLY execution anywhere. A filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0 — rename the tests and the hot-path
+          # timing gate is green forever having measured nothing, with no other job to notice.
+          out="$(cargo test --release --locked timing_gate -- --ignored 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
+            echo "::error::the hot-path timing gate ran ZERO tests (renamed, moved, or un-ignored?)."
+            echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass."
+            exit 1
+          }
 
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
   windows:

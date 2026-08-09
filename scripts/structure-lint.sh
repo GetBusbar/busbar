@@ -105,6 +105,77 @@ scan_rule() { awk "$TEST_SCOPE_AWK"'
   $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
 ' "$@"; }
 
+# ══ THE INLINE-TEST SCANNER ══════════════════════════════════════════════════════════════════════
+#
+# THE RULE, owner: "tests in their own file always", because it "keeps code file length honest and
+# easier to compare". That rationale is not decoration; it already corrupted an investigation. A
+# reviewer compared `config/overlay.rs` at 2,111 lines against `config/migrate.rs` at 2,379 and drew
+# a conclusion from the pair. The real implementation figure for overlay.rs was 607 lines; the rest
+# was inline test bodies. Two files whose stated sizes are measuring different things cannot be
+# compared, and nothing in the file tells you that.
+#
+# So: an implementation file carries NO inline test body. The body lives at `foo/tests/<what>.rs`
+# and the impl file keeps the one-line declaration that leaves it a direct child, which is what
+# preserves `use super::*` reaching private items:
+#
+#     #[cfg(test)]
+#     #[path = "tests/overlay_tests.rs"]
+#     mod tests;
+#
+# WHAT COUNTS AS A VIOLATION, precisely: a `#[cfg(test)]`-gated region that contains a test-function
+# attribute (`#[test]`, `#[tokio::test]`, `#[rstest]`, …). "Gated" is answered by TEST_SCOPE_AWK
+# above and by nothing else, so this rule and the choke-point registry can never disagree about what
+# test code is. Two shapes deliberately do NOT trip it, because neither is a test:
+#   - the `#[path]` DECLARATION above (brace-less; gates its own line and stops);
+#   - a `#[cfg(test)]` support module or helper fn that declares no test (a log tap, a serialising
+#     mutex). Those are production-side hooks, not tests, and they have no own-file to move to.
+# Files under a `tests/` dir are skipped: they ARE the own-file, and a `#[cfg(test)]` wrapper inside
+# one is idiomatic.
+#
+# THE ALLOW MARKER, and why it is shaped the way it is: the marker must NAME ITS REASON. A bare
+# allow is the permission-to-ignore mechanism this project banned outright ("0 permission ever on
+# anything"), so a marker with no reason is not a weaker pass, it is its own violation:
+#
+#     // structure-lint: allow inline-test: <why this body cannot move>
+#
+# It must sit in the comment block directly above the `#[cfg(test)]`; any code between detaches it.
+INLINE_TEST_ATTR='^[[:space:]]*#\[((tokio|async_std|actix_rt|serial_test)::)?(test|rstest|test_case|bench|proptest)[]([:space:]]'
+INLINE_ALLOW_RE='structure-lint:[[:space:]]*allow[[:space:]]+inline-test'
+
+scan_inline_tests() { awk "$TEST_SCOPE_AWK"'
+  function flush_marker() { marker = 0; reason = "" }
+  FNR==1 { arm=0; armline=0; emitted=0; a_marker=0; a_reason=""; flush_marker() }
+  {
+    # A file that IS the own-file is not in scope; the wrapper inside it is idiomatic. (A `next`
+    # rather than `nextfile`: the latter is a GNU extension and this script runs on macOS awk too.)
+    if (FILENAME ~ /\/tests\//) next
+    # (1) region bookkeeping. The report points at the `#[cfg(test)]` that opened the region, which
+    #     is the line a reader has to act on, not the individual test attribute inside it.
+    if (gated && !arm)      { arm=1; armline=FNR; emitted=0; a_marker=marker; a_reason=reason }
+    else if (!gated && arm) { arm=0 }
+
+    # (2) the trigger: a test-function attribute anywhere inside the gated region. Report once.
+    if (arm && !emitted && $0 ~ ENVIRON["INLINE_TEST_ATTR"]) {
+      emitted=1
+      if (!a_marker)
+        printf "%s:%d: INLINE-TEST: an inline #[cfg(test)] test body in an implementation file — move it to tests/<what>.rs and leave a #[path] declaration\n", FILENAME, armline
+      else if (a_reason == "")
+        printf "%s:%d: ALLOW-WITHOUT-REASON: `structure-lint: allow inline-test` with no reason after it — a bare allow is permission to ignore; name why this body cannot move\n", FILENAME, armline
+    }
+
+    # (3) marker adjacency, evaluated AFTER the region test so the marker on the line above is the
+    #     one that applies. Any line that is not a comment and not blank detaches it.
+    if (!gated) {
+      if ($0 ~ ENVIRON["INLINE_ALLOW_RE"]) {
+        marker=1; reason=$0
+        sub(/^.*structure-lint:[[:space:]]*allow[[:space:]]+inline-test/, "", reason)
+        gsub(/^[[:space:]:.-]+|[[:space:]]+$/, "", reason)
+        if (length(reason) < 12) reason = ""     # a token like "yes" names nothing
+      } else if (!is_comment && $0 !~ /^[[:space:]]*$/) flush_marker()
+    }
+  }
+' "$@"; }
+
 # ══ SELF-TEST: the scanner that guards the tree is itself guarded ════════════════════════════════
 #
 # `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` above (not a copy) over a fixture
@@ -118,6 +189,13 @@ selftest_case() {   # $1 = name, stdin = fixture source
   local name="$1" src want_hit got_hit
   src="$SELFTEST_DIR/$name.rs"
   cat > "$src"
+  selftest_ran=$((selftest_ran+1))
+  # A fixture that did not reach disk must be RED, never a silent skip. A case that "passes" because
+  # its input vanished is the exact false green this project has already been burned by.
+  if [ ! -s "$src" ]; then
+    note "SELFTEST FAIL [$name] registry: fixture is missing or empty at $src"
+    selftest_fail=1; return 0
+  fi
   LINT_PAT='std::fs::rename\('; LINT_WHAT='probe'; LINT_UNLESS=''
   export LINT_PAT LINT_WHAT LINT_UNLESS
   got_hit=$(scan_rule "$src" | cut -d: -f2 | sort -n | tr '\n' ' ')
@@ -126,13 +204,42 @@ selftest_case() {   # $1 = name, stdin = fixture source
     note "SELFTEST FAIL [$name] registry: flagged lines {${got_hit}} but expected {${want_hit}}"
     selftest_fail=1
   else selftest_pass=$((selftest_pass+1)); fi
+  unset LINT_PAT LINT_WHAT LINT_UNLESS
+  return 0
+}
+
+# The inline-test rule's fixture helper. `$1` is the fixture's path RELATIVE to the corpus root, so
+# a case can be placed under a `tests/` dir and prove the rule MISSES a legitimately test-only file.
+# A probe line declares its verdict with a trailing `//= INLINE`, `//= NOREASON` or `//= OK`; the
+# expectation is read off the fixture itself, so a fixture and its expectation cannot drift.
+selftest_inline_case() {   # $1 = relative path, stdin = fixture source
+  local rel="$1" src want got
+  src="$SELFTEST_DIR/$rel"
+  mkdir -p "$(dirname "$src")"
+  cat > "$src"
+  selftest_ran=$((selftest_ran+1))
+  if [ ! -s "$src" ]; then
+    note "SELFTEST FAIL [$rel] inline-test: fixture is missing or empty at $src"
+    selftest_fail=1; return 0
+  fi
+  export INLINE_TEST_ATTR INLINE_ALLOW_RE
+  got=$(scan_inline_tests "$src" | awk -F: '{ split($3, a, " "); printf "%s=%s ", $2, a[1] }')
+  want=$({ grep -nE '//= (INLINE|NOREASON)' "$src" || true; } \
+        | sed -E 's|^([0-9]+):.*//= |\1=|' | tr '\n' ' ')
+  # Normalise: the scanner prints `INLINE-TEST` / `ALLOW-WITHOUT-REASON`, the fixture says
+  # `INLINE` / `NOREASON`.
+  got=$(printf '%s' "$got" | sed 's/=INLINE-TEST/=INLINE/g; s/=ALLOW-WITHOUT-REASON/=NOREASON/g')
+  if [ "$got" != "$want" ]; then
+    note "SELFTEST FAIL [$rel] inline-test: reported {${got}} but expected {${want}}"
+    selftest_fail=1
+  else selftest_pass=$((selftest_pass+1)); fi
   return 0
 }
 
 run_selftest() {
   hdr "structure-lint SELF-TEST (the test-scope scanner cannot be lied to)"
   SELFTEST_DIR=$(mktemp -d); trap 'rm -rf "$SELFTEST_DIR"' EXIT
-  selftest_fail=0; selftest_pass=0
+  selftest_fail=0; selftest_pass=0; selftest_ran=0
 
   # ① The shadow bug that was PROVEN exploitable: a doc comment that merely NAMES the attribute.
   selftest_case doc_comment_mentions_attr <<'RS'
@@ -257,7 +364,117 @@ pub fn far_away() {
 }
 RS
 
-  note "self-test: ${selftest_pass} fixture(s) passed"
+  # ══ the inline-test rule (invariant 3) ═════════════════════════════════════════════════════════
+  # Verdict markers sit on the `#[cfg(test)]` line, which is where the scanner reports.
+
+  # ⑦ The plain violation: an inline test body in an implementation file.
+  selftest_inline_case inline_body.rs <<'RS'
+pub fn prod() -> u32 { 1 }
+
+#[cfg(test)]                                                         //= INLINE
+mod tests {
+    use super::*;
+    #[test]
+    fn t() { assert_eq!(prod(), 1); }
+}
+RS
+
+  # ⑧ MUST MISS. The CORRECT shape: the body lives in tests/, the impl file keeps the declaration.
+  #    Also here: a `#[cfg(test)]` support module that declares no test is not a test and has no
+  #    own-file to move to, and a `#[cfg(test)]` helper method inside a production impl likewise.
+  selftest_inline_case correct_shapes.rs <<'RS'
+#[cfg(test)]
+#[path = "tests/thing_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+pub(crate) mod log_tap {
+    pub(crate) fn install() {}
+}
+
+impl Foo {
+    #[cfg(test)]
+    fn probe(&self) -> u32 { 7 }
+}
+RS
+
+  # ⑨ MUST MISS. A legitimately test-only file: it IS the own-file, so the wrapper inside it is
+  #    idiomatic. If this case ever HITS, the rule has started forbidding the very shape it demands.
+  selftest_inline_case tests/already_own_file.rs <<'RS'
+#[cfg(test)]
+mod inner {
+    #[test]
+    fn t() { assert!(true); }
+}
+
+#[test]
+fn top_level() { assert!(true); }
+RS
+
+  # ⑩ The allow marker. With a reason it permits the body; with NO reason it is its own violation.
+  #    A bare allow is the permission-to-ignore mechanism this project banned, so it may not be a
+  #    quieter pass than the thing it was suppressing.
+  selftest_inline_case allow_marker.rs <<'RS'
+// structure-lint: allow inline-test: exercises a macro that only expands at this scope
+#[cfg(test)]
+mod ok_with_reason {
+    #[test]
+    fn t() { assert!(true); }
+}
+
+// structure-lint: allow inline-test
+#[cfg(test)]                                                         //= NOREASON
+mod bare_allow {
+    #[test]
+    fn t() { assert!(true); }
+}
+
+// structure-lint: allow inline-test: yes
+#[cfg(test)]                                                         //= NOREASON
+mod too_short_to_be_a_reason {
+    #[test]
+    fn t() { assert!(true); }
+}
+RS
+
+  # ⑪ Marker adjacency. A marker is spent on the region directly below it: any code between them
+  #    detaches it, so an allow written for one body cannot silently cover a later one.
+  selftest_inline_case marker_adjacency.rs <<'RS'
+// structure-lint: allow inline-test: this reason belongs to the item below, not to the tests
+pub fn prod() -> u32 { 1 }
+
+#[cfg(test)]                                                         //= INLINE
+mod tests {
+    #[test]
+    fn t() { assert!(true); }
+}
+RS
+
+  # ⑫ Attribute flavours: async and non-std test attributes are tests too, and a body reported once
+  #    is reported once however many tests it holds.
+  selftest_inline_case attr_flavours.rs <<'RS'
+#[cfg(test)]                                                         //= INLINE
+mod a {
+    #[tokio::test]
+    async fn t1() {}
+    #[test]
+    fn t2() {}
+}
+
+#[cfg(test)]                                                         //= INLINE
+mod b {
+    #[rstest]
+    fn t3() {}
+}
+RS
+
+  # A self-test that asserted nothing would report exactly what a passing one reports. So the count
+  # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
+  if [ "$selftest_ran" -eq 0 ]; then
+    note "SELFTEST FAIL: no fixture cases ran — a self-test that executes nothing proves nothing"
+    selftest_fail=1
+  fi
+  note "self-test: ${selftest_pass}/${selftest_ran} fixture case(s) passed"
   if [ "$selftest_fail" -ne 0 ]; then
     note "structure-lint SELF-TEST FAILED — the scanner would let a bypass through"
     return 1
@@ -287,22 +504,21 @@ done < <(find crates -type d)
 # list exists to make visible and trackable, not to hide. Shrinking this list is the only permitted
 # edit to it — a PR that ADDS an entry here for NEW code is not a fix, it's evading the check.
 GRANDFATHERED_OVERSIZED="
-crates/busbar/src/admin/v1/service.rs
 crates/busbar/src/admin/v1/json/handlers.rs
 crates/busbar/src/config/mod.rs
 crates/busbar/src/proxy/engine/mod.rs
 crates/busbar/src/main.rs
 "
-GRANDFATHERED_LOCALITY="
-crates/busbar/src/proto/stream.rs
-crates/busbar/src/admin/mod.rs
-crates/busbar/src/admin/v1/service.rs
-crates/busbar/src/config/secret.rs
-crates/busbar/src/config/overlay.rs
-crates/busbar/src/governance/mod.rs
-crates/busbar/src/proxy/engine/mod.rs
-"
+# There is no grandfathered list for test locality. There was one, of 7 files, and it was deleted
+# rather than shrunk: the rule it was suspending is "tests in their own file always", every entry on
+# it was moved, and an exception list for a mechanical change is only a way of never doing it.
 is_grandfathered() { printf '%s\n' "$2" | grep -qx "$1"; }
+
+# Candidate set, computed once and shared by invariants 3 and 4: every crate .rs outside a tests/
+# dir. (Built with a read loop rather than `mapfile` so the script still runs on the bash 3.2 that
+# ships with macOS.)
+CANDIDATES=()
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' | sort)
 
 # ── Invariant 2: no monster impl files — split by area. Test files (under a tests/ dir) are exempt. ─
 hdr "no impl .rs file over ${MAX_LINES_IMPL} lines (test files exempt)"
@@ -320,38 +536,17 @@ while IFS= read -r f; do
 done < <(find crates -name '*.rs')
 [ "$big" -eq 0 ] && note "ok"
 
-# ── Invariant 3: tests live in foo/tests/. The trigger is an inline test module BODY — a
-#    `#[cfg(test)] mod X { ... }` (note the brace). A one-line `#[cfg(test)] #[path=...] mod X;`
-#    DECLARATION is fine and expected: it keeps X a direct child so `use super::*` still resolves,
-#    while the body lives in tests/X.rs. A folder-module hub (mod.rs) may carry those declarations
-#    but no inline body; and no file may carry more than one inline body (the split trigger). A leaf
-#    file (not a mod.rs) may keep a single inline body. ────────────────────────────────────────────
-hdr "test locality (no inline test bodies in mod.rs; <=1 inline test body per file)"
+# ── Invariant 3: tests live in foo/tests/, ALWAYS. See scan_inline_tests above for the rule, the
+#    two shapes that are deliberately not violations, and the allow marker. ────────────────────────
+hdr "test locality (tests in their own file always; no inline test body in an impl file)"
 loc=0
-# Count inline test module BODIES: a `#[cfg(test)]` line whose next `mod X` line opens a brace.
-inline_bodies() { awk '
-  /^[[:space:]]*#\[cfg\(test\)\]/ { armed=1; next }
-  armed && /^[[:space:]]*mod [A-Za-z0-9_]+[[:space:]]*\{/ { c++ }
-  armed { armed=0 }
-  END { print c+0 }' "$1"; }
-while IFS= read -r f; do
-  bodies=$(inline_bodies "$f")
-  if [ "$(basename "$f")" = "mod.rs" ] && [ "$bodies" -ge 1 ]; then
-    if is_grandfathered "$f" "$GRANDFATHERED_LOCALITY"; then
-      note "TESTS-IN-HUB (grandfathered, pre-existing debt): $f"
-    else
-      note "TESTS-IN-HUB: $f is a mod.rs with an inline test body — move it to tests/ (keep a #[path] decl)"
-      fail=1; loc=1
-    fi
-  elif [ "$bodies" -ge 2 ]; then
-    if is_grandfathered "$f" "$GRANDFATHERED_LOCALITY"; then
-      note "MULTI-TEST-MOD (grandfathered, pre-existing debt): $f (${bodies} inline test bodies)"
-    else
-      note "MULTI-TEST-MOD: $f has ${bodies} inline test bodies — give each its own tests/<name>.rs"
-      fail=1; loc=1
-    fi
-  fi
-done < <(find crates -name '*.rs')
+export INLINE_TEST_ATTR INLINE_ALLOW_RE
+inline_hits=$(scan_inline_tests "${CANDIDATES[@]}")
+if [ -n "$inline_hits" ]; then
+  while IFS= read -r h; do note "$h"; done <<<"$inline_hits"
+  note "$(printf '%s\n' "$inline_hits" | wc -l | tr -d ' ') inline test body/bodies — see docs/code-layout.md § 2"
+  fail=1; loc=1
+fi
 [ "$loc" -eq 0 ] && note "ok"
 
 # ══ Invariant 4: THE CHOKE-POINT REGISTRY ════════════════════════════════════════════════════════
@@ -393,7 +588,7 @@ CHOKE_POINTS=(
   # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
   #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
   #         0600 mode) its author forgot.
-  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,crates/busbar/src/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,crates/busbar/src/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.
@@ -424,11 +619,6 @@ CHOKE_POINTS=(
 
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
-
-# Candidate set, computed once: every crate .rs outside a tests/ dir. (Built with a read loop rather
-# than `mapfile` so the script still runs on the bash 3.2 that ships with macOS.)
-CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' | sort)
 
 hdr "choke-point registry (every hazard class has ONE owner; no hand-rolled bypass)"
 ck=0

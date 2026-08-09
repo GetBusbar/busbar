@@ -14,5 +14,5 @@ crate-type = ["cdylib"]
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }

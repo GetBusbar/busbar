@@ -17,19 +17,5 @@ use std::collections::BTreeMap;
 pub(crate) type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn source_scoped_extra_namespaces_by_protocol() {
-        let mut e: SourceScopedExtra = BTreeMap::new();
-        e.entry("openai".into())
-            .or_default()
-            .insert("logprobs".into(), Value::Bool(true));
-        assert!(e["openai"].contains_key("logprobs"));
-        assert!(
-            !e.contains_key("anthropic"),
-            "a foreign protocol's namespace is absent, not merged"
-        );
-    }
-}
+#[path = "tests/lossless_tests.rs"]
+mod tests;

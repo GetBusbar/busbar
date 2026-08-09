@@ -3,10 +3,11 @@
     "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (enforced by the config-stability gate).",
     "frozen_at": "1.5.3",
     "generator": "scripts/config-schema.py gen",
-    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd) + the named-definition-map type aliases under crates/busbar/src/config"
+    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, and UpstreamCreds"
   },
   "types": {
     "AdvancedCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "rate_sweep_interval": {
           "optional": true,
@@ -33,9 +34,11 @@
           "type": "usize"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "AffinityCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "header_name": {
           "optional": true,
@@ -46,15 +49,19 @@
           "type": "AffinityMode"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "AffinityMode": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "session"
       ]
     },
     "AuthDeployCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "admin_auth": {
           "optional": true,
@@ -77,9 +84,11 @@
           "type": "SecretRef"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "BreakerCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "base_cooldown_secs": {
           "optional": true,
@@ -94,9 +103,11 @@
           "type": "BreakerTripConfig"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "BreakerTripConfig": {
+      "deny_unknown_fields": true,
       "fields": {
         "consecutive_n": {
           "optional": true,
@@ -119,16 +130,20 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "BreakerTripMode": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "consecutive",
         "error_rate"
       ]
     },
     "BrowserLoginCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "client_id": {
           "optional": true,
@@ -139,18 +154,22 @@
           "type": "SecretRef"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ChildDefault": {
+      "deny_unknown_fields": true,
       "fields": {
         "limits": {
           "optional": true,
           "type": "Vec<LimitCfg>"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ConfigMgmtCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "locked": {
           "optional": true,
@@ -161,9 +180,11 @@
           "type": "OverlayCfg"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "DeployCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "admin_listen": {
           "optional": true,
@@ -274,18 +295,22 @@
           "type": "TlsCfg"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "EnvFetch": {
+      "deny_unknown_fields": true,
       "fields": {
         "env": {
           "optional": false,
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ExportAuthHeader": {
+      "deny_unknown_fields": true,
       "fields": {
         "name": {
           "optional": false,
@@ -296,9 +321,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ExportDefCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "durable": {
           "optional": true,
@@ -321,9 +348,11 @@
           "type": "Vec<String>"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "FailoverCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "exclusions": {
           "optional": true,
@@ -338,18 +367,22 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "FallbackBody": {
+      "deny_unknown_fields": true,
       "fields": {
         "fallback_pool": {
           "optional": false,
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "FileSettings": {
+      "deny_unknown_fields": true,
       "fields": {
         "path": {
           "optional": false,
@@ -360,9 +393,11 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "GithubFetch": {
+      "deny_unknown_fields": true,
       "fields": {
         "github": {
           "optional": false,
@@ -373,9 +408,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "GroupCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "child_default": {
           "optional": true,
@@ -394,9 +431,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HealthCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "interval_secs": {
           "optional": true,
@@ -411,9 +450,11 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HealthDefaultsCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "default_probe_interval_secs": {
           "optional": true,
@@ -424,10 +465,13 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HealthMode": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "active",
         "dead",
@@ -435,6 +479,7 @@
       ]
     },
     "HookCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "at": {
           "optional": true,
@@ -497,9 +542,11 @@
           "type": "UserAccess"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HookDefCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "groups": {
           "optional": true,
@@ -546,26 +593,33 @@
           "type": "UserAccess"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HookKind": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "gate",
         "tap"
       ]
     },
     "HookRefBody": {
+      "deny_unknown_fields": true,
       "fields": {
         "hook": {
           "optional": false,
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "HookStage": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "candidate",
         "request",
@@ -574,6 +628,7 @@
       ]
     },
     "IdentityProviderCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "browser_login": {
           "optional": true,
@@ -596,7 +651,8 @@
           "type": "SecretRef"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "LimitCfg": {
       "deserialize": "manual",
@@ -604,7 +660,9 @@
       "kind": "struct"
     },
     "LimitWindow": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "day",
         "hour",
@@ -614,6 +672,7 @@
       ]
     },
     "LimitsCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "default_max_tokens": {
           "optional": true,
@@ -672,9 +731,11 @@
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ModelCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "attempt_timeout_ms": {
           "optional": true,
@@ -709,7 +770,8 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "OnErrorCfg": {
       "deserialize": "manual",
@@ -717,7 +779,9 @@
       "kind": "struct"
     },
     "OnExhaust": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "block",
         "downgrade"
@@ -729,31 +793,38 @@
       "kind": "struct"
     },
     "OtlpSettings": {
+      "deny_unknown_fields": true,
       "fields": {
         "url": {
           "optional": false,
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "OverlayBackend": {
+      "deny_unknown_fields": true,
       "fields": {
         "file": {
           "optional": true,
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "OverlayCfg": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "Backend",
         "Disabled"
       ]
     },
     "OverlayDoc": {
+      "deny_unknown_fields": false,
       "fields": {
         "deleted": {
           "optional": true,
@@ -792,10 +863,13 @@
           "type": "u32"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PluginFetch": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "Env",
         "Github",
@@ -803,6 +877,7 @@
       ]
     },
     "PluginPublisher": {
+      "deny_unknown_fields": true,
       "fields": {
         "name": {
           "optional": false,
@@ -813,9 +888,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PluginsCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "dir": {
           "optional": true,
@@ -838,9 +915,11 @@
           "type": "PluginsTrustCfg"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PluginsTrustCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "allow_third_party": {
           "optional": true,
@@ -855,10 +934,13 @@
           "type": "Vec<PluginPublisher>"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PolicyOnError": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "first",
         "reject",
@@ -871,6 +953,7 @@
       "kind": "struct"
     },
     "PoolMember": {
+      "deny_unknown_fields": true,
       "fields": {
         "attempt_timeout_ms": {
           "optional": true,
@@ -901,10 +984,13 @@
           "type": "u32"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PoolPolicy": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "cheapest",
         "fastest",
@@ -919,6 +1005,7 @@
       "kind": "struct"
     },
     "PrometheusSettings": {
+      "deny_unknown_fields": true,
       "fields": {
         "buffer_seconds": {
           "optional": false,
@@ -929,10 +1016,13 @@
           "type": "usize"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "PromptAccess": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "no",
         "ro",
@@ -940,7 +1030,9 @@
       ]
     },
     "ProviderAuth": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "api-key",
         "bearer",
@@ -949,6 +1041,7 @@
       ]
     },
     "ProviderCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "allow_metadata_hosts": {
           "optional": true,
@@ -999,9 +1092,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ProviderDef": {
+      "deny_unknown_fields": false,
       "fields": {
         "allow_metadata_hosts": {
           "optional": true,
@@ -1048,9 +1143,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ProviderDeploy": {
+      "deny_unknown_fields": true,
       "fields": {
         "allow_metadata_hosts": {
           "optional": true,
@@ -1101,27 +1198,33 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "QueueBody": {
+      "deny_unknown_fields": true,
       "fields": {
         "queue": {
           "optional": false,
           "type": "QueueInner"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "QueueInner": {
+      "deny_unknown_fields": true,
       "fields": {
         "max_ms": {
           "optional": false,
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "RateEntryCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "cache_read_utok": {
           "optional": true,
@@ -1140,9 +1243,11 @@
           "type": "f64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "RawPoolCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "affinity": {
           "optional": true,
@@ -1173,9 +1278,11 @@
           "type": "crate::auth::UpstreamCreds"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ReasoningEffortBudgets": {
+      "deny_unknown_fields": false,
       "fields": {
         "high": {
           "optional": true,
@@ -1194,9 +1301,11 @@
           "type": "u32"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "ResponseHeadersCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "route_policy": {
           "optional": true,
@@ -1207,9 +1316,11 @@
           "type": "bool"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "RoleBindingCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "admin_scope": {
           "optional": true,
@@ -1224,9 +1335,11 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "RootSettings": {
+      "deny_unknown_fields": true,
       "fields": {
         "admin_listen": {
           "optional": true,
@@ -1281,27 +1394,38 @@
           "type": "TlsCfg"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "RoutingCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "default_policy_timeout_ms": {
           "optional": true,
           "type": "u64"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "SecretModuleCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "settings": {
           "optional": true,
           "type": "serde_json::Map<String, serde_json::Value>"
         }
       },
+      "kind": "struct",
+      "transparent": false
+    },
+    "SecretRef": {
+      "deserialize": "manual",
+      "fields": {},
       "kind": "struct"
     },
     "SecurityCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "allow_all_metadata": {
           "optional": true,
@@ -1316,9 +1440,11 @@
           "type": "Vec<String>"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "StoreCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "module": {
           "optional": true,
@@ -1329,9 +1455,11 @@
           "type": "serde_json::Map<String, serde_json::Value>"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "TlsCfg": {
+      "deny_unknown_fields": true,
       "fields": {
         "cert": {
           "optional": false,
@@ -1346,9 +1474,20 @@
           "type": "SecretRef"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
+    },
+    "UpstreamCreds": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "own",
+        "passthrough"
+      ]
     },
     "UrlFetch": {
+      "deny_unknown_fields": true,
       "fields": {
         "sha256": {
           "optional": true,
@@ -1359,16 +1498,20 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
     },
     "UserAccess": {
+      "deny_unknown_fields": false,
       "kind": "enum",
+      "transparent": false,
       "variants": [
         "no",
         "ro"
       ]
     },
     "WebhookSettings": {
+      "deny_unknown_fields": true,
       "fields": {
         "auth_header": {
           "optional": true,
@@ -1387,7 +1530,77 @@
           "type": "String"
         }
       },
-      "kind": "struct"
+      "kind": "struct",
+      "transparent": false
+    },
+    "manual-de LimitCfg": {
+      "fields": {
+        "downgrade_to": {
+          "optional": true,
+          "type": "ScopeRef"
+        },
+        "on_exhaust": {
+          "optional": true,
+          "type": "OnExhaust"
+        },
+        "per": {
+          "optional": true,
+          "type": "LimitWindow"
+        }
+      },
+      "kind": "manual",
+      "wire_keys": [
+        "budget",
+        "concurrent",
+        "downgrade_to",
+        "on_exhaust",
+        "per",
+        "pool",
+        "requests",
+        "tokens"
+      ]
+    },
+    "manual-de OnErrorCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
+    },
+    "manual-de OnExhaustedCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": [
+        "least_bad",
+        "reject"
+      ]
+    },
+    "manual-de PoolCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
+    },
+    "manual-de PoolsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
+    },
+    "manual-de SecretRef": {
+      "fields": {
+        "module": {
+          "optional": false,
+          "type": "String"
+        },
+        "settings": {
+          "optional": false,
+          "type": "serde_json::Map<String, serde_json::Value>"
+        }
+      },
+      "kind": "manual",
+      "wire_keys": [
+        "env",
+        "file",
+        "module",
+        "settings"
+      ]
     },
     "type AuthMethods": {
       "kind": "alias",

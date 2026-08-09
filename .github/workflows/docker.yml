@@ -3,17 +3,39 @@ name: Docker
 # Build and publish the busbar container image (Docker Hub + GHCR) as a multi-arch
 # manifest (linux/amd64 + linux/arm64), FROM scratch over static musl binaries.
 #
+# THIS WORKFLOW NO LONGER OWNS THE VERSION TAG, AND THAT IS THE WHOLE POINT.
+#
+# It used to fire on a `v*` tag push and emit `X.Y.Z` + `latest` in the same build-push that
+# produced the bytes. So the user-facing name existed the instant the build succeeded, before one
+# consumer check had run against it. Docker Hub has TAG IMMUTABILITY enabled on getbusbar/busbar: a
+# published `X.Y.Z` CANNOT be overwritten, so a broken one is permanent and the only remedies are
+# deleting the tag (which has needed owner scope that was not available) or burning a version
+# number. Creating the name before proving the bytes is therefore the wrong order regardless of
+# convenience, and 1.5.3 paid for it.
+#
+# The order is now: build -> push under a THROWAWAY name -> verify from the consumer side ->
+# PROMOTE. This file provides both halves as separate, independently callable paths, and
+# release.yml sequences them. Exactly ONE thing emits `X.Y.Z`: the `promote` job below, reached
+# only from release.yml's promote step, only after staged verification went green.
+#
 # Triggers:
-#   - v* tags: publish the EXACT semver pin plus `latest` (X.Y.Z and latest) -- no floating
-#     X.Y or X aliases. This header used to claim an "X.Y.Z, X.Y, X, latest" cascade that the
-#     `tags:` block has never produced; the code is right about the shape and the header was stale.
-#     Both halves of that drift are now GUARDED rather than merely corrected: verify-deploy.yml
-#     asserts that `latest` and the version pin resolve to the SAME manifest digest on BOTH
-#     registries, which is the assertion whose absence let `latest` sit frozen at 1.5.2 through the
-#     whole of the 1.5.3 release. GetBusbar/helm-charts pins `getbusbar/busbar:<appVersion>`, the
-#     exact pin, so this tag shape is load-bearing downstream and not cosmetic.
-#   - workflow_dispatch: publish a `test` tag only — end-to-end pipeline check
-#     without cutting a release.
+#   - workflow_call (how release.yml drives it):
+#       * staging_tag: build the multi-arch image and push it under THAT name only. Really
+#         pullable, really executable, but no user is looking at `staging-<sha>`. Outputs the
+#         manifest digest so the promote path can retag those exact bytes.
+#       * promote_to (+ promote_from): manifest-only retag. Creates `X.Y.Z` from the already-pushed
+#         staged manifest and moves `latest` onto it. NO REBUILD, so the promoted image is
+#         bit-identical to the one verification actually pulled and ran, and the build-provenance
+#         attestation recorded against the digest carries over unchanged.
+#   - workflow_dispatch: the manual recovery door for the same two primitives, plus a bare dispatch
+#     that publishes only a `test` tag (pipeline smoke test, cuts nothing).
+#
+# THE INPUT THAT WAS REMOVED, AND WHY. There used to be a `version` dispatch input that decided
+# whether the semver tag was emitted AT ALL: `type=semver` was gated `enable=<version != ''>`, so a
+# bare dispatch published only `test`. That is how the headroom bundle rebuild "succeeded" and
+# published nothing anybody pulls. Two mechanisms both believing they own tagging is how this
+# breaks again, so `version` is gone and `label_version` (which sets the OCI version LABEL and the
+# bundled plugin's version, and emits NO tag) took over the part of its job that was legitimate.
 #
 # Supply chain: both registries carry a GitHub build-provenance attestation
 # (stored by GitHub — no extra tags on the repo). Verify with:
@@ -26,24 +48,63 @@ name: Docker
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 on:
-  push:
-    tags:
-      - "v*"
-      - "!v*-*" # NEVER publish a pre-release tag (e.g. v1.5.2-rc.1) — qa staging markers only.
+  # NO `push: tags` TRIGGER. Its absence is a load-bearing part of the design, not an omission: a
+  # `v*` tag existing must not, by itself, cause anything to be published under a user-facing name.
+  # scripts/release-order-lint.py asserts this file has no tag trigger and fails the build if one
+  # is added back.
+  workflow_call:
+    inputs:
+      staging_tag:
+        description: "Build and push the image under THIS throwaway tag only (e.g. staging-abc1234)."
+        required: false
+        type: string
+        default: ""
+      label_version:
+        description: >-
+          The X.Y.Z this build IS, for the org.opencontainers.image.version label and the bundled
+          headroom plugin's version. Emits NO tag. verify-deploy's check (d) reads this label off
+          the STAGED image, so the staged bytes must already claim the right version.
+        required: false
+        type: string
+        default: ""
+      promote_to:
+        description: >-
+          Manifest-only promote: create this version tag (e.g. 1.5.4) and move `latest` onto it.
+          No rebuild. Skips the build jobs entirely.
+        required: false
+        type: string
+        default: ""
+      promote_from:
+        description: >-
+          Source tag the promote copies manifests from (normally the staging tag). Leave empty to
+          promote from `promote_to` itself, which is the old `retag_from` behaviour: move `latest`
+          onto an already-published, immutable version without re-pushing it.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      digest:
+        description: "Manifest digest of the image this run pushed (staging path only)."
+        value: ${{ jobs.publish.outputs.digest }}
   workflow_dispatch:
     inputs:
-      version:
-        description: >-
-          Publish as this version (e.g. 1.1.0) with the full semver tag cascade +
-          latest. Only use when the dispatched ref is source-identical to that
-          release. Leave empty to publish only a `test` tag.
+      staging_tag:
+        description: "Build and push under this throwaway tag only (e.g. staging-abc1234). Cuts nothing."
         required: false
         default: ""
-      retag_from:
+      label_version:
+        description: "X.Y.Z for the OCI version label and the bundled plugin. Emits NO tag."
+        required: false
+        default: ""
+      promote_to:
         description: >-
-          Point `latest` at an ALREADY-PUBLISHED version (e.g. 1.1.1) with a
-          manifest-only retag — no rebuild, and the immutable X.Y.Z tag is never
-          re-pushed. Skips the build. Leave empty for a normal build.
+          Manifest-only promote: create this version tag and move `latest` onto it. No rebuild.
+        required: false
+        default: ""
+      promote_from:
+        description: >-
+          Source tag to promote FROM. Empty means promote from promote_to itself (move `latest`
+          onto an already-published immutable version). This is the old `retag_from` input.
         required: false
         default: ""
 
@@ -64,11 +125,29 @@ permissions:
   attestations: write  # build-provenance attestation
 
 jobs:
-  # Manifest-only retag: point `latest` at an already-published version, no rebuild.
-  # Used when version tags are immutable — the immutable X.Y.Z is never re-pushed.
-  retag-latest:
-    name: point latest at ${{ inputs.retag_from }}
-    if: ${{ inputs.retag_from != '' }}
+  # -- THE PROMOTE PRIMITIVE: manifest-only, no rebuild ---------------------------------------------
+  #
+  # This is the ONLY job in this repository that emits a user-facing `X.Y.Z` container tag. It takes
+  # bytes that are ALREADY pushed (normally under `staging-<sha>`, and already pulled, booted and
+  # executed by verification) and gives them their real names. Three properties make this the right
+  # promote primitive rather than a rebuild:
+  #
+  #   * BIT-IDENTICAL. `imagetools create` copies manifests. The promoted `X.Y.Z` is the exact
+  #     digest verification ran, not a second build that "should" be the same. A rebuild would make
+  #     the verification a statement about a DIFFERENT artifact, which is no verification at all.
+  #   * THE ATTESTATION CARRIES OVER. Build provenance is recorded against the DIGEST, so the same
+  #     digest under a new tag is still attested. `gh attestation verify oci://...:X.Y.Z` passes
+  #     without re-attesting.
+  #   * CHEAP AND RETRYABLE. Seconds, not the ~40 minutes a two-arch PGO build costs, so a promote
+  #     that fails half way can be re-run immediately.
+  #
+  # IMMUTABILITY IS WHY THE ORDER INSIDE THIS JOB IS WHAT IT IS. `X.Y.Z` on Docker Hub cannot be
+  # overwritten, so it is pushed FIRST, while nothing else has moved: if the registry rejects it
+  # (the tag already exists) the job dies before `latest` has been touched and before release.yml
+  # has pushed a git tag or published anything. `latest` is mutable and therefore safe to move last.
+  promote:
+    name: promote ${{ inputs.promote_from || inputs.promote_to }} -> ${{ inputs.promote_to }} + latest
+    if: ${{ inputs.promote_to != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: docker/setup-buildx-action@v4
@@ -83,26 +162,80 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Retag latest -> ${{ inputs.retag_from }} (multi-arch preserved)
+      - name: Promote (manifest-only, multi-arch preserved)
         env:
-          V: ${{ inputs.retag_from }}
+          V: ${{ inputs.promote_to }}
+          # Empty SRC means "promote from V itself", i.e. the old `retag_from` recovery: V is
+          # already published and immutable, and all that is wanted is `latest` pointed at it.
+          SRC: ${{ inputs.promote_from }}
         run: |
           set -euo pipefail
-          # Docker Hub: point latest at the (immutable) version. Idempotent.
-          docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:latest" "${DOCKERHUB_IMAGE}:${V}"
-          # GHCR may be MISSING this version if a prior combined build-push aborted mid-way
-          # (e.g. Docker Hub tag-immutability rejected `latest` before GHCR finished). Mirror the
-          # version from Docker Hub into GHCR (cross-registry manifest copy, no rebuild), then move
-          # GHCR latest onto it. `imagetools create` is a no-op-safe overwrite if it already exists.
+          src="${SRC:-$V}"
+          echo "Promoting ${DOCKERHUB_IMAGE}:${src} -> :${V} and :latest on both registries."
+
+          # 1. The IMMUTABLE tag first, on both registries, while nothing else has moved.
+          if [ "$src" != "$V" ]; then
+            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:${src}"
+          fi
+          # GHCR may be MISSING this version if a prior combined push aborted mid-way. Mirror it
+          # from Docker Hub (cross-registry manifest copy, no rebuild). `imagetools create` is a
+          # no-op-safe overwrite if it already exists, which is what makes a re-run idempotent.
           docker buildx imagetools create -t "${GHCR_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:${V}"
+
+          # 2. Only then the MUTABLE pointer. Moving `latest` before the pin exists would, for the
+          #    window between the two, hand `docker pull getbusbar/busbar` an image no user can pin.
+          docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:latest" "${DOCKERHUB_IMAGE}:${V}"
           docker buildx imagetools create -t "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}:${V}"
-          echo "== Docker Hub latest =="; docker buildx imagetools inspect "${DOCKERHUB_IMAGE}:latest" | grep -iE 'name|platform'
-          echo "== GHCR ${V} =="; docker buildx imagetools inspect "${GHCR_IMAGE}:${V}" | grep -iE 'name|platform'
+
+      # PARTIAL PROMOTE IS DETECTABLE, NOT SILENT. `imagetools create` exiting 0 says the API call
+      # was accepted; it does not say the registry now serves that name, and "the pin published but
+      # `latest` never moved" is precisely the class of defect that shipped 1.5.3. So the promote is
+      # re-derived from OUTSIDE, over the Distribution API the way `docker pull` reads it, and all
+      # four names must agree on ONE digest. Any disagreement names which half landed.
+      - name: Assert the promote actually landed on all four names
+        env:
+          V: ${{ inputs.promote_to }}
+        run: |
+          set -euo pipefail
+          reg_digest() {  # reg_digest <auth-host> <registry-host> <repo> <tag>
+            local auth_host="$1" reg_host="$2" repo="$3" tag="$4" token_url token
+            if [ "$auth_host" = "auth.docker.io" ]; then
+              token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull"
+            else
+              token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
+            fi
+            token="$(curl -fsS --max-time 30 "$token_url" | jq -r '.token // .access_token')"
+            [ -n "$token" ] && [ "$token" != "null" ] || return 1
+            curl -fsS --max-time 30 -I \
+              -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json' \
+              "https://${reg_host}/v2/${repo}/manifests/${tag}" \
+            | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
+          }
+          hub_v="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar "$V" || true)"
+          hub_l="$(reg_digest auth.docker.io registry-1.docker.io getbusbar/busbar latest || true)"
+          ghcr_v="$(reg_digest ghcr.io ghcr.io getbusbar/busbar "$V" || true)"
+          ghcr_l="$(reg_digest ghcr.io ghcr.io getbusbar/busbar latest || true)"
+          echo "docker.io ${V}     = ${hub_v:-<none>}"
+          echo "docker.io latest   = ${hub_l:-<none>}"
+          echo "ghcr.io   ${V}     = ${ghcr_v:-<none>}"
+          echo "ghcr.io   latest   = ${ghcr_l:-<none>}"
+          fail=0
+          [ -n "$hub_v" ] || { echo "::error::PARTIAL PROMOTE: docker.io/getbusbar/busbar:${V} does not resolve. The version pin was never created. Nothing downstream should treat ${V} as released."; fail=1; }
+          for pair in "docker.io latest:$hub_l" "ghcr.io ${V}:$ghcr_v" "ghcr.io latest:$ghcr_l"; do
+            name="${pair%%:*}"; got="${pair#*:}"
+            if [ "$got" != "$hub_v" ] || [ -z "$got" ]; then
+              echo "::error::PARTIAL PROMOTE: ${name} resolves to '${got:-<none>}' but docker.io/${V} is '${hub_v}'. Exactly the 1.5.3 shape: one name moved and another did not, and nothing was red. Fix: re-run docker.yml with promote_to=${V} (the promote is idempotent), then re-run this assertion."
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "PASS: docker.io ${V}, docker.io latest, ghcr.io ${V} and ghcr.io latest all resolve to ${hub_v}."
 
   # Static musl binaries, one per architecture, built on native runners (no QEMU).
   build-binaries:
     name: musl ${{ matrix.arch }}
-    if: ${{ inputs.retag_from == '' }}
+    if: ${{ inputs.promote_to == '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -280,10 +413,12 @@ jobs:
         run: |
           set -euo pipefail
           # Same version resolution as the publish job's "Resolve version" step (duplicated here,
-          # not shared, since this runs in a different job): the workflow_dispatch `version` input,
-          # else the pushed v* tag, else a placeholder for a bare `test`-tag dispatch build.
-          ver="${{ inputs.version }}"
-          if [ -z "$ver" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then ver="${GITHUB_REF_NAME#v}"; fi
+          # not shared, since this runs in a different job): the `label_version` input, else a
+          # placeholder for a bare `test`-tag dispatch build. There is deliberately no fallback to
+          # a git tag: this workflow no longer runs on tag pushes, and inferring a release version
+          # from the ref is exactly the coupling the restructure removed.
+          ver="${{ inputs.label_version }}"
+          ver="${ver#v}"
           [ -n "$ver" ] || ver="0.0.0-test"
           outdir="plugin-dist"; mkdir -p "$outdir"
           unsigned_flag=""
@@ -326,6 +461,8 @@ jobs:
     name: build & push image
     needs: build-binaries
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
 
@@ -367,14 +504,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The version being published: the pushed v* tag, or the workflow_dispatch
-      # `version` input. Empty (bare dispatch) → publish only a `test` tag.
-      - name: Resolve version
+      # The LABEL version. This does not, and must not, decide any tag.
+      - name: Resolve label version
         id: ver
         run: |
-          VER="${{ inputs.version }}"
-          if [ -z "$VER" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then VER="$GITHUB_REF_NAME"; fi
-          echo "ver=${VER#v}" >> "$GITHUB_OUTPUT"
+          VER="${{ inputs.label_version }}"; VER="${VER#v}"
+          # Matches the plugin-pack step's fallback, so a bare `test` dispatch labels the image
+          # honestly rather than with an empty string.
+          [ -n "$VER" ] || VER="0.0.0-test"
+          echo "ver=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Compute tags and labels
         id: meta
@@ -383,18 +521,25 @@ jobs:
           images: |
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
-          # version resolved -> X.Y.Z + latest (exact pins only, no floating major/minor aliases,
-          # one consistent tag shape); bare dispatch -> `test` only.
-          #
-          # `latest` is an EXPLICIT type=raw. It is not implied by type=semver, and this comment
-          # claimed the cascade produced it while the tag list did not: 1.5.3 published as an exact
-          # pin while `docker pull getbusbar/busbar` kept serving 1.5.2, because nothing had moved
-          # `latest` since someone last did it by hand. A comment is not a tag.
+          # EXACTLY ONE TAG COMES OUT OF THIS JOB, AND IT IS NEVER A VERSION.
+          #   staging_tag set -> that throwaway name and nothing else.
+          #   staging_tag empty (bare dispatch) -> `test` and nothing else.
+          # `X.Y.Z` and `latest` are emitted by the `promote` job above, from already-verified
+          # bytes. There is no `type=semver` line here any more and there must not be one: the old
+          # `type=semver ... enable=<version != ''>` shape is what let a build decide, on its own,
+          # whether a release existed. scripts/release-order-lint.py fails the build if `semver`,
+          # or a `latest` raw tag, reappears in this block.
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.ver.outputs.ver }},enable=${{ steps.ver.outputs.ver != '' }}
-            type=raw,value=latest,enable=${{ steps.ver.outputs.ver != '' }}
-            type=raw,value=test,enable=${{ steps.ver.outputs.ver == '' }}
+            type=raw,value=${{ inputs.staging_tag }},enable=${{ inputs.staging_tag != '' }}
+            type=raw,value=test,enable=${{ inputs.staging_tag == '' }}
+          # org.opencontainers.image.version IS SET EXPLICITLY, and it has to be. metadata-action
+          # derives that label from the tag it computed, which under a throwaway name would make the
+          # staged image claim `staging-abc1234` as its version -- and verify-deploy's check (d)
+          # reads exactly this label to prove the tag and the bytes agree. Setting it from
+          # label_version means the staged image already claims the version it will be promoted to,
+          # so (d) is a real assertion at staging time and the promoted image needs no relabelling.
           labels: |
+            org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
             org.opencontainers.image.title=busbar
             org.opencontainers.image.description=The reliability layer for LLM traffic — one endpoint, six wire protocols, fault-attributed circuit breaking, in-flight failover.
             org.opencontainers.image.url=https://getbusbar.com
@@ -409,7 +554,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # THE VERSION LABEL IS REPEATED HERE ON PURPOSE, AND IT IS NOT BELT-AND-BRACES FOR ITS OWN
+          # SAKE. metadata-action derives an `org.opencontainers.image.version` label from the tag it
+          # computed, which under a throwaway name would be `staging-<sha>`; the `labels:` input above
+          # overrides it, but that override depends on metadata-action's merge order, which is a
+          # property of a third-party action rather than of anything here. buildx applies `--label`
+          # last-one-wins, so restating it after the generated block makes the outcome deterministic
+          # regardless. This matters because verify-deploy's check (d) reads exactly this label: if it
+          # ever said `staging-<sha>`, EVERY release would fail the staged gate, and a check that
+          # blocks every release for a reason unrelated to the software is the fragile-gate defect.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.ver }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

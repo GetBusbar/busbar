@@ -65,8 +65,20 @@ jobs:
 
       - name: Sanity — build + the drift/emit gates pass before we tag
         run: |
+          set -euo pipefail
           cargo build -p busbar --quiet
-          cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file --quiet
+          # FLOOR ON THE MATCH COUNT. `cargo test <filter>` is a SUBSTRING filter, and a filter that
+          # matches NOTHING prints "running 0 tests / test result: ok" and EXITS 0. Rename or move
+          # `openapi_json_matches_committed_file` and this step — the last gate before the release is
+          # tagged — goes green having run no test at all, and we tag a stale committed openapi.json
+          # that the runtime then serves. Asserting the test actually ran is the whole point.
+          out="$(cargo test -p busbar --features openapi-schema \
+                   openapi_json_matches_committed_file 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
+            echo "::error::the OpenAPI drift test did not run (renamed, moved, or filtered to zero)."
+            echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter."
+            exit 1
+          }
 
       - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
         run: |

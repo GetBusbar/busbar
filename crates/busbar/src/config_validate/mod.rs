@@ -1527,41 +1527,6 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
 /// module reference, and every
 /// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
 /// by boot and `--validate` so the two cannot drift.
-/// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
-/// the human-readable config path used in error messages. The SINGLE source of truth for which
-/// references are secrets: the structural check in `validate_cost_model` and the registry-backed
-/// module-existence check in `main::validate_secret_refs` (deferred until the plugin registry exists)
-/// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
-pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
-    let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
-    for (name, p) in &cfg.providers {
-        refs.push((format!("providers.{name}.api_key"), &p.api_key));
-    }
-    if let Some(tls) = &cfg.tls {
-        refs.push(("tls.cert".to_string(), &tls.cert));
-        refs.push(("tls.key".to_string(), &tls.key));
-        if let Some(ca) = &tls.client_ca {
-            refs.push(("tls.client_ca".to_string(), ca));
-        }
-    }
-    if let Some(tls) = &cfg.admin_tls {
-        refs.push(("admin_tls.cert".to_string(), &tls.cert));
-        refs.push(("admin_tls.key".to_string(), &tls.key));
-        if let Some(ca) = &tls.client_ca {
-            refs.push(("admin_tls.client_ca".to_string(), ca));
-        }
-    }
-    if let Some(auth) = &cfg.auth {
-        if let Some(sk) = &auth.signing_key {
-            refs.push(("auth.signing_key".to_string(), sk));
-        }
-        if let Some(tok) = auth.admin_token_ref() {
-            refs.push(("auth.admin_auth admin-tokens token".to_string(), tok));
-        }
-    }
-    refs
-}
-
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
@@ -2308,6 +2273,13 @@ fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
     };
     Some(std::net::Ipv4Addr::from(addr))
 }
+
+/// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
+/// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
+/// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
+/// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
+mod secret_refs;
+pub(crate) use secret_refs::secret_refs;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

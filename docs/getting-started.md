@@ -77,6 +77,18 @@ docker run -d -p 8080:8080 \
 
 The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
 
+The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_KEY \
+  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
+  -v busbar-data:/var/lib/busbar \
+  getbusbar/busbar
+```
+
+with `config.overlay.file: /var/lib/busbar/busbar-overlay.json` in your `config.yaml`. Or set `config.locked: true` to declare the read-only posture deliberately and silence the warning.
+
 **Or build from source** (requires Rust 1.97+):
 
 ```bash

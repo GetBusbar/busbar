@@ -1569,9 +1569,14 @@ fn test_validate_admin_tokens_secret_module_checked() {
         settings: serde_json::Map::new(),
     })
     .expect_err("an env secret ref without settings.key must fail validation");
+    // The path is the DOTTED config path down to the individual chain entry
+    // (`auth.<plane>.<entry-name>.token`). It used to be the prose label "auth.admin_auth
+    // admin-tokens token", which could only ever describe ONE entry, because `secret_refs` only ever
+    // reported one: it called `AuthCfg::admin_token_ref`, which returns the FIRST `admin-tokens`
+    // entry it finds and stops. Every entry is enumerated now, so each one names itself.
     assert!(
         errs.iter()
-            .any(|e| e.contains("auth.admin_auth admin-tokens token")
+            .any(|e| e.contains("auth.admin_auth.admin-tokens.token")
                 && e.contains("requires settings.key")),
         "expected the env-shape error; got: {errs:?}"
     );
