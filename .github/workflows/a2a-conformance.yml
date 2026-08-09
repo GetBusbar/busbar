@@ -153,6 +153,12 @@ jobs:
   control-a2a-python:
     name: control a2a-python (the second, independent oracle)
     runs-on: ubuntu-latest
+    # A HANG IS A FAILURE, AND IT MUST LOOK LIKE ONE WITHIN MINUTES. The battery has no overall
+    # deadline of its own: if a launched control never becomes ready, `--launch` waits, and the job
+    # sits amber for hours. Amber is not a verdict, and a leg nobody can read the result of is the
+    # same false signal as a leg that passed without executing. So the job is bounded, and the
+    # bound is well above the ~2 minutes the other control legs take.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
@@ -169,12 +175,34 @@ jobs:
           SRC="${A2AHT_CONTROL_SRC:-$HOME/.a2aht/src}"
           # Port 41241 is the sample's own, and the sample path is the one pinned by
           # install-control.sh's clone of tag v1.1.2.
+          # Started OUT OF BAND rather than through `--launch`, so its own stderr reaches the log.
+          # A control that fails to boot must say WHY here; `--launch` swallows it and the job then
+          # reports only "not reachable", which is true and useless.
+          "$SRC/venv/bin/python" "$SRC/a2a-python/samples/hello_world_agent.py" \
+            > /tmp/a2a-python.log 2>&1 &
+          CONTROL_PID=$!
+          for _ in $(seq 1 60); do
+            curl -fsS -m 2 -o /dev/null \
+              http://127.0.0.1:41241/.well-known/agent-card.json && break
+            sleep 1
+          done
+          if ! curl -fsS -m 5 -o /dev/null \
+               http://127.0.0.1:41241/.well-known/agent-card.json; then
+            echo "::error::the a2a-python control never served its agent card. Its own output:"
+            cat /tmp/a2a-python.log
+            kill $CONTROL_PID 2>/dev/null || true
+            exit 1
+          fi
+          rc=0
           python3 -m a2aht run \
-            --launch "$SRC/venv/bin/python $SRC/a2a-python/samples/hello_world_agent.py" \
-            --port 41241 --label "control:a2a-python" --tier pre-release \
+            --endpoint http://127.0.0.1:41241 \
+            --label "control:a2a-python" --tier pre-release \
             --known-deviations baselines/known-deviations-a2a-python.json \
             --role server \
-            --json reports/control-python.json --allow-red
+            --json reports/control-python.json --allow-red || rc=$?
+          kill $CONTROL_PID 2>/dev/null || true
+          echo "  (battery exit $rc; the verdict is the baseline comparison)"
+          tail -40 /tmp/a2a-python.log
       - name: The second control must still produce its pinned verdict
         working-directory: testing/a2a-harness
         run: |
