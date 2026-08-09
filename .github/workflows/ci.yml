@@ -169,6 +169,14 @@ jobs:
         run: git fetch --no-tags --depth=1 origin main
       - name: qa-gate dispatcher drift
         run: python3 scripts/qa-gate-dispatch-lint.py
+      # ARTIFACT CONTRACT wholeness. The contract is data (.github/artifact-contract.json) and the
+      # verifier implements it, so the two can drift: a row declared with no implementation is a
+      # property everybody believes is checked and nobody checks, and a check outside the contract is
+      # invisible to anyone reading it. The guard asserts SET EQUALITY both ways plus a row floor,
+      # and this self-test proves that guard still discriminates rather than merely returning the
+      # rows unchanged. Its eight cases each construct one malformation and require it be refused.
+      - name: Artifact-contract wholeness self-test
+        run: python3 scripts/verify-artifact.py --selftest
       # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the

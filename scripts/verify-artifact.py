@@ -549,8 +549,109 @@ class Ctx:
     pass
 
 
+def selftest() -> int:
+    """Prove the CONTRACT-WHOLENESS guards discriminate, by constructing each failure state.
+
+    Without this the guards are only ever exercised by a well-formed contract, so they would look
+    identical to guards that parse nothing and return the rows unchanged. Every case below asserts
+    that a SPECIFIC malformation is refused; a case that stops failing means the guard it covers has
+    silently stopped guarding.
+
+    The row implementations themselves are not exercised here — they need a real artifact, and the
+    honest proof for those is running the verifier against one. That has been done against real
+    released bytes: busbar 1.5.3's aarch64-unknown-linux-gnu artifact FAILS `release_pubkey` and its
+    x86_64-unknown-linux-gnu artifact PASSES it, which is this file catching the exact defect that
+    motivated it, on production artifacts rather than fixtures.
+    """
+    # EVERY implemented check, because set equality runs both ways: a "well-formed" fixture that
+    # declared only some of them would be refused as orphaning the rest — which is the guard working,
+    # and would have made the control case fail for the wrong reason.
+    all_ids = list(CHECKS)
+    good = {"min_rows": len(all_ids), "rows": [{"id": rid} for rid in all_ids]}
+    cases = []
+
+    def case(name, contract, want_fail, why):
+        cases.append((name, contract, want_fail, why))
+
+    case("a whole contract", good, False, "the well-formed case must pass, or every case below is vacuous")
+    case(
+        "min_rows absent",
+        {"rows": good["rows"]},
+        True,
+        "a contract with no floor verifies against however many rows survive a bad edit",
+    )
+    case(
+        "min_rows zero",
+        {"min_rows": 0, "rows": good["rows"]},
+        True,
+        "a floor of zero is not a floor; an empty contract would then verify everything against nothing",
+    )
+    case(
+        "fewer rows than the floor",
+        {"min_rows": len(all_ids) + 3, "rows": good["rows"]},
+        True,
+        "a truncated contract must be refused rather than quietly checking less",
+    )
+    case(
+        "a declared row with no implementation",
+        {"min_rows": 1, "rows": [{"id": "no_such_row_is_implemented"}]},
+        True,
+        "a declared-but-unimplemented row is a property everybody believes is checked and nobody checks",
+    )
+    case(
+        "an implemented check declared nowhere",
+        {"min_rows": 1, "rows": [{"id": all_ids[0]}]},
+        True,
+        "set equality runs BOTH ways: a check outside the contract is invisible to anyone reading it",
+    )
+    case(
+        "duplicate row ids",
+        {"min_rows": 2, "rows": [{"id": all_ids[0]}, {"id": all_ids[0]}]},
+        True,
+        "a duplicated id can satisfy a count floor while covering fewer properties than it claims",
+    )
+
+    failures = 0
+    for name, contract, want_fail, why in cases:
+        try:
+            _assert_contract_is_whole(contract)
+            got_fail = False
+        except SystemExit:
+            got_fail = True
+        ok = got_fail == want_fail
+        if not ok:
+            failures += 1
+        print(
+            "  [%s] %-38s -> %s (expected %s)\n         %s"
+            % ("ok" if ok else "FAILED", name,
+               "refused" if got_fail else "accepted",
+               "refused" if want_fail else "accepted", why)
+        )
+
+    # `applies_when` gating on a field no target declares would switch a row off for EVERY target
+    # while looking like a deliberate exemption. Proven rather than asserted.
+    try:
+        applies({"id": "x", "applies_when": {"a_field_no_target_declares": True}}, {"target": "t"})
+        print("  [FAILED] applies_when on an undeclared field was accepted")
+        failures += 1
+    except SystemExit:
+        print("  [ok] %-38s -> refused (a gate on an absent field silently disables the row)"
+              % "applies_when on an undeclared field")
+
+    total = len(cases) + 1
+    if failures:
+        print("\nSELF-TEST FAILED: %d of %d checks did not hold" % (failures, total), file=sys.stderr)
+        return 1
+    print("\nself-test: %d checks, all hold" % total)
+    return 0
+
+
 def main(argv=None) -> int:
+    if "--selftest" in (argv if argv is not None else sys.argv[1:]):
+        return selftest()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the contract-wholeness guards discriminate, then exit")
     ap.add_argument("--archive", required=True, help="the artifact AS DOWNLOADED FROM THE RELEASE")
     ap.add_argument("--target", required=True)
     ap.add_argument("--version", required=True)
