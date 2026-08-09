@@ -12405,6 +12405,11 @@ identity-providers:
   admin-tokens:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
+agents:
+  base-agent:
+    url: https://a2a.example/planner
+    pin:
+      mechanism: unpinned
 "
         .to_string()
             + if base_export {
@@ -12491,6 +12496,14 @@ async fn named_map_app_opts(
             }))
             .unwrap(),
         );
+    // The A2A plane's base entry, mirroring the fixture config above. It is `unpinned` on purpose:
+    // the point of these fixtures is the generic CRUD surface, and an entry with a real root would
+    // need key material that says nothing about the routes under test.
+    builder = builder.agent_def(
+        "base-agent",
+        serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
+            .unwrap(),
+    );
     builder = if base_export {
         builder.export_def(
             "base-metrics",
@@ -13395,6 +13408,9 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
+        // The A2A plane's entries are NOT plugin instances, so a legal definition here names a URL
+        // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
+        "agents" => r#"{"url":"https://a2a.example/x","pin":{"mechanism":"unpinned"}}"#.to_string(),
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
     // (label, method, relative path, If-Match, body, want status, want code)
@@ -13411,6 +13427,7 @@ async fn drive_named_map_errors() {
     for (section, base) in [
         ("identity-providers", "base-idp"),
         ("export", "base-metrics"),
+        ("agents", "base-agent"),
     ] {
         let c = |label: &str,
                  method: &'static str,
@@ -13451,11 +13468,19 @@ async fn drive_named_map_errors() {
                 "invalid_request",
             ),
             c(
-                "put_empty_module",
+                "put_invalid_config",
                 "PUT",
                 format!("/{section}/x"),
                 None,
-                Some(r#"{"module":""}"#.into()),
+                Some(if section == "agents" {
+                    // A pin whose mechanism needs material and carries none. On the other sections
+                    // the equivalent nonsense is an empty `module:`; the CONDITION being witnessed
+                    // (`Validation/InvalidConfig`) is the same one either way.
+                    r#"{"url":"https://a2a.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
+                        .to_string()
+                } else {
+                    r#"{"module":""}"#.to_string()
+                }),
                 400,
                 "invalid_request",
             ),
@@ -13637,7 +13662,7 @@ async fn drive_named_map_errors() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        for section in ["identity-providers", "export"] {
+        for section in ["identity-providers", "export", "agents"] {
             for (label, method, rel, body) in [
                 (
                     "put",

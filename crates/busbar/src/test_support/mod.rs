@@ -750,6 +750,7 @@ pub(crate) struct TestApp {
     base_group_names: std::collections::HashSet<String>,
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
+    agent_defs: crate::a2a::config::AgentsCfg,
     overlay_path: Option<std::path::PathBuf>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
@@ -793,6 +794,7 @@ impl TestApp {
             base_group_names: std::collections::HashSet::new(),
             identity_providers: Default::default(),
             export_defs: Default::default(),
+            agent_defs: Default::default(),
             overlay_path: None,
             explicit_no_overlay: false,
             plugins_dir: None,
@@ -891,6 +893,12 @@ impl TestApp {
     /// [`TestApp::identity_provider`].
     pub(crate) fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
         self.export_defs.insert(name.into(), cfg);
+        self
+    }
+    /// Seed an `agents:` DEFINITION into the App's effective named map — the A2A-plane twin of
+    /// [`TestApp::export_def`].
+    pub(crate) fn agent_def(mut self, name: &str, cfg: crate::a2a::config::AgentDefCfg) -> Self {
+        self.agent_defs.agents.insert(name.into(), cfg);
         self
     }
     /// Seed the WHOLE groups tree at once as RUNTIME (non-base) groups: populates the App's group
@@ -1099,7 +1107,7 @@ impl TestApp {
         // production's verbatim: whatever this table declares is what the router mounted.
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
         let app = std::sync::Arc::new(crate::state::App {
-            agent_defs: Default::default(),
+            agent_defs: self.agent_defs,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
