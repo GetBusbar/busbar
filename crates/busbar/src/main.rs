@@ -3803,6 +3803,13 @@ pub(crate) fn build_app_from_config(
         mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
         mcp_servers: Arc::new(cfg.tool_defs.clone()),
         mcp_pool: Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
+        // CARRIED ACROSS THE APPLY. A sighting is what accumulated, not what the operator intended,
+        // so a config apply must not erase it: dropping the observations here would clear a
+        // quarantine as a side effect of an unrelated edit.
+        mcp_sightings: prior.map_or_else(
+            || Arc::new(crate::mcp::client::catalogue::CatalogueCache::new()),
+            |p| p.mcp_sightings.clone(),
+        ),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),

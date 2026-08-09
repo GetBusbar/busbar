@@ -236,6 +236,17 @@ impl<A: PinnedArtifact> Approval<A> {
         self.pin.as_ref()
     }
 
+    /// EVERY STANDING PER-CAPABILITY DECISION, in name order.
+    ///
+    /// A READ, not a transition — which is the point. A trust view has to render three distinct
+    /// answers per capability (approved at a digest, rejected, or absent-and-therefore-pending) and
+    /// with no accessor the only way to distinguish the first two from outside is to re-derive them
+    /// from a sighting, which answers a different question and gets `Rejected` wrong. Nothing here
+    /// can change a decision; the transitions above remain the only way in.
+    pub(crate) fn capabilities(&self) -> impl Iterator<Item = (&str, &CapabilityApproval)> {
+        self.capabilities.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// The operator-visible suspension reason, if suspended.
     pub(crate) fn suspension(&self) -> Option<&str> {
         self.suspension.as_deref()

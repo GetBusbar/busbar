@@ -18,24 +18,41 @@
 #   the environment — never about busbar — and it must be visible before any subject verdict is
 #   believed.
 #
-#   SUBJECT legs SKIP until ARMED by one variable naming busbar's endpoint. They do NOT fail. A job
-#   that is red today for a reason that is not a defect is how red stops meaning defect: the first
-#   REAL conformance failure would look exactly like the standing ones and be read as noise. The
-#   counterweight is the ARMED GUARD — once armed, a run that produces zero executed scenarios is a
-#   hard failure, because "armed but vacuous" is the state a skip would otherwise rot into.
+#   SUBJECT legs are ARMED OR RED. They used to skip, and the reasoning for that was sound while
+#   busbar answered no MCP method at all: a job red for a reason that is not a defect teaches
+#   everyone to read red as noise. It stopped being sound the moment the release claim became "MCP
+#   works". A disarmed subject leg proves the SUITE works and proves NOTHING about busbar, and it
+#   renders as the same green tick as a leg that judged busbar and passed. So `NOT ARMED, SO NOT
+#   RUN` is now a RED STATE — see `require_armed`, and see the `--selftest` fixtures that prove
+#   that transition rather than asserting it.
+#
+#   The ARMED GUARD survives underneath: once armed, a run that produces fewer than the revision's
+#   FULL required scenario set is a hard failure. Set equality, never a floor — a floor of 30 is
+#   satisfied by any 30 of 37, which is precisely the defect the rule exists to prevent.
 #
 # MODES
 #   --official-control   the official suite against a PINNED third-party SDK, in server mode
-#   --official-subject   the official suite against busbar, if armed
+#   --official-subject   the official suite against busbar. ARMED OR RED.
 #   --battery-control    the in-house adversarial/seam battery against its pinned python control
-#   --battery-subject    the in-house battery against busbar, if armed
+#   --battery-subject    the in-house battery against busbar. ARMED OR RED.
 #   --selftest           prove the anti-vacuity assertions bite, before any verdict is trusted
 #   --help
 #
 # ARMING
-#   MCP_CONFORMANCE_SUBJECT_URL   busbar's MCP endpoint, e.g. https://gw.example.com/mcp
-#   MCP_BATTERY_DIR               a checkout of the in-house adversarial/seam battery, if you have
-#                                 one; the legs that use it skip when it is unset
+#   MCP_SUBJECT_BUSBAR_BIN        THE PRIMARY ARM for the official-suite subject leg: a busbar
+#                                 binary built from THIS COMMIT. The leg boots it on loopback,
+#                                 gives the suite a real audience-bound credential for it, and
+#                                 proves the plane boundary is still intact before believing any
+#                                 verdict. See scripts/mcp-subject/boot.sh.
+#   MCP_CONFORMANCE_SUBJECT_URL   an EXTERNAL, already-deployed busbar endpoint. Kept as an optional
+#                                 extra leg; it is deliberately no longer the primary arm, because a
+#                                 release gate that depends on somebody's deployment being up
+#                                 answers a question about that deployment, not about this commit.
+#   MCP_SUBJECT_SERVER_CMD        a command that starts busbar as an MCP server on stdio
+#   MCP_SUBJECT_CLIENT_CMD        ... or as an MCP client
+#   MCP_BATTERY_DIR               the in-house battery. Defaults to testing/mcp-conformance IN THIS
+#                                 REPOSITORY and is not expected to be set: the battery was moved
+#                                 here (DECISION 2) precisely so no leg depends on a private host.
 #
 # PINS, and why each is exact:
 #   CONFORMANCE_PIN  the suite version. A silent upgrade can never LOOSEN what a gate accepts, so it
@@ -58,10 +75,62 @@ REVISION="2026-07-28"
 # reporting nothing.
 MIN_SERVER_SCENARIOS=30
 
+# The in-house adversarial/seam battery. IN THIS REPOSITORY, and that is the whole of DECISION 2:
+# it used to be fetched from a private repository on an internal Gitea host with no route
+# from a GitHub-hosted runner. Reaching it needed a SECRET and a reachable private host, and the
+# moment a control leg depends on a secret, "control legs run ALWAYS" is aspirational. A battery
+# that contains no product knowledge by construction loses nothing by being readable, and gains a
+# gate that cannot silently stop running. The A2A workflow settled this the same way first.
+DEFAULT_BATTERY_DIR="testing/mcp-conformance"
+
 say() { printf '%s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; }
+# The subject-boot harness: build-from-this-commit, boot on loopback, obtain a real audience-bound
+# credential, and PROVE the plane boundary is intact before any verdict is believed. Sourced rather
+# than inlined because it is a substantial piece of reasoning of its own; sourced AFTER `say`/`die`
+# because it uses both.
+# shellcheck source=scripts/mcp-subject/boot.sh
+. "$(dirname "$0")/mcp-subject/boot.sh"
+
+usage() { sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ARMED OR RED, in one place so it can be tested in one place.
+#
+# `require_armed <label> <VAR> [VAR...]` succeeds if ANY named variable is non-empty, and dies
+# otherwise. The death is the point: it is what turns `NOT ARMED, SO NOT RUN` from a green tick
+# into a failure. It is a function rather than an inline `if` in each leg so that `--selftest` can
+# drive the transition itself — a rule whose enforcement is only ever exercised by the real thing
+# is a rule nobody has watched work.
+require_armed() {
+  local label="$1"; shift
+  local v
+  for v in "$@"; do
+    if [ -n "${!v:-}" ]; then
+      say "   armed by $v"
+      return 0
+    fi
+  done
+  printf '%s\n' "" >&2
+  printf 'FAIL: %s\n' "NOT ARMED, SO NOT RUN — and that is RED." >&2
+  cat >&2 <<'BANNER'
+
+  This leg judges BUSBAR. Disarmed, it judges nothing, and it reports the same
+  green tick as a leg that judged busbar and passed. That is the false green
+  this whole gate exists to refuse, so an unarmed subject leg FAILS.
+
+  Arm it with any ONE of:
+BANNER
+  for v in "$@"; do printf '      %s=...\n' "$v" >&2; done
+  cat >&2 <<'BANNER'
+
+  In CI these are repository VARIABLES, never secrets: an endpoint URL is not a
+  credential, and putting it in `secrets` would mask it out of the very logs
+  someone debugging an armed run has to read.
+
+BANNER
+  exit 1
+}
 
 # Every scenario the pinned suite says REVISION requires of a server. This is the SET the runs below
 # are compared against: "the suite exited 0" is satisfied by a suite that ran nothing.
@@ -185,35 +254,42 @@ green."
 
 official_subject() {
   say "== OFFICIAL SUITE · SUBJECT leg (busbar) =="
-  if [ -z "${MCP_CONFORMANCE_SUBJECT_URL:-}" ]; then
-    cat <<'BANNER'
+  # ARMED BY A BINARY, and only secondarily by a URL. See scripts/mcp-subject/boot.sh for why the
+  # subject is built from this commit and booted in this job rather than being an endpoint somebody
+  # deployed: a release gate that depends on a live deployment produces two unreadable verdicts, a
+  # green that means "the deployment was fine yesterday" and a red that means "somebody redeployed".
+  # `MCP_CONFORMANCE_SUBJECT_URL` is kept as an OPTIONAL EXTRA leg for an operator who also wants a
+  # real deployment judged; it is no longer how this gate gets armed.
+  require_armed "official subject" MCP_SUBJECT_BUSBAR_BIN MCP_CONFORMANCE_SUBJECT_URL
 
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │  NOT ARMED, SO NOT RUN.                                                  │
-  │                                                                          │
-  │  This leg needs one variable naming a running busbar MCP endpoint:       │
-  │      MCP_CONFORMANCE_SUBJECT_URL=https://<host>/mcp                      │
-  │                                                                          │
-  │  It SKIPS rather than failing, on purpose. A job that is red for a       │
-  │  reason that is not a defect teaches everyone to ignore red, and the     │
-  │  first real conformance failure would then look like noise.              │
-  └──────────────────────────────────────────────────────────────────────────┘
-
-BANNER
-    return 0
+  local target
+  if [ -n "${MCP_SUBJECT_BUSBAR_BIN:-}" ]; then
+    boot_busbar_subject
+    # shellcheck disable=SC2064
+    trap "kill $SUBJECT_PIDS 2>/dev/null || true" EXIT
+    target="$SUBJECT_URL"
+  else
+    target="$MCP_CONFORMANCE_SUBJECT_URL"
+    say "   armed by an EXTERNAL endpoint only: $target"
+    say "   NOTE: this judges whatever is deployed there, which may not be this commit."
   fi
-  say "   armed: $MCP_CONFORMANCE_SUBJECT_URL"
-  rm -rf .mcp-conformance/subject
-  mkdir -p .mcp-conformance/subject
+
+  # The results directory is a variable so the OPTIONAL external leg can run in the same job without
+  # overwriting the booted subject's evidence. Two runs that both wrote here would leave one verdict
+  # standing over the other's artifact, which is exactly the "reading a report from a previous run"
+  # defect the battery leg already has a hard error for.
+  local out="${MCP_SUBJECT_OUT:-.mcp-conformance/subject}"
+  rm -rf "$out"
+  mkdir -p "$out"
   local baseline=()
   [ -f qa/mcp-conformance-baseline.yml ] && baseline=(--expected-failures qa/mcp-conformance-baseline.yml)
   local rc=0
   npx --yes "$CONFORMANCE_PIN" server \
-      --url "$MCP_CONFORMANCE_SUBJECT_URL" --requirements "$REVISION" \
-      "${baseline[@]}" -o .mcp-conformance/subject || rc=$?
+      --url "$target" --requirements "$REVISION" \
+      "${baseline[@]}" -o "$out" || rc=$?
   # THE ARMED GUARD, and it runs BEFORE the exit code is honoured. An armed run that executed
   # nothing is the state the skip above would otherwise rot into: configured, green, and vacuous.
-  assert_covered .mcp-conformance/subject "official subject"
+  assert_covered "$out" "official subject"
   [ "$rc" -eq 0 ] || die "busbar failed scenarios the $REVISION requirement set demands. If a \
 failure is known and accepted, it belongs in qa/mcp-conformance-baseline.yml with a reason — never \
 absorbed by loosening the gate."
@@ -221,21 +297,13 @@ absorbed by loosening the gate."
 
 battery_control() {
   say "== IN-HOUSE BATTERY · CONTROL leg (pinned python reference peer) =="
-  if [ -z "${MCP_BATTERY_DIR:-}" ] || [ ! -d "${MCP_BATTERY_DIR:-}" ]; then
-    cat <<'BANNER'
-
-  NOT AVAILABLE, SO NOT RUN.
-
-  The in-house adversarial and seam battery is not part of this repository. Set MCP_BATTERY_DIR to
-  a checkout of it to run these legs.
-
-  This SKIPS rather than failing, for the same reason the subject legs do. Note that it is a WEAKER
-  position than the official control leg above, which depends on nothing beyond this repository and
-  therefore always runs.
-
-BANNER
-    return 0
-  fi
+  # NO LONGER SKIPPABLE. The battery is in this repository (DECISION 2), so "not available" can no
+  # longer mean "somebody did not set a secret" — it can only mean the tree was gutted. That is a
+  # finding, so it is red.
+  MCP_BATTERY_DIR="${MCP_BATTERY_DIR:-$DEFAULT_BATTERY_DIR}"
+  [ -d "$MCP_BATTERY_DIR" ] || die "the in-house battery is not at $MCP_BATTERY_DIR. It lives in \
+this repository so that this leg needs no secret and no reachable private host; if it is missing, \
+the tree is wrong and no verdict from this script means anything."
   say "   battery: $MCP_BATTERY_DIR"
   # The battery writes `reports/control-<tier>.json`, with the tier's comma turned into a dash.
   # DELETED FIRST, and there is no fallback to any other report file. An earlier version of this
@@ -267,15 +335,19 @@ PY
 
 battery_subject() {
   say "== IN-HOUSE BATTERY · SUBJECT leg (busbar) =="
-  if [ -z "${MCP_BATTERY_DIR:-}" ] || [ ! -d "${MCP_BATTERY_DIR:-}" ]; then
-    say "  battery not available (MCP_BATTERY_DIR unset); not run."
-    return 0
-  fi
-  if [ -z "${MCP_SUBJECT_SERVER_CMD:-}${MCP_SUBJECT_CLIENT_CMD:-}" ]; then
-    say "  NOT ARMED, SO NOT RUN. Set MCP_SUBJECT_SERVER_CMD or MCP_SUBJECT_CLIENT_CMD to arm."
-    return 0
-  fi
-  ( cd "$MCP_BATTERY_DIR" && ./scripts/run-subject.sh ) \
+  MCP_BATTERY_DIR="${MCP_BATTERY_DIR:-$DEFAULT_BATTERY_DIR}"
+  [ -d "$MCP_BATTERY_DIR" ] || die "the in-house battery is not at $MCP_BATTERY_DIR."
+  require_armed "battery subject" MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
+  # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
+  # because on the control legs a skip is the harness telling the truth about a peer it was never
+  # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched. It
+  # makes the six `pr`-tier seam tests RED while busbar has no MCP CLIENT direction to mount the
+  # battery's fake server as an upstream — which is the correct answer, because the seam is exactly
+  # the one property that is meaningless with only one direction built.
+  MCP_NO_SKIPS=1 \
+  MCP_SUBJECT_SERVER_CMD="${MCP_SUBJECT_SERVER_CMD:-}" \
+  MCP_SUBJECT_CLIENT_CMD="${MCP_SUBJECT_CLIENT_CMD:-}" \
+    bash -c 'cd "$0" && ./scripts/run-subject.sh' "$MCP_BATTERY_DIR" \
     || die "the in-house battery found a defect in busbar."
 }
 
@@ -358,8 +430,116 @@ selftest() {
     failures=$((failures+1))
   fi
 
+  # ---------------------------------------------------------------------------------------------
+  # THE ARM-STATE TRANSITION, TESTED RATHER THAN ASSERTED.
+  #
+  # `NOT ARMED, SO NOT RUN` used to be a green tick and is now a RED state. That change is worth
+  # exactly nothing unless somebody watches it happen, and the only run that would otherwise
+  # exercise it is a real CI run of a leg that is supposed to be armed — i.e. never, once the
+  # variables are set. So the transition is driven here, in both directions, on the same function
+  # the real legs call.
+  #
+  # Driven in a SUBSHELL with the environment scrubbed, for the same reason as `probe` above: a
+  # `die` inside an `if` condition would take the whole self-test with it.
+  armed_probe() { ( unset MCP_ARMTEST_A MCP_ARMTEST_B; "$@" >/dev/null 2>&1 ); }
+
+  # RED 4: nothing set. This is the state the gate was in for the whole of 1.5.5, reporting green.
+  if armed_probe require_armed "selftest" MCP_ARMTEST_A MCP_ARMTEST_B; then
+    say "  MISS: an UNARMED subject leg was accepted — 'NOT ARMED, SO NOT RUN' is still green"
+    failures=$((failures+1))
+  else
+    say "  ok: an unarmed subject leg is RED"
+  fi
+
+  # RED 5: set, but EMPTY. `vars.FOO` on a repository with no such variable expands to the empty
+  # string, not to an unset name, so this is the shape an unarmed CI run actually has — and a
+  # `[ -z ]` written as `[ -n "${FOO+x}" ]` would wave it through.
+  if ( export MCP_ARMTEST_A=""; require_armed "selftest" MCP_ARMTEST_A MCP_ARMTEST_B ) >/dev/null 2>&1; then
+    say "  MISS: an EMPTY arming variable was accepted as armed"
+    failures=$((failures+1))
+  else
+    say "  ok: an empty arming variable is not armed"
+  fi
+
+  # GREEN 3: armed on the FIRST name, and GREEN 4 on the SECOND. Both, because a check that only
+  # ever reads argument one would pass GREEN 3 and silently make `MCP_SUBJECT_CLIENT_CMD` — the
+  # client half of the battery leg — unable to arm anything.
+  if ( export MCP_ARMTEST_A="x"; require_armed "selftest" MCP_ARMTEST_A MCP_ARMTEST_B ) >/dev/null 2>&1; then
+    say "  ok: the first arming variable arms the leg"
+  else
+    say "  MISS: a leg armed by its first variable was still refused"; failures=$((failures+1))
+  fi
+  if ( export MCP_ARMTEST_B="x"; require_armed "selftest" MCP_ARMTEST_A MCP_ARMTEST_B ) >/dev/null 2>&1; then
+    say "  ok: the second arming variable also arms the leg"
+  else
+    say "  MISS: a leg armed by its second variable was refused"; failures=$((failures+1))
+  fi
+
+  # ---------------------------------------------------------------------------------------------
+  # THE NON-WEAKENING DISPROOF MUST ITSELF BITE.
+  #
+  # The subject leg's whole claim to honesty is `prove_the_boundary_is_intact`: it presents four
+  # tokens the booted busbar MUST refuse and one it MUST admit, and refuses to run the suite if any
+  # of them behaves otherwise. If that function were broken — if it accepted every status, or
+  # rejected every status — the leg would still report a confident verdict, and the verdict would be
+  # about a busbar whose plane boundary nobody checked. So it is driven here against a stubbed
+  # probe, in every direction that matters, exactly as `assert_covered` is.
+  #
+  # The stub replaces `subject_probe_status`, the ONE function that reaches the network, so no
+  # busbar and no port are needed and the fixtures are about the LOGIC rather than about a boot.
+  boundary_probe() (
+    # $1 = the status to answer for the audience-bound token, $2 = for everything else.
+    local ok="$1" other="$2"
+    subject_probe_status() { [ "${2:-}" = "GOODTOKEN" ] && printf '%s' "$ok" || printf '%s' "$other"; }
+    prove_the_boundary_is_intact "http://127.0.0.1:1/mcp" PLAIN GOODTOKEN WRONG >/dev/null 2>&1
+  )
+
+  # GREEN 5: the honest shape — refusals refused, the bound token admitted.
+  if boundary_probe 200 401; then
+    say "  ok: an intact audience boundary is accepted"
+  else
+    say "  MISS: an intact audience boundary was refused — the disproof refuses everything"
+    failures=$((failures+1))
+  fi
+
+  # RED 7: a busbar that admits EVERYTHING. This is the shape a weakened audience check, a
+  # conformance bypass or an accidentally-open auth chain would produce, and it is the exact false
+  # green this leg must never report: 37 scenarios judged against a resource server that is not one.
+  if boundary_probe 200 200; then
+    say "  MISS: a busbar that admitted every token was accepted — the disproof proves nothing"
+    failures=$((failures+1))
+  else
+    say "  ok: a busbar that admits an unbound/wrong-audience token is refused"
+  fi
+
+  # RED 8: a busbar that refuses everything, the bound token included. The four refusals alone are
+  # equally consistent with this, which is why the disproof carries a positive control — without it
+  # the leg would be "vacuous in the other direction" and every scenario would fail on auth.
+  if boundary_probe 401 401; then
+    say "  MISS: a busbar that refused even the valid token was accepted"
+    failures=$((failures+1))
+  else
+    say "  ok: a busbar that refuses even the correctly-bound token is refused"
+  fi
+
+  # RED 9: the subject binary must EXIST and be executable. A missing build artifact must name
+  # itself, not fail later as a connection error the reader has to trace back.
+  if ( MCP_SUBJECT_BUSBAR_BIN="$tmp/there-is-no-such-binary" boot_busbar_subject ) >/dev/null 2>&1; then
+    say "  MISS: a non-existent subject binary was accepted as an arm"
+    failures=$((failures+1))
+  else
+    say "  ok: a non-existent subject binary is refused"
+  fi
+
+  # RED 6: the battery must be IN THIS REPOSITORY. It was moved here so no leg needs a secret or a
+  # reachable private host; if the directory is gone, every battery verdict is vacuous, and the
+  # honest report is red rather than a skip.
+  [ -d "$DEFAULT_BATTERY_DIR" ] || {
+    say "  MISS: the in-house battery is not at $DEFAULT_BATTERY_DIR"; failures=$((failures+1)); }
+  [ -d "$DEFAULT_BATTERY_DIR" ] && say "  ok: the in-house battery is in-repo at $DEFAULT_BATTERY_DIR"
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 5 fixture(s) passed"
+  say "  self-test: 14 fixture(s) passed"
 }
 
 case "${1:---help}" in

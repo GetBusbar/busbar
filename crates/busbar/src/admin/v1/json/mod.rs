@@ -76,6 +76,18 @@ impl AdminTransport for JsonV1 {
             // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
             // the admin surface mirrors the config grammar and a future section is additive.
             .merge(named_map::routes())
+            // THE MCP TRUST VERBS. Additive on top of the generic `tools` section CRUD: the
+            // generic handler owns the DEFINITION, and these own the operator's standing decision
+            // about the upstream behind it. They live in `crate::mcp` — see that module.
+            .route(
+                "/tools/{name}/connect",
+                post(crate::mcp::adminverbs::connect),
+            )
+            .route(
+                "/tools/{name}/changes",
+                get(crate::mcp::adminverbs::changes),
+            )
+            .route("/tools/{name}/health", get(crate::mcp::adminverbs::health))
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))
@@ -259,7 +271,7 @@ pub(crate) mod named_map;
 /// Serialize a successful view to the JSON body with the given status. `view` is any `contract` view
 /// (`#[derive(Serialize)]`); the JSON projection is the derive, so a field added to a view appears
 /// automatically (additive-only holds by construction).
-fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
+pub(crate) fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
     (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],

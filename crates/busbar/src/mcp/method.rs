@@ -52,6 +52,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use super::catalogue::{DispatchRefusal, ToolEntry};
+use super::client::catalogue::LiveSightings;
 use super::inputreq::{self, Outcome, Refusal, RoundRecord};
 use super::sanitize;
 
@@ -67,8 +68,49 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
     "prompts/list",
     "prompts/get",
     "resources/list",
+    "resources/templates/list",
     "resources/read",
+    "completion/complete",
 ];
+
+/// `resultType` on every result this server returns: `complete`, never `input_required`.
+///
+/// This is an INVARIANT of the dispatch design, not a default. An upstream's `input_required` ask
+/// TERMINATES at busbar — [`super::inputreq`] either satisfies it under the caller's grant or
+/// refuses the call — so the caller is never handed a half-finished result to answer. There is
+/// therefore no code path on which busbar has an incomplete result to describe, and the one place
+/// that stamps this ([`result`]) is the one place that would have to change if that ever stopped
+/// being true.
+const RESULT_TYPE_COMPLETE: &str = "complete";
+
+/// `cacheScope` on every cacheable result: `private`, and it is the only value that is TRUE here,
+/// not a cautious default.
+///
+/// Every answer this module computes is scoped to the CALLER'S GRANT (owner ruling 2): two callers
+/// holding two different grants get two different catalogues from the same deployment, from the
+/// same registry, at the same instant. `public` means precisely "any client or intermediary MAY
+/// cache this and serve it ACROSS authorization contexts" — which for this server would mean a
+/// shared proxy serving one caller's authorized catalogue to a caller who holds none of it. That is
+/// the grant boundary being crossed by a cache, and a cache is not a place where authorization is
+/// re-checked. So `private`, on every result, including the ones that happen to be empty today: a
+/// value that is only correct while the registry is empty is a value that becomes wrong silently.
+const CACHE_SCOPE: &str = "private";
+
+/// `ttlMs` on every cacheable result: `0` — "consider this immediately stale; re-fetch when you
+/// need it".
+///
+/// A POSITIVE ttl is a promise that the answer will still be true for that long, and this server
+/// cannot make it. The registry is versioned and the operator can move it at any moment: an
+/// approval revoked, a pin bumped, a rug-pull quarantine landing between two requests. There is
+/// also no channel to correct a stale cache with — `listChanged` is advertised `false` because this
+/// revision is stateless and there is no stream to notify over — so a client that cached for a
+/// minute would keep OFFERING a de-approved tool for a minute. Dispatch would still refuse the
+/// call it produced (the generation re-check is per request and does not consult any cache), so the
+/// cost is a confusing refusal rather than an unauthorized call. That is exactly why the honest
+/// answer is `0` and not a comfortable-looking `60000`: a cache hint that lies is worse than none,
+/// and `0` is not the absence of a hint — it is the schema's own way of stating "no freshness
+/// window", which is the true statement about a catalogue with no invalidation channel.
+const CACHE_TTL_MS: i64 = 0;
 
 /// Everything a method needs, gathered once so no handler reaches for a global.
 pub(crate) struct Ctx<'a> {
@@ -116,9 +158,54 @@ pub(crate) async fn dispatch(
         "prompts/list" => Some(prompts_list(ctx, id)),
         "prompts/get" => Some(prompts_get(ctx, params, id)),
         "resources/list" => Some(resources_list(ctx, id)),
+        "resources/templates/list" => Some(resources_templates_list(id)),
         "resources/read" => Some(resources_read(ctx, params, id)),
+        "completion/complete" => Some(completion_complete(id)),
         _ => None,
     }
+}
+
+/// `completion/complete` — argument autocompletion, which for this server is always the EMPTY set.
+///
+/// The method is implemented and answers correctly; what it has to answer WITH is nothing, and that
+/// is a fact about the registry rather than a stub. A completion is a set of candidate VALUES for a
+/// named argument, and the only place busbar could get one is an operator declaring it: a prompt is
+/// registered with a description and a template (`prompts_allow`), and neither states a value set.
+/// There is nothing to proxy either — a completion is answered from the catalogue busbar itself
+/// serves, and asking an upstream would be asking it to complete an argument of a prompt busbar
+/// composed.
+///
+/// So the honest answer is `values: []` with `hasMore: false` and `total: 0`: not "I failed", not "I
+/// do not implement this", but "there are no suggestions", which is a complete and correct answer
+/// and is the same shape as the empty catalogue a caller whose grant reaches nothing receives. The
+/// refs are deliberately NOT validated against the catalogue: a completion request that named a
+/// prompt the caller may not see would otherwise get a different answer from one that named a
+/// prompt that does not exist, and the difference is a probe for what is behind the grant.
+///
+/// This does NOT dispatch, charge or audit, and it takes no `Ctx`: it reads nothing the caller's
+/// grant scopes, so there is nothing for a grant to narrow and nothing for an audit row to name.
+fn completion_complete(id: Option<serde_json::Value>) -> Response {
+    result(
+        id,
+        serde_json::json!({
+            "completion": { "values": [], "hasMore": false, "total": 0 },
+        }),
+    )
+}
+
+/// Add the SEP-2549 caching hints to a result that is CACHEABLE. See [`CACHE_SCOPE`] and
+/// [`CACHE_TTL_MS`] for the two values and why they are those values.
+///
+/// One function so the pair cannot drift apart across the six cacheable results, for the same
+/// reason [`super::ingress::error_response`] is one function for the status/code pair: a hint that
+/// says "private" in one place and "public" in another is a hint no client can act on.
+fn cache_hints(value: serde_json::Value) -> serde_json::Value {
+    let mut value = value;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("cacheScope".into(), CACHE_SCOPE.into());
+        obj.insert("ttlMs".into(), CACHE_TTL_MS.into());
+    }
+    value
 }
 
 /// `server/discover` — the MERGED, GRANT-SCOPED catalogue advertisement.
@@ -149,8 +236,16 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 
     result(
         id,
-        serde_json::json!({
+        cache_hints(serde_json::json!({
             "protocolVersion": super::ingress::PROTOCOL_VERSION,
+            // The versions this server will ACCEPT, which is the mandatory field of a
+            // `DiscoverResult` and is not the same statement as `protocolVersion` above (that one
+            // names the revision this answer is written in). It is the SAME constant the ingress
+            // refuses an unsupported version against, and it is that constant rather than a copy
+            // for a reason the conformance suite checks directly: it correlates the `data.supported`
+            // list on an `UnsupportedProtocolVersionError` against this list, so two lists that
+            // could disagree would be a client told to retry with a version it will be refused for.
+            "supportedVersions": super::ingress::SUPPORTED_PROTOCOL_VERSIONS,
             "serverInfo": { "name": "busbar", "version": env!("CARGO_PKG_VERSION") },
             // Advertised as present only when this caller can actually reach one. A capability
             // advertised to a caller who holds nothing under it is an invitation to a refusal.
@@ -158,6 +253,11 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 "tools": { "listChanged": false },
                 "prompts": { "listChanged": false },
                 "resources": { "listChanged": false, "subscribe": false },
+                // Present because `completion/complete` is IMPLEMENTED and answers correctly, which
+                // is what the capability declares. It is not a claim that this deployment has
+                // suggestions to give — see `completion_complete` for why the answer is the empty
+                // set and why that is a complete answer rather than a stub.
+                "completions": {},
             },
             "methods": IMPLEMENTED_METHODS,
             "servers": servers,
@@ -170,7 +270,7 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             // every catalogue with an empty list, and a client that cannot tell "you may see
             // nothing" from "there is nothing" will retry for ever.
             "registryEmpty": cat.is_empty(),
-        }),
+        })),
     )
 }
 
@@ -184,7 +284,7 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
         .into_iter()
         .map(render_tool)
         .collect();
-    result(id, serde_json::json!({ "tools": tools }))
+    result(id, cache_hints(serde_json::json!({ "tools": tools })))
 }
 
 /// One catalogue entry as the wire carries it. The description is MARKUP-NORMALISED here: this is
@@ -236,7 +336,45 @@ fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             serde_json::Value::Object(obj)
         })
         .collect();
-    result(id, serde_json::json!({ "prompts": prompts }))
+    result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
+}
+
+/// Substitute `{arg}` placeholders in a prompt template from the caller's `params.arguments`.
+///
+/// The `{name}` spelling is the one the operator-facing templates already use; what was missing was
+/// the substitution, so a client that sent arguments got the template back with its placeholders
+/// intact and no indication that anything had been ignored.
+///
+/// TWO RULES, and both are about where the caller's text is allowed to reach.
+///
+/// 1. THE SUBSTITUTED TEXT IS NORMALISED, NOT THE TEMPLATE. Sanitising first and substituting after
+///    would put caller-controlled bytes into a model's context having passed through no filter at
+///    all — the argument value is exactly as injectable as the template it lands in, and it is more
+///    attacker-controlled, because the template is the operator's and the argument is not. So this
+///    function only builds the string; the single `normalise` at the call site runs over the
+///    RESULT, after substitution.
+/// 2. AN UNKNOWN PLACEHOLDER IS LEFT ALONE rather than emptied. `{arg1}` with no `arg1` supplied
+///    stays `{arg1}`, which is visible to a human reading the output; silently substituting the
+///    empty string would turn "you forgot an argument" into a prompt that reads as complete and
+///    means something else.
+///
+/// Only string arguments substitute. A structured value has no single correct rendering into a
+/// text template, and picking one (`JSON.stringify`, say) would let an argument's shape decide what
+/// the prompt says.
+fn substitute_arguments(template: &str, params: Option<&serde_json::Value>) -> String {
+    let Some(args) = params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.as_object())
+    else {
+        return template.to_string();
+    };
+    let mut out = template.to_string();
+    for (key, value) in args {
+        if let Some(text) = value.as_str() {
+            out = out.replace(&format!("{{{key}}}"), text);
+        }
+    }
+    out
 }
 
 /// `prompts/get` — the TEMPLATE, sanitized. Prompt templates are in the sanitization set
@@ -259,7 +397,12 @@ fn prompts_get(
             &format!("`{name}` is not a prompt this server exposes."),
         );
     };
-    let text = sanitize::normalise(prompt.template.as_deref().unwrap_or(""));
+    // Substitute FIRST, normalise SECOND — see `substitute_arguments` rule 1. The caller's argument
+    // values pass through the same markup strip the operator's template does.
+    let text = sanitize::normalise(&substitute_arguments(
+        prompt.template.as_deref().unwrap_or(""),
+        params,
+    ));
     result(
         id,
         serde_json::json!({
@@ -298,7 +441,33 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             serde_json::Value::Object(obj)
         })
         .collect();
-    result(id, serde_json::json!({ "resources": resources }))
+    result(
+        id,
+        cache_hints(serde_json::json!({ "resources": resources })),
+    )
+}
+
+/// `resources/templates/list` — the URI-TEMPLATE catalogue, which for this server is EMPTY, and
+/// says so rather than answering `-32601`.
+///
+/// A resource template is a parameterised URI (`file:///logs/{date}.log`) that a client expands and
+/// then reads. busbar's registry has no such concept: `resources_allow:` names CONCRETE resources
+/// the operator approved one at a time, by URI, and approval-by-URI is the whole basis on which a
+/// resource is served at all. A template is an approval of a SHAPE — of every URI matching a
+/// pattern — and granting that is a policy decision the operator has not been given a way to make,
+/// so there is nothing here to enumerate and inventing one would enumerate an approval nobody gave.
+///
+/// The empty list is therefore the COMPLETE and correct answer, exactly as it is for a caller whose
+/// grant reaches no tools, and it is a different answer from `-32601`: `-32601` says "this server
+/// does not do templates and never will", which would be a claim about the roadmap, while `[]` says
+/// "this deployment exposes none", which is a claim about the registry and is the one that is true.
+/// It also takes no grant argument, because there is nothing to scope — an empty list is the same
+/// empty list under every grant, and threading one would imply a filtering that does not happen.
+fn resources_templates_list(id: Option<serde_json::Value>) -> Response {
+    result(
+        id,
+        cache_hints(serde_json::json!({ "resourceTemplates": [] })),
+    )
 }
 
 /// `resources/read` — the CONTENT, sanitized. The third injectable surface, beside tool output and
@@ -329,7 +498,7 @@ fn resources_read(
     );
     result(
         id,
-        serde_json::json!({ "contents": [serde_json::Value::Object(content)] }),
+        cache_hints(serde_json::json!({ "contents": [serde_json::Value::Object(content)] })),
     )
 }
 
@@ -350,20 +519,37 @@ async fn tools_call(
     let grant = ctx.grant();
     let selected_gen = ctx.app.mcp_catalogue.generation();
 
+    // THE LIVE TOOL-LIST SIGHTINGS as of admission. This is the right-hand side of the rug-pull
+    // comparison: with one, the gate below compares the operator's approved digest against what the
+    // upstream is CURRENTLY serving, so a schema changed under a live cache refuses the call.
+    // Without one — no refresh has ever run — it compares against the configured hash, exactly as
+    // before.
+    let admitted_sightings = ctx.app.mcp_sightings.load();
     // (1) ADMISSION on the snapshot this request arrived on.
-    let selected = match ctx.app.mcp_catalogue.resolve(&grant, name) {
-        Ok(entry) => entry.clone(),
-        Err(refusal) => return refuse(ctx, name, &refusal, id),
-    };
+    let selected =
+        match ctx
+            .app
+            .mcp_catalogue
+            .resolve(&grant, LiveSightings::of(&admitted_sightings), name)
+        {
+            Ok(entry) => entry.clone(),
+            Err(refusal) => return refuse(ctx, name, &refusal, id),
+        };
 
     // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot. Re-read, not
     // re-use: `ctx.app` is the snapshot the request arrived on, and comparing it against itself
     // would be a check that cannot fail.
     let live = ctx.handle.load();
-    if let Err(refusal) = live
-        .mcp_catalogue
-        .revalidate(&grant, &selected, selected_gen)
-    {
+    // RE-READ the sightings too, not just the catalogue: a refresh that landed a drifted tool list
+    // between admission and dispatch has to bite on THIS request. Re-reading only one of the two
+    // would leave a window exactly as wide as the check it replaced.
+    let live_sightings = live.mcp_sightings.load();
+    if let Err(refusal) = live.mcp_catalogue.revalidate(
+        &grant,
+        LiveSightings::of(&live_sightings),
+        &selected,
+        selected_gen,
+    ) {
         return refuse(ctx, name, &refusal, id);
     }
     let Some(server) = live.mcp_catalogue.server(&selected.server).cloned() else {
@@ -581,7 +767,12 @@ fn refuse(
     let status = match refusal {
         DispatchRefusal::GenerationMoved { .. } => StatusCode::CONFLICT,
         DispatchRefusal::UnknownTool(_) | DispatchRefusal::NotGranted(_) => StatusCode::NOT_FOUND,
-        DispatchRefusal::NotApproved(_) | DispatchRefusal::NotPinned(_) => StatusCode::FORBIDDEN,
+        // A QUARANTINE is `403` and not `404`: the tool exists and this caller may see it, and what
+        // changed is the upstream. Answering `404` would tell an operator debugging a rug-pull that
+        // their registration had vanished.
+        DispatchRefusal::NotApproved(_)
+        | DispatchRefusal::NotPinned(_)
+        | DispatchRefusal::Quarantined { .. } => StatusCode::FORBIDDEN,
     };
     error(
         status,
@@ -621,8 +812,20 @@ fn not_found(id: Option<serde_json::Value>, message: &str) -> Response {
 }
 
 /// A JSON-RPC success envelope. `200`, always: a result is a result.
+///
+/// This is also the ONE place `resultType` is stamped, and it is stamped on every result rather
+/// than at each handler, because `2026-07-28` makes it mandatory on all of them and a field that
+/// each handler has to remember is a field a seventh handler forgets. `or_insert` rather than a
+/// blind overwrite: `tools/call` passes an UPSTREAM's result through here, and rewriting a
+/// statement the upstream made about its own result would be busbar answering for it. See
+/// [`RESULT_TYPE_COMPLETE`] for why every result busbar itself composes is complete.
 fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
     use axum::response::IntoResponse as _;
+    let mut value = value;
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("resultType")
+            .or_insert_with(|| RESULT_TYPE_COMPLETE.into());
+    }
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), "2.0".into());
     if let Some(id) = id {
@@ -651,3 +854,11 @@ fn error(
 #[cfg(test)]
 #[path = "tests/method_tests.rs"]
 mod method_tests;
+
+#[cfg(test)]
+#[path = "tests/result_envelope_tests.rs"]
+mod result_envelope_tests;
+
+#[cfg(test)]
+#[path = "tests/prompt_args_tests.rs"]
+mod prompt_args_tests;

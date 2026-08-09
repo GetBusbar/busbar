@@ -47,11 +47,16 @@ async fn serve(origins: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
 /// A method the server genuinely does NOT implement.
 ///
 /// Before the method table landed, EVERY method took the `-32601` arm, so any name served as the
-/// "the request reached dispatch" control. Now that `tools/*`, `prompts/*`, `resources/*` and
-/// `server/discover` answer, a control has to be a method that is really absent — otherwise the
-/// tests below would be asserting `404` against a surface that returns `200`, and the day one of
-/// them turned green for the wrong reason nobody would know which.
-const UNIMPLEMENTED: &str = "completion/complete";
+/// "the request reached dispatch" control. Now that `tools/*`, `prompts/*`, `resources/*`,
+/// `completion/complete` and `server/discover` answer, a control has to be a method that is really
+/// absent — otherwise the tests below would be asserting `404` against a surface that returns
+/// `200`, and the day one of them turned green for the wrong reason nobody would know which.
+///
+/// `logging/setLevel` is the choice, and it is a real absence rather than a name invented to be
+/// missing: this revision carries no session to hold a log level across requests, so a client asks
+/// for logging per request in `_meta` and there is nothing for a `setLevel` RPC to set. A test
+/// asserting `404` against a method that could never exist would be asserting nothing.
+const UNIMPLEMENTED: &str = "logging/setLevel";
 
 fn well_formed(method: &str) -> (serde_json::Value, Vec<(&'static str, String)>) {
     // `_meta` sits under `params`, which is where the schema puts it and where every real client
@@ -188,13 +193,11 @@ async fn every_header_body_disagreement_is_a_400_header_mismatch() {
     let (status, json) = post(&url, &body, &disagreeing).await;
     assert_eq!((status, err(&json)), (400, -32020), "version disagreement");
 
-    // (c) the body carries no protocol version. Under on-demand negotiation there is no handshake
-    // to have learned it from, so it cannot be inferred — and inferring it would silently pick a
-    // revision on the client's behalf.
-    let mut bodyless = body.clone();
-    bodyless["params"]["_meta"] = serde_json::json!({});
-    let (status, json) = post(&url, &bodyless, &headers).await;
-    assert_eq!((status, err(&json)), (400, -32020), "no version in _meta");
+    // (c) USED TO LIVE HERE and does not any more: a body whose `_meta` carries no protocol
+    // version. That is a defect in the request's own PARAMS, not two readings of one request
+    // disagreeing, so it answers `-32602` and is pinned by `request_meta_tests`. Naming the move
+    // rather than deleting the case silently, because "the header rules cover it" was the belief
+    // that put a body defect in the header vocabulary in the first place.
 
     // (d) `Mcp-Method` absent — REQUIRED on every request.
     let without_method: Vec<_> = headers
@@ -240,7 +243,10 @@ async fn the_name_header_is_required_where_it_is_required_and_decoded_before_com
         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
         "params": {
             "name": "search",
-            "_meta": { "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
         },
     });
     let base = vec![
@@ -294,7 +300,10 @@ async fn the_name_header_is_required_where_it_is_required_and_decoded_before_com
         "jsonrpc": "2.0", "id": 8, "method": "resources/read",
         "params": {
             "uri": "file:///a", "name": "decoy",
-            "_meta": { "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
         },
     });
     let read = vec![
@@ -329,7 +338,10 @@ async fn an_unsupported_protocol_version_names_what_is_supported() {
     let (url, h) = serve(Vec::new()).await;
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/list",
-        "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2025-06-18" } },
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2025-06-18",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        } },
     });
     let headers = vec![
         ("mcp-protocol-version", "2025-06-18".to_string()),
@@ -356,7 +368,10 @@ async fn a_malformed_request_is_refused_before_the_version_is_judged() {
     // Unsupported version AND a mirrored-header disagreement. The header rules win.
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 4, "method": "tools/list",
-        "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "1999-01-01" } },
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "1999-01-01",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        } },
     });
     let headers = vec![
         ("mcp-protocol-version", "1999-01-01".to_string()),

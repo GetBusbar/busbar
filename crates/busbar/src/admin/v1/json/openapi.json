@@ -1489,6 +1489,145 @@
         ],
         "type": "object"
       },
+      "McpCapabilityView": {
+        "description": "ONE CAPABILITY'S STANDING STATUS, the three-way answer a trust view has to render.\n\nThree and not two: `approved at a digest`, `rejected`, and `allowed but never ruled on`. The\nthird is `pending` and it is the one a queue exists to drain, so collapsing it into \"not\napproved\" would hide the operator's whole worklist.",
+        "properties": {
+          "approved_digest": {
+            "description": "The digest the operator approved, when there is one. A rejected or pending capability has\nnone, and reporting the last OBSERVED digest here would read as an approval.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`approved`, `rejected` or `pending`.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The bare tool name, as the upstream spells it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "status",
+          "approved_digest"
+        ],
+        "type": "object"
+      },
+      "McpHealthView": {
+        "description": "THE HEALTH VIEW — `GET /tools/{name}/health`. Deliberately smaller than the trust view: health\nanswers \"can busbar use this server right now, and if not why\", and a dashboard polling it should\nnot be re-rendering the whole changes queue to find out.",
+        "properties": {
+          "contacted": {
+            "description": "`false` until a refresh has ever landed. A server that has never been contacted is not\nunhealthy, and reporting it as such would page somebody for a declarative deployment.",
+            "type": "boolean"
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_tools": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "serving": {
+            "description": "Whether this server currently SERVES: `state == approved`. Named separately from `state`\nbecause it is the one bit a caller usually wants and deriving it from a word is how a client\nends up hard-coding a spelling.",
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "serving",
+          "contacted",
+          "failure",
+          "observed_tools"
+        ],
+        "type": "object"
+      },
+      "McpTrustView": {
+        "description": "THE TRUST VIEW of one registered MCP server — `POST /tools/{name}/connect` and\n`GET /tools/{name}/changes` answer with this.",
+        "properties": {
+          "added": {
+            "description": "Offered now, never ruled on.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "capabilities": {
+            "description": "Every capability's standing status, in name order.",
+            "items": {
+              "$ref": "#/components/schemas/McpCapabilityView"
+            },
+            "type": "array"
+          },
+          "changed": {
+            "description": "Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "failure": {
+            "description": "Why the last contact failed, when it did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_tools": {
+            "description": "How many tools the last successful observation carried.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pin_changed": {
+            "description": "The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.",
+            "type": "boolean"
+          },
+          "pin_mechanism": {
+            "description": "The operator's word for the authenticity root. Never interpreted by the machine.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Approved, and no longer offered.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED from the approval and\nthe last sighting on every read, so there is no stored state to go stale.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "pin_mechanism",
+          "pin_changed",
+          "added",
+          "changed",
+          "removed",
+          "observed_tools",
+          "failure",
+          "capabilities"
+        ],
+        "type": "object"
+      },
       "ModelUsageView": {
         "description": "One (model, provider) row of the per-model aggregation.",
         "properties": {
@@ -9516,6 +9655,257 @@
         ],
         "summary": "Create or REPLACE one `tools:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/tools/{name}/changes": {
+      "get": {
+        "operationId": "GetToolsNameChanges",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpTrustView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The changes queue for one MCP server, derived from the LAST observation. Contacts nothing",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/tools/{name}/connect": {
+      "post": {
+        "operationId": "PostToolsNameConnect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpTrustView"
+                }
+              }
+            },
+            "description": "OK (the derived trust state and changes queue; a refresh that landed a quarantine is still a 200 — the drift is in the body)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: invalid config; nothing changed"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: unknown resource"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Fetch a registered MCP server's LIVE tool list, hash it, and record the observation. Approves nothing: adopting what was seen is a separate operator act",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/tools/{name}/health": {
+      "get": {
+        "operationId": "GetToolsNameHealth",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpHealthView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Whether one MCP server currently serves, and why not when it does not",
+        "x-busbar-required-scope": "read-only"
       }
     },
     "/api/v1/admin/tools/{name}/settings": {

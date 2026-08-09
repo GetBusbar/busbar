@@ -203,7 +203,7 @@ fn ungoverned_principal() -> VirtualKey {
 /// The subject token is resolved HERE, at dispatch, rather than at snapshot build: a secret that
 /// resolves at build time is a secret whose rotation needs a restart, and a snapshot holding
 /// resolved plaintext is a snapshot that cannot be compared or logged safely.
-fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential, String> {
+pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential, String> {
     if matches!(
         server.upstream.credentials,
         Some(crate::auth::UpstreamCreds::Passthrough)
@@ -298,7 +298,7 @@ pub(crate) async fn call(
 /// The token endpoint goes through the SAME pool, and therefore the same resolve-then-pin SSRF
 /// check, as the tool call. An authorization server reached without that check is a destination
 /// busbar sends its own subject token to on the strength of a string comparison.
-async fn exchange(
+pub(super) async fn exchange(
     pool: &McpConnectionPool,
     req: &ExchangeRequest,
     policy: SsrfPolicy,

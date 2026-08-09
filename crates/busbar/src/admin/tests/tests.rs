@@ -9742,8 +9742,31 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
 
 /// RESET: `DELETE /overlay/root` discards the root overrides and reverts to base config.yaml — the
 /// overlay `root` section is cleared on disk (the sibling hooks/groups sections would survive).
+/// SERIALISES the three tests that assert on `AUDIT` rows for the `overlay:root` resource.
+///
+/// `AUDIT` is a PROCESS-WIDE ring and `resource: "overlay:root"` is a fixed literal every
+/// overlay-reset test shares — that literal is production behaviour, not a test artifact, so it
+/// cannot be made unique per test without changing what an operator sees.
+///
+/// Bracketing by `seq` was the previous fix and it is not sufficient: it excludes rows written
+/// BEFORE a test starts, but a sibling running CONCURRENTLY can land its own legitimate APPLIED row
+/// between this test's two REJECTED rows, and the "never APPLIED" assertion then fails on a tree
+/// with nothing wrong with it. That is what made this an intermittent red rather than a real one.
+///
+/// A TOKIO mutex, not a `std` one, and that is not a preference. The guard is held across `.await`
+/// points — the HTTP calls that sit between taking it and reading the ring — and a
+/// `std::sync::MutexGuard` held across an await can deadlock when the task is moved between runtime
+/// threads. Clippy's `await_holding_lock` caught exactly that on the first version of this guard.
+/// Tokio's mutex is await-aware and has no poisoning, so there is nothing to recover from either.
+static OVERLAY_ROOT_AUDIT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_reverts_to_base() {
+    // Taken FIRST, before any HTTP. This test performs a LEGITIMATE applied reset, and its row is
+    // the one that was landing inside a sibling's window as `seq: 4, outcome: "applied"`. Guarding
+    // only the readers was not enough: the writer has to be inside the same critical section, or it
+    // simply writes while a reader is mid-window.
+    let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
     let (dir, overlay, addr, handle) = settings_test_app("reset").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
@@ -9819,6 +9842,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 /// idempotent no-op.
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
+    let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
     let (dir, overlay, addr, handle) = settings_test_app("reset-corrupt").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
@@ -9895,6 +9919,11 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
 /// with a false `changed:false`.
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
+    // Held even though this test ASSERTS on no audit rows: it still WRITES one, by resetting the
+    // same process-wide `overlay:root` resource its two siblings read. An unguarded writer is just
+    // as good at landing an `applied` row inside a reader's window as an unguarded reader is at
+    // seeing one -- which is exactly what it did, as `seq: 4, outcome: "applied"`.
+    let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
     let (dir, overlay, addr, handle) = settings_test_app("reset-too-new").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
@@ -12102,6 +12131,9 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
+    // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
+    // condition witnessed only by a sibling test is witnessed nowhere.
+    crate::mcp::adminverbs::adminverbs_tests::drive_mcp_verb_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,

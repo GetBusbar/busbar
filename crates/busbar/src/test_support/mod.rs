@@ -738,6 +738,10 @@ pub(crate) struct TestApp {
     /// the built router mounts no MCP route at all — which is what every pre-existing test expects.
     mcp: Option<crate::mcp::McpResource>,
     tool_defs: crate::mcp::config::ToolsCfg,
+    /// The LIVE tool-list sightings the built `App` dispatches against. `None` (the default) means
+    /// no upstream has ever been contacted, which is what every pre-existing test expects and what
+    /// makes the dispatch gate fall back to the operator's configured hash.
+    mcp_sightings: Option<std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>>,
     role_bindings: Option<crate::config::RoleBindings>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
@@ -777,6 +781,7 @@ impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
             tool_defs: Default::default(),
+            mcp_sightings: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
@@ -1005,6 +1010,15 @@ impl TestApp {
         crate::mcp::config::validate_server(name, &def)
             .expect("test tools: entry must be valid config");
         self.tool_defs.servers.insert(name.to_string(), def);
+        self
+    }
+
+    /// Dispatch against these LIVE sightings — the cache a `connect`/refresh has published into.
+    pub(crate) fn with_mcp_sightings(
+        mut self,
+        cache: std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>,
+    ) -> Self {
+        self.mcp_sightings = Some(cache);
         self
     }
 
@@ -1242,6 +1256,7 @@ impl TestApp {
             )),
             mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
             mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
+            mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),

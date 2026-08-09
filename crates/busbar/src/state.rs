@@ -448,6 +448,20 @@ pub(crate) struct App {
     /// revision, so there is no session on it a revocation would have to invalidate. What must be
     /// re-checked is the catalogue GENERATION, and that is checked per request.
     pub(crate) mcp_pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
+    /// THE LIVE TOOL-LIST SIGHTINGS — what each registered upstream was last observed to OFFER,
+    /// hashed per tool.
+    ///
+    /// Arc-shared ACROSS config applies, like the pool and the credential cache, and for a reason
+    /// that is a correctness rule rather than an efficiency one: an observation is ACCUMULATED
+    /// state, not intent, and rebuilding it on every apply would discard the evidence of a drift the
+    /// instant an operator touched an unrelated section — which is the moment a rug-pull would like
+    /// it discarded.
+    ///
+    /// This is the right-hand side of the dispatch gate's comparison. With no sighting the gate
+    /// compares against the hash the operator wrote in config, which is what a deployment that never
+    /// runs a refresh has always done; with one, it compares against what the upstream is actually
+    /// serving, and a schema that moved refuses the call.
+    pub(crate) mcp_sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

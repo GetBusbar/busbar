@@ -392,6 +392,16 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / SettingsPush,
             VersionConflict / StaleIfMatch,
         ],
+        // ── The MCP trust verbs ───────────────────────────────────────────────────────────────
+        //
+        // `connect` reaches an operator-named endpoint, so it has one refusal the reads do not: a
+        // registration whose credential posture an operator-driven refresh cannot honour
+        // (`passthrough`, whose credential belongs to a caller that a refresh does not have). That
+        // is the operator's own configuration, hence `invalid_request` rather than a 404 or a 5xx.
+        // The two READ verbs take the default templated-read 404 and declare nothing.
+        (Post, "/tools/{name}/connect") => {
+            de![Validation / InvalidConfig, NotFound / UnknownResource,]
+        }
         // ── Groups (the limit tree) ───────────────────────────────────────────────────────────
         (Post, "/groups") => de![
             Validation / InvalidTree,

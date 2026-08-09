@@ -22,6 +22,7 @@ fn test_query_has_alt_sse() {
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
         mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
+        mcp_sightings: Default::default(),
         mcp_pool: Default::default(),
         mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every

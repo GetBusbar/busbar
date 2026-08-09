@@ -23,9 +23,50 @@ All notable changes to Busbar are documented here. The format is based on
   The endpoint speaks MCP revision `2026-07-28` (the stateless streamable-HTTP revision — no
   handshake, no sessions, no resumable stream) and enforces its transport rules: mirrored
   `Mcp-Method` / `Mcp-Name` headers must agree with the request body, `GET` and `DELETE` answer
-  `405`, an unknown method answers `404`, and an unlisted browser `Origin` answers `403`. The tool
-  surface itself — `tools/list`, `tools/call` — is not part of this change; every method currently
-  answers "not implemented".
+  `405`, an unknown method answers `404`, an unlisted browser `Origin` answers `403`, and a request
+  whose `params._meta` omits its protocol version or its client capabilities answers `400` with
+  `-32602` rather than having either inferred for it.
+
+- **The MCP tool surface answers, in both directions.** `server/discover`, `tools/list`,
+  `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`,
+  `resources/read` and `completion/complete`
+  are served, and Busbar calls OUT to the upstream MCP servers you register under
+  `tools:` — so Busbar is a governed gateway in front of your tool estate, not only an endpoint that
+  speaks the protocol.
+
+  What a caller SEES and what it may CALL are one decision, taken from that caller's own key
+  grants: two callers holding two different grants get two different catalogues from the same
+  deployment, and a caller whose grant reaches nothing gets an empty catalogue rather than an error.
+  A call is admitted on the snapshot it arrived on and re-validated against the live one before it
+  is dispatched, so a tool you de-approve stops being callable on the next request rather than at
+  the end of a session. The credential Busbar spends upstream is selected under the INBOUND
+  caller's grant, so Busbar cannot be talked into spending an authority the caller does not hold.
+  Descriptions, prompt templates and tool output are markup-normalised on the way through, because
+  each of them re-enters a model's context.
+
+  Every list result carries this revision's caching hints, and both values are deliberate:
+  `cacheScope: private`, because a catalogue computed under a caller's grant must never be served
+  by a shared cache to a caller who holds none of it, and `ttlMs: 0`, because a stateless server has
+  no channel to invalidate a stale catalogue over and any freshness window would be a promise it
+  could not keep.
+
+  A prompt registered with `{placeholder}` spellings now has them SUBSTITUTED from the arguments a
+  client sends on `prompts/get`; before, the arguments were ignored and the caller received the
+  template unchanged. Substitution happens BEFORE the markup strip, so a value supplied on the
+  request is normalised exactly as the operator's own template is — an argument value ends up in a
+  model's context and is the more attacker-controlled of the two. A placeholder you supply no value
+  for is left visible rather than emptied, so a missing argument stays legible instead of producing
+  a prompt that reads as complete and means something else.
+
+  `completion/complete` answers, with an empty completion set: Busbar's registry declares no value
+  sets for prompt arguments, so there are no suggestions to give, and "none" is a complete answer
+  where `404` would wrongly say Busbar does not speak completion at all.
+
+  **An MCP deployment may not have an anonymous front door.** An `mcp:` block together with an
+  empty `auth.chain` is now a configuration error and Busbar will not start: a request that carries
+  no key is never narrowed by one, so it would run with wildcard grants over every registered
+  server and every approved tool, and there would be no inbound grant to bind Busbar's outbound
+  credentials to. Close the data-plane chain, or drop the `mcp:` block.
 
 ### Fixed
 

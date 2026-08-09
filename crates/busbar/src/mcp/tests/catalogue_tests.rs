@@ -6,6 +6,7 @@
 //! asserted on the resolved SETS and on the refusal each check produces.
 
 use super::{Catalogue, DispatchRefusal};
+use crate::mcp::client::catalogue::LiveSightings;
 use crate::mcp::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolAllowCfg, ToolsCfg};
 
 /// A registered server with `tools` approved AT a hash (so it serves) and `pending` allowed with no
@@ -159,9 +160,11 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
     names.sort();
     assert_eq!(names, vec!["fs_pending".to_string(), "fs_read".to_string()]);
 
-    assert!(cat.resolve(&g, "fs_read").is_ok());
+    assert!(cat
+        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .is_ok());
     assert_eq!(
-        cat.resolve(&g, "fs_pending"),
+        cat.resolve(&g, LiveSightings::unsighted(), "fs_pending"),
         Err(DispatchRefusal::NotApproved("fs_pending".to_string()))
     );
 }
@@ -179,7 +182,7 @@ fn an_unpinned_server_never_dispatches() {
     let cat = Catalogue::build(&cfg(vec![(name, def)]));
     let g = grant_of(&[("mcp_server", "dev"), ("mcp_tool", "dev_read")]);
     assert_eq!(
-        cat.resolve(&g, "dev_read"),
+        cat.resolve(&g, LiveSightings::unsighted(), "dev_read"),
         Err(DispatchRefusal::NotPinned("dev".to_string())),
         "no locked pin ⇒ pending ⇒ never served, even to a fully granted caller"
     );
@@ -192,12 +195,12 @@ fn not_granted_and_unknown_are_distinct_internally() {
     let cat = Catalogue::build(&cfg(vec![server("fs", &["read"], &[])]));
     let none = grant_of(&[]);
     assert_eq!(
-        cat.resolve(&none, "fs_read"),
+        cat.resolve(&none, LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotGranted("fs_read".to_string()))
     );
     let all = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_nope")]);
     assert_eq!(
-        cat.resolve(&all, "fs_nope"),
+        cat.resolve(&all, LiveSightings::unsighted(), "fs_nope"),
         Err(DispatchRefusal::UnknownTool("fs_nope".to_string()))
     );
     // The operator gets two reasons; the caller gets one message. That is the design.
@@ -245,12 +248,18 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
     let c = cfg(vec![server("fs", &["read"], &[])]);
     let admitted = Catalogue::build(&c);
     let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let selected = admitted.resolve(&g, "fs_read").unwrap().clone();
+    let selected = admitted
+        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .unwrap()
+        .clone();
     let selected_gen = admitted.generation();
 
     // Same snapshot: the call goes through. Without this half, the refusal below would be
     // indistinguishable from a check that refuses everything.
-    assert_eq!(admitted.revalidate(&g, &selected, selected_gen), Ok(()));
+    assert_eq!(
+        admitted.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
+        Ok(())
+    );
 
     // THE SWAP. The operator quarantines the tool by withdrawing its approved hash, and the new
     // snapshot takes the next generation.
@@ -264,7 +273,7 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
     let live = Catalogue::build(&quarantined);
 
     assert_eq!(
-        live.revalidate(&g, &selected, selected_gen),
+        live.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
         Err(DispatchRefusal::GenerationMoved {
             selected: selected_gen,
             live: live.generation(),
@@ -280,14 +289,17 @@ fn a_revert_still_refuses_because_the_generation_is_not_content() {
     let c = cfg(vec![server("fs", &["read"], &[])]);
     let admitted = Catalogue::build(&c);
     let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let selected = admitted.resolve(&g, "fs_read").unwrap().clone();
+    let selected = admitted
+        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .unwrap()
+        .clone();
     let selected_gen = admitted.generation();
 
     // Byte-identical content, rebuilt. A content-derived generation would compare equal here and
     // admit the call; a counter cannot.
     let live = Catalogue::build(&c);
     assert!(matches!(
-        live.revalidate(&g, &selected, selected_gen),
+        live.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
         Err(DispatchRefusal::GenerationMoved { .. })
     ));
 }
@@ -300,12 +312,15 @@ fn a_revert_still_refuses_because_the_generation_is_not_content() {
 fn revalidation_also_re_derives_the_identity_under_the_live_grant() {
     let cat = Catalogue::build(&cfg(vec![server("fs", &["read"], &[])]));
     let full = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let selected = cat.resolve(&full, "fs_read").unwrap().clone();
+    let selected = cat
+        .resolve(&full, LiveSightings::unsighted(), "fs_read")
+        .unwrap()
+        .clone();
     let gen = cat.generation();
 
     let revoked = grant_of(&[]);
     assert_eq!(
-        cat.revalidate(&revoked, &selected, gen),
+        cat.revalidate(&revoked, LiveSightings::unsighted(), &selected, gen),
         Err(DispatchRefusal::NotGranted("fs_read".to_string())),
         "same generation, revoked grant: still refused"
     );

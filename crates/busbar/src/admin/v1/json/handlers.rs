@@ -3914,6 +3914,55 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    // ── The MCP TRUST VERBS. Additive on top of the generic `tools` section CRUD. ───────────────
+    paths.insert(
+        ap("/tools/{name}/connect"),
+        json!({
+            "post": {
+                "summary": "Fetch a registered MCP server's LIVE tool list, hash it, and record the observation. Approves nothing: adopting what was seen is a separate operator act",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the derived trust state and changes queue; a refresh that landed a quarantine is still a 200 — the drift is in the body)"},
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/tools/{name}/changes"),
+        json!({
+            "get": {
+                "summary": "The changes queue for one MCP server, derived from the LAST observation. Contacts nothing",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK"},
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/tools/{name}/health"),
+        json!({
+            "get": {
+                "summary": "Whether one MCP server currently serves, and why not when it does not",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK"},
+                }
+            }
+        }),
+    );
     paths.insert(
         ap("/hooks/{name}/health"),
         json!({
@@ -4631,6 +4680,25 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
+    // MCP trust verbs.
+    typed!(
+        "/tools/{name}/connect",
+        "post",
+        "200",
+        crate::mcp::admin_view::McpTrustView
+    );
+    typed!(
+        "/tools/{name}/changes",
+        "get",
+        "200",
+        crate::mcp::admin_view::McpTrustView
+    );
+    typed!(
+        "/tools/{name}/health",
+        "get",
+        "200",
+        crate::mcp::admin_view::McpHealthView
+    );
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
     typed!("/hooks/{name}/status", "get", "200", sview::HookStatusView);
     // Groups (the limit tree).
