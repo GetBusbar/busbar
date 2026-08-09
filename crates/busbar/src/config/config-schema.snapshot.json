@@ -181,6 +181,10 @@
           "optional": true,
           "type": "AdvancedCfg"
         },
+        "agents": {
+          "optional": true,
+          "type": "crate::a2a::config::AgentsCfg"
+        },
         "auth": {
           "optional": true,
           "type": "AuthDeployCfg"
