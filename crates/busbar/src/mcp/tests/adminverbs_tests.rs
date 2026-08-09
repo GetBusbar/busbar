@@ -276,7 +276,13 @@ async fn connect_refuses_a_passthrough_registration() {
 /// Every response `contract::taxonomy::declared_errors` names for these routes is produced HERE, by
 /// a real request over the real router. A condition witnessed only by a sibling test is witnessed
 /// nowhere, because the registry the comparison reads is filled by whatever ran.
-#[cfg(test)]
+// GATED EXACTLY AS ITS ONLY CALLER IS. `declared_error_set_is_exactly_what_the_handlers_emit`
+// lives in `admin/tests`, which is `#[cfg(all(test, feature = "auth-admin-tokens"))]`, so under
+// `--no-default-features` the caller disappears and this driver is dead code — `-D warnings` then
+// fails the build. Matching the caller's condition rather than adding `#[allow(dead_code)]` keeps
+// the property that an unreferenced driver is still an error: a driver nobody calls witnesses
+// nothing, which is the exact failure this whole registry exists to prevent.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
 pub(crate) async fn drive_mcp_verb_errors() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;

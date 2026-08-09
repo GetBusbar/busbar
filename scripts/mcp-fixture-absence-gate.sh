@@ -117,13 +117,51 @@ axis_wire() {
   local dir port pid rc=0 id
   dir="$(mktemp -d)"
   port=18731
+  admin_port=18732
+  # THE CONFIG AND THE LAUNCH ARE BOTH COPIED FROM `no-plugins-gate.sh`, DELIBERATELY.
+  #
+  # This block previously wrote `server: { bind: ... }` and launched with `--config`. Neither
+  # exists: the grammar's root keys are `listen:` / `admin_listen:`, and the config path arrives
+  # through `BUSBAR_CONFIG` — there is no `--config` flag at all. So the binary exited on its
+  # first argument, every run, and axis 2 has NEVER probed anything since this gate was written.
+  # It surfaced only because the readiness check calls an unprobed axis RED rather than skipping
+  # it; had it degraded to a skip, this would have read green forever.
+  #
+  # The `keys` verifier requires an explicit signing key — busbar no longer auto-generates one.
+  "$bin" --generate-signing-key >"$dir/signing.key" 2>/dev/null
+  [ -s "$dir/signing.key" ] || die "axis 2: --generate-signing-key produced no key"
+  # A provider/model/pool set is REQUIRED by the grammar, so one is declared. It points at a port
+  # nothing listens on, deliberately: this gate reads what busbar SERVES, and never routes a
+  # completion, so an unreachable upstream is the honest declaration rather than a mock to maintain.
+  cat >"$dir/providers.yaml" <<YAML
+mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:1"
+YAML
   cat >"$dir/config.yaml" <<YAML
-server:
-  bind: 127.0.0.1:$port
+listen: "127.0.0.1:$port"
+admin_listen: "127.0.0.1:$admin_port"
+providers_file: "$dir/providers.yaml"
+auth:
+  chain: [keys]
+  admin_auth: []
+  signing_key: { file: "$dir/signing.key" }
 store:
   module: memory
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+pools:
+  main:
+    members:
+      - model: test-model
+        weight: 1
+    hooks: [weighted]
 YAML
-  "$bin" --config "$dir/config.yaml" >"$dir/server.log" 2>&1 &
+  BUSBAR_CONFIG="$dir/config.yaml" MOCK_KEY=unused RUST_LOG=warn "$bin" >"$dir/server.log" 2>&1 &
   pid=$!
   # Readiness BY OBSERVATION, not by sleeping. Any answer proves it is listening; waiting for a 2xx
   # would make readiness depend on behaviour that is not under test here.
@@ -139,14 +177,30 @@ YAML
   done
 
   : >"$dir/wire.txt"
-  probe() {
-    printf '\n--- %s %s ---\n' "$1" "$2" >>"$dir/wire.txt"
-    curl -s --max-time 5 -X "$1" "http://127.0.0.1:$port$2" \
-      -H 'content-type: application/json' ${3:+-d "$3"} >>"$dir/wire.txt" 2>&1 || true
+  # `probe` hits the DATA plane; `probe_admin` hits the ADMIN plane, which listens on its own port.
+  # Both are needed: the admin surface was previously probed on the data port, where it can only
+  # ever 404, so its responses were never read and the identifiers could have travelled on it
+  # unseen. A surface probed at the wrong address is not a probed surface.
+  # `body_bytes` counts ONLY what the server actually returned, never the `--- METHOD path ---`
+  # separators. That distinction is the whole point: the separators are written by `printf` before
+  # curl runs, so a transcript containing nothing but separators is non-empty, and a `[ -s ]` check
+  # over this file can never fail. Counting response bytes is what makes the floor below real.
+  body_bytes=0
+  probe_to() {
+    local base="$1" method="$2" path="$3" data="${4:-}"
+    printf '\n--- %s %s (%s) ---\n' "$method" "$path" "$base" >>"$dir/wire.txt"
+    : >"$dir/body.tmp"
+    curl -s --max-time 5 -X "$method" "$base$path" \
+      -H 'content-type: application/json' ${data:+-d "$data"} >"$dir/body.tmp" 2>&1 || true
+    body_bytes=$((body_bytes + $(wc -c <"$dir/body.tmp")))
+    cat "$dir/body.tmp" >>"$dir/wire.txt"
   }
+  probe()       { probe_to "http://127.0.0.1:$port"       "$@"; }
+  probe_admin() { probe_to "http://127.0.0.1:$admin_port" "$@"; }
   probe GET  /healthz
   probe GET  /metrics
-  probe GET  /api/v1/admin/info
+  probe_admin GET /api/v1/admin/info
+  probe_admin GET /api/v1/admin/tools
   probe GET  /.well-known/oauth-protected-resource
   probe POST /mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
   probe POST /mcp '{"jsonrpc":"2.0","id":2,"method":"server/discover"}'
@@ -156,8 +210,17 @@ YAML
 
   # THE PREMISE, PROVEN RATHER THAN ASSUMED. If the probes captured nothing, every assertion below
   # holds vacuously. Same reasoning as no-plugins-gate proving its plugins dir is really empty.
-  [ -s "$dir/wire.txt" ] || die "axis 2: the probes captured no bytes at all. A wire assertion \
-over an empty transcript is not an assertion."
+  #
+  # A FLOOR ON RESPONSE BYTES, not `[ -s wire.txt ]`. The previous check could not fail: `probe`
+  # writes its `--- METHOD path ---` separator before curl runs, so the file is non-empty even when
+  # every single probe returns nothing — which is exactly the state this gate spent its whole life
+  # in, since it was launching the binary with a flag that does not exist. `/healthz` and
+  # `/metrics` alone answer with far more than this; the floor is set low enough to never be
+  # load-bearing on response FORMAT and high enough that a wholesale probe failure is red.
+  readonly MIN_WIRE_BYTES=200
+  [ "$body_bytes" -ge "$MIN_WIRE_BYTES" ] || die "axis 2: the probes captured only ${body_bytes} \
+response byte(s), under the ${MIN_WIRE_BYTES}-byte floor. A wire assertion over an empty \
+transcript is not an assertion."
 
   for id in "${forbidden[@]}"; do
     if grep -qF "$id" "$dir/wire.txt"; then
