@@ -274,6 +274,122 @@ async fn an_upstreams_ask_is_recognised_off_the_wire_and_refused_deny_by_default
     );
 }
 
+/// THE CONFUSED-DEPUTY LAUNDERING TEST, asserted on the BYTES THE CALLER RECEIVES.
+///
+/// The test above asserts busbar's refusal is well-formed. It cannot catch laundering, because a
+/// laundered ask never reaches the arm it inspects — it is a `200` with a result, not a `403` with a
+/// reason. This one asserts the only thing that actually matters: **no field of the upstream's ask
+/// appears anywhere in the response body busbar hands its caller.**
+///
+/// The upstream mounts the real attack: a conformant `elicitation/create` demanding the caller's
+/// account password. If busbar relays it, the caller sees a credential prompt arriving from the
+/// party it trusts — busbar — with busbar's authentication and busbar's name on it. That is the
+/// laundering `mcp/mod.rs:83` and `method.rs:649-652` both say busbar refuses to do.
+///
+/// Asserted as a SUBSTRING SCAN over the serialised body rather than field-by-field, for the reason
+/// `Recorded::wire` gives on the outbound side: a field-by-field assertion is a list somebody has to
+/// remember to extend, and the next `InputRequiredResult` field is the one it will not name.
+#[tokio::test]
+async fn a_conformant_upstreams_ask_reaches_the_caller_never() {
+    crate::metrics::init();
+    let peer = Peer::start(Behaviour::HarvestsCredentials, ISSUED).await;
+    let app = TestApp::new()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (_status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    let wire = serde_json::to_string(&body).expect("the caller's response body serialises");
+    for sentinel in [
+        "input_required",
+        "inputRequests",
+        "requestState",
+        "elicitation/create",
+        "upstream-opaque-state-blob",
+        "account password",
+        "requestedSchema",
+    ] {
+        assert!(
+            !wire.contains(sentinel),
+            "the upstream's ask reached busbar's CALLER: `{sentinel}` is in the response body.\n\
+             A registered tool server just asked busbar's caller for its password, and busbar \
+             delivered the demand under its own name.\n\
+             FULL BODY: {wire}"
+        );
+    }
+}
+
+/// THE SECOND MECHANISM, exercised on the case the FIRST one cannot see.
+///
+/// `input_required_kind` recognises an ask by its discriminator. So an upstream that carries
+/// `inputRequests` on a result labelled `complete` walks straight past it — and that is not a
+/// contrived shape, it is the cheapest way for a hostile upstream to be non-conformant in the
+/// direction that helps it.
+///
+/// This is why the terminal check in `method.rs` reads the FIELDS rather than the discriminator, and
+/// why it refuses rather than scrubbing: scrubbing `resultType` alone would deliver the password
+/// prompt anyway, relabelled, and dropping `inputRequests` alone would hand the caller a truncated
+/// result it had no way to know was truncated.
+#[tokio::test]
+async fn an_ask_smuggled_onto_a_result_labelled_complete_does_not_reach_the_caller_either() {
+    crate::metrics::init();
+    let peer = Peer::start(Behaviour::HalfConformantAsk, ISSUED).await;
+    let app = TestApp::new()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+    )
+    .await;
+
+    // NO RESULT AT ALL. Asserted before the content scan, because it is the stronger statement: a
+    // refusal has no result, so there is nothing for the upstream's ask to be hiding in.
+    assert!(
+        body.get("result").is_none(),
+        "a result carrying an ask must not be delivered in any form: {body}"
+    );
+    // The scan is over the upstream's OWN CONTENT, and deliberately not over the field names.
+    // busbar's refusal names the offending field on purpose — an operator debugging a
+    // half-conformant upstream needs to know which one arrived — and a scan that could not tell
+    // busbar's diagnosis from the upstream's demand would forbid busbar from explaining itself.
+    let wire = serde_json::to_string(&body).expect("serialises");
+    for sentinel in [
+        "elicitation/create",
+        "account password",
+        "requestedSchema",
+        "upstream-opaque-state-blob",
+        "almost done",
+    ] {
+        assert!(
+            !wire.contains(sentinel),
+            "an ask labelled `complete` reached busbar's CALLER: `{sentinel}` is in the response \
+             body. The discriminator-based recogniser cannot catch this shape, which is precisely \
+             what the terminal check exists for.\nFULL BODY: {wire}"
+        );
+    }
+    assert_eq!(status, 403, "and it is a busbar-attributed refusal: {body}");
+    assert_eq!(
+        body.pointer("/error/data/reason").and_then(|v| v.as_str()),
+        Some("ask_not_proxied"),
+        "the terminal check has its OWN audit word, so an operator can tell it from the \
+         recogniser's refusal: {body}"
+    );
+}
+
 /// A JSON-RPC error from the upstream is an upstream failure, not a governance refusal, and the
 /// upstream's message is not laundered into busbar's own vocabulary.
 #[tokio::test]

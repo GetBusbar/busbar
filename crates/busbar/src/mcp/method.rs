@@ -623,6 +623,47 @@ async fn tools_call(
     let resource = format!("mcp_tool:{}", selected.namespaced);
     match outcome {
         Outcome::Completed(value) => {
+            // (5a) THE TERMINAL ASSERTION, and it is deliberately a SECOND mechanism rather than a
+            // tidier version of the first.
+            //
+            // Whether an upstream's ask ever reaches this arm is decided by a PREDICATE
+            // (`client::jsonrpc::input_required_kind`), and predicates drift: this one spent its
+            // whole life matching a wire shape no conformant server emits, and everything
+            // downstream of it — including a type with no arm capable of carrying an ask — was
+            // correct and unreached. So the value is checked once more here, at the last point
+            // before it becomes bytes, against the FIELDS rather than the discriminator.
+            //
+            // The fields and not just `resultType`, because scrubbing the discriminator alone would
+            // leave `inputRequests` in place: the caller would still receive the upstream's demand
+            // for its password, now labelled `complete`. And a REFUSAL rather than a scrub, because
+            // a result that says it is unfinished is not a finished result, and handing the caller a
+            // silently-truncated one would be answering a question nobody asked.
+            if let Some(field) = upstream_ask_field(&value) {
+                tracing::error!(
+                    tool = %selected.namespaced,
+                    field,
+                    "an upstream's input-required result reached the terminal check: the ask \
+                     recogniser did not catch it"
+                );
+                crate::admin::audit::AUDIT.record_by(
+                    "mcp_tool.call",
+                    &resource,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    ctx.actor,
+                );
+                return error(
+                    StatusCode::FORBIDDEN,
+                    id,
+                    CODE_REFUSED,
+                    &format!(
+                        "MCP server `{}` answered with an input-required result (`{field}`), which \
+                         is a request that YOU spend authority on its behalf. An upstream's ask \
+                         terminates at busbar and is never forwarded to you.",
+                        selected.server
+                    ),
+                    Some(serde_json::json!({ "reason": "ask_not_proxied" })),
+                );
+            }
             crate::admin::audit::AUDIT.record_by(
                 "mcp_tool.call",
                 &resource,
@@ -662,6 +703,25 @@ async fn tools_call(
             )
         }
     }
+}
+
+/// Which MRTR ask field, if any, an upstream's supposedly-complete result still carries.
+///
+/// Named as a LIST rather than as a check on `resultType`, for the reason the call site gives: the
+/// discriminator is one field and the ask's CONTENT is in the other two, so a check that read only
+/// the discriminator would pass a result that still carried the upstream's `inputRequests`.
+///
+/// Returns the offending field so the refusal and the log can name it — an operator debugging this
+/// needs to know which of the three arrived, because it tells them whether their upstream is
+/// conformant, half-conformant, or something else entirely.
+fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
+    let obj = value.as_object()?;
+    if obj.get("resultType").and_then(|v| v.as_str()) == Some("input_required") {
+        return Some("resultType");
+    }
+    ["inputRequests", "requestState"]
+        .into_iter()
+        .find(|field| obj.contains_key(*field))
 }
 
 /// CHARGE one round on the caller's own budget plane, then meter it.
@@ -815,16 +875,38 @@ fn not_found(id: Option<serde_json::Value>, message: &str) -> Response {
 ///
 /// This is also the ONE place `resultType` is stamped, and it is stamped on every result rather
 /// than at each handler, because `2026-07-28` makes it mandatory on all of them and a field that
-/// each handler has to remember is a field a seventh handler forgets. `or_insert` rather than a
-/// blind overwrite: `tools/call` passes an UPSTREAM's result through here, and rewriting a
-/// statement the upstream made about its own result would be busbar answering for it. See
-/// [`RESULT_TYPE_COMPLETE`] for why every result busbar itself composes is complete.
+/// each handler has to remember is a field a seventh handler forgets.
+///
+/// ## `insert`, not `or_insert`, and the reasoning that changed
+///
+/// This used to `or_insert`, on the stated grounds that `tools/call` passes an UPSTREAM's result
+/// through here and "rewriting a statement the upstream made about its own result would be busbar
+/// answering for it". That reasoning is INVERTED, and enumerating the cases is what shows it —
+/// because the set of results where `or_insert` differs from a plain `insert` is exactly the set
+/// where preserving the upstream's value is wrong:
+///
+/// | what the upstream said | what preserving it does |
+/// |---|---|
+/// | `"complete"` | nothing — `insert` writes the same value |
+/// | `"input_required"` | THE LAUNDERING. Hands busbar's caller an upstream's demand for authority, under busbar's name and busbar's authentication |
+/// | anything else | passes on a result type busbar cannot describe and did not vouch for |
+///
+/// There is no case in which deferring to the upstream is both different and right. And the premise
+/// was wrong too: the value leaving here is not the upstream's statement being relayed, it is
+/// BUSBAR'S OWN RESULT — busbar chose to dispatch, normalised the content
+/// ([`sanitize::normalise_json`]), and signs for what it returns. `resultType` is therefore busbar's
+/// sentence to write, and the only honest thing busbar can write on a result it is handing over as
+/// finished is `complete`.
+///
+/// The one result busbar legitimately marks otherwise is an ask BUSBAR ITSELF composed, and that is
+/// deliberately a DIFFERENT FUNCTION rather than a branch here: see [`input_required_result`]. Two
+/// constructors mean the `resultType` a caller sees is always one busbar chose, and which one is
+/// visible at the call site rather than dependent on what arrived from a third party.
 fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
     use axum::response::IntoResponse as _;
     let mut value = value;
     if let Some(obj) = value.as_object_mut() {
-        obj.entry("resultType")
-            .or_insert_with(|| RESULT_TYPE_COMPLETE.into());
+        obj.insert("resultType".into(), RESULT_TYPE_COMPLETE.into());
     }
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), "2.0".into());
