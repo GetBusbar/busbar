@@ -7,9 +7,9 @@
 //!
 //! busbar is the resource server and NOTHING ELSE here. It issues no token, runs no `/authorize`,
 //! no `/token`, no code exchange, and authenticates no human. The authorization server is the
-//! operator's existing IdP (Okta, Entra, Auth0), and a busbar-hosted AS is a separate, deferred,
-//! PLUGIN-shaped piece of work (`mcp-design.md` §11 ruling 7, 2026-08-08). If a future change in
-//! this module starts minting a credential, it is in the wrong module.
+//! operator's existing IdP (Okta, Entra, Auth0), and a busbar-hosted authorization server is
+//! separate, deferred, plugin-shaped work. If a future change in this module starts minting a
+//! credential, it is in the wrong module.
 //!
 //! # The flow
 //!
@@ -30,8 +30,8 @@
 //!
 //! **The token's audience must be busbar itself.** A token minted for some other service — a token
 //! the operator's IdP quite legitimately issued to the same agent for a different API — MUST be
-//! refused (RFC 8707 resource indicators; MCP authorization spec; `mcp-design.md:157-163`). Without
-//! it busbar is a confused deputy: it would accept a credential intended for elsewhere and act on it
+//! refused (RFC 8707 resource indicators, and the MCP authorization specification's confused-deputy
+//! requirement). Without it busbar is a confused deputy: it would accept a credential intended for elsewhere and act on it
 //! with busbar's own upstream authority, and every other gate in the system would still report
 //! green, because every other gate is asking a different question. The audience comparison therefore
 //! lives in [`ResourceServer::admit`] beside the signature check, not in a handler, so a route added
@@ -46,9 +46,9 @@
 //!
 //! # Why the key set is operator-supplied rather than fetched from a `jwks_uri`
 //!
-//! The keys arrive out of band, in config. That is the same posture `mcp-design.md` §3.2 takes for
-//! MCP server trust roots (operator-pinned issuer key, explicitly NOT TOFU, explicitly not "fetch
-//! and hope"), and it buys three things a runtime fetch does not: no SSRF surface reachable from an
+//! The keys arrive out of band, in config. That is the same posture busbar takes for every other
+//! upstream trust root — operator-pinned, never trust-on-first-use, never "fetch and hope" — and it
+//! buys three things a runtime fetch does not: no SSRF surface reachable from an
 //! unauthenticated request path, no IdP outage turning into a busbar outage, and hermetic tests that
 //! cannot pass by silently skipping a network call. A `jwks_uri` refresh is a real follow-up for
 //! operators who rotate often; it is additive (a second source for the same [`jwks::JwkSet`]) and is
@@ -82,8 +82,8 @@ pub(crate) mod support;
 /// busbar's MCP ingress mount. FIXED, not operator-chosen: the RFC 9728 metadata document's path is
 /// derived from the resource's path (`/.well-known/oauth-protected-resource` + `/mcp`), and a
 /// derived path that is also a `&'static str` route pattern is what lets the metadata route be
-/// mounted by exact match rather than by a prefix exception (`mcp-oauth-1.5.4-DESIGN.md` §5.2 option
-/// (a)). `canonical_uri` is validated to carry exactly this path, so the document busbar serves and
+/// mounted by exact match rather than by a prefix exception, which is the rule every route bypass in
+/// this codebase follows. `canonical_uri` is validated to carry exactly this path, so the document busbar serves and
 /// the document a client derives are the same URL by construction.
 pub(crate) const MCP_MOUNT_PATH: &str = "/mcp";
 
@@ -435,16 +435,12 @@ impl ResourceServer {
             }
         }
 
-        // THE CHECK THIS MODULE EXISTS FOR (RFC 8707; MCP authorization spec; `mcp-design.md`
-        // §2.2). It sits here, in the resource server, above the signature branch and below nothing:
-        // a token that is authentic, unexpired and issued by a trusted IdP is STILL not a token for
-        // busbar unless it says so. Refusing it is the difference between a gateway and a confused
-        // deputy, and the difference is invisible to every other gate in the system.
-        // THE CHECK THIS MODULE EXISTS FOR (RFC 8707; MCP authorization spec; `mcp-design.md`
-        // §2.2). It sits here, in the resource server, above the signature branch and below nothing:
-        // a token that is authentic, unexpired and issued by a trusted IdP is STILL not a token for
-        // busbar unless it says so. Refusing it is the difference between a gateway and a confused
-        // deputy, and the difference is invisible to every other gate in the system.
+        // THE CHECK THIS MODULE EXISTS FOR (RFC 8707 resource indicators, and the MCP
+        // authorization specification's confused-deputy requirement). It sits here, in the resource
+        // server, above the signature branch and below nothing: a token that is authentic,
+        // unexpired and issued by a trusted IdP is STILL not a token for busbar unless it says so.
+        // Refusing it is the difference between a gateway and a confused deputy, and the difference
+        // is invisible to every other gate in the system.
         match claims.aud {
             None => return Err(Refusal::AudienceMissing),
             Some(ref aud) if !aud.names(&self.canonical_uri) => {

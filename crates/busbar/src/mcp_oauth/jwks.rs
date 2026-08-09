@@ -146,8 +146,9 @@ impl JwkSet {
 
     /// Every key whose `kid` matches. Selecting by `kid` rather than trying the whole set is what
     /// makes a key id meaningful; more than one key may share a `kid` when `kty` differs (RFC 7517
-    /// §4.5, seen during an algorithm migration), so the caller must try every match rather than the
-    /// first. A non-empty queried `kid` never falls through to a keyless key: that is only a match
+    /// permits it, and it happens during an algorithm migration), so the caller must try every match
+    /// rather than the first. A non-empty queried `kid` never falls through to a keyless key: it is
+    /// a match
     /// when the queried id is itself empty.
     pub(crate) fn find_all<'a>(&'a self, kid: &'a str) -> impl Iterator<Item = &'a Jwk> {
         self.keys

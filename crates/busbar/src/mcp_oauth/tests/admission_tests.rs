@@ -4,9 +4,8 @@
 //! The adversarial admission battery for the MCP resource server.
 //!
 //! There is no third-party coverage to lean on here. Server-side MCP OAuth is absent from busbar's
-//! independent battery and absent from the official `modelcontextprotocol/conformance` suite
-//! (`mcp-independent-test-battery.md` §10, §12), so there is no oracle and nothing to adopt — these
-//! tests ARE the coverage. They are written from the attacker's side: every case below is a token an
+//! independent conformance battery and absent from the official `modelcontextprotocol/conformance`
+//! suite, so there is no oracle and nothing to adopt — these tests ARE the coverage. They are written from the attacker's side: every case below is a token an
 //! attacker or a confused client can actually produce, and every one of them is signed for real by
 //! the fixture in `support.rs`, so a passing case cannot be passing because the crypto was faked.
 //!
