@@ -662,6 +662,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
+        NamedMapSection::Agents => app.agent_defs.agents.contains_key(name),
     }
 }
 
@@ -697,9 +698,19 @@ fn validate_definition(
         )));
     };
     let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
-    if module.trim().is_empty() {
+    if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
             "a {} must name its backing plugin via a non-empty `module:`",
+            section.singular()
+        )));
+    }
+    if !section.requires_module() && !module.trim().is_empty() {
+        // A section whose entries are not plugin instances must not quietly ACCEPT a `module:`
+        // either. Storing a key the rebuild will drop is the silent-drop defect this whole path
+        // was hardened against; the typed parse below would refuse it, and saying so here gives
+        // the operator the section-shaped reason rather than a serde message.
+        return Err(AdminError::Validation(format!(
+            "an {} is a remote endpoint, not a plugin instance, so it has no `module:`",
             section.singular()
         )));
     }

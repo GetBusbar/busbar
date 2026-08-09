@@ -1,0 +1,375 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE `agents:` SECTION — the A2A plane's config grammar, and the one place its values are judged.
+//!
+//! ## The section IS the plane
+//!
+//! There is no `plane:`, `bind:` or `target:` selector anywhere in here. `pools:`, `tools:` and
+//! `agents:` are SIBLINGS with the same shape, and which plane an entry is on is decided by which
+//! map it is written in. Hooks attach BY BARE NAME from the one top-level `hooks:` map, exactly as
+//! they do on the pool plane.
+//!
+//! ## Two words are reserved on every plane, including the ones that do not use them
+//!
+//! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
+//! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
+//! rule once should not discover that a name legal on one plane is a section knob on another. The
+//! reserved set is closed; a new A2A knob lands under a per-entry key, never as a new section word.
+//!
+//! ## The pin is an OBJECT, and that is the whole trust story compressed into one field
+//!
+//! A2A's authenticity root is a JWS issuer key PLUS a card fingerprint, and where a card carries no
+//! signature it degrades to a transport binding. That is four mechanisms carrying different
+//! material, and a scalar `spki_pin:` can spell exactly one of them. So `pin:` is
+//! `{mechanism, key?, fingerprint?}` and the mechanism is checked against the material it requires,
+//! here, at parse. A registration cannot claim `jws_issuer_key` and carry nothing to verify with.
+//!
+//! `unpinned` is accepted and named out loud rather than being spelled as an absent field, because
+//! an operator reading a list of registrations needs to SEE which entries have no root. It is legal
+//! to write and impossible to approve: the cap lives in [`super::pin::approve_registration`], which
+//! is where the ruling belongs, and this file only refuses to let it carry key material it would
+//! never use.
+//!
+//! ## Cross-plane reference is refused, not ignored
+//!
+//! An `agents:` entry may name hooks. It may not name a pool, a tool, or another agent. The
+//! validator says so rather than silently dropping the reference, because a dropped reference is an
+//! operator believing a control is attached that is not.
+
+use serde::{Deserialize, Serialize};
+
+/// The two words reserved at the `agents:` section level. IDENTICAL to
+/// [`crate::config::RESERVED_POOLS_SECTION_KEYS`] by design, and pinned to it by a test: the whole
+/// point is that the reserved word space does not vary per plane.
+pub(crate) const RESERVED_AGENTS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+
+/// The default re-verification cadence for a registration that names none: six hours.
+///
+/// Chosen as the longest window an operator would accept for "a vendor rotated a key and we have
+/// not looked", not as a performance figure — the fetch is one HTTP request per registered agent
+/// per period and is nowhere near any budget. An operator who wants tighter says so per agent.
+pub(crate) const DEFAULT_REVERIFY_TTL: &str = "6h";
+
+/// `agents.<name>.pin.mechanism` — WHICH authenticity root this registration has.
+///
+/// The variants are the four the design names, and they are spelled in config exactly as
+/// [`super::pin::CardPin::mechanism`] renders them, so an operator comparing a config file against
+/// an admin response or an audit row is comparing the same strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PinMechanism {
+    /// The card is SIGNED and verified against an operator-supplied, out-of-band JWS issuer key.
+    JwsIssuerKey,
+    /// The card is UNSIGNED; authenticity is bound to the card endpoint's certificate SPKI hash.
+    CertSpki,
+    /// The card is UNSIGNED and served behind mutual TLS; pinned on the peer certificate SPKI hash.
+    Mtls,
+    /// NO authenticity root. Registrable, never approvable.
+    Unpinned,
+}
+
+impl PinMechanism {
+    /// Does this mechanism require operator-supplied key material?
+    ///
+    /// This is the predicate that makes the object form worth having: three of the four mechanisms
+    /// are meaningless without material, and the fourth is meaningless WITH it.
+    fn needs_key(self) -> bool {
+        !matches!(self, PinMechanism::Unpinned)
+    }
+
+    /// The config token, for diagnostics. Deliberately the same string `serde` accepts.
+    fn token(self) -> &'static str {
+        match self {
+            PinMechanism::JwsIssuerKey => "jws_issuer_key",
+            PinMechanism::CertSpki => "cert_spki",
+            PinMechanism::Mtls => "mtls",
+            PinMechanism::Unpinned => "unpinned",
+        }
+    }
+}
+
+/// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentPinCfg {
+    /// Which root this is. Required: a pin whose mechanism is inferred is a pin whose meaning
+    /// changes when the code that infers it changes.
+    pub(crate) mechanism: PinMechanism,
+    /// The operator-supplied material: a JWS verification key, or a certificate SPKI hash. Absent
+    /// only for `unpinned`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) key: Option<String>,
+    /// The approved canonical card fingerprint, where the operator already has one. Absent means
+    /// "capture it at `connect` and let me approve it", which is the normal first registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fingerprint: Option<String>,
+}
+
+/// One entry in the top-level `agents:` NAMED-DEFINITION map — one registered external A2A agent.
+///
+/// Operator INTENT only. Everything that ACCUMULATES about an agent — every observed card, the
+/// drift queue, the approval trail, the anomaly counters, the task rows — is store state and is
+/// deliberately absent from this struct. The split is not tidiness: intent is what an operator
+/// wrote and may edit, accumulation is what happened and may not be, and a field that lives in the
+/// wrong one is a field an admin write can silently rewrite history through.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin an agent.
+pub(crate) struct AgentDefCfg {
+    /// The real remote A2A endpoint. Never client-visible: callers reach it through busbar.
+    pub(crate) url: String,
+    /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is
+    /// `unpinned` — see the module note on why absence is not an acceptable spelling for "none".
+    pub(crate) pin: AgentPinCfg,
+    /// `<n><s|m|h|d>` — how long a verification stays fresh before the card is re-fetched and
+    /// re-verified. Absent ⇒ [`DEFAULT_REVERIFY_TTL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reverify_ttl: Option<String>,
+    /// How long after a DRIFT a clean answer is disbelieved. Absent ⇒ the deployment default.
+    ///
+    /// This is the recovery backoff, and it is the only half of the cadence that is ever held.
+    /// There is deliberately no knob that slows DETECTION or delays a DEMOTION: both would be a
+    /// window an upstream could open for itself by flapping, and choosing when to flap is entirely
+    /// within its gift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_backoff: Option<String>,
+    /// The A2A protocol version this registration is PINNED to. Absent ⇒ the release default.
+    /// Pinned per registration because the well-known card path moved between versions and a
+    /// registration that follows whatever the upstream now claims has no pin at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) protocol_version: Option<String>,
+    /// Outbound credential mode at delegation time. Same vocabulary as the pool plane's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    /// Hooks attached to THIS agent, by bare name from the top-level `hooks:` map. ADDS to the
+    /// section-level `agents.hooks:` list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) hooks: Vec<String>,
+}
+
+/// The top-level `agents:` map, carrying [`RESERVED_AGENTS_SECTION_KEYS`] alongside the agents.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentsCfg {
+    /// The ALL-AGENTS attach list (the reserved `agents.hooks:` key). LIST ⇒ ADDITIVE: an agent's
+    /// own `hooks:` are appended to this, deduped by name.
+    pub(crate) all_agent_hooks: Vec<String>,
+    /// The ALL-AGENTS `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
+    pub(crate) all_agent_upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
+    /// listing are deterministic rather than hash-ordered.
+    pub(crate) agents: indexmap::IndexMap<String, AgentDefCfg>,
+}
+
+impl<'de> Deserialize<'de> for AgentsCfg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
+            indexmap::IndexMap::deserialize(deserializer)?;
+
+        // A reserved key holding a MAPPING is somebody trying to define an agent by that name.
+        // Caught before the typed lifts so the message names the real problem instead of surfacing
+        // as "expected a sequence".
+        for reserved in RESERVED_AGENTS_SECTION_KEYS {
+            if raw
+                .get(*reserved)
+                .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
+            {
+                return Err(serde::de::Error::custom(format!(
+                    "an agent may not be named `{reserved}`: that key is RESERVED at the `agents:` \
+                     section level (the all-agents `hooks:` attach list and \
+                     `upstream_credentials:` default), on every plane. Rename the agent."
+                )));
+            }
+        }
+
+        let all_agent_hooks: Vec<String> = match raw.shift_remove("hooks") {
+            None => Vec::new(),
+            Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "the reserved `agents.hooks:` all-agents attach must be a list of hook \
+                     names: {e}"
+                ))
+            })?,
+        };
+        let all_agent_upstream_credentials = match raw.shift_remove("upstream_credentials") {
+            None => None,
+            Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "the reserved `agents.upstream_credentials:` all-agents default must be `own` \
+                     or `passthrough`: {e}"
+                ))
+            })?),
+        };
+
+        let mut agents = indexmap::IndexMap::new();
+        for (name, value) in raw {
+            if RESERVED_AGENTS_SECTION_KEYS.contains(&name.as_str()) {
+                return Err(serde::de::Error::custom(format!(
+                    "an agent may not be named `{name}`: that key is RESERVED at the `agents:` \
+                     section level, on every plane. Rename the agent."
+                )));
+            }
+            let def: AgentDefCfg =
+                AgentDefCfg::deserialize(value).map_err(serde::de::Error::custom)?;
+            // The VALUE rules, run through the same function the admin write path calls, so the
+            // API rejects exactly what the file rejects.
+            validate_agent(&name, &def).map_err(serde::de::Error::custom)?;
+            agents.insert(name, def);
+        }
+
+        Ok(AgentsCfg {
+            all_agent_hooks,
+            all_agent_upstream_credentials,
+            agents,
+        })
+    }
+}
+
+/// THE VALUE-LEVEL RULES for one `agents:` entry.
+///
+/// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is
+/// about a VALUE that is well-typed and still wrong. Boot calls it from the `Deserialize` above and
+/// the admin write path calls it from
+/// [`crate::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
+/// different grammars — which is the exact defect that let the API persist a definition the file
+/// would have refused, and then drop it at the next rebuild with a log line.
+pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
+    let at = format!("`agents.{name}`");
+
+    if def.url.trim().is_empty() {
+        return Err(format!("{at}: `url:` must name the agent's A2A endpoint"));
+    }
+    // Scheme is checked here rather than at fetch time so the failure lands on the operator who
+    // wrote it, at boot, rather than on a delegation six hours later.
+    let scheme_ok = def.url.starts_with("https://") || def.url.starts_with("http://");
+    if !scheme_ok {
+        return Err(format!(
+            "{at}: `url:` must be an http:// or https:// endpoint, got `{}`",
+            def.url
+        ));
+    }
+
+    // THE PIN, matched against the material its mechanism needs. This is the rule the object form
+    // exists to make expressible.
+    let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
+    if def.pin.mechanism.needs_key() && !has_key {
+        return Err(format!(
+            "{at}: `pin.mechanism: {}` needs `pin.key:` — the out-of-band material this \
+             registration is verified against. A pin with nothing to verify with is not a pin.",
+            def.pin.mechanism.token()
+        ));
+    }
+    if !def.pin.mechanism.needs_key() && has_key {
+        return Err(format!(
+            "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
+             no authenticity root; key material that is never verified against reads to an \
+             operator as protection that does not exist. Name the real mechanism, or drop the key."
+        ));
+    }
+
+    if let Some(ttl) = def.reverify_ttl.as_deref() {
+        crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `reverify_ttl:` {e}"))?;
+    }
+    if let Some(backoff) = def.recovery_backoff.as_deref() {
+        crate::admin::parse_duration_secs(backoff)
+            .map_err(|e| format!("{at}: `recovery_backoff:` {e}"))?;
+    }
+
+    for hook in &def.hooks {
+        refuse_cross_plane_reference(&at, hook)?;
+    }
+    Ok(())
+}
+
+/// The all-agents attach list is validated by the same rule as a per-agent one.
+pub(crate) fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
+    for hook in hooks {
+        refuse_cross_plane_reference("`agents.hooks`", hook)?;
+    }
+    Ok(())
+}
+
+/// REFUSE, rather than ignore, a reference that reaches onto another plane.
+///
+/// A hook reference is a bare name into the one top-level `hooks:` map. Somebody who writes
+/// `pools.fast` or `agents.planner` there means something, and the something is not available: no
+/// entry on one plane may reference an entry on another. Dropping it silently would leave an
+/// operator believing a control is attached that is not, which is worse than the typo.
+fn refuse_cross_plane_reference(at: &str, hook: &str) -> Result<(), String> {
+    let hook = hook.trim();
+    if hook.is_empty() {
+        return Err(format!("{at}: `hooks:` contains an empty name"));
+    }
+    // A dotted name is the tell: bare names into `hooks:` never contain a plane prefix.
+    for plane in ["pools", "tools", "agents", "export", "identity-providers"] {
+        if let Some(rest) = hook.strip_prefix(&format!("{plane}.")) {
+            return Err(format!(
+                "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
+                 `{hook}` reaches onto the `{plane}:` plane, and no entry on one plane may \
+                 reference an entry on another. Did you mean the hook `{rest}`?"
+            ));
+        }
+    }
+    if hook.contains('.') {
+        return Err(format!(
+            "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
+             `{hook}` is not a bare name."
+        ));
+    }
+    Ok(())
+}
+
+/// The effective re-verification cadence for one registration, as the pure-function policy
+/// [`super::reverify`] consumes.
+///
+/// Config in, policy out, no clock and no I/O — so the cadence an operator wrote and the cadence
+/// the decision uses are provably the same value rather than two parallel readings of it.
+pub(crate) fn policy_for(
+    def: &AgentDefCfg,
+    default_backoff_ms: u64,
+) -> Result<super::reverify::Policy, String> {
+    let ttl = def.reverify_ttl.as_deref().unwrap_or(DEFAULT_REVERIFY_TTL);
+    let ttl_ms = crate::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    let recovery_backoff_ms = match def.recovery_backoff.as_deref() {
+        None => default_backoff_ms,
+        Some(v) => crate::admin::parse_duration_secs(v)?.saturating_mul(1_000),
+    };
+    Ok(super::reverify::Policy {
+        ttl_ms,
+        recovery_backoff_ms,
+    })
+}
+
+/// The pin an operator DECLARED, where they declared a complete one.
+///
+/// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
+/// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is
+/// deliberately NOT an error, and it is deliberately not filled in with anything the upstream said.
+pub(crate) fn declared_pin(def: &AgentDefCfg) -> Option<super::pin::CardPin> {
+    let key = def.pin.key.clone().unwrap_or_default();
+    let fp = def.pin.fingerprint.clone();
+    match (def.pin.mechanism, fp) {
+        (PinMechanism::Unpinned, _) => Some(super::pin::CardPin::Unpinned),
+        (PinMechanism::JwsIssuerKey, Some(card_fingerprint)) => {
+            Some(super::pin::CardPin::JwsIssuerKey {
+                issuer_key: key,
+                card_fingerprint,
+            })
+        }
+        (PinMechanism::CertSpki, Some(card_fingerprint)) => Some(super::pin::CardPin::CertSpki {
+            spki: key,
+            card_fingerprint,
+        }),
+        (PinMechanism::Mtls, Some(card_fingerprint)) => Some(super::pin::CardPin::Mtls {
+            spki: key,
+            card_fingerprint,
+        }),
+        (_, None) => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/config_tests.rs"]
+mod config_tests;

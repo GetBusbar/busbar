@@ -465,6 +465,11 @@ pub(crate) struct RootCfg {
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub(crate) export_defs: ExportDefs,
+    /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
+    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
+    /// control plane derives its runtime `AgentRegistration` from this plus what the store has
+    /// accumulated. Nothing here is accumulation.
+    pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -2677,6 +2682,12 @@ pub(crate) struct DeployCfg {
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
     pub(crate) export: ExportDefs,
+    /// The top-level `agents:` NAMED-DEFINITION map (1.5.6): agent NAME →
+    /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
+    /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
+    /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
+    #[serde(default)]
+    pub(crate) agents: crate::a2a::config::AgentsCfg,
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -4199,6 +4210,24 @@ pub(crate) fn resolve(
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
+    // THE A2A PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
+    // per-agent lists are checked at parse (`a2a::config::validate_agent`); the section list has no
+    // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
+    if let Err(e) = crate::a2a::config::validate_section_hooks(&deploy.agents.all_agent_hooks) {
+        errors.push(e);
+    }
+    // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
+    // reference is an operator believing a control is attached that is not, so it is an error and
+    // not a warning, exactly as it is for `auth.chain`.
+    for (agent, def) in &deploy.agents.agents {
+        for hook in deploy.agents.all_agent_hooks.iter().chain(def.hooks.iter()) {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
     for (name, def) in &deploy.hooks {
         if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
             errors.push(format!(
@@ -4314,6 +4343,7 @@ pub(crate) fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
+            agent_defs: deploy.agents.clone(),
         })
     } else {
         Err(errors)

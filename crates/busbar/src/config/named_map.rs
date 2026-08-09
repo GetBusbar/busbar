@@ -21,6 +21,8 @@
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
 //! push), and `store:` is singular — there is no map to name into.
 
+use crate::a2a::config::AgentDefCfg;
+
 use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
@@ -32,15 +34,21 @@ pub(crate) enum NamedMapSection {
     IdentityProviders,
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
-    // 1.5.4: `Tools` (MCP server registry). 1.5.5: `Agents` (A2A agent registry). Both land as one
-    // variant each plus their arms in the `match`es below.
+    /// `agents:` — agent NAME → `{url, pin, reverify_ttl, …}`, THE A2A plane: one registered
+    /// external agent per entry, referenced by bare name. Sibling in shape to `pools:`, and no
+    /// entry on it may reference an entry on another plane.
+    Agents,
+    // 1.5.4: `Tools` (MCP server registry) lands as one more variant plus its arms below.
 }
 
 impl NamedMapSection {
     /// Every section, in route/mount order. The router, the OpenAPI generator and the overlay
     /// applier all iterate THIS — so a new variant is live everywhere the moment it is added.
-    pub(crate) const ALL: &'static [NamedMapSection] =
-        &[NamedMapSection::IdentityProviders, NamedMapSection::Export];
+    pub(crate) const ALL: &'static [NamedMapSection] = &[
+        NamedMapSection::IdentityProviders,
+        NamedMapSection::Export,
+        NamedMapSection::Agents,
+    ];
 
     /// The config key AND the admin path segment — they are deliberately the same string, so the API
     /// mirrors the config grammar exactly (`export:` ⇄ `/export`).
@@ -48,6 +56,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "identity-providers",
             NamedMapSection::Export => "export",
+            NamedMapSection::Agents => "agents",
         }
     }
 
@@ -56,6 +65,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "/identity-providers",
             NamedMapSection::Export => "/export",
+            NamedMapSection::Agents => "/agents",
         }
     }
 
@@ -64,7 +74,21 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
+            NamedMapSection::Agents => "agent",
         }
+    }
+
+    /// Whether a definition in this section is a PLUGIN INSTANCE, and therefore must name a
+    /// backing `module:`.
+    ///
+    /// Every 1.5.3 section was one, so the generic write path simply demanded `module:`. The A2A
+    /// plane is the first section that is NOT: an `agents:` entry describes a REMOTE ENDPOINT that
+    /// somebody else runs, and there is no plugin behind it to name. The requirement is therefore a
+    /// per-section property here rather than a hardcoded rule in the handler, for the same reason
+    /// [`NamedMapSection::has_trust_ceiling`] is: the handler stays generic and the asymmetry stays
+    /// visible in the table where a reader can find it.
+    pub(crate) fn requires_module(self) -> bool {
+        !matches!(self, NamedMapSection::Agents)
     }
 
     /// Whether this section's definitions carry a `max_admin_scope` TRUST CEILING — the one
@@ -103,6 +127,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
+            NamedMapSection::Agents => deploy.agents.agents.contains_key(name),
         }
     }
 
@@ -125,6 +150,11 @@ impl NamedMapSection {
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
             NamedMapSection::Export => deploy
                 .export
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Agents => deploy
+                .agents
+                .agents
                 .get(name)
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
         }
@@ -182,6 +212,17 @@ impl NamedMapSection {
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+            NamedMapSection::Agents => serde_json::from_value(def.clone())
+                .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
+                .and_then(|cfg: AgentDefCfg| {
+                    // THE SAME VALUE RULES BOOT APPLIES, through the same function boot calls: the
+                    // pin's mechanism must match the material it carries, the durations must
+                    // parse, and no hook reference may reach onto another plane. Without this the
+                    // API would accept a `jws_issuer_key` pin with nothing to verify against, and
+                    // the operator would read a registration as protected when it is not.
+                    crate::a2a::config::validate_agent(name, &cfg)?;
+                    Ok(NamedDef::Agent(cfg))
+                }),
         }
     }
 
@@ -217,6 +258,10 @@ impl NamedMapSection {
                 }
             }
             NamedMapSection::Export => {}
+            // An agent is referenced from nowhere else in config: the catalogue is derived from
+            // the registry rather than named from it, and cross-plane reference is refused
+            // outright. So there is nothing to find here -- which is not the same as not looking.
+            NamedMapSection::Agents => {}
         }
         out
     }
@@ -234,6 +279,7 @@ impl NamedMapSection {
                 .get(name)
                 .and_then(|def| def.max_admin_scope.clone()),
             NamedMapSection::Export => None,
+            NamedMapSection::Agents => None,
         }
     }
 }
@@ -244,6 +290,7 @@ impl NamedMapSection {
 pub(crate) enum NamedDef {
     IdentityProvider(IdentityProviderCfg),
     Export(ExportDefCfg),
+    Agent(AgentDefCfg),
 }
 
 impl NamedDef {
@@ -256,6 +303,9 @@ impl NamedDef {
             }
             NamedDef::Export(cfg) => {
                 deploy.export.insert(name.to_string(), cfg);
+            }
+            NamedDef::Agent(cfg) => {
+                deploy.agents.agents.insert(name.to_string(), cfg);
             }
         }
     }

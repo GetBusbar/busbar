@@ -354,6 +354,11 @@ pub(crate) struct App {
     /// serving `GET /api/v1/admin/export[/{name}]`. The lowered runtime projection lives in the
     /// recorder / plugin-route table, never here.
     pub(crate) export_defs: crate::config::ExportDefs,
+    /// The EFFECTIVE `agents:` NAMED-DEFINITION map — THE A2A plane, serving
+    /// `GET /api/v1/admin/agents[/{name}]`. Operator INTENT only: everything that accumulates about
+    /// a registered agent (observed cards, the drift queue, anomaly counters, task rows) is store
+    /// state and is deliberately not reachable from a config snapshot.
+    pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,

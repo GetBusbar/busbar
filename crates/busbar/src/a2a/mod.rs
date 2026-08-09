@@ -33,6 +33,7 @@
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
+pub(crate) mod config;
 pub(crate) mod jws;
 pub(crate) mod pin;
 pub(crate) mod reverify;

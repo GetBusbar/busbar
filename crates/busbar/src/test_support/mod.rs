@@ -1099,6 +1099,7 @@ impl TestApp {
         // production's verbatim: whatever this table declares is what the router mounted.
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
         let app = std::sync::Arc::new(crate::state::App {
+            agent_defs: Default::default(),
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,

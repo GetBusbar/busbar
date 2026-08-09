@@ -3642,6 +3642,7 @@ pub(crate) fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
+        agent_defs: cfg.agent_defs.clone(),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),

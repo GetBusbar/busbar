@@ -96,6 +96,9 @@ fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) 
         max_admin_scope: cfg.max_admin_scope.clone(),
         token_configured: Some(cfg.token.is_some()),
         browser_login_configured: Some(cfg.browser_login.is_some()),
+        pin_mechanism: None,
+        fingerprint_pinned: None,
+        reverify_ttl: None,
         unparseable: None,
     }
 }
@@ -112,6 +115,40 @@ fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefVie
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
+        pin_mechanism: None,
+        fingerprint_pinned: None,
+        reverify_ttl: None,
+        unparseable: None,
+    }
+}
+
+/// Project one `agents:` DEFINITION onto the shared named-map view.
+///
+/// The backend `url:` is NOT projected. It is the real remote endpoint, this surface is reachable
+/// at read-only admin scope, and "which third party is behind this name" is exactly the fact the
+/// rewrite-through-busbar posture exists to keep on the server side. What IS projected is what an
+/// operator auditing trust needs and cannot get anywhere else: which root the entry is pinned to,
+/// whether a fingerprint has been approved yet, and how often it is re-checked.
+fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDefView {
+    NamedDefView {
+        name: name.to_string(),
+        module: String::new(),
+        settings_keys: Vec::new(),
+        max_admin_scope: None,
+        token_configured: None,
+        browser_login_configured: None,
+        pin_mechanism: Some(
+            serde_json::to_value(cfg.pin.mechanism)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ),
+        fingerprint_pinned: Some(cfg.pin.fingerprint.is_some()),
+        reverify_ttl: Some(
+            cfg.reverify_ttl
+                .clone()
+                .unwrap_or_else(|| crate::a2a::config::DEFAULT_REVERIFY_TTL.to_string()),
+        ),
         unparseable: None,
     }
 }
@@ -143,6 +180,9 @@ fn unparseable_def_view(
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
+        pin_mechanism: None,
+        fingerprint_pinned: None,
+        reverify_ttl: None,
         unparseable: Some(entry.error.clone()),
     }
 }
@@ -1235,6 +1275,13 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
+            NamedMapSection::Agents => self
+                .app
+                .agent_defs
+                .agents
+                .iter()
+                .map(|(name, cfg)| agent_def_view(name, cfg))
+                .collect(),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1270,6 +1317,12 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
+            NamedMapSection::Agents => self
+                .app
+                .agent_defs
+                .agents
+                .get(name)
+                .map(|cfg| agent_def_view(name, cfg)),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a

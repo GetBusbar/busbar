@@ -49,7 +49,11 @@ pub(crate) const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJEC
 /// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
 /// otherwise-ambiguous credential scheme to the single native header the caller's real client
 /// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+// `Serialize` as well as `Deserialize`: `NamedMapSection::entry_as_document` projects a named-map
+// entry BACK to a document so the overlay's per-entry merge has something to patch, and the A2A
+// plane's entries carry this. A one-way type would force that projection to be hand-written, which
+// is how a field that survives a merge untouched stops parsing back to the value it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UpstreamCreds {
     #[default]
