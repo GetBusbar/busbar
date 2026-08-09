@@ -175,6 +175,14 @@ jobs:
           SRC="${A2AHT_CONTROL_SRC:-$HOME/.a2aht/src}"
           # Port 41241 is the sample's own, and the sample path is the one pinned by
           # install-control.sh's clone of tag v1.1.2.
+          # THE GRPC ACKNOWLEDGEMENT, AND WHY IT IS NOT A SKIP. This control's card declares a GRPC
+          # interface, and this battery drives JSON-RPC and HTTP+JSON only. Left unstated that is a
+          # red -- `card.every_declared_binding_is_exercised` fails on purpose, because a suite that
+          # goes green having never touched the transport that ships is worse than no suite. The
+          # flag does not silence it; it records the gap as ACKNOWLEDGED, by name, in the report.
+          # It is also the exact gap the official TCK leg exists to cover: the TCK drives all three
+          # transports, which is why wiring it beat writing a gRPC driver of our own.
+          #
           # Started OUT OF BAND rather than through `--launch`, so its own stderr reaches the log.
           # A control that fails to boot must say WHY here; `--launch` swallows it and the job then
           # reports only "not reachable", which is true and useless.
@@ -199,6 +207,7 @@ jobs:
             --label "control:a2a-python" --tier pre-release \
             --known-deviations baselines/known-deviations-a2a-python.json \
             --role server \
+            --allow-undriven-bindings GRPC \
             --json reports/control-python.json --allow-red || rc=$?
           kill $CONTROL_PID 2>/dev/null || true
           echo "  (battery exit $rc; the verdict is the baseline comparison)"
