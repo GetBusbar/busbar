@@ -193,6 +193,13 @@ RULES = [
             # exclusions are the vendor error code (`GH013`) and the latency percentile (`P95`),
             # both of which are real technical tokens that wear the same shape.
             Pat(r"[(,;]\s*(?!P(?:50|95|99)\b|GH\d)[A-Z]{1,2}(?:\d{1,2}|-\d{3})\s*\)", flags=0),
+            # THE WORD `auditor` MAKES IT A CITATION, whatever the id looks like. The three patterns
+            # above all lean on the id SHAPE (`C6`, `R27`, `E-007`), and shape-matching has a tail:
+            # `auditor MCP-2 M` and `(auditor MCP-1 H9)` are audit findings cited exactly the same
+            # way, and both slip past every one of them. `auditor` followed by anything id-shaped
+            # needs no heuristic — the phrasing already says it is a reference to an audit the reader
+            # has never seen.
+            Pat(r"\bauditor\s+[A-Za-z]{1,4}[-\s]?\d", flags=re.I),
         ],
     ),
     Rule(
@@ -539,7 +546,11 @@ FIXTURES = {
     "audit-finding-id": (
         "/// `allowed_scopes` OMITTED = ALL scopes of every kind (C6).\n"
         "// MINT-TIME group resolution (self-service D2): a bound group must exist now.\n"
-        "// The assertion that would have caught D4 (a leaked temp on a pre-rename error).\n",
+        "// The assertion that would have caught D4 (a leaked temp on a pre-rename error).\n"
+        # Shape-matching has a tail: these two are audit findings cited identically and slipped
+        # past every shape pattern, because `MCP-2 M` and `MCP-1 H9` are not `C6`.
+        "// Auditor MCP-2 M is the finding, and this module is where it lands.\n"
+        "// The stdio child is net-new engine surface (auditor MCP-1 H9).\n",
         "/// `allowed_scopes` OMITTED = ALL scopes of every kind; an explicit `[]` = none.\n"
         "// The assertion that pins the leaked-temp case: a failed write leaves no `.tmp`.\n"
         "// Serves HTTP/2 (h2) and falls back to HTTP/1.1.\n"

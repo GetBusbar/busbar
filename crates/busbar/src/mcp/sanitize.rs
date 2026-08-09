@@ -6,8 +6,9 @@
 //! ## What this does
 //!
 //! It strips instruction-injection MARKUP — `<IMPORTANT>`, `<system>`, HTML-like tags — from three
-//! places, and all three are named deliberately, because the prior draft named only the first two
-//! (auditor MCP-1 H9):
+//! places. All three are named explicitly, and the third is the one that gets forgotten: it is easy
+//! to reach for the two surfaces a caller READS and to miss the ones an upstream SERVES back, even
+//! though they carry the same text by the same route:
 //!
 //! - tool and prompt DESCRIPTIONS, before they are shown or fed as context;
 //! - tool OUTPUTS, before results re-enter model context;

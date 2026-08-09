@@ -10,7 +10,8 @@
 //! `crates/busbar/src/proto/` is six STATELESS HTTP families over one shared `reqwest` pool. There
 //! is no process in any of them, nothing to crash, nothing to restart, and nothing to reap. A stdio
 //! MCP server is a child of this process with a pipe on each side of it, and every one of those
-//! properties is new. Auditor MCP-2 M is the finding, and this module is where it lands.
+//! properties is new. Treating a stdio server as
+//! "one more entry in an existing pattern" is therefore wrong in every respect that matters here.
 //!
 //! The correction that comes with it: **spawn is milliseconds, not sub-100µs.** Selection and
 //! dispatch carry SEPARATE budgets, and this is squarely on the dispatch side, which is explicitly

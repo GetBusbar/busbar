@@ -215,9 +215,9 @@ async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description()
     );
 }
 
-/// `prompts/get` and `resources/read` — the two markup-normalisation sites the prior design draft
-/// missed entirely (auditor MCP-1 H9), though a template and a resource body are exactly as
-/// injectable as a tool description. Both must come back stripped.
+/// `prompts/get` and `resources/read` — two markup-normalisation sites that are easy to
+/// overlook, because the obvious one is the tool description — yet a prompt template and a resource
+/// body are exactly as injectable, and arrive by the same route. Both must come back stripped.
 #[tokio::test]
 async fn prompts_and_resources_are_sanitised_on_the_way_out() {
     crate::metrics::init();
