@@ -33,9 +33,15 @@ name: MCP conformance
 #
 # This is a separate workflow rather than a job in ci.yml on purpose: the control leg builds a
 # 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
+#
+# `branches: ['**']` matches the sibling A2A conformance workflow and ci.yml. A workflow that only
+# runs on the promotion branches cannot be seen to work on the branch that introduces it, and during
+# 1.5.4 two work items were reported green from local runs and had never been CI-verified at all.
+# The control leg's third-party build is cached on its pin, so the expensive half is paid once per
+# pin rather than once per push.
 on:
   push:
-    branches: [main, dev, qa]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -73,6 +79,14 @@ jobs:
       # via corepack so the version is visible in the log when a build breaks.
       - name: Install pnpm
         run: npm install -g pnpm@10
+      # Keyed on the PIN, not on a lockfile hash: the checkout and its build are entirely a function
+      # of the commit the script pins, so the cache is correct by construction and a pin bump misses
+      # it on purpose. Without this the control leg builds a 53-package workspace on every push.
+      - name: Cache the pinned control peer
+        uses: actions/cache@v4
+        with:
+          path: .mcp-conformance/sdk
+          key: mcp-control-peer-${{ hashFiles('scripts/mcp-conformance.sh') }}
       - name: Judge the pinned reference SDK
         run: ./scripts/mcp-conformance.sh --official-control
       - name: Publish the control results
