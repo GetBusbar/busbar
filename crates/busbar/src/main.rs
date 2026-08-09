@@ -3707,6 +3707,7 @@ pub(crate) fn build_app_from_config(
         // and the config that produced it disagree.
         mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
         mcp_servers: Arc::new(cfg.tool_defs.clone()),
+        mcp_pool: Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),

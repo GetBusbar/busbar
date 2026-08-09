@@ -76,6 +76,9 @@ impl OutboundRequest {
     /// from the same fields the transport writes, so a field added to `OutboundRequest` without
     /// being added here fails `wire_tests::every_field_is_scanned` — a scan that silently stops
     /// covering a new field is the exact false green this rule exists to prevent.
+    /// Used by the tests that scan the whole wire for a leaked caller credential; the dispatch
+    /// path hands the body to the transport directly.
+    #[allow(dead_code)]
     pub(crate) fn wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(self.url.as_bytes());
@@ -123,6 +126,9 @@ pub(crate) fn tools_call(
 }
 
 /// Build a `tools/list` for one server.
+/// The CONNECT-path request. Nothing fetches a live tool list yet — that is the gap named in
+/// `client::catalogue`.
+#[allow(dead_code)]
 pub(crate) fn tools_list(
     url: &str,
     request_id: u64,
@@ -308,6 +314,8 @@ pub(crate) struct ServerRequestGrants {
 }
 
 impl ServerRequestGrants {
+    /// Read by the connect-path grant preview; the live gate reads the server plane's grants.
+    #[allow(dead_code)]
     pub(crate) fn allows(&self, ask: ServerAsk) -> bool {
         match ask {
             ServerAsk::Sampling => self.sampling,
@@ -319,6 +327,8 @@ impl ServerRequestGrants {
 
 /// Why busbar refused to satisfy an upstream's ask.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Reached only by the connect/refresh path, which has no verb yet.
+#[allow(dead_code)]
 pub(crate) enum AskRefusal {
     /// The server's registry entry carries no grant for this ask.
     Ungranted { server: String, ask: &'static str },
@@ -350,6 +360,8 @@ impl std::fmt::Display for AskRefusal {
 /// dispatch and not per connection — there is no connection-scoped state under this revision, and a
 /// counter that outlived a dispatch would be a session by another name.
 #[derive(Debug)]
+// Reached only by the connect/refresh path, which has no verb yet.
+#[allow(dead_code)]
 pub(crate) struct InputRequiredLoop {
     server: String,
     max_rounds: u32,
@@ -357,6 +369,8 @@ pub(crate) struct InputRequiredLoop {
 }
 
 impl InputRequiredLoop {
+    // Reached only by the connect/refresh path, which has no verb yet.
+    #[allow(dead_code)]
     pub(crate) fn new(server: &str, max_rounds: u32) -> Self {
         Self {
             server: server.to_string(),
@@ -370,6 +384,8 @@ impl InputRequiredLoop {
     /// `grants` is a PARAMETER rather than a field, and that is the re-check-every-round rule
     /// written into a signature: the grant is re-derived from the live registry snapshot each time,
     /// so a revocation bites on the next retry, not at the end of a sequence that has no end.
+    // Reached only by the connect/refresh path, which has no verb yet.
+    #[allow(dead_code)]
     pub(crate) fn may_satisfy(
         &mut self,
         ask: ServerAsk,
@@ -394,6 +410,8 @@ impl InputRequiredLoop {
     /// Rounds actually satisfied. Read by the metering call site, because each round has to be
     /// attributed and metered like any other request, and a count nobody reads is a count nobody
     /// meters.
+    // Read by the connect-path preview; the live loop bound lives on the server plane.
+    #[allow(dead_code)]
     pub(crate) fn rounds(&self) -> u32 {
         self.rounds
     }

@@ -218,6 +218,9 @@ pub(crate) struct ArgScan {
 
 impl ArgScan {
     /// Total values that were actually put through the guard.
+    /// Not read on the dispatch path: `mcp::upstream` acts on the REFUSAL, and the counts exist
+    /// for the floor assertions that stop a walker which visits nothing from passing.
+    #[allow(dead_code)]
     pub(crate) fn judged(&self) -> usize {
         self.declared_judged + self.undeclared_judged
     }

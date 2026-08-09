@@ -77,6 +77,8 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         transport: None,
         aud: None,
         grants: ServerRequestGrants::default(),
+        allow_private: false,
+        token_exchange: None,
         max_input_required_rounds: None,
         upstream_credentials: None,
         hooks: Vec::new(),
@@ -136,6 +138,7 @@ async fn call(
         actor: "test-principal",
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
+        .await
         .unwrap_or_else(|| panic!("`{method}` must be in the method table"));
     let status = response.status().as_u16();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -368,59 +371,19 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
             actor: "t",
         };
         assert!(
-            crate::mcp::method::dispatch(&ctx, m, Some(&serde_json::json!({})), None).is_some(),
+            crate::mcp::method::dispatch(&ctx, m, Some(&serde_json::json!({})), None)
+                .await
+                .is_some(),
             "`{m}` is advertised but not implemented"
         );
     }
 }
 
-/// `tools/call` runs every governance check and then fails at the ROUND TRIP, because the client
-/// direction is not in this build. The refusal must be busbar-attributed and must say which unit is
-/// missing — a generic failure here is what would let this gap read as a network blip for a year.
-#[tokio::test]
-async fn tools_call_passes_every_governance_check_and_then_fails_honestly_at_the_upstream() {
-    crate::metrics::init();
-    let app = two_server_app();
-    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
-    let (status, body) = call(
-        &app,
-        &g,
-        "tools/call",
-        serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } }),
-    )
-    .await;
-    assert_eq!(status, 403);
-    assert_eq!(
-        body.pointer("/error/data/reason").unwrap(),
-        "upstream_failed",
-        "the call was refused by the MISSING UPSTREAM, not by a governance check — every check \
-         above it passed. Body: {body}"
-    );
-    let msg = body.pointer("/error/message").unwrap().as_str().unwrap();
-    assert!(
-        msg.contains("client direction"),
-        "the refusal must name the missing unit: {msg}"
-    );
-}
-
-/// The same call from an ungranted caller is refused BEFORE the upstream, and the reason says so.
-/// Paired with the test above so the two are distinguishable: without the pair, "it was refused"
-/// would prove nothing about which check refused it.
-#[tokio::test]
-async fn tools_call_is_refused_by_the_grant_before_it_reaches_the_upstream() {
-    crate::metrics::init();
-    let app = two_server_app();
-    let none = gov_with_scopes(&[]);
-    let (status, body) = call(
-        &app,
-        &none,
-        "tools/call",
-        serde_json::json!({ "name": "fs_read" }),
-    )
-    .await;
-    assert_eq!(status, 404);
-    assert_eq!(body.pointer("/error/data/reason").unwrap(), "not_granted");
-}
+// THE THREE-ARM PAIRING for `tools/call` — refused BEFORE the upstream, refused AFTER it, and
+// dispatched THROUGH it — lives in `tests/upstream_join_tests.rs`, beside the module that owns the
+// upstream leg. It moved there when the leg landed: the arms are only distinguishable against a REAL
+// upstream that can be made reachable or unreachable at will, and that needs a fixture this file has
+// no other use for.
 
 /// GOVERNANCE DISABLED is not a special MCP case: with no key there is no grant to check, and the
 /// deployment still serves — the same posture `pool_allowed` takes on the LLM plane.
@@ -554,9 +517,11 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         serde_json::json!({ "name": "fs_read", "arguments": {} }),
     )
     .await;
-    // The call is refused at the ROUND TRIP (no client direction). Everything before it ran, which
-    // is what this test is here to show — validate, then dispatch, then audit the decision actually
-    // reached is the required ordering and the shape a real dispatch has.
+    // The call is refused at the ROUND TRIP: `fs.internal` does not resolve, so the dispatch-time
+    // SSRF check refuses the destination. Everything BEFORE the round trip ran, and that is what
+    // this test is here to show — the charge and the meter happen ahead of the call, so a dispatch
+    // that never reaches an upstream is still charged and still audited. Charging afterwards would
+    // let a runaway loop spend past the cap by exactly one unbounded loop.
     assert_eq!(status, 403);
     assert_eq!(
         body.pointer("/error/data/reason").unwrap(),

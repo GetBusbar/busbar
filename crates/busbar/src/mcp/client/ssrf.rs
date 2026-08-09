@@ -141,6 +141,8 @@ impl PinnedTarget {
         &self.host
     }
 
+    // Reached only by the connect/refresh path, which has no verb yet.
+    #[allow(dead_code)]
     pub(crate) fn port(&self) -> u16 {
         self.port
     }
@@ -150,6 +152,8 @@ impl PinnedTarget {
         self.addr
     }
 
+    // Reached only by the connect/refresh path, which has no verb yet.
+    #[allow(dead_code)]
     pub(crate) fn is_https(&self) -> bool {
         self.https
     }

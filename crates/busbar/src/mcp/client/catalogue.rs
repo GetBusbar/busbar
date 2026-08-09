@@ -44,6 +44,24 @@
 //! than per server, deliberately: a coarser generation can only cause a spurious refusal and a retry,
 //! where a per-server one gives every future caller a chance to pick the wrong counter.
 
+// ── NO PRODUCTION CALLER YET, AND THAT IS A GAP WORTH SEEING ────────────────────────────────────
+//
+// `tools/call` reaches an upstream through `mcp::upstream`, which composes this module's PARTS
+// directly: `egress` (the grant gate and credential plan), `identity` (the bound name), `jsonrpc`,
+// `pool`, `ssrf`, `transport`, `argguard`. Those all have production callers and are on the
+// dispatch path.
+//
+// THIS FILE IS THE DRIFT DETECTOR, and it is not. The live gate in `mcp::catalogue` compares an
+// approved digest against `ToolEntry::dispatch_digest()`, which is the schema hash the OPERATOR
+// WROTE IN CONFIG — so it proves the served tool matches what was approved, and cannot by
+// construction notice that the UPSTREAM changed its schema underneath. Detecting that needs a live
+// `tools/list` fetched and compared, which is the `connect`/refresh path, which does not exist yet.
+//
+// So the rug-pull defence is built and adversarially tested here, and is NOT yet defending the hot
+// path. Inventing a caller to satisfy the linter would hide precisely that. The allow is scoped to
+// this module alone, so anything else in `client/` losing its caller still breaks the build.
+#![allow(dead_code)]
+
 use super::identity::{BoundIdentity, ServerId, ToolKey};
 use crate::trust::{Approval, Observation, PinnedArtifact, Sighting, TrustState};
 use std::collections::BTreeMap;

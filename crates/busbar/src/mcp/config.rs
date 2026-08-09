@@ -242,6 +242,24 @@ pub(crate) struct McpServerDefCfg {
     /// The server-initiated request grants. Absent ⇒ all denied.
     #[serde(default)]
     pub(crate) grants: ServerRequestGrants,
+    /// Whether this ONE upstream may live on a private / loopback / CGNAT address.
+    ///
+    /// Per server rather than plane-wide, because the answer genuinely differs per registration: an
+    /// MCP server on the cluster's internal network is the normal case, and a global switch would
+    /// extend that one decision to every other server at once. Cloud-metadata addresses stay refused
+    /// whatever this says — an operator saying "this server is internal" has said nothing about IMDS.
+    /// Absent ⇒ `false`, which is the fail-closed posture.
+    #[serde(default)]
+    pub(crate) allow_private: bool,
+    /// RFC 8693 token exchange for this upstream: how busbar's OWN subject token is exchanged for a
+    /// per-backend, audience-bound, DOWN-SCOPED access token.
+    ///
+    /// Absent ⇒ no credential is sent at all (a public or network-authenticated upstream). What the
+    /// exchange asks FOR is deliberately not written here: the requested scope is DERIVED from the
+    /// inbound caller's own grant at dispatch time, because a configured static scope list would be a
+    /// second place the authority is written down and the two would drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_exchange: Option<TokenExchangeCfg>,
     /// The cap on input-required rounds per logical dispatch. Absent ⇒
     /// [`DEFAULT_MAX_INPUT_REQUIRED_ROUNDS`]. `0` is legal and means "never satisfy one".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +275,43 @@ pub(crate) struct McpServerDefCfg {
     /// section-level `tools.hooks:` list (LIST ⇒ ADDITIVE).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) hooks: Vec<String>,
+}
+
+/// `tools.<server>.token_exchange` — the RFC 8693 exchange busbar performs before it calls this
+/// upstream.
+///
+/// Three fields and no fourth. In particular there is NO `scope:` here, and that absence is the
+/// design: the scope busbar asks for is derived from the INBOUND caller's grant on this server (see
+/// `crate::mcp::client::egress::downscope`). A configured scope list would be a second, independent
+/// statement of what a caller may reach, and the moment the two disagree the wider one wins — which
+/// is exactly the transitive confused deputy this plane exists to close.
+///
+/// The RFC 8707 `resource` is `tools.<server>.aud`, which already exists: the exchanged token is
+/// audience-bound to this backend so it cannot be spent at another.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TokenExchangeCfg {
+    /// The operator's authorization server token endpoint. Vetted at boot for scheme, so the failure
+    /// lands on the operator who wrote it rather than on a tool call an hour later.
+    pub(crate) token_url: String,
+    /// BUSBAR'S OWN token — the SUBJECT of the exchange, never the caller's. A `SecretRef` rather
+    /// than an inline string so the value follows the same resolution path (`env` / `file` / a
+    /// trusted secret plugin) every other credential on this engine does.
+    pub(crate) subject_token: crate::config::SecretRef,
+    /// RFC 8693 §2.1 `subject_token_type`. Defaulted to an access token, which is what busbar's own
+    /// ambient credential is.
+    #[serde(default = "default_subject_token_type")]
+    pub(crate) subject_token_type: String,
+}
+
+/// `Eq` is asserted rather than derived because [`crate::config::SecretRef`] derives only
+/// `PartialEq`. The relation is still a true equivalence — every field compares structurally and
+/// none of them is a float — and the snapshot types this is embedded in (`ToolsCfg`, `ServerEntry`,
+/// `Catalogue`) require `Eq` so a config apply can be compared for a no-op.
+impl Eq for TokenExchangeCfg {}
+
+fn default_subject_token_type() -> String {
+    "urn:ietf:params:oauth:token-type:access_token".to_string()
 }
 
 /// `tools.<server>.transport` — the MCP transport generation.
@@ -287,12 +342,13 @@ pub(crate) struct ToolsCfg {
 impl ToolsCfg {
     // The two combine rules below have NO PRODUCTION CALLER YET, and that is a statement about what
     // this release builds rather than about the rules. Hooks attach on the DISPATCH path (owner
-    // ruling 2 puts them nowhere else — the catalogue is authorization, not routing), and the
-    // dispatch path's upstream leg is the client direction, which is not in this build. They are
-    // written and pinned here because the ADDITIVE-list / OVERRIDE-scalar combine is a rule of the
-    // config grammar itself, and a grammar rule discovered at the moment its first caller lands is
-    // a grammar rule
-    // decided by that caller.
+    // ruling 2 puts them nowhere else — the catalogue is authorization, not routing) and no hook
+    // runs on it yet; the effective upstream-credential MODE is read off the catalogue snapshot's
+    // `UpstreamPosture` rather than through `effective_upstream_credentials`, because the snapshot is
+    // what dispatch holds and reaching back into `ToolsCfg` from a request path would be a second
+    // reader of the operator's intent. They are written and pinned here because the ADDITIVE-list /
+    // OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule discovered
+    // at the moment its first caller lands is a grammar rule decided by that caller.
     #![cfg_attr(not(test), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
@@ -471,6 +527,45 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     for uri in def.resources_allow.keys() {
         if uri.trim().is_empty() {
             return Err(format!("{at}: `resources_allow:` has an empty URI key"));
+        }
+    }
+
+    if let Some(tx) = &def.token_exchange {
+        // The same scheme rule the `url:` gets, and for a stronger reason: this endpoint receives
+        // busbar's OWN subject token, so plaintext to a public host would put busbar's ambient
+        // credential on the wire in the clear. Private/loopback is exempted only where the operator
+        // has said this deployment's estate is internal.
+        let private_ok = def.allow_private && tx.token_url.starts_with("http://");
+        if !(tx.token_url.starts_with("https://") || private_ok) {
+            return Err(format!(
+                "{at}: `token_exchange.token_url:` must be https (it receives busbar's own subject \
+                 token); plaintext http is permitted only on a registration that also sets \
+                 `allow_private: true`. Got `{}`.",
+                tx.token_url
+            ));
+        }
+        // An exchange mints BUSBAR's credential. `passthrough` says the CALLER supplies the
+        // credential. Configuring both is an operator asking for two different answers to one
+        // question, and silently preferring either is how a deputy is created.
+        if matches!(
+            def.upstream_credentials,
+            Some(crate::auth::UpstreamCreds::Passthrough)
+        ) {
+            return Err(format!(
+                "{at}: `token_exchange:` mints BUSBAR's own down-scoped credential, and \
+                 `upstream_credentials: passthrough` says the CALLER supplies one. Set one or the \
+                 other."
+            ));
+        }
+        // RFC 8707 is not optional on an exchange: without a resource indicator the issued token is
+        // spendable at any backend the AS serves, which is the audience-confusion the exchange
+        // exists to prevent.
+        if def.aud.is_none() {
+            return Err(format!(
+                "{at}: `token_exchange:` requires `aud:` — the RFC 8707 resource indicator the \
+                 exchanged token is audience-bound to. A token minted for one upstream must not be \
+                 spendable at another."
+            ));
         }
     }
 

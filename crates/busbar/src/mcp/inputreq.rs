@@ -66,12 +66,10 @@ pub(crate) struct Ask {
 }
 
 /// What one upstream round returned.
-// `Done` and `InputRequired` have no production CONSTRUCTOR in this build, because the only thing
-// that could construct one is the upstream reader, and the client direction is not built. The gate,
-// the bound and the metering they feed are all real and all tested against a deliberately hostile
-// fake upstream — which is the only way to test a gate against an adversary anyway, since a
-// cooperative real upstream never exercises the refusing arms.
-#[cfg_attr(not(test), allow(dead_code))]
+// Both arms are constructed in production by `super::upstream::call`, which reads the upstream's
+// JSON-RPC answer. They are ALSO driven from a deliberately hostile fake upstream in the tests,
+// which is the only way to exercise the refusing arms at all — a cooperative real upstream never
+// returns an ask it has no grant for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Round {
     /// A finished result. This is the only thing that ever reaches the caller.
@@ -191,8 +189,10 @@ pub(crate) struct RoundRecord {
 ///
 /// The four closures are the seams, and each one is a closure for a reason:
 ///
-/// - `call` is the upstream leg. Taking it as a parameter is what lets the gate, the bound and the
-///   metering be tested against a deliberately hostile upstream without a network.
+/// - `call` is the upstream leg — in production, `super::upstream::call`, which plans the outbound
+///   credential under the INBOUND caller's grant and sends the request. Taking it as a parameter is
+///   what lets the gate, the bound and the metering be tested against a deliberately hostile
+///   upstream without a network.
 /// - `grants` RE-READS the live registry each round. A value would be a grant read once, and under
 ///   on-demand negotiation a check made once and cached is not a check at all.
 /// - `satisfy` performs the granted ask — for `sampling`, a real LLM request on busbar's pools and
@@ -204,14 +204,26 @@ pub(crate) struct RoundRecord {
 ///   rather than a round that happens and is billed afterwards. Charging after the fact would let a
 ///   hostile upstream spend past the cap by exactly the amount of one unbounded loop, which is the
 ///   entire failure mode.
-pub(crate) fn drive(
+///
+/// `call` is ASYNC and the others are not, and that split is the honest one: the upstream leg is the
+/// only step here that reaches a network. Making the whole driver async would have said the gate,
+/// the bound and the charge were I/O too, and a reader would then have to check whether any of them
+/// could be awaited past — which is exactly the kind of question a per-round check must not raise.
+/// The satisfaction is passed BY VALUE rather than by reference so the returned future borrows
+/// nothing from the loop's own state, which is what keeps `call` a plain `FnMut` rather than
+/// something only a boxed, higher-ranked signature could express.
+pub(crate) async fn drive<C, F>(
     server: &str,
     cap: u32,
-    mut call: impl FnMut(u32, Option<&serde_json::Value>) -> Result<Round, String>,
+    mut call: C,
     grants: impl Fn() -> super::config::ServerRequestGrants,
     mut satisfy: impl FnMut(&Ask) -> Result<serde_json::Value, String>,
     mut charge: impl FnMut(&RoundRecord) -> Result<(), String>,
-) -> Outcome {
+) -> Outcome
+where
+    C: FnMut(u32, Option<serde_json::Value>) -> F,
+    F: std::future::Future<Output = Result<Round, String>>,
+{
     let mut round: u32 = 0;
     let mut satisfaction: Option<serde_json::Value> = None;
     let mut satisfied_kind: Option<String> = None;
@@ -229,7 +241,7 @@ pub(crate) fn drive(
                 reason,
             });
         }
-        let result = match call(round, satisfaction.as_ref()) {
+        let result = match call(round, satisfaction.take()).await {
             Ok(r) => r,
             Err(e) => return Outcome::Refused(Refusal::UpstreamFailed(e)),
         };
