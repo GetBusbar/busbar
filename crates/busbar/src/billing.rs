@@ -59,15 +59,5 @@ pub(crate) enum Billing {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn billing_variants_are_distinct() {
-        assert_ne!(Billing::Flat, Billing::Characters { count: 0 });
-        assert_ne!(
-            Billing::Duration { seconds: 1.0 },
-            Billing::Duration { seconds: 2.0 }
-        );
-    }
-}
+#[path = "tests/billing_tests.rs"]
+mod tests;

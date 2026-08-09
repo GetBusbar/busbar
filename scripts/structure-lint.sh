@@ -504,7 +504,6 @@ done < <(find crates -type d)
 # list exists to make visible and trackable, not to hide. Shrinking this list is the only permitted
 # edit to it — a PR that ADDS an entry here for NEW code is not a fix, it's evading the check.
 GRANDFATHERED_OVERSIZED="
-crates/busbar/src/admin/v1/service.rs
 crates/busbar/src/admin/v1/json/handlers.rs
 crates/busbar/src/config/mod.rs
 crates/busbar/src/proxy/engine/mod.rs
@@ -589,7 +588,7 @@ CHOKE_POINTS=(
   # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
   #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
   #         0600 mode) its author forgot.
-  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,crates/busbar/src/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,crates/busbar/src/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.

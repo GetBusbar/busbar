@@ -257,20 +257,5 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constant_time_eq_basics() {
-        assert!(constant_time_eq("secret", "secret"));
-        assert!(!constant_time_eq("short", "longer"));
-        assert!(!constant_time_eq("secret1", "secret2"));
-    }
-
-    #[test]
-    fn sha256_hex_is_lowercase_64() {
-        let h = sha256_hex(b"busbar");
-        assert_eq!(h.len(), 64);
-        assert_eq!(h, h.to_lowercase());
-    }
-}
+#[path = "tests/auth_tests.rs"]
+mod tests;
