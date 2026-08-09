@@ -35,9 +35,37 @@ name: CI images mirror
 #   1. Land and run THIS workflow. It creates the packages and proves the bytes arrived.
 #   2. ONE-TIME OWNER ACTION: flip both packages to public. There is no REST endpoint for container
 #      package visibility -- it is a UI action under the package's own settings -- so this cannot be
-#      scripted with any token. The `anonymous pull` step below FAILS until it is done, on purpose:
-#      the incomplete state is loud rather than silent.
+#      scripted with any token.
 #   3. Only then repoint `ci.yml`'s service containers at the mirrors.
+#
+# AND THE ANONYMOUS CHECK ARMS ITSELF AT STEP 3, RATHER THAN STANDING RED THROUGH STEP 2.
+#
+# An earlier draft of this file failed the anonymous-pull step from its very first run, on the
+# grounds that a private package is an incomplete state and incomplete states should be loud. The
+# reasoning was wrong, and the rule it broke is absolute here: "nothing should ever be released red",
+# "or ignored". A KNOWN, EXPECTED red is the worst kind, because it trains everyone to read a red X
+# on this workflow as normal -- and then the next red, a mirror that genuinely did not land or a
+# package flipped back to private, looks exactly like the one everybody was told to expect. A good
+# reason for a standing red does not make it a different thing.
+#
+# The distinguishing fact is whether anything CONSUMES the mirrors, and it is derived from the tree
+# by `scripts/ci-images.py --consumer-state` rather than from a flag somebody remembers to set:
+#
+#   * While `ci.yml` still pulls from Docker Hub, the packages being private breaks NOTHING, because
+#     nothing consumes them. The check reports the outstanding flip as a NOTICE and the job is
+#     GREEN. That is honest: at that moment the repository is in a correct state with a known next
+#     action, and green is what a correct state should look like.
+#   * The moment `ci.yml` is repointed, a private package genuinely does break CI -- including the
+#     fork PRs the mirror exists to protect -- and the check becomes a hard failure with no
+#     tolerance.
+#
+# So the guard arms itself AS A CONSEQUENCE of the consumer moving. There is no window in which a
+# red on this workflow means "expected".
+#
+# THE NOTICE CANNOT BECOME PERMANENT. An indefinite notice is just a red with better manners. If
+# `ci.yml` is still on Docker Hub GRACE_DAYS after this workflow first landed, the notice turns into
+# a failure: at that point the mirror is unfinished work that has stopped being tracked, which is a
+# real defect even though no image is broken.
 #
 # Until step 3, this workflow changes nothing about how CI runs. It is additive and safe to land.
 on:
@@ -77,8 +105,17 @@ jobs:
     name: mirror the pinned CI service images into GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # How long the "ci.yml has not been repointed yet" NOTICE may stand before it becomes a
+      # failure. Long enough that the one-time visibility flip is not a fire drill, short enough
+      # that unfinished work cannot quietly become permanent.
+      GRACE_DAYS: "30"
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so the grace window can be measured from the commit that ADDED this
+          # workflow. Deriving it from git rather than from a hardcoded date means it cannot drift.
+          fetch-depth: 0
 
       # DERIVED, NEVER RESTATED. scripts/ci-images.py parses the pins out of ci.yml and release.yml
       # and asserts the two agree, so this workflow holds no copy of a digest. A third copy of the
@@ -190,53 +227,81 @@ jobs:
       # THE ASSERTION THE WHOLE DESIGN RESTS ON, AND IT BELONGS IN CI RATHER THAN IN SOMEBODY'S SHELL.
       #
       # The mirror is only useful if a fork PR -- which has NO secrets -- can pull it. That is a
-      # property of the package's VISIBILITY, which is set in the GitHub UI and can be changed by a
-      # human at any time, in either direction, with nothing in git recording it. Checking it once by
-      # hand proves it was true once.
-      #
-      # Without this step, the first symptom of a package being private is a broken CI run on a fork
+      # property of the package's VISIBILITY, a UI setting a human can change at any time, in either
+      # direction, with nothing in git recording it. Checking it once by hand proves it was true
+      # once. Without this step the first symptom of a private package is a broken CI run on a fork
       # PR from an outside contributor: the worst possible place to discover it, on somebody's first
       # interaction with the project.
       #
-      # THIS STEP IS EXPECTED TO FAIL ON THE FIRST RUN, AND THAT IS THE POINT. The packages are
-      # created by the step above and GHCR makes new packages PRIVATE by default, so until the
-      # one-time visibility flip this goes red and names the exact action. The incomplete state is
-      # loud instead of silent, and the same red is what will catch someone flipping a package back
-      # to private later, or adding a new mirrored image and leaving it private.
+      # NOTICE OR FAILURE, DECIDED BY WHETHER ANYTHING CONSUMES THE MIRRORS. See the long note in
+      # this file's header for why a known-expected red is refused outright. In short: while
+      # `ci.yml` still pulls from Docker Hub a private package breaks nothing, so this reports the
+      # outstanding flip and stays GREEN; the moment `ci.yml` is repointed it becomes a hard
+      # failure. The condition is derived from the tree, so the guard arms itself as a consequence
+      # of the consumer moving rather than because someone remembered to flip a switch.
       #
       # NO CREDENTIALS ANYWHERE IN THIS STEP, DELIBERATELY. `docker/login-action` above wrote
       # credentials into the runner's docker config, so `docker pull` here would succeed as the
       # authenticated actor and prove nothing about what an anonymous client sees. This talks to the
-      # Distribution API directly with a token fetched anonymously, which is exactly what a fork PR's
-      # runner does.
-      - name: Assert each mirror is pullable with NO credentials (what a fork PR gets)
+      # Distribution API directly with a token fetched anonymously, which is exactly what a fork
+      # PR's runner does.
+      - name: Anonymous pullability (notice until ci.yml consumes the mirrors, hard failure after)
         env:
           IMAGES: ${{ steps.images.outputs.json }}
         run: |
           set -uo pipefail
-          fail=0
-          echo "$IMAGES" | python3 -c 'import json,sys;[print(i["mirror_repo"], i["tag"], i["mirror"]) for i in json.load(sys.stdin)]' \
-          | while read -r repo tag ref; do
-              tok="$(curl -fsS --max-time 30 "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" \
-                     | jq -r '.token // empty' 2>/dev/null || true)"
-              if [ -z "${tok:-}" ]; then
-                echo "::error::ANONYMOUS PULL REFUSED: ghcr.io would not even issue an anonymous pull token for ${repo}, which means the package is PRIVATE. A fork PR has no secrets and would fail to start its service container. ONE-TIME FIX (UI only, there is no REST endpoint for container package visibility): https://github.com/orgs/GetBusbar/packages/container/${repo##*/}/settings -> Danger Zone -> Change visibility -> Public."
-                echo fail > /tmp/anon-fail
-                continue
-              fi
+
+          state="$(python3 scripts/ci-images.py --consumer-state)"
+          echo "ci.yml service containers currently pull from: ${state}"
+
+          # The grace clock runs from the commit that ADDED this workflow, so an unfinished mirror
+          # cannot sit behind a permanent notice. Derived from git rather than hardcoded.
+          added="$(git log --diff-filter=A --format=%aI -- .github/workflows/ci-images-mirror.yml | tail -1)"
+          if [ -n "${added:-}" ]; then
+            age_days=$(( ( $(date -u +%s) - $(date -u -d "$added" +%s 2>/dev/null || echo "$(date -u +%s)") ) / 86400 ))
+          else
+            age_days=0
+          fi
+          echo "this workflow first landed ${added:-<unknown>} (${age_days} day(s) ago); grace is ${GRACE_DAYS} day(s)"
+
+          rc=0
+          while read -r repo tag ref; do
+            tok="$(curl -fsS --max-time 30 "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" \
+                   | jq -r '.token // empty' 2>/dev/null || true)"
+            code=000
+            if [ -n "${tok:-}" ]; then
               code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
                 -H "Authorization: Bearer ${tok}" \
                 -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
                 "https://ghcr.io/v2/${repo}/manifests/${tag}" || echo 000)"
-              if [ "$code" = "200" ]; then
-                echo "PASS: ${ref} is pullable with no credentials (anonymous HEAD -> 200)"
-              else
-                echo "::error::ANONYMOUS PULL FAILED for ${ref}: anonymous HEAD returned HTTP ${code}. A fork PR would not be able to start this service container. ONE-TIME FIX (UI only): https://github.com/orgs/GetBusbar/packages/container/${repo##*/}/settings -> Danger Zone -> Change visibility -> Public."
-                echo fail > /tmp/anon-fail
-              fi
-            done
-          if [ -f /tmp/anon-fail ]; then
-            echo "::error::The mirror exists but is not yet usable by an unauthenticated puller. Do NOT repoint ci.yml until this step is green: doing so would break every fork PR, which is the exact breakage the mirror exists to prevent."
+            fi
+            if [ "$code" = "200" ]; then
+              echo "PASS: ${ref} is pullable with no credentials (anonymous HEAD -> 200)"
+              continue
+            fi
+            why="anonymous HEAD returned HTTP ${code}"
+            [ -n "${tok:-}" ] || why="ghcr.io would not issue an anonymous pull token, so the package is PRIVATE"
+            fix="ONE-TIME FIX (UI only; there is no REST endpoint for container package visibility): https://github.com/orgs/GetBusbar/packages/container/${repo##*/}/settings -> Danger Zone -> Change visibility -> Public."
+            if [ "$state" = "mirrored" ]; then
+              echo "::error::ANONYMOUS PULL FAILED for ${ref}: ${why}. ci.yml PULLS THIS IMAGE, so every fork PR is currently unable to start its service container. ${fix}"
+              rc=1
+            elif [ "$age_days" -gt "${GRACE_DAYS}" ]; then
+              echo "::error::${ref} has been un-flipped for ${age_days} days, past the ${GRACE_DAYS}-day grace window: ${why}. Nothing is broken yet because ci.yml still pulls from Docker Hub, but the mirror is unfinished work that has stopped being tracked, and an indefinite notice is just a red with better manners. Either complete it or delete the mirror. ${fix}"
+              rc=1
+            else
+              echo "NOTICE: ${ref} is not yet anonymously pullable (${why})."
+              echo "        Nothing is broken: ci.yml still pulls from Docker Hub, so no job consumes this image."
+              echo "        ${fix}"
+              echo "        STEP 3 (repointing ci.yml) IS BLOCKED until this reports PASS."
+              echo "::notice::${ref} awaits the one-time visibility flip. Not a failure: nothing consumes it yet. ${fix}"
+            fi
+          done < <(echo "$IMAGES" | python3 -c 'import json,sys;[print(i["mirror_repo"], i["tag"], i["mirror"]) for i in json.load(sys.stdin)]')
+
+          if [ "$rc" != 0 ]; then
             exit 1
           fi
-          echo "All mirrors are anonymously pullable. ci.yml may now be repointed."
+          if [ "$state" = "mirrored" ]; then
+            echo "All mirrors are anonymously pullable and ci.yml consumes them. The mirror is complete."
+          else
+            echo "Mirror created. ci.yml still pulls from Docker Hub, which is the correct state until the visibility flip."
+          fi

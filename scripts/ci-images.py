@@ -64,6 +64,32 @@ def _mirror_name(repo: str) -> str:
     return "ci-" + repo.rsplit("/", 1)[-1]
 
 
+def _is_mirror(repo: str) -> bool:
+    """Is this ref already one of OUR mirrors, rather than an upstream to be mirrored?"""
+    return repo.startswith(MIRROR_NS.split("//")[-1] + "/ci-") or repo.startswith("ghcr.io/getbusbar/ci-")
+
+
+def consumer_state(root: str) -> str:
+    """Has ci.yml been repointed at the mirrors yet?
+
+    DERIVED FROM THE TREE, NOT FROM A FLAG SOMEBODY SETS. This is what arms the anonymous-pull
+    assertion in ci-images-mirror.yml, and a hand-maintained switch for that would be one more thing
+    to forget in exactly the state where forgetting it is expensive. Reading the consumer's own
+    `image:` lines means the guard arms itself AS A CONSEQUENCE of the consumer moving, which is the
+    same "consumer moves last, on proof" ordering the release promote uses.
+
+    Returns 'mirrored' once ci.yml pulls its service containers from GHCR, else 'upstream'.
+    """
+    path = os.path.join(root, WORKFLOWS, "ci.yml")
+    if not os.path.exists(path):
+        return "upstream"
+    text = open(path, encoding="utf-8").read()
+    for m in ANY_IMAGE.finditer(text):
+        if _is_mirror(m.group("ref").split(":")[0].split("@")[0]):
+            return "mirrored"
+    return "upstream"
+
+
 def collect(root: str):
     """Return (images, problems). `images` is one dict per distinct pinned image."""
     problems: list[str] = []
@@ -92,42 +118,84 @@ def collect(root: str):
                     "caused by a database nobody in this repository changed." % (name, ref)
                 )
 
-    present = [f for f in SOURCES if f in per_file]
-    if len(present) == len(SOURCES):
-        a, b = per_file[SOURCES[0]], per_file[SOURCES[1]]
-        for key in sorted(set(a) | set(b)):
-            if key not in a or key not in b:
-                missing = SOURCES[0] if key not in a else SOURCES[1]
+    # -- AGREEMENT, EXPRESSED OVER LOGICAL IMAGES RATHER THAN LITERAL REFS ---------------------
+    #
+    # ci.yml's `check` and release.yml's `gate` run the identical test command, so they must run it
+    # against identical bytes. Comparing the literal `image:` strings expresses that only while both
+    # files name the same registry. After step 3 ci.yml says `ghcr.io/getbusbar/ci-postgres:16` and
+    # release.yml still says `postgres:16`, and a literal comparison then finds no shared key and
+    # QUIETLY STOPS CHECKING -- the gate that stopped gating.
+    #
+    # So each file is reduced to an EFFECTIVE DIGEST per LOGICAL image ("postgres:16"), reached
+    # either directly or through its mirror, and the invariant is stated over that. It holds
+    # identically before, during and after the transition.
+    upstream_repos = {}          # mirror short-name -> upstream repo, learned from any upstream pin
+    for pinned in per_file.values():
+        for key in pinned:
+            repo = key.rsplit(":", 1)[0]
+            if not _is_mirror(repo):
+                upstream_repos[_mirror_name(repo)] = repo
+
+    def logical(key):
+        """`postgres:16` -> ('postgres:16', False); `ghcr.io/.../ci-postgres:16` -> ('postgres:16', True)."""
+        repo, _, tag = key.rpartition(":")
+        if not _is_mirror(repo):
+            return "%s:%s" % (repo, tag), False
+        upstream = upstream_repos.get(repo.rsplit("/", 1)[-1])
+        return (("%s:%s" % (upstream, tag)) if upstream else None), True
+
+    effective = {}               # file -> {logical key -> (digest, via_mirror)}
+    for fname, pinned in per_file.items():
+        eff = {}
+        for key, digest in pinned.items():
+            lk, via = logical(key)
+            if lk is None:
                 problems.append(
-                    "`%s` is pinned in one workflow but absent from %s. ci.yml's `check` and "
-                    "release.yml's `gate` run the identical test command and must run it against "
-                    "the identical services." % (key, missing)
+                    "%s pins mirrored image `%s`, but no workflow pins the upstream it mirrors, so "
+                    "nothing proves it carries the bytes the release gate runs against."
+                    % (fname, key)
                 )
-            elif a[key] != b[key]:
+                continue
+            eff[lk] = (digest, via)
+        effective[fname] = eff
+
+    if len(per_file) == len(SOURCES):
+        a, b = effective[SOURCES[0]], effective[SOURCES[1]]
+        for lk in sorted(set(a) | set(b)):
+            if lk not in a or lk not in b:
+                missing = SOURCES[0] if lk not in a else SOURCES[1]
                 problems.append(
-                    "`%s` is pinned to DIFFERENT digests: %s has %s, %s has %s. The per-push gate "
-                    "and the release gate would be testing against different databases while "
-                    "reporting the same thing."
-                    % (key, SOURCES[0], a[key], SOURCES[1], b[key])
+                    "`%s` is pinned in one workflow but reached by neither pin nor mirror in %s. "
+                    "ci.yml's `check` and release.yml's `gate` run the identical test command and "
+                    "must run it against the identical services." % (lk, missing)
+                )
+            elif a[lk][0] != b[lk][0]:
+                problems.append(
+                    "`%s` resolves to DIFFERENT digests: %s has %s%s, %s has %s%s. The per-push "
+                    "gate and the release gate would run against different bytes while reporting "
+                    "the same thing."
+                    % (lk, SOURCES[0], a[lk][0], " (via its mirror)" if a[lk][1] else "",
+                       SOURCES[1], b[lk][0], " (via its mirror)" if b[lk][1] else "")
                 )
 
-    merged: dict[str, str] = {}
+    merged = {}
     for pinned in per_file.values():
         merged.update(pinned)
+    upstreams = {k: v for k, v in merged.items() if not _is_mirror(k.rsplit(":", 1)[0])}
 
-    # A PARSER THAT FINDS NOTHING MUST NOT READ AS "NOTHING TO DO". That is the vacuous pass, and it
-    # is the same shape as the counts Worker that logged every failure and returned normally, so a
-    # refresh which updated nothing reported success. The floor is 2 because these workflows have
-    # always booted both a Postgres and a Valkey.
-    if len(merged) < 2:
+    # A PARSER THAT FINDS NOTHING MUST NOT READ AS "NOTHING TO DO". That is the vacuous pass, the
+    # same shape as the counts Worker that logged every failure and returned normally, so a refresh
+    # which updated nothing reported success. The floor is 2 because these workflows have always
+    # booted both a Postgres and a Valkey.
+    if len(upstreams) < 2:
         problems.append(
-            "derived only %d pinned service image(s) from %s. Refusing to report success on an "
-            "empty or truncated list: a mirror job that copies nothing and exits 0 is exactly the "
-            "failure this guard exists to prevent." % (len(merged), " and ".join(SOURCES))
+            "derived only %d pinned UPSTREAM service image(s) from %s. Refusing to report success "
+            "on an empty or truncated list: a mirror job that copies nothing and exits 0 is exactly "
+            "the failure this guard exists to prevent." % (len(upstreams), " and ".join(SOURCES))
         )
 
     images = []
-    for ref in sorted(merged):
+    for ref in sorted(upstreams):
         repo, tag = ref.rsplit(":", 1)
         images.append(
             {
@@ -170,7 +238,7 @@ MUTATIONS = [
             r"^\s*image: valkey/valkey:8@sha256:[0-9a-f]{64}\s*$", "        image: scratch@sha256:"
             + "b" * 64, t, count=1, flags=re.M
         ),
-        "absent from",
+        "reached by neither pin nor mirror",
     ),
 ]
 
@@ -206,6 +274,52 @@ def selftest(root: str) -> int:
                 print("  SELFTEST FAILED: %s did not report %r. Got: %s" % (label, expect, got or "nothing"))
                 failures += 1
 
+    # THE STEP-3 TRANSITION, PROVEN BOTH WAYS. Once ci.yml is repointed at the mirrors, the
+    # "both workflows agree" invariant has to survive -- and the natural failure is that it silently
+    # stops being checked because the two files no longer share a key. So the repointed shape is
+    # proven GREEN when the digests match (the twin) and RED when they do not, and `consumer_state`
+    # is proven to flip. Without the green twin, a rule that rejected EVERYTHING would look correct.
+    def _repoint(text, digest=None):
+        import re as _re
+        def sub(m):
+            d = digest or m.group(2)
+            return "        image: ghcr.io/getbusbar/ci-postgres:16@%s" % d
+        return _re.sub(r"^(\s*)image: postgres:16@(sha256:[0-9a-f]{64})\s*$", sub, text,
+                       count=1, flags=_re.M)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+        cip = os.path.join(tmp, WORKFLOWS, "ci.yml")
+        before = open(cip, encoding="utf-8").read()
+        after = _repoint(before)
+        assert after != before, "the repoint mutation matched nothing; its anchor has moved"
+        open(cip, "w", encoding="utf-8").write(after)
+        state = consumer_state(tmp)
+        _, got = collect(tmp)
+        if state == "mirrored" and not got:
+            print("  GREEN twin: ci.yml repointed at a mirror with the matching digest is accepted, "
+                  "and consumer_state flips to 'mirrored'")
+        else:
+            print("  SELFTEST FAILED: the repointed-and-correct shape should be GREEN with "
+                  "state='mirrored'. state=%s problems=%s" % (state, got or "none"))
+            failures += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+        cip = os.path.join(tmp, WORKFLOWS, "ci.yml")
+        wrong = "sha256:" + "c" * 64
+        before = open(cip, encoding="utf-8").read()
+        after = _repoint(before, wrong)
+        assert after != before, "the repoint mutation matched nothing; its anchor has moved"
+        open(cip, "w", encoding="utf-8").write(after)
+        _, got = collect(tmp)
+        if any("different bytes" in g for g in got):
+            print("  RED as required: a mirrored image pinned to a different digest than its upstream")
+        else:
+            print("  SELFTEST FAILED: a mirrored image disagreeing with its upstream was accepted. "
+                  "Got: %s" % (got or "nothing"))
+            failures += 1
+
     # THE VACUOUS-PASS RULE, proven by removing the pins entirely rather than by argument.
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
@@ -232,11 +346,16 @@ def selftest(root: str) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
-    ap.add_argument("--list", action="store_true", help="emit the pinned images as JSON")
+    ap.add_argument("--list", action="store_true", help="emit the pinned upstream images as JSON")
+    ap.add_argument("--consumer-state", action="store_true",
+                    help="print 'mirrored' if ci.yml pulls from GHCR, else 'upstream'")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         return selftest(args.root)
+    if args.consumer_state:
+        print(consumer_state(args.root))
+        return 0
     images, problems = collect(args.root)
     if problems:
         for p in problems:
