@@ -162,6 +162,20 @@ impl TransportPin {
             value: value.to_string(),
         }
     }
+
+    /// The pin an operator DECLARED in a registration, under the mechanism they named there.
+    ///
+    /// It is the same type as the observed pin above, deliberately: the SERVER direction's
+    /// registration and the CLIENT direction's transport observation are two sources of one plane's
+    /// authenticity root, and giving them two types is how the plane would end up with two
+    /// lifecycles. The mechanism is carried as the operator's word for it and, as everywhere else,
+    /// is never interpreted by the machine.
+    pub(crate) fn declared(mechanism: &'static str, value: &str) -> Self {
+        Self {
+            mechanism,
+            value: value.to_string(),
+        }
+    }
 }
 
 impl PinnedArtifact for TransportPin {

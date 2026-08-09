@@ -31,6 +31,27 @@
 //! this upstream at all" and `mcp_tool` is "may it reach this capability", and a key scoped to one
 //! tool on a server must not acquire the rest by having been let through the door.
 //!
+//! ## "May this artifact serve?" has ONE owner, and it is not this module
+//!
+//! The admission gate in [`Catalogue::resolve`] is [`crate::trust::Approval::serves`] — the shared
+//! trust lifecycle's own comparison — and there is no second implementation of it here. A
+//! registration becomes an [`crate::trust::Approval`] at BUILD time: the mechanism and key the
+//! operator declared become the locked pin, and each capability's approved hash becomes that
+//! capability's approved digest. Dispatch then asks the lifecycle, not the raw fields.
+//!
+//! That is a correctness rule rather than a tidiness one. The gate a call passes through must be
+//! THE SAME COMPARISON the operator is looking at on the trust surfaces; two implementations of it
+//! agree right up until they do not, the divergence is silent, and it fails OPEN in exactly the
+//! case that matters — a de-approval the operator believes they made, honoured by the surface and
+//! not by the gate. `tests/trust_gate_tests.rs` holds the invariant: an equivalence matrix over
+//! every mechanism × approved-hash shape, and a source scan of this file that fails on any second
+//! answer to the question.
+//!
+//! A registration with no authenticity root (`unpinned`) has no artifact to lock, so it cannot be
+//! anything but [`crate::trust::Approval::registered`]: pending, inspectable, and serving nothing.
+//! That is enforced by what is CONSTRUCTIBLE — `Approval::declared` takes a pin by value — rather
+//! than by a check here that a later edit could relax.
+//!
 //! ## Candidates are BOUND IDENTITIES, never descriptions
 //!
 //! ROUTE ONLY ON BOUND IDENTITY. A catalogue entry is keyed on `(server-id, namespaced-name,
@@ -41,7 +62,9 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::config::{McpServerDefCfg, ToolsCfg, NAMESPACE_SEP};
+use super::client::catalogue::TransportPin;
+use super::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolsCfg, NAMESPACE_SEP};
+use crate::trust::Approval;
 
 /// THE PIN GENERATION SOURCE. Monotonic, process-global, bumped once per snapshot BUILD.
 ///
@@ -67,6 +90,20 @@ pub(crate) struct ToolEntry {
     pub(crate) description: Option<String>,
     /// The tool's JSON Schema, echoed verbatim. Opaque to busbar.
     pub(crate) input_schema: Option<serde_json::Value>,
+}
+
+impl ToolEntry {
+    /// The digest the dispatch gate compares AGAINST — the left operand it cannot be called without,
+    /// not a decision of its own.
+    ///
+    /// An entry the operator approved no hash for has no digest, and the empty string stands in.
+    /// That cannot admit anything: [`Catalogue::build`] records an approval only for a tool whose
+    /// hash is PRESENT, so a tool with none is absent from the approval altogether and
+    /// `Approval::serves` refuses it whatever it is handed — it never reaches a digest comparison at
+    /// all.
+    fn dispatch_digest(&self) -> &str {
+        self.schema_hash.as_deref().unwrap_or_default()
+    }
 }
 
 /// One exposed prompt. Markup-normalised at the edge, not here — this is the store, not the writer.
@@ -109,10 +146,20 @@ pub(crate) struct ServerEntry {
     /// The mechanism NAME. Operator-facing and audit-facing only; never interpreted, exactly as
     /// [`crate::trust::PinnedArtifact::mechanism`] is never interpreted.
     pub(crate) pin_mechanism: &'static str,
-    /// Whether this registration has an authenticity root at all. `unpinned` is registrable and
-    /// never servable: a registration that is `unpinned` sits in `pending`, and pending is exactly
-    /// the state that may be inspected but may not carry traffic.
-    pub(crate) pinned: bool,
+    /// THE OPERATOR'S STANDING DECISION about this registration — the locked identity pin and the
+    /// per-capability approved digests — held in the shared lifecycle type rather than re-expressed
+    /// as local booleans.
+    ///
+    /// This is the whole point: `may this artifact serve?` has ONE owner
+    /// ([`crate::trust::Approval::serves`]), so the gate a call passes through and the state an
+    /// operator reads are the SAME comparison. A second local answer would agree with it right up
+    /// until it did not, and the divergence would be silent and fail OPEN — a de-approval the
+    /// operator believes they made, honoured by the surface and not by the gate.
+    ///
+    /// A registration with no authenticity root is [`crate::trust::Approval::registered`]: no pin,
+    /// nothing approved, serves nothing. It is `pending`, which is exactly the state that may be
+    /// inspected but may not carry traffic.
+    pub(crate) approval: Approval<TransportPin>,
     /// The grants for the asks an upstream can come back with — sampling, elicitation, roots.
     /// Deny-by-default by construction.
     pub(crate) grants: super::config::ServerRequestGrants,
@@ -372,11 +419,12 @@ impl Catalogue {
             .servers
             .get(&entry.server)
             .ok_or_else(|| DispatchRefusal::UnknownTool(namespaced_name.to_string()))?;
-        if !server.pinned {
-            return Err(DispatchRefusal::NotPinned(server.id.clone()));
-        }
-        if entry.schema_hash.is_none() {
-            return Err(DispatchRefusal::NotApproved(namespaced_name.to_string()));
+        // THE GATE, and the only one. It is not "is the registration pinned, and is a hash
+        // configured" restated here; it is the shared lifecycle's own comparison, so the answer
+        // dispatch gets is by construction the answer the operator's trust surfaces are computed
+        // from.
+        if !server.approval.serves(&entry.tool, entry.dispatch_digest()) {
+            return Err(refusal_reason(server, entry));
         }
         Ok(entry)
     }
@@ -428,12 +476,53 @@ pub(crate) fn namespaced(server: &str, capability: &str) -> String {
     format!("{server}{NAMESPACE_SEP}{capability}")
 }
 
+/// WHY a dispatch was refused, derived AFTER the gate has ALREADY said no.
+///
+/// It names a reason and can never admit a call — there is no `Ok` arm to reach — which is what
+/// keeps it a diagnostic rather than a second gate. The operator needs the distinction because the
+/// two arms are two different actions: supply an authenticity root, or approve a digest.
+fn refusal_reason(server: &ServerEntry, entry: &ToolEntry) -> DispatchRefusal {
+    match server.approval.pin() {
+        None => DispatchRefusal::NotPinned(server.id.clone()),
+        Some(_) => DispatchRefusal::NotApproved(entry.namespaced.clone()),
+    }
+}
+
+/// THE ARTIFACT this registration is pinned to, or `None` when the operator named no authenticity
+/// root or supplied no material for the one they named.
+///
+/// Construction, not authorization. It answers only "is there a root to lock", and the answer feeds
+/// the lifecycle rather than a dispatch decision: with no artifact there is nothing to hand
+/// [`crate::trust::Approval::declared`], so the registration can only be
+/// [`crate::trust::Approval::registered`] — pending, and serving nothing. That is a fact about what
+/// is CONSTRUCTIBLE, which is why `unpinned` cannot be talked into serving by a later edit here.
+fn declared_pin(pin: &ServerPinCfg) -> Option<TransportPin> {
+    if matches!(pin.mechanism, PinMechanism::Unpinned) {
+        return None;
+    }
+    let key = pin.key.as_deref().filter(|k| !k.trim().is_empty())?;
+    Some(TransportPin::declared(pin.mechanism.token(), key))
+}
+
 fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
+    // The registration read as the operator's standing INTENT: the identity they pinned out of
+    // band, and the digest they approved for each capability. A capability they allowed without
+    // approving a digest is absent from the map, which is `pending` — allowed is not approved.
+    let approval = match declared_pin(&def.pin) {
+        Some(pin) => Approval::declared(
+            pin,
+            def.tools_allow
+                .iter()
+                .filter_map(|(tool, allow)| allow.schema_hash.clone().map(|h| (tool.clone(), h)))
+                .collect(),
+        ),
+        None => Approval::registered(),
+    };
     ServerEntry {
         id: id.to_string(),
         url: def.url.clone(),
         pin_mechanism: def.pin.mechanism.token(),
-        pinned: !matches!(def.pin.mechanism, super::config::PinMechanism::Unpinned),
+        approval,
         grants: def.grants,
         max_input_required_rounds: def
             .max_input_required_rounds
@@ -444,3 +533,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
+
+#[cfg(test)]
+#[path = "tests/trust_gate_tests.rs"]
+mod trust_gate_tests;
