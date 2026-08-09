@@ -20,6 +20,7 @@
 //! | [`stdio`] | spawn + supervise, with the `spawning → ready → draining → dead` state machine |
 //! | [`pool`] | engine-owned connection pooling, keyed by the PINNED address |
 //! | [`ssrf`] | dispatch-time resolve-then-pin |
+//! | [`argguard`] | the schema-aware walk of nested tool arguments for URL and host fields |
 //! | [`egress`] | per-server credentials, RFC 8707/8693, and the transitive confused-deputy gate |
 //! | [`dispatch`] | selection, and the re-validation that runs on every single request |
 //!
@@ -65,6 +66,7 @@
 // before a wire is built on top of them. Same posture as `crate::trust` and `crate::plane`.
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub(crate) mod argguard;
 pub(crate) mod catalogue;
 pub(crate) mod dispatch;
 pub(crate) mod egress;

@@ -39,10 +39,11 @@
 //! grant learns nothing about the upstream's current schema — a refusal that leaks the thing it is
 //! refusing access to is a refusal that has failed at half its job.
 
+use super::argguard::{ArgRefusal, ArgScan};
 use super::catalogue::{CatalogueCache, CatalogueSnapshot};
 use super::egress::EgressDenied;
 use super::identity::{BoundIdentity, NameError, ToolKey};
-use super::ssrf::SsrfRefusal;
+use super::ssrf::{SsrfPolicy, SsrfRefusal};
 use crate::trust::TrustState;
 use busbar_api::VirtualKey;
 
@@ -81,6 +82,10 @@ pub(crate) enum DispatchRefusal {
     Egress(EgressDenied),
     /// The destination failed the dispatch-time SSRF check.
     Ssrf(SsrfRefusal),
+    /// THE ARGUMENT REFUSAL: a URL or host carried INSIDE the per-request tool arguments failed the
+    /// same check the destination does. The routing rule makes the destination immune to
+    /// attacker-chosen text; it does not make the payload immune, and this is the arm that says so.
+    ToolArgument(ArgRefusal),
 }
 
 impl std::fmt::Display for DispatchRefusal {
@@ -116,6 +121,7 @@ impl std::fmt::Display for DispatchRefusal {
             ),
             DispatchRefusal::Egress(e) => write!(f, "{e}"),
             DispatchRefusal::Ssrf(e) => write!(f, "{e}"),
+            DispatchRefusal::ToolArgument(e) => write!(f, "{e}"),
         }
     }
 }
@@ -208,6 +214,46 @@ pub(crate) fn revalidate(
         });
     }
     Ok(())
+}
+
+/// STEP 3 — judge the per-request ARGUMENTS against the tool's PINNED input schema.
+///
+/// Separate from [`resolve`] because it answers a different question. Resolve decides WHERE the
+/// call goes, on the bound identity alone; this decides whether the DATA the call carries is
+/// admissible. An argument is attacker-influenced content travelling to an operator-chosen
+/// destination, which the routing rule does not and cannot address.
+///
+/// THE SCHEMA IS RE-PINNED HERE. The definition is re-hashed and compared against the digest the
+/// resolution carried, so the document the walk reads is the one the operator approved rather than
+/// whatever the cache holds at the moment of the walk. A schema swapped underneath this call is
+/// drift, and drift refuses.
+///
+/// Returns what the walk VISITED on success. A caller that wants to know the guard did work — and
+/// the tests, which must — can read it, because a walker that visits nothing refuses nothing.
+pub(crate) fn check_arguments(
+    snapshot: &CatalogueSnapshot,
+    resolved: &Resolved,
+    arguments: &serde_json::Value,
+    policy: SsrfPolicy,
+) -> Result<ArgScan, DispatchRefusal> {
+    let key = &resolved.identity.key;
+    let server = snapshot
+        .server(key.server())
+        .ok_or_else(|| DispatchRefusal::UnknownServer(key.server().as_str().to_string()))?;
+    let def = server
+        .observed
+        .get(key.tool())
+        .ok_or_else(|| DispatchRefusal::UnknownTool(key.tool().to_string()))?;
+    let observed = super::catalogue::tool_digest(def);
+    if observed != resolved.identity.digest {
+        return Err(DispatchRefusal::SchemaDrift {
+            tool: key.namespaced(),
+            approved_or_absent: resolved.identity.digest.clone(),
+            observed,
+        });
+    }
+    super::argguard::guard(&def.input_schema, arguments, policy)
+        .map_err(DispatchRefusal::ToolArgument)
 }
 
 /// The catalogue one caller may SEE: every served tool the caller holds both grants for.
