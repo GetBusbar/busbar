@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONTENT SURFACES: binary resources (B2), resource templates that resolve (B3) and typed
-//! prompt content (B4) — plus the CHARACTERISATION that says why `-32021` (B6) is not among them.
+//! THE CONTENT SURFACES: binary resources, resource templates that resolve, and typed prompt
+//! content — plus the characterisation that records why `-32021` is NOT emitted here.
 //!
 //! ## Why every registration in this file is written as YAML
 //!
-//! Each of B2, B3 and B4 adds CONFIG. A test that constructed `ResourceAllowCfg { blob: … }` as a
+//! Each of those three adds CONFIG. A test that constructed `ResourceAllowCfg { blob: … }` as a
 //! Rust literal would prove the field exists on a struct and nothing about whether an operator can
 //! write it: `McpServerDefCfg` is `deny_unknown_fields`, so the only thing that decides whether
 //! `blob:` is a key an operator may type is the `Deserialize` impl. These fixtures therefore go
