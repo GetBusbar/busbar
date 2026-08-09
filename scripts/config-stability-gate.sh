@@ -29,6 +29,14 @@
 # — and that a snapshot "refresh" does not launder a break. The self-test cannot be lied to: it feeds
 # the classifier known inputs and asserts the exact exit codes.
 #
+# It also drives the GENERATOR over throwaway Rust fixtures, because a classifier that judges deltas
+# perfectly proves nothing about a generator that renders no delta to judge. Those cases assert that
+# a hand-written `Deserialize` (its accepted spellings AND their types), a `deny_unknown_fields`
+# flip and a container `rename_all` on a struct each move the fingerprint, and that the real tracked
+# source set actually covers the secret-reference and upstream-credential grammars. A missing
+# fixture is a FAILURE, never a skip, and the suite asserts its own executed case count so deleted
+# coverage cannot present itself as a pass.
+#
 # No external deps beyond python3 (stdlib only) + git — the same bare-runner posture as the sibling
 # lints. `UPDATE_CONFIG_SCHEMA=1` regenerates the snapshot (the reviewed-intentional-change path).
 
@@ -37,7 +45,11 @@ cd "$(dirname "$0")/.."
 
 PY=python3
 GEN="scripts/config-schema.py"
-CONFIG_SRC="crates/busbar/src/config"
+# The TRACKED SOURCE SET lives in ONE place — `SOURCES` in config-schema.py — so `gen` is called
+# with no path argument. It used to be a lone `crates/busbar/src/config` argument here, which is how
+# `SecretRef` (its own crate) and `UpstreamCreds` (auth/mod.rs) came to be config grammar that no
+# fingerprint covered. A gate whose reach is a directory glob covers where types live, not what they
+# are, and both of those types moved out from under it.
 SNAPSHOT="crates/busbar/src/config/config-schema.snapshot.json"
 # The per-path break-waiver file (see config-schema.py load_waivers). A COMMITTED file, deliberately
 # not an env var: every excused break is a reviewable line in the PR diff. Empty by default.
@@ -55,7 +67,7 @@ command -v "$PY" >/dev/null 2>&1 || { echo "config-stability-gate: python3 not f
 # ── SELF-TEST ──────────────────────────────────────────────────────────────────────────────────────
 selftest() {
   hdr "config-stability gate SELF-TEST (the gate proves itself before it judges the tree)"
-  local tmp rc fails=0
+  local tmp rc fails=0 cases=0
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
@@ -94,6 +106,13 @@ PY
       "$PY" "$GEN" classify "$tmp/base.json" "$tmp/fresh.json" >/dev/null 2>&1
     fi
     rc=$?
+    verdict "$name" "$want" "$rc"
+  }
+
+  # ONE place that records a case outcome, so `cases` cannot drift from what actually ran.
+  verdict() {
+    local name="$1" want="$2" rc="$3"
+    cases=$((cases + 1))
     if [ "$rc" -eq "$want" ]; then
       note "PASS  $name (exit $rc)"
     else
@@ -152,11 +171,239 @@ PY
     'del d["types"]["Root"]["fields"]["keep"]' \
     '# no waivers'
 
+  # ══ GENERATOR-SURFACE CASES ══════════════════════════════════════════════════════════════════
+  # The cases above feed the CLASSIFIER hand-written JSON. They prove the classifier judges a delta
+  # correctly and nothing else — every one of them stays green while the GENERATOR emits no delta at
+  # all for a breaking source change, and four such changes did exactly that: a retyped secret
+  # reference, a dropped upstream-credential value, a flipped `deny_unknown_fields` and a `rename_all`
+  # added to a config struct all rendered byte-identical fingerprints. These cases therefore drive the
+  # real `gen` over throwaway Rust fixtures, so a capability regression in the EXTRACTOR is caught
+  # rather than papered over by a healthy classifier.
+
+  mkdir -p "$tmp/fx"
+
+  # (1) The secret-reference grammar: a hand-written `Deserialize` accepting a canonical form plus
+  #     two sugar spellings. This shape is `SecretRef`, which lives in its own crate.
+  cat >"$tmp/fx/secretref-base.rs" <<'RS'
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SecretRefFx {
+    pub module: String,
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for SecretRefFx {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> {
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "module" => module = Some(map.next_value()?),
+                "settings" => settings = Some(map.next_value()?),
+                "env" => sugar = Some(map.next_value()?),
+                "file" => sugar = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, FIELDS)),
+            }
+        }
+    }
+}
+RS
+  sed 's/pub module: String,/pub module: Vec<String>,/' \
+    "$tmp/fx/secretref-base.rs" >"$tmp/fx/secretref-retyped.rs"
+  sed 's/"env" =>/"environment" =>/' \
+    "$tmp/fx/secretref-base.rs" >"$tmp/fx/secretref-sugar-renamed.rs"
+
+  # (2) The upstream-credential grammar, which lives beside the auth middleware.
+  cat >"$tmp/fx/creds-base.rs" <<'RS'
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UpstreamCredsFx {
+    #[default]
+    Own,
+    Passthrough,
+}
+RS
+  sed '/    Passthrough,/d' "$tmp/fx/creds-base.rs" >"$tmp/fx/creds-dropped.rs"
+
+  # (3) deny_unknown_fields: the knob that decides whether a document carrying an extra key parses.
+  cat >"$tmp/fx/deny-off.rs" <<'RS'
+#[derive(serde::Deserialize)]
+pub(crate) struct DenyFx {
+    pub(crate) protocol: String,
+}
+RS
+  cat >"$tmp/fx/deny-on.rs" <<'RS'
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DenyFx {
+    pub(crate) protocol: String,
+}
+RS
+
+  # (4) container rename_all on a STRUCT: it rewrites the wire key of every field it covers.
+  cat >"$tmp/fx/rename-none.rs" <<'RS'
+#[derive(serde::Deserialize)]
+pub(crate) struct RenameFx {
+    pub(crate) max_tokens: u32,
+    pub(crate) on_error: String,
+}
+RS
+  cat >"$tmp/fx/rename-kebab.rs" <<'RS'
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct RenameFx {
+    pub(crate) max_tokens: u32,
+    pub(crate) on_error: String,
+}
+RS
+
+  # (5) a test-only type is NOT config grammar, and must never be able to displace a real one.
+  cat >"$tmp/fx/cfgtest.rs" <<'RS'
+#[derive(serde::Deserialize)]
+pub(crate) struct RealFx {
+    pub(crate) real_key: String,
+}
+
+#[cfg(test)]
+mod tests {
+    #[derive(serde::Deserialize)]
+    struct TestOnlyFx {
+        fixture_key: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RealFx {
+        displaced: String,
+    }
+}
+RS
+
+  gen_fp() { # <fixture.rs> <out.json> — fingerprint one throwaway source tree
+    rm -rf "$tmp/gsrc"
+    mkdir -p "$tmp/gsrc"
+    # A fixture that is not there is a FAILURE, never a skip: a self-test that quietly stops
+    # exercising its cases is the false green this gate is supposed to be immune to.
+    [ -f "$1" ] || { red "  self-test fixture MISSING: $1"; return 9; }
+    cp "$1" "$tmp/gsrc/fixture.rs"
+    "$PY" "$GEN" gen "$tmp/gsrc" >"$2"
+  }
+
+  gen_case() { # <name> <want-exit> <base.rs> <fresh.rs>
+    local name="$1" want="$2" rc
+    if ! gen_fp "$3" "$tmp/gbase.json" || ! gen_fp "$4" "$tmp/gfresh.json"; then
+      verdict "$name (generator failed / fixture missing)" "$want" 9
+      return
+    fi
+    "$PY" "$GEN" classify "$tmp/gbase.json" "$tmp/gfresh.json" >/dev/null 2>&1
+    rc=$?
+    verdict "$name" "$want" "$rc"
+  }
+
+  py_assert() { # <name> <python body, `t` = the types map> [json-file, default the real render]
+    local name="$1" code="$2" src="${3:-$tmp/real.json}" rc
+    "$PY" - "$src" >/dev/null 2>&1 <<PY
+import json, sys
+t = json.load(open(sys.argv[1]))["types"]
+$code
+PY
+    rc=$?
+    verdict "$name" 0 "$rc"
+  }
+
+  hdr "self-test: GENERATOR surface (the four reach/fidelity holes, driven through \`gen\`)"
+
+  # Controls first: an unchanged fixture must render identically, so a RED below is the sabotage
+  # and never the fixture.
+  gen_case "control: identical secret-ref render is GREEN"        0 \
+    "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-base.rs"
+  gen_case "control: identical upstream-creds render is GREEN"    0 \
+    "$tmp/fx/creds-base.rs" "$tmp/fx/creds-base.rs"
+
+  # HOLE 1 — the secret-reference grammar was outside the gate's reach entirely.
+  gen_case "secret-ref canonical form RETYPED is RED"        3 \
+    "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-retyped.rs"
+  gen_case "secret-ref SUGAR spelling renamed is RED"        3 \
+    "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-sugar-renamed.rs"
+  gen_fp "$tmp/fx/secretref-base.rs" "$tmp/fx-secretref.json" || fails=$((fails + 1))
+  py_assert "hand-written Deserialize: wire keys fingerprinted" \
+    'assert set(t["manual-de SecretRefFx"]["wire_keys"]) == {"module", "settings", "env", "file"}, t["manual-de SecretRefFx"]' \
+    "$tmp/fx-secretref.json"
+  py_assert "hand-written Deserialize: member types fingerprinted" \
+    'assert t["manual-de SecretRefFx"]["fields"]["module"]["type"] == "String", t["manual-de SecretRefFx"]' \
+    "$tmp/fx-secretref.json"
+
+  # HOLE 2 — same reach problem, the `upstream_credentials:` value grammar.
+  gen_case "upstream-creds value DROPPED is RED"             3 \
+    "$tmp/fx/creds-base.rs" "$tmp/fx/creds-dropped.rs"
+
+  # HOLE 3 — deny_unknown_fields was parsed and then discarded.
+  gen_case "deny_unknown_fields turned ON is RED"            3 \
+    "$tmp/fx/deny-off.rs" "$tmp/fx/deny-on.rs"
+  gen_case "deny_unknown_fields turned OFF is GREEN"         0 \
+    "$tmp/fx/deny-on.rs" "$tmp/fx/deny-off.rs"
+  gen_fp "$tmp/fx/deny-on.rs" "$tmp/fx-deny.json" || fails=$((fails + 1))
+  py_assert "deny_unknown_fields is RECORDED, not discarded" \
+    'assert t["DenyFx"]["deny_unknown_fields"] is True, t["DenyFx"]' \
+    "$tmp/fx-deny.json"
+
+  # HOLE 4 — container rename_all reached enum variants but never struct fields.
+  gen_case "rename_all ADDED to a struct is RED"             3 \
+    "$tmp/fx/rename-none.rs" "$tmp/fx/rename-kebab.rs"
+  gen_case "rename_all REMOVED from a struct is RED"         3 \
+    "$tmp/fx/rename-kebab.rs" "$tmp/fx/rename-none.rs"
+  gen_fp "$tmp/fx/rename-kebab.rs" "$tmp/fx-rename.json" || fails=$((fails + 1))
+  py_assert "rename_all is APPLIED to struct field keys" \
+    'assert sorted(t["RenameFx"]["fields"]) == ["max-tokens", "on-error"], t["RenameFx"]' \
+    "$tmp/fx-rename.json"
+
+  # A test-only type is not grammar, and must not displace a same-named real one.
+  gen_fp "$tmp/fx/cfgtest.rs" "$tmp/fx-cfgtest.json" || fails=$((fails + 1))
+  py_assert "cfg(test) types are EXCLUDED from the grammar" \
+    'assert "TestOnlyFx" not in t and sorted(t["RealFx"]["fields"]) == ["real_key"], sorted(t)' \
+    "$tmp/fx-cfgtest.json"
+
+  # ── COVERAGE: the assertions above are about fixtures. These are about the REAL tracked set, so
+  # the gate cannot be capable-in-principle while covering nothing that ships.
+  hdr "self-test: COVERAGE of the real tracked source set"
+  "$PY" "$GEN" gen >"$tmp/real.json" 2>/dev/null
+  verdict "coverage: \`gen\` over the tracked source set succeeds" 0 "$?"
+  py_assert "coverage: the surface is non-trivial (>= 50 types)" \
+    'assert len(t) >= 50, len(t)'
+  py_assert "coverage: SecretRef IS fingerprinted" \
+    'assert "SecretRef" in t and set(t["manual-de SecretRef"]["wire_keys"]) >= {"module", "settings", "env", "file"}, sorted(k for k in t if "Secret" in k)'
+  py_assert "coverage: SecretRef member types are fingerprinted" \
+    'assert t["manual-de SecretRef"]["fields"]["module"]["type"] == "String", t["manual-de SecretRef"]'
+  py_assert "coverage: UpstreamCreds IS fingerprinted" \
+    'assert t["UpstreamCreds"]["variants"] == ["own", "passthrough"], t.get("UpstreamCreds")'
+  py_assert "coverage: every derived container records its serde flags" \
+    'bad = [k for k, v in t.items() if v.get("kind") in ("struct", "enum") and v.get("deserialize") != "manual" and not {"deny_unknown_fields", "transparent"} <= set(v)]
+assert not bad, bad'
+  py_assert "coverage: deny_unknown_fields is read from the source, not stubbed" \
+    'assert any(v.get("deny_unknown_fields") for v in t.values()), "no type reported deny_unknown_fields"'
+
+  # A tracked source that vanished must be a HARD ERROR. If a rename could silently shrink the
+  # tracked set, the whole gate could be disabled by moving a file.
+  if "$PY" "$GEN" gen "$tmp/no-such-source.rs" >/dev/null 2>&1; then rc=1; else rc=0; fi
+  verdict "a MISSING tracked source is an error, never a skip" 0 "$rc"
+
+  # ── The self-test's own honesty check. A suite that runs zero cases reports zero failures, which
+  # is the false green this project has already been burned by three times in one night. Assert the
+  # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
+  # coverage is itself RED.
+  local want_cases=43
+  if [ "$cases" -lt "$want_cases" ]; then
+    red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
+    red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."
+    fails=$((fails + 1))
+  else
+    note "PASS  self-test executed $cases case(s) (floor $want_cases)"
+  fi
+
   if [ "$fails" -eq 0 ]; then
-    grn "config-stability gate self-test: ALL GREEN (classifier RED/GREEN discipline proven)"
+    grn "config-stability gate self-test: ALL GREEN ($cases cases; classifier RED/GREEN discipline"
+    grn "and generator surface coverage both proven)"
     return 0
   fi
-  red "config-stability gate self-test: $fails FAILED"
+  red "config-stability gate self-test: $fails FAILED (of $cases)"
   return 1
 }
 
@@ -167,7 +414,7 @@ check() {
   trap 'rm -rf "$tmp"' RETURN
   fresh="$tmp/fresh.json"
 
-  "$PY" "$GEN" gen "$CONFIG_SRC" >"$fresh" || { red "config-schema gen failed"; return 2; }
+  "$PY" "$GEN" gen >"$fresh" || { red "config-schema gen failed"; return 2; }
 
   # UPDATE path: the reviewed-intentional-change escape hatch (identical role to UPDATE_OPENAPI=1).
   if [ "${UPDATE_CONFIG_SCHEMA:-}" = "1" ]; then
