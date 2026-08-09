@@ -397,7 +397,7 @@ pub(crate) struct App {
     /// the mount path from this ONE object, so the value advertised to clients and the value the
     /// verifier compares against cannot be two different strings.
     pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
-    /// THE MCP CATALOGUE SNAPSHOT for this config generation (`mcp-design.md` §3.9a): every
+    /// THE MCP CATALOGUE SNAPSHOT for this config generation: every
     /// registered server, its approved tools/prompts/resources, and the monotonic PIN GENERATION the
     /// snapshot was built under.
     ///

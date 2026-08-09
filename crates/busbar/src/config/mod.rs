@@ -2628,7 +2628,9 @@ pub(crate) struct DeployCfg {
     /// The top-level `tools:` NAMED-DEFINITION map (1.5.5) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
-    /// section an entry is written in IS which plane it is on (`mcp-design.md` §5.1).
+    /// section an entry is written in IS which plane it is on: a `tools:` entry is an MCP server
+    /// and an `agents:` entry is an A2A agent, so there is no second declaration that could
+    /// disagree with the first.
     ///
     /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
     /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door

@@ -14,7 +14,8 @@
 //! sentinel and scanning the whole serialized request, rather than by reading the code and agreeing
 //! with it.
 //!
-//! **Rule 2 (threat 17): the outbound credential is bound to the inbound principal's grant.**
+//! **Rule 2 — the TRANSITIVE CONFUSED DEPUTY: the outbound credential is bound to the inbound
+//! principal's grant.**
 //! A client-only gateway cannot have this bug — it has no inbound principal to be confused about.
 //! busbar is both directions, so an authenticated inbound `tools/call` could cause busbar to mint an
 //! outbound token from its OWN ambient upstream credentials and re-export a tool with more authority

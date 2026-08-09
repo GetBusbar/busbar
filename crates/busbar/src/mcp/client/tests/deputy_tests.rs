@@ -9,7 +9,8 @@
 //! busbar holds ambient credentials for upstream MCP servers. An authenticated inbound caller asks
 //! busbar to call one. If busbar selects an upstream credential on the basis of its OWN identity —
 //! "I have a token for `payments`, so I can call `payments`" — then the caller has just spent
-//! authority it does not hold. That is threat 17, and a client-only gateway cannot have it, because
+//! authority it does not hold. That is the TRANSITIVE CONFUSED DEPUTY, and a client-only gateway
+//! cannot have it, because
 //! it has no inbound principal to be confused about. The bundle creates it, so the bundle closes it.
 //!
 //! ## What is proven here, and what is NOT
@@ -19,7 +20,7 @@
 //! busbar's own authority.
 //!
 //! NOT PROVEN: that a real inbound MCP `tools/call` resolves to the principal used here. The
-//! server direction's method surface does not exist yet (`mcp-design.md` §15.5). The principal is
+//! server direction's method surface does not exist yet. The principal is
 //! a `busbar_api::VirtualKey`, which is the type BOTH directions resolve to and the one
 //! `scope_allowed` is defined on, so the seam is real — but egress scoping is one of the two
 //! integrity properties that are only meaningful as a PAIR with the inbound surface, so it is not

@@ -29,7 +29,7 @@ filesystem:
 
 #[test]
 fn the_locked_section_shape_parses_into_the_values_it_declares() {
-    let cfg = parse(LOCKED_EXAMPLE).expect("the §5.1 locked example must parse");
+    let cfg = parse(LOCKED_EXAMPLE).expect("the locked example must parse");
     assert_eq!(cfg.all_server_hooks, vec!["mcp-sanitizer".to_string()]);
     assert_eq!(cfg.servers.len(), 1, "one server, and `hooks:` is not one");
     let fs = &cfg.servers["filesystem"];
@@ -60,7 +60,7 @@ fn the_reserved_section_words_are_identical_to_the_pool_planes() {
     assert_eq!(
         RESERVED_TOOLS_SECTION_KEYS,
         crate::config::RESERVED_POOLS_SECTION_KEYS,
-        "the two reserved section words are one word space across every plane (§5.1)"
+        "the two reserved section words are one word space across every plane"
     );
 }
 
@@ -123,7 +123,7 @@ fn the_namespace_separator_is_refused_in_a_server_id_and_allowed_in_a_tool_name(
     // Straight out of the locked example. Refusing it would make busbar unable to front the very
     // config shape this plane is specified around.
     parse("fs:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  tools_allow: { read_file: {} }\n")
-        .expect("a tool name may carry the separator — §5.1's locked example does");
+        .expect("a tool name may carry the separator — the locked example does");
 
     // THE COLLISION the server-id rule prevents, stated as the arithmetic it is. `a_b` + `c` and
     // `a` + `b_c` render the SAME grant value; with `a_b` unregistrable, only one of the two pairs

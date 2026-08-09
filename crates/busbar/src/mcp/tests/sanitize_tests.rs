@@ -116,8 +116,8 @@ fn semantic_injection_survives_and_that_is_the_documented_limit() {
     assert_eq!(
         normalise(semantic),
         semantic,
-        "§3.5: markup-normalisation reduces the MARKUP-shaped surface only. If this ever changes, \
-         the honest-scope paragraph in sanitize.rs and in §3.5 has to change with it — do not \
-         'fix' this test."
+        "markup-normalisation reduces the MARKUP-shaped surface only. If this ever changes, the \
+         honest-scope paragraph in sanitize.rs has to change with it: this assertion is what \
+         makes the limit a claim the suite defends rather than a caveat in prose."
     );
 }

@@ -147,7 +147,8 @@ fn dispatch_never_reads_a_tool_description() {
     );
     assert!(
         offenders.is_empty(),
-        "dispatch.rs must never read a tool description — §3.0. Offending code lines:\n{}",
+        "dispatch.rs must never read a tool description: a route is decided on bound identity \
+         alone, so a hostile description has nothing to influence. Offending code lines:\n{}",
         offenders.join("\n")
     );
 }

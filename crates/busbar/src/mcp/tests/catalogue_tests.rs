@@ -267,7 +267,7 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
             selected: selected_gen,
             live: live.generation(),
         }),
-        "an in-flight call cannot outlive a quarantine (§14.2)"
+        "an in-flight call cannot outlive a quarantine"
     );
 }
 

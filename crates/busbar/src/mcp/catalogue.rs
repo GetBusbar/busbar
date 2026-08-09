@@ -84,8 +84,8 @@ pub(crate) struct PromptEntry {
 /// NAMESPACED like everything else, and that is a correction rather than a symmetry: keying the
 /// catalogue by the upstream's raw URI let two registered servers exposing the SAME URI collide, and
 /// the collision was SILENT — one entry simply replaced the other, so a caller granted the first
-/// server read the second server's content. That is threat 3 (name overlap) arriving through a key
-/// nobody thought of as a name. The wire `uri` is therefore `{server}_{uri}`, which a client treats
+/// server read the second server's content. That is a NAME OVERLAP between two registered servers,
+/// arriving through a key nobody thought of as a name. The wire `uri` is therefore `{server}_{uri}`, which a client treats
 /// as the opaque identifier every MCP resource URI already is and hands back verbatim.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResourceEntry {

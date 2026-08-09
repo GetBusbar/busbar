@@ -33,13 +33,13 @@ pub(crate) enum NamedMapSection {
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
     /// `tools:` — server NAME → `{url, pin, tools_allow, …}`, THE MCP PLANE: one registered external
-    /// MCP server per entry (`mcp-design.md` §5.1). The admin path segment is `tools` and NOT `mcp`,
+    /// MCP server per entry. The admin path segment is `tools` and NOT `mcp`,
     /// deliberately: the config block is LOCKED as `tools:` — its mere existence is what declares
     /// the plane, the way `pools:` declares the LLM plane — and this table's whole discipline is
     /// that [`NamedMapSection::key`] is both the config key and the path segment, so the API mirrors
-    /// the config grammar exactly. The design's older `/api/v1/admin/mcp/*` admin prose predates
-    /// that lock and is superseded by it — a second spelling of one plane is the thing this table
-    /// exists to prevent.
+    /// the config grammar exactly. An earlier `/api/v1/admin/mcp/*` spelling of this same surface
+    /// predates that lock and is superseded by it — a second spelling of one plane is the thing
+    /// this table exists to prevent.
     Tools,
     // 1.5.6: `Agents` (A2A agent registry) lands as one variant plus its arms in the `match`es below.
 }

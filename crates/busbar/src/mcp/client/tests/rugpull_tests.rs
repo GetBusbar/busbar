@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RUG-PULL BATTERY (threat 12): a tool definition is changed UNDER A LIVE CACHE and the change
+//! THE RUG-PULL BATTERY: a tool definition is changed UNDER A LIVE CACHE and the change
 //! must be DETECTED and the server DEMOTED. Every approved catalogue is pinned by a per-tool
 //! schema/description hash, and a changed hash re-approves rather than auto-adopts.
 //!

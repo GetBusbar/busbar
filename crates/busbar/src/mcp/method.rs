@@ -191,7 +191,7 @@ fn render_tool(t: &ToolEntry) -> serde_json::Value {
     // The NAMESPACED name is the wire name, because it is the routing key — the bound identity a
     // route is decided on, never the free-text description — and the value an `mcp_tool` grant
     // carries. Exposing the bare upstream name would let two servers collide in one caller's
-    // catalogue, which is threat 3.
+    // catalogue, so one server's tool would silently answer for another's.
     obj.insert("name".into(), t.namespaced.clone().into());
     if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
         obj.insert("description".into(), d.into());
@@ -281,7 +281,7 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             let mut obj = serde_json::Map::new();
             // The NAMESPACED uri. Two registered servers may legitimately expose the same upstream
             // URI, and keying the catalogue on the raw one made the second silently replace the
-            // first — threat 3 arriving through a key nobody thought of as a name.
+            // first — a name overlap arriving through a key nobody thought of as a name.
             obj.insert("uri".into(), r.namespaced.clone().into());
             if let Some(n) = sanitize::normalise_opt(r.name.as_deref()) {
                 obj.insert("name".into(), n.into());
@@ -419,7 +419,9 @@ fn tools_call(
                 crate::admin::audit::OUTCOME_APPLIED,
                 ctx.actor,
             );
-            // Tool OUTPUT is markup-normalised before it re-enters model context (threat 13).
+            // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
+            // RESULT is exactly as injectable as its description, and it arrives later, when the
+            // operator has already approved the tool.
             result(id, sanitize::normalise_json(&value))
         }
         Outcome::Refused(refusal) => {
@@ -519,7 +521,7 @@ fn dispatch_upstream(
     _arguments: &serde_json::Value,
 ) -> Result<Round, String> {
     let _ = (url, selected);
-    Err("the MCP client direction (§2.1) is not built in this release, so busbar cannot reach the \
+    Err("the MCP client direction is not built in this release, so busbar cannot reach the \
          registered upstream. Every governance check on this call ran and passed; the round trip is \
          what is missing."
         .to_string())

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STDIO TRANSPORT: spawn and supervise a child process, with the real lifecycle state machine
-//! `mcp-design.md` §3.9c calls for.
+//! THE STDIO TRANSPORT: spawn and supervise a child process, with a real lifecycle state machine
+//! rather than a fire-and-forget spawn — a child that is never reaped is a leak, and one that is
+//! written to before it is ready loses the write silently.
 //!
 //! ## Why this is net-new engine surface and not "a seventh entry in an existing pattern"
 //!

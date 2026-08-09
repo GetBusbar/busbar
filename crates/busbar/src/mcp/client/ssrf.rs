@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! DISPATCH-TIME SSRF: an upstream MCP URL is attacker-influenced, so it is validated per request,
-//! resolved, and then CONNECTED TO THE ADDRESS THAT WAS VALIDATED (`mcp-design.md` §3.7).
+//! resolved, and then CONNECTED TO THE ADDRESS THAT WAS VALIDATED.
 //!
 //! ## Why the existing guard is not enough, stated precisely
 //!

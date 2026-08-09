@@ -26,7 +26,7 @@ fn mint_then_verify_roundtrips() {
     assert_eq!(claims.kid, DEFAULT_KID);
 }
 
-/// THE PLANE BOUNDARY (1.5.5 P1, `mcp-oauth-1.5.5-DESIGN.md` par. 4): an AUDIENCE-BOUND token
+/// THE PLANE BOUNDARY (1.5.5): an AUDIENCE-BOUND token
 /// (the shape the MCP authorization server mints, wire claim `a`) must be REJECTED by the
 /// plain data-plane verify. Before the boundary existed, serde ignored the unknown claim and
 /// the token verified everywhere a busbar key does (`/stats`, `/v1/models`, every

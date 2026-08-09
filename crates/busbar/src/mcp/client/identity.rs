@@ -3,7 +3,7 @@
 
 //! THE ROUTING KEY: `{server}_{tool}`, and nothing else.
 //!
-//! `mcp-design.md` §3.0 states the one rule the whole client direction hangs on:
+//! One rule holds up the whole client direction:
 //!
 //! > Route ONLY on bound identity = `(registered-server-id, namespaced-tool-name, schema/description
 //! > hash)`. NEVER route on untrusted tool descriptions.

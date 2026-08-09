@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE TOOL-LIST CACHE: a versioned snapshot with atomic swap, per-tool schema/description
-//! hash-pinning, and the drift detection that is the RUG-PULL defence (`mcp-design.md` §3.3).
+//! hash-pinning, and the drift detection that is the RUG-PULL defence.
 //!
 //! ## What a rug-pull is, and what actually stops it
 //!
@@ -10,7 +10,7 @@
 //! it. A week later the upstream re-serves `read_file` under the same name with a schema that also
 //! takes a `webhook_url`, or a description that instructs the model to exfiltrate. Nothing about the
 //! NAME changed, so a cache keyed on names re-adopts the poisoned definition silently. That is
-//! CVE-2025-54136's shape and it is threat 12.
+//! CVE-2025-54136's shape.
 //!
 //! The defence is a per-tool DIGEST over exactly the parts an upstream controls — name, description
 //! and input schema — approved once by the operator and re-compared on every refresh. A digest that

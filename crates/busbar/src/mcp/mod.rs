@@ -14,8 +14,8 @@
 //! identity, budget, policy, rate limits, audit.
 //!
 //! busbar is NOT the authorization server. The tokens are minted by the operator's existing IdP
-//! (Okta, Entra, Auth0), and nothing in this module issues one. That split is an owner ruling
-//! (`mcp-design.md` §11.7): the AS is a plugin, and it is deferred.
+//! (Okta, Entra, Auth0), and nothing in this module issues one. That split is deliberate: an
+//! authorization server is a plugin surface, and it is deferred.
 //!
 //! ## Why the audience check is the load-bearing one
 //!
@@ -38,9 +38,10 @@
 //!
 //! - There is no `initialize` handshake and there are no protocol sessions. Every request is
 //!   self-describing, carrying its protocol version and the client's capabilities in `_meta`. So
-//!   there is no `Mcp-Session-Id` to mint, honour, or invalidate — see `mcp-design.md` §14.2 for
-//!   what that does to the designed session-tombstoning defence (it collapses into a per-request
-//!   check, which is simpler).
+//!   there is no `Mcp-Session-Id` to mint, honour, or invalidate. A stateful protocol would need
+//!   to TOMBSTONE the sessions pinned to a server the operator has de-approved; with no handshake
+//!   and no sessions there is nothing to tombstone, so that defence collapses into a per-request
+//!   generation check, which is simpler and cannot go stale.
 //! - The GET stream endpoint is gone, and with it resumability. GET and DELETE answer `405`.
 //! - `Mcp-Method` mirrors the body's `method` on every request, and `Mcp-Name` mirrors the target
 //!   name on `tools/call`, `resources/read` and `prompts/get`. Both are REQUIRED for compliance, and

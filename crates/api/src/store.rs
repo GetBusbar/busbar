@@ -54,8 +54,8 @@ impl ScopeRef {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.5 P0,
-/// `mcp-oauth-1.5.5-DESIGN.md` §6.2): each registered scope kind gets its OWN named wire field -
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.5): each registered
+/// scope kind gets its OWN named wire field -
 /// `allowed_pools` (kind `pool`), `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools`
 /// (kind `mcp_tool`) - each a plain array of bare value strings, never a `{kind, value}` object.
 /// The in-memory `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read.

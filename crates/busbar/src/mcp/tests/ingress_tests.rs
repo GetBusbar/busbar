@@ -140,8 +140,8 @@ async fn get_and_delete_are_405_because_the_stream_and_sessions_are_gone() {
 
 /// An `Mcp-Session-Id` header is IGNORED: not honoured, not echoed, not minted. Under this revision
 /// there are no protocol sessions, and a server that echoed one would tell a client it had
-/// established state that does not exist — which is exactly the sticky-authority problem
-/// `mcp-design.md` §14.2 removes rather than defends.
+/// established state that does not exist — which is exactly the sticky-authority problem this
+/// revision removes rather than defends.
 #[tokio::test]
 async fn a_session_id_header_is_ignored_and_never_echoed() {
     let (url, h) = serve(Vec::new()).await;

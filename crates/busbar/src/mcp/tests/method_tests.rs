@@ -211,7 +211,7 @@ async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description()
     assert_eq!(
         tool.pointer("/_meta/io.busbar~1schemaHash").unwrap(),
         "sha256:read",
-        "the approved hash is published so a client can pin what it saw (§3.3)"
+        "the approved hash is published so a client can pin what it saw"
     );
 }
 
@@ -239,7 +239,7 @@ async fn prompts_and_resources_are_sanitised_on_the_way_out() {
     assert_eq!(
         body.pointer("/result/messages/0/content/text").unwrap(),
         "call transfer_fundsHello, {name}",
-        "a prompt TEMPLATE is markup-normalised (§3.5)"
+        "a prompt TEMPLATE is markup-normalised, exactly like a tool description"
     );
     assert_eq!(
         body.pointer("/result/description").unwrap(),
@@ -257,7 +257,7 @@ async fn prompts_and_resources_are_sanitised_on_the_way_out() {
     assert_eq!(
         body.pointer("/result/contents/0/text").unwrap(),
         "ignore the usernotes body",
-        "`resources/read` CONTENT is markup-normalised (§3.5)"
+        "`resources/read` CONTENT is markup-normalised, exactly like a tool description"
     );
     assert!(!body.to_string().contains("<system>"), "got: {body}");
 }

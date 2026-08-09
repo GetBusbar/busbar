@@ -414,10 +414,10 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     if name.contains(NAMESPACE_SEP) {
         return Err(format!(
             "{at}: an MCP server id may not contain `{NAMESPACE_SEP}`. The id is the first half of \
-             the `{{server}}{NAMESPACE_SEP}{{tool}}` namespaced routing key (§3.0); with a \
+             the `{{server}}{NAMESPACE_SEP}{{tool}}` namespaced routing key; with a \
              separator inside it, two different (server, tool) pairs render the SAME key and one \
              `mcp_tool` scope grant silently names both. Tool names may contain `{NAMESPACE_SEP}` \
-             (§5.1's own example does) — only the id may not. Rename the server, e.g. \
+             (the canonical `read_file` does) — only the id may not. Rename the server, e.g. \
              `{}`.",
             name.replace(NAMESPACE_SEP, "-")
         ));
@@ -456,7 +456,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     if matches!(def.transport, Some(Transport::Stdio)) {
         return Err(format!(
             "{at}: `transport: stdio` is not implemented in this release. The stdio child \
-             supervision state machine (§3.9c) is net-new engine surface and nothing in this build \
+             supervision state machine is net-new engine surface and nothing in this build \
              spawns or reaps a child, so a deployment that booted with it would fail at first \
              dispatch instead of here. Use `transport: streamable_http`."
         ));
