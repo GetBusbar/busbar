@@ -400,6 +400,7 @@ pub(super) fn exchanging_server(
         tools_allow,
         prompts_allow: indexmap::IndexMap::new(),
         resources_allow: indexmap::IndexMap::new(),
+        resource_templates_allow: Default::default(),
         transport: None,
         // The RFC 8707 resource indicator: the exchanged token is bound to THIS upstream and is not
         // spendable at another.

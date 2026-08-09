@@ -181,7 +181,7 @@ pub(crate) async fn dispatch(
         "prompts/list" => Some(prompts_list(ctx, id)),
         "prompts/get" => Some(prompts_get(ctx, params, id)),
         "resources/list" => Some(resources_list(ctx, id)),
-        "resources/templates/list" => Some(resources_templates_list(id)),
+        "resources/templates/list" => Some(resources_templates_list(ctx, id)),
         "resources/read" => Some(resources_read(ctx, params, id)),
         "completion/complete" => Some(completion_complete(id)),
         _ => None,
@@ -281,6 +281,11 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // suggestions to give — see `completion_complete` for why the answer is the empty
                 // set and why that is a complete answer rather than a stub.
                 "completions": {},
+                // Present because busbar EMITS `notifications/message` records about its own
+                // handling of a request, on the response stream of the request they describe. There
+                // is deliberately no `logging/setLevel`: this revision has no session for a level to
+                // live in, so the level is named per request in `_meta` — see `super::sse`.
+                "logging": {},
             },
             "methods": IMPLEMENTED_METHODS,
             "servers": servers,
@@ -498,20 +503,81 @@ fn prompts_get(
     }
     // Substitute FIRST, normalise SECOND — see `substitute_arguments` rule 1. The caller's argument
     // values pass through the same markup strip the operator's template does.
-    let text = sanitize::normalise(&substitute_arguments(
-        prompt.template.as_deref().unwrap_or(""),
-        params,
-    ));
     result(
         id,
         serde_json::json!({
             "description": sanitize::normalise_opt(prompt.description.as_deref()),
-            "messages": [{
-                "role": "user",
-                "content": { "type": "text", "text": text },
-            }],
+            "messages": render_prompt_messages(prompt, params),
         }),
     )
+}
+
+/// The `messages` array `prompts/get` returns, in whichever of the two forms the operator declared.
+///
+/// ONE FUNCTION FOR BOTH FORMS, and that is the point rather than tidiness: the text form and the
+/// typed form must go through the SAME substitute-then-normalise pass. A second rendering path
+/// would be a second place to forget the strip, and a new content type that skipped it would be a
+/// hole opened by a feature nobody thought of as a text surface.
+fn render_prompt_messages(
+    prompt: &super::catalogue::PromptEntry,
+    params: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    use super::config::PromptContentCfg;
+
+    // SUBSTITUTE FIRST, NORMALISE SECOND — `substitute_arguments` rule 1. The caller's argument
+    // values pass through the same markup strip the operator's own text does.
+    let render = |s: &str| sanitize::normalise(&substitute_arguments(s, params));
+
+    if prompt.messages.is_empty() {
+        return vec![serde_json::json!({
+            "role": "user",
+            "content": {
+                "type": "text",
+                "text": render(prompt.template.as_deref().unwrap_or("")),
+            },
+        })];
+    }
+
+    prompt
+        .messages
+        .iter()
+        .map(|m| {
+            let content = match &m.content {
+                PromptContentCfg::Text { text } => serde_json::json!({
+                    "type": "text", "text": render(text),
+                }),
+                // The base64 payload is NOT normalised. `normalise` strips markup from text that
+                // re-enters a model's instruction stream; a media payload is opaque bytes the client
+                // was told the type of, and running a text filter over base64 would corrupt it while
+                // protecting nothing. It is validated as decodable at BOOT instead.
+                PromptContentCfg::Image { data, mime_type } => serde_json::json!({
+                    "type": "image", "data": data, "mimeType": mime_type,
+                }),
+                PromptContentCfg::Audio { data, mime_type } => serde_json::json!({
+                    "type": "audio", "data": data, "mimeType": mime_type,
+                }),
+                PromptContentCfg::Resource { resource } => {
+                    let mut r = serde_json::Map::new();
+                    // The URI substitutes: `test_prompt_with_embedded_resource` takes the URI to
+                    // embed as an ARGUMENT, so a template that could not substitute here could not
+                    // express the shape at all. It is normalised too — a URI carrying an HTML-like
+                    // tag is not a URI, and this one is echoed into a model's context.
+                    r.insert("uri".into(), render(&resource.uri).into());
+                    if let Some(m) = &resource.mime_type {
+                        r.insert("mimeType".into(), m.clone().into());
+                    }
+                    if let Some(t) = &resource.text {
+                        r.insert("text".into(), render(t).into());
+                    }
+                    if let Some(b) = &resource.blob {
+                        r.insert("blob".into(), b.clone().into());
+                    }
+                    serde_json::json!({ "type": "resource", "resource": r })
+                }
+            };
+            serde_json::json!({ "role": m.role, "content": content })
+        })
+        .collect()
 }
 
 /// `resources/list`, with every free-text field markup-normalised on the way out.
@@ -546,26 +612,47 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// `resources/templates/list` — the URI-TEMPLATE catalogue, which for this server is EMPTY, and
-/// says so rather than answering `-32601`.
+/// `resources/templates/list` — the GRANT-SCOPED URI-TEMPLATE catalogue.
 ///
 /// A resource template is a parameterised URI (`file:///logs/{date}.log`) that a client expands and
-/// then reads. busbar's registry has no such concept: `resources_allow:` names CONCRETE resources
-/// the operator approved one at a time, by URI, and approval-by-URI is the whole basis on which a
-/// resource is served at all. A template is an approval of a SHAPE — of every URI matching a
-/// pattern — and granting that is a policy decision the operator has not been given a way to make,
-/// so there is nothing here to enumerate and inventing one would enumerate an approval nobody gave.
+/// then reads. This method answered `[]` unconditionally, and that WAS the complete and correct
+/// answer for as long as the registry had no concept of one: `resources_allow:` named concrete URIs
+/// the operator approved one at a time, a template is an approval of a SHAPE, and the operator had
+/// no way to make that decision. `resource_templates_allow:` is that way, so the empty list stopped
+/// being a fact about the registry and became a fact about this function.
 ///
-/// The empty list is therefore the COMPLETE and correct answer, exactly as it is for a caller whose
-/// grant reaches no tools, and it is a different answer from `-32601`: `-32601` says "this server
-/// does not do templates and never will", which would be a claim about the roadmap, while `[]` says
-/// "this deployment exposes none", which is a claim about the registry and is the one that is true.
-/// It also takes no grant argument, because there is nothing to scope — an empty list is the same
-/// empty list under every grant, and threading one would imply a filtering that does not happen.
-fn resources_templates_list(id: Option<serde_json::Value>) -> Response {
+/// It is scoped by the same two grants as every other catalogue read, and it is scoped for the same
+/// reason: a template names a capability of a server, and a caller with no reach to the server has
+/// no reach to its templates. The empty list survives for a caller whose grant reaches none, which
+/// is where the old answer was right all along.
+fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
+    let grant = ctx.grant();
+    let templates: Vec<serde_json::Value> = ctx
+        .app
+        .mcp_catalogue
+        .resource_templates_for(&grant)
+        .into_iter()
+        .map(|t| {
+            let mut obj = serde_json::Map::new();
+            // The NAMESPACED template, for the reason `resources_list` publishes the namespaced uri:
+            // two servers may legitimately publish one template, and the raw form would let the
+            // second silently answer for the first.
+            obj.insert("uriTemplate".into(), t.namespaced.clone().into());
+            if let Some(n) = sanitize::normalise_opt(t.name.as_deref()) {
+                obj.insert("name".into(), n.into());
+            }
+            if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
+                obj.insert("description".into(), d.into());
+            }
+            if let Some(m) = &t.mime_type {
+                obj.insert("mimeType".into(), m.clone().into());
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
     result(
         id,
-        cache_hints(serde_json::json!({ "resourceTemplates": [] })),
+        cache_hints(serde_json::json!({ "resourceTemplates": templates })),
     )
 }
 
@@ -580,25 +667,82 @@ fn resources_read(
         return invalid_params(id, "`params.uri` is required and must be a string.");
     };
     let grant = ctx.grant();
-    let Some(res) = ctx.app.mcp_catalogue.resource_for(&grant, uri) else {
-        return not_found(
-            id,
-            &format!("`{uri}` is not a resource this server exposes."),
-        );
+    // CONCRETE FIRST, TEMPLATE SECOND, and never the other way round. A URI the operator approved BY
+    // NAME must not be answered by a template that happens to match it: the two are different
+    // approvals, and letting the broader one win would let adding a template silently change what an
+    // already-approved URI returns.
+    let content = match ctx.app.mcp_catalogue.resource_for(&grant, uri) {
+        Some(res) => concrete_resource_content(res),
+        None => match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
+            Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
+            None => {
+                return not_found(
+                    id,
+                    &format!("`{uri}` is not a resource this server exposes."),
+                )
+            }
+        },
     };
+    result(
+        id,
+        cache_hints(serde_json::json!({ "contents": [content] })),
+    )
+}
+
+/// The `ResourceContents` block for a CONCRETE resource.
+///
+/// `text` and `blob` are the schema's two ALTERNATIVES, and exactly one is emitted. Config
+/// validation already refuses a declaration carrying both, so the `else` arm here is the honest
+/// "neither was declared" — an approved resource with no content, which answers the empty text form
+/// rather than an error, because the operator approving a URI and leaving it empty is a statement
+/// about content, not a malformed request.
+fn concrete_resource_content(res: &super::catalogue::ResourceEntry) -> serde_json::Value {
     let mut content = serde_json::Map::new();
     content.insert("uri".into(), res.namespaced.clone().into());
     if let Some(m) = &res.mime_type {
         content.insert("mimeType".into(), m.clone().into());
     }
-    content.insert(
-        "text".into(),
-        sanitize::normalise(res.text.as_deref().unwrap_or("")).into(),
-    );
-    result(
-        id,
-        cache_hints(serde_json::json!({ "contents": [serde_json::Value::Object(content)] })),
-    )
+    match &res.blob {
+        // NOT normalised — see `ResourceAllowCfg::blob`. A markup strip over base64 corrupts the
+        // payload and protects nothing; what protects the client is the boot-time decode check.
+        Some(blob) => {
+            content.insert("blob".into(), blob.clone().into());
+        }
+        None => {
+            content.insert(
+                "text".into(),
+                sanitize::normalise(res.text.as_deref().unwrap_or("")).into(),
+            );
+        }
+    }
+    serde_json::Value::Object(content)
+}
+
+/// The `ResourceContents` block for one EXPANSION of a template.
+///
+/// The URI echoed is the one the CALLER ASKED FOR, not the template. A client correlates the content
+/// it received with the URI it sent; answering with the unexpanded template would hand back an
+/// identifier that names every expansion at once.
+///
+/// The bindings substitute into the content, and the substituted result is normalised — the
+/// parameter values come from the caller's own URI, so they are exactly as attacker-controlled as a
+/// prompt argument and go through exactly the same strip.
+fn templated_resource_content(
+    requested_uri: &str,
+    template: &super::catalogue::ResourceTemplateEntry,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    let mut text = template.text.clone().unwrap_or_default();
+    for (name, value) in bindings {
+        text = text.replace(&format!("{{{name}}}"), value);
+    }
+    let mut content = serde_json::Map::new();
+    content.insert("uri".into(), requested_uri.into());
+    if let Some(m) = &template.mime_type {
+        content.insert("mimeType".into(), m.clone().into());
+    }
+    content.insert("text".into(), sanitize::normalise(&text).into());
+    serde_json::Value::Object(content)
 }
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.

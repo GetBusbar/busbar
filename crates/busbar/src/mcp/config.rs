@@ -141,6 +141,14 @@ pub(crate) struct ToolAllowCfg {
 /// The locked core keys name only `tools_allow`; prompts and resources belong to the MCP-SPECIFIC
 /// superset an operator "may also set per entry". They take the same MAP shape as `tools_allow` for
 /// the same reason: a capability needs a slot for what the operator approved about it.
+///
+/// TWO SPELLINGS, AND EXACTLY ONE PER PROMPT. `template:` is the text form and stays the documented
+/// spelling for the common case — one `{type:"text"}` message, which is what almost every prompt is.
+/// `messages:` is the TYPED form, and it exists because a text template cannot express an image, an
+/// audio clip or an embedded resource at all: base64 in a `text` field is prose to every client that
+/// reads it, so "put it in the template" is not a workaround, it is a different and wrong answer.
+/// Declaring both is a config refusal — see [`validate_server`] — because two statements of what one
+/// prompt says make the answer depend on which branch runs first.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PromptAllowCfg {
@@ -154,6 +162,12 @@ pub(crate) struct PromptAllowCfg {
     /// same deny-by-default-by-absence as `tools_allow`'s — one grammar, two paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ask_caller: Vec<AskRoundCfg>,
+    /// The TYPED form: the `PromptMessage` list `prompts/get` returns verbatim. Absent ⇒ the
+    /// `template:` form. Every text field in it is markup-normalised on the way out, exactly as
+    /// `template:` is — a second way to put text into a model's context must not be a second way
+    /// past the strip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) messages: Vec<PromptMessageCfg>,
 }
 
 /// ONE ROUND of `ask_caller` — a map from the server-assigned key to the request busbar makes.
@@ -201,6 +215,65 @@ pub(crate) struct AskEntryCfg {
     pub(crate) params: Option<serde_json::Value>,
 }
 
+/// `tools.<server>.prompts_allow.<name>.messages[]` — ONE typed message.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PromptMessageCfg {
+    /// `user` or `assistant`, checked by [`validate_server`]. Defaulted to `user` because a prompt is
+    /// what the operator is asking the model, and a field an operator must retype on every line is a
+    /// field an operator eventually mistypes.
+    #[serde(default = "default_prompt_role")]
+    pub(crate) role: String,
+    pub(crate) content: PromptContentCfg,
+}
+
+fn default_prompt_role() -> String {
+    "user".to_string()
+}
+
+/// One content block, INTERNALLY TAGGED by `type` — which is both the MCP wire spelling and the only
+/// discriminator that survives a typo. An untagged union would silently deserialise into whichever
+/// arm happened to fit, so a misspelled `mime_type` on an image could land as something else
+/// entirely and the operator would be told nothing.
+///
+/// No `deny_unknown_fields`: serde does not support it on an internally tagged enum, and asking for
+/// it here would be a compile error rather than the guard it looks like. The variants' own fields
+/// are all required or defaulted, so an unknown key is caught as a missing/duplicate field instead.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum PromptContentCfg {
+    /// Plain text. The same thing `template:` produces, available inside the typed form so a prompt
+    /// that carries an image can also carry the sentence that asks about it.
+    Text { text: String },
+    /// Base64 image data. `mime_type` is REQUIRED: a client cannot render bytes it has not been told
+    /// the type of, and guessing one from the payload would be busbar deciding what the operator
+    /// meant.
+    Image { data: String, mime_type: String },
+    /// Base64 audio data, same rule.
+    Audio { data: String, mime_type: String },
+    /// An EMBEDDED RESOURCE — content carried inline in the prompt rather than fetched.
+    Resource { resource: PromptResourceCfg },
+}
+
+/// The resource a `type: resource` content block embeds.
+///
+/// Its `uri` is an IDENTIFIER the client may echo, not a promise that `resources/read` will serve it:
+/// an embedded resource is content that has already arrived. Making it a promise would mean every
+/// embedded URI had to be separately approved in `resources_allow`, which is an approval an operator
+/// did not make by writing a prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PromptResourceCfg {
+    pub(crate) uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<String>,
+    /// Base64, and mutually exclusive with `text` for the same reason [`ResourceAllowCfg`]'s pair is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) blob: Option<String>,
+}
+
 /// `tools.<server>.resources_allow.<uri>` — one exposed resource, markup-normalised on the way out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -213,6 +286,53 @@ pub(crate) struct ResourceAllowCfg {
     pub(crate) mime_type: Option<String>,
     /// The content `resources/read` returns. In the sanitization set for the same reason as prompt
     /// templates: it re-enters model context verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<String>,
+    /// The BASE64 content `resources/read` returns, for a resource that is not text.
+    ///
+    /// `ResourceContents` in the schema is a union of a text form and a blob form, and this registry
+    /// answered only one half of it: an operator with a PNG had to declare it as `text` — handing a
+    /// client base64 in a field every client renders as prose — or not expose it at all.
+    ///
+    /// MUTUALLY EXCLUSIVE with `text:`, refused at boot rather than resolved. The two are the
+    /// schema's alternatives; accepting both and picking one would put the choice of what a client
+    /// reads in whichever branch happens to run first.
+    ///
+    /// NOT markup-normalised, and that is not an exemption from the sanitization rule — it is the
+    /// rule applied correctly. `normalise` strips markup from TEXT that re-enters model context; a
+    /// blob is opaque bytes the client is told the type of, and running a text filter over base64
+    /// would corrupt the payload while protecting nothing. What IS checked is that it decodes, at
+    /// boot, so the operator finds out rather than the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) blob: Option<String>,
+}
+
+/// `tools.<server>.resource_templates_allow.<uri-template>` — one exposed RESOURCE TEMPLATE.
+///
+/// A template is a PARAMETERISED URI (`test://template/{id}/data`) that a client expands and then
+/// reads. `resources/templates/list` answered `[]` unconditionally before this, and that was the
+/// correct answer only while the registry had no concept of one: the empty list said "this
+/// deployment exposes none", which was true. It stops being true the moment an operator can declare
+/// one, and the difference is not cosmetic — that method is the ONLY way a client discovers a
+/// template, so an unconditional `[]` makes a declared template unreachable.
+///
+/// The KEY is the template. Approval is still per-declaration and still the operator's: what changes
+/// is that one declaration now approves a SHAPE rather than a single URI, which is a policy decision
+/// the operator makes by writing it here and could not previously express at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResourceTemplateAllowCfg {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mime_type: Option<String>,
+    /// The content, with the template's own `{param}` placeholders substituted from the URI the
+    /// caller actually asked for. There is deliberately no `blob:` here: a blob cannot carry a
+    /// substitution, so a parameterised blob would be a template whose parameter changes nothing —
+    /// which is a concrete resource wearing a template's clothes, and `resources_allow` is where
+    /// those go.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) text: Option<String>,
 }
@@ -293,6 +413,12 @@ pub(crate) struct McpServerDefCfg {
     /// The exposed resources, keyed by URI — MCP-specific superset, likewise.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) resources_allow: indexmap::IndexMap<String, ResourceAllowCfg>,
+    /// The exposed resource TEMPLATES, keyed by URI template. Separate from `resources_allow`
+    /// deliberately: `resources/list` and `resources/templates/list` are two different methods
+    /// answering two different questions, and a client that expanded a concrete URI as a template —
+    /// or listed a template as a readable resource — would be acting on the wrong one.
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    pub(crate) resource_templates_allow: indexmap::IndexMap<String, ResourceTemplateAllowCfg>,
     /// The transport generation this registration speaks. One value today, spelled because the
     /// MCP-specific superset carries it and because a second leg would be a second wire format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -595,12 +721,43 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     for tool in def.tools_allow.keys() {
         validate_capability_name(&at, "tools_allow", tool)?;
     }
-    for prompt in def.prompts_allow.keys() {
+    for (prompt, allow) in &def.prompts_allow {
         validate_capability_name(&at, "prompts_allow", prompt)?;
+        validate_prompt(&at, prompt, allow)?;
     }
-    for uri in def.resources_allow.keys() {
+    for (uri, allow) in &def.resources_allow {
         if uri.trim().is_empty() {
             return Err(format!("{at}: `resources_allow:` has an empty URI key"));
+        }
+        // THE TWO FORMS ARE ALTERNATIVES. See `ResourceAllowCfg::blob`.
+        if allow.text.is_some() && allow.blob.is_some() {
+            return Err(format!(
+                "{at}: `resources_allow.{uri}` declares both `text:` and `blob:`. Those are the two \
+                 ALTERNATIVE forms of one resource's contents, and a server that carried both would \
+                 be leaving a client to choose which of the operator's two answers to believe. Keep \
+                 one."
+            ));
+        }
+        if let Some(blob) = &allow.blob {
+            validate_base64(&at, &format!("resources_allow.{uri}.blob"), blob)?;
+        }
+    }
+    for (template, allow) in &def.resource_templates_allow {
+        validate_uri_template(&at, template)?;
+        // A template whose CONTENT names no parameter is a template that answers the same bytes for
+        // every expansion, which is a concrete resource with a wildcard in front of it. Refused,
+        // because the wildcard is then an approval of a whole URI shape bought for nothing.
+        if let Some(text) = &allow.text {
+            let names = template_parameter_names(template);
+            if !names.iter().any(|n| text.contains(&format!("{{{n}}}"))) {
+                return Err(format!(
+                    "{at}: `resource_templates_allow.{template}` has `text:` that substitutes none \
+                     of its parameters ({names:?}), so every expansion answers identical bytes. That \
+                     is a concrete resource behind a URI wildcard, and the wildcard approves a whole \
+                     shape for no benefit — declare it in `resources_allow:` instead, or use the \
+                     parameter."
+                ));
+            }
         }
     }
 
@@ -665,6 +822,150 @@ fn validate_capability_name(at: &str, field: &str, name: &str) -> Result<(), Str
         return Err(format!("{at}: `{field}:` has an empty name key"));
     }
     Ok(())
+}
+
+/// The VALUE rules for one `prompts_allow` entry: one form, a legal role, and decodable media.
+fn validate_prompt(at: &str, name: &str, allow: &PromptAllowCfg) -> Result<(), String> {
+    if allow.template.is_some() && !allow.messages.is_empty() {
+        return Err(format!(
+            "{at}: `prompts_allow.{name}` declares both `template:` and `messages:`. Those are the \
+             two ALTERNATIVE spellings of what one prompt says — `template:` is the single-text \
+             form, `messages:` is the typed form — and honouring one silently would make the answer \
+             depend on which branch runs first. Keep one."
+        ));
+    }
+    for (i, message) in allow.messages.iter().enumerate() {
+        // The schema names exactly two roles. An unrecognised one is refused rather than passed
+        // through: a client that does not know the role has no way to place the message, and a
+        // message with no place in a conversation is a message a model reads in the wrong voice.
+        if !matches!(message.role.as_str(), "user" | "assistant") {
+            return Err(format!(
+                "{at}: `prompts_allow.{name}.messages[{i}].role` is `{}`; a PromptMessage role is \
+                 `user` or `assistant`.",
+                message.role
+            ));
+        }
+        let field = format!("prompts_allow.{name}.messages[{i}]");
+        match &message.content {
+            PromptContentCfg::Text { .. } => {}
+            PromptContentCfg::Image { data, .. } | PromptContentCfg::Audio { data, .. } => {
+                validate_base64(at, &format!("{field}.data"), data)?;
+            }
+            PromptContentCfg::Resource { resource } => {
+                if resource.uri.trim().is_empty() {
+                    return Err(format!("{at}: `{field}.resource.uri` must not be empty"));
+                }
+                if resource.text.is_some() && resource.blob.is_some() {
+                    return Err(format!(
+                        "{at}: `{field}.resource` declares both `text:` and `blob:`; those are the \
+                         two alternative forms of one resource's contents. Keep one."
+                    ));
+                }
+                if let Some(blob) = &resource.blob {
+                    validate_base64(at, &format!("{field}.resource.blob"), blob)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A base64 value that does not decode is refused HERE, at boot, on the operator who typed it.
+///
+/// The alternative is a client receiving bytes it cannot decode, which surfaces hours later, in
+/// somebody else's log, as "busbar sent me rubbish".
+fn validate_base64(at: &str, field: &str, value: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|e| {
+            format!(
+                "{at}: `{field}` is not valid standard base64 ({e}). A client is told these bytes \
+                 are media of a declared type; bytes that do not decode are not media."
+            )
+        })?;
+    Ok(())
+}
+
+/// THE URI-TEMPLATE RULES, and they are deliberately narrow.
+///
+/// Only RFC 6570 LEVEL 1 — `{name}`, simple string expansion — is accepted. The higher levels add
+/// operators (`{+var}` reserved expansion, `{#var}` fragments, `{/var}` path segments, `{?var}` form
+/// parameters) whose expansions and, crucially, whose MATCHING rules differ from one another. A
+/// matcher that accepted the syntax of level 3 while implementing the semantics of level 1 would
+/// resolve some URIs to the wrong template, silently, and a resource template IS an approval — so a
+/// mis-match is content served under an approval nobody gave. Refusing the syntax we do not
+/// implement is the only version of this that cannot be wrong.
+fn validate_uri_template(at: &str, template: &str) -> Result<(), String> {
+    if template.trim().is_empty() {
+        return Err(format!(
+            "{at}: `resource_templates_allow:` has an empty URI-template key"
+        ));
+    }
+    let mut rest = template;
+    let mut names: Vec<&str> = Vec::new();
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return Err(format!(
+                "{at}: `resource_templates_allow.{template}` has a `{{` with no matching `}}`"
+            ));
+        };
+        let name = &after[..close];
+        if name.is_empty() {
+            return Err(format!(
+                "{at}: `resource_templates_allow.{template}` has an empty `{{}}` parameter"
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Err(format!(
+                "{at}: `resource_templates_allow.{template}` uses `{{{name}}}`, which is not an RFC \
+                 6570 LEVEL 1 parameter. busbar implements level 1 (simple string expansion) only: \
+                 an operator (`+`, `#`, `/`, `?`, `&`, `*`) expands AND MATCHES differently, and a \
+                 matcher that accepted the syntax without the semantics would resolve some URIs to \
+                 the wrong template — which is content served under an approval nobody gave."
+            ));
+        }
+        if names.contains(&name) {
+            return Err(format!(
+                "{at}: `resource_templates_allow.{template}` names `{{{name}}}` twice. Two \
+                 occurrences of one parameter can be expanded with two different values, and this \
+                 matcher would then have to decide which one the URI meant."
+            ));
+        }
+        names.push(name);
+        rest = &after[close + 1..];
+    }
+    if names.is_empty() {
+        return Err(format!(
+            "{at}: `resource_templates_allow.{template}` names no `{{parameter}}`, so it is a \
+             concrete URI. Declare it in `resources_allow:`."
+        ));
+    }
+    if rest.contains('}') {
+        return Err(format!(
+            "{at}: `resource_templates_allow.{template}` has a `}}` with no matching `{{`"
+        ));
+    }
+    Ok(())
+}
+
+/// The parameter names of a template, in order. Only called on a template
+/// [`validate_uri_template`] has already accepted, so the scan cannot be tricked by unbalanced
+/// braces — and that ordering is why this returns a plain `Vec` rather than a `Result`.
+pub(crate) fn template_parameter_names(template: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else { break };
+        out.push(after[..close].to_string());
+        rest = &after[close + 1..];
+    }
+    out
 }
 
 /// The all-MCP attach list is validated by the same rule as a per-server one.

@@ -38,6 +38,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
             tools_allow,
             prompts_allow: indexmap::IndexMap::new(),
             resources_allow: indexmap::IndexMap::new(),
+            resource_templates_allow: Default::default(),
             transport: None,
             aud: None,
             grants: Default::default(),
