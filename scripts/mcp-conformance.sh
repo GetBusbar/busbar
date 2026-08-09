@@ -34,8 +34,8 @@
 #
 # ARMING
 #   MCP_CONFORMANCE_SUBJECT_URL   busbar's MCP endpoint, e.g. https://gw.example.com/mcp
-#   MCP_BATTERY_DIR               a checkout of the in-house battery
-#                                 (busbarAI-private/testing/mcp-conformance)
+#   MCP_BATTERY_DIR               a checkout of the in-house adversarial/seam battery, if you have
+#                                 one; the legs that use it skip when it is unset
 #
 # PINS, and why each is exact:
 #   CONFORMANCE_PIN  the suite version. A silent upgrade can never LOOSEN what a gate accepts, so it
@@ -226,13 +226,12 @@ battery_control() {
 
   NOT AVAILABLE, SO NOT RUN.
 
-  The in-house adversarial/seam battery lives in the private design repo and is not vendored here.
-  Point MCP_BATTERY_DIR at a checkout of `testing/mcp-conformance` to run it.
+  The in-house adversarial and seam battery is not part of this repository. Set MCP_BATTERY_DIR to
+  a checkout of it to run these legs.
 
-  This SKIPS rather than failing for the same reason the subject legs do — but note that it is a
-  WEAKER position than the official control leg above, which needs nothing private and therefore
-  always runs. See the report accompanying this script: the battery's home is reachable only
-  through a self-hosted host, which is a poor dependency for a release gate.
+  This SKIPS rather than failing, for the same reason the subject legs do. Note that it is a WEAKER
+  position than the official control leg above, which depends on nothing beyond this repository and
+  therefore always runs.
 
 BANNER
     return 0

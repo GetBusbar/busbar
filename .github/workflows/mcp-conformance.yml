@@ -135,13 +135,12 @@ jobs:
         with:
           python-version: '3.12'
       # THE HONEST GAP, stated here rather than hidden in a green check: the in-house adversarial
-      # and seam battery lives in the private design repo, which is served from a self-hosted host.
-      # It is NOT vendored into this repo, so this job cannot run it by default and skips. That is a
-      # weaker position than the official legs above, which need nothing private and always run —
-      # and it is a decision the owner owes rather than one this workflow should paper over. The two
-      # options are vendoring the battery here (it contains no product knowledge by construction, so
-      # publishing it is safe and arguably makes it more credible) or accepting a release gate that
-      # depends on a self-hosted host being up.
+      # and seam battery is not part of this repository, so this job cannot run it by default and
+      # skips. That is a weaker position than the official legs above, which depend on nothing
+      # beyond this repository and therefore always run. The sibling A2A conformance workflow
+      # resolved the same question by bringing its battery in alongside the code it judges, which is
+      # what should happen here too: a battery that contains no product knowledge by construction
+      # loses nothing by being readable, and gains a gate that cannot silently stop running.
       - name: Fetch the in-house battery, if reachable
         id: battery
         continue-on-error: true
