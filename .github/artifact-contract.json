@@ -33,7 +33,7 @@
     "without executing: an empty or truncated contract file would otherwise verify every artifact",
     "against nothing and report green."
   ],
-  "min_rows": 13,
+  "min_rows": 14,
   "rows": [
     {
       "id": "archive_shape",
@@ -101,7 +101,8 @@
         "no failure text at all."
       ],
       "applies_when": {
-        "kind": "binary"
+        "kind": "binary",
+        "published": true
       }
     },
     {
@@ -142,10 +143,14 @@
         "to run, so it is the command that must be proven to pass -- on the bytes downloaded from the",
         "release, not on a local copy of the file the build step happened to still have. An",
         "attestation that covers a different digest than the asset a user downloads is worse than",
-        "none, because it looks like provenance."
+        "none, because it looks like provenance.",
+        "Gated on `published`: an artifact packaged into an image rather than",
+        "uploaded has no release asset to attest against, and a row that cannot",
+        "run must not be quietly satisfied."
       ],
       "applies_when": {
-        "kind": "binary"
+        "kind": "binary",
+        "published": true
       }
     },
     {
@@ -209,6 +214,19 @@
         "kind": "image"
       },
       "why": "anchored so 1.5.4 cannot be satisfied by 1.5.40, and read from the running image rather than from the tag that labels it."
+    },
+    {
+      "id": "image_matches_packaged_binary",
+      "applies_when": {
+        "kind": "image"
+      },
+      "why": [
+        "the binary INSIDE the image must be byte-identical to the musl artifact the single",
+        "build path produced for it. This is what makes the image a PACKAGE rather than a",
+        "second build: without it the image could be assembled from a differently-built",
+        "binary and every other row would still pass \u2014 which is how one artifact came to",
+        "embed the plugin release key while its sibling did not."
+      ]
     }
   ]
 }

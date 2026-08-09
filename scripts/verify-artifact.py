@@ -599,6 +599,56 @@ def row_image_version_anchored(ctx) -> str:
     return "reports %s" % ctx.version
 
 
+
+def row_image_matches_packaged_binary(ctx) -> str:
+    """The binary INSIDE the image must be the artifact the single build path produced.
+
+    This is the row that makes the image a PACKAGE rather than a second build. Without it the
+    image could be assembled from a separately-compiled binary and every other row would still
+    pass — which is exactly how one release artifact came to embed the plugin release key while its
+    sibling did not: two build paths, one release, and nothing comparing their outputs.
+
+    Compared by SHA-256 of the bytes, because that is the only comparison that cannot be satisfied
+    by two binaries that merely behave alike today.
+    """
+    ref = _image_ref(ctx)
+    expected = getattr(ctx, "packaged_from", "")
+    if not expected:
+        raise AssertionError(
+            "the musl artifact this image is packaged from was not passed to the verifier "
+            "(--packaged-from), so it could not be proven that the image contains it rather than a "
+            "separately-built binary. A row that cannot run is RED, never skipped."
+        )
+    want = sha256_file(expected)
+    out = run(["docker", "create", "--platform", ctx.spec["platform"], ref])
+    if out.returncode != 0:
+        raise AssertionError("could not create a container to read the image: %s"
+                             % (out.stderr or "").strip()[:300])
+    cid = (out.stdout or "").strip()
+    try:
+        dest = os.path.join(ctx.work, "from-image")
+        os.makedirs(dest, exist_ok=True)
+        cp = run(["docker", "cp", "%s:/%s" % (cid, ctx.spec["exe"]), dest])
+        if cp.returncode != 0:
+            cp = run(["docker", "cp", "%s:/usr/local/bin/%s" % (cid, ctx.spec["exe"]), dest])
+        if cp.returncode != 0:
+            raise AssertionError(
+                "could not read %s out of the image: %s" % (ctx.spec["exe"], (cp.stderr or "").strip()[:300])
+            )
+        got = sha256_file(os.path.join(dest, ctx.spec["exe"]))
+    finally:
+        run(["docker", "rm", "-f", cid])
+    if got != want:
+        raise AssertionError(
+            "the binary in the image is NOT the artifact the build produced for this platform.\n"
+            "  image:  %s\n  built:  %s\n"
+            "  The image is supposed to PACKAGE the release binary, not compile its own. Two build "
+            "paths producing one release is how a property proven on one artifact silently fails to "
+            "hold on another." % (got, want)
+        )
+    return "packages the built artifact exactly (%s)" % got[:12]
+
+
 CHECKS = {
     "archive_shape": row_archive_shape,
     "binary_format": row_binary_format,
@@ -613,6 +663,7 @@ CHECKS = {
     "image_runs_as_nonroot": row_image_runs_as_nonroot,
     "image_release_pubkey": row_image_release_pubkey,
     "image_version_anchored": row_image_version_anchored,
+    "image_matches_packaged_binary": row_image_matches_packaged_binary,
 }
 
 
@@ -781,6 +832,9 @@ def main(argv=None) -> int:
     ap.add_argument("--version", required=True)
     ap.add_argument("--pubkey", default=os.environ.get("BUSBAR_RELEASE_PUBKEY", ""))
     ap.add_argument("--plugin", default="", help="the signed first-party plugin tarball for this target")
+    ap.add_argument("--packaged-from", default="",
+                    help="for an image target, the musl binary the single build path produced for "
+                         "this platform. The image must contain exactly these bytes.")
     ap.add_argument("--image", default="",
                     help="DIGEST-PINNED image reference for an image target. A tag is a moving "
                          "pointer, so verifying one proves something about whatever that name meant "
@@ -826,6 +880,7 @@ def main(argv=None) -> int:
     ctx.pubkey, ctx.repo, ctx.spec, ctx.targets = a.pubkey, a.repo, spec, targets
     ctx.plugin = os.path.abspath(a.plugin) if a.plugin else ""
     ctx.image = a.image
+    ctx.packaged_from = a.packaged_from
     ctx.evidence = os.path.abspath(a.evidence) if a.evidence else ""
     ctx.repo_root, ctx.work = os.path.abspath(a.repo_root), work
 
