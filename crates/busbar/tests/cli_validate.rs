@@ -780,6 +780,15 @@ fn validate_ok_on_valid_root_overlay() {
 ///
 /// The env var is removed explicitly rather than merely left unset, so an unrelated variable in the
 /// developer's or the runner's environment can never turn this test green by accident.
+///
+/// Gated on `auth-admin-tokens` because the FIXTURE cannot exist without it: the identity provider
+/// this test configures is `module: admin-tokens`, which that feature compiles out entirely. Built
+/// without it, `--validate` fails EARLIER — "an admin-tokens token is configured but this binary
+/// was built WITHOUT the `auth-admin-tokens` feature" — so the run never reaches the secret check
+/// and the assertion below fails against an error about something else. The B1 behaviour under test
+/// is feature-independent; only this fixture is not. `docs_examples.rs` gates its whole file on the
+/// same feature for the same reason.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn validate_fails_on_unresolvable_browser_login_client_secret() {
     const UNSET_VAR: &str = "BUSBAR_TEST_B1_OIDC_CLIENT_SECRET_NEVER_SET";
