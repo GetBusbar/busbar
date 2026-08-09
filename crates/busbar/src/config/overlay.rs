@@ -597,29 +597,65 @@ pub(crate) enum OverlaySection {
     /// restoring the base-config `plugins.min_versions` floors — the plugins then upgrade back to their
     /// current artifacts on the next (re)load.
     PluginVersions,
+    /// ONE named-DEFINITION map (`identity-providers:` / `export:`, and whatever
+    /// [`NamedMapSection`](crate::config::named_map::NamedMapSection) gains next). Clearing it
+    /// discards every API-applied definition in THAT map and reverts it to `config.yaml` truth,
+    /// leaving the other maps alone — the same granularity the CRUD that writes them is served at.
+    ///
+    /// This variant did not exist until 1.5.4, and its absence was a shipped functional gap: the
+    /// `named_maps` overlay section was durable and API-writable with no way to revert it, so
+    /// `DELETE /api/v1/admin/overlay/identity-providers` answered `400 unknown overlay section`
+    /// while the docs listed the section set as COMPLETE.
+    NamedMap(crate::config::named_map::NamedMapSection),
 }
 
 impl OverlaySection {
+    /// EVERY section, in wire order. The route's error message, the OpenAPI enum and the docs audit
+    /// all read THIS, so the valid set is stated ONCE: a new section cannot be live in the parser and
+    /// missing from what the API tells an operator, or from what the reference documents.
+    pub(crate) fn all() -> Vec<OverlaySection> {
+        let mut out = vec![
+            OverlaySection::Groups,
+            OverlaySection::Hooks,
+            OverlaySection::Root,
+            OverlaySection::PluginVersions,
+        ];
+        out.extend(
+            crate::config::named_map::NamedMapSection::ALL
+                .iter()
+                .map(|s| OverlaySection::NamedMap(*s)),
+        );
+        out
+    }
+
     /// Parse a URL path segment into a section, or `None` for an unknown name (the caller 400s). The
     /// ONE place the valid section names live, so the route + the doc + the tests share one source.
     pub(crate) fn parse(s: &str) -> Option<Self> {
-        match s {
-            "hooks" => Some(OverlaySection::Hooks),
-            "groups" => Some(OverlaySection::Groups),
-            "root" => Some(OverlaySection::Root),
-            "plugin_versions" => Some(OverlaySection::PluginVersions),
-            _ => None,
-        }
+        OverlaySection::all().into_iter().find(|v| v.as_str() == s)
     }
 
-    /// The section's wire/label name (the path segment).
+    /// The section's wire/label name (the path segment). For a named map this is the section KEY,
+    /// which is deliberately the same string as the config key and the CRUD path segment
+    /// (`export:` ⇄ `/export` ⇄ `/overlay/export`).
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             OverlaySection::Hooks => "hooks",
             OverlaySection::Groups => "groups",
             OverlaySection::Root => "root",
             OverlaySection::PluginVersions => "plugin_versions",
+            OverlaySection::NamedMap(s) => s.key(),
         }
+    }
+
+    /// The valid section names as a comma-separated, backticked list for an error message. Derived
+    /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
+    /// string is exactly what told operators `export` was not a section while it was becoming one.
+    pub(crate) fn valid_names() -> String {
+        OverlaySection::all()
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -715,22 +751,48 @@ impl OverlayDoc {
     /// Wipe ONE section's entries + tombstones in place (the pure core of a per-section reset). The
     /// remaining section is untouched, so merging this doc onto a freshly-resolved base config reverts
     /// exactly the cleared section to `config.yaml` truth while the other section's overlay stays live.
+    ///
+    /// DRIFT GUARD, the idiom `RootSettings::is_empty` and `config::patch` already use: an EXHAUSTIVE
+    /// destructure with NO `..`, so a new field on `OverlayDoc` fails to compile until somebody has
+    /// said WHICH SECTION OWNS IT. A durable, API-writable overlay field that belongs to no section
+    /// is a slice of config an operator can change and cannot revert, which is exactly what
+    /// `named_maps` was: it shipped durable and API-writable while `OverlaySection` had four variants
+    /// and none of them was it.
     pub(crate) fn clear_section(&mut self, section: OverlaySection) {
+        let OverlayDoc {
+            hooks,
+            global_hooks,
+            deleted,
+            groups,
+            deleted_groups,
+            root,
+            plugin_versions,
+            named_maps,
+            // NOT a section: the overlay's own schema version describes the FILE, not any slice of
+            // config. It is rewritten by every persist and must survive every reset.
+            version: _,
+        } = self;
         match section {
             OverlaySection::Hooks => {
-                self.hooks.clear();
-                self.global_hooks.clear();
-                self.deleted.clear();
+                hooks.clear();
+                global_hooks.clear();
+                deleted.clear();
             }
             OverlaySection::Groups => {
-                self.groups.clear();
-                self.deleted_groups.clear();
+                groups.clear();
+                deleted_groups.clear();
             }
             OverlaySection::Root => {
-                self.root = None;
+                *root = None;
             }
             OverlaySection::PluginVersions => {
-                self.plugin_versions.clear();
+                plugin_versions.clear();
+            }
+            // Only THIS map. `named_maps` is keyed by section, so a reset of `export` leaves
+            // `identity-providers` (and every future map) exactly as it was — the same isolation the
+            // hooks/groups sections have from each other.
+            OverlaySection::NamedMap(s) => {
+                named_maps.remove(s.key());
             }
         }
     }
@@ -747,6 +809,12 @@ impl OverlayDoc {
             OverlaySection::Groups => self.groups.is_empty() && self.deleted_groups.is_empty(),
             OverlaySection::Root => self.root.as_ref().is_none_or(RootSettings::is_empty),
             OverlaySection::PluginVersions => self.plugin_versions.is_empty(),
+            // `persist_named_map` removes a map's key entirely once its last entry goes, so an
+            // ABSENT key and a present-but-empty one both mean "no overlay state here".
+            OverlaySection::NamedMap(s) => self
+                .named_maps
+                .get(s.key())
+                .is_none_or(std::collections::BTreeMap::is_empty),
         }
     }
 }
