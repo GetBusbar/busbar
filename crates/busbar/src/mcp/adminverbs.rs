@@ -147,6 +147,18 @@ pub(crate) async fn health(
 }
 
 // Driven over the REAL router, because "mounted and reachable at the right scope" is the claim.
-#[cfg(test)]
+//
+// GATED ON `auth-admin-tokens`, WHICH IS WHAT MAKES THE CLAIM TESTABLE AT ALL. Every test in here
+// authenticates with `x-admin-token`, and the only thing that verifies that header is the
+// `admin-tokens` module this feature compiles in. Under `--no-default-features` there is no admin
+// auth module at all, so the chain fails closed and every request is a 401 before it reaches a
+// verb — the tests were asserting 200/404/400 and getting 401.
+//
+// THE COVERAGE GAP, STATED RATHER THAN LEFT TO BE FOUND: with this feature off, the trust verbs
+// have no test coverage. That is not a hole in the verbs — it is that a build with no admin auth
+// module cannot admit an admin request by design, so there is no authenticated caller to test
+// with. Covering it would mean standing up an external admin auth module in the fixture, which is
+// a different test than this one and belongs with the plugin suite.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
 #[path = "tests/adminverbs_tests.rs"]
 pub(crate) mod adminverbs_tests;

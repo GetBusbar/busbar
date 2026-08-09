@@ -66,8 +66,6 @@ admin_listen: "127.0.0.1:{admin_port}"
 providers: {{}}
 models: {{}}
 pools: {{}}
-identity-providers:
-  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}
 {auth_block}
 mcp:
   canonical_uri: "http://127.0.0.1:{data_port}/mcp"
@@ -80,15 +78,24 @@ mcp:
     path
 }
 
+// BOTH BLOCKS USE `admin_auth: []`, AND THE `admin-tokens` IDENTITY PROVIDER IS GONE FROM THE
+// CONFIG ABOVE, ON PURPOSE. Configuring an admin-tokens token is itself a boot refusal in a binary
+// built without the `auth-admin-tokens` feature ("the admin API would be silently disabled"), so
+// the scaffolding was failing the control before the property under test was ever reached.
+//
+// The alternative was to gate this file on that feature. That would have been wrong: an MCP
+// deployment answering anonymously with wildcard grants is a security property that must hold in
+// EVERY build, and `--no-default-features` is exactly the build where quietly dropping the check
+// would go unnoticed. The admin plane is scaffolding here; the data plane is the subject.
 /// The OPEN front door: an `auth:` block with no data-plane chain at all.
 const AUTH_OPEN: &str = r#"auth:
-  admin_auth: [admin-tokens]
+  admin_auth: []
 "#;
 
 /// The CLOSED control: the built-in signed-key verifier, and the signing key it requires.
 const AUTH_CLOSED: &str = r#"auth:
   chain: [keys]
-  admin_auth: [admin-tokens]
+  admin_auth: []
   signing_key: { env: BUSBAR_SIGNING_KEY }
 "#;
 
@@ -153,15 +160,41 @@ fn an_mcp_config_with_no_auth_chain_does_not_boot() {
         .spawn()
         .expect("spawn busbar");
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // 120s, and the size is deliberate. This deadline BOUNDS A WAIT; it does not assert a latency.
+    // The property is "busbar exits rather than serving the plane", and how long it takes to decide
+    // that is not part of the claim — so a generous bound costs nothing and a tight one buys
+    // nothing. (Contrast a test that asserts an operation finishes within N: there the deadline IS
+    // the property, and raising it to stop a flake deletes the test.)
+    //
+    // 30s was marginal in practice, and not for any reason in busbar: on macOS a freshly linked
+    // debug binary is stalled inside `_dyld_start` by the code-signing scan before `main` runs at
+    // all — sampled and confirmed, the child sat entirely in dyld while producing no output. That
+    // is a property of the developer's machine, not of the engine, and the test should not be
+    // reporting a security regression because the linker was busy.
+    let deadline = Instant::now() + Duration::from_secs(120);
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(s) => break s,
             None if Instant::now() >= deadline => {
+                // The verdict has to carry its EVIDENCE. This arm used to panic with the headline
+                // alone, which is indistinguishable between "the guard is gone" and "the fixture
+                // never reached the guard" — and the second is what it actually was. Kill first,
+                // then drain both pipes, so the message names which one happened.
                 let _ = child.kill();
+                let _ = child.wait();
+                let mut seen = String::new();
+                if let Some(mut o) = child.stdout.take() {
+                    let _ = o.read_to_string(&mut seen);
+                }
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut seen);
+                }
+                let cfg_text = std::fs::read_to_string(&cfg).unwrap_or_default();
                 panic!(
-                    "busbar BOOTED with `mcp:` and an empty auth.chain — it is serving the MCP \
-                     plane to anonymous callers with wildcard grants"
+                    "busbar did not exit within 120s with `mcp:` and an empty auth.chain.\n\
+                     If the output below carries the refusal, the guard fired and this test's \
+                     wait is wrong; if it does not, the plane is being served anonymously.\n\
+                     ── what busbar said ──\n{seen}\n── the config it was given ──\n{cfg_text}"
                 );
             }
             None => std::thread::sleep(Duration::from_millis(100)),
