@@ -32,6 +32,11 @@
 //! second-class would be teaching it one plane's vocabulary, and the sibling plane would inherit a
 //! rule it never asked for.
 
+// PARTLY UNMOUNTED. The artifact and its refusals are driven by the re-verification sweep; the
+// accessors and the mechanism-specific constructors that only an operator-driven `connect` would
+// reach are not, for the same reason `verbs` is not.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use super::{card, jws};
 use crate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 

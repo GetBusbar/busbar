@@ -3703,6 +3703,13 @@ pub(crate) fn build_app_from_config(
         |p| p.boot_route_paths.clone(),
     );
 
+    // THE A2A PLANE, lowered ONCE and read twice below: as the registry the re-verification job
+    // sweeps, and as the source of the dispatch table's A2A admission facts. Lowering it twice would
+    // let the mounted surface and the registry behind it come from two different readings of one
+    // config generation.
+    let a2a_plane =
+        crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref());
+
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
@@ -3740,7 +3747,7 @@ pub(crate) fn build_app_from_config(
         // THIS generation's config on every apply, deliberately — a registration an operator
         // removed must stop being re-verified, and one whose pin they changed must be judged
         // against the pin they now declare.
-        a2a: crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref()),
+        a2a: a2a_plane.clone(),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -3764,15 +3771,26 @@ pub(crate) fn build_app_from_config(
         // canonical URI becomes the audience the middleware enforces there. Absent `mcp:`, the
         // dispatch table is empty and `admission_for` answers `None` for every path, so the
         // audience check costs one `Option` test on the hot path and changes nothing.
-        planes: Arc::new(
-            cfg.mcp
-                .as_ref()
-                .map_or_else(crate::plane::PlaneDispatch::default, |r| {
-                    crate::plane::PlaneDispatch::default()
-                        .mount(crate::plane::Plane::Mcp, r.mount_path())
-                        .admit(crate::plane::Plane::Mcp, r.admission())
-                }),
-        ),
+        //
+        // THE SECOND CONSUMER. A2A mounts and admits through the very same two verbs, with its own
+        // strings and no new code in `plane/` — which is the claim that module's own doc made when
+        // it was written for a consumer that did not exist yet. A2A admits only when it has a
+        // RECEIVING side (`A2aPlane::admission` answers `None` without a `public_url`), so a
+        // delegation-only deployment claims no path and binds no audience.
+        planes: Arc::new({
+            let mut dispatch = crate::plane::PlaneDispatch::default();
+            if let Some(r) = cfg.mcp.as_ref() {
+                dispatch = dispatch
+                    .mount(crate::plane::Plane::Mcp, r.mount_path())
+                    .admit(crate::plane::Plane::Mcp, r.admission());
+            }
+            if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
+                dispatch = dispatch
+                    .mount(crate::plane::Plane::A2a, crate::a2a::serve::MOUNT_PATH)
+                    .admit(crate::plane::Plane::A2a, admission);
+            }
+            dispatch
+        }),
         mcp: cfg.mcp.clone().map(Arc::new),
         // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
         // construction, so every config apply — including one that changes nothing about `tools:` —
@@ -3886,12 +3904,13 @@ fn build_router_with_limits(
     // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
     // set is not something a later hot-swap can rewrite.
     let mcp = app.mcp.clone();
+    let a2a = app.a2a.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes, mcp.as_deref());
+    let (router, core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -3914,6 +3933,7 @@ fn build_router_with_limits(
 fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
     mcp: Option<&crate::mcp::McpResource>,
+    a2a: Option<&std::sync::Arc<crate::a2a::plane::A2aPlane>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -4050,6 +4070,11 @@ fn base_data_router(
                 crate::mcp::ingress::legacy_verb,
             ),
     };
+
+    // THE A2A PLANE, mounted on exactly the same terms and by the plane's own module: no `agents:`
+    // (or no `public_url`, so no receiving side) means no route in the table at all, which is what
+    // keeps "is this deployment an A2A server?" a question the mounted surface answers.
+    let router = crate::a2a::ingress::mount(router, a2a);
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -4146,10 +4171,11 @@ fn build_split_routers_with_limits(
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let mcp = app.mcp.clone();
+    let a2a = app.a2a.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp.as_deref());
+    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
     let data = apply_common_layers(
         data,
         data_core_routes,

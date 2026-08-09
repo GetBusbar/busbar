@@ -25,6 +25,11 @@
 //! must not publish, because publishing it is publishing the way around busbar. [`super::serve`]
 //! rewrites it out of every served card; this record is where the value that gets rewritten lives.
 
+// PARTLY UNMOUNTED. `trust_state`/`is_delegable` are consulted on every inbound request and by the
+// sweep. `may_dispatch` takes a capability digest, which only a caller that has resolved a skill
+// against a served card can supply — the relay leg, not mounted here.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use serde_json::Value;
 
 use crate::trust::{Approval, Sighting, TrustState};

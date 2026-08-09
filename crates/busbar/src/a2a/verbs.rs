@@ -44,6 +44,12 @@
 //! wants — including the answers a real network makes hard to produce on demand, like "the same host
 //! served a different card the second time".
 
+// NO PRODUCTION CALLER YET for the verbs themselves. The two TRAITS below are implemented in
+// production by `verify::RegistrationProbe`, so the seam is live; what is missing is the operator
+// surface that drives `connect`/`sync`/`operator_suspend`/`operator_resume` — a trust transition
+// is a human decision, and the admin routes that carry it are not mounted on this branch.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use super::pin::CardPin;
 use super::reverify::{self, Due, Ledger, Policy};
 use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};

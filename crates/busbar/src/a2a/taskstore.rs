@@ -34,6 +34,11 @@
 //! not-found is an enumeration oracle: a caller that can tell the two apart can probe the id space
 //! and learn which task ids exist in other tenants.
 
+// PARTLY UNMOUNTED. `set_sink`, `restore_from_store`, `submit` and `record_dispatch` are all
+// driven — boot rehydrates and the ingress opens a task per call. `advance_cursor`,
+// `set_push_callback`, the scoped reads and `compact` await the relay and the task-read surface.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 

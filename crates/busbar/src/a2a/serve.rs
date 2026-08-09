@@ -86,10 +86,45 @@ impl std::fmt::Display for ServeError {
 /// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a
 /// caller's endpoint is stable and says which agent it reaches.
 pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String, ServeError> {
-    let base = reqwest::Url::parse(public_url)
+    absolute(public_url, &format!("{MOUNT_PATH}/agents/{agent_id}"))
+}
+
+/// THE PLANE'S MOUNT, the one path prefix the A2A plane claims. Every route this plane serves is
+/// under it, and [`crate::plane::PlaneDispatch`] matches on it at a segment boundary, so `/a2ax` is
+/// somebody else's path.
+pub(crate) const MOUNT_PATH: &str = "/a2a";
+
+/// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
+/// plane's mount appended, exactly as the sibling plane composes its own.
+pub(crate) const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/a2a";
+
+/// THE PLANE'S CANONICAL URI — the RFC 8707 resource indicator a token must be minted FOR to be
+/// spendable here, and the audience [`crate::plane::PlaneAdmission`] carries.
+///
+/// Derived from `public_url` rather than configured separately, and that is the point: the card
+/// this plane serves points callers at [`agent_endpoint`], which is derived from the same value.
+/// One reading means the audience a caller is told to ask for and the audience busbar demands
+/// cannot drift apart, which is precisely the confused-deputy gap an independently configured
+/// audience would open.
+pub(crate) fn canonical_uri(public_url: &str) -> Result<String, ServeError> {
+    absolute(public_url, MOUNT_PATH)
+}
+
+/// The absolute URL of this plane's metadata document, as quoted into a `WWW-Authenticate`
+/// challenge. Same base, same reading.
+pub(crate) fn metadata_url(public_url: &str) -> Result<String, ServeError> {
+    absolute(public_url, METADATA_PATH)
+}
+
+/// One reading of `public_url`: parse it, replace the path wholesale, drop query and fragment.
+///
+/// The path is REPLACED rather than joined, so a `public_url` carrying a path of its own cannot
+/// produce `/some/prefix/a2a/agents/x` here while the router serves `/a2a/agents/x` — two spellings
+/// of one endpoint, one of which 404s.
+fn absolute(public_url: &str, path: &str) -> Result<String, ServeError> {
+    let mut u = reqwest::Url::parse(public_url)
         .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
-    let mut u = base.clone();
-    u.set_path(&format!("/a2a/agents/{agent_id}"));
+    u.set_path(path);
     u.set_query(None);
     u.set_fragment(None);
     Ok(u.to_string())

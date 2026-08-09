@@ -41,6 +41,10 @@
 //! re-verification tick, not on the request hot path, so a thread and a client per hop is a cost
 //! that is not worth engineering away.
 
+// PARTLY UNMOUNTED. The live card fetch is driven by the re-verification job. The pieces a
+// caller-supplied root or an injected client would use are reached only by tests today.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;

@@ -23,21 +23,25 @@
 //! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
 //! generalised is a test over production code rather than an assertion nobody can check.
 
-// PART OF THIS PLANE NOW HAS A PRODUCTION CALLER AND PART OF IT STILL DOES NOT, and the attribute
-// below is what keeps the second half honest rather than hidden.
+// THE RECEIVING HOT PATH NOW HAS A ROUTER. What used to be a plane-wide `allow(dead_code)` with a
+// list of nine unmounted modules in its prose is gone from this file, because the thing it was
+// describing is gone: [`ingress`] mounts `GET`/`POST /a2a/agents/{agent_id}` and this plane's RFC
+// 9728 metadata document, and a request arriving there is authenticated by the shared middleware
+// against [`crate::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
+// [`catalogue::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
+// [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
-// [`plane`] and [`scheduler`] are DRIVEN: `main` lowers `agents:` into a registry and spawns the
-// re-verification job, so `verify::reverify_once`, `reverify::due`, `reverify::settle`,
-// `registry::apply_anomaly_breaker`, `anomaly::evaluate`, `fetch`, `jws` and `pin` are all reached
-// by a running deployment rather than by tests alone.
+// TWELVE OF THIS PLANE'S TWENTY-FOUR MODULES still contain surface with no production caller, and
+// each now carries its OWN narrowed attribute at the top of its own file, stating what is driven and
+// what is not. Twelve do not, and are warning-clean for the first time: `ingress`, `serve`,
+// `inbound`, `plane`, `scheduler`, `reverify`, `verify`, `fetch`, `anomaly`, `jws`, `card` and
+// `canonical`. The residue is coherent rather than scattered — it is the DELEGATING direction, the
+// operator-driven trust verbs, push-notification delivery, and the task verbs a completion relay
+// would drive.
 //
-// The RECEIVING hot path is not: `serve`, `inbound`, `catalogue`, `meter`, `task`, `taskstore`,
-// `provenance`, `pushnotify` and `verbs` are decisions with no router calling them. They are not
-// dead code that nobody wants — they are the parts a wire reader is built ON TOP of, and settling
-// them first is deliberate, because a fingerprint whose definition moves after an operator has
-// approved one invalidates every approval in the deployment. The attribute stays until the last of
-// them is mounted, and shrinking rather than deleting it is how the remaining gap stays visible.
-#![cfg_attr(not(test), allow(dead_code))]
+// Narrowing this way is the point. A plane-wide attribute made an unused item ANYWHERE here
+// invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
+// module is a warning again, and the file that still has one has to say why.
 
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
@@ -47,6 +51,7 @@ pub(crate) mod config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
 pub(crate) mod inbound;
+pub(crate) mod ingress;
 pub(crate) mod jws;
 pub(crate) mod meter;
 pub(crate) mod pin;

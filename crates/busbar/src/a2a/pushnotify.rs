@@ -36,6 +36,13 @@
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
 
+// NO PRODUCTION CALLER YET, and this attribute names exactly which module that is true of rather
+// than sheltering a whole plane. `taskstore::set_push_callback` stores a callback without
+// validating it, deliberately: validation needs the RESOLVED addresses, and the resolver belongs
+// to the delivery path that will call `validate` here and then connect to the pinned addresses it
+// returns. Nothing delivers a push notification yet, so nothing calls this yet.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::net::IpAddr;
 
 /// Why a callback URL was refused. Every variant names the property that failed, because "SSRF

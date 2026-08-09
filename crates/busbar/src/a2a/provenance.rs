@@ -38,6 +38,13 @@
 //!
 //! The three are distinguishable because the operator's next action differs.
 
+// PARTLY UNMOUNTED. The chain is appended on every inbound task the ingress opens, so `append`,
+// `EV_SUBMITTED` and `EV_DELEGATED` are live. The event kinds for transitions the ingress does not
+// yet drive — artifact relay, interrupt, resume, terminal — are declared here because the DIGEST
+// covers the kind: adding one later would be adding a field to a chained record, which is not a
+// change a deployment with existing chains can absorb.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use busbar_api::TaskEventRow;
 
 /// Event kinds. Small, stable, greppable — tooling branches on these strings, so they are constants

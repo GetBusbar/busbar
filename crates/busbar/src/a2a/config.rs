@@ -37,6 +37,11 @@
 //! validator says so rather than silently dropping the reference, because a dropped reference is an
 //! operator believing a control is attached that is not.
 
+// PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
+// `declared_pin`: reading an operator's DECLARED fingerprint is only useful to the `connect` verb
+// that captures a sighting for a human to approve, and that verb has no admin surface yet.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use serde::{Deserialize, Serialize};
 
 /// The two words reserved at the `agents:` section level. IDENTICAL to

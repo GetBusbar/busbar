@@ -33,6 +33,13 @@
 //! the Agent Card, and never in a debug rendering: [`Lease`] has a hand-written `Debug` for exactly
 //! the reason `VirtualKey` and `CredentialSecret` do.
 
+// NO PRODUCTION CALLER: this module is entirely the DELEGATING direction. A lease is the credential
+// busbar presents when it calls OUT to a vendor agent, and this branch mounts the RECEIVING side
+// only. The config that feeds it IS live — `secret_refs` walks `OutboundCredential` and boot
+// validates the lease TTL — so the shape is under test from the config end while the mint stays
+// uncalled.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use crate::config::secret::SecretResolver;
 use crate::config::SecretRef;
 

@@ -34,6 +34,12 @@
 //! `Approved` registration is ever a candidate. Operator approval is a capability VOUCH as well as
 //! an authenticity check, and the anomaly breaker is what catches an agent that betrays the vouch.
 
+// PARTLY UNMOUNTED. `inbound_catalogue` and `explain` are on the receiving hot path and driven by
+// `ingress::admit`; `delegation_catalogue` is the DELEGATING direction's half and has no caller
+// because nothing yet delegates outward. The two differ only by the egress-grant filter, which is
+// exactly why they live together — and why the unused one is not deleted.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use busbar_api::VirtualKey;
 
 use super::card::{AgentCard, CardError};

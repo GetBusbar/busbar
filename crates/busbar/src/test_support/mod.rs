@@ -1157,13 +1157,14 @@ impl TestApp {
         // A test App is a BOOT App (production seeds this only when `prior` is `None`), so the rule is
         // production's verbatim: whatever this table declares is what the router mounted.
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
+        // Lowered ONCE and read twice, exactly as production does it: the registry a test
+        // configures and the dispatch table that mounts it must come from one reading.
+        let a2a_plane =
+            crate::a2a::plane::A2aPlane::from_config(&self.agent_defs, self.public_url.as_deref());
         let app = std::sync::Arc::new(crate::state::App {
             // Built from the SAME lowering production uses, so a test that configures agents gets
             // the same registry a deployment would and one that configures none gets no plane.
-            a2a: crate::a2a::plane::A2aPlane::from_config(
-                &self.agent_defs,
-                self.public_url.as_deref(),
-            ),
+            a2a: a2a_plane.clone(),
             agent_defs: self.agent_defs,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
@@ -1218,14 +1219,23 @@ impl TestApp {
             // The MCP plane and its dispatch table are built together from ONE validated resource,
             // exactly as `build_app_from_config` does it, so a test can never construct an App whose
             // ingress is mounted at one path while the audience check watches another.
-            planes: std::sync::Arc::new(self.mcp.as_ref().map_or_else(
-                crate::plane::PlaneDispatch::default,
-                |r| {
-                    crate::plane::PlaneDispatch::default()
+            // BOTH PLANES, mounted the way production mounts them, so a router-walking test sees
+            // the surface a deployment would have rather than one this fixture invented.
+            planes: std::sync::Arc::new({
+                let mut dispatch = crate::plane::PlaneDispatch::default();
+                if let Some(r) = self.mcp.as_ref() {
+                    dispatch = dispatch
                         .mount(crate::plane::Plane::Mcp, r.mount_path())
-                        .admit(crate::plane::Plane::Mcp, r.admission())
-                },
-            )),
+                        .admit(crate::plane::Plane::Mcp, r.admission());
+                }
+                if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
+                    dispatch = dispatch
+                        .mount(crate::plane::Plane::A2a, crate::a2a::serve::MOUNT_PATH)
+                        .admit(crate::plane::Plane::A2a, admission);
+                }
+
+                dispatch
+            }),
             mcp: self.mcp.clone().map(std::sync::Arc::new),
             mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
                 &self.tool_defs,

@@ -27,6 +27,13 @@
 //! work may be a long-running task that reached down into L2 tools, and a limit enforced after it
 //! has already cost the operator the thing the limit was for.
 
+// PARTLY UNMOUNTED. `Attribution::receiving` is on the hot path (`ingress::rpc` bills the
+// presenting key through it). `Attribution::delegating`, `Direction::Delegating` and `Admission`
+// are the delegating direction's half: nothing delegates outward yet, and `Admission` is this
+// plane's own window arithmetic, which the ingress does not use because it meters through the
+// shared governance ledger rather than a second one.
+#![cfg_attr(not(test), allow(dead_code))]
+
 /// Which direction a metered A2A event belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Direction {

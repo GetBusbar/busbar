@@ -150,6 +150,27 @@ impl A2aPlane {
     pub(crate) fn len(&self) -> usize {
         self.with_registrations(<[AgentRegistration]>::len)
     }
+
+    /// THIS PLANE'S ADMISSION FACTS, or `None` when it has no RECEIVING side to admit anyone to.
+    ///
+    /// `None` for exactly one reason: no usable `public_url`. That is the same asymmetry the field's
+    /// own doc records — an operator may configure `agents:` for the DELEGATING direction alone, and
+    /// a deployment that only delegates fronts nothing, so it has no resource for a token to be
+    /// bound to and no metadata document to point a refused caller at. Answering `None` here is what
+    /// makes `main` mount no receiving route in that case, rather than mounting one that could only
+    /// ever refuse.
+    ///
+    /// Both strings come from [`super::serve`], which is also what builds the endpoint the served
+    /// card advertises. A caller reads the audience to ask for off the card busbar served it, so the
+    /// two must be one derivation — an independently configured audience is a confused-deputy gap
+    /// that opens the first time somebody edits one of the two.
+    pub(crate) fn admission(&self) -> Option<crate::plane::PlaneAdmission> {
+        let public = self.public_url.as_deref()?;
+        Some(crate::plane::PlaneAdmission {
+            audience: super::serve::canonical_uri(public).ok()?,
+            resource_metadata: super::serve::metadata_url(public).ok()?,
+        })
+    }
 }
 
 #[cfg(test)]
