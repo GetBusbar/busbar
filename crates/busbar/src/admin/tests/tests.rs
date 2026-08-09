@@ -454,9 +454,23 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         fm["usable"], false,
         "the tripped pool's OWN cell must report unusable: {fast}"
     );
-    assert_eq!(
-        fm["cooldown_remaining_seconds"], 300,
-        "the tripped pool must report its own cell's cooldown: {fast}"
+    // A RANGE, not an equality, and the reason is a real failure: this asserted exactly 300 and
+    // went red in CI. The test seeds the cell with `now + 300` from one `now()`, and the handler
+    // computes the remainder from a SECOND `now()` taken when the request arrives. Between them sit
+    // a router build, a TCP bind, a task spawn and a real HTTP round trip — so on a loaded runner
+    // the wall clock ticks and the answer is 299, which is correct behaviour reported as a failure.
+    //
+    // The property worth asserting is that the cell reports ITS OWN cooldown rather than a
+    // neighbour's or a default, and a couple of seconds of slack proves that just as well while
+    // being independent of how busy the machine is. Kept tight enough that a genuinely wrong value
+    // (0, or the other pool's) still fails.
+    let remaining = fm["cooldown_remaining_seconds"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("cooldown_remaining_seconds must be a number: {fast}"));
+    assert!(
+        (295..=300).contains(&remaining),
+        "the tripped pool must report its own cell's cooldown (~300s, allowing for the wall clock \
+         advancing between seeding the cell and serving the request); got {remaining}: {fast}"
     );
 
     let cheap: serde_json::Value = client
