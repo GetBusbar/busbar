@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §3.7 — the dispatch-time SSRF guard: schemes, obfuscated hosts, rebinding, cloud metadata, and
-//! redirects.
+//! The dispatch-time SSRF guard: schemes, obfuscated hosts, rebinding, cloud metadata, and
+//! redirects. Tool arguments are attacker-controlled, per-request, nested JSON, so this guard is
+//! NEW work on the dispatch path rather than a reuse of the startup webhook-URL check — that one
+//! validates a single operator-supplied config URL and explicitly disclaims DNS rebinding, which is
+//! precisely the threat here.
 //!
 //! The address checks are driven through [`check_addresses`] with a constructed address list rather
 //! than through a resolver, which is the only way to test the case that matters: a resolver

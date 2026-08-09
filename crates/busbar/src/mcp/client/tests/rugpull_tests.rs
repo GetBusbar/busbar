@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RUG-PULL BATTERY (§3.3, threat 12): a tool definition is changed UNDER A LIVE CACHE and the
-//! change must be DETECTED and the server DEMOTED.
+//! THE RUG-PULL BATTERY (threat 12): a tool definition is changed UNDER A LIVE CACHE and the change
+//! must be DETECTED and the server DEMOTED. Every approved catalogue is pinned by a per-tool
+//! schema/description hash, and a changed hash re-approves rather than auto-adopts.
 //!
 //! Every test here drives the real cache — `apply` builds a new snapshot and swaps it, exactly as a
 //! background refresh does — rather than comparing two digests in isolation. The bug this defends
@@ -68,7 +69,7 @@ fn a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused() {
     );
 
     // (2) DEMOTED: the derived state is Quarantined, and the changes queue names the tool. The
-    // state is DERIVED, so nothing had to remember to set a flag (§12.2).
+    // state is DERIVED from approval-versus-observation, so nothing had to remember to set a flag.
     assert_eq!(server.state(), TrustState::Quarantined);
     let drift = server.drift();
     assert_eq!(drift.changed, vec!["read_file".to_string()]);
@@ -125,7 +126,7 @@ fn a_new_tool_is_drift_and_is_never_auto_adopted() {
 }
 
 /// A CHANGED CERTIFICATE is drift on its OWN axis, so accepting a rotated certificate cannot smuggle
-/// a changed tool through with it (§12.3).
+/// a changed tool through with it: settling identity settles identity, and nothing else.
 #[test]
 fn a_changed_pin_is_its_own_axis() {
     let mut s = approved_server("srv", vec![simple_tool("read", "r")]);

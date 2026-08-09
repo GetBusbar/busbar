@@ -5,7 +5,7 @@
 //!
 //! ## The section IS the plane
 //!
-//! `mcp-design.md` §5.1: there is no `plane:`, `bind:` or `target:` selector anywhere in here.
+//! There is deliberately no `plane:`, `bind:` or `target:` selector anywhere in here.
 //! `pools:`, `tools:` and `agents:` are SIBLINGS of one shape, and which plane an entry is on is
 //! decided by which map it is written in. Hooks attach BY BARE NAME from the one top-level `hooks:`
 //! map, exactly as they do on the pool plane.
@@ -19,8 +19,9 @@
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
 //!
-//! §5.1 (RESOLVED 2026-08-07): tool identity is `(server, tool, schema-hash)` (§3.0), so every
-//! allowed tool needs a SLOT for its approved schema hash. A bare list has nowhere to put one, and
+//! Tool identity is `(server, tool, schema-hash)` — the bound-identity rule everything else on this
+//! plane hangs on — so every allowed tool needs a SLOT for its approved schema hash, and later for
+//! its per-tool policy. A bare list has nowhere to put either, and
 //! the two obvious repairs are both worse — a second sibling key makes "is this tool allowed"
 //! ambiguous, and re-typing after publication breaks operators' files. So the shape is
 //! `tools_allow: { <tool>: { schema_hash?: "sha256:…" } }`, where an empty value object means
@@ -28,18 +29,21 @@
 //!
 //! ## The pin is an OBJECT, not a scalar
 //!
-//! §5.1's earlier `spki_pin:` scalar contradicted §5.5.3's own admin API, which already speaks
-//! `pin{mechanism,key?}`, and it cannot express the sibling plane's root at all. The object form is
-//! canonical, and the mechanism is checked HERE against the material it requires: a registration
-//! cannot claim `cert_spki` and carry nothing to verify with. `unpinned` is spelled out loud rather
-//! than encoded as an absent field, because an operator reading a list of registrations needs to SEE
-//! which entries have no root — and because §3.2 requires the mechanism to be named "explicitly, and
-//! loudly", per server.
+//! The earlier `spki_pin:` scalar spelling contradicted busbar's own admin API, which already
+//! speaks `pin{mechanism,key?}`, and a scalar cannot express the sibling plane's root at all — an
+//! A2A agent is pinned by a JWS issuer key plus a card fingerprint, not by a certificate SPKI. The
+//! object form is canonical, and the mechanism is checked HERE against the material it requires: a
+//! registration cannot claim `cert_spki` and carry nothing to verify with. `unpinned` is spelled
+//! out loud rather than encoded as an absent field, because an operator reading a list of
+//! registrations needs to SEE which entries have no root — and because the trust-root rule requires
+//! the mechanism to be named "explicitly, and loudly", per server.
 //!
 //! ## The server-initiated grants are DENY-BY-DEFAULT, and that is a `Default` impl, not a comment
 //!
-//! §3.10 as corrected by §14.3: `sampling`, `elicitation` and `roots` are grants on the registry
-//! entry. Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
+//! `sampling`, `elicitation` and `roots` are grants on the registry entry — an upstream must not be
+//! able to induce busbar to spend busbar's own authority (an LLM completion on busbar's pools and
+//! budget, a user prompt, a filesystem-root disclosure) that the operator never granted it.
+//! Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
 //! `false`s — a field an operator forgets to write is a field that grants nothing.
 
 use serde::{Deserialize, Serialize};
@@ -50,13 +54,15 @@ use serde::{Deserialize, Serialize};
 pub(crate) const RESERVED_TOOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
 
 /// The separator between a server id and a tool name in the `{server}_{tool}` namespaced routing
-/// key (§2.1, §3.0). Stated once because it is the ROUTING KEY: the catalogue builds it, the scope
+/// key. Stated once because it is the ROUTING KEY: the catalogue builds it, the scope
 /// grant `mcp_tool` names it, and dispatch parses nothing back out of it.
 pub(crate) const NAMESPACE_SEP: &str = "_";
 
-/// `tools.<server>.pin.mechanism` — WHICH authenticity root this registration has (§3.2).
+/// `tools.<server>.pin.mechanism` — WHICH authenticity root this registration has.
 ///
-/// The four are the ones §3.2 names verbatim: `pinned_pubkey | cert_spki | mtls | unpinned`.
+/// Exactly four, because four is every root an MCP endpoint can actually offer: a signed manifest's
+/// operator-pinned issuer key, the endpoint's certificate SPKI, mutual TLS, or nothing at all —
+/// `pinned_pubkey | cert_spki | mtls | unpinned`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PinMechanism {
@@ -67,8 +73,8 @@ pub(crate) enum PinMechanism {
     CertSpki,
     /// Mutual TLS; pinned on the peer certificate SPKI hash.
     Mtls,
-    /// NO authenticity root. Registrable, never approvable — §3.2 requires low-risk dev use to be
-    /// spelled out loud rather than inferred from an absent field.
+    /// NO authenticity root. Registrable, never approvable — low-risk dev use has to be spelled out
+    /// loud rather than inferred from an absent field.
     Unpinned,
 }
 
@@ -91,7 +97,7 @@ impl PinMechanism {
     }
 }
 
-/// `tools.<server>.pin` — the out-of-band operator-supplied trust root (§3.2).
+/// `tools.<server>.pin` — the out-of-band operator-supplied trust root.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerPinCfg {
@@ -109,13 +115,16 @@ pub(crate) struct ServerPinCfg {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ToolAllowCfg {
-    /// The APPROVED schema/description hash (§3.3). An empty value object means "allowed, no hash
-    /// approved yet", which is `pending` and does NOT serve — the dispatch gate compares the
-    /// observed digest against an approved one, and there is no approved one to compare against.
+    /// The APPROVED schema/description hash — the value a background tool-list refresh diffs the
+    /// observed one against, which is the whole rug-pull defence. An empty value object means
+    /// "allowed, no hash approved yet", which is `pending` and does NOT serve — the dispatch gate
+    /// compares the observed digest against an approved one, and there is no approved one to
+    /// compare against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) schema_hash: Option<String>,
-    /// The operator-facing description shown in the catalogue. NEVER an input to a routing decision
-    /// (§3.0) — it is markup-normalised (§3.5) on the way out and is otherwise inert.
+    /// The operator-facing description shown in the catalogue. NEVER an input to a routing
+    /// decision — routing binds `(server, tool, schema-hash)`, never attacker-supplied free text.
+    /// It is markup-normalised on the way out and is otherwise inert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     /// The tool's JSON Schema, echoed verbatim in `tools/list`. Opaque to busbar.
@@ -123,23 +132,23 @@ pub(crate) struct ToolAllowCfg {
     pub(crate) input_schema: Option<serde_json::Value>,
 }
 
-/// `tools.<server>.prompts_allow.<name>` — one exposed prompt (§2.2, sanitized per §3.5).
+/// `tools.<server>.prompts_allow.<name>` — one exposed prompt, markup-normalised on the way out.
 ///
-/// §5.1 names only `tools_allow`; prompts and resources are part of the MCP-SPECIFIC superset §5.1
-/// says an operator "may also set per entry". They take the same MAP shape as `tools_allow` for the
-/// same reason: a capability needs a slot for what the operator approved about it.
+/// The locked core keys name only `tools_allow`; prompts and resources belong to the MCP-SPECIFIC
+/// superset an operator "may also set per entry". They take the same MAP shape as `tools_allow` for
+/// the same reason: a capability needs a slot for what the operator approved about it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PromptAllowCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
-    /// The prompt TEMPLATE returned by `prompts/get`. §3.5 (auditor MCP-1 H9) puts prompt templates
-    /// in the sanitization set alongside tool output, because a template is exactly as injectable.
+    /// The prompt TEMPLATE returned by `prompts/get`. Templates sit in the sanitization set
+    /// alongside tool output, because a template is exactly as injectable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) template: Option<String>,
 }
 
-/// `tools.<server>.resources_allow.<uri>` — one exposed resource (§2.2, sanitized per §3.5).
+/// `tools.<server>.resources_allow.<uri>` — one exposed resource, markup-normalised on the way out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResourceAllowCfg {
@@ -149,19 +158,20 @@ pub(crate) struct ResourceAllowCfg {
     pub(crate) description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mime_type: Option<String>,
-    /// The content `resources/read` returns. §3.5 puts `resources/read` content in the sanitization
-    /// set for the same reason as prompt templates.
+    /// The content `resources/read` returns. In the sanitization set for the same reason as prompt
+    /// templates: it re-enters model context verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) text: Option<String>,
 }
 
-/// `tools.<server>.grants` — the SERVER-INITIATED request grants (§3.10 as corrected by §14.3).
+/// `tools.<server>.grants` — the SERVER-INITIATED request grants.
 ///
 /// DENY-BY-DEFAULT is this type's `Default`, not a rule written down somewhere else. Under revision
 /// `2026-07-28` a server cannot initiate a request at all; the ask arrives as an
 /// `InputRequiredResult` in the RESULT of a call busbar made, and these three grants are consulted
 /// at busbar's decision to satisfy it — on EVERY retry, because there is no handshake to consult
-/// them once (§14.3 part 2).
+/// them once — a revocation has to bite on the NEXT retry, not at the end of a conversation that
+/// has no end.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerRequestGrants {
@@ -192,7 +202,7 @@ impl ServerRequestGrants {
     }
 }
 
-/// The DEFAULT cap on input-required rounds per logical dispatch (§14.3 part 3).
+/// The DEFAULT cap on input-required rounds per logical dispatch.
 ///
 /// A hard cap, refused past it, not a warning. Three is chosen because it is enough for a real
 /// elicitation exchange (ask, clarify, confirm) and small enough that a hostile upstream returning
@@ -211,17 +221,17 @@ pub(crate) struct McpServerDefCfg {
     pub(crate) url: String,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is `unpinned`.
     pub(crate) pin: ServerPinCfg,
-    /// The approved tools, as a MAP so each carries its approved schema hash (§5.1).
+    /// The approved tools, as a MAP so each carries its approved schema hash.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) tools_allow: indexmap::IndexMap<String, ToolAllowCfg>,
-    /// The exposed prompts (MCP-specific superset, §5.1).
+    /// The exposed prompts — MCP-specific superset, not one of the locked core keys.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) prompts_allow: indexmap::IndexMap<String, PromptAllowCfg>,
-    /// The exposed resources, keyed by URI (MCP-specific superset, §5.1).
+    /// The exposed resources, keyed by URI — MCP-specific superset, likewise.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) resources_allow: indexmap::IndexMap<String, ResourceAllowCfg>,
-    /// The transport generation this registration speaks. One value today, spelled because §5.1
-    /// lists it in the MCP-specific superset and because a second leg would be a second wire format.
+    /// The transport generation this registration speaks. One value today, spelled because the
+    /// MCP-specific superset carries it and because a second leg would be a second wire format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transport: Option<Transport>,
     /// The RFC 8707 audience busbar asks for when minting an OUTBOUND token for this server. Not
@@ -229,17 +239,18 @@ pub(crate) struct McpServerDefCfg {
     /// confused-deputy bug this field's name has to keep distinct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) aud: Option<String>,
-    /// The server-initiated request grants (§3.10 / §14.3). Absent ⇒ all denied.
+    /// The server-initiated request grants. Absent ⇒ all denied.
     #[serde(default)]
     pub(crate) grants: ServerRequestGrants,
-    /// The cap on input-required rounds per logical dispatch (§14.3 part 3). Absent ⇒
+    /// The cap on input-required rounds per logical dispatch. Absent ⇒
     /// [`DEFAULT_MAX_INPUT_REQUIRED_ROUNDS`]. `0` is legal and means "never satisfy one".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) max_input_required_rounds: Option<u32>,
-    /// Outbound credential mode. Same vocabulary as the pool plane's, and DISTINCT from it: §5.1
-    /// says there is deliberately no section-level `tools.upstream_credentials` default in the
-    /// design's prose, but the reserved word space is uniform across planes, so the key is reserved
-    /// at the section level and an entry-level value overrides it (SCALAR ⇒ OVERRIDE).
+    /// Outbound credential mode. Same vocabulary as the pool plane's, and DISTINCT from it: every
+    /// MCP server authenticates independently, so this plane deliberately has no all-plane
+    /// `tools.upstream_credentials` default at all. The reserved word space is
+    /// uniform across planes regardless, so the key is reserved at the section level and an
+    /// entry-level value overrides it (SCALAR ⇒ OVERRIDE).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// Hooks attached to THIS server, by bare name from the top-level `hooks:` map. ADDS to the
@@ -254,7 +265,8 @@ pub(crate) struct McpServerDefCfg {
 pub(crate) enum Transport {
     /// Streamable HTTP, the `2026-07-28` stateless shape. The only one busbar speaks.
     StreamableHttp,
-    /// A locally spawned child process. Named because §2.1 designs it; refused at validation because
+    /// A locally spawned child process. Named because the transport set is designed for all three
+    /// generations; refused at validation because
     /// nothing in this release supervises a child, and a config value that boots into an
     /// unimplemented path is a deployment that fails at first dispatch instead of at boot.
     Stdio,
@@ -277,13 +289,14 @@ impl ToolsCfg {
     // this release builds rather than about the rules. Hooks attach on the DISPATCH path (owner
     // ruling 2 puts them nowhere else — the catalogue is authorization, not routing), and the
     // dispatch path's upstream leg is the client direction, which is not in this build. They are
-    // written and pinned here because §5.1's ADDITIVE-list / OVERRIDE-scalar combine is a grammar
-    // rule, and a grammar rule discovered at the moment its first caller lands is a grammar rule
+    // written and pinned here because the ADDITIVE-list / OVERRIDE-scalar combine is a rule of the
+    // config grammar itself, and a grammar rule discovered at the moment its first caller lands is
+    // a grammar rule
     // decided by that caller.
     #![cfg_attr(not(test), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
-    /// declaration order (§5.1's ADDITIVE combine rule).
+    /// declaration order (`hooks` is a LIST, and a LIST combines ADDITIVELY).
     pub(crate) fn effective_hooks(&self, server: &str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let own = self.servers.get(server).map(|d| d.hooks.as_slice());
@@ -386,13 +399,14 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // THE SEPARATOR RULE, and it lands on the SERVER ID ALONE. This is a real tension in the spec
     // and it is resolved here rather than worked around, so the resolution is visible:
     //
-    // §2.1 and §3.0 make `{server}_{tool}` THE ROUTING KEY, and §5.1's own locked example writes
+    // `{server}_{tool}` is THE ROUTING KEY, and the locked config example writes
     // `tools_allow: { read_file: {} }` — a tool name containing the separator. Both cannot hold with
     // an unambiguous key unless one of the two halves is separator-free, and the spec constrains
     // neither. Constraining the SERVER ID is the choice that costs nothing and buys everything: a
     // server id is an operator-chosen registry label with no upstream to satisfy, so renaming
     // `my_server` to `my-server` is free — whereas a TOOL name is chosen by somebody else's server
-    // and refusing `read_file` would make busbar unable to front the very example §5.1 ships.
+    // and refusing `read_file` would make busbar unable to front the very example the grammar
+    // ships.
     //
     // With the server id separator-free, `{server}_{tool}` splits at the FIRST separator and splits
     // exactly one way. Without the rule, `a_b` + `c` and `a` + `b_c` render the same string, and one
@@ -422,7 +436,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     }
 
     // THE PIN, matched against the material its mechanism needs. This is the rule the object form
-    // exists to make expressible (§3.2).
+    // exists to make expressible.
     let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
     if def.pin.mechanism.needs_key() && !has_key {
         return Err(format!(

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §14.2 — the per-request generation check, and the refusal ordering.
+//! The per-request generation check, and the refusal ordering.
 //!
-//! The headline is the test §14.2 names verbatim: *a call whose candidate was resolved under pin
-//! generation N is refused at dispatch when the live generation is N+1.* Under a stateless protocol
-//! that is not a backstop to session invalidation — it is the defence.
+//! The headline: *a call whose candidate was resolved under pin generation N is refused at dispatch
+//! when the live generation is N+1.* A de-approved, quarantined or re-pinned server must stop being
+//! served against in bounded time, including by a call that was already in flight when the
+//! revocation landed. Under a stateless protocol there is no session to tombstone, so re-reading
+//! the live generation at dispatch is not a backstop to session invalidation — it is the defence,
+//! and the bound is ONE REQUEST rather than one session lifetime.
 
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::client::dispatch::{resolve, revalidate, visible_catalogue, DispatchRefusal};
@@ -28,7 +31,8 @@ fn seeded() -> CatalogueCache {
     cache
 }
 
-/// THE §14.2 TEST, in the exact shape the design states it.
+/// THE GENERATION TEST. This is the one assertion that
+/// stands in for session tombstoning, and it is assertable with no session table and no handshake.
 #[test]
 fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_plus_one() {
     let cache = seeded();
@@ -125,8 +129,9 @@ fn a_narrowed_grant_is_caught_at_revalidation_even_though_the_catalogue_did_not_
 
 /// THE HASH-PIN GATE IS A SEPARATE LAYER FROM THE TRUST STATE, and this is the case that shows it:
 /// a REJECTED tool leaves the served set without putting the server into quarantine (a rejection is
-/// a settled operator decision, not drift — §12.3). The server is `Approved`, the tool is still
-/// observed, and dispatching to it must still be refused, by `Approval::serves` and by nothing else.
+/// a standing operator instruction about a NAME, not drift). The server is `Approved`, the tool is
+/// still observed, and dispatching to it must still be refused, by `Approval::serves` and by
+/// nothing else.
 #[test]
 fn a_rejected_tool_is_refused_at_dispatch_even_though_its_server_is_approved() {
     let cache = seeded();

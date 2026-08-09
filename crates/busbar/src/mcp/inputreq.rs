@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SERVER-INITIATED ASKS — sampling, elicitation and roots — gated deny-by-default, per §3.10 AS
-//! CORRECTED BY §14.3.
+//! SERVER-INITIATED ASKS — sampling, elicitation and roots — GATED DENY-BY-DEFAULT.
 //!
 //! ## What the correction changed, and what it did not
 //!
-//! §3.10 designed these as SERVER-INITIATED REQUESTS gated at the point busbar accepts them. Under
+//! These were designed as SERVER-INITIATED REQUESTS, gated at the point busbar accepts them. Under
 //! revision `2026-07-28` a server cannot initiate a JSON-RPC request at all, so there is no inbound
 //! request to refuse. The ask now arrives as an `InputRequiredResult` inside the RESULT of a call
 //! **we** made, and the client decides whether to satisfy it by issuing a fresh request (MRTR,
@@ -29,9 +28,9 @@
 //! 2. **The grant is re-checked on EVERY retry, because there is no handshake to check it once.**
 //!    This is the part that is easy to get wrong, and it is why `grants` is a CLOSURE and not a
 //!    value: a value captured before the loop is a grant read once, which is exactly the
-//!    handshake-era shape §14.4 says is "either a per-request check or nothing at all". The closure
-//!    re-derives the grant from the LIVE registry snapshot each round, so a revocation bites on the
-//!    next retry rather than at the end of a conversation that has no end.
+//!    handshake-era shape that, under on-demand negotiation, is either a per-request check or no
+//!    check at all. The closure re-derives the grant from the LIVE registry snapshot each round, so
+//!    a revocation bites on the next retry rather than at the end of a conversation with no end.
 //!
 //! 3. **The loop is BOUNDED and METERED, and this is NEW.** Removing the handshake turns one call
 //!    into a SEQUENCE of calls, and a hostile upstream can return `InputRequiredResult` for ever to
@@ -39,7 +38,7 @@
 //!    is a hard cap on rounds per logical dispatch (refused past it, not warned), and every round is
 //!    metered before it is spent, not after.
 //!
-//! ## The risk this revision CREATES, which §3.10 could not have anticipated
+//! ## The risk this revision CREATES, which a request/response gate could not have anticipated
 //!
 //! busbar is a server as well as a client. When busbar's own caller drives a dispatch to an upstream
 //! that answers `InputRequiredResult`, busbar must NOT forward that result to its caller. Doing so
@@ -83,7 +82,7 @@ pub(crate) enum Round {
 
 /// How the whole logical dispatch ended.
 ///
-/// There is deliberately NO arm carrying an [`Ask`]. That absence is the §14.3 termination rule
+/// There is deliberately NO arm carrying an [`Ask`]. That absence is the termination rule
 /// expressed as a type: an upstream's `InputRequiredResult` cannot leave this function, because
 /// there is nothing to put it in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +99,7 @@ pub(crate) enum Outcome {
 pub(crate) enum Refusal {
     /// The operator granted this server nothing for this kind of ask. THE DEFAULT ANSWER.
     Ungranted { server: String, kind: String },
-    /// The hard cap on input-required rounds was reached. §14.3 part 3: refused past it, not warned.
+    /// The hard cap on input-required rounds was reached — refused past it, never merely warned.
     RoundCapExceeded { server: String, cap: u32 },
     /// Busbar held the grant and still could not satisfy the ask (an elicitation with nobody to
     /// ask). Kept distinct from `Ungranted` because the operator's remedy is completely different.
@@ -109,10 +108,10 @@ pub(crate) enum Refusal {
         kind: String,
         reason: String,
     },
-    /// THE RUNAWAY-LOOP COST CAP (§2.2). The caller's own per-key budget refused to charge this
-    /// round, so the round never happened. This is the mechanism §1.2 names for the $2k/2hr failure
-    /// mode, and it is the caller's ordinary budget doing its ordinary job — there is no
-    /// MCP-specific budget, which is the point.
+    /// THE RUNAWAY-LOOP COST CAP. The caller's own per-key budget refused to charge this round, so
+    /// the round never happened. Per-key budgets ARE the loop cap — the answer to the $2k/2hr
+    /// runaway failure mode — and this is the caller's ordinary budget doing its ordinary job.
+    /// There is no MCP-specific budget, which is the point.
     BudgetExhausted {
         server: String,
         round: u32,
@@ -194,11 +193,12 @@ pub(crate) struct RoundRecord {
 ///
 /// - `call` is the upstream leg. Taking it as a parameter is what lets the gate, the bound and the
 ///   metering be tested against a deliberately hostile upstream without a network.
-/// - `grants` RE-READS the live registry each round (§14.3 part 2). A value would be a grant read
-///   once, which §14.4 says is not a check at all.
+/// - `grants` RE-READS the live registry each round. A value would be a grant read once, and under
+///   on-demand negotiation a check made once and cached is not a check at all.
 /// - `satisfy` performs the granted ask — for `sampling`, a real LLM request on busbar's pools and
-///   budget, which is the surviving clause of §3.10: when granted, it rides the SAME
-///   admission/budget/metering/audit plane as any other LLM request, never a free side channel.
+///   budget. That is the clause deny-by-default was always paired with: when granted, the ask rides
+///   the SAME admission/budget/metering/audit plane as any other LLM request, never a free side
+///   channel.
 /// - `charge` runs BEFORE each round, and its refusal ENDS the dispatch. That ordering is the
 ///   runaway-loop cost cap: a round that the budget will not admit is a round that never happens,
 ///   rather than a round that happens and is billed afterwards. Charging after the fact would let a

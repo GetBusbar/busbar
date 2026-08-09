@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MARKUP-NORMALISATION — §3.5, and NOTHING MORE THAN §3.5.
+//! MARKUP-NORMALISATION — and NOTHING MORE THAN MARKUP-NORMALISATION.
 //!
 //! ## What this does
 //!
 //! It strips instruction-injection MARKUP — `<IMPORTANT>`, `<system>`, HTML-like tags — from three
-//! places, and §3.5 names all three because the prior draft named only the first two (auditor
-//! MCP-1 H9):
+//! places, and all three are named deliberately, because the prior draft named only the first two
+//! (auditor MCP-1 H9):
 //!
 //! - tool and prompt DESCRIPTIONS, before they are shown or fed as context;
 //! - tool OUTPUTS, before results re-enter model context;
@@ -22,14 +22,14 @@
 //! markup-shaped attack surface rather than neutralising prompt injection. Anyone reading this
 //! module as "injection is handled" has read it wrong.
 //!
-//! ## Why it is in core when §3.5 places it on a hook
+//! ## Why it is in core when the placement matrix puts it on a hook
 //!
-//! §3.5 and the §5 placement matrix put markup-normalisation on a hook / signed plugin, on the
-//! Response-phase `Rewrite` grant, because content policy is tunable and core is neutral. That
-//! placement is right for the TUNABLE part and it is deliberately not what this is. This is the
-//! FLOOR: the fixed, universal, security-critical strip that applies whether or not an operator has
-//! installed a hook, for the same reason §3.7 splits SSRF into "fixed scheme/IP checks in core" plus
-//! "tunable per-tool policy in a hook". A deployment with no sanitiser hook must not serve raw
+//! The placement matrix puts markup-normalisation on a hook / signed plugin, on the Response-phase
+//! `Rewrite` grant, because content policy is tunable and core is neutral. That placement is right
+//! for the TUNABLE part and it is deliberately not what this is. This is the FLOOR: the fixed,
+//! universal, security-critical strip that applies whether or not an operator has installed a hook,
+//! for the same reason SSRF argument validation splits into fixed scheme and IP checks in core plus
+//! tunable per-tool policy in a hook. A deployment with no sanitiser hook must not serve raw
 //! `<IMPORTANT>` markup out of a governance plane, and "the operator should have installed a plugin"
 //! is not a defence. The hook remains the place to add anything beyond the floor.
 //!

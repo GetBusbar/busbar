@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §3.8 — THE TRANSITIVE CONFUSED-DEPUTY DEFENCE, and the single most important battery in the
-//! client direction.
+//! THE TRANSITIVE CONFUSED-DEPUTY DEFENCE — outbound credential selection bound to the INBOUND
+//! principal's grant — and the single most important battery in the client direction.
 //!
 //! ## The bug being defended against, stated exactly
 //!
@@ -21,9 +21,9 @@
 //! NOT PROVEN: that a real inbound MCP `tools/call` resolves to the principal used here. The
 //! server direction's method surface does not exist yet (`mcp-design.md` §15.5). The principal is
 //! a `busbar_api::VirtualKey`, which is the type BOTH directions resolve to and the one
-//! `scope_allowed` is defined on, so the seam is the real one — but the end-to-end pairing §2.3
-//! insists on is unproven until the two halves land together, and that is stated rather than
-//! implied.
+//! `scope_allowed` is defined on, so the seam is real — but egress scoping is one of the two
+//! integrity properties that are only meaningful as a PAIR with the inbound surface, so it is not
+//! proven end to end until the two halves land together, and that is stated rather than implied.
 
 use crate::mcp::client::egress::{
     authorise_egress, downscope, plan_credential, CredentialPlan, EgressDenied, ExchangeCfg,
@@ -186,10 +186,10 @@ fn the_requested_scope_is_the_callers_grant_and_nothing_wider() {
 
 /// A WILDCARD principal gets the SINGLE tool being called, not everything.
 ///
-/// This is the case that would quietly make §3.8 vacuous in a small deployment, where keys are often
-/// minted with no scope list at all. `allowed_scopes: None` is an absence of a constraint on the
-/// INBOUND side; turning it into a grant of everything on the OUTBOUND side is the confused deputy
-/// arriving through the default configuration.
+/// This is the case that would quietly make the whole egress gate vacuous in a small deployment,
+/// where keys are often minted with no scope list at all. `allowed_scopes: None` is an absence of a
+/// constraint on the INBOUND side; turning it into a grant of everything on the OUTBOUND side is
+/// the confused deputy arriving through the default configuration.
 #[test]
 fn a_wildcard_principal_is_still_down_scoped_to_the_one_tool_it_called() {
     let caller = key_wildcard("root");

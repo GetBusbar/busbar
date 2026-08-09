@@ -399,8 +399,8 @@ pub(crate) struct RootCfg {
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
     /// happens to it is building the catalogue snapshot, which is a separate value with its own
     /// generation. Lowering it here would give the registry two representations that could disagree
-    /// about what the operator approved, which is precisely the disagreement §12.2 removes from the
-    /// trust lifecycle by deriving state instead of storing it.
+    /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
+    /// DERIVING state from intent-versus-observation instead of storing it.
     pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,

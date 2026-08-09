@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MARKUP-NORMALISATION (§3.5) — asserted on the OUTPUT string, character by character.
+//! MARKUP-NORMALISATION — asserted on the OUTPUT string, character by character.
 //!
 //! Two halves, and the second is the one that matters more:
 //!
@@ -10,8 +10,9 @@
 //!   operator turns off, and a sanitiser that is off defends nothing.
 //!
 //! The honest-scope test at the bottom is deliberately an assertion that the function does NOT do
-//! something. §3.5 says markup-stripping "does not stop plain-language semantic injection", and a
-//! module whose tests only ever demonstrate its strengths lets that caveat rot into a claim.
+//! something. Markup-stripping does not stop plain-language semantic injection — that caveat is part
+//! of the feature, and a module whose tests only ever demonstrate its strengths lets a caveat rot
+//! into a claim.
 
 use super::{normalise, normalise_json, normalise_opt};
 
@@ -72,9 +73,10 @@ fn an_unterminated_tag_takes_the_tail_with_it() {
     assert_eq!(normalise("<system"), "");
 }
 
-/// The three §3.5 SITES all reduce to this one function, so the optional and JSON wrappers must
-/// behave identically to the scalar one — a wrapper that forgot to call through would leave one of
-/// the three sites unsanitised while the other two passed.
+/// The three injectable SITES — tool descriptions, prompt templates, and `resources/read` content —
+/// all reduce to this one function, so the optional and JSON wrappers must behave identically to the
+/// scalar one: a wrapper that forgot to call through would leave one of the three sites unsanitised
+/// while the other two passed.
 #[test]
 fn every_wrapper_normalises_through_the_same_function() {
     assert_eq!(
@@ -104,7 +106,7 @@ fn every_wrapper_normalises_through_the_same_function() {
     assert!(out.as_object().unwrap().contains_key("<system>"));
 }
 
-/// §3.5's HONEST SCOPE, asserted rather than written down: markup-stripping does not stop
+/// THE HONEST SCOPE, asserted rather than written down: markup-stripping does not stop
 /// plain-language semantic injection, and this test exists so nobody can later read this module as
 /// "prompt injection is handled". MCPTox shows strong agents follow instructions like this roughly
 /// half the time with no markup at all; that is a model-alignment residual and a hook's problem.

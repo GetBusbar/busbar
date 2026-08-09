@@ -107,10 +107,10 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         //     the top-level `upstream_credentials: _` above already declines for the same reason.
         //   * the three `*_allow` maps hold approved hashes, descriptions and schemas, all of which
         //     are published verbatim in `tools/list`.
-        // WHEN §5.1's per-server `credential:` (`kind: secret`) ref lands, a server WILL hold a
-        // `SecretRef` and this arm must start walking it. That is not left to memory:
-        // `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE, so the layer-2 test fails with
-        // the type named the moment one appears here.
+        // This is a statement about the fields that exist TODAY, not a permanent one: give a server
+        // a held credential and it will hold a `SecretRef`, at which point this arm must walk it.
+        // That is not left to memory: `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE, so
+        // the layer-2 test fails with the type named the moment one appears here.
         tool_defs: _,
     } = cfg;
 

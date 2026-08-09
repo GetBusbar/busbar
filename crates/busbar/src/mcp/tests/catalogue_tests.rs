@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CATALOGUE — the grant filter (owner ruling 2) and the dispatch-time re-validation (§3.9a as
-//! restated by §14.2), asserted on the resolved SETS and on the refusal each check produces.
+//! THE CATALOGUE — the grant filter (owner ruling 2) and the dispatch-time re-validation that
+//! re-reads the live pin generation on every request rather than trusting the one selection saw,
+//! asserted on the resolved SETS and on the refusal each check produces.
 
 use super::{Catalogue, DispatchRefusal};
 use crate::mcp::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolAllowCfg, ToolsCfg};
@@ -163,8 +164,9 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
     );
 }
 
-/// §3.2 / §5.5.2: an `unpinned` registration has no authenticity root, so it CANNOT SERVE TRAFFIC —
-/// whatever its tools claim and whatever the caller's grant says.
+/// An `unpinned` registration has no authenticity root — nothing the operator pinned out of band for
+/// the endpoint to be checked against — so it CANNOT SERVE TRAFFIC, whatever its tools claim and
+/// whatever the caller's grant says.
 #[test]
 fn an_unpinned_server_never_dispatches() {
     let (name, mut def) = server("dev", &["read"], &[]);
@@ -208,11 +210,11 @@ fn not_granted_and_unknown_are_distinct_internally() {
     );
 }
 
-/// §3.9a: the generation is MONOTONIC across builds, including a build whose content is identical.
+/// The generation is MONOTONIC across builds, including a build whose content is identical.
 ///
 /// Identical content matters: a generation derived from a content hash would compare EQUAL after a
-/// change-and-revert, and §14.2 is about whether the operator's approval was replaced, not about
-/// whether it happens to look the same.
+/// change-and-revert, and the dispatch-time check asks whether the operator's approval was REPLACED,
+/// not whether it happens to look the same.
 #[test]
 fn the_pin_generation_moves_on_every_build_including_an_identical_one() {
     let c = cfg(vec![server("fs", &["read"], &[])]);
@@ -230,11 +232,12 @@ fn the_pin_generation_moves_on_every_build_including_an_identical_one() {
     assert!(e.generation() > b.generation());
 }
 
-/// THE §14.2 SEAM TEST, in the exact words the correction gives it: *a call whose candidate was
-/// resolved under pin generation N is refused at dispatch when the live generation is N+1.*
+/// THE SEAM TEST, in the exact words the correction gives it: *a call whose candidate was resolved
+/// under pin generation N is refused at dispatch when the live generation is N+1.*
 ///
 /// It is assertable with no session table and no handshake, which is the whole point of the
-/// restatement — the test §3.9b implied ("a pin change tombstones a session") could never have run.
+/// restatement — the defence used to be phrased as "a pin change tombstones the sticky session", and
+/// this wire revision has no sessions, so that test could never have run at all.
 #[test]
 fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_plus_1() {
     let c = cfg(vec![server("fs", &["read"], &[])]);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §14.3 — an upstream's `InputRequiredResult`: deny-by-default, re-checked on every retry, bounded
-//! and metered, and never proxied outward.
+//! An upstream's `InputRequiredResult`: deny-by-default, re-checked on every retry, bounded and
+//! metered, and never proxied outward. An upstream must not be able to induce busbar to spend
+//! busbar's own authority — an LLM completion on busbar's pools and budget, a prompt to a user, or
+//! disclosure of filesystem roots — that the operator never granted that server.
 
 use crate::mcp::client::jsonrpc::{
     parse_response, AskRefusal, InputRequiredLoop, RpcOutcome, ServerAsk, ServerRequestGrants,
@@ -78,7 +80,9 @@ fn an_ungranted_ask_is_refused_and_the_message_names_the_grant() {
     assert_eq!(l.rounds(), 0);
 }
 
-/// §14.3 part 2: the grant is re-derived on EVERY round. A revocation bites on the next retry.
+/// The grant is re-derived on EVERY round. There is no handshake to authorise once and then trust,
+/// so each retry must re-read the live registry — which is what makes a revocation bite on the very
+/// next retry rather than at the end of a conversation that has no end.
 #[test]
 fn a_revoked_grant_bites_on_the_very_next_retry() {
     let granted = ServerRequestGrants {
@@ -111,8 +115,10 @@ fn each_grant_is_independent() {
         .is_err());
 }
 
-/// §14.3 part 3: the loop is a HARD CAP, refused past it. This is the cost-amplification defence —
-/// every satisfied sampling round is a real LLM call against real budget.
+/// The loop is a HARD CAP, refused past it, not a warning. This is the cost-amplification defence:
+/// dropping the handshake turns one call into a SEQUENCE, a hostile upstream can answer
+/// `InputRequiredResult` forever, and every satisfied sampling round is a real LLM call against real
+/// budget.
 #[test]
 fn a_hostile_upstream_cannot_amplify_cost_by_asking_forever() {
     let granted = ServerRequestGrants {

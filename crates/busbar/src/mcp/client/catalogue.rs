@@ -16,8 +16,8 @@
 //! and input schema — approved once by the operator and re-compared on every refresh. A digest that
 //! moved is DRIFT, drift DEMOTES the server, and a demoted server serves nothing until an operator
 //! works the change. Crucially the demotion is not a flag anybody has to remember to set: it is
-//! `crate::trust::Approval::state` disagreeing with the last observation, which is the §12 lifecycle
-//! this module reuses rather than reimplements.
+//! `crate::trust::Approval::state` disagreeing with the last observation, which is the shared trust
+//! lifecycle this module reuses rather than reimplements.
 //!
 //! ## Why the digest is over a CANONICAL rendering
 //!
@@ -29,17 +29,16 @@
 //!
 //! ## The refresh trigger is OURS, never the upstream's
 //!
-//! §3.3 is explicit that a refresh MUST NOT be driven solely by the server's own
-//! `notifications/tools/list_changed`, because that is an attacker-controlled trigger: an upstream
-//! that wants its poisoned list adopted can simply ask, repeatedly. [`RefreshGate`] rate-limits the
-//! notification to a floor interval and the notification's CONTENTS are never read — it can only
-//! bring forward a re-pull of the authoritative `tools/list`, which is then re-hashed exactly as a
-//! scheduled refresh would be.
+//! A refresh MUST NOT be driven solely by the server's own `notifications/tools/list_changed`,
+//! because that is an attacker-controlled trigger: an upstream that wants its poisoned list adopted
+//! can simply ask, repeatedly. [`RefreshGate`] rate-limits the notification to a floor interval and
+//! the notification's CONTENTS are never read — it can only bring forward a re-pull of the
+//! authoritative `tools/list`, which is then re-hashed exactly as a scheduled refresh would be.
 //!
 //! ## The pin GENERATION, and why dispatch re-reads it
 //!
-//! Revision `2026-07-28` has no sessions, so §14.2 collapses the designed session-tombstoning into
-//! one per-request check: selection resolves a candidate under generation *N*, and dispatch re-reads
+//! Revision `2026-07-28` has no sessions, so the designed session-tombstoning collapses into one
+//! per-request check: selection resolves a candidate under generation *N*, and dispatch re-reads
 //! the LIVE generation and refuses if it moved. That is what stops an in-flight call outliving the
 //! quarantine that was meant to stop it. The generation is monotonic across the whole cache rather
 //! than per server, deliberately: a coarser generation can only cause a spurious refusal and a retry,
@@ -58,14 +57,15 @@ pub(crate) struct ToolDef {
     /// The upstream's own (un-namespaced) tool name.
     pub(crate) name: String,
     /// Free text. Shown to an operator at approval time and fed to a model as context after
-    /// markup-normalisation (§3.5). NEVER an input to a routing decision (§3.0) — see
-    /// `super::dispatch`, whose refusal to read this field is machine-checked.
+    /// markup-normalisation. NEVER an input to a routing decision, which reads the bound identity
+    /// and nothing else — see `super::dispatch`, whose refusal to read this field is
+    /// machine-checked.
     pub(crate) description: String,
     /// The JSON Schema for the tool's arguments.
     pub(crate) input_schema: serde_json::Value,
 }
 
-/// The per-tool schema/description hash of §3.3, as `sha256:<hex>`.
+/// The per-tool schema/description hash the rug-pull defence pins on, as `sha256:<hex>`.
 ///
 /// Covers name, description AND schema together, in one digest rather than three. Three digests
 /// would let a caller approve a name change without a schema change or vice versa, and there is no
@@ -129,8 +129,9 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// The MCP plane's pinned artifact: one opaque transport-layer value, per §12.1's note that an MCP
-/// server offers a single value where a signed A2A card offers two.
+/// The MCP plane's pinned artifact: one opaque transport-layer value. That arity is the reason the
+/// shared lifecycle takes the artifact as a type parameter — a signed A2A card pins two halves, an
+/// issuer key AND a card fingerprint, and a single string would have made MCP's arity universal.
 ///
 /// The `mechanism` is carried rather than hard-coded so `cert_spki`, `mtls` and a future
 /// `pinned_pubkey` are the same type with different operator-facing labels; the machine never reads
@@ -143,8 +144,10 @@ pub(crate) struct TransportPin {
 }
 
 impl TransportPin {
-    /// A pin on the endpoint's TLS certificate SPKI — the mechanism §3.2 names as the degradation
-    /// path where an upstream offers no signature of its own, and the common case for MCP.
+    /// A pin on the endpoint's TLS certificate SPKI — where the operator-pinned trust root degrades
+    /// to when an upstream offers no signature of its own, which for MCP is the common case: there
+    /// is no MCP-native manifest signature to verify. Still a real network-layer authenticity root,
+    /// and still not trust-on-first-use, because the operator supplies the value out of band.
     pub(crate) fn cert_spki(value: &str) -> Self {
         Self {
             mechanism: "cert_spki",
@@ -176,14 +179,14 @@ impl PinnedArtifact for TransportPin {
 #[derive(Clone, Debug)]
 pub(crate) struct ServerCatalogue {
     pub(crate) id: ServerId,
-    /// Operator INTENT (§12.2): the locked pin and the approved per-tool digests. Config-overlay
-    /// state in a wired deployment.
+    /// Operator INTENT: the locked pin and the approved per-tool digests. Config-overlay state in a
+    /// wired deployment.
     pub(crate) approval: Approval<TransportPin>,
     /// What the upstream was last observed to offer. Store state in a wired deployment.
     pub(crate) sighting: Sighting<TransportPin>,
     /// The observed tool definitions, by un-namespaced name. Kept beside the sighting because the
     /// sighting carries only digests: an operator approval screen needs the definition, and the
-    /// markup-normalisation of §3.5 needs the description text.
+    /// markup-normalisation needs the description text.
     pub(crate) observed: BTreeMap<String, ToolDef>,
 }
 
@@ -221,8 +224,8 @@ impl ServerCatalogue {
         self.sighting = Sighting::Failed(reason.to_string());
     }
 
-    /// The DERIVED trust state (§12.2). Never stored, so a drift cannot leave a stale `Approved`
-    /// behind.
+    /// The DERIVED trust state: a pure function of the approval and the sighting. Never stored, so
+    /// a drift cannot leave a stale `Approved` behind — there is no stored `Approved` to leave.
     pub(crate) fn state(&self) -> TrustState {
         self.approval.state(&self.sighting)
     }
@@ -335,8 +338,9 @@ impl CatalogueCache {
         }
     }
 
-    /// THE LIVE GENERATION, read without touching the snapshot. This is what dispatch re-reads per
-    /// §14.2.
+    /// THE LIVE GENERATION, read without touching the snapshot. This is what dispatch re-reads on
+    /// every request, so a call selected under an older generation cannot go out against a snapshot
+    /// the operator has already revoked.
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
     }
@@ -363,8 +367,7 @@ impl CatalogueCache {
     }
 }
 
-/// THE REFRESH TRIGGER GATE of §3.3: an upstream may ASK for a re-pull and may not have one on
-/// demand.
+/// THE REFRESH TRIGGER GATE: an upstream may ASK for a re-pull and may not have one on demand.
 ///
 /// `notifications/tools/list_changed` is attacker-controlled in both timing and content. This gate
 /// answers only the timing half — content is handled by never reading the notification's body at

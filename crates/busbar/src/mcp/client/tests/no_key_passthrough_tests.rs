@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ADVERSARIAL: the caller's busbar key NEVER reaches an upstream (§2.1, DIGEST §D.2).
+//! ADVERSARIAL: the caller's busbar key NEVER reaches an upstream. busbar holds its own per-backend
+//! credentials and mints audience-bound tokens for them; the inbound key authenticates the caller
+//! TO busbar and has no business travelling any further.
 //!
 //! ## Why this is a scan and not an inspection
 //!

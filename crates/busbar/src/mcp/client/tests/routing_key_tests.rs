@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §3.0: `{server}_{tool}` IS the routing key, and a free-text description is NOT an input to any
-//! routing decision.
+//! THE BOUND-IDENTITY RULE: `{server}_{tool}` IS the routing key — busbar routes only on the
+//! (registered-server-id, namespaced-tool-name, schema/description hash) the operator approved —
+//! and an upstream's free-text description is NOT an input to any routing decision.
 //!
 //! Two kinds of proof, because either alone is weak. The behavioural tests plant a hostile
 //! description and assert on the resolved OUTPUT. The source scan asserts that no line of the

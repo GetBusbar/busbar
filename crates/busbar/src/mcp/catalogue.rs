@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CATALOGUE — the versioned snapshot every MCP answer is computed from, and the two checks that
-//! ride it: the grant scope filter (owner ruling 2) and the dispatch-time re-validation (§3.9a as
-//! restated by §14.2).
+//! ride it: the grant scope filter (owner ruling 2) and the dispatch-time re-validation that stops
+//! an in-flight call from outliving the approval it was admitted under.
 //!
 //! ## One snapshot, one generation, an atomic swap
 //!
-//! §3.9a: the catalogue is a VERSIONED SNAPSHOT built once per config apply and swapped atomically,
+//! The catalogue is a VERSIONED SNAPSHOT built once per config apply and swapped atomically,
 //! and dispatch RE-VALIDATES the bound identity and hash pin against the CURRENT snapshot
 //! immediately before the call goes out. The swap mechanism is the one the router already uses —
 //! `AppHandle`'s `RwLock<Arc<App>>` — so this module does not invent a second hot-swap discipline;
@@ -16,7 +16,7 @@
 //!
 //! [`PIN_GENERATION`] is process-global and monotonic rather than a field derived from config
 //! content. That is deliberate: a content hash would compare equal after a change-and-revert, and
-//! §14.2's rule is about whether the operator's approval was REPLACED, not about whether it happens
+//! the rule is about whether the operator's approval was REPLACED, not about whether it happens
 //! to look the same. A counter cannot compare equal to a previous value, so a call resolved under
 //! generation N is refused under N+1 whatever the new snapshot says.
 //!
@@ -33,10 +33,10 @@
 //!
 //! ## Candidates are BOUND IDENTITIES, never descriptions
 //!
-//! §3.0. A catalogue entry is keyed on `(server-id, namespaced-name, schema-hash)`. The description
-//! is carried for display, is markup-normalised on the way out (§3.5), and is never read by any
-//! decision in this module — which is checkable rather than asserted, because [`ToolEntry::description`]
-//! is the only place it appears and nothing in [`Catalogue`] calls it.
+//! ROUTE ONLY ON BOUND IDENTITY. A catalogue entry is keyed on `(server-id, namespaced-name,
+//! schema-hash)`. The description is carried for display, is markup-normalised on the way out, and
+//! is never read by any decision in this module — which is checkable rather than asserted, because
+//! [`ToolEntry::description`] is the only place it appears and nothing in [`Catalogue`] calls it.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,18 +49,19 @@ use super::config::{McpServerDefCfg, ToolsCfg, NAMESPACE_SEP};
 /// future caller with nothing selected yet) as an unambiguous "no generation".
 static PIN_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// ONE approved capability, as the bound identity §3.0 requires plus the inert display fields.
+/// ONE approved capability — the bound identity in full, plus the inert display fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToolEntry {
     /// The registered server id — the first half of the bound identity.
     pub(crate) server: String,
     /// The bare tool name as the upstream spells it.
     pub(crate) tool: String,
-    /// `{server}_{tool}` — THE ROUTING KEY (§2.1, §3.0), and the value an `mcp_tool` grant names.
+    /// `{server}_{tool}` — THE ROUTING KEY, and the value an `mcp_tool` grant names.
     pub(crate) namespaced: String,
-    /// The APPROVED schema/description hash (§3.3). `None` means the operator has allowed the tool
-    /// but approved no hash, which is `pending`: it is CATALOGUED (so an operator can see what is
-    /// waiting) and it does NOT dispatch (there is no approved digest to compare against).
+    /// The APPROVED schema/description hash — the pin every refresh is diffed against, which is how
+    /// a rug-pull is caught. `None` means the operator has allowed the tool but approved no hash,
+    /// which is `pending`: it is CATALOGUED (so an operator can see what is waiting) and it does
+    /// NOT dispatch (there is no approved digest to compare against).
     pub(crate) schema_hash: Option<String>,
     /// Display only. Never read by a decision in this module — see the header.
     pub(crate) description: Option<String>,
@@ -68,7 +69,7 @@ pub(crate) struct ToolEntry {
     pub(crate) input_schema: Option<serde_json::Value>,
 }
 
-/// One exposed prompt. Sanitised at the edge (§3.5), never here — this is the store, not the writer.
+/// One exposed prompt. Markup-normalised at the edge, not here — this is the store, not the writer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PromptEntry {
     pub(crate) server: String,
@@ -109,11 +110,14 @@ pub(crate) struct ServerEntry {
     /// [`crate::trust::PinnedArtifact::mechanism`] is never interpreted.
     pub(crate) pin_mechanism: &'static str,
     /// Whether this registration has an authenticity root at all. `unpinned` is registrable and
-    /// never servable (§3.2 / §5.5.2 "register → pending … cannot serve traffic").
+    /// never servable: a registration that is `unpinned` sits in `pending`, and pending is exactly
+    /// the state that may be inspected but may not carry traffic.
     pub(crate) pinned: bool,
-    /// The server-initiated request grants (§3.10 / §14.3). Deny-by-default by construction.
+    /// The grants for the asks an upstream can come back with — sampling, elicitation, roots.
+    /// Deny-by-default by construction.
     pub(crate) grants: super::config::ServerRequestGrants,
-    /// The hard cap on input-required rounds per logical dispatch (§14.3 part 3).
+    /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
+    /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
 }
 
@@ -149,11 +153,12 @@ impl Default for Catalogue {
 }
 
 /// Why a dispatch was refused before it went out. Every arm is a refusal the caller is TOLD about:
-/// §3.11 requires the rejection to be audited as a rejection, and an unnamed refusal cannot be.
+/// a rejected call must be audited AS a rejection, and an unnamed refusal cannot be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DispatchRefusal {
-    /// The snapshot moved between selection and dispatch. §14.2's whole defence: an in-flight call
-    /// cannot outlive a quarantine, because the generation it resolved under is not the live one.
+    /// The snapshot moved between selection and dispatch. This IS the whole defence: an in-flight
+    /// call cannot outlive a quarantine, because the generation it resolved under is not the live
+    /// one.
     GenerationMoved { selected: u64, live: u64 },
     /// The named tool is not in the live catalogue at all.
     UnknownTool(String),
@@ -376,14 +381,14 @@ impl Catalogue {
         Ok(entry)
     }
 
-    /// DISPATCH-TIME RE-VALIDATION (§3.9a, §14.2).
+    /// DISPATCH-TIME RE-VALIDATION — the check that makes a revocation bite within one request.
     ///
     /// `self` is the LIVE snapshot, re-read immediately before the call goes out; `selected` is what
     /// admission resolved and the generation it resolved under. Two things are checked and they are
     /// deliberately both checked:
     ///
     /// 1. The GENERATION. If it moved, refuse — without looking at anything else. This is the whole
-    ///    of §14.2: a call that raced a quarantine, a de-approval or a re-pin is refused because the
+    ///    defence: a call that raced a quarantine, a de-approval or a re-pin is refused because the
     ///    approval it was admitted under has been replaced, whatever the replacement says. Checking
     ///    the identity instead would let a revert-then-re-approve slip a call through on a snapshot
     ///    the operator had already revoked.

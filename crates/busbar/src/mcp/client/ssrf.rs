@@ -26,15 +26,17 @@
 //!   first is checking whichever one the resolver put first.
 //! - **RESOLVE-THEN-PIN.** The address that passed the check is the address the connection is made
 //!   to ([`PinnedTarget`]), so a second resolution between check and connect cannot change the
-//!   destination. This is the part a hostname string compare cannot do (§3.4).
+//!   destination. This is the part a hostname string compare cannot do, and it is why endpoint
+//!   authenticity is established by RESOLVING and pinning rather than by comparing strings.
 //! - **No redirects, ever.** A 3xx is a URL the operator never validated, chosen by the upstream, at
 //!   the moment a credential is already on the wire. The client is built `Policy::none()` and a 3xx
 //!   is surfaced as a refusal rather than followed.
 //!
 //! ## What this module is NOT
 //!
-//! It is not on the selection hot path. §8 splits the budgets explicitly: selection is sub-100µs,
-//! dispatch is milliseconds-class and does DNS. This runs on dispatch.
+//! It is not on the selection hot path. Selection and dispatch carry SEPARATE budgets: selection
+//! targets sub-100µs, while dispatch is milliseconds-class and does DNS. This runs on dispatch, and
+//! the separation is what lets it do a blocking-class lookup without breaking the selection number.
 
 use crate::net_guard::{is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6};
 use std::net::{IpAddr, SocketAddr};
@@ -283,7 +285,8 @@ pub(crate) fn precheck(
 /// RESOLVE-THEN-PIN. Resolves `url`'s host, refuses if ANY resolved address is inadmissible, and
 /// returns the address the caller must connect to.
 ///
-/// Async because it does DNS, and DNS on a dispatch path is exactly where §3.7 says this belongs.
+/// Async because it does DNS, and a dispatch path — after selection, before the outbound
+/// `tools/call` — is the one place a per-request DNS lookup belongs.
 pub(crate) async fn resolve_and_pin(
     url: &str,
     policy: SsrfPolicy,

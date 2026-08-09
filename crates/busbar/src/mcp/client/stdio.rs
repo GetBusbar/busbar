@@ -11,9 +11,10 @@
 //! MCP server is a child of this process with a pipe on each side of it, and every one of those
 //! properties is new. Auditor MCP-2 M is the finding, and this module is where it lands.
 //!
-//! The correction that comes with it: **spawn is milliseconds, not sub-100µs.** §8 splits the
-//! budgets, and this is squarely on the dispatch side. Nothing here is on the selection path, and
-//! the mis-analogy to the sub-100µs provider pools is dropped rather than argued with.
+//! The correction that comes with it: **spawn is milliseconds, not sub-100µs.** Selection and
+//! dispatch carry SEPARATE budgets, and this is squarely on the dispatch side, which is explicitly
+//! milliseconds-class. Nothing here is on the selection path, and the mis-analogy to the sub-100µs
+//! provider pools is dropped rather than argued with.
 //!
 //! ## The state machine, and why each transition exists
 //!
@@ -271,7 +272,8 @@ impl StdioChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            // Reaped by tokio when the handle drops, which is the zombie-reaping half of §3.9c.
+            // Reaped by tokio when the handle drops, which is the zombie-reaping obligation of
+            // the state machine above discharged by the runtime rather than by hand.
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn stdio MCP server `{program}`: {e}"))?;

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE OUTBOUND WIRE for MCP revision `2026-07-28`: the JSON-RPC envelope busbar sends to an
-//! upstream, and the two rules of §14.3 that govern what busbar does with the answer.
+//! upstream, and the rules that govern what busbar does with the answer.
 //!
 //! ## Symmetry with the ingress, deliberately
 //!
@@ -14,7 +14,8 @@
 //! mode is silent: busbar would accept requests it could not itself send.
 //!
 //! There is no `initialize` and there is no session. Every request is self-describing, so there is
-//! nothing to establish and nothing to invalidate (§14.1, §14.2).
+//! nothing to establish and nothing to invalidate — which is why nothing in this module caches a
+//! negotiated fact across two requests.
 //!
 //! ## The namespaced name is BUSBAR'S, not the upstream's
 //!
@@ -25,7 +26,7 @@
 //! `super::identity`): stripping a prefix off a rendering would be parsing, and parsing is where the
 //! ambiguity lives.
 //!
-//! ## §14.3: an upstream's ask terminates at busbar
+//! ## An upstream's ask terminates at busbar
 //!
 //! Under this revision a server cannot send a request. Sampling, elicitation and roots come back
 //! INLINE as an `InputRequiredResult` in the result of a call busbar made, and busbar decides
@@ -38,9 +39,11 @@
 //!    into a sequence, and a hostile upstream can return `InputRequiredResult` forever to amplify
 //!    cost — every satisfied sampling round is a real LLM call against real budget.
 //!
-//! And the rule this revision creates that §3.10 could not have anticipated: an upstream's
-//! `InputRequiredResult` is NEVER proxied outward to busbar's own caller. Doing so would launder an
-//! upstream's request for authority through the party the caller actually trusts.
+//! And the rule this revision creates, which a design written against server-initiated requests had
+//! no reason to anticipate: an upstream's `InputRequiredResult` is NEVER proxied outward to
+//! busbar's own caller. Doing so would launder an upstream's request for authority through the
+//! party the caller actually trusts, and would ask that caller to satisfy, on the upstream's
+//! behalf, an ask busbar itself declined.
 
 use super::identity::ToolKey;
 use crate::mcp::ingress::PROTOCOL_VERSION;
@@ -109,7 +112,7 @@ pub(crate) fn tools_call(
             "_meta": {
                 META_PROTOCOL_VERSION: PROTOCOL_VERSION,
                 // busbar declares NO client capabilities. Sampling, elicitation and roots are
-                // deny-by-default per server (§14.3), and declaring a capability we then refuse to
+                // deny-by-default per server, and declaring a capability we then refuse to
                 // honour invites an upstream to build a call sequence around it. Declaring the empty
                 // set is the honest statement of a client that will not be answering.
                 META_CLIENT_CAPABILITIES: {},
@@ -209,7 +212,7 @@ pub(crate) enum RpcOutcome {
     Result(serde_json::Value),
     /// A JSON-RPC error object.
     Error { code: i64, message: String },
-    /// The upstream is asking busbar to spend busbar's authority: an `InputRequiredResult` (§14.3).
+    /// The upstream is asking busbar to spend busbar's OWN authority: an `InputRequiredResult`.
     /// Carries the kind of ask so the grant check names the right grant.
     InputRequired { kind: ServerAsk },
     /// The body was not a JSON-RPC response at all.
@@ -292,7 +295,8 @@ fn input_required_kind(result: &serde_json::Value) -> Option<ServerAsk> {
     }
 }
 
-/// The per-server grants of §3.10, unchanged by §14.3 — only where they are consulted moved.
+/// The per-server grants, unchanged by the stateless revision. What moved is WHERE they are
+/// consulted: from refusing a server's inbound request to refusing to answer its inline ask.
 ///
 /// All false at construction, and there is no `all()` constructor. Deny-by-default is a property of
 /// the type, not of a config default somebody can invert.
@@ -340,7 +344,7 @@ impl std::fmt::Display for AskRefusal {
     }
 }
 
-/// THE BOUNDED, METERED INPUT-REQUIRED LOOP (§14.3 part 3).
+/// THE BOUNDED, METERED INPUT-REQUIRED LOOP.
 ///
 /// A hard cap, refused past it, not a warning. Constructed per logical dispatch, so the bound is per
 /// dispatch and not per connection — there is no connection-scoped state under this revision, and a
@@ -363,9 +367,9 @@ impl InputRequiredLoop {
 
     /// May busbar satisfy this ask, right now?
     ///
-    /// `grants` is a PARAMETER rather than a field, and that is §14.3 part 2 in a signature: the
-    /// grant is re-derived from the live registry snapshot on every round, so a revocation bites on
-    /// the next retry rather than at the end of a sequence that has no end.
+    /// `grants` is a PARAMETER rather than a field, and that is the re-check-every-round rule
+    /// written into a signature: the grant is re-derived from the live registry snapshot each time,
+    /// so a revocation bites on the next retry, not at the end of a sequence that has no end.
     pub(crate) fn may_satisfy(
         &mut self,
         ask: ServerAsk,
@@ -387,7 +391,7 @@ impl InputRequiredLoop {
         Ok(())
     }
 
-    /// Rounds actually satisfied. Read by the metering call site: §14.3 requires each round to be
+    /// Rounds actually satisfied. Read by the metering call site, because each round has to be
     /// attributed and metered like any other request, and a count nobody reads is a count nobody
     /// meters.
     pub(crate) fn rounds(&self) -> u32 {

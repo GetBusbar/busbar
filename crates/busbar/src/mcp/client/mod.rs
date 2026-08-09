@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MCP CLIENT DIRECTION: busbar calling OUT to external MCP tool servers — `mcp-design.md`
-//! §2.1, the "7th wire protocol".
+//! THE MCP CLIENT DIRECTION: busbar calling OUT to external MCP tool servers — the "7th wire
+//! protocol", so named because it sits beside the six stateless HTTP provider families in
+//! `crate::proto` and is nothing like them.
 //!
 //! `crate::mcp` (the parent) is the SERVER direction: busbar's own front door. This module is the
 //! other half of the same governance boundary. They share the trust lifecycle, the scope kinds, the
@@ -12,28 +13,30 @@
 //!
 //! | module | owns |
 //! |---|---|
-//! | [`identity`] | `{server}_{tool}` as THE routing key, and the bound identity of §3.0 |
-//! | [`catalogue`] | the versioned tool-list snapshot, per-tool hash-pinning, drift detection (§3.3) |
-//! | [`jsonrpc`] | the `2026-07-28` outbound wire, and the `InputRequiredResult` rules of §14.3 |
+//! | [`identity`] | `{server}_{tool}` as THE routing key — bound identity, never the description |
+//! | [`catalogue`] | the versioned tool-list snapshot, per-tool hash-pinning, drift detection |
+//! | [`jsonrpc`] | the `2026-07-28` outbound wire, and the rules for answering an upstream's ask |
 //! | [`transport`] | the streamable-HTTP stateless transport — the primary target |
-//! | [`stdio`] | spawn + supervise, with the lifecycle state machine of §3.9c |
+//! | [`stdio`] | spawn + supervise, with the `spawning → ready → draining → dead` state machine |
 //! | [`pool`] | engine-owned connection pooling, keyed by the PINNED address |
-//! | [`ssrf`] | dispatch-time resolve-then-pin (§3.7) |
-//! | [`egress`] | per-server credentials, RFC 8707/8693, and the §3.8 confused-deputy gate |
-//! | [`dispatch`] | selection, and the per-request re-validation of §14.2 |
+//! | [`ssrf`] | dispatch-time resolve-then-pin |
+//! | [`egress`] | per-server credentials, RFC 8707/8693, and the transitive confused-deputy gate |
+//! | [`dispatch`] | selection, and the re-validation that runs on every single request |
 //!
 //! ## The revision, stated once
 //!
-//! `2026-07-28`, streamable-HTTP stateless. §15.3 supersedes §2.1's "do not build primarily against
-//! the not-yet-ratified RC": it is the current revision. There is no `initialize`, no session, no
+//! `2026-07-28`, streamable-HTTP stateless. This plane was designed when that was an unratified RC
+//! and building primarily against an unratified RC was the wrong bet to take; that caveat is
+//! spent — it is the current
+//! revision, and it is the only one busbar speaks. There is no `initialize`, no session, no
 //! `Mcp-Session-Id`, no GET stream, no resumability, and a server cannot send a JSON-RPC request.
-//! §14.4 is the rule that follows and it governs every check in here: **under on-demand negotiation
-//! every defence is a per-request check.** Anything phrased "at the handshake" or "for the session"
-//! is a per-request check or it is nothing.
+//! The rule that follows governs every check in here: **under on-demand negotiation every defence
+//! is a per-request check.** Anything phrased "at the handshake" or "for the session" is a
+//! per-request check or it is nothing.
 //!
 //! ## The trust lifecycle is REUSED, not rebuilt
 //!
-//! §12 landed `crate::trust` — the plane-neutral `Approval` / `Sighting` / `TrustState` /
+//! `crate::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
 //! `Drift` machine, generic over its pinned artifact, with the state DERIVED rather than stored.
 //! This plane supplies one adapter, [`catalogue::TransportPin`], and gets the whole lifecycle:
 //! register, connect, approve, per-capability approve/reject, `approve_pin`, suspend, unpin,
@@ -44,17 +47,18 @@
 //!
 //! There is **no production caller**: no `tools:` config section (goal item 17), no admin verbs
 //! (item 18), no store-side sighting table, and therefore no path by which a real request reaches
-//! this code today. That is the same posture §12 recorded for the trust lifecycle and for the same
+//! this code today. That is the same posture the trust lifecycle shipped under and for the same
 //! reason — the parts with a dependant waiting land ahead of the wiring. The consequence is stated
 //! rather than softened: every property below is proven at the unit and integration seam, and none
 //! of it is proven end-to-end through a live deployment.
 //!
-//! The **inbound half of §3.8** is likewise unproven as a pair. [`egress::authorise_egress`] binds
-//! outbound credential selection to a `busbar_api::VirtualKey`, which is the real principal type
-//! both directions resolve to — but until the server direction's `tools/call` resolves a caller into
-//! one and hands it here, the transitive confused-deputy defence is proven against a constructed
-//! principal, not against an inbound MCP client. §2.3 says that property is the reason both
-//! directions ship together; this module holds up its end and says so precisely.
+//! The **inbound half of the egress gate** is likewise unproven as a pair.
+//! [`egress::authorise_egress`] binds outbound credential selection to a `busbar_api::VirtualKey`,
+//! which is the real principal type both directions resolve to — but until the server direction's
+//! `tools/call` resolves a caller into one and hands it here, the transitive confused-deputy
+//! defence is proven against a constructed principal, not against an inbound MCP client. A defence
+//! that only means anything once both halves exist is precisely why the two directions ship as one
+//! unit; this module holds up its end and says so precisely.
 
 // NO PRODUCTION CALLER YET — see the module header. Landed ahead of the config section and the admin
 // verbs deliberately, because the integrity properties are the part worth settling and pinning
@@ -90,23 +94,26 @@ pub(crate) enum Endpoint {
 ///
 /// Deliberately not `serde`-derived. The config face of this record is goal item 17's `tools:`
 /// block, and deriving a wire shape now would freeze a grammar before the section that owns it
-/// exists — which is exactly the "re-typing after publication is a breaking change" trap §5.1
-/// records about `tools_allow`.
+/// exists — exactly the trap the locked `tools:` grammar records against `tools_allow`: once
+/// operators have written a key into their files, re-typing it is a breaking change.
 #[derive(Clone, Debug)]
 pub(crate) struct McpServerRegistration {
     pub(crate) id: ServerId,
     pub(crate) endpoint: Endpoint,
-    /// The out-of-band operator pin (§3.2). `None` is the explicitly-and-loudly `unpinned` case the
-    /// design permits for low-risk dev use; the trust lifecycle refuses to APPROVE without one, so
-    /// an unpinned server is `Pending` and serves nothing until the operator supplies a pin or
-    /// accepts a captured candidate.
+    /// The out-of-band operator pin: an authenticity root supplied at registration, never a key the
+    /// endpoint offered on first contact, which is what keeps this out of trust-on-first-use.
+    /// `None` is the explicitly-and-loudly `unpinned` case, permitted for low-risk dev use only;
+    /// the trust lifecycle refuses to APPROVE without one, so an unpinned server is `Pending` and
+    /// serves nothing until the operator supplies a pin or accepts a captured candidate.
     pub(crate) pin: Option<TransportPin>,
     pub(crate) credential: UpstreamCredential,
     /// Per-server addressing posture for the dispatch-time SSRF check.
     pub(crate) ssrf: SsrfPolicy,
-    /// §3.10/§14.3 grants. All false unless an operator set them.
+    /// Per-server grants for the three asks an upstream can make of busbar's OWN authority —
+    /// sampling, elicitation, roots. All false unless an operator set them.
     pub(crate) grants: ServerRequestGrants,
-    /// The hard cap on input-required rounds for one logical dispatch (§14.3 part 3).
+    /// The hard cap on input-required rounds for one logical dispatch. Without it a hostile
+    /// upstream can ask forever, and every satisfied sampling round is a real, budgeted LLM call.
     pub(crate) max_input_required_rounds: u32,
 }
 
@@ -166,7 +173,7 @@ impl McpClientEngine {
     }
 
     /// Remove an upstream. Bumps the catalogue generation, which is what makes a call already
-    /// resolved against it fail its dispatch-time re-validation (§14.2).
+    /// resolved against it fail its dispatch-time re-validation, revocation included.
     pub(crate) fn deregister(&self, id: &ServerId) {
         if let Ok(mut r) = self.registry.write() {
             r.remove(id.as_str());

@@ -65,14 +65,15 @@
 //!
 //! ## What is deliberately NOT here
 //!
-//! The CLIENT direction (§2.1). Nothing in this module opens a connection to an upstream MCP server,
-//! so a `tools/call` runs every governance check and then fails at the round trip with a
-//! busbar-attributed error. That is stated in [`method::dispatch_upstream`] rather than papered over
-//! with a stub result, because a fake result makes every check above it pass for the wrong reason.
+//! The CLIENT direction — busbar calling OUT. Nothing in this module opens a connection to an
+//! upstream MCP server, so a `tools/call` runs every governance check and then fails at the round
+//! trip with a busbar-attributed error. That is stated in [`method::dispatch_upstream`] rather than
+//! papered over with a stub result, because a fake result makes every check above it pass for the
+//! wrong reason.
 
 pub(crate) mod admin_view;
 pub(crate) mod catalogue;
-/// The CLIENT direction (§2.1): busbar calling OUT to external MCP tool servers. The other half of
+/// The CLIENT direction: busbar calling OUT to external MCP tool servers. The other half of
 /// the same governance boundary this module's front door opens — same revision, same trust
 /// lifecycle, same scope kinds, opposite initiator.
 pub(crate) mod client;

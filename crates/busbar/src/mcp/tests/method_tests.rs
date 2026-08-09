@@ -36,7 +36,7 @@ fn mcp_cfg() -> crate::mcp::McpCfg {
 }
 
 /// A registered server carrying one approved tool, one prompt and one resource — each with a
-/// deliberately POISONED description/template/body, so every §3.5 site has something to strip.
+/// deliberately POISONED description/template/body, so every sanitisation site has work to do.
 fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
     let mut tools_allow = indexmap::IndexMap::new();
     tools_allow.insert(
@@ -188,8 +188,9 @@ async fn tools_list_is_scoped_to_the_callers_grant() {
     assert_ne!(tool_names(&ba), tool_names(&bb));
 }
 
-/// The wire name is the NAMESPACED one (§2.1, §3.0), and the description is markup-normalised on the
-/// way out (§3.5). Both asserted on the emitted object, not on the catalogue that produced it.
+/// The wire name is the NAMESPACED one — the routing key, part of the bound identity, and never the
+/// free-text description — and the description is markup-normalised on the way out. Both asserted on
+/// the emitted object, not on the catalogue that produced it.
 #[tokio::test]
 async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description() {
     crate::metrics::init();
@@ -214,8 +215,9 @@ async fn tools_list_publishes_the_namespaced_name_and_a_normalised_description()
     );
 }
 
-/// `prompts/get` and `resources/read` — the two §3.5 sites the prior design draft missed entirely
-/// (auditor MCP-1 H9). Both must come back stripped.
+/// `prompts/get` and `resources/read` — the two markup-normalisation sites the prior design draft
+/// missed entirely (auditor MCP-1 H9), though a template and a resource body are exactly as
+/// injectable as a tool description. Both must come back stripped.
 #[tokio::test]
 async fn prompts_and_resources_are_sanitised_on_the_way_out() {
     crate::metrics::init();
@@ -553,8 +555,8 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     )
     .await;
     // The call is refused at the ROUND TRIP (no client direction). Everything before it ran, which
-    // is what this test is here to show — a refusal after the charge is exactly the ordering
-    // §3.11 requires and the shape a real dispatch has.
+    // is what this test is here to show — validate, then dispatch, then audit the decision actually
+    // reached is the required ordering and the shape a real dispatch has.
     assert_eq!(status, 403);
     assert_eq!(
         body.pointer("/error/data/reason").unwrap(),
@@ -587,7 +589,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     );
     assert_eq!(row.requests, 1);
 
-    // THE AUDIT (§3.11): the VALIDATED decision, attributed, recorded as a REJECTION because that is
+    // THE AUDIT: the VALIDATED decision, attributed, recorded as a REJECTION because that is
     // what it was — never as a successful route.
     let entries = crate::admin::audit::AUDIT.export();
     assert!(entries.len() > before, "the call must have audited");

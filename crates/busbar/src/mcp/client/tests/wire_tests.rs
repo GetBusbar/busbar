@@ -46,9 +46,9 @@ fn the_outbound_name_is_the_un_namespaced_tool() {
 
 #[test]
 fn meta_lives_at_params_meta_and_not_at_the_top_level() {
-    // This is the exact defect the third-party conformance suite caught on the ingress side
-    // (§15.4). Building the client against the same wrong shape would have made both halves agree
-    // and both halves wrong.
+    // This is the exact defect the third-party conformance suite caught on the ingress side, where
+    // every one of our own tests had agreed with the reader that read the top level. Building the
+    // client against the same wrong shape would have made both halves agree and both halves wrong.
     let req = tools_list("https://u.example/mcp", 1, None);
     let body = body_of(&req);
     assert!(body.get("_meta").is_none(), "no top-level `_meta`");
@@ -129,7 +129,7 @@ fn the_authorization_header_is_present_exactly_when_a_credential_was_planned() {
 ///
 /// A live round trip through `crate::mcp::ingress::rpc` is the stronger test and is deliberately not
 /// attempted: that handler needs a mounted `App`, and the method surface it dispatches into does not
-/// exist yet (§15.5). Stated rather than skipped quietly.
+/// exist yet — the ingress answers `-32601` to every method. Stated rather than skipped quietly.
 #[test]
 fn the_client_and_the_ingress_agree_on_every_wire_literal() {
     let ingress_src = include_str!("../../ingress.rs");

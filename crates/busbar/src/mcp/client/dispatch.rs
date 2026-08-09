@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SELECTION AND DISPATCH-TIME RE-VALIDATION: the two-step §14.2 collapses the designed
-//! session-tombstoning into, plus the §3.11 ordering that puts integrity ahead of the audit append.
+//! SELECTION AND DISPATCH-TIME RE-VALIDATION: what invalidating a session collapses into once the
+//! protocol has no sessions left to invalidate, plus the ordering that puts integrity validation
+//! ahead of the audit append.
 //!
 //! ## Two steps, and the gap between them is the whole point
 //!
@@ -12,20 +13,22 @@
 //!    re-read and the bound identity is re-compared against the LIVE snapshot.
 //!
 //! Under a stateless protocol that second step is not a backstop to session invalidation — it IS the
-//! defence, and it is the only one needed (§14.2). A call whose candidate was resolved under
-//! generation *N* is refused when the live generation is *N+1*, which is what stops an in-flight
-//! call outliving the quarantine that was meant to stop it.
+//! defence, and it is the only one needed. A call whose candidate was resolved under generation *N*
+//! is refused when the live generation is *N+1*, which is what stops an in-flight call outliving
+//! the quarantine that was meant to stop it.
 //!
 //! ## Route on the KEY, never on the description
 //!
-//! §3.0's rule is enforced here by construction and then MACHINE-CHECKED. [`resolve`] takes a
-//! namespaced name and a snapshot; there is no argument through which a description could arrive,
-//! and no line of this module's code reads `ToolDef::description`. That second half is a test
+//! Route ONLY on the bound identity — registered server, namespaced tool, schema/description digest
+//! — and never on an upstream's free text. That rule is enforced here by construction and then
+//! MACHINE-CHECKED. [`resolve`] takes a namespaced name and a snapshot; there is no argument through
+//! which a description could arrive, and no line of this module's code reads `ToolDef::description`.
+//! That second half is a test
 //! (`tests/routing_key_tests.rs::dispatch_never_reads_a_tool_description`) that scans this module's
 //! own source with prose stripped, because "no line reads it" is a claim that decays the moment
 //! somebody adds a convenience.
 //!
-//! The honest limit stays honest (§3.0): this protects busbar's ROUTING. It does not protect the
+//! The honest limit stays honest: this protects busbar's ROUTING. It does not protect the
 //! MODEL's tool-CHOICE. If two approved servers expose near-identical tools, which one the model
 //! asks for is the model's decision, outside busbar's routing boundary.
 //!
@@ -53,9 +56,9 @@ pub(crate) struct Resolved {
     pub(crate) generation: u64,
 }
 
-/// Why a dispatch was refused. Every arm is a refusal that must be AUDITED as a rejection rather
-/// than dropped (§3.11): a call that was stopped is exactly the call an investigator later needs a
-/// record of.
+/// Why a dispatch was refused. Integrity is validated BEFORE anything is appended to the audit log,
+/// and every arm here must then be AUDITED as a rejection rather than dropped: a call that was
+/// stopped is exactly the call an investigator later needs a record of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DispatchRefusal {
     /// The namespaced name did not parse into a `(server, tool)` pair.
@@ -72,11 +75,11 @@ pub(crate) enum DispatchRefusal {
         approved_or_absent: String,
         observed: String,
     },
-    /// §14.2: the catalogue moved between selection and dispatch.
+    /// THE LIFECYCLE-RACE REFUSAL: the catalogue moved between selection and dispatch.
     GenerationMoved { selected: u64, live: u64 },
-    /// §3.8: the inbound principal's grant does not cover this call.
+    /// THE CONFUSED-DEPUTY REFUSAL: the inbound principal's grant does not cover this call.
     Egress(EgressDenied),
-    /// §3.7: the destination failed the dispatch-time SSRF check.
+    /// The destination failed the dispatch-time SSRF check.
     Ssrf(SsrfRefusal),
 }
 
@@ -142,8 +145,8 @@ pub(crate) fn resolve(
         .bound_identity(key.tool())
         .ok_or_else(|| DispatchRefusal::UnknownTool(key.tool().to_string()))?;
     // THE HASH-PIN CHECK. `Approval::serves` is the SAME comparison the operator's changes queue is
-    // rendered from (§12.2), rather than a second opinion that could disagree with it at exactly the
-    // moment a call races a quarantine.
+    // rendered from, rather than a second opinion that could disagree with it at exactly the moment
+    // a call races a quarantine.
     if !server.approval.serves(key.tool(), &identity.digest) {
         return Err(DispatchRefusal::SchemaDrift {
             tool: key.namespaced(),
@@ -211,8 +214,8 @@ pub(crate) fn revalidate(
 ///
 /// Separate from [`resolve`] because they answer different questions at different moments — this is
 /// the catalogue filter (an authorisation decision per owner ruling 2), and `resolve` is the
-/// credential-selection gate of §3.8. Both consult the same `scope_allowed`; neither is the other's
-/// backstop.
+/// credential-selection gate that binds an outbound call to the inbound caller's own grant. Both
+/// consult the same `scope_allowed`; neither is the other's backstop.
 pub(crate) fn visible_catalogue(
     snapshot: &CatalogueSnapshot,
     caller: &VirtualKey,

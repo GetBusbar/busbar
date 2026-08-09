@@ -137,8 +137,8 @@ pub(crate) async fn rpc(
     body: Bytes,
 ) -> Response {
     // The snapshot this request runs on, taken ONCE. `method::Ctx` also carries the handle, because
-    // dispatch re-reads the LIVE snapshot to compare pin generations (§14.2) — a comparison against
-    // this same value could never fail.
+    // dispatch re-reads the LIVE snapshot to compare pin generations — a comparison against this
+    // same value could never fail.
     let app = handle.load();
     // The resource is present whenever this route is mounted — the mount is what creates it. The
     // fallback exists only so a future refactor that mounts the route without the config produces a

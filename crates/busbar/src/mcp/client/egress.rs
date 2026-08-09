@@ -2,24 +2,25 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! OUTBOUND CREDENTIAL SELECTION: per-server injection, RFC 8707 audience binding, RFC 8693
-//! down-scoping — and the §3.8 rule that ties all three to the INBOUND principal's grant.
+//! down-scoping — and the rule that ties all three to the INBOUND principal's grant.
 //!
 //! ## The two rules, and why the second one only exists because busbar is bidirectional
 //!
-//! **Rule 1 (§2.1, DIGEST §D.2): the caller's busbar key NEVER reaches an upstream.** It is a
-//! credential minted by busbar, for busbar, and forwarding it hands an upstream a token that spends
-//! against busbar's own governance plane. This is enforced structurally: the credential planner
+//! **Rule 1: the caller's busbar key NEVER reaches an upstream.** It is a credential minted by
+//! busbar, for busbar, and forwarding it hands an upstream a token that spends against busbar's own
+//! governance plane. This is enforced structurally: the credential planner
 //! below is not given the caller's presented secret, and the request builder that IS given it never
 //! reads it. That is asserted adversarially in `tests/no_key_passthrough_tests.rs` by planting a
 //! sentinel and scanning the whole serialized request, rather than by reading the code and agreeing
 //! with it.
 //!
-//! **Rule 2 (§3.8, threat 17): the outbound credential is bound to the inbound principal's grant.**
+//! **Rule 2 (threat 17): the outbound credential is bound to the inbound principal's grant.**
 //! A client-only gateway cannot have this bug — it has no inbound principal to be confused about.
 //! busbar is both directions, so an authenticated inbound `tools/call` could cause busbar to mint an
 //! outbound token from its OWN ambient upstream credentials and re-export a tool with more authority
-//! than the caller holds. §2.3's whole argument for shipping both halves together is that this
-//! property is the one that only exists in the pair.
+//! than the caller holds. The whole argument for shipping both directions as one unit is that this
+//! property is the one that only exists in the pair: the bundle creates the deputy, so the bundle
+//! has to close it.
 //!
 //! The gate is [`authorise_egress`], and it runs at the CREDENTIAL SELECTION SITE rather than at the
 //! catalogue. That placement is the point: a catalogue filter answers "what may this caller SEE",
@@ -45,9 +46,9 @@
 use super::identity::{ServerId, ToolKey};
 use busbar_api::{Redacted, VirtualKey};
 
-/// How ONE upstream server is authenticated to. Per server, never a plane-wide default — §5.1 is
-/// explicit that MCP auth is never an all-plane scalar because every MCP server authenticates
-/// independently.
+/// How ONE upstream server is authenticated to. Per server, never a plane-wide default: every MCP
+/// server authenticates independently, so there is no all-plane auth scalar an operator could set
+/// and no ambient credential for a misconfigured server to fall back to.
 #[derive(Clone, Debug)]
 pub(crate) enum UpstreamCredential {
     /// No credential. A public or network-authenticated upstream.
@@ -59,8 +60,8 @@ pub(crate) enum UpstreamCredential {
     Exchange(ExchangeCfg),
     /// The caller supplied its own credential FOR THIS UPSTREAM, and busbar forwards it.
     ///
-    /// This is `upstream_credentials: passthrough` from §5.1, and the distinction that keeps it from
-    /// violating rule 1 is that the forwarded value is a credential the caller holds for the
+    /// This is the config's `upstream_credentials: passthrough`, and the distinction that keeps it
+    /// from violating rule 1 is that the forwarded value is a credential the caller holds for the
     /// UPSTREAM, carried in its own field, and is never the busbar key the caller authenticated to
     /// busbar with. See [`CallerContext`], where the two are separate fields precisely so that
     /// "forward the caller's credential" cannot accidentally mean the wrong one.
@@ -94,7 +95,7 @@ pub(crate) struct ExchangeCfg {
 ///   `passthrough`. This is the only caller-supplied value that may leave.
 #[derive(Clone, Debug)]
 pub(crate) struct CallerContext {
-    /// The caller's resolved governance row. `scope_allowed` on this is the §3.8 gate's input.
+    /// The caller's resolved governance row. `scope_allowed` on this is the egress gate's input.
     pub(crate) key: VirtualKey,
     /// The secret the caller presented to busbar. MUST NOT leave busbar.
     pub(crate) busbar_key: Redacted<String>,
@@ -111,7 +112,7 @@ pub(crate) enum EgressDenied {
     /// The inbound principal has no `mcp_tool` grant for this namespaced tool.
     NoToolGrant { caller: String, tool: String },
     /// `passthrough` was configured and the caller supplied no upstream credential. Fail closed:
-    /// falling back to busbar's ambient credential is exactly the deputy §3.8 exists to close.
+    /// falling back to busbar's ambient credential is exactly the deputy this gate exists to close.
     PassthroughWithoutCallerCredential { server: String },
 }
 
@@ -138,12 +139,12 @@ impl std::fmt::Display for EgressDenied {
     }
 }
 
-/// THE §3.8 GATE. Both grants must pass before any credential is selected.
+/// THE EGRESS GATE. Both grants must pass before any credential is selected.
 ///
 /// Two checks and not one, because the two grants answer different questions and a deployment may
 /// legitimately grant one without the other: `mcp_server` says the caller may reach this upstream at
-/// all, `mcp_tool` says which of its tools. §3.8 names both, and requiring both is what makes a
-/// server-wide grant not a tool-wide one.
+/// all, `mcp_tool` says which of its tools. Requiring BOTH is what keeps a server-wide grant from
+/// silently becoming a tool-wide one.
 ///
 /// `VirtualKey::scope_allowed` is reused verbatim rather than reimplemented: its cross-kind
 /// fail-closed semantics are frozen at 1.5.3 and a second implementation of a frozen rule is a

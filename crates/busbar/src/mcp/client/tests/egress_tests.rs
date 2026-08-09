@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Per-server credential injection: the RFC 8693 request shape, RFC 8707 binding, and the per-server
-//! independence §5.1 requires.
+//! independence the config grammar requires — a credential is declared on the server's own registry
+//! entry, so there is nowhere to express a plane-wide one.
 //!
 //! The confused-deputy half of this module is in `deputy_tests.rs`; this file pins the WIRE SHAPE, so
 //! a reader can compare it against RFC 8693 §2.1 field by field.
@@ -139,8 +140,9 @@ fn passthrough_forwards_the_callers_upstream_credential() {
     }
 }
 
-/// §5.1: MCP credentials are PER SERVER and there is no plane-wide default. Two servers configured
-/// differently behave differently for the same caller and the same tool name.
+/// MCP credentials are PER SERVER — each is a key on that server's own registry entry — and there
+/// is no plane-wide default to fall back to. Two servers configured differently behave differently
+/// for the same caller and the same tool name.
 #[test]
 fn two_servers_authenticate_independently() {
     let caller = key_wildcard("k");

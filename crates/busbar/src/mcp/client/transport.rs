@@ -10,7 +10,8 @@
 //! nothing to pin a client to one server instance; no GET stream, so there is nothing to resume.
 //! Every request is self-describing (`params._meta` carries the protocol version and the client's
 //! capabilities), which is why a plain round-robin load balancer in front of an upstream is fine and
-//! why busbar's own connection reuse carries no authority (§14.2).
+//! why busbar's own connection reuse carries no authority: a reused socket negotiated nothing, so
+//! there is nothing on it a revocation would have to invalidate.
 //!
 //! The one thing that survives from the streaming design is the RESPONSE content type: `text/event-
 //! stream` is a permitted answer to a POST. So the reader accepts either, and an SSE answer is

@@ -5,18 +5,19 @@
 //!
 //! ## Why the pool key includes the address and not just the host
 //!
-//! §3.7's resolve-then-pin is only a defence if the connection actually goes to the address that was
-//! checked. `reqwest` resolves per connection, so a pooled client built for a hostname would
-//! re-resolve on the next new connection and could reach an address nobody validated — the TOCTOU
-//! this whole path exists to close, reintroduced by the cache in front of it.
+//! The dispatch-time resolve-then-pin in `super::ssrf` is only a defence if the connection actually
+//! goes to the address that was checked. `reqwest` resolves per connection, so a pooled client
+//! built for a hostname would re-resolve on the next new connection and could reach an address
+//! nobody validated — the TOCTOU this whole path exists to close, reintroduced by the cache in
+//! front of it.
 //!
 //! So the pool is keyed `(host, pinned-address)` and each entry is a `reqwest::Client` whose
 //! resolver is pinned to that one address. A rebinding resolver that answers differently produces a
 //! DIFFERENT key, which means a new client, which means the check runs again — the cache cannot
 //! launder an unvalidated destination, because an unvalidated destination is not in it.
 //!
-//! Keep-alive is safe under this scheme and it is worth saying why explicitly, because §14.2 warns
-//! about exactly the confusion: busbar's HTTP connection reuse is NOT a protocol session. It carries
+//! Keep-alive is safe under this scheme and it is worth saying why explicitly, because it invites
+//! exactly one confusion: busbar's HTTP connection reuse is NOT a protocol session. It carries
 //! no negotiated authority, nothing was established over it, and there is nothing on it to
 //! invalidate when a pin changes. What must be re-checked on a pin change is the CATALOGUE
 //! generation, and that is `super::catalogue`'s job, per request.

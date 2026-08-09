@@ -40,8 +40,9 @@ fn an_http_registration_carries_the_url_the_transport_will_post_to() {
 #[test]
 fn the_engine_owns_the_connection_pool() {
     let engine = McpClientEngine::new();
-    // Engine-owned, per §2.1: the pool is a field of the engine rather than a global, so a second
-    // deployment in one process cannot share pinned clients with the first.
+    // Connection pooling to upstreams is engine-owned: the pool is a field of the engine rather
+    // than a global, so a second deployment in one process cannot share pinned clients with the
+    // first.
     assert_eq!(engine.pool.len(), 0);
 }
 
@@ -53,7 +54,7 @@ fn both_pin_mechanisms_are_operator_visible_and_never_interpreted_by_the_machine
     assert_eq!(mtls.mechanism(), "mtls");
     assert_eq!(spki.digest(), "sha256/AAAA");
     // Two mechanisms with the same VALUE are still different pins, because equality is structural
-    // and the plane decides what identity equality means (§12.1).
+    // and the plane — not the trust machinery — decides what identity equality means.
     assert_ne!(TransportPin::cert_spki("x"), TransportPin::mtls("x"));
 }
 

@@ -405,8 +405,10 @@ pub(crate) struct App {
     /// the whole `Arc<App>` under one lock, so the catalogue is replaced atomically without a second
     /// hot-swap mechanism to keep correct. The generation is what makes the swap DETECTABLE from
     /// inside a request: dispatch re-reads the live snapshot and refuses a call whose identity was
-    /// resolved under a generation the operator has since replaced (§14.2), which is the defence
-    /// §3.9b used to spell as session tombstoning and which a stateless protocol reduces to this.
+    /// resolved under a generation the operator has since replaced. On a stateful protocol this
+    /// defence was spelled as tombstoning the sessions pinned to a de-approved server; with no
+    /// handshake and no sessions there is nothing to tombstone, and the per-request generation
+    /// re-read is the whole of it — the bound is one REQUEST, not one session lifetime.
     ///
     /// Present even on a deployment with no `tools:` block, as an EMPTY catalogue. `Option` would
     /// have made "MCP is not configured" and "MCP is configured with nothing registered" the same

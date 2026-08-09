@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! §3.9c — the stdio child's supervision state machine, and one real spawn.
+//! The stdio child's supervision state machine — `spawning → ready → draining → dead`, with crash
+//! detection, bounded restart backoff and a circuit-breaker for a crash-looping child — and one
+//! real spawn.
 //!
 //! The policy is driven by an injected clock, so the crash-storm case is asserted at exact times.
 //! A supervision policy verified by sleeping is a supervision policy verified at one timing.

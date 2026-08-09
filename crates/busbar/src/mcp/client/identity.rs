@@ -17,12 +17,12 @@
 //!
 //! `{server}_{tool}` is a rendering, and every rendering has an ambiguity question. Server `a_b`
 //! offering tool `c` and server `a` offering tool `b_c` both render `a_b_c`. That is not cosmetic:
-//! the rendered form is the VALUE of a `ScopeRef{kind: "mcp_tool"}` grant (§3.8), so an ambiguous
+//! the rendered form is the VALUE of a `ScopeRef{kind: "mcp_tool"}` grant, so an ambiguous
 //! rendering is a grant for one tool silently admitting another — a confused deputy created by a
 //! separator.
 //!
 //! Two ways to close it, and only one of them survives contact with real tool names. Forbidding `_`
-//! in TOOL names is a non-starter: `read_file` is the design doc's own example. Forbidding `_` in
+//! in TOOL names is a non-starter: `read_file` is the canonical MCP tool name. Forbidding `_` in
 //! SERVER ids costs an operator nothing (they choose the id at registration, and `-` is right
 //! there), and it makes the split at the FIRST `_` total and unambiguous. So that is the rule, it is
 //! enforced at construction, and [`ToolKey::parse`] is exact rather than best-effort.
@@ -30,9 +30,9 @@
 //! ## What "bound identity" adds on top of the key
 //!
 //! The key names the tool. [`BoundIdentity`] is the key plus the schema/description DIGEST the
-//! operator approved — the third component of §3.0. Dispatch validates against the bound identity,
-//! not the key, so a tool whose schema drifted under a live cache is refused even though its name is
-//! unchanged. The digest lives in `super::catalogue`; this module owns the naming.
+//! operator approved — the third component of the rule quoted above. Dispatch validates against it
+//! and not the key, so a tool whose schema drifted under a live cache is refused even though its
+//! name is unchanged. The digest lives in `super::catalogue`; this module owns the naming.
 
 use std::fmt;
 
@@ -177,8 +177,8 @@ impl fmt::Display for ToolKey {
     }
 }
 
-/// THE BOUND IDENTITY of §3.0: the registered server, the namespaced tool, and the schema/
-/// description digest the operator approved.
+/// THE BOUND IDENTITY, all three components of it: the registered server, the namespaced tool, and
+/// the schema/description digest the operator approved.
 ///
 /// Every one of the three is authenticated state — an id the operator registered, a name derived
 /// from it, and a digest the operator approved. None of them is free text an upstream chose the

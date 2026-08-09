@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SERVER-INITIATED ASKS (§3.10 as corrected by §14.3), driven against a DELIBERATELY HOSTILE fake
+//! SERVER-INITIATED ASKS — an upstream's bid to spend BUSBAR's authority, gated deny-by-default at
+//! the point busbar decides whether to ANSWER the ask — driven against a DELIBERATELY HOSTILE fake
 //! upstream.
 //!
 //! Hostile on purpose. A gate tested against a cooperative peer never reaches its refusing arms, so
@@ -67,11 +68,11 @@ fn an_unrecognised_ask_kind_is_refused_even_when_everything_else_is_granted() {
     ));
 }
 
-/// §14.3 PART 2, the part that is easy to get wrong: THE GRANT IS RE-CHECKED ON EVERY RETRY.
+/// THE PART THAT IS EASIEST TO GET WRONG: THE GRANT IS RE-CHECKED ON EVERY RETRY.
 ///
-/// The registry says `sampling: true` for round 0 and `sampling: false` from round 1 on. A
-/// handshake-era design would have read the grant once and satisfied both. The revocation must bite
-/// on the very next retry — there is no conversation to wait for the end of.
+/// The registry says `sampling: true` for the opening ask and `sampling: false` for every ask after
+/// it. A handshake-era design would have read the grant once and satisfied both. The revocation must
+/// bite on the very next retry — there is no conversation to wait for the end of.
 #[test]
 fn the_grant_is_re_read_on_every_retry_so_a_revocation_bites_on_the_next_one() {
     let reads = RefCell::new(0usize);
@@ -115,8 +116,10 @@ fn the_grant_is_re_read_on_every_retry_so_a_revocation_bites_on_the_next_one() {
     );
 }
 
-/// §14.3 PART 3: THE LOOP IS BOUNDED. A fully granted, infinitely asking upstream is stopped by the
-/// cap, and the cap counts SATISFIED asks, so the number of upstream calls is `cap + 1`.
+/// THE LOOP IS BOUNDED — the defence that only exists because dropping the handshake turned one call
+/// into a SEQUENCE of calls a hostile upstream can extend for ever. A fully granted, infinitely
+/// asking upstream is stopped by the cap, and the cap counts SATISFIED asks, so the number of
+/// upstream calls is `cap + 1`.
 ///
 /// This is the test the goal asks for in the words "a test that actually loops and is actually
 /// stopped": the fake upstream never returns a result, ever.
@@ -158,8 +161,9 @@ fn an_infinitely_asking_upstream_is_stopped_by_the_hard_round_cap() {
     }
 }
 
-/// THE RUNAWAY-LOOP COST CAP (§2.2, goal item 9). The upstream asks for ever and the cap is
-/// generous; what stops it is the caller's own BUDGET refusing to charge a round.
+/// THE RUNAWAY-LOOP COST CAP, which is the caller's own per-key BUDGET and not some second
+/// mechanism beside it. The upstream asks for ever and the round cap is generous; what stops it is
+/// the budget refusing to charge one more round.
 ///
 /// The round that was refused must NOT have happened — the charge runs before the call, so a budget
 /// refusal costs zero upstream work rather than one round's worth.
@@ -210,9 +214,9 @@ fn a_runaway_loop_is_stopped_by_the_callers_budget_and_the_refused_round_never_r
     );
 }
 
-/// EVERY round is charged, including round 0. A dispatch that never asks anything still costs one
-/// metered, charged event — which is what "one metered event per call, on the same budget plane as
-/// an LLM request" means for the ordinary case.
+/// EVERY round is charged, the opening one included. A dispatch that never asks anything still
+/// costs one metered, charged event — which is what "one metered event per call, on the same budget
+/// plane as an LLM request" means for the ordinary case.
 #[test]
 fn every_round_including_the_first_is_charged_exactly_once() {
     let seen: RefCell<Vec<RoundRecord>> = RefCell::new(Vec::new());
@@ -262,8 +266,10 @@ fn every_round_including_the_first_is_charged_exactly_once() {
     );
 }
 
-/// THE TERMINATION RULE (§14.3's closing paragraph): an upstream's `InputRequiredResult` TERMINATES
-/// AT BUSBAR and is never proxied outward.
+/// THE TERMINATION RULE: an upstream's `InputRequiredResult` TERMINATES AT BUSBAR and is never
+/// proxied outward. Forwarding it would launder an upstream's bid for authority through the party
+/// the caller actually trusts, asking the caller to satisfy — on the upstream's behalf — an ask
+/// busbar itself declined.
 ///
 /// Two independent checks, because the first alone is a snapshot of today's arms:
 ///

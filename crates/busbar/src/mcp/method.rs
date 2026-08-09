@@ -5,8 +5,8 @@
 //!
 //! The envelope is already settled by the time anything here runs: `ingress` has enforced `Origin`,
 //! the mirrored headers, the protocol version and the JSON-RPC shape, and the auth middleware has
-//! verified that the token's audience is this deployment (§15.2). What is left is the two questions
-//! this module answers.
+//! verified that the token's audience is this deployment. What is left is the two questions this
+//! module answers.
 //!
 //! ## CATALOGUE — what a caller can SEE
 //!
@@ -19,28 +19,31 @@
 //! ## DISPATCH — what a caller can DO
 //!
 //! Ordered so that every refusal happens before anything is charged and before anything is
-//! dispatched, per §3.11 (validate before audit) and §3.9a (re-validate at dispatch):
+//! dispatched — validated before it is audited, and validated AGAIN at the moment of dispatch:
 //!
 //! 1. Resolve the namespaced name to a BOUND IDENTITY under the caller's grant, on the snapshot the
 //!    request arrived on. Note the generation.
-//! 2. Re-read the LIVE snapshot and re-validate against it (§14.2). A call whose identity was
-//!    resolved under pin generation N is refused when the live generation is N+1 — this is the whole
-//!    of the defence that §3.9b used to spell as session tombstoning, and under a stateless protocol
-//!    it is the only one needed.
-//! 3. Drive the bounded, metered, per-round-gated input-required loop (§14.3), charging the caller's
-//!    own budget before each round.
-//! 4. Audit the outcome — the VALIDATED decision, per §3.11, never a rejected call recorded as a
-//!    successful route.
+//! 2. Re-read the LIVE snapshot and re-validate against it. A call whose identity resolved under
+//!    pin generation N is refused when the live generation is N+1. On a protocol with sessions this
+//!    would be the backstop behind tombstoning the sessions a de-approved server was still being
+//!    served over; on a stateless one there are no sessions to tombstone, so the per-request
+//!    generation check is the whole of the defence — and the only part that was ever needed.
+//! 3. Drive the input-required loop — bounded, metered, and re-gated on every round — charging the
+//!    caller's own budget before each round, because an upstream that can ask for input forever is
+//!    an upstream that can amplify cost forever.
+//! 4. Audit the outcome — the VALIDATED decision, never a rejected call recorded as a successful
+//!    route.
 //!
 //! ## What is honestly NOT here
 //!
-//! There is no upstream leg. The CLIENT direction (§2.1) is a separate unit and nothing in this
-//! build opens a connection to an MCP server, so [`dispatch_upstream`] refuses with a
-//! busbar-attributed error. Every step above it is real, runs, and is asserted on — admission,
-//! grant scoping, generation re-validation, budget charging, metering, the ask gate and the audit
-//! row all happen and are observable. What does not happen is the round trip. This is stated here
-//! rather than hidden behind a stub that returns a plausible-looking result, because a fake result
-//! would make every test above it pass for the wrong reason.
+//! There is no upstream leg. The CLIENT direction — busbar calling OUT to external MCP tool servers
+//! — is a separate unit, and nothing in this build opens a connection to an MCP server, so
+//! [`dispatch_upstream`] refuses with a busbar-attributed error. Every step above it is real, runs,
+//! and is asserted on — admission, grant scoping, generation re-validation, budget charging,
+//! metering, the ask gate and the audit row all happen and are observable. What does not happen is
+//! the round trip. This is stated here rather than hidden behind a stub that returns a
+//! plausible-looking result, because a fake result would make every test above it pass for the
+//! wrong reason.
 
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -68,7 +71,7 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
 pub(crate) struct Ctx<'a> {
     /// The snapshot this REQUEST arrived on. Selection reads it.
     pub(crate) app: &'a std::sync::Arc<crate::state::App>,
-    /// The LIVE handle. Dispatch re-reads it, which is what makes §14.2's generation check a real
+    /// The LIVE handle. Dispatch re-reads it, which is what makes the generation check a real
     /// re-read rather than a comparison of a value against itself.
     pub(crate) handle: &'a std::sync::Arc<crate::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
@@ -115,14 +118,14 @@ pub(crate) fn dispatch(
     }
 }
 
-/// `server/discover` — the MERGED, GRANT-SCOPED catalogue advertisement (§2.2).
+/// `server/discover` — the MERGED, GRANT-SCOPED catalogue advertisement.
 ///
 /// Under `2026-07-28` there is no `initialize`, so this is the only capability advertisement there
-/// is, and §14.4's rule applies to it like everything else: it is computed PER REQUEST from the
-/// caller's own grant. Two callers discover two different servers. That is the point — a discovery
-/// document that described the deployment rather than the caller would enumerate every registered
-/// upstream to anyone who asked, which is a map of the operator's internal estate handed out for the
-/// price of one token.
+/// is, and the rule that governs every other check under on-demand negotiation governs this one:
+/// it is computed PER REQUEST from the caller's own grant, never once and then cached. Two callers
+/// discover two different servers. That is the point — a discovery document that described the
+/// deployment rather than the caller would enumerate every registered upstream to anyone who asked,
+/// which is a map of the operator's internal estate handed out for the price of one token.
 ///
 /// The counts are of what THIS caller can reach, and the `servers` list names only servers this
 /// caller holds at least one capability on.
@@ -181,13 +184,14 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     result(id, serde_json::json!({ "tools": tools }))
 }
 
-/// One catalogue entry as the wire carries it. The description is MARKUP-NORMALISED here (§3.5):
-/// this is the moment it is "shown or fed as context", which is exactly where §3.5 puts the strip.
+/// One catalogue entry as the wire carries it. The description is MARKUP-NORMALISED here: this is
+/// the moment it is shown or fed as context, and that moment is exactly where the strip belongs.
 fn render_tool(t: &ToolEntry) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-    // The NAMESPACED name is the wire name, because it is the routing key (§3.0) and the value an
-    // `mcp_tool` grant carries. Exposing the bare upstream name would let two servers collide in one
-    // caller's catalogue, which is threat 3.
+    // The NAMESPACED name is the wire name, because it is the routing key — the bound identity a
+    // route is decided on, never the free-text description — and the value an `mcp_tool` grant
+    // carries. Exposing the bare upstream name would let two servers collide in one caller's
+    // catalogue, which is threat 3.
     obj.insert("name".into(), t.namespaced.clone().into());
     if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
         obj.insert("description".into(), d.into());
@@ -202,7 +206,7 @@ fn render_tool(t: &ToolEntry) -> serde_json::Value {
             .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
     );
     // The approved schema hash is published because it is the operator's approval, not a secret, and
-    // a client that pins what it saw is a client that notices a rug-pull too (§3.3).
+    // a client that pins what it saw is a client that notices a rug-pull too.
     if let Some(h) = &t.schema_hash {
         obj.insert(
             "_meta".into(),
@@ -212,7 +216,7 @@ fn render_tool(t: &ToolEntry) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-/// `prompts/list`, sanitized per §3.5.
+/// `prompts/list`, with every description markup-normalised on the way out.
 fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let grant = ctx.grant();
     let prompts: Vec<serde_json::Value> = ctx
@@ -232,9 +236,9 @@ fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     result(id, serde_json::json!({ "prompts": prompts }))
 }
 
-/// `prompts/get` — the TEMPLATE, sanitized. §3.5 (auditor MCP-1 H9) adds prompt templates to the
-/// sanitization set explicitly, because a template is exactly as injectable as tool output and the
-/// prior draft covered neither.
+/// `prompts/get` — the TEMPLATE, sanitized. Prompt templates are in the sanitization set
+/// explicitly, because a template is exactly as injectable as tool output, and an early draft of
+/// this design covered neither.
 fn prompts_get(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -265,7 +269,7 @@ fn prompts_get(
     )
 }
 
-/// `resources/list`, sanitized per §3.5.
+/// `resources/list`, with every free-text field markup-normalised on the way out.
 fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let grant = ctx.grant();
     let resources: Vec<serde_json::Value> = ctx
@@ -294,7 +298,8 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     result(id, serde_json::json!({ "resources": resources }))
 }
 
-/// `resources/read` — the CONTENT, sanitized. The third member of §3.5's set.
+/// `resources/read` — the CONTENT, sanitized. The third injectable surface, beside tool output and
+/// prompt templates, and no less injectable for arriving as "data".
 fn resources_read(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -348,7 +353,7 @@ fn tools_call(
         Err(refusal) => return refuse(ctx, name, &refusal, id),
     };
 
-    // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot (§3.9a / §14.2). Re-read, not
+    // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot. Re-read, not
     // re-use: `ctx.app` is the snapshot the request arrived on, and comparing it against itself
     // would be a check that cannot fail.
     let live = ctx.handle.load();
@@ -378,9 +383,9 @@ fn tools_call(
         &server_id,
         server.max_input_required_rounds,
         |_round, _satisfaction| dispatch_upstream(&server.url, &selected, &arguments),
-        // THE GRANT, RE-READ LIVE ON EVERY ROUND (§14.3 part 2). A revocation between rounds bites
-        // on the next one, which is the only thing "per-request check" can mean when one logical
-        // dispatch is several requests.
+        // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
+        // trust, so a revocation between rounds has to bite on the next one — which is the only
+        // thing "per-request check" can mean when one logical dispatch is several requests.
         || {
             ctx.handle
                 .load()
@@ -403,7 +408,8 @@ fn tools_call(
         |rec| charge_round(ctx, &selected, rec, &mut holds),
     );
 
-    // (4) AUDIT the VALIDATED decision (§3.11).
+    // (4) AUDIT the VALIDATED decision — the one that survived every check above, never a call that
+    // got no further than a refusal.
     let resource = format!("mcp_tool:{}", selected.namespaced);
     match outcome {
         Outcome::Completed(value) => {
@@ -413,7 +419,7 @@ fn tools_call(
                 crate::admin::audit::OUTCOME_APPLIED,
                 ctx.actor,
             );
-            // Tool OUTPUT is markup-normalised before it re-enters model context (§3.5, threat 13).
+            // Tool OUTPUT is markup-normalised before it re-enters model context (threat 13).
             result(id, sanitize::normalise_json(&value))
         }
         Outcome::Refused(refusal) => {
@@ -429,7 +435,9 @@ fn tools_call(
                 "mcp tools/call refused"
             );
             // Every arm is busbar-attributed. An upstream's ask is reported as busbar's refusal to
-            // satisfy it, never handed onward for the caller to answer — §14.3's termination rule.
+            // satisfy it, never handed onward for the caller to answer: an upstream's ask
+            // TERMINATES at busbar, because proxying it would ask the caller to grant, on the
+            // upstream's behalf, authority busbar itself just declined to spend.
             error(
                 match refusal {
                     Refusal::BudgetExhausted { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -448,9 +456,9 @@ fn tools_call(
 ///
 /// The two halves are the LLM path's two halves, called the same way for the same reason: `try_admit`
 /// is the hard cap (and charges the flat per-request fee), `record_metering` is the attributed
-/// series. There is no MCP-specific budget and no MCP-specific meter — §2.2's "an inbound
-/// `tools/call` authenticates with a busbar key exactly like an LLM request; the key's
-/// budget/governance policy applies" is implemented by calling the same two functions.
+/// series. There is no MCP-specific budget and no MCP-specific meter: an inbound `tools/call`
+/// authenticates with a busbar key exactly like an LLM request and the key's budget and governance
+/// policy applies — a claim implemented by calling the same two functions rather than asserted.
 ///
 /// The `pool` argument is the NAMESPACED TOOL. Pool-scoped budget buckets test it with
 /// `applies_to_pool`, so an MCP call never matches a bucket an operator scoped to an LLM pool — the
@@ -497,7 +505,7 @@ fn charge_round(
 
 /// THE UPSTREAM LEG, which does not exist in this release.
 ///
-/// The CLIENT direction (§2.1) — transports, connection pooling, tool-list caching, credential
+/// The CLIENT direction — transports, connection pooling, tool-list caching, credential
 /// injection, RFC 8693 down-scoping — is a separate unit, and none of it is in this build. So this
 /// refuses, with a reason that names the missing unit rather than a generic failure.
 ///
@@ -517,8 +525,8 @@ fn dispatch_upstream(
         .to_string())
 }
 
-/// A refusal from the catalogue, rendered and audited. §3.11: the rejection is audited AS a
-/// rejection, before anything could mistake it for a route.
+/// A refusal from the catalogue, rendered and audited: the rejection is audited AS a rejection,
+/// before anything could mistake it for a successful route to a server the operator revoked.
 fn refuse(
     ctx: &Ctx<'_>,
     name: &str,

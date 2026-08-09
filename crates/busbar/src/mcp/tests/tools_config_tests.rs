@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `tools:` GRAMMAR (§5.1) — parsed from the YAML an operator actually writes, and refused for
-//! the reasons §5.1 and §3.2 give.
+//! THE `tools:` GRAMMAR — the named map whose mere existence declares the mcp plane — parsed from
+//! the YAML an operator actually writes, and refused for the reasons the locked named-map grammar
+//! and the out-of-band pin trust root give.
 //!
 //! Every test here goes through `serde_yaml` rather than constructing the struct, because the thing
 //! under test IS the grammar: a test that built `McpServerDefCfg` directly would skip the custom
@@ -14,8 +15,8 @@ fn parse(yaml: &str) -> Result<ToolsCfg, String> {
     serde_yaml::from_str::<ToolsCfg>(yaml).map_err(|e| e.to_string())
 }
 
-/// The §5.1 LOCKED example, verbatim in shape: the section knobs, the object pin, the `tools_allow`
-/// MAP, the per-server credential mode and the bare-name hook attach.
+/// THE LOCKED SECTION SHAPE, verbatim: the section knobs, the object pin, the
+/// `tools_allow` MAP, the per-server credential mode and the bare-name hook attach.
 const LOCKED_EXAMPLE: &str = r#"
 hooks: [mcp-sanitizer]
 filesystem:
@@ -36,7 +37,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     assert_eq!(fs.pin.mechanism.token(), "cert_spki");
     assert_eq!(fs.pin.key.as_deref(), Some("sha256/PIN=="));
     // THE MAP, not a list: `read_file` has a SLOT, and it is empty, which is "allowed, no hash
-    // approved yet" (§5.1). A list could not have expressed the slot at all.
+    // approved yet". A list could not have expressed the slot at all.
     assert!(fs.tools_allow.contains_key("read_file"));
     assert_eq!(fs.tools_allow["read_file"].schema_hash, None);
     // LIST ⇒ ADDITIVE, deduped: the section attach plus the server's own, the shared name once.
@@ -76,9 +77,10 @@ fn a_server_may_not_be_named_with_a_reserved_section_word() {
     }
 }
 
-/// §3.2: the mechanism is checked against the MATERIAL it needs, in both directions. This is the
-/// rule the object pin form exists to make expressible, and a scalar `spki_pin:` could state
-/// neither half of it.
+/// The pin IS the authenticity root, so the mechanism is checked against the MATERIAL it needs, in
+/// both directions: a keyed mechanism with no key protects nothing, and `unpinned` carrying key
+/// material reads as protection that is not there. This is the rule the object pin form exists to
+/// make expressible, and a scalar `spki_pin:` could state neither half of it.
 #[test]
 fn a_pin_must_carry_exactly_the_material_its_mechanism_needs() {
     for mech in ["pinned_pubkey", "cert_spki", "mtls"] {
@@ -102,8 +104,9 @@ fn a_pin_must_carry_exactly_the_material_its_mechanism_needs() {
 
 /// THE SEPARATOR RULE, and the asymmetry in it.
 ///
-/// §2.1/§3.0 make `{server}_{tool}` the routing key while §5.1's own locked example writes a tool
-/// named `read_file`. Both hold only if ONE half is separator-free, and the spec constrains neither.
+/// `{server}_{tool}` IS the routing key — the bound identity busbar dispatches on — while the locked
+/// config example writes a tool named `read_file`. Both hold only if ONE half is separator-free, and
+/// the spec constrains neither.
 /// busbar constrains the SERVER ID: an operator-chosen registry label is free to rename, an upstream
 /// tool name is not. This test pins both halves of that decision, because relaxing either one
 /// silently re-opens the grant collision.
@@ -117,7 +120,8 @@ fn the_namespace_separator_is_refused_in_a_server_id_and_allowed_in_a_tool_name(
         "the refusal must suggest a legal spelling: {err}"
     );
 
-    // §5.1's own example. Refusing it would make busbar unable to front the config the design ships.
+    // Straight out of the locked example. Refusing it would make busbar unable to front the very
+    // config shape this plane is specified around.
     parse("fs:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  tools_allow: { read_file: {} }\n")
         .expect("a tool name may carry the separator — §5.1's locked example does");
 
@@ -136,8 +140,8 @@ fn the_namespace_separator_is_refused_in_a_server_id_and_allowed_in_a_tool_name(
     );
 }
 
-/// DENY-BY-DEFAULT is the `Default` impl, not a rule written elsewhere (§3.10 / §14.3). A registry
-/// entry that names no grants grants nothing.
+/// DENY-BY-DEFAULT is the `Default` impl, not a rule written down somewhere else and remembered at
+/// each call site. A registry entry that names no grants grants nothing.
 #[test]
 fn server_initiated_grants_default_to_denied() {
     let cfg = parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n").unwrap();
@@ -186,7 +190,7 @@ fn an_unknown_key_is_refused_rather_than_ignored() {
     assert!(err.contains("tols_allow"), "the typo must be named: {err}");
 }
 
-/// ONE GRAMMAR, TWO PATHS (§5.1, and the defect `NamedMapSection::parse_def` was written to close).
+/// ONE GRAMMAR, TWO PATHS — the defect `NamedMapSection::parse_def` was written to close.
 ///
 /// The admin write path and the config file must have IDENTICAL reject sets. Asserted as SET
 /// EQUALITY over a battery of documents rather than by spot-checking one, so a rule that lands on

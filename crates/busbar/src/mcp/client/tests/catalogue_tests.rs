@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The cache's own mechanics: atomic swap under concurrency, and the §3.3 refresh-trigger gate.
+//! The cache's own mechanics: atomic swap under concurrency, and the rug-pull defence's
+//! refresh-trigger gate.
 
 use crate::mcp::client::catalogue::{CatalogueCache, RefreshGate, ServerCatalogue};
 use crate::mcp::client::support::{approved_server, sid, simple_tool};
@@ -81,7 +82,8 @@ fn a_failed_contact_is_never_reported_as_trust() {
     assert!(sc.served_tools().is_empty());
 }
 
-/// §3.3: `notifications/tools/list_changed` is attacker-controlled in TIMING. The gate rations it.
+/// A refresh must never be driven solely by the upstream's own `notifications/tools/list_changed`:
+/// that trigger is attacker-controlled in TIMING. The gate rations it.
 #[test]
 fn the_refresh_trigger_is_rate_limited_and_counts_what_it_rejected() {
     let gate = RefreshGate::new(5_000);
