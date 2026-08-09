@@ -79,11 +79,13 @@ mod ir;
 mod json;
 mod limits;
 mod lossless;
+mod mcp;
 mod media;
 mod metrics;
 mod net_guard;
 mod observability;
 mod operation;
+mod plane;
 mod plugin_routes;
 mod profile;
 mod proto;
@@ -3757,6 +3759,32 @@ pub(crate) fn build_app_from_config(
         admin_modules,
         login_methods,
         public_url: cfg.public_url.clone(),
+        // The MCP plane, and the dispatch table that governs it, are built from ONE validated
+        // object in ONE act: the resource that mounts the ingress is the same resource whose
+        // canonical URI becomes the audience the middleware enforces there. Absent `mcp:`, the
+        // dispatch table is empty and `admission_for` answers `None` for every path, so the
+        // audience check costs one `Option` test on the hot path and changes nothing.
+        planes: Arc::new(
+            cfg.mcp
+                .as_ref()
+                .map_or_else(crate::plane::PlaneDispatch::default, |r| {
+                    crate::plane::PlaneDispatch::default()
+                        .mount(crate::plane::Plane::Mcp, r.mount_path())
+                        .admit(crate::plane::Plane::Mcp, r.admission())
+                }),
+        ),
+        mcp: cfg.mcp.clone().map(Arc::new),
+        // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
+        // construction, so every config apply — including one that changes nothing about `tools:` —
+        // moves the generation and a call admitted under the previous one is refused at dispatch —
+        // an in-flight call cannot outlive the approval it was admitted under, which is the whole
+        // point of taking the generation here rather than reading config at dispatch time.
+        // Building it beside the `App` is what makes the swap atomic: the
+        // whole `Arc<App>` is replaced under one lock, so there is no window in which the catalogue
+        // and the config that produced it disagree.
+        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
+        mcp_servers: Arc::new(cfg.tool_defs.clone()),
+        mcp_pool: Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),
@@ -3854,12 +3882,16 @@ fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle (both planes mount from it).
     let plugin_routes = app.plugin_routes.clone();
+    // The MCP resource is captured before `app` moves into the handle, for the same reason the
+    // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
+    // set is not something a later hot-swap can rewrite.
+    let mcp = app.mcp.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes);
+    let (router, core_routes) = base_data_router(&plugin_routes, mcp.as_deref());
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -3881,6 +3913,7 @@ fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
+    mcp: Option<&crate::mcp::McpResource>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -3966,6 +3999,57 @@ fn base_data_router(
             RouteAuth::Key,
             ingress::adhoc,
         );
+    // THE MCP PLANE, mounted only when `mcp:` is configured. A deployment that is not an MCP server
+    // carries none of these routes: no ingress, no metadata document, nothing in the route table and
+    // therefore nothing for the auth middleware to consult. That is the same posture the AS design
+    // requires of its own routes, and it is what makes "is this deployment an MCP server?" a
+    // question the mounted surface answers rather than a config flag someone has to trust.
+    //
+    // The paths are CONCRETE, derived from the operator's canonical URI at mount time. No prefix
+    // matching anywhere: `/.well-known/oauth-protected-resource/mcp` is registered as that exact
+    // string, so the auth middleware's exact-match discipline survives a route whose path is not a
+    // literal (see `core_routes::CoreRoute::path`).
+    let router = match mcp {
+        None => router,
+        Some(resource) => router
+            // RFC 9728 §3: the protected-resource metadata document is READ WITHOUT CREDENTIALS.
+            // It must be — every caller who needs it is by definition one that does not have a
+            // token yet, so requiring one would be a discovery loop with no entrance. This is the
+            // ONE open route on this plane and it says so at the mount, where the openness travels
+            // with the route rather than being asserted from a distance.
+            .route(
+                resource.metadata_path().to_string(),
+                RouteMethod::Get,
+                RouteAuth::None,
+                crate::mcp::resource::metadata,
+            )
+            // The endpoint itself. `RouteAuth::Key` sends it through the normal chain, where the
+            // plane's admission facts make the verifier require this deployment's canonical URI as
+            // the token's audience — the RFC 8707 confused-deputy defence, enforced in the verifier
+            // rather than in the handler so a route added here later cannot forget it.
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Post,
+                RouteAuth::Key,
+                crate::mcp::ingress::rpc,
+            )
+            // GET and DELETE answer 405: this revision has no GET stream and no sessions. They are
+            // `RouteAuth::Key` like the POST, so an anonymous caller gets the 401 challenge and the
+            // 405 is only ever shown to an admitted one — a protected resource should not describe
+            // its own surface before it knows who is asking.
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Get,
+                RouteAuth::Key,
+                crate::mcp::ingress::legacy_verb,
+            )
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Delete,
+                RouteAuth::Key,
+                crate::mcp::ingress::legacy_verb,
+            ),
+    };
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -4061,10 +4145,11 @@ fn build_split_routers_with_limits(
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
+    let mcp = app.mcp.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(&plugin_routes);
+    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp.as_deref());
     let data = apply_common_layers(
         data,
         data_core_routes,

@@ -734,6 +734,10 @@ pub(crate) struct TestApp {
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
+    /// The validated MCP resource for the built App. `None` (the default) = not an MCP server, and
+    /// the built router mounts no MCP route at all — which is what every pre-existing test expects.
+    mcp: Option<crate::mcp::McpResource>,
+    tool_defs: crate::mcp::config::ToolsCfg,
     role_bindings: Option<crate::config::RoleBindings>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
@@ -772,6 +776,7 @@ pub(crate) struct TestApp {
 impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
+            tool_defs: Default::default(),
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
@@ -780,6 +785,7 @@ impl TestApp {
             admin_modules: None,
             login_methods: None,
             public_url: None,
+            mcp: None,
             role_bindings: None,
             governance: None,
             cost: None,
@@ -972,6 +978,36 @@ impl TestApp {
         self
     }
 
+    /// Make the built App an MCP server, from the same `mcp:` config shape an operator writes.
+    ///
+    /// Takes the CONFIG and runs the real validation rather than accepting a pre-built
+    /// [`crate::mcp::McpResource`]: a test that hand-assembled the resource could mount a
+    /// combination the validator refuses, and would then be asserting against a deployment that
+    /// cannot exist.
+    pub(crate) fn mcp(mut self, cfg: &crate::mcp::McpCfg) -> Self {
+        self.mcp =
+            Some(crate::mcp::McpResource::from_cfg(cfg).expect("test mcp config must be valid"));
+        self
+    }
+
+    /// Register one `tools:` entry — one MCP server — through the SAME value validation the file
+    /// path and the admin write path run.
+    ///
+    /// It validates rather than accepting the struct: a test that hand-assembled a registration
+    /// could declare a combination boot refuses (an `unpinned` server carrying key material, a
+    /// `stdio` transport nothing implements) and would then be asserting against a deployment that
+    /// cannot exist.
+    pub(crate) fn mcp_server(
+        mut self,
+        name: &str,
+        def: crate::mcp::config::McpServerDefCfg,
+    ) -> Self {
+        crate::mcp::config::validate_server(name, &def)
+            .expect("test tools: entry must be valid config");
+        self.tool_defs.servers.insert(name.to_string(), def);
+        self
+    }
+
     /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
     /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
     /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
@@ -1027,6 +1063,21 @@ impl TestApp {
         ));
         self
     }
+    /// Install the TEST-ONLY OIDC stand-in as the whole data-plane chain: it identifies any
+    /// non-empty credential and is audience-blind, which is what a real `kind: auth` plugin is
+    /// forced to be by the module ABI. Use it wherever the thing under test is whether CORE refuses
+    /// something a chain module would have admitted.
+    pub(crate) fn idp_chain(mut self) -> Self {
+        let cfg = crate::config::AuthCfg {
+            chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
+            ..crate::config::AuthCfg::default_none()
+        };
+        self.auth = Some(std::sync::Arc::new(
+            crate::auth::AuthMiddleware::new_builtin(&cfg),
+        ));
+        self
+    }
+
     /// Set the `role_bindings:` table used by the built `App` (default: empty). Needed by tests that
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
     pub(crate) fn role_bindings(mut self, rb: crate::config::RoleBindings) -> Self {
@@ -1164,6 +1215,23 @@ impl TestApp {
                     .unwrap_or_else(crate::auth::token::LoginMethods::empty),
             ),
             public_url: self.public_url,
+            // The MCP plane and its dispatch table are built together from ONE validated resource,
+            // exactly as `build_app_from_config` does it, so a test can never construct an App whose
+            // ingress is mounted at one path while the audience check watches another.
+            planes: std::sync::Arc::new(self.mcp.as_ref().map_or_else(
+                crate::plane::PlaneDispatch::default,
+                |r| {
+                    crate::plane::PlaneDispatch::default()
+                        .mount(crate::plane::Plane::Mcp, r.mount_path())
+                        .admit(crate::plane::Plane::Mcp, r.admission())
+                },
+            )),
+            mcp: self.mcp.clone().map(std::sync::Arc::new),
+            mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
+                &self.tool_defs,
+            )),
+            mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
+            mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),

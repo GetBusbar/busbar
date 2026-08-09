@@ -52,9 +52,9 @@ pub(crate) struct TokenClaims {
     /// `GovState::binding_generation_matches`), never against a rotated one.
     #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
     pub(crate) generation: Option<String>,
-    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.4: the MCP plane boundary.
+    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.5: the MCP plane boundary.
     /// `None` = a plain data-plane busbar key (every token
-    /// minted before 1.5.4, and every `/auth/token` key after it). `Some(uri)` = an MCP
+    /// minted before 1.5.5, and every `/auth/token` key after it). `Some(uri)` = an MCP
     /// authorization-server access token bound to the operator-configured canonical MCP URI.
     /// Enforcement lives in the VERIFIER ([`TokenVerifier::verify`]), never in a handler, so a
     /// route added later cannot forget it: the data plane verifies with expected-audience `None`
@@ -88,7 +88,7 @@ pub(crate) enum VerifyError {
     Expired,
     /// The token's audience claim does not match the plane it was presented on: an
     /// audience-bound (MCP) token on the plain data plane, a plain token on an audience-checked
-    /// (MCP) ingress, or a different audience URI. The 1.5.4 plane boundary; fail-closed.
+    /// (MCP) ingress, or a different audience URI. The 1.5.5 plane boundary; fail-closed.
     AudienceMismatch,
 }
 
@@ -174,7 +174,7 @@ impl TokenSigner {
         })
     }
 
-    /// Mint an AUDIENCE-BOUND token (1.5.4, the MCP authorization-server mint): identical to
+    /// Mint an AUDIENCE-BOUND token (1.5.5, the MCP authorization-server mint): identical to
     /// [`Self::mint`] plus the `aud` plane-boundary claim and the optional `cid` client
     /// attribution. Such a token verifies ONLY where the verifier expects exactly this audience
     /// (the MCP ingress); the plain data-plane verify rejects it (see [`TokenClaims::aud`]).
@@ -233,7 +233,7 @@ impl TokenVerifier {
     /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
     /// testable and the revocation read is the only state touched). `now` is Unix seconds.
     ///
-    /// `expected_aud` is the PLANE the token is being presented on (1.5.4): `None` = the plain
+    /// `expected_aud` is the PLANE the token is being presented on (1.5.5): `None` = the plain
     /// data plane, which rejects a token
     /// carrying ANY audience; `Some(uri)` = an audience-checked ingress (the MCP endpoint), which
     /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not

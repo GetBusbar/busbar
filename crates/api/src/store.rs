@@ -33,7 +33,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_server"` scope (1.5.4) - grants a caller access to a registered MCP
+    /// Build a `kind: "mcp_server"` scope (1.5.5) - grants a caller access to a registered MCP
     /// server as a whole. Carried on the wire by its OWN named field (`allowed_mcp_servers`),
     /// never mixed into `allowed_pools`.
     pub fn mcp_server(value: impl Into<String>) -> Self {
@@ -43,7 +43,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_tool"` scope (1.5.4) - grants a caller access to one namespaced
+    /// Build a `kind: "mcp_tool"` scope (1.5.5) - grants a caller access to one namespaced
     /// `{server}_{tool}` bound identity. Carried on the wire by its OWN named field
     /// (`allowed_mcp_tools`), never mixed into `allowed_pools`.
     pub fn mcp_tool(value: impl Into<String>) -> Self {
@@ -54,7 +54,7 @@ impl ScopeRef {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.4): each registered
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.5): each registered
 /// scope kind gets its OWN named wire field -
 /// `allowed_pools` (kind `pool`), `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools`
 /// (kind `mcp_tool`) - each a plain array of bare value strings, never a `{kind, value}` object.
@@ -63,7 +63,7 @@ impl ScopeRef {
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
 ///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
-///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.5.4 row/reader never
+///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.5.5 row/reader never
 ///   sees them;
 /// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
 ///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
@@ -222,7 +222,7 @@ mod virtual_key_wire {
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
 /// so policy is mutable in config/store without re-issuing the credential.
 /// Serde note: `Serialize`/`Deserialize` are HAND-IMPLEMENTED in [`virtual_key_wire`] (the
-/// kind-partitioned scope wire, 1.5.4 P0) - keep the wire mirror struct's fields/defaults in
+/// kind-partitioned scope wire, 1.5.5 P0) - keep the wire mirror struct's fields/defaults in
 /// lockstep with this struct when adding a field.
 #[derive(Clone, PartialEq)]
 pub struct VirtualKey {
@@ -277,7 +277,7 @@ impl VirtualKey {
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` in 1.5.4, `agent` in 1.5.5), an
+    /// When a later release introduces a new kind (`mcp_server` in 1.5.5, `agent` in 1.5.6), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///
@@ -791,6 +791,62 @@ pub struct TaskEventRow {
     pub hash: String,
 }
 
+/// One MCP TOOL-CALL record, as it crosses the store seam for DURABLE persistence — the per-call
+/// evidence the audit claim rests on, and a DIFFERENT population from [`AuditRecord`].
+///
+/// The two are kept apart on purpose rather than for tidiness. [`AuditRecord`] is the admin
+/// MUTATION log: a low-rate, operator-driven stream whose engine-side working set is a bounded ring.
+/// A tool call is DATA-PLANE traffic at request rate. Pouring one into the other means a busy
+/// afternoon of tool calls evicts every admin row from the ring, so "who changed this registration"
+/// becomes unanswerable exactly when an incident makes somebody ask. Two populations, two chains,
+/// two tables.
+///
+/// The chain is scoped to the PRINCIPAL, not to the server and not globally, and each of the three
+/// was considered:
+/// - GLOBAL serialises every tool call of every caller behind one append lock on the request path,
+///   and makes one caller's evidence unverifiable without possessing every other caller's rows.
+/// - PER SERVER reads well until a refusal names a server that does not exist: the namespaced tool
+///   name is caller-supplied, so an unauthenticated-shaped mistake (or a probe) mints chains from
+///   attacker-chosen ids without bound.
+/// - PER PRINCIPAL is bounded by the key table, is the same boundary every other read on this plane
+///   is scoped by, and still has a well-defined chain id for a call that named nothing real.
+///
+/// A store persists these verbatim and returns them verbatim: the digest is computed and verified
+/// engine-side, and a backend never interprets or recomputes it. Plain data, never a credential —
+/// arguments and results are deliberately ABSENT (a tool argument is caller content and can carry a
+/// secret; the digest and the bound identity are what an auditor needs and are what is kept).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpCallRecord {
+    /// The authenticated caller this chain belongs to. THE CHAIN SCOPE — see the type doc.
+    pub principal: String,
+    /// Monotonic sequence number, 1-based WITHIN `principal`.
+    pub seq: u64,
+    /// Unix seconds the call was attempted.
+    pub ts: u64,
+    /// The registered MCP server id the call resolved to, or empty when it resolved to none (a
+    /// refusal against a name that matched no registration).
+    pub server: String,
+    /// `{server}_{tool}` — the namespaced routing key exactly as the call named it.
+    pub tool: String,
+    /// Stable outcome token: `dispatched` (the call went out) | `refused` (it did not).
+    pub outcome: String,
+    /// The refusal reason token, or empty on a dispatch. Never free text: tooling branches on it.
+    pub reason: String,
+    /// The tool digest the call was admitted against, or empty on a refusal that never reached one.
+    /// This is what ties a call to the exact schema/description the operator approved.
+    pub tool_digest: String,
+    /// The catalogue pin generation the call was resolved under, so a later re-approval cannot be
+    /// mistaken for the approval this call actually rode.
+    pub pin_generation: u64,
+    /// The request-spine join key. EXCLUDED from the digest — see the engine-side chain.
+    pub request_id: String,
+    /// The preceding record's `hash` for this principal (empty for the first of a chain).
+    pub prev_hash: String,
+    /// The tamper-evidence digest over this record's chained fields (computed + verified
+    /// engine-side).
+    pub hash: String,
+}
+
 /// The result type every `Store` method returns.
 pub type StoreResult<T> = Result<T, StoreError>;
 
@@ -1215,6 +1271,47 @@ pub trait Store: Send + Sync + 'static {
     /// engine's chain verifier reads. DEFAULTED to empty.
     fn list_task_events(&self, _task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
         Ok(Vec::new())
+    }
+    /// Append one MCP TOOL-CALL record for durable persistence. Append-only, ordered by `seq`
+    /// within `record.principal`; a store never rewrites or recomputes the digest.
+    ///
+    /// A record arriving on a `(principal, seq)` that ALREADY HAS ONE is settled exactly as
+    /// [`Store::append_audit`] settles it, and for the same reasons: byte-identical is the retry and
+    /// is `Ok(())`; DIFFERENT is a forked or tampered log and is an error. Overwriting destroys the
+    /// second case instead of reporting it.
+    ///
+    /// DEFAULTED to `Ok(())` — ACCEPT AND KEEP NOTHING. Two things follow from that and both are
+    /// deliberate. First, every existing store plugin, INCLUDING already-signed dynamic-library
+    /// artifacts that predate this method, keeps compiling and working unchanged. Second, the
+    /// return value of a write is therefore WORTHLESS as evidence of durability: an `Ok(())` here
+    /// means "the backend did not object", never "the row is on disk". The only honest way to know
+    /// whether a deployment has durable call evidence is to READ IT BACK through
+    /// [`Store::list_mcp_calls`], which is what the engine does.
+    fn append_mcp_call(&self, _record: &McpCallRecord) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// Every persisted call record for one principal, oldest-first by `seq` — the chain as stored,
+    /// which is what the engine verifies and what a restart resumes from. DEFAULTED to empty: a
+    /// store with no durable call log has nothing to return, and that empty answer is the truth
+    /// being reported rather than a failure.
+    fn list_mcp_calls(&self, _principal: &str) -> StoreResult<Vec<McpCallRecord>> {
+        Ok(Vec::new())
+    }
+
+    /// Every principal that has at least one persisted call record — the boot enumeration, so a
+    /// restart can resume a chain for a principal this process has not yet seen. DEFAULTED to empty
+    /// for the same reason as [`Store::list_mcp_calls`].
+    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Retention purge for the durable call log: drop every record with `ts < before`, returning
+    /// how many went. DEFAULTED to `Ok(0)`, same reasoning as [`Store::purge_windows_before`] — a
+    /// backend has no obligation to bound its own storage this way, and a default that claimed to
+    /// purge while doing nothing would be worse than one that reports nothing purged.
+    fn purge_mcp_calls_before(&self, _before: u64) -> StoreResult<u64> {
+        Ok(0)
     }
 }
 

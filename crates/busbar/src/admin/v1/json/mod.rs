@@ -250,7 +250,7 @@ mod txn;
 pub(crate) use txn::{config_transaction, Outcome};
 
 /// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; `tools`/`agents` land
-/// additively in 1.5.4/1.5.5). One handler set for every section of the 1.5.3 universal config
+/// additively in 1.5.5/1.5.6). One handler set for every section of the 1.5.3 universal config
 /// pattern — see the module header.
 pub(crate) mod named_map;
 

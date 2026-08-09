@@ -12,8 +12,8 @@
 //! Everything that serves the pattern is parameterized by [`NamedMapSection`] rather than written per
 //! kind: the admin router mounts its five routes in a loop, the OpenAPI generator emits its path
 //! items in a loop, the error taxonomy declares one set per route SHAPE, and the config overlay
-//! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.5.4 MCP) or
-//! `agents:` (1.5.5 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
+//! stores every section in one `section → name → raw definition` map. Adding `tools:` (1.5.5 MCP) or
+//! `agents:` (1.5.6 A2A) is therefore a ONE-VARIANT addition here plus its two accessors below — no
 //! new route handler, no new overlay type, no new taxonomy arm, and no breaking change to anything
 //! already shipped.
 //!
@@ -34,11 +34,19 @@ pub(crate) enum NamedMapSection {
     IdentityProviders,
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
+    /// `tools:` — server NAME → `{url, pin, tools_allow, …}`, THE MCP PLANE: one registered external
+    /// MCP server per entry. The admin path segment is `tools` and NOT `mcp`,
+    /// deliberately: the config block is LOCKED as `tools:` — its mere existence is what declares
+    /// the plane, the way `pools:` declares the LLM plane — and this table's whole discipline is
+    /// that [`NamedMapSection::key`] is both the config key and the path segment, so the API mirrors
+    /// the config grammar exactly. An earlier `/api/v1/admin/mcp/*` spelling of this same surface
+    /// predates that lock and is superseded by it — a second spelling of one plane is the thing
+    /// this table exists to prevent.
+    Tools,
     /// `agents:` — agent NAME → `{url, pin, reverify_ttl, …}`, THE A2A plane: one registered
     /// external agent per entry, referenced by bare name. Sibling in shape to `pools:`, and no
     /// entry on it may reference an entry on another plane.
     Agents,
-    // 1.5.4: `Tools` (MCP server registry) lands as one more variant plus its arms below.
 }
 
 impl NamedMapSection {
@@ -47,6 +55,7 @@ impl NamedMapSection {
     pub(crate) const ALL: &'static [NamedMapSection] = &[
         NamedMapSection::IdentityProviders,
         NamedMapSection::Export,
+        NamedMapSection::Tools,
         NamedMapSection::Agents,
     ];
 
@@ -56,6 +65,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "identity-providers",
             NamedMapSection::Export => "export",
+            NamedMapSection::Tools => "tools",
             NamedMapSection::Agents => "agents",
         }
     }
@@ -65,6 +75,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "/identity-providers",
             NamedMapSection::Export => "/export",
+            NamedMapSection::Tools => "/tools",
             NamedMapSection::Agents => "/agents",
         }
     }
@@ -74,21 +85,23 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
+            NamedMapSection::Tools => "mcp-server",
             NamedMapSection::Agents => "agent",
         }
     }
 
-    /// Whether a definition in this section is a PLUGIN INSTANCE, and therefore must name a
-    /// backing `module:`.
+    /// Whether a definition in this section is a PLUGIN INSTANCE, and therefore must name a backing
+    /// `module:`.
     ///
-    /// Every 1.5.3 section was one, so the generic write path simply demanded `module:`. The A2A
-    /// plane is the first section that is NOT: an `agents:` entry describes a REMOTE ENDPOINT that
-    /// somebody else runs, and there is no plugin behind it to name. The requirement is therefore a
-    /// per-section property here rather than a hardcoded rule in the handler, for the same reason
-    /// [`NamedMapSection::has_trust_ceiling`] is: the handler stays generic and the asymmetry stays
-    /// visible in the table where a reader can find it.
+    /// Every 1.5.3 section was one, so the generic write path simply demanded `module:`. The two
+    /// PLANE sections are the ones that are NOT: a `tools:` entry and an `agents:` entry each
+    /// describe a REMOTE ENDPOINT that somebody else runs, and there is no plugin behind either to
+    /// name. That both planes landed on the same exception independently is the argument for it
+    /// living here: the requirement is a per-section property in this table rather than a hardcoded
+    /// rule in the handler, for the same reason [`NamedMapSection::has_trust_ceiling`] is — the
+    /// handler stays generic and the asymmetry stays visible where a reader can find it.
     pub(crate) fn requires_module(self) -> bool {
-        !matches!(self, NamedMapSection::Agents)
+        !matches!(self, NamedMapSection::Tools | NamedMapSection::Agents)
     }
 
     /// Whether this section's definitions carry a `max_admin_scope` TRUST CEILING — the one
@@ -127,6 +140,7 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
+            NamedMapSection::Tools => deploy.tools.servers.contains_key(name),
             NamedMapSection::Agents => deploy.agents.agents.contains_key(name),
         }
     }
@@ -150,6 +164,11 @@ impl NamedMapSection {
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
             NamedMapSection::Export => deploy
                 .export
+                .get(name)
+                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Tools => deploy
+                .tools
+                .servers
                 .get(name)
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
             NamedMapSection::Agents => deploy
@@ -212,6 +231,18 @@ impl NamedMapSection {
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+            NamedMapSection::Tools => serde_json::from_value(def.clone())
+                .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))
+                .and_then(|cfg: crate::mcp::config::McpServerDefCfg| {
+                    // THE VALUE RULES, run through the very function the FILE path runs (the custom
+                    // `Deserialize` for `ToolsCfg` calls the same `validate_server`). ONE GRAMMAR,
+                    // TWO PATHS: the API rejects exactly what `config.yaml` rejects, because both
+                    // reach this function. Without it the API would accept an `unpinned` server
+                    // carrying key material, or a `stdio` transport nothing implements, persist it,
+                    // and then have boot refuse the file it wrote.
+                    crate::mcp::config::validate_server(name, &cfg)?;
+                    Ok(NamedDef::Tool(Box::new(cfg)))
+                }),
             NamedMapSection::Agents => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
                 .and_then(|cfg: AgentDefCfg| {
@@ -258,6 +289,12 @@ impl NamedMapSection {
                 }
             }
             NamedMapSection::Export => {}
+            // An MCP server is referenced from nowhere BY NAME in config: a `tools:` entry is a leaf
+            // like an exporter. It IS named by a caller's `mcp_server`/`mcp_tool` key GRANTS, but a
+            // grant lives on a key in the store, not in this config document, and a dangling grant
+            // is fail-closed by construction (`scope_allowed` matches nothing) rather than a boot
+            // error. So the check is not skipped for `tools:` — it has nothing here to find.
+            NamedMapSection::Tools => {}
             // An agent is referenced from nowhere else in config: the catalogue is derived from
             // the registry rather than named from it, and cross-plane reference is refused
             // outright. So there is nothing to find here -- which is not the same as not looking.
@@ -279,6 +316,7 @@ impl NamedMapSection {
                 .get(name)
                 .and_then(|def| def.max_admin_scope.clone()),
             NamedMapSection::Export => None,
+            NamedMapSection::Tools => None,
             NamedMapSection::Agents => None,
         }
     }
@@ -290,6 +328,10 @@ impl NamedMapSection {
 pub(crate) enum NamedDef {
     IdentityProvider(IdentityProviderCfg),
     Export(ExportDefCfg),
+    // BOXED because `McpServerDefCfg` carries three `IndexMap`s and is by far the largest variant;
+    // an unboxed one would make every `NamedDef` — including the two small ones on the hot admin
+    // write path — as wide as the widest.
+    Tool(Box<crate::mcp::config::McpServerDefCfg>),
     Agent(AgentDefCfg),
 }
 
@@ -303,6 +345,9 @@ impl NamedDef {
             }
             NamedDef::Export(cfg) => {
                 deploy.export.insert(name.to_string(), cfg);
+            }
+            NamedDef::Tool(cfg) => {
+                deploy.tools.servers.insert(name.to_string(), *cfg);
             }
             NamedDef::Agent(cfg) => {
                 deploy.agents.agents.insert(name.to_string(), cfg);

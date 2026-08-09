@@ -12639,6 +12639,10 @@ identity-providers:
   admin-tokens:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
+tools:
+  base-mcp:
+    url: https://mcp.internal/fs
+    pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }
 agents:
   base-agent:
     url: https://a2a.example/planner
@@ -12727,6 +12731,18 @@ async fn named_map_app_opts(
             serde_json::from_value(serde_json::json!({
                 "module": "admin-tokens",
                 "token": {"file": dir.join("admin.token").to_string_lossy()}
+            }))
+            .unwrap(),
+        )
+        // The MCP plane's base entry, seeded to match the file exactly — same reason the
+        // identity-provider and export base entries are: a `TestApp` does not parse config.yaml, so
+        // without this the read surface and disk truth would disagree and the base-protection guard
+        // would be measuring the disagreement rather than the guard.
+        .mcp_server(
+            "base-mcp",
+            serde_json::from_value(serde_json::json!({
+                "url": "https://mcp.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
             }))
             .unwrap(),
         );
@@ -13642,6 +13658,9 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
+        // The MCP plane has no backing plugin, so its valid definition names no `module:` at all —
+        // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
+        "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
         // The A2A plane's entries are NOT plugin instances, so a legal definition here names a URL
         // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
         "agents" => r#"{"url":"https://a2a.example/x","pin":{"mechanism":"unpinned"}}"#.to_string(),
@@ -13661,6 +13680,7 @@ async fn drive_named_map_errors() {
     for (section, base) in [
         ("identity-providers", "base-idp"),
         ("export", "base-metrics"),
+        ("tools", "base-mcp"),
         ("agents", "base-agent"),
     ] {
         let c = |label: &str,
@@ -13702,7 +13722,11 @@ async fn drive_named_map_errors() {
                 "invalid_request",
             ),
             c(
-                "put_invalid_config",
+                // On a plugin-instance section this is the empty-`module:` guard. On `tools:` there
+                // is no `module:` at all, so the same document is refused by the typed
+                // `deny_unknown_fields` parse — one status, two reasons, and both are the section's
+                // own grammar rather than a hardcoded rule in the handler.
+                "put_bad_definition",
                 "PUT",
                 format!("/{section}/x"),
                 None,
@@ -13887,7 +13911,16 @@ async fn drive_named_map_errors() {
     // NO DISK BASE: an EPHEMERAL busbar (started without config files) has no base truth to merge a
     // named-map change onto, so every write verb refuses up front — the condition the disk fixtures
     // above can never reach.
-    {
+    //
+    // ONE SERVER PER SECTION, and that is about the RATE LIMITER rather than isolation. Every verb
+    // below is a CONFIG-class admin mutation, budgeted at 10/min PER PRINCIPAL, and failed attempts
+    // spend the budget too (that is the anti-enumeration rule, working as designed). The section
+    // list is now four long — the two 1.5.3 sections plus a plane section each for `tools:` and
+    // `agents:` — so twelve probes against one server would start answering 429 at the eleventh and
+    // the error taxonomy this test exists to pin would go unchecked from there on. The limiter is a
+    // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
+    // made the test pass by weakening the thing it shares with production.
+    for section in ["identity-providers", "export", "tools", "agents"] {
         crate::metrics::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -13896,7 +13929,7 @@ async fn drive_named_map_errors() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        for section in ["identity-providers", "export", "agents"] {
+        {
             for (label, method, rel, body) in [
                 (
                     "put",

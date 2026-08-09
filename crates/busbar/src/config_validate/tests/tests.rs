@@ -8,8 +8,11 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
+        tool_defs: Default::default(),
         agent_defs: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        // Not an MCP server.
+        mcp: None,
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),

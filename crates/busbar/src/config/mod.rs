@@ -390,6 +390,18 @@ pub(crate) struct RootCfg {
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
     pub(crate) public_url: Option<String>,
+    /// The VALIDATED MCP resource (`mcp:`), or `None` when this deployment is not an MCP server.
+    /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
+    /// re-parses the canonical URI or re-derives the mount path.
+    pub(crate) mcp: Option<crate::mcp::McpResource>,
+    /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
+    ///
+    /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
+    /// happens to it is building the catalogue snapshot, which is a separate value with its own
+    /// generation. Lowering it here would give the registry two representations that could disagree
+    /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
+    /// DERIVING state from intent-versus-observation instead of storing it.
+    pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -1532,7 +1544,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
 /// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
 /// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
-/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.4/1.5.5): reserve the same two
+/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.5/1.5.6): reserve the same two
 /// words in every plane section, even where a plane chooses not to implement one, so the word space is
 /// identical across planes.
 ///
@@ -1765,7 +1777,7 @@ pub(crate) enum HookStage {
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
 /// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
-/// MCP tool-invocation stage in 1.5.4 or an A2A delegation stage in 1.5.5 would retroactively make
+/// MCP tool-invocation stage in 1.5.5 or an A2A delegation stage in 1.5.6 would retroactively make
 /// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
 /// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
 /// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
@@ -2612,6 +2624,24 @@ pub(crate) struct DeployCfg {
     /// shippable catalog that config.yaml's `providers:` map references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
+    /// The top-level `mcp:` block (1.5.5): busbar's own MCP endpoint, as an OAuth 2.1 resource
+    /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
+    /// ingress and no `.well-known` document, and nothing joins the route table. See
+    /// [`crate::mcp::McpCfg`].
+    #[serde(default)]
+    pub(crate) mcp: Option<crate::mcp::McpCfg>,
+    /// The top-level `tools:` NAMED-DEFINITION map (1.5.5) — THE MCP PLANE's registry: server name →
+    /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
+    /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
+    /// section an entry is written in IS which plane it is on: a `tools:` entry is an MCP server
+    /// and an `agents:` entry is an A2A agent, so there is no second declaration that could
+    /// disagree with the first.
+    ///
+    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
+    /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
+    /// exposes (the rooms). A deployment may configure either without the other.
+    #[serde(default)]
+    pub(crate) tools: crate::mcp::config::ToolsCfg,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
@@ -4249,6 +4279,24 @@ pub(crate) fn resolve(
     // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
+    // THE `tools:` PLANE's hook references, held to the SAME rules as the pool plane's: bare names
+    // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
+    // silently dropped attachment. A dropped reference leaves an operator believing a control is
+    // attached that is not, which is worse than the typo it came from.
+    if let Err(e) = crate::mcp::config::validate_section_hooks(&deploy.tools.all_server_hooks) {
+        errors.push(e);
+    }
+    for (server, def) in &deploy.tools.servers {
+        for hook in deploy.tools.all_server_hooks.iter().chain(def.hooks.iter()) {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
+                     `hooks:` map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
+
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
     // behind a bearer token alone. Loopback binds are safe (unreachable off-host); an explicit
@@ -4289,10 +4337,26 @@ pub(crate) fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
+    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: an MCP plane
+    // whose canonical URI is malformed would advertise one audience in its metadata document and
+    // expect another in its verifier, and every correctly-behaved client in the world would obtain a
+    // token this server then refuses. A boot refusal names the field and what to type; a runtime one
+    // is discovered by an agent that cannot connect and cannot say why.
+    let mcp = match deploy.mcp.as_ref().map(crate::mcp::McpResource::from_cfg) {
+        None => None,
+        Some(Ok(resource)) => Some(resource),
+        Some(Err(e)) => {
+            errors.push(e.to_string());
+            None
+        }
+    };
+
     if errors.is_empty() {
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
+            mcp,
+            tool_defs: deploy.tools.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),

@@ -407,6 +407,52 @@ pub(crate) struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
+    /// The validated MCP resource (`mcp:`, 1.5.5), or `None` when this deployment is not an MCP
+    /// server. Read by the MCP ingress and the RFC 9728 metadata handler; both take the audience and
+    /// the mount path from this ONE object, so the value advertised to clients and the value the
+    /// verifier compares against cannot be two different strings.
+    pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
+    /// THE MCP CATALOGUE SNAPSHOT for this config generation: every
+    /// registered server, its approved tools/prompts/resources, and the monotonic PIN GENERATION the
+    /// snapshot was built under.
+    ///
+    /// It rides the `App` because that is where the atomic swap already is — a config apply replaces
+    /// the whole `Arc<App>` under one lock, so the catalogue is replaced atomically without a second
+    /// hot-swap mechanism to keep correct. The generation is what makes the swap DETECTABLE from
+    /// inside a request: dispatch re-reads the live snapshot and refuses a call whose identity was
+    /// resolved under a generation the operator has since replaced. On a stateful protocol this
+    /// defence was spelled as tombstoning the sessions pinned to a de-approved server; with no
+    /// handshake and no sessions there is nothing to tombstone, and the per-request generation
+    /// re-read is the whole of it — the bound is one REQUEST, not one session lifetime.
+    ///
+    /// Present even on a deployment with no `tools:` block, as an EMPTY catalogue. `Option` would
+    /// have made "MCP is not configured" and "MCP is configured with nothing registered" the same
+    /// value, and they answer differently: the first has no endpoint, the second answers every
+    /// catalogue with an empty list.
+    pub(crate) mcp_catalogue: Arc<crate::mcp::catalogue::Catalogue>,
+    /// The `tools:` REGISTRY as the operator wrote it — operator INTENT (owner ruling 3), carried
+    /// beside the catalogue that is derived from it.
+    ///
+    /// Both, and not one: the catalogue is the answer-shaped projection the data plane reads, and
+    /// this is the definition-shaped document the ADMIN plane reads and writes. Deriving the admin
+    /// read back out of the catalogue would mean reconstructing what the operator typed from what
+    /// busbar computed, and a round trip that loses a field loses it silently.
+    pub(crate) mcp_servers: Arc<crate::mcp::config::ToolsCfg>,
+    /// THE UPSTREAM CONNECTION POOL for the MCP client direction, keyed by `(host, PINNED
+    /// SocketAddr)`.
+    ///
+    /// Engine-owned and shared across config applies, which is deliberate and is why it is not
+    /// rebuilt beside `mcp_catalogue`: a pool rebuilt on every apply is a pool that never reuses a
+    /// connection on a deployment whose config is written through the admin API. It carries no
+    /// authority to leak across an apply either — a pooled socket negotiated nothing under this
+    /// revision, so there is no session on it a revocation would have to invalidate. What must be
+    /// re-checked is the catalogue GENERATION, and that is checked per request.
+    pub(crate) mcp_pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
+    /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
+    /// an audience-bound plane — what a token presented there must carry and where a refused caller
+    /// is told to go. Consulted by the auth middleware on every request, which is why it is a
+    /// prebuilt table rather than a per-request derivation.
+    pub(crate) planes: Arc<crate::plane::PlaneDispatch>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,

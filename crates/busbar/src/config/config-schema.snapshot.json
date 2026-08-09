@@ -318,6 +318,10 @@
           "optional": true,
           "type": "String"
         },
+        "mcp": {
+          "optional": true,
+          "type": "crate::mcp::McpCfg"
+        },
         "models": {
           "optional": false,
           "type": "HashMap<String, ModelCfg>"
@@ -369,6 +373,10 @@
         "tls": {
           "optional": true,
           "type": "TlsCfg"
+        },
+        "tools": {
+          "optional": true,
+          "type": "crate::mcp::config::ToolsCfg"
         }
       },
       "kind": "struct",

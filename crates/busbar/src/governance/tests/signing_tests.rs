@@ -26,7 +26,7 @@ fn mint_then_verify_roundtrips() {
     assert_eq!(claims.kid, DEFAULT_KID);
 }
 
-/// THE PLANE BOUNDARY (1.5.4): an AUDIENCE-BOUND token
+/// THE PLANE BOUNDARY (1.5.5): an AUDIENCE-BOUND token
 /// (the shape the MCP authorization server mints, wire claim `a`) must be REJECTED by the
 /// plain data-plane verify. Before the boundary existed, serde ignored the unknown claim and
 /// the token verified everywhere a busbar key does (`/stats`, `/v1/models`, every
@@ -56,7 +56,7 @@ fn audience_bound_token_is_rejected_on_the_plain_verify_path() {
     );
 }
 
-/// The full audience matrix, fail-closed on every mismatch arm (1.5.4 P1). The two accept
+/// The full audience matrix, fail-closed on every mismatch arm (1.5.5 P1). The two accept
 /// arms are exact: plain token on the plain plane, and matching audience on the
 /// audience-checked plane. Everything else is `AudienceMismatch`.
 #[test]
@@ -99,7 +99,7 @@ fn audience_matrix_is_fail_closed() {
 fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
     let s = signer();
     let v = verifier(&s);
-    // The pre-1.5.4 payload shape, hand-crafted: {sub, exp, kid} only.
+    // The pre-1.5.5 payload shape, hand-crafted: {sub, exp, kid} only.
     let payload = serde_json::to_vec(&serde_json::json!({
         "sub": "vk_old",
         "exp": 2000u64,

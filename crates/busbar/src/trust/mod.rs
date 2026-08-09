@@ -189,7 +189,7 @@ impl std::fmt::Display for TrustError {
 
 /// The operator's INTENT about one upstream: what they approved, pinned to what identity. Config
 /// overlay state, written per field.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Approval<A: PinnedArtifact> {
     pin: Option<A>,
     capabilities: BTreeMap<String, CapabilityApproval>,
@@ -203,6 +203,30 @@ impl<A: PinnedArtifact> Approval<A> {
         Self {
             pin: None,
             capabilities: BTreeMap::new(),
+            suspension: None,
+        }
+    }
+
+    /// THE DECLARATIVE APPROVAL: the intent an operator wrote down in config rather than worked
+    /// through the changes queue against a live sighting. Same intent, different route in.
+    ///
+    /// The pin is taken BY VALUE, not as an `Option`, and that is the whole reason this exists as a
+    /// constructor instead of a caller assembling the fields. An upstream with no authenticity root
+    /// has no artifact to pass, so it cannot build one of these AT ALL: "unpinned can never be
+    /// approved" becomes a fact about what is constructible rather than a runtime check somebody
+    /// could later relax. [`Approval::registered`] is the only thing an unrooted registration can
+    /// be, and it serves nothing.
+    ///
+    /// `capabilities` is `name -> approved digest`. A capability the operator allowed but approved
+    /// no digest for is simply ABSENT, which is `pending`: [`Approval::serves`] finds no entry and
+    /// refuses whatever digest it is handed, so "allowed" never quietly becomes "approved".
+    pub(crate) fn declared(pin: A, capabilities: BTreeMap<String, String>) -> Self {
+        Self {
+            pin: Some(pin),
+            capabilities: capabilities
+                .into_iter()
+                .map(|(name, digest)| (name, CapabilityApproval::At(digest)))
+                .collect(),
             suspension: None,
         }
     }

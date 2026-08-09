@@ -1177,6 +1177,7 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
+            NamedMapSection::Tools => crate::mcp::admin_view::list(&self.app),
             NamedMapSection::Agents => self
                 .app
                 .agent_defs
@@ -1219,6 +1220,7 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
+            NamedMapSection::Tools => crate::mcp::admin_view::get(&self.app, name),
             NamedMapSection::Agents => self
                 .app
                 .agent_defs

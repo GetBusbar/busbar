@@ -15,8 +15,8 @@
 //! | `PATCH  <section>/{name}/settings`  | `full`      | replace only the opaque settings bag |
 //! | `DELETE <section>/{name}`           | `full`      | remove |
 //!
-//! `<section>` is `/identity-providers` or `/export` today. **Adding `tools:` (1.5.4 MCP) or
-//! `agents:` (1.5.5 A2A) is ONE variant on [`NamedMapSection`]** — [`routes`] mounts from
+//! `<section>` is `/identity-providers` or `/export` today. **Adding `tools:` (1.5.5 MCP) or
+//! `agents:` (1.5.6 A2A) is ONE variant on [`NamedMapSection`]** — [`routes`] mounts from
 //! `NamedMapSection::ALL`, `openapi_paths` emits from it, and the error taxonomy declares per route
 //! SHAPE — so a new section is purely additive and BREAKS NOTHING already shipped.
 //!
@@ -662,6 +662,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
+        NamedMapSection::Tools => app.mcp_servers.servers.contains_key(name),
         NamedMapSection::Agents => app.agent_defs.agents.contains_key(name),
     }
 }
@@ -693,10 +694,16 @@ fn validate_definition(
     }
     let Some(obj) = def.as_object() else {
         return Err(AdminError::Validation(format!(
-            "a {} definition must be an object (`{{\"module\": …}}`)",
+            "a {} definition must be an object",
             section.singular()
         )));
     };
+    // `module:` is required only of a PLUGIN-INSTANCE section. A `tools:` or an `agents:` entry is
+    // a remote endpoint somebody else runs; there is no plugin behind either to name, and demanding
+    // one would make the API refuse exactly the definitions `config.yaml` accepts — the two-grammars
+    // defect this handler's `validate_def` call exists to prevent. The value is read ONCE, out here,
+    // because the converse check below needs it too: a non-plugin section must not merely tolerate
+    // a `module:`, it must refuse one.
     let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
     if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
@@ -710,8 +717,9 @@ fn validate_definition(
         // was hardened against; the typed parse below would refuse it, and saying so here gives
         // the operator the section-shaped reason rather than a serde message.
         return Err(AdminError::Validation(format!(
-            "an {} is a remote endpoint, not a plugin instance, so it has no `module:`",
-            section.singular()
+            "a definition in `{}` is a remote endpoint, not a plugin instance, so it has no \
+             `module:`",
+            section.key()
         )));
     }
     if let Some(serde_json::Value::Object(settings)) = obj.get("settings") {

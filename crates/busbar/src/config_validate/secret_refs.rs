@@ -84,6 +84,33 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // `models` names a provider and a model id; the credential lives on the provider.
         models: _,
         pools: _,
+        // `mcp` carries NO credential, and the reason is checkable rather than asserted: all four of
+        // its fields — `canonical_uri`, `authorization_servers`, `scopes_supported`,
+        // `allowed_origins` — are published VERBATIM in the RFC 9728 protected-resource metadata
+        // document, which is served to unauthenticated callers by design. A secret cannot live in a
+        // struct whose every field is deliberately public. busbar is the RESOURCE server here: it
+        // VERIFIES tokens the operator's IdP mints and holds no issuing key of its own.
+        //
+        // This arm exists because B1 made omission impossible: adding `mcp:` to `RootCfg` FAILED TO
+        // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
+        // Give `McpCfg` a `SecretRef`-typed field later and this breaks again, which is correct.
+        mcp: _,
+        // `tool_defs` DOES carry a credential, and the arm that said otherwise was correct only
+        // until RFC 8693 token exchange landed. It said, in as many words, "give a server a held
+        // credential and it will hold a `SecretRef`, at which point this arm must walk it" — and
+        // then `token_exchange.subject_token` appeared and layer 2 failed with the type named,
+        // `["TokenExchangeCfg"]`, before anybody re-read the comment. That is the guard working: the
+        // prediction and the enforcement were the same mechanism.
+        //
+        // Walked below. Everything else on a server stays declined, and each for a stated reason:
+        //   * `pin.key` is a VERIFICATION value (an issuer public key or a certificate SPKI hash).
+        //     Publishing it would cost nothing; it is the operator's trust root, not their secret.
+        //   * `aud` is an RFC 8707 resource indicator — an identifier the authorization server is
+        //     asked to mint FOR, and one that appears in a token any upstream can read.
+        //   * `upstream_credentials` is `Own | Passthrough`, a `Copy` mode selector.
+        //   * the three `*_allow` maps hold approved hashes, descriptions and schemas, all of which
+        //     are published verbatim in `tools/list`.
+        tool_defs,
         // `agent_defs` NOW CARRIES A CREDENTIAL, and this arm walks it. It used to decline, with a
         // note saying the decline was checkable and that the arm would have to start walking the
         // moment leased outbound credentials landed. They landed;
@@ -101,6 +128,43 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+
+    // MCP SERVERS: `tools.<name>.token_exchange.subject_token` is BUSBAR'S OWN token, the SUBJECT of
+    // an RFC 8693 exchange — never the caller's. It resolves through the same `env` / `file` /
+    // secret-plugin path every other credential does, so it must be enumerable here or `--validate`
+    // reports a config fine and the first tool call of the day fails on it.
+    for (name, server) in &tool_defs.servers {
+        let crate::mcp::config::McpServerDefCfg {
+            token_exchange,
+            // Not credentials, each for the reason recorded at the destructure above.
+            url: _,
+            pin: _,
+            transport: _,
+            aud: _,
+            grants: _,
+            max_input_required_rounds: _,
+            upstream_credentials: _,
+            hooks: _,
+            // The SSRF posture for this server. A boolean, and the guard that reads it is the one
+            // place it means anything.
+            allow_private: _,
+            tools_allow: _,
+            prompts_allow: _,
+            resources_allow: _,
+        } = server;
+        if let Some(tx) = token_exchange {
+            let crate::mcp::config::TokenExchangeCfg {
+                subject_token,
+                // A URL and an RFC 8693 token-type URN; neither is a secret.
+                token_url: _,
+                subject_token_type: _,
+            } = tx;
+            refs.push((
+                format!("tools.{name}.token_exchange.subject_token"),
+                subject_token,
+            ));
+        }
+    }
     for (name, p) in providers {
         let crate::config::ProviderCfg {
             api_key,
@@ -296,6 +360,9 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
+    // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
+    // exchange, never the caller's.
+    ("TokenExchangeCfg", SecretBearing::Walked),
     // The A2A plane's LEASED outbound delegation credential. Reached from `RootCfg` through
     // `agent_defs -> agents.<name>.upstream_credential`.
     ("OutboundCredential", SecretBearing::Walked),
