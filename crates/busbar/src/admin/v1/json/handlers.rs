@@ -1752,7 +1752,20 @@ pub(crate) async fn reset_overlay_section(
         }
         Err(e) => {
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
+            // TAGGED with its condition where one is declared. The taxonomy test witnesses
+            // emissions at `(route, method, kind, cond)` granularity, and this arm rendered every
+            // failure as a bare kind — so `DELETE /overlay/{section}`'s declared
+            // `Conflict/StillReferenced` had NO witness and the gate correctly called it an
+            // OVER-CLAIM: a documented error nothing could be seen to produce. The dangling-
+            // reference guard was implemented AND had a test asserting 409; only the condition
+            // label was missing. That is precisely the gap a witness-backed taxonomy exists to
+            // surface, and it would have shipped as a documented error nobody could trigger.
+            match &e {
+                AdminError::Conflict(m) if m.contains("would be left naming") => {
+                    err_json_cond(&e, Cond::StillReferenced)
+                }
+                _ => err_json(&e),
+            }
         }
     }
 }
