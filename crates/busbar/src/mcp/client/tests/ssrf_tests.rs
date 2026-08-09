@@ -232,8 +232,14 @@ fn default_ports_are_derived_from_the_scheme() {
 #[test]
 fn the_ipv4_compatible_form_of_imds_is_refused() {
     let addr: SocketAddr = "[::169.254.169.254]:80".parse().unwrap();
-    let err = check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: false })
-        .expect_err("[::169.254.169.254] is the AWS IMDS endpoint wearing a v6 costume");
+    let err = check_addresses(
+        "evil.test",
+        &[addr],
+        SsrfPolicy {
+            allow_private: false,
+        },
+    )
+    .expect_err("[::169.254.169.254] is the AWS IMDS endpoint wearing a v6 costume");
     assert!(
         matches!(err, SsrfRefusal::CloudMetadata { .. }),
         "must be refused AS METADATA, not merely as internal: {err:?}"
@@ -243,15 +249,27 @@ fn the_ipv4_compatible_form_of_imds_is_refused() {
 #[test]
 fn the_ipv4_compatible_imds_form_is_refused_even_with_allow_private() {
     let addr: SocketAddr = "[::169.254.169.254]:80".parse().unwrap();
-    check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: true })
-        .expect_err("cloud metadata is refused unconditionally, `allow_private` or not");
+    check_addresses(
+        "evil.test",
+        &[addr],
+        SsrfPolicy {
+            allow_private: true,
+        },
+    )
+    .expect_err("cloud metadata is refused unconditionally, `allow_private` or not");
 }
 
 #[test]
 fn the_ipv4_mapped_form_of_imds_is_refused() {
     let addr: SocketAddr = "[::ffff:169.254.169.254]:80".parse().unwrap();
-    check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: true })
-        .expect_err("the mapped form is the same endpoint");
+    check_addresses(
+        "evil.test",
+        &[addr],
+        SsrfPolicy {
+            allow_private: true,
+        },
+    )
+    .expect_err("the mapped form is the same endpoint");
 }
 
 /// Azure WireServer and OCI IMDS are ORDINARY-LOOKING addresses in no reserved range, so a guard
@@ -260,8 +278,14 @@ fn the_ipv4_mapped_form_of_imds_is_refused() {
 fn azure_wireserver_and_oci_imds_are_refused() {
     for lit in ["168.63.129.16:80", "192.0.0.192:80"] {
         let addr: SocketAddr = lit.parse().unwrap();
-        check_addresses("evil.test", &[addr], SsrfPolicy { allow_private: false })
-            .unwrap_err_or_else_msg(lit);
+        check_addresses(
+            "evil.test",
+            &[addr],
+            SsrfPolicy {
+                allow_private: false,
+            },
+        )
+        .unwrap_err_or_else_msg(lit);
     }
 }
 
@@ -270,6 +294,9 @@ trait UnwrapErrMsg {
 }
 impl UnwrapErrMsg for Result<(), SsrfRefusal> {
     fn unwrap_err_or_else_msg(self, lit: &str) {
-        assert!(self.is_err(), "{lit} is a cloud-metadata endpoint and must be refused");
+        assert!(
+            self.is_err(),
+            "{lit} is a cloud-metadata endpoint and must be refused"
+        );
     }
 }

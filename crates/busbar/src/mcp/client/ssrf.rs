@@ -159,7 +159,6 @@ impl PinnedTarget {
     }
 }
 
-
 // THE TWO ADDRESS PREDICATES LIVE IN `crate::net_guard`, NOT HERE.
 //
 // This module used to keep its own composite built from three imported atoms, and it drifted from
