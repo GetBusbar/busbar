@@ -59,6 +59,10 @@
 //! that implements no methods, and it stays correct unchanged once the method table has entries.
 //! What this module owns is the door, not the rooms.
 
+/// The CLIENT direction (§2.1): busbar calling OUT to external MCP tool servers. The other half of
+/// the same governance boundary this module's front door opens — same revision, same trust
+/// lifecycle, same scope kinds, opposite initiator.
+pub(crate) mod client;
 pub(crate) mod ingress;
 pub(crate) mod resource;
 
