@@ -48,5 +48,6 @@ pub(crate) mod reverify;
 pub(crate) mod serve;
 pub(crate) mod task;
 pub(crate) mod taskstore;
+pub(crate) mod transport;
 pub(crate) mod verbs;
 pub(crate) mod verify;
