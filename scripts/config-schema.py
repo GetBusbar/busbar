@@ -48,6 +48,13 @@ from pathlib import Path
 #   * `UpstreamCreds` (crates/busbar/src/auth/mod.rs) is the `upstream_credentials:` key's value
 #     grammar. It is deserialized straight out of the config document; it lives beside the
 #     middleware that consumes it.
+#   * `crates/busbar/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
+#     four pin mechanisms, and the leased outbound credential. It was outside the set for the same
+#     reason the two above were: it lives with the plane that consumes it rather than under the
+#     config module. The snapshot recorded `agents: crate::a2a::config::AgentsCfg` and stopped
+#     there, so every key an operator writes under an agent had NO fingerprint at all and a
+#     BREAKING change to that grammar passed the additive-only check silently. Only the two files
+#     that declare config types are tracked; the rest of the plane is runtime.
 #
 # A path is a directory (every `*.rs` directly inside it) or a single file. A path that does not
 # exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
@@ -56,6 +63,8 @@ SOURCES = [
     "crates/busbar/src/config",
     "crates/secret-ref/src/lib.rs",
     "crates/busbar/src/auth/mod.rs",
+    "crates/busbar/src/a2a/config.rs",
+    "crates/busbar/src/a2a/creds.rs",
 ]
 
 

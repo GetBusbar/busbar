@@ -1,0 +1,245 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! RECEIVING: busbar SERVES its fronted agents' Agent Cards, with every URL rewritten
+//! through busbar.
+//!
+//! ## The backend URL is the one thing that must not be published
+//!
+//! A caller reaching a fronted agent talks to busbar, and busbar authenticates, authorises, meters
+//! and provenances the task. Publishing the backend endpoint publishes the way around all of that.
+//! So the rewrite is not cosmetic and it is not "mostly": [`rewrite_card`] rewrites every endpoint
+//! member, and `tests/serve_tests.rs` walks the whole served document — every string at every
+//! depth, including members busbar does not model — and fails if the backend authority appears
+//! anywhere in it.
+//!
+//! ## The vendor's signature is REMOVED, not carried
+//!
+//! A card busbar has rewritten is no longer the document the vendor signed, so the vendor's
+//! signature over it cannot verify. Carrying it would publish a signature that fails, which is
+//! worse than publishing none: a client that checks would reject busbar's card, and a client that
+//! does not check is being shown a credential-shaped member that means nothing. So `signatures` is
+//! dropped, and this is the honest boundary of the receiving side — **busbar does not sign the cards it serves
+//! today**. That is stated rather than papered over, because "busbar's card IS the thing external
+//! callers pin against" is a design sentence this build does not yet make true.
+//!
+//! ## The backend's `securitySchemes` are REPLACED, not merged
+//!
+//! The backend's schemes describe how to authenticate TO THE BACKEND, which no external caller ever
+//! reaches. Publishing them would tell a caller to present a credential to busbar that busbar does
+//! not accept, and would leak the backend's auth posture. The served card advertises exactly one
+//! scheme: busbar's own `a2a_inbound` credential.
+
+use serde_json::{json, Map, Value};
+
+use super::card::CardError;
+use super::inbound::CREDENTIAL_KIND_A2A_INBOUND;
+
+/// The security-scheme NAME busbar advertises on every card it serves. Fixed rather than
+/// per-agent: a caller reads one name across every fronted agent in a deployment.
+pub(crate) const INBOUND_SCHEME_NAME: &str = "busbarA2aInbound";
+
+/// The HTTP header an inbound A2A caller presents its busbar credential on.
+pub(crate) const INBOUND_HEADER: &str = "authorization";
+
+/// Why a card could not be served.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ServeError {
+    /// The cached backend card is not a JSON object.
+    Card(CardError),
+    /// busbar's own public URL is not a URL, so there is nothing to rewrite TO. Refused rather than
+    /// served un-rewritten: serving the backend's own endpoints because our base URL was
+    /// misconfigured is the failure this whole module exists to prevent.
+    BadPublicUrl(String),
+    /// The backend authority still appears in the card after the rewrite, at the named paths.
+    ///
+    /// Refused rather than served with a warning. The served card's entire purpose is to point
+    /// callers at busbar, and one that also tells them where the backend is has handed a caller the
+    /// way around every control busbar applies.
+    BackendLeak {
+        agent_id: String,
+        host: String,
+        at: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for ServeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServeError::Card(e) => write!(f, "{e}"),
+            ServeError::BadPublicUrl(u) => write!(
+                f,
+                "cannot serve an agent card: `public_url` is not a URL (`{u}`), so there is no \
+                 busbar endpoint to rewrite the backend's URLs to. Refused rather than served \
+                 un-rewritten."
+            ),
+            ServeError::BackendLeak { agent_id, host, at } => write!(
+                f,
+                "refusing to serve the card for `{agent_id}`: the backend authority `{host}` still \
+                 appears at {at:?} after the rewrite. A served card that names the backend hands a \
+                 caller the way around every control busbar applies."
+            ),
+        }
+    }
+}
+
+/// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a
+/// caller's endpoint is stable and says which agent it reaches.
+pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String, ServeError> {
+    let base = reqwest::Url::parse(public_url)
+        .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
+    let mut u = base.clone();
+    u.set_path(&format!("/a2a/agents/{agent_id}"));
+    u.set_query(None);
+    u.set_fragment(None);
+    Ok(u.to_string())
+}
+
+/// REWRITE a fronted agent's backend card into the card busbar serves.
+///
+/// The backend document is the input and is never mutated: the cached card is what the fingerprint
+/// was taken over, and a rewrite in place would change what an operator approved.
+///
+/// `backend_url` is taken as well as the card because THE MODELLED FIELDS ARE NOT ENOUGH. The first
+/// version of this function rewrote `supportedInterfaces[].url` and the top-level `url`, which is
+/// every endpoint the specification defines — and a card carrying
+/// `x-vendor-extensions.mirrors[0]: "https://internal-planner.corp.example/a2a/eu"` sailed straight
+/// through it, published by busbar, with the backend authority intact. Cards carry unmodelled
+/// members by design; a rewrite that only covers the ones busbar parses is a rewrite that covers
+/// the cards nobody was trying to leak through.
+pub(crate) fn rewrite_card(
+    backend_card: &Value,
+    backend_url: &str,
+    public_url: &str,
+    agent_id: &str,
+) -> Result<Value, ServeError> {
+    let obj = backend_card
+        .as_object()
+        .ok_or(ServeError::Card(CardError::NotAnObject))?;
+    let endpoint = agent_endpoint(public_url, agent_id)?;
+    let backend_host = reqwest::Url::parse(backend_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase));
+
+    let mut out = obj.clone();
+
+    // ── EVERY ENDPOINT MEMBER, rewritten to busbar's. ──
+    //
+    // `supportedInterfaces[].url` is the modelled one. A top-level `url` is the pre-v0.3 spelling
+    // and is rewritten too, because an upstream pinned to an older `protocolVersion` still serves
+    // it and a caller reading it would reach the backend directly.
+    if let Some(Value::Array(interfaces)) = out.get_mut("supportedInterfaces") {
+        for iface in interfaces.iter_mut() {
+            if let Some(iface) = iface.as_object_mut() {
+                if iface.contains_key("url") {
+                    iface.insert("url".to_string(), Value::String(endpoint.clone()));
+                }
+            }
+        }
+    }
+    if out.contains_key("url") {
+        out.insert("url".to_string(), Value::String(endpoint.clone()));
+    }
+
+    // ── THE VENDOR'S SIGNATURE, dropped. See the module note. ──
+    out.remove("signatures");
+
+    // ── THE SECURITY SCHEMES, replaced. See the module note. ──
+    let mut schemes = Map::new();
+    schemes.insert(
+        INBOUND_SCHEME_NAME.to_string(),
+        json!({
+            "type": "http",
+            "scheme": "bearer",
+            "description": format!(
+                "A busbar credential of kind `{CREDENTIAL_KIND_A2A_INBOUND}`, presented on the \
+                 `{INBOUND_HEADER}` header. busbar authorises it against this fronted agent and \
+                 meters the task against the presenting key's budget."
+            ),
+        }),
+    );
+    out.insert("securitySchemes".to_string(), Value::Object(schemes));
+    out.insert("security".to_string(), json!([{ INBOUND_SCHEME_NAME: [] }]));
+
+    // ── AND THEN EVERY OTHER STRING IN THE DOCUMENT, at every depth. ──
+    //
+    // A sweep rather than a longer list of field names, because the hazard is a member busbar has
+    // never heard of. Only URL-SHAPED strings whose host IS the backend's are touched: a description
+    // that happens to mention the vendor's public site is not an endpoint, and rewriting it would
+    // make busbar's card say something the vendor did not.
+    let mut served = Value::Object(out);
+    if let Some(host) = backend_host.as_deref() {
+        rewrite_backend_urls(&mut served, host, &endpoint);
+        // FAIL CLOSED ON WHAT THE SWEEP COULD NOT FIX. A remaining mention is a string that is not
+        // a URL busbar can rewrite but still names the backend — a bare authority in a free-text
+        // member, say. Serving it anyway would publish the way around busbar in the one document
+        // whose entire purpose is to point callers at busbar.
+        let mut remaining = Vec::new();
+        collect_mentions(&served, host, &mut remaining);
+        if !remaining.is_empty() {
+            return Err(ServeError::BackendLeak {
+                agent_id: agent_id.to_string(),
+                host: host.to_string(),
+                at: remaining,
+            });
+        }
+    }
+    Ok(served)
+}
+
+/// Replace every URL-shaped string whose host is the backend's with busbar's endpoint, at every
+/// depth. Object KEYS are deliberately not rewritten: a key is a member name, and renaming one
+/// changes the document's shape rather than where it points.
+fn rewrite_backend_urls(v: &mut Value, backend_host: &str, endpoint: &str) {
+    match v {
+        Value::String(s) => {
+            if reqwest::Url::parse(s)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_lowercase))
+                .is_some_and(|h| h == backend_host)
+            {
+                *s = endpoint.to_string();
+            }
+        }
+        Value::Array(a) => a
+            .iter_mut()
+            .for_each(|x| rewrite_backend_urls(x, backend_host, endpoint)),
+        Value::Object(o) => o
+            .values_mut()
+            .for_each(|x| rewrite_backend_urls(x, backend_host, endpoint)),
+        _ => {}
+    }
+}
+
+/// Every remaining mention of the backend host, with the JSON path it sits at, so the refusal names
+/// the member an operator has to look at rather than merely that one exists.
+fn collect_mentions(v: &Value, backend_host: &str, out: &mut Vec<String>) {
+    fn walk(v: &Value, host: &str, path: &str, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => {
+                if s.to_lowercase().contains(host) {
+                    out.push(path.to_string());
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    walk(x, host, &format!("{path}[{i}]"), out);
+                }
+            }
+            Value::Object(o) => {
+                for (k, x) in o {
+                    if k.to_lowercase().contains(host) {
+                        out.push(format!("{path}.{k} (member NAME)"));
+                    }
+                    walk(x, host, &format!("{path}.{k}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(v, backend_host, "$", out);
+}
+
+#[cfg(test)]
+#[path = "tests/serve_tests.rs"]
+mod serve_tests;

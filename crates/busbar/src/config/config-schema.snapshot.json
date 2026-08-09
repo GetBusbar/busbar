@@ -60,6 +60,73 @@
         "session"
       ]
     },
+    "AgentDefCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "egress_scopes": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "hooks": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "pin": {
+          "optional": false,
+          "type": "AgentPinCfg"
+        },
+        "protocol_version": {
+          "optional": true,
+          "type": "String"
+        },
+        "recovery_backoff": {
+          "optional": true,
+          "type": "String"
+        },
+        "reverify_ttl": {
+          "optional": true,
+          "type": "String"
+        },
+        "upstream_credential": {
+          "optional": true,
+          "type": "super::creds::OutboundCredential"
+        },
+        "upstream_credentials": {
+          "optional": true,
+          "type": "crate::auth::UpstreamCreds"
+        },
+        "url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "AgentPinCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "fingerprint": {
+          "optional": true,
+          "type": "String"
+        },
+        "key": {
+          "optional": true,
+          "type": "String"
+        },
+        "mechanism": {
+          "optional": false,
+          "type": "PinMechanism"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "AgentsCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
     "AuthDeployCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -182,6 +249,15 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "CredentialPlacement": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "bearer",
+        "header"
+      ]
     },
     "DeployCfg": {
       "deny_unknown_fields": true,
@@ -803,6 +879,25 @@
       "kind": "struct",
       "transparent": false
     },
+    "OutboundCredential": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "lease_ttl_ms": {
+          "optional": false,
+          "type": "u64"
+        },
+        "placement": {
+          "optional": true,
+          "type": "CredentialPlacement"
+        },
+        "secret": {
+          "optional": false,
+          "type": "SecretRef"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "OverlayBackend": {
       "deny_unknown_fields": true,
       "fields": {
@@ -865,6 +960,17 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "PinMechanism": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "cert_spki",
+        "jws_issuer_key",
+        "mtls",
+        "unpinned"
+      ]
     },
     "PluginFetch": {
       "deny_unknown_fields": false,
@@ -1532,6 +1638,11 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "manual-de AgentsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
     },
     "manual-de LimitCfg": {
       "fields": {

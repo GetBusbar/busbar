@@ -51,6 +51,21 @@ pub(crate) const RESERVED_AGENTS_SECTION_KEYS: &[&str] = &["hooks", "upstream_cr
 /// per period and is nowhere near any budget. An operator who wants tighter says so per agent.
 pub(crate) const DEFAULT_REVERIFY_TTL: &str = "6h";
 
+/// THE REFUSAL FOR `upstream_credentials: passthrough` ON THIS PLANE, written once so the per-entry
+/// and section-level paths cannot say different things about the same rule.
+///
+/// `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that
+/// would hand a third-party vendor a working busbar credential belonging to somebody else — the
+/// caller's key authenticated them TO busbar and authorised them against busbar's scopes, and it
+/// means nothing anywhere else. The WORD stays reserved on every plane so the vocabulary is learned
+/// once; the VALUE is refused loudly, because accepting it and quietly doing something else is how
+/// an operator ends up believing a credential is being forwarded when it is not, or the reverse.
+pub(crate) const REFUSE_PASSTHROUGH_SECTION: &str =
+    "`upstream_credentials: passthrough` is refused on the `agents:` plane. busbar delegates AS \
+     ITSELF: the caller's key authenticated them to busbar and means nothing to a third-party \
+     agent, so forwarding it would hand that agent a working busbar credential belonging to \
+     someone else. Use `own` with an `upstream_credential:` handle.";
+
 /// `agents.<name>.pin.mechanism` — WHICH authenticity root this registration has.
 ///
 /// The variants are the four the design names, and they are spelled in config exactly as
@@ -90,7 +105,7 @@ impl PinMechanism {
 }
 
 /// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentPinCfg {
     /// Which root this is. Required: a pin whose mechanism is inferred is a pin whose meaning
@@ -113,7 +128,7 @@ pub(crate) struct AgentPinCfg {
 /// deliberately absent from this struct. The split is not tidiness: intent is what an operator
 /// wrote and may edit, accumulation is what happened and may not be, and a field that lives in the
 /// wrong one is a field an admin write can silently rewrite history through.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin an agent.
 pub(crate) struct AgentDefCfg {
     /// The real remote A2A endpoint. Never client-visible: callers reach it through busbar.
@@ -138,9 +153,21 @@ pub(crate) struct AgentDefCfg {
     /// registration that follows whatever the upstream now claims has no pin at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) protocol_version: Option<String>,
-    /// Outbound credential mode at delegation time. Same vocabulary as the pool plane's.
+    /// Outbound credential mode at delegation time. Same vocabulary as the pool plane's — and
+    /// `passthrough` is REFUSED here, loudly, by [`validate_agent`]. The word is reserved on every
+    /// plane so the vocabulary is learned once; a plane that cannot honor a VALUE says so rather
+    /// than accepting it and doing something else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    /// The LEASED outbound credential busbar presents to this agent: a secret-store handle
+    /// plus its lease policy. Never the secret, never the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_credential: Option<super::creds::OutboundCredential>,
+    /// WHICH FRONTED AGENTS MAY DELEGATE HERE. Egress policy, over the same `ScopeRef` kind as
+    /// inbound authZ. Absent or empty ⇒ NONE may: the fail-closed floor, because reading an empty
+    /// list as "everyone" is a registration granting egress nobody wrote down.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) egress_scopes: Vec<String>,
     /// Hooks attached to THIS agent, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `agents.hooks:` list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -148,7 +175,7 @@ pub(crate) struct AgentDefCfg {
 }
 
 /// The top-level `agents:` map, carrying [`RESERVED_AGENTS_SECTION_KEYS`] alongside the agents.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct AgentsCfg {
     /// The ALL-AGENTS attach list (the reserved `agents.hooks:` key). LIST ⇒ ADDITIVE: an agent's
     /// own `hooks:` are appended to this, deduped by name.
@@ -197,11 +224,17 @@ impl<'de> Deserialize<'de> for AgentsCfg {
             None => None,
             Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
                 serde::de::Error::custom(format!(
-                    "the reserved `agents.upstream_credentials:` all-agents default must be `own` \
-                     or `passthrough`: {e}"
+                    "the reserved `agents.upstream_credentials:` all-agents default must be \
+                     `own`: {e}"
                 ))
             })?),
         };
+        // The all-agents DEFAULT is refused for the same reason a per-agent value is, and it is
+        // checked here rather than only per entry because a section default applies to agents that
+        // never spell the key — which is precisely the set an entry-level check cannot see.
+        if all_agent_upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
+            return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
+        }
 
         let mut agents = indexmap::IndexMap::new();
         for (name, value) in raw {
@@ -267,6 +300,40 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
              no authenticity root; key material that is never verified against reads to an \
              operator as protection that does not exist. Name the real mechanism, or drop the key."
         ));
+    }
+
+    // THE CALLER'S CREDENTIAL NEVER LEAVES BUSBAR. `passthrough` means "forward the CALLER's
+    // credential upstream", and a busbar key handed to a third-party vendor is a working busbar
+    // credential belonging to somebody else. Refused at parse, on this plane only, because the
+    // word is reserved on every plane and only the VALUE is inapplicable here.
+    if def.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
+        return Err(format!("{at}: {REFUSE_PASSTHROUGH_SECTION}"));
+    }
+    if let Some(cred) = def.upstream_credential.as_ref() {
+        // A lease that has expired before it is used is a credential that can never be presented,
+        // so a zero TTL is an operator getting something other than what they wrote.
+        if cred.lease_ttl_ms == 0 {
+            return Err(format!(
+                "{at}: `upstream_credential.lease_ttl_ms:` must be greater than zero. A lease that \
+                 expires at the instant it is minted is a credential that can never be presented."
+            ));
+        }
+        if let super::creds::CredentialPlacement::Header(name) = &cred.placement {
+            if name.trim().is_empty() {
+                return Err(format!(
+                    "{at}: `upstream_credential.placement.header:` must name a header"
+                ));
+            }
+        }
+    }
+
+    for scope in &def.egress_scopes {
+        if scope.trim().is_empty() {
+            return Err(format!(
+                "{at}: `egress_scopes:` contains an empty name; an empty scope grants nothing and \
+                 reads as though it grants something"
+            ));
+        }
     }
 
     if let Some(ttl) = def.reverify_ttl.as_deref() {

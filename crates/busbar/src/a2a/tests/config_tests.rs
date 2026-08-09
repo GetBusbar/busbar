@@ -26,6 +26,8 @@ fn signed(fingerprint: Option<&str>) -> AgentDefCfg {
         recovery_backoff: None,
         protocol_version: None,
         upstream_credentials: None,
+        upstream_credential: None,
+        egress_scopes: Vec::new(),
         hooks: Vec::new(),
     }
 }
@@ -277,7 +279,7 @@ fn the_reserved_words_still_function_as_section_knobs() {
     let cfg = parse(
         r#"
 hooks: [a, b]
-upstream_credentials: passthrough
+upstream_credentials: own
 planner:
   url: "https://x/"
   pin: { mechanism: unpinned }
@@ -287,9 +289,106 @@ planner:
     assert_eq!(cfg.all_agent_hooks, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(
         cfg.all_agent_upstream_credentials,
-        Some(crate::auth::UpstreamCreds::Passthrough)
+        Some(crate::auth::UpstreamCreds::Own)
     );
     assert_eq!(cfg.agents.len(), 1, "the knobs are not agents");
+}
+
+/// THE CALLER'S CREDENTIAL IS NEVER FORWARDED TO A DELEGATE, and the section-level default is
+/// refused as well as the per-entry value — a section default applies to every agent that never
+/// spells the key, which is exactly the set a per-entry check cannot see.
+#[test]
+fn passthrough_is_refused_at_the_section_level_as_well_as_per_entry() {
+    let err = parse(
+        r#"
+upstream_credentials: passthrough
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("delegates AS ITSELF"),
+        "the section-level refusal must explain itself, got: {err}"
+    );
+
+    let per_entry = parse(
+        r#"
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+  upstream_credentials: passthrough
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        per_entry.contains("delegates AS ITSELF"),
+        "the per-entry refusal must explain itself, got: {per_entry}"
+    );
+
+    // `own` is accepted in both places, so the refusal is about the VALUE and not about the key.
+    parse(
+        r#"
+upstream_credentials: own
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+  upstream_credentials: own
+"#,
+    )
+    .expect("`own` is the supported mode on both");
+}
+
+/// The LEASE is a field rather than an adjective, so a lease that could never be presented is
+/// refused where the operator wrote it.
+#[test]
+fn a_zero_lease_ttl_is_refused_at_parse() {
+    let err = parse(
+        r#"
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+  upstream_credential:
+    secret: { env: VENDOR_TOKEN }
+    lease_ttl_ms: 0
+"#,
+    )
+    .unwrap_err();
+    assert!(err.contains("lease_ttl_ms"), "got: {err}");
+
+    let cfg = parse(
+        r#"
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+  upstream_credential:
+    secret: { env: VENDOR_TOKEN }
+    lease_ttl_ms: 60000
+  egress_scopes: [orchestrator]
+"#,
+    )
+    .expect("a positive TTL is legal");
+    let def = &cfg.agents["planner"];
+    let cred = def.upstream_credential.as_ref().expect("the handle");
+    assert_eq!(cred.lease_ttl_ms, 60_000);
+    assert_eq!(cred.secret.env_var(), Some("VENDOR_TOKEN"));
+    assert_eq!(def.egress_scopes, vec!["orchestrator".to_string()]);
+}
+
+/// An empty egress scope grants nothing and READS as though it grants something.
+#[test]
+fn an_empty_egress_scope_is_refused() {
+    let err = parse(
+        r#"
+planner:
+  url: "https://x/"
+  pin: { mechanism: unpinned }
+  egress_scopes: ["  "]
+"#,
+    )
+    .unwrap_err();
+    assert!(err.contains("egress_scopes"), "got: {err}");
 }
 
 /// THE TWO PATHS RUN ONE GRAMMAR. The admin write path must reject exactly what the file rejects,
@@ -369,7 +468,13 @@ fn an_entry_round_trips_through_its_document_form() {
         reverify_ttl: Some("15m".to_string()),
         recovery_backoff: Some("1h".to_string()),
         protocol_version: Some("1.0".to_string()),
-        upstream_credentials: Some(crate::auth::UpstreamCreds::Passthrough),
+        upstream_credentials: Some(crate::auth::UpstreamCreds::Own),
+        upstream_credential: Some(crate::a2a::creds::OutboundCredential {
+            secret: crate::config::SecretRef::env("VENDOR_TOKEN"),
+            placement: crate::a2a::creds::CredentialPlacement::Header("x-api-key".to_string()),
+            lease_ttl_ms: 60_000,
+        }),
+        egress_scopes: vec!["orchestrator".to_string()],
         hooks: vec!["dispatch-order".to_string()],
     };
     let doc = serde_json::to_value(&def).expect("an entry must project to a document");

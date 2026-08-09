@@ -44,7 +44,6 @@
 //! wants — including the answers a real network makes hard to produce on demand, like "the same host
 //! served a different card the second time".
 
-use super::card::AgentCard;
 use super::pin::CardPin;
 use super::reverify::{self, Due, Ledger, Policy};
 use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
@@ -55,9 +54,18 @@ use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 /// `agent_id` rather than a URL: the backend URL is server-side only and is never client-visible,
 /// and a verb layer that took a URL would be one an admin request could aim.
 pub(crate) trait CardSource {
-    /// Fetch and parse the agent's card. `Err` is a CONTACT failure (DNS, TLS, HTTP, malformed
-    /// document) — anything where busbar did not obtain a card it could read.
-    fn fetch_card(&self, agent_id: &str) -> Result<AgentCard, String>;
+    /// Fetch the agent's card and hand back the document AS RECEIVED. `Err` is a CONTACT failure
+    /// (DNS, TLS, HTTP, malformed document) — anything where busbar did not obtain a card it could
+    /// read.
+    ///
+    /// THE RAW DOCUMENT, NOT [`super::card::AgentCard`], and that is a correctness requirement rather
+    /// than a convenience. Both hashes on this plane — the pinned fingerprint and the per-skill digests —
+    /// are taken over the received bytes, precisely so that a member busbar does not model cannot
+    /// change without registering as drift. That type is busbar's PROJECTION: parsing to it
+    /// discards every unmodelled member, so a fingerprint computed downstream of one would be blind
+    /// to exactly the silent rug-pull the pin exists to catch. This seam originally carried
+    /// the projection; the type is what makes the mistake impossible rather than remembered.
+    fn fetch_card(&self, agent_id: &str) -> Result<serde_json::Value, String>;
 }
 
 /// HOW A CARD BECOMES AN OBSERVATION: the JWS verification against the operator-pinned issuer key,
@@ -72,7 +80,11 @@ pub(crate) trait CardObserver {
     /// `Err` is a VERIFICATION failure (unpinned card, wrong issuer key, bad signature). It is
     /// deliberately the same arm a contact failure lands in downstream — both derive `Error`, and
     /// neither may ever silently read as "unchanged".
-    fn observe(&self, card: &AgentCard) -> Result<Observation<CardPin>, String>;
+    ///
+    /// Takes the document AS RECEIVED for the reason [`CardSource::fetch_card`] returns one: the
+    /// signature covers the canonical received bytes with `signatures` removed, and the fingerprint
+    /// covers the canonical received bytes entire. Neither is computable from busbar's projection.
+    fn observe(&self, card: &serde_json::Value) -> Result<Observation<CardPin>, String>;
 }
 
 /// THE TWO SEAMS, TRAVELLING TOGETHER. Fetch and verify are separate concerns but they are never

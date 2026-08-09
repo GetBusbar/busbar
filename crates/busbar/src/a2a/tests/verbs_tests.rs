@@ -46,16 +46,18 @@ impl ScriptedSource {
 }
 
 impl CardSource for ScriptedSource {
-    fn fetch_card(&self, _agent_id: &str) -> Result<AgentCard, String> {
+    fn fetch_card(&self, _agent_id: &str) -> Result<serde_json::Value, String> {
         let mut answers = self.answers.borrow_mut();
         assert!(
             !answers.is_empty(),
             "the source was called more times than the test scripted"
         );
-        match answers.remove(0) {
-            Err(e) => Err(e),
-            Ok(v) => card::parse(&v).map_err(|e| e.to_string()),
-        }
+        // The document is handed back AS RECEIVED. It is checked for readability on the way past —
+        // an unparseable document is a contact failure — but what travels on is the raw value, not
+        // the projection, because everything downstream hashes the received bytes.
+        let v = answers.remove(0)?;
+        card::parse(&v).map_err(|e| e.to_string())?;
+        Ok(v)
     }
 }
 
@@ -81,7 +83,7 @@ impl ScriptedObserver {
 }
 
 impl CardObserver for ScriptedObserver {
-    fn observe(&self, _card: &AgentCard) -> Result<Observation<CardPin>, String> {
+    fn observe(&self, _card: &serde_json::Value) -> Result<Observation<CardPin>, String> {
         let mut outcome = self.outcome.borrow_mut();
         assert!(
             !outcome.is_empty(),

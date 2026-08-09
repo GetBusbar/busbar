@@ -84,18 +84,20 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // `models` names a provider and a model id; the credential lives on the provider.
         models: _,
         pools: _,
-        // `agent_defs` carries no credential TODAY, and the claim is checkable rather than asserted:
-        // `AgentDefCfg` is `url` + `pin` + two cadence strings + `protocol_version` +
-        // `upstream_credentials` + `hooks`, and there is no `SecretRef` anywhere under `a2a/`.
-        //   * `pin.key` is a VERIFICATION key (a JWS public key or a certificate SPKI hash). Publishing
-        //     it would cost nothing; it is the operator's trust root, not their secret.
+        // `agent_defs` NOW CARRIES A CREDENTIAL, and this arm walks it. It used to decline, with a
+        // note saying the decline was checkable and that the arm would have to start walking the
+        // moment leased outbound credentials landed. They landed;
+        // `AgentDefCfg::upstream_credential` holds an `OutboundCredential`, which holds a
+        // `SecretRef`, and layer 2 duly failed with `["OutboundCredential"]` named before this line
+        // was written. Nothing about it was remembered.
+        //
+        // What is still NOT a secret here, and why:
+        //   * `pin.key` is a VERIFICATION key (a JWS public key or a certificate SPKI hash).
+        //     Publishing it would cost nothing; it is the operator's trust root, not their secret.
         //   * `upstream_credentials` is `Own | Passthrough` — a `Copy` mode selector, the same type
         //     the top-level `upstream_credentials: _` above already declines for the same reason.
-        // This is a statement about the fields that exist TODAY, not a permanent one: give an agent a
-        // held outbound credential and it will hold a `SecretRef`, at which point this arm must walk
-        // it. That is not left to memory — `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE,
-        // so the layer-2 test fails with the type named the moment one appears here.
-        agent_defs: _,
+        //     (`Passthrough` is refused outright on this plane; see `a2a::config`.)
+        agent_defs,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
@@ -192,6 +194,44 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             );
         }
     }
+
+    // ── THE `agents:` PLANE. Exhaustive, no `..`, at both levels. ──
+    let crate::a2a::config::AgentsCfg {
+        // The all-agents attach list and credential MODE carry no reference: a hook name is a bare
+        // name into the top-level `hooks:` map, and the mode is a `Copy` selector.
+        all_agent_hooks: _,
+        all_agent_upstream_credentials: _,
+        agents,
+    } = agent_defs;
+    for (name, def) in agents {
+        let crate::a2a::config::AgentDefCfg {
+            upstream_credential,
+            // An endpoint URL, an out-of-band VERIFICATION pin, two cadence strings, a pinned
+            // protocol version, a `Copy` credential-mode selector, egress scope names and bare hook
+            // names. None of them is a credential, and `pin.key` is the one that most looks like
+            // one: it is the public half of the operator's trust root, and an operator who cannot
+            // publish it has the wrong value in the field.
+            url: _,
+            pin: _,
+            reverify_ttl: _,
+            recovery_backoff: _,
+            protocol_version: _,
+            upstream_credentials: _,
+            egress_scopes: _,
+            hooks: _,
+        } = def;
+        if let Some(cred) = upstream_credential {
+            let crate::a2a::creds::OutboundCredential {
+                secret,
+                // Where the resolved value is placed on the wire, and how long the lease lasts.
+                // Neither is material.
+                placement: _,
+                lease_ttl_ms: _,
+            } = cred;
+            refs.push((format!("agents.{name}.upstream_credential.secret"), secret));
+        }
+    }
+
     refs
 }
 
@@ -256,6 +296,9 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
+    // The A2A plane's LEASED outbound delegation credential. Reached from `RootCfg` through
+    // `agent_defs -> agents.<name>.upstream_credential`.
+    ("OutboundCredential", SecretBearing::Walked),
     (
         "AuthDeployCfg",
         SecretBearing::NotInResolvedConfig(
