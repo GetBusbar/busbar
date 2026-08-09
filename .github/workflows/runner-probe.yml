@@ -1,6 +1,8 @@
 name: runner probe (temporary)
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/one-build-pipeline]
 jobs:
   probe:
     strategy:
