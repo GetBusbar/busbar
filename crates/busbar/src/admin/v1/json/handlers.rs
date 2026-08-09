@@ -1509,9 +1509,12 @@ pub(crate) async fn reset_overlay_section(
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     let Some(section) = OverlaySection::parse(&section) else {
+        // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
+        // hand-written version of this sentence outlived the addition of the `named_maps` section
+        // and told operators `export` was not a section for a whole release.
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, `root`, or \
-             `plugin_versions`"
+            "unknown overlay section `{section}`: expected one of {}",
+            OverlaySection::valid_names()
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -1583,12 +1586,55 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let built = crate::load_config_from_disk(
+            let loaded_base = crate::load_config_from_disk(
                 &config_path,
                 Some(&providers_path),
                 false,
                 crate::config::EnvSubst::Strict,
             )
+            .map_err(AdminError::Validation)?;
+            // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
+            // named-map reset removes MANY definitions at once, and a config site that still names
+            // one of them would otherwise fail deep inside the rebuild with "references X, which is
+            // not defined" — true, but it does not say WHICH of the definitions the operator just
+            // discarded was the one in use. Refused as a terminal `conflict` naming every offender
+            // and its referents, before anything is cleared, persisted or swapped.
+            //
+            // `loaded_base.deploy` is base `config.yaml` truth with NO overlay applied, which is
+            // exactly the state a reset of this map produces, so the question it answers is the
+            // right one: after the reset, is this name still defined anywhere, and does anything
+            // still point at it? (`contains` is the belt to the braces: the write path already
+            // refuses to shadow a base-defined entry, so an overlay name that base also defines
+            // should not exist. If that invariant ever changes, this guard stays correct.)
+            if let OverlaySection::NamedMap(nm) = section {
+                let dangling: Vec<String> = loaded_base
+                    .overlay_doc
+                    .as_ref()
+                    .and_then(|doc| doc.named_maps.get(nm.key()))
+                    .map(|entries| {
+                        entries
+                            .keys()
+                            .filter(|name| !nm.contains(&loaded_base.deploy, name))
+                            .filter_map(|name| {
+                                let referents = nm.referents(&loaded_base.deploy, name);
+                                (!referents.is_empty())
+                                    .then(|| format!("`{name}` (still referenced by {})", referents.join(", ")))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !dangling.is_empty() {
+                    return Err(AdminError::Conflict(format!(
+                        "cannot reset the `{}` overlay section: base config.yaml would be left \
+                         naming {} that the reset removes — {}. Remove the reference(s) from \
+                         config.yaml first, or delete the definitions individually.",
+                        nm.key(),
+                        nm.singular(),
+                        dangling.join("; ")
+                    )));
+                }
+            }
+            let built = Ok(loaded_base)
             .and_then(|mut loaded| {
                 // CLEAR the target section from the persisted overlay FIRST — that slice reverts to
                 // base, the other slices stay live. The clear happens before both merge halves so a
@@ -4039,13 +4085,20 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
+    // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
+    // reference documentation asserted a shipped functional gap was not one.
+    let overlay_section_names: Vec<&'static str> = crate::config::overlay::OverlaySection::all()
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     paths.insert(
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)", overlay_section_names.join("|")),
                 "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
+                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": overlay_section_names}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
                 }

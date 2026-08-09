@@ -1638,7 +1638,7 @@
             "type": "integer"
           },
           "reset": {
-            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).",
+            "description": "The section that was reset. This endpoint's `section` path parameter enumerates the valid\nset; it is deliberately not restated here, because the hand-written copy that used to sit on\nthis line went stale the moment a section was added.",
             "type": "string"
           }
         },
@@ -7547,7 +7547,9 @@
                 "groups",
                 "hooks",
                 "root",
-                "plugin_versions"
+                "plugin_versions",
+                "identity-providers",
+                "export"
               ],
               "type": "string"
             }
@@ -7581,7 +7583,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
+            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -7611,7 +7613,7 @@
                 }
               }
             },
-            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: another config section still references this definition by bare name (remove the reference first) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -7642,7 +7644,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
       }
     },
