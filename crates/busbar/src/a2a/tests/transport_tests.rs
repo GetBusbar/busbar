@@ -35,12 +35,12 @@ use rcgen::{CertificateParams, CertifiedKey, IsCa, Issuer, KeyPair};
 use super::*;
 use crate::a2a::fetch::{FetchPolicy, Resolver, Transport};
 
-const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+pub(crate) const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 /// The hostname every test uses. It is in the RFC 6761 `.test` TLD, so a machine running these
 /// tests cannot resolve it by accident and a lookup that "succeeded" can only have come from the
 /// resolver the test installed.
-const HOST: &str = "a2a.vendor.test";
+pub(crate) const HOST: &str = "a2a.vendor.test";
 
 // ══ THE RESOLVER THAT COUNTS ═════════════════════════════════════════════════════════════════════
 
@@ -171,11 +171,11 @@ type Requests = Arc<Mutex<Vec<String>>>;
 /// What one TLS connection told us about itself. Recorded even when the handshake FAILS, because a
 /// client that rejects the certificate has already sent its `ClientHello` — which is where the
 /// server name lives, and is precisely what these tests need to read.
-type ObservedSni = Arc<Mutex<Vec<Option<String>>>>;
+pub(crate) type ObservedSni = Arc<Mutex<Vec<Option<String>>>>;
 
 /// A real rustls server on an ephemeral loopback port. Records the SNI of every connection and, if
 /// the handshake completes, answers `body`.
-fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketAddr, ObservedSni) {
+pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketAddr, ObservedSni) {
     crate::tls::install_crypto_provider();
     let certs: Vec<rustls_pki_types::CertificateDer<'static>> = {
         use rustls_pki_types::pem::PemObject;
@@ -243,7 +243,7 @@ fn ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
     (ca_cert.pem(), leaf_cert.pem(), leaf_kp.serialize_pem())
 }
 
-fn url(scheme: &str, port: u16, path: &str) -> reqwest::Url {
+pub(crate) fn url(scheme: &str, port: u16, path: &str) -> reqwest::Url {
     reqwest::Url::parse(&format!("{scheme}://{HOST}:{port}{path}")).expect("a URL")
 }
 

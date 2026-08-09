@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE HONEST DEGRADE, MADE TRUE: `cert_spki` is a pin that is actually checked.
+//!
+//! An A2A card's signature is OPTIONAL, and the design's answer for a vendor that does not sign is
+//! that the pin degrades to a transport-layer authenticity binding — a real network-layer root and
+//! still not trust-on-first-use. Until this file existed that degrade was unavailable in the build:
+//! nothing read a peer certificate, so `cert_spki` was REFUSED rather than recorded as satisfied.
+//! Refusing was the right call — a fetch that succeeded is not a transport binding that was checked
+//! — but the consequence was that an unsigned vendor had no root at all.
+//!
+//! ## Every test here runs a REAL TLS HANDSHAKE
+//!
+//! Not a fixture that hands back a certificate. The certificate under test is one a real `rustls`
+//! server presented, over a real socket, to the real production client, and the pin is read off the
+//! response that handshake produced. That matters because the entire safety argument is an
+//! ORDERING: the certificate is observable only because the chain-and-name check already accepted
+//! it. A fixture could not fail that ordering and so could not test it — and
+//! [`no_path_in_this_crate_obtains_a_pin_by_switching_verification_off`] is the ratchet that keeps
+//! the ordering from being "fixed" by the obvious shortcut.
+//!
+//! ## The pin is compared against a value computed OUTSIDE busbar
+//!
+//! `rcgen` encodes the leaf key as a bare SubjectPublicKeyInfo, quite separately from encoding the
+//! certificate. Every expectation below is the SHA-256 of THAT, so a walk that read the wrong
+//! member of the certificate produces a stable, plausible value that these tests still reject.
+
+use base64::Engine as _;
+use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use super::transport_tests::{spawn_tls, url, HOST, LOOPBACK};
+use super::*;
+use crate::a2a::config::{AgentPinCfg, PinMechanism};
+use crate::a2a::fetch::FetchPolicy;
+use crate::a2a::pin::{approve_registration, ApproveError, CardPin};
+use crate::a2a::verify::{verify_document, VerifyRefusal};
+use crate::trust::{Approval, Observation, Sighting};
+
+/// A CA, a leaf it signed, and — computed independently of the certificate — the pin that leaf's
+/// key must produce.
+struct Endpoint {
+    ca_pem: String,
+    leaf_pem: String,
+    leaf_key_pem: String,
+    /// The expected `sha256/…` value, from `rcgen`'s own SPKI encoding of the leaf key. NOT from
+    /// anything in `crate::a2a::spki`.
+    expected_pin: String,
+}
+
+fn endpoint_for(sans: Vec<String>) -> Endpoint {
+    let ca_kp = KeyPair::generate().expect("ca key");
+    let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_cert = ca_params.self_signed(&ca_kp).expect("self-signed ca");
+
+    let issuer = Issuer::from_params(&ca_params, ca_kp);
+    let leaf_kp = KeyPair::generate().expect("leaf key");
+    let leaf_cert = CertificateParams::new(sans)
+        .expect("leaf params")
+        .signed_by(&leaf_kp, &issuer)
+        .expect("signed leaf");
+
+    Endpoint {
+        ca_pem: ca_cert.pem(),
+        leaf_pem: leaf_cert.pem(),
+        leaf_key_pem: leaf_kp.serialize_pem(),
+        // COMPUTED FROM RCGEN'S OWN SPKI ENCODING, never from `crate::a2a::spki`. This is the
+        // oracle; a test whose expectation came from the code under test would agree with a walk
+        // that read the wrong member.
+        expected_pin: format!(
+            "sha256/{}",
+            base64::engine::general_purpose::STANDARD
+                .encode(Sha256::digest(leaf_kp.subject_public_key_info()))
+        ),
+    }
+}
+
+fn an_unsigned_card() -> Value {
+    json!({
+        "protocolVersion": "0.3.0",
+        "name": "planner",
+        "skills": [{ "id": "plan", "name": "Plan", "description": "decompose a goal" }]
+    })
+}
+
+/// FETCH THE CARD OVER A REAL HANDSHAKE and hand back what the connection proved.
+///
+/// The two steps the driver performs for one hop, against the production transport: the guard's
+/// address, then the transport with it. Loopback is INTERNAL and the SSRF guard refuses it with no
+/// override, so the hop is driven at the transport seam exactly as `transport_tests.rs` does —
+/// adding a "test addresses are fine" escape hatch to the guard would be a hole in production to
+/// make a test pass.
+fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<String>) {
+    let (addr, _sni) = spawn_tls(
+        &endpoint.leaf_pem,
+        &endpoint.leaf_key_pem,
+        serde_json::to_string(card).expect("serialize"),
+    );
+    let policy = FetchPolicy::default();
+    let resp = ReqwestTransport::new(&policy)
+        .trusting_root(endpoint.ca_pem.as_bytes())
+        .get(
+            &url("https", addr.port(), "/.well-known/agent-card.json"),
+            LOOPBACK,
+        )
+        .expect("a certificate for the URL's hostname, from a trusted CA, must be accepted");
+    assert_eq!(resp.status, 200);
+    let document: Value = serde_json::from_slice(&resp.body).expect("a card");
+    (document, resp.peer_spki)
+}
+
+fn transport_pin_cfg(mechanism: PinMechanism, pin: &str) -> AgentPinCfg {
+    AgentPinCfg {
+        mechanism,
+        key: Some(pin.to_string()),
+        fingerprint: None,
+    }
+}
+
+// ══ THE PIN IS READ, AND IT IS THE RIGHT ONE ═════════════════════════════════════════════════════
+
+#[test]
+fn the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash() {
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let (_card, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
+    assert_eq!(
+        observed.as_deref(),
+        Some(endpoint.expected_pin.as_str()),
+        "the pin must be the SHA-256 of the leaf key's SubjectPublicKeyInfo, computed by rcgen \
+         rather than by us — a walk that read a neighbouring member would produce a stable, \
+         plausible and wrong value that only an independent oracle rejects"
+    );
+}
+
+// ══ A MISMATCHED CERTIFICATE IS REFUSED; THE PINNED ONE IS ACCEPTED ══════════════════════════════
+
+#[test]
+fn a_card_served_under_a_certificate_whose_spki_does_not_match_the_pin_is_refused() {
+    // The card is fine. The CA is trusted. The name is right. The KEY is somebody else's, which is
+    // precisely the case an unsigned card has no other way to notice.
+    let serving = endpoint_for(vec![HOST.to_string()]);
+    let elsewhere = endpoint_for(vec![HOST.to_string()]);
+    assert_ne!(serving.expected_pin, elsewhere.expected_pin);
+
+    let card = an_unsigned_card();
+    let (document, observed) = observed_pin_over_tls(&serving, &card);
+    let refusal = verify_document(
+        &transport_pin_cfg(PinMechanism::CertSpki, &elsewhere.expected_pin),
+        &document,
+        observed.as_deref(),
+    )
+    .expect_err("a certificate that is not the pinned one must be refused");
+
+    assert_eq!(
+        refusal,
+        VerifyRefusal::TransportPinMismatch {
+            mechanism: "cert_spki",
+            expected: elsewhere.expected_pin.clone(),
+            observed: serving.expected_pin.clone(),
+        }
+    );
+    // And the refusal NAMES BOTH VALUES, because an operator staring at it has to be able to tell
+    // a vendor's key rotation from a look-alike endpoint, and cannot if it says only "mismatch".
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains(&serving.expected_pin) && rendered.contains(&elsewhere.expected_pin),
+        "the refusal must show what was served and what was pinned: {rendered}"
+    );
+}
+
+#[test]
+fn a_card_served_under_the_pinned_certificate_is_accepted_and_pins_what_was_observed() {
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let card = an_unsigned_card();
+    let (document, observed) = observed_pin_over_tls(&endpoint, &card);
+
+    let verified = verify_document(
+        &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
+        &document,
+        observed.as_deref(),
+    )
+    .expect("the pinned certificate must be accepted");
+
+    assert_eq!(
+        verified.pin,
+        CardPin::CertSpki {
+            spki: endpoint.expected_pin.clone(),
+            card_fingerprint: crate::a2a::card::fingerprint(&document).expect("fingerprint"),
+        },
+        "the recorded pin carries BOTH halves: the identity the network established and the card \
+         that identity served"
+    );
+    assert!(verified.observation.capabilities.contains_key("plan"));
+}
+
+#[test]
+fn a_transport_pinned_registration_whose_hop_produced_no_certificate_is_refused() {
+    // "We could not look" and "it matched" are the two answers a pin exists to keep apart. A
+    // plaintext hop produces no certificate, and that is a refusal rather than a pass — otherwise
+    // an upstream downgrades its own pin by serving the card over `http://`.
+    let refusal = verify_document(
+        &transport_pin_cfg(PinMechanism::CertSpki, "sha256/AAAA"),
+        &an_unsigned_card(),
+        None,
+    )
+    .expect_err("no observed certificate must refuse");
+    assert_eq!(refusal, VerifyRefusal::TransportPinNotObserved("cert_spki"));
+}
+
+#[test]
+fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_degraded() {
+    let refusal = verify_document(
+        &AgentPinCfg {
+            mechanism: PinMechanism::CertSpki,
+            key: None,
+            fingerprint: None,
+        },
+        &an_unsigned_card(),
+        Some("sha256/anything"),
+    )
+    .expect_err("a mechanism with nothing to compare against has no root");
+    assert_eq!(refusal, VerifyRefusal::NoTransportPin("cert_spki"));
+}
+
+// ══ THE HONEST DEGRADE, END TO END ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn an_unsigned_card_with_a_matching_cert_spki_pin_is_a_root_an_operator_can_approve() {
+    // THE PROPERTY THE DESIGN CLAIMS AND THE BUILD DID NOT HAVE. An unsigned card is not
+    // un-rootable: the certificate its endpoint proved possession of is a real network-layer root,
+    // supplied out of band by the operator exactly as an issuer key is.
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let card = an_unsigned_card();
+    assert!(
+        card.get("signatures").is_none(),
+        "this test is about an UNSIGNED card; a signed one would prove nothing about the degrade"
+    );
+
+    let (document, observed) = observed_pin_over_tls(&endpoint, &card);
+    let verified = verify_document(
+        &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
+        &document,
+        observed.as_deref(),
+    )
+    .expect("an unsigned card bound at the transport layer must verify");
+
+    assert!(
+        verified.pin.is_a_root(),
+        "a transport binding is an authenticity root, and the approval gate asks exactly that"
+    );
+
+    let mut approval: Approval<CardPin> = Approval::registered();
+    let sighting = Sighting::Seen(Observation {
+        pin: Some(verified.pin.clone()),
+        capabilities: verified.observation.capabilities.clone(),
+    });
+    approve_registration(&mut approval, &sighting, None)
+        .expect("a transport-bound unsigned card is approvable, which is what the degrade MEANS");
+    assert!(approval.serves(
+        "plan",
+        &crate::a2a::card::skill_digests(&document).expect("digests")["plan"]
+    ));
+}
+
+#[test]
+fn an_unsigned_card_with_no_pin_at_all_is_still_refused() {
+    // THE OTHER HALF, and it must not move. The degrade is to a transport root, never to nothing:
+    // an `unpinned` registration stays capturable and stays un-approvable, whatever certificate the
+    // endpoint happened to present.
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
+    assert!(
+        observed.is_some(),
+        "the endpoint DID present a certificate; the refusal below must therefore be about the \
+         absent PIN and not about an absent certificate"
+    );
+
+    let verified = verify_document(
+        &AgentPinCfg {
+            mechanism: PinMechanism::Unpinned,
+            key: None,
+            fingerprint: None,
+        },
+        &document,
+        observed.as_deref(),
+    )
+    .expect("an unpinned registration is capturable");
+    assert_eq!(verified.pin, CardPin::Unpinned);
+
+    let mut approval: Approval<CardPin> = Approval::registered();
+    let sighting = Sighting::Seen(Observation {
+        pin: Some(CardPin::Unpinned),
+        capabilities: verified.observation.capabilities.clone(),
+    });
+    assert_eq!(
+        approve_registration(&mut approval, &sighting, None),
+        Err(ApproveError::Unpinned),
+        "a certificate that nobody pinned is not a root; observing one must not become one"
+    );
+}
+
+// ══ MTLS: THE PEER HALF IS CHECKED, THE MUTUAL HALF IS NOT PRESENT ═══════════════════════════════
+
+#[test]
+fn mtls_refuses_for_the_missing_client_certificate_and_not_for_the_missing_peer_read() {
+    // The reason moved and that is the whole assertion. `mtls` used to refuse because busbar read
+    // no peer certificate; it now reads one, and refuses because busbar PRESENTS none. An operator
+    // who chose `mtls` over `cert_spki` chose it for the mutual half, and being told the mechanism
+    // is unimplemented when the peer is also the wrong one would send them to configure a
+    // certificate for a look-alike endpoint.
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
+
+    assert_eq!(
+        verify_document(
+            &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+            &document,
+            observed.as_deref(),
+        )
+        .expect_err("mtls is not satisfied by a one-way handshake"),
+        VerifyRefusal::MutualTlsNotPresented
+    );
+
+    // AND THE PEER HALF IS CHECKED FIRST. A mismatched endpoint is reported as a mismatched
+    // endpoint, never collapsed into "mtls is unavailable".
+    let elsewhere = endpoint_for(vec![HOST.to_string()]);
+    assert!(matches!(
+        verify_document(
+            &transport_pin_cfg(PinMechanism::Mtls, &elsewhere.expected_pin),
+            &document,
+            observed.as_deref(),
+        )
+        .expect_err("a look-alike endpoint must be named as one"),
+        VerifyRefusal::TransportPinMismatch { .. }
+    ));
+}
+
+// ══ THE ORDERING THAT MAKES ALL OF THIS SAFE ═════════════════════════════════════════════════════
+
+#[test]
+fn an_untrusted_certificate_produces_no_card_and_therefore_no_pin() {
+    // THE SAFETY ARGUMENT, EXECUTED. The pin is readable only off a response, and a handshake the
+    // chain check refused produces no response. So there is no arrangement of certificates under
+    // which busbar records a transport pin for a connection it did not verify.
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let (addr, _sni) = spawn_tls(
+        &endpoint.leaf_pem,
+        &endpoint.leaf_key_pem,
+        r#"{"name":"planner"}"#.to_string(),
+    );
+    let policy = FetchPolicy::default();
+    // The same server, the same certificate, the same socket — and its CA is NOT trusted.
+    let err = ReqwestTransport::new(&policy)
+        .get(&url("https", addr.port(), "/card"), LOOPBACK)
+        .expect_err("an untrusted certificate must not produce a response");
+    assert!(
+        err.contains("invalid peer certificate"),
+        "the refusal must be the chain check: {err}"
+    );
+}
+
+#[test]
+fn no_path_in_this_crate_obtains_a_pin_by_switching_verification_off() {
+    // THE RATCHET. The obvious way to make a certificate readable in an awkward test environment is
+    // to stop verifying it, and a pin obtained that way is worse than no pin: it reads to an
+    // operator as a network-layer root while accepting any certificate on the path. This scan is
+    // over the WHOLE crate rather than this plane, because the shortcut is equally available to the
+    // module next door and would be equally fatal there.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = 0usize;
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).expect("readable directory") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            scanned += 1;
+            // COMMENTS STRIPPED FIRST. The prose that explains why this shortcut is unavailable has
+            // to be allowed to NAME it, or the only way to document the decision is to not document
+            // it. This scan is about what the compiler sees.
+            let source: String = std::fs::read_to_string(&path)
+                .expect("readable source")
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // SPELLED IN HALVES so the scan does not trip over its own needle list. A scan that had
+            // to exclude the file it lives in would be a scan with an exception, and an exception is
+            // where the next one goes.
+            for needle in [
+                concat!("danger_", "accept_invalid_certs"),
+                concat!("danger_", "accept_invalid_hostnames"),
+                concat!("danger", "ous()"),
+            ] {
+                assert!(
+                    !source.contains(needle),
+                    "{} names `{needle}`. The peer certificate is read off a handshake that ALREADY \
+                     verified; a pin obtained by switching verification off is strictly worse than \
+                     no pin at all.",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        scanned >= 100,
+        "the scan read {scanned} source file(s), which cannot be right: a scan that discovers \
+         nothing passes vacuously, which is worse than no scan at all"
+    );
+}

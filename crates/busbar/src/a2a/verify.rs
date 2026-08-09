@@ -61,13 +61,34 @@ pub(crate) enum VerifyRefusal {
     /// registration reaches this code and key material that is never verified against reads to an
     /// operator as protection that does not exist.
     UnpinnedCarriesKey,
-    /// A transport-layer mechanism (`cert_spki`, `mtls`) whose binding this build does not verify.
+    /// A transport-pinned mechanism with no `pin.key:` SPKI to compare against. The sibling of
+    /// [`VerifyRefusal::NoIssuerKey`], for the same reason: a registration that names a root and
+    /// carries nothing to check it with has no root.
+    NoTransportPin(&'static str),
+    /// A transport-pinned mechanism whose fetch produced NO peer certificate — a plaintext hop, or
+    /// a certificate the peer served that yielded no SubjectPublicKeyInfo.
     ///
-    /// REFUSED, NOT DEGRADED, and this is the honest arm of this module: the pin names the peer
-    /// certificate's SPKI, and nothing in busbar's card fetch reads a peer certificate today.
-    /// Treating the mechanism as satisfied because the fetch succeeded would be recording "pinned
-    /// at the transport layer" about a connection nobody checked the transport of.
-    TransportPinNotVerified(&'static str),
+    /// REFUSED, NOT DEGRADED. "We could not look" and "it matched" are the two answers a pin exists
+    /// to keep apart, and a fetch that succeeded is not a transport binding that was checked.
+    TransportPinNotObserved(&'static str),
+    /// The peer certificate's SPKI is NOT the one the operator pinned. The transport-layer twin of
+    /// [`JwsError::NoSignatureVerified`]: the endpoint answered, and it is not the endpoint the
+    /// operator supplied a root for.
+    TransportPinMismatch {
+        mechanism: &'static str,
+        expected: String,
+        observed: String,
+    },
+    /// `pin.mechanism: mtls` — busbar has no client certificate to present, so the connection the
+    /// card arrived over was authenticated in ONE direction.
+    ///
+    /// The peer half of an `mtls` pin is checked exactly as `cert_spki`'s is; what is missing is
+    /// the MUTUAL half. Recording `mtls` as satisfied over a one-way handshake would put "busbar
+    /// proved who it was to this endpoint" into the store about a connection where it did not, and
+    /// an operator who chose `mtls` over `cert_spki` chose it for precisely that half. There is no
+    /// grammar under `agents:` naming busbar's client certificate, so the refusal names the missing
+    /// thing rather than the mechanism.
+    MutualTlsNotPresented,
 }
 
 impl std::fmt::Display for VerifyRefusal {
@@ -87,11 +108,35 @@ impl std::fmt::Display for VerifyRefusal {
                  authenticity root; key material that is never verified against reads to an \
                  operator as protection that does not exist"
             ),
-            VerifyRefusal::TransportPinNotVerified(m) => write!(
+            VerifyRefusal::NoTransportPin(m) => write!(
                 f,
-                "`pin.mechanism: {m}` binds the CARD ENDPOINT's certificate, and this build does \
-                 not read a peer certificate on the card fetch. Refused rather than recorded as \
-                 satisfied: a fetch that succeeded is not a transport binding that was checked."
+                "`pin.mechanism: {m}` carries no `pin.key:`; it binds the card endpoint's \
+                 certificate and there is no SubjectPublicKeyInfo hash to bind it to"
+            ),
+            VerifyRefusal::TransportPinNotObserved(m) => write!(
+                f,
+                "`pin.mechanism: {m}` binds the CARD ENDPOINT's certificate, and this fetch \
+                 observed none — the hop was plaintext, or the peer's certificate yielded no \
+                 subject-public-key-info. Refused rather than recorded as satisfied: a fetch that \
+                 succeeded is not a transport binding that was checked."
+            ),
+            VerifyRefusal::TransportPinMismatch {
+                mechanism,
+                expected,
+                observed,
+            } => write!(
+                f,
+                "`pin.mechanism: {mechanism}`: the card endpoint served a certificate whose \
+                 subject-public-key-info is `{observed}`, and the operator pinned `{expected}`. \
+                 The endpoint answered and it is not the endpoint the operator supplied a root for."
+            ),
+            VerifyRefusal::MutualTlsNotPresented => write!(
+                f,
+                "`pin.mechanism: mtls` requires busbar to present a client certificate, and the \
+                 `agents:` grammar names none, so the card arrived over a connection authenticated \
+                 in one direction only. The peer half is checked exactly as `cert_spki`'s is; \
+                 refused because an operator who chose `mtls` over `cert_spki` chose it for the \
+                 mutual half. Use `cert_spki` for a one-way binding."
             ),
         }
     }
@@ -111,9 +156,16 @@ pub(crate) struct VerifiedCard {
 /// This is where the out-of-band trust root stops being prose. The operator's key is the root; the
 /// card's own claims about
 /// who signed it are not consulted for anything except agreement.
+///
+/// `observed_spki` is the transport-layer identity of the hop that SERVED this document — the
+/// certificate the endpoint proved it held the key for, read off a handshake that had already
+/// verified ([`super::transport`]). It is the root for the mechanisms whose root the network is,
+/// and it is deliberately a separate argument rather than something read out of the document: a
+/// card that named its own certificate would be naming its own trust root.
 pub(crate) fn verify_document(
     pin_cfg: &AgentPinCfg,
     document: &Value,
+    observed_spki: Option<&str>,
 ) -> Result<VerifiedCard, VerifyRefusal> {
     let key = pin_cfg
         .key
@@ -131,8 +183,28 @@ pub(crate) fn verify_document(
                 super::pin::pin_a_signed_card(document, key).map_err(VerifyRefusal::Jws)?;
             pin
         }
-        PinMechanism::CertSpki => return Err(VerifyRefusal::TransportPinNotVerified("cert_spki")),
-        PinMechanism::Mtls => return Err(VerifyRefusal::TransportPinNotVerified("mtls")),
+        // THE HONEST DEGRADE, implemented. An unsigned card has no JWS root; what it has is the
+        // certificate its endpoint proved possession of, and that is a real network-layer root and
+        // still not trust-on-first-use, because the operator supplied the SPKI out of band exactly
+        // as they supply an issuer key.
+        PinMechanism::CertSpki => {
+            let expected = key.ok_or(VerifyRefusal::NoTransportPin("cert_spki"))?;
+            let spki = transport_pin("cert_spki", expected, observed_spki)?;
+            CardPin::CertSpki {
+                spki,
+                card_fingerprint: card::fingerprint(document).map_err(VerifyRefusal::Card)?,
+            }
+        }
+        // The PEER half of `mtls` is the same check, and it is performed FIRST so that a mismatched
+        // endpoint is reported as a mismatched endpoint rather than as busbar's missing client
+        // certificate. Only once the peer is the pinned one does the missing mutual half become the
+        // reason. Ordering the two the other way round would tell an operator staring at a
+        // look-alike endpoint to go and configure a certificate.
+        PinMechanism::Mtls => {
+            let expected = key.ok_or(VerifyRefusal::NoTransportPin("mtls"))?;
+            transport_pin("mtls", expected, observed_spki)?;
+            return Err(VerifyRefusal::MutualTlsNotPresented);
+        }
         PinMechanism::Unpinned => {
             // ON THE WIRE, not only at parse. A registration does not have to have come from a
             // config file to reach here.
@@ -150,6 +222,34 @@ pub(crate) fn verify_document(
         observation,
         document: document.clone(),
     })
+}
+
+/// THE TRANSPORT-LAYER ROOT, checked. Returns the OBSERVED value, never the configured one.
+///
+/// Returning what was observed rather than echoing the operator's string is the point: the pin that
+/// gets recorded is a fact about the connection, and a function that returned its own argument
+/// would produce an identical-looking pin whether or not the comparison had happened at all.
+///
+/// The comparison is on the trimmed strings and is CASE-SENSITIVE. Base64 is case-significant, so a
+/// case-insensitive compare would accept a value that is not the operator's key; and an operator who
+/// has pasted a pin with the wrong case has pasted the wrong pin.
+fn transport_pin(
+    mechanism: &'static str,
+    expected: &str,
+    observed: Option<&str>,
+) -> Result<String, VerifyRefusal> {
+    let observed = observed
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(VerifyRefusal::TransportPinNotObserved(mechanism))?;
+    if observed != expected {
+        return Err(VerifyRefusal::TransportPinMismatch {
+            mechanism,
+            expected: expected.to_string(),
+            observed: observed.to_string(),
+        });
+    }
+    Ok(observed.to_string())
 }
 
 /// What one pass of the re-verification job did, so a caller can audit it rather than infer it.
@@ -258,7 +358,12 @@ fn fetch_and_verify(
     let mut last: Option<FetchRefusal> = None;
     for url in &urls {
         match fetch::fetch_card(url, resolver, transport, policy) {
-            Ok(fetched) => return verify_document(pin_cfg, &fetched.document),
+            // The certificate of the hop that SERVED the card travels with the card. Re-fetching it
+            // separately would ask the host a second question an attacker gets to answer
+            // differently, which is the same hazard the single name resolution exists to remove.
+            Ok(fetched) => {
+                return verify_document(pin_cfg, &fetched.document, fetched.peer_spki.as_deref())
+            }
             Err(e) => last = Some(e),
         }
     }
@@ -291,7 +396,7 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
     /// `agent_id` is checked against the registration this probe was built for rather than used to
     /// look anything up. A probe answering about an agent it was not built for would be a
     /// cross-registration confusion in the one place where the answer becomes an approval.
-    fn fetch_card(&self, agent_id: &str) -> Result<Value, String> {
+    fn fetch_card(&self, agent_id: &str) -> Result<super::verbs::SightedCard, String> {
         if agent_id != self.registration.agent_id {
             return Err(format!(
                 "this probe was built for agent `{}` and was asked about `{agent_id}`",
@@ -303,7 +408,12 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
         let mut last = String::new();
         for url in &urls {
             match fetch::fetch_card(url, self.resolver, self.transport, self.policy) {
-                Ok(fetched) => return Ok(fetched.document),
+                Ok(fetched) => {
+                    return Ok(super::verbs::SightedCard {
+                        document: fetched.document,
+                        peer_spki: fetched.peer_spki,
+                    })
+                }
                 Err(e) => last = e.to_string(),
             }
         }
@@ -312,8 +422,8 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
 }
 
 impl super::verbs::CardObserver for RegistrationProbe<'_> {
-    fn observe(&self, card: &Value) -> Result<Observation<CardPin>, String> {
-        verify_document(self.pin_cfg, card)
+    fn observe(&self, card: &super::verbs::SightedCard) -> Result<Observation<CardPin>, String> {
+        verify_document(self.pin_cfg, &card.document, card.peer_spki.as_deref())
             .map(|v| v.observation)
             .map_err(|e| e.to_string())
     }

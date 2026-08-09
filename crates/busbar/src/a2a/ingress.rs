@@ -237,11 +237,16 @@ pub(crate) async fn card(
             .into_response();
     };
 
+    // BUSBAR SIGNS WHAT BUSBAR SERVES. The vendor's signature cannot survive the rewrite, so the
+    // served card carries busbar's own — which is what gives an external caller something to pin
+    // busbar by.
+    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
     match super::serve::rewrite_card(
         &cached,
         &admitted.dispatch.backend_url,
         public_url,
         &admitted.dispatch.agent_id,
+        signer.as_ref(),
     ) {
         Ok(card) => (axum::http::StatusCode::OK, axum::Json(card)).into_response(),
         Err(e) => {

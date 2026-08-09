@@ -62,6 +62,8 @@ pub(crate) mod registry;
 pub(crate) mod reverify;
 pub(crate) mod scheduler;
 pub(crate) mod serve;
+pub(crate) mod sign;
+pub(crate) mod spki;
 pub(crate) mod task;
 pub(crate) mod taskstore;
 pub(crate) mod transport;

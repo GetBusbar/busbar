@@ -75,7 +75,7 @@ fn the_endpoint_a_caller_sees_is_busbars_and_names_the_agent() {
 
 #[test]
 fn every_endpoint_member_is_rewritten_through_busbar() {
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     let endpoint = "https://gateway.acme.example/a2a/agents/planner";
 
     assert_eq!(served["url"], endpoint, "the pre-v0.3 top-level `url` too");
@@ -99,7 +99,7 @@ fn every_endpoint_member_is_rewritten_through_busbar() {
 fn the_backend_authority_appears_nowhere_in_the_served_card() {
     // THE ASSERTION THAT MATTERS. Not "the fields I remembered are rewritten" — every string, at
     // every depth, including `x-vendor-extensions.mirrors[0]`, which no modelled field covers.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     let mut strings = Vec::new();
     every_string(&served, &mut strings);
 
@@ -120,7 +120,7 @@ fn the_vendors_signature_is_removed_rather_than_carried_over_a_document_it_no_lo
     // busbar rewrote the document, so the vendor's signature over it cannot verify. Publishing a
     // signature that fails is worse than publishing none: a client that checks rejects busbar's
     // card, and a client that does not check is shown a credential-shaped member meaning nothing.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     assert!(
         served.get("signatures").is_none(),
         "a rewritten card must not carry the signature of the document it used to be"
@@ -132,7 +132,7 @@ fn the_backends_security_schemes_are_replaced_by_busbars_own_inbound_credential(
     // The backend's schemes say how to authenticate TO THE BACKEND, which no external caller ever
     // reaches. Publishing them tells a caller to present something busbar does not accept, and
     // leaks the backend's auth posture on the way.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     let schemes = served["securitySchemes"].as_object().expect("schemes");
 
     assert_eq!(
@@ -165,7 +165,7 @@ fn everything_that_is_not_an_endpoint_or_a_credential_survives_verbatim() {
     // The rewrite is narrow on purpose. A card that arrives with members busbar does not model must
     // still be servable, and dropping them would make busbar's card a lossy projection of the
     // vendor's.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     assert_eq!(served["name"], "planner");
     assert_eq!(served["description"], "decomposes goals");
     assert_eq!(served["version"], "2.1.0");
@@ -188,7 +188,7 @@ fn the_backend_card_itself_is_never_mutated() {
     // an operator approved.
     let original = backend_card();
     let before = serde_json::to_string(&original).expect("serialize");
-    let _ = rewrite_card(&original, BACKEND, PUBLIC, "planner").expect("rewrite");
+    let _ = rewrite_card(&original, BACKEND, PUBLIC, "planner", None).expect("rewrite");
     assert_eq!(
         serde_json::to_string(&original).expect("serialize"),
         before,
@@ -198,7 +198,7 @@ fn the_backend_card_itself_is_never_mutated() {
 
 #[test]
 fn a_misconfigured_public_url_refuses_rather_than_serving_the_backends_own_endpoints() {
-    let err = rewrite_card(&backend_card(), BACKEND, "not a url", "planner")
+    let err = rewrite_card(&backend_card(), BACKEND, "not a url", "planner", None)
         .expect_err("a bad public URL must refuse");
     assert_eq!(err, ServeError::BadPublicUrl("not a url".to_string()));
     assert!(
@@ -212,7 +212,7 @@ fn a_misconfigured_public_url_refuses_rather_than_serving_the_backends_own_endpo
 fn a_document_that_is_not_an_object_is_not_a_card() {
     for v in [json!([]), json!("card"), json!(null), json!(7)] {
         assert_eq!(
-            rewrite_card(&v, BACKEND, PUBLIC, "planner").expect_err("not a card"),
+            rewrite_card(&v, BACKEND, PUBLIC, "planner", None).expect_err("not a card"),
             ServeError::Card(CardError::NotAnObject)
         );
     }
@@ -222,7 +222,7 @@ fn a_document_that_is_not_an_object_is_not_a_card() {
 fn an_unmodelled_member_carrying_the_backend_endpoint_is_rewritten_not_missed() {
     // THE CASE THAT CAUGHT THE FIRST IMPLEMENTATION. `x-vendor-extensions.mirrors[0]` is not a
     // member the specification defines, so a rewrite over the modelled fields published it intact.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     let endpoint = "https://gateway.acme.example/a2a/agents/planner";
     assert_eq!(served["x-vendor-extensions"]["adminConsole"], endpoint);
     assert_eq!(served["x-vendor-extensions"]["mirrors"][0], endpoint);
@@ -237,7 +237,8 @@ fn a_backend_mention_the_sweep_cannot_rewrite_refuses_the_card_and_names_where()
         "description".to_string(),
         Value::String("mirrors internal-planner.corp.example for the EU region".to_string()),
     );
-    let err = rewrite_card(&card, BACKEND, PUBLIC, "planner").expect_err("a leak must refuse");
+    let err =
+        rewrite_card(&card, BACKEND, PUBLIC, "planner", None).expect_err("a leak must refuse");
     match err {
         ServeError::BackendLeak {
             ref agent_id,
@@ -262,7 +263,7 @@ fn a_string_that_merely_mentions_a_different_host_is_left_alone() {
     // Only URL-shaped strings whose host IS the backend's are touched. A description mentioning the
     // vendor's public site is not an endpoint, and rewriting it would make busbar's card say
     // something the vendor did not.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner").expect("rewrite");
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
     assert_eq!(served["provider"]["url"], "https://acme.example");
     assert_eq!(served["description"], "decomposes goals");
 }

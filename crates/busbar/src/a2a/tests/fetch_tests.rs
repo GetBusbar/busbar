@@ -112,6 +112,7 @@ impl ScriptedTransport {
                 status: 200,
                 location: None,
                 body: body.as_bytes().to_vec(),
+                peer_spki: None,
             },
         );
         self
@@ -124,6 +125,7 @@ impl ScriptedTransport {
                 status: 302,
                 location: Some(to.to_string()),
                 body: Vec::new(),
+                peer_spki: None,
             },
         );
         self
@@ -136,6 +138,7 @@ impl ScriptedTransport {
                 status,
                 location: None,
                 body: Vec::new(),
+                peer_spki: None,
             },
         );
         self

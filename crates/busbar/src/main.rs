@@ -1099,6 +1099,27 @@ async fn run() {
             tick_secs = crate::a2a::scheduler::REVERIFY_TICK.as_secs(),
             "a2a: re-verification job started"
         );
+        // PUBLISH BUSBAR'S AGENT-CARD ISSUER KEY, once, at the one moment an operator is watching.
+        //
+        // busbar signs the cards it serves so external callers have something to pin it BY, and a
+        // pin is only a root if the pinning party got the key OUT OF BAND — which means a human has
+        // to be able to read it off this deployment and hand it over. It is a PUBLIC key, so a log
+        // line is the right place for it; the secret it is derived from never appears here or
+        // anywhere else. Logged beside the plane's start rather than at key resolution, because
+        // this value only means anything where an A2A plane is actually serving cards.
+        if let Some(signer) = app_handle
+            .load()
+            .governance
+            .as_ref()
+            .and_then(|g| g.a2a_card_signer())
+        {
+            tracing::info!(
+                kid = signer.kid(),
+                issuer_key = signer.issuer_spki_base64(),
+                "a2a: agent cards served by this deployment are signed with this key; give it to \
+                 callers out of band so they can pin busbar"
+            );
+        }
         // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
         // lifetime and exits its own loop on the shutdown broadcast.
         std::mem::drop(crate::a2a::scheduler::spawn_reverifier(
