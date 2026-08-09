@@ -636,6 +636,10 @@ jobs:
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       assets: ${{ steps.emit.outputs.assets }}
+      # The bare list of target triples, for the set-equality job. It is emitted HERE, from the same
+      # parse as the build matrix, so "the set that was supposed to be produced" and "the set that
+      # was supposed to be verified" are literally the same computation and cannot drift apart.
+      targets: ${{ steps.emit.outputs.targets }}
     steps:
       - uses: actions/checkout@v7
       - name: Emit the target matrix and the asset names it must produce
@@ -648,143 +652,71 @@ jobs:
           import json, os
           spec = json.load(open(".github/release-targets.json"))
           tag = os.environ["TAG"]
-          inc = [{k: t[k] for k in ("target", "os", "pgo")} for t in spec["targets"]]
+          # EVERY per-target difference travels in the matrix as a PARAMETER. The build workflow has
+          # no `if:` and no second path, so anything a target needs has to arrive this way or not at
+          # all -- that is what makes "no way for 1 to be different" a property of the graph rather
+          # than a promise in a comment.
+          fields = ("target", "runner", "pgo", "archive", "plugin_asset")
+          inc = [{k: t[k] for k in fields} for t in spec["targets"]]
           assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in spec["targets"]]
           assets += [a.replace("{tag}", tag) for a in spec["metadata_assets"]]
+          # A FLOOR, BECAUSE A LOOP OVER A DISCOVERED SET WITH NO FLOOR PASSES WHEN THE SET IS EMPTY.
+          # Both the build matrix and the verify matrix are enumerated from this output; a truncated
+          # or mis-parsed manifest would otherwise build nothing, verify nothing, and report green
+          # all the way to a published release with no assets on it.
+          if len(inc) < 5:
+              raise SystemExit(
+                  "release-targets.json declares %d targets; busbar ships 5. Refusing to run a "
+                  "build matrix and a verify matrix over a set this small: an empty expectation "
+                  "list passes for a release that published nothing." % len(inc))
           print("matrix=" + json.dumps({"include": inc}))
+          print("targets=" + json.dumps(sorted(t["target"] for t in spec["targets"])))
           print("assets=" + json.dumps(assets))
           PY
           cat "$GITHUB_OUTPUT"
 
+  # -- THE BUILD: ONE PIPELINE, ONE STEP, FIVE TARGETS ---------------------------------------------
+  #
+  # This job used to be the build. It had TWO build steps -- scripts/pgo-build.sh behind
+  # `if: matrix.pgo` for the host-native targets, upload-rust-binary-action behind `if: !matrix.pgo`
+  # for the cross targets -- two packaging steps and two upload steps, each pair gated on the same
+  # flag. Both build steps carried `BUSBAR_RELEASE_PUBKEY` in their own `env:` block. Both were
+  # green. And busbar-aarch64-unknown-linux-gnu shipped with no embedded release key in 1.5.1, 1.5.2
+  # and 1.5.3, so on ARM Linux every correctly-signed first-party plugin was refused.
+  #
+  # The key was never the point: the org variable was set the whole time. TWO BUILD PATHS PRODUCING
+  # ONE RELEASE is the point. A property established on one path is unproven on the other, silently
+  # and permanently, and no amount of care on either path fixes that.
+  #
+  # Owner, 2026-08-08: "should just be 1 build pipeline that takes what its building: arm, windows,
+  # mac, but it does the same thing for each no way for 1 to be different".
+  #
+  # So the build is now .github/workflows/build-artifact.yml: one reusable workflow that builds ONE
+  # artifact, with no `if:` on any step. Everything a target needs is a matrix VALUE passed in as an
+  # input -- runner label, whether PGO applies, archive extension -- read from
+  # .github/release-targets.json by the `targets` job above, which is the same single source of
+  # truth that computes the asset-name list `verify-assets` enforces.
+  #
+  # `fail-fast: false` is deliberate and is why `verify-assets` below runs on `!cancelled()`: one
+  # target failing must not cancel the other four, because the verifier's job is to NAME the
+  # platforms that are missing, and it cannot name what was never attempted.
   upload-assets:
+    name: build
     needs: [plan, draft, targets]
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
-    env:
-      TAG: ${{ needs.plan.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v7
-
-      # ── PGO path (host-native targets): the release binaries users download ARE PGO-optimized ──
-      # scripts/pgo-build.sh runs the three-phase PGO build (instrumented -> on-host training ->
-      # optimized) exactly as docker.yml does, FAIL-CLOSED: if any PGO phase fails the script exits
-      # non-zero and the job FAILS (it never falls back to a plain build). This closes the
-      # "PGO mandatory for release" drift where the GitHub-Release binaries were plain --release.
-      - name: Build busbar (PGO, required/fail-closed)
-        if: ${{ matrix.pgo }}
-        env:
-          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
-          PGO_TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          scripts/pgo-build.sh
-          file "target/pgo/${{ matrix.target }}/release/busbar"
-
-      # POSITIVE PGO GATE: pgo-build.sh writes this marker ONLY after a non-empty merged profile fed
-      # a successful -Cprofile-use build. Asserting it here (not just the script exit code) means a
-      # release cannot ship a non-PGO host binary and still pass. (Mirrors docker.yml's gate.)
-      - name: Verify PGO was applied (marker gate)
-        if: ${{ matrix.pgo }}
-        run: |
-          set -euo pipefail
-          marker="target/pgo/${{ matrix.target }}/release/busbar.pgo-verified"
-          if [ ! -s "$marker" ]; then
-            echo "::error::PGO proof marker missing or empty at $marker - refusing to ship a non-PGO binary" >&2
-            exit 1
-          fi
-          echo "--- PGO proof marker ---"
-          cat "$marker"
-          grep -q '^pgo-verified=1$' "$marker" || { echo "::error::marker not marked verified" >&2; exit 1; }
-          bytes="$(grep '^profile_bytes=' "$marker" | cut -d= -f2)"
-          raw="$(grep '^profraw_count=' "$marker" | cut -d= -f2)"
-          if [ -z "$bytes" ] || [ "$bytes" -le 0 ] 2>/dev/null; then
-            echo "::error::merged profile was empty (profile_bytes=$bytes) - build was not PGO-optimized" >&2
-            exit 1
-          fi
-          if [ -z "$raw" ] || [ "$raw" -le 0 ] 2>/dev/null; then
-            echo "::error::no .profraw files fed the profile (profraw_count=$raw) - build was not PGO-optimized" >&2
-            exit 1
-          fi
-          echo "PGO verified: ${bytes} bytes of merged profile from ${raw} .profraw file(s)."
-
-      # Archive the PGO binary into the SAME `busbar-<target>.tar.gz` name the plain path produces and
-      # upload it to the DRAFT, so the attestation glob below covers it identically.
-      - name: Package and upload busbar (PGO)
-        if: ${{ matrix.pgo }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          bin="target/pgo/${{ matrix.target }}/release/busbar"
-          archive="busbar-${{ matrix.target }}.tar.gz"
-          tar -czf "$archive" -C "$(dirname "$bin")" busbar
-          gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
-
-      # ── Plain path (cross / windows targets that cannot self-train for PGO) ──
-      # Builds --release for the target (installing the toolchain + cross-linker as
-      # needed) and tarballs the `busbar` binary.
-      #
-      # `dry-run: true` IS PART OF THE RESTRUCTURE, NOT A NICETY. The action's upload path resolves
-      # the release from the git ref, and under this design there IS no tag yet -- the whole point.
-      # So the action is used for what only it does well (installing cross toolchains and producing
-      # the right archive shape per platform, .tar.gz on unix and .zip on windows) and the upload is
-      # done explicitly below against the DRAFT, by tag, exactly as the PGO path does. One upload
-      # mechanism, one place that knows where assets go.
-      #
-      # BUSBAR_RELEASE_PUBKEY (repository VARIABLE, not a secret — it is the PUBLIC half) is
-      # embedded into the binary at build time (plugin-sign's option_env!): busbar-signed
-      # plugins then verify as first-party with zero configuration. The matching PRIVATE half
-      # is the BUSBAR_SIGN_KEY secret used by each standalone plugin repo's own release workflow.
-      # TODO(release-keys): the release orchestrator generates the real keypair separately
-      # (`busbar-plugin-pack keygen`) and provisions BOTH: the variable (public) + the secret
-      # (private). Until provisioned, release binaries embed no key and first-party plugin
-      # verification is unavailable (plugins still load via the third-party/unsigned paths).
-      - name: Build busbar (no upload, there is no tag yet)
-        if: ${{ !matrix.pgo }}
-        uses: taiki-e/upload-rust-binary-action@v1
-        env:
-          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
-        with:
-          bin: busbar
-          target: ${{ matrix.target }}
-          archive: busbar-$target
-          ref: refs/tags/${{ needs.plan.outputs.tag }}
-          dry-run: true
-          dry-run-intended: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload busbar to the draft
-        if: ${{ !matrix.pgo }}
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The action leaves the archive in the workspace under the `archive:` name with whichever
-          # extension that platform produces. Glob for it rather than assuming, and REFUSE to
-          # silently upload nothing -- an empty glob here is how a platform goes missing.
-          shopt -s nullglob
-          files=(busbar-${{ matrix.target }}.tar.gz busbar-${{ matrix.target }}.zip)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::no archive was produced for ${{ matrix.target }}. That platform would be MISSING from the release, which is the 1.5.3 defect verbatim." >&2
-            exit 1
-          fi
-          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-
-      # Generate a keyless (Sigstore/OIDC) build-provenance attestation binding THIS
-      # archive's digest to this workflow run + commit. A user verifies the download with
-      #   gh attestation verify <archive> --repo ${{ github.repository }}
-      # so a swapped/backdoored artifact on the Release page (the LiteLLM-PyPI scenario)
-      # fails verification. The glob matches whichever extension was produced (.tar.gz on
-      # unix, .zip on windows). Attestation binds a DIGEST, so it is unaffected by the draft
-      # being promoted later: promoting changes no bytes.
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: "busbar-${{ matrix.target }}.*"
+    uses: ./.github/workflows/build-artifact.yml
+    with:
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+      archive: ${{ matrix.archive }}
+      tag: ${{ needs.plan.outputs.tag }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    secrets: inherit
 
   # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
   # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
@@ -921,6 +853,191 @@ jobs:
                         file=sys.stderr)
               sys.exit(1)
           print("All %d required assets present and plausibly sized." % len(expected))
+          PY
+
+  # -- THE PER-ARTIFACT CONTRACT: 100% OR 0%, FOR EVERY ARTIFACT -----------------------------------
+  #
+  # `verify-assets` above answers "is every name present, and plausibly sized". That is a question
+  # about the RELEASE. This job answers "is this artifact everything a busbar binary must be", which
+  # is a question about the ARTIFACT, and it is the question 1.5.3 never asked: five assets were
+  # present and correctly sized, and one of them refused every signed plugin on its platform.
+  #
+  # ONE VERIFIER, ONE ARTIFACT, EVERY ROW. scripts/verify-artifact.py takes (artifact, target) and
+  # checks EVERY row of .github/artifact-contract.json that applies to that target. The rows are
+  # data, so adding a property is one entry in that file plus its check function -- and it then
+  # applies to all five targets automatically, with no per-target list for a platform to be
+  # forgotten from. The verifier refuses to run at all unless the declared row ids and the
+  # implemented checks are the SAME SET in both directions, so a row nobody implemented cannot look
+  # like a row that passed.
+  #
+  # IT RUNS ON THE TARGET'S OWN NATIVE RUNNER, and that is what makes the contract uniform. Because
+  # every target now builds natively, every artifact can be EXECUTED where it is verified: the
+  # aarch64-linux asset runs on ubuntu-24.04-arm, the Intel-mac asset on macos-15-intel, the Windows
+  # asset on windows-latest. So the executable rows -- the real signed first-party plugin, the
+  # anchored --version, the documented quickstart -- run for EVERY platform. Nothing is statically
+  # approximated because a runner could not execute it, and there is no per-platform subset.
+  #
+  # THE ARTIFACT IS DOWNLOADED BACK FROM THE DRAFT, NOT REUSED FROM THE BUILD. Every property is
+  # asserted on the bytes a user would receive. Asserting them on the build machine's copy is what
+  # 1.5.3 did with an env var, and the env var was set.
+  verify-artifact:
+    name: contract ${{ matrix.target }}
+    needs: [plan, targets, upload-assets]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    # THE SAME `!cancelled()` REASONING AS `verify-assets`, FOR THE SAME REASON. `upload-assets`
+    # runs fail-fast:false, so one failed leg fails the matrix job, and a `needs:` on a failed job
+    # SKIPS the dependent by default -- the verifier would be switched off precisely when the
+    # release is broken. A skipped leg leaves no receipt, so `verify-set-equality` below turns it
+    # red anyway; this line is what lets the other four legs still report what they found.
+    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download this artifact from the draft, and its build evidence
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          archive="busbar-${{ matrix.target }}.${{ matrix.archive }}"
+          gh release download "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" --dir . --clobber
+          # The REAL signed first-party plugin for THIS platform, from its own repo's own release,
+          # signed with the real private half of the release key. Nothing here is packed locally: a
+          # locally-signed fixture would prove the signature code compiles and would have gone green
+          # on the broken 1.5.3 aarch64 artifact.
+          gh release download "$(jq -r .plugin_probe.tag .github/release-targets.json)" \
+            --repo "$(jq -r .plugin_probe.repo .github/release-targets.json)" \
+            --pattern "${{ matrix.plugin_asset }}" --dir plugin-probe --clobber
+          ls -l "$archive" plugin-probe
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-evidence-${{ matrix.target }}
+          path: build-evidence
+
+      - name: The artifact contract
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-artifact.py \
+            --archive "busbar-${{ matrix.target }}.${{ matrix.archive }}" \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.plan.outputs.version }}" \
+            --pubkey "${{ vars.BUSBAR_RELEASE_PUBKEY }}" \
+            --plugin "plugin-probe/${{ matrix.plugin_asset }}" \
+            --evidence build-evidence \
+            --repo "$GITHUB_REPOSITORY" \
+            --repo-root .
+
+      # THE RECEIPT. Written only after the contract exits 0, so its existence means every applicable
+      # row passed for this target -- not that a job was scheduled. `verify-set-equality` reads these.
+      - name: Write the verified-receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verified
+          echo "${{ matrix.target }}" > "verified/${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-${{ matrix.target }}
+          path: verified
+          if-no-files-found: error
+          retention-days: 7
+
+  # -- SET EQUALITY, NOT SUBSET --------------------------------------------------------------------
+  #
+  # THIS IS THE CLAUSE THAT MAKES A FORGOTTEN LEG IMPOSSIBLE RATHER THAN UNLIKELY.
+  #
+  # The third structural fault behind the 1.5.3 aarch64 defect was that the PRODUCED set and the
+  # VERIFIED set were never compared. The `targets` job was already correct and already the single
+  # source of truth; verification simply did not enumerate from it, so an artifact could be produced
+  # and never checked and nothing anywhere noticed. verify-deploy.yml still hardcodes
+  # `busbar-x86_64-unknown-linux-gnu.tar.gz` for its quickstart check -- one platform, chosen once,
+  # standing in for five.
+  #
+  # So this job asserts three sets are IDENTICAL:
+  #
+  #   DECLARED  the targets `targets` emitted, from .github/release-targets.json.
+  #   BUILT     one `build-evidence-<target>` receipt per artifact the build actually produced.
+  #   VERIFIED  one `verified-<target>` receipt per artifact the contract actually passed.
+  #
+  # A target that is built but not verified is an ERROR. A target that is verified but not built is
+  # an ERROR. A subset check in either direction would have passed the whole 1.5.3 release.
+  #
+  # IT READS RECEIPTS, NOT JOB CONCLUSIONS, and the difference matters: a matrix leg that is skipped
+  # (the default `needs:` behaviour when an upstream job fails) leaves a grey square, no receipt, and
+  # a set that has silently shrunk to fit. Receipts can only be created by a step that ran and
+  # succeeded, so the sets can only shrink in a direction this job can see.
+  #
+  # `!cancelled()` for the same reason as its two upstream verifiers: this check must be loudest
+  # exactly when something upstream went wrong.
+  verify-set-equality:
+    name: the set built and the set verified must be identical
+    needs: [plan, targets, upload-assets, verify-artifact]
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: receipts
+          pattern: "*-*"
+      - name: Compare the declared, built and verified sets
+        env:
+          DECLARED: ${{ needs.targets.outputs.targets }}
+        run: |
+          set -euo pipefail
+          ls -la receipts || true
+          python3 - <<'PY'
+          import json, os, sys
+
+          declared = set(json.loads(os.environ["DECLARED"]))
+          names = set(os.listdir("receipts")) if os.path.isdir("receipts") else set()
+          built = {n[len("build-evidence-"):] for n in names if n.startswith("build-evidence-")}
+          verified = {n[len("verified-"):] for n in names if n.startswith("verified-")}
+
+          lines = ["### produced vs verified", "", "| target | built | contract |", "| --- | --- | --- |"]
+          for t in sorted(declared | built | verified):
+              lines.append("| `%s` | %s | %s |" % (
+                  t, "yes" if t in built else "**NO**", "PASS" if t in verified else "**NOT VERIFIED**"))
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              open(summary, "a").write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+
+          fail = False
+          # A FLOOR FIRST. Every comparison below is between sets, and all three being empty is the
+          # state in which every comparison is trivially satisfied -- the false green this whole
+          # design exists to make impossible.
+          if len(declared) < 5:
+              print("::error::the declared target set has %d entries; busbar ships 5. Set equality "
+                    "between three empty sets is not a check." % len(declared), file=sys.stderr)
+              fail = True
+          for label, got in (("built", built), ("verified", verified)):
+              missing = sorted(declared - got)
+              extra = sorted(got - declared)
+              if missing:
+                  print("::error::NOT %s: %s. Every one of those targets is an artifact this release "
+                        "owes that was never %s. A target that is built but not verified is an error, "
+                        "and so is a target that is verified but not built -- this is set equality, "
+                        "not a subset check, because a subset check passes the 1.5.3 release in which "
+                        "busbar-aarch64-unknown-linux-gnu shipped with no release key."
+                        % (label.upper(), ", ".join(missing), label), file=sys.stderr)
+                  fail = True
+              if extra:
+                  print("::error::%s but NOT DECLARED: %s. An artifact nothing declares is an artifact "
+                        "nothing owes and nothing tracks; add it to .github/release-targets.json or "
+                        "stop producing it." % (label.upper(), ", ".join(extra)), file=sys.stderr)
+                  fail = True
+          if fail:
+              sys.exit(1)
+          print("SET EQUALITY HOLDS: %d targets declared, built and contract-verified: %s"
+                % (len(declared), ", ".join(sorted(declared))))
           PY
 
   # -- THE GATE: CONSUMER VERIFICATION, BEFORE THE NAME EXISTS -------------------------------------
