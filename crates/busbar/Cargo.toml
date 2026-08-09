@@ -56,10 +56,17 @@ tower = { workspace = true }
 # Only the subsystems busbar actually touches: the multi-thread runtime (#[tokio::main],
 # spawn/JoinHandle), macros (main/test), net (TcpListener), time (sleep/interval), sync
 # (Semaphore/OwnedSemaphorePermit), and signal (graceful-shutdown ctrl_c/SIGTERM, so OTLP spans
-# flush on exit). The "full" meta-feature additionally pulls fs/process/io-util/io-std/test-util —
-# none referenced in src/ — so it is dropped to shrink the request-path binary's compile + attack
-# surface.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+# flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
+# src/ — so it is NOT used; the slice below is hand-picked instead.
+#
+# `process` + `io-util` are the MCP stdio transport (1.5.5, `mcp/client/stdio.rs`): spawning and
+# supervising a child MCP server is a spec transport (`mcp-design.md` §2.1) and there is no way to
+# own a child's lifecycle without them. This is a FEATURE on a crate already in the graph, not a new
+# dependency — no new crate, no new version requirement, nothing added to
+# `[workspace.dependencies]`. It does grow the request-path binary, which is the honest cost of the
+# transport, and it is spelled out here rather than slipped in: the previous comment said these two
+# were dropped because nothing referenced them, and now something does.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "io-util"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

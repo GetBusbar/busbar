@@ -72,6 +72,10 @@
 
 pub(crate) mod admin_view;
 pub(crate) mod catalogue;
+/// The CLIENT direction (§2.1): busbar calling OUT to external MCP tool servers. The other half of
+/// the same governance boundary this module's front door opens — same revision, same trust
+/// lifecycle, same scope kinds, opposite initiator.
+pub(crate) mod client;
 pub(crate) mod config;
 pub(crate) mod ingress;
 pub(crate) mod inputreq;
