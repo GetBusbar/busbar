@@ -13,6 +13,8 @@
 use crate::mcp::client::catalogue::TransportPin;
 use crate::mcp::client::egress::{CallerContext, UpstreamCredential};
 use crate::mcp::client::ssrf::SsrfRefusal;
+// Both are used ONLY by the `cfg(unix)` spawning test below, so the import carries the same gate.
+#[cfg(unix)]
 use crate::mcp::client::stdio::{RestartPolicy, StdioChild};
 use crate::mcp::client::support::key_wildcard;
 use crate::mcp::client::{

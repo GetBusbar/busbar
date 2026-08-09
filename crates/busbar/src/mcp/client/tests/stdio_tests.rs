@@ -8,7 +8,13 @@
 //! The policy is driven by an injected clock, so the crash-storm case is asserted at exact times.
 //! A supervision policy verified by sleeping is a supervision policy verified at one timing.
 
-use crate::mcp::client::stdio::{ChildState, RestartPolicy, StdioChild, StdioRefusal, Supervisor};
+use crate::mcp::client::stdio::{ChildState, RestartPolicy, StdioRefusal, Supervisor};
+// Used ONLY by the `cfg(unix)` spawning tests below, so the import carries the same gate. Without
+// it the Windows build fails on `unused_imports` under `-D warnings` — which is the gate working:
+// an import that only one platform needs should say so.
+#[cfg(unix)]
+use crate::mcp::client::stdio::StdioChild;
+#[cfg(unix)]
 use std::time::Duration;
 
 fn policy() -> RestartPolicy {
