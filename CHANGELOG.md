@@ -6,6 +6,25 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Busbar can be an MCP server that your existing identity provider protects.** Set `mcp.canonical_uri`
+  and point `mcp.authorization_servers` at your IdP, and the MCP endpoint at `/mcp` becomes an OAuth 2.1
+  resource server: an agent that arrives without a token is answered `401` with a `WWW-Authenticate`
+  header naming a protected-resource metadata document (RFC 9728), goes and gets a token from your IdP the
+  ordinary way, and comes back. Busbar issues no tokens of its own and authenticates no humans — your IdP
+  keeps doing both.
+
+  Busbar checks that a presented token was actually meant **for busbar** before it does anything with it.
+  A token your IdP legitimately issued to the same agent for some other service is refused, however valid
+  it otherwise is. That check is what stops a gateway from becoming a confused deputy, and it is not
+  configurable. Configure your IdP to mint MCP tokens whose audience is exactly your `mcp.canonical_uri`.
+
+  The token's subject becomes the caller's identity, so your existing `auth.role_bindings:`, budgets,
+  rate limits and audit trail apply unchanged; the OAuth client id is kept alongside it, so an audit row
+  can say which agent acted for which person. With `mcp:` absent — the default — none of this is mounted.
+  See [the configuration reference](docs/configuration.md).
+
 ## [1.5.3], 2026-08-08
 
 This release reshapes the config file, so give yourself a few minutes for the upgrade.

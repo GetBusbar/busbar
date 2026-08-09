@@ -1357,6 +1357,57 @@ security:
 
 ---
 
+### `mcp:` — the MCP plane (OAuth resource server)
+
+Present ⇒ busbar exposes its MCP endpoint at `/mcp` and protects it as an **OAuth 2.1 resource
+server**. Absent (the default) ⇒ the plane is off and none of its routes are mounted, so a
+deployment that does not use MCP carries no MCP surface at all.
+
+**busbar validates tokens; it does not issue them.** The authorization server is your existing IdP
+(Okta, Entra, Auth0, Keycloak). busbar has no `/authorize`, no `/token`, and authenticates no human.
+
+```yaml
+mcp:
+  canonical_uri: "https://busbar.acme.com/mcp"
+  authorization_servers:
+    - issuer: "https://acme.okta.com/oauth2/default"
+      jwks: { file: /etc/busbar/okta-jwks.json }
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `canonical_uri` | string | *(required)* | busbar's own resource identifier: advertised as `resource` in the protected-resource metadata document **and** the audience every inbound token must carry. Must be absolute https (plain http only for loopback), carry no query or fragment, and end in `/mcp`. Its own key, deliberately not derived from `public_url:` — that one is presentation, this one is a security identifier compared byte-for-byte. |
+| `authorization_servers` | list | *(at least one required)* | The IdPs whose tokens busbar accepts. A list because RFC 9728's field is an array. |
+| `authorization_servers[].issuer` | string | *(required)* | The issuer identifier (RFC 8414 §2: https, no query, no fragment). Matched byte-for-byte against a token's `iss` to select which key set may have signed it, and published verbatim in the metadata document. |
+| `authorization_servers[].jwks` | secret ref | *(required)* | That IdP's JWKS document (`{file: …}`, `{env: …}`, or a secret plugin). Delivered **out of band** rather than fetched from a `jwks_uri`: it keeps an SSRF surface off an unauthenticated request path and stops an IdP outage from becoming a busbar outage. Rotate by updating this file. |
+
+**The flow a client sees.** An unauthenticated request to `/mcp` is answered `401` with
+
+```
+WWW-Authenticate: Bearer resource_metadata="https://busbar.acme.com/.well-known/oauth-protected-resource/mcp"
+```
+
+The client fetches that document (also served at the root form
+`/.well-known/oauth-protected-resource`), does ordinary OAuth against the issuer it names, and
+returns with an access token.
+
+**What busbar then enforces**, in order, all fail-closed: the token is a compact JWS signed with
+`RS256` or `ES256` (`none` and `HS*` are refused by name); its `iss` names a configured
+authorization server; its signature verifies against that server's published key for the token's
+`kid`; it is unexpired (60s skew allowance); **its `aud` names `canonical_uri`**; and it carries a
+`sub` and a `client_id` (or `azp`, or `appid`).
+
+The audience check is the **confused-deputy defence** and it is not optional: without it busbar would
+accept a token your IdP issued to the same agent for a *different* service and then act on it with
+busbar's own upstream authority. Configure your IdP to mint MCP tokens with `aud` (or the RFC 8707
+`resource` parameter) set to exactly `canonical_uri`.
+
+The token's `sub` becomes the principal, so it keys `auth.role_bindings:` like any other identified
+caller and the existing budget, policy, rate-limit and audit machinery applies unchanged. The
+`client_id` is retained alongside it as the acting agent.
+
+---
+
 ## Minimal working example
 
 The smallest config that parses and resolves. `providers` and `models` are the only required top-level sections.
