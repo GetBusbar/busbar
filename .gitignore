@@ -1,5 +1,13 @@
 # Rust
 /target/
+# ANY cargo target dir, not just the default one. Concurrent worktrees each need their own
+# CARGO_TARGET_DIR (a shared one makes tests shell out to the wrong binary), and the first
+# time that happened the whole 700MB directory was swept into a commit by `git add -A` and
+# only the remote's 100MB file limit caught it. The same rule binds the two FEATURE configs:
+# a default-features build and a `--no-default-features` build MUST NOT share one target dir,
+# which was proven to make a test shell out to the wrong binary and report a false green.
+/target-*/
+target/
 **/*.rs.bk
 *.pdb
 
@@ -53,3 +61,10 @@ mutants-report-live/
 # full suite. Untracked, a failing proptest would trip that assertion TOO, so one flake reports as
 # two failures and the second points at the wrong thing entirely.
 crates/*/proptest-regressions/
+
+# MCP conformance scratch: the pinned third-party control peer's checkout and every run's results.
+# Both are outputs of `scripts/mcp-conformance.sh`, rebuilt from a pin on every run, and a committed
+# results directory is worse than none — a gate that falls back to a stale report is a gate that
+# reports a state it never reached.
+/.mcp-conformance/
+/.sdk-under-test/

@@ -85,67 +85,9 @@ pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
     }
 }
 
-/// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
-/// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two
-/// places a secret could leak, closed by construction.
-fn identity_provider_view(name: &str, cfg: &crate::config::IdentityProviderCfg) -> NamedDefView {
-    NamedDefView {
-        name: name.to_string(),
-        module: cfg.module.clone(),
-        settings_keys: settings_keys(&cfg.settings),
-        max_admin_scope: cfg.max_admin_scope.clone(),
-        token_configured: Some(cfg.token.is_some()),
-        browser_login_configured: Some(cfg.browser_login.is_some()),
-        unparseable: None,
-    }
-}
-
-/// Project one `export:` DEFINITION onto the shared named-map view. An exporter carries neither a
-/// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
-/// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
-/// projected as KEY NAMES exactly as the identity-provider view projects it.
-fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> NamedDefView {
-    NamedDefView {
-        name: name.to_string(),
-        module: cfg.module.clone(),
-        settings_keys: settings_keys(&cfg.settings),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
-        unparseable: None,
-    }
-}
-
-/// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly
-/// FLAGGED (`unparseable`). Such an entry is stored in the overlay but dropped at every rebuild, so
-/// it is not live anywhere — before this it was invisible to every read surface and announced only
-/// by a boot log line, which an operator who does not tail logs can never discover. `module` and
-/// `settings_keys` are a best-effort projection of the RAW stored document (still key names only, so
-/// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
-fn unparseable_def_view(
-    name: &str,
-    entry: &crate::config::overlay::UnparseableNamedDef,
-) -> NamedDefView {
-    NamedDefView {
-        name: name.to_string(),
-        module: entry
-            .raw
-            .get("module")
-            .and_then(|m| m.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        settings_keys: entry
-            .raw
-            .get("settings")
-            .and_then(|s| s.as_object())
-            .map(settings_keys)
-            .unwrap_or_default(),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
-        unparseable: Some(entry.error.clone()),
-    }
-}
+use super::named_def_views::{
+    agent_def_view, export_def_view, identity_provider_view, unparseable_def_view,
+};
 
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
 /// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
@@ -1235,6 +1177,14 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
+            NamedMapSection::Tools => crate::mcp::admin_view::list(&self.app),
+            NamedMapSection::Agents => self
+                .app
+                .agent_defs
+                .agents
+                .iter()
+                .map(|(name, cfg)| agent_def_view(name, cfg))
+                .collect(),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1270,6 +1220,13 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
+            NamedMapSection::Tools => crate::mcp::admin_view::get(&self.app, name),
+            NamedMapSection::Agents => self
+                .app
+                .agent_defs
+                .agents
+                .get(name)
+                .map(|cfg| agent_def_view(name, cfg)),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a

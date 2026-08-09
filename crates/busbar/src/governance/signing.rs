@@ -52,6 +52,26 @@ pub(crate) struct TokenClaims {
     /// `GovState::binding_generation_matches`), never against a rotated one.
     #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
     pub(crate) generation: Option<String>,
+    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.5: the MCP plane boundary.
+    /// `None` = a plain data-plane busbar key (every token
+    /// minted before 1.5.5, and every `/auth/token` key after it). `Some(uri)` = an MCP
+    /// authorization-server access token bound to the operator-configured canonical MCP URI.
+    /// Enforcement lives in the VERIFIER ([`TokenVerifier::verify`]), never in a handler, so a
+    /// route added later cannot forget it: the data plane verifies with expected-audience `None`
+    /// and REJECTS any token carrying an audience; the MCP ingress verifies with `Some(uri)` and
+    /// rejects a token whose audience is absent or different. Same additive fleet-compat shape as
+    /// `generation`/`g`: old tokens carry no `a` and keep verifying on the data plane.
+    #[serde(default, rename = "a", skip_serializing_if = "Option::is_none")]
+    pub(crate) aud: Option<String>,
+    /// The OAuth CLIENT id this token was minted through (wire name `cid`), for per-client
+    /// attribution. HOW MUCH THAT ATTRIBUTION IS WORTH DEPENDS ON THE CLIENT CLASS, and an audit
+    /// reader has to be told which: a CONFIDENTIAL client authenticated to the authorization
+    /// server, so its `cid` is cryptographically attributable; a PUBLIC (PKCE-only) client did
+    /// not, so its `cid` is self-asserted and names only who the client SAID it was. Carried,
+    /// never an admission input on the data plane — which is exactly why the weaker of the two
+    /// classes is tolerable here and would not be in an authorization decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cid: Option<String>,
 }
 
 /// A verify failure. Every arm rejects fail-closed; the distinctions exist for the AUDIT log /
@@ -66,6 +86,10 @@ pub(crate) enum VerifyError {
     BadSignature,
     /// The token is past its `exp`.
     Expired,
+    /// The token's audience claim does not match the plane it was presented on: an
+    /// audience-bound (MCP) token on the plain data plane, a plain token on an audience-checked
+    /// (MCP) ingress, or a different audience URI. The 1.5.5 plane boundary; fail-closed.
+    AudienceMismatch,
 }
 
 impl std::fmt::Display for VerifyError {
@@ -75,6 +99,7 @@ impl std::fmt::Display for VerifyError {
             VerifyError::UnknownKid => "unknown signing-key id",
             VerifyError::BadSignature => "bad signature",
             VerifyError::Expired => "token expired",
+            VerifyError::AudienceMismatch => "audience mismatch",
         };
         f.write_str(s)
     }
@@ -139,12 +164,46 @@ impl TokenSigner {
     /// GENERATION it is issued against (see [`TokenClaims::generation`]). Returns the full token
     /// string, shown to the caller ONCE.
     pub(crate) fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
-        let claims = TokenClaims {
+        self.sign_claims(TokenClaims {
             sub: sub.to_string(),
             exp,
             kid: self.kid.clone(),
             generation: generation.map(str::to_string),
-        };
+            aud: None,
+            cid: None,
+        })
+    }
+
+    /// Mint an AUDIENCE-BOUND token (1.5.5, the MCP authorization-server mint): identical to
+    /// [`Self::mint`] plus the `aud` plane-boundary claim and the optional `cid` client
+    /// attribution. Such a token verifies ONLY where the verifier expects exactly this audience
+    /// (the MCP ingress); the plain data-plane verify rejects it (see [`TokenClaims::aud`]).
+    ///
+    /// `cfg(test)` until the authorization-server mint path (OAuth Unit D) lands and becomes its
+    /// production caller - per the house rule against shipping dead code behind a live-looking
+    /// surface. The boundary tests below exercise it against the real verifier today.
+    #[cfg(test)]
+    pub(crate) fn mint_for_audience(
+        &self,
+        sub: &str,
+        exp: u64,
+        generation: Option<&str>,
+        aud: &str,
+        cid: Option<&str>,
+    ) -> String {
+        self.sign_claims(TokenClaims {
+            sub: sub.to_string(),
+            exp,
+            kid: self.kid.clone(),
+            generation: generation.map(str::to_string),
+            aud: Some(aud.to_string()),
+            cid: cid.map(str::to_string),
+        })
+    }
+
+    /// Serialize + sign a claims payload into the two-segment token form. The ONE signing site,
+    /// so every mint variant produces the identical wire shape.
+    fn sign_claims(&self, claims: TokenClaims) -> String {
         let payload = serde_json::to_vec(&claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
         format!(
@@ -170,15 +229,27 @@ impl TokenVerifier {
         Self { keys }
     }
 
-    /// PARSE + verify + expiry, returning the claims. Does NOT consult the denylist - the caller
-    /// pairs this with a `sub`-denylist read (kept separate so the crypto is pure and testable and
-    /// the revocation read is the only state touched). `now` is Unix seconds.
+    /// PARSE + verify + expiry + AUDIENCE, returning the claims. Does NOT consult the denylist -
+    /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
+    /// testable and the revocation read is the only state touched). `now` is Unix seconds.
     ///
-    /// Order: structural parse -> kid lookup -> signature -> expiry. Signature is checked BEFORE
-    /// expiry so an attacker cannot learn a real `sub`'s existence by probing expiries on a forged
-    /// token (both a bad signature and an expiry reject opaquely upstream anyway, but checking the
-    /// signature first means the claims are only trusted once authenticated).
-    pub(crate) fn verify(&self, token: &str, now: u64) -> Result<TokenClaims, VerifyError> {
+    /// `expected_aud` is the PLANE the token is being presented on (1.5.5): `None` = the plain
+    /// data plane, which rejects a token
+    /// carrying ANY audience; `Some(uri)` = an audience-checked ingress (the MCP endpoint), which
+    /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not
+    /// per handler, so a route added later cannot forget the boundary.
+    ///
+    /// Order: structural parse -> kid lookup -> signature -> expiry -> audience. Signature is
+    /// checked BEFORE expiry so an attacker cannot learn a real `sub`'s existence by probing
+    /// expiries on a forged token (both a bad signature and an expiry reject opaquely upstream
+    /// anyway, but checking the signature first means the claims are only trusted once
+    /// authenticated).
+    pub(crate) fn verify(
+        &self,
+        token: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Result<TokenClaims, VerifyError> {
         let body = token
             .strip_prefix(TOKEN_PREFIX)
             .ok_or(VerifyError::Malformed)?;
@@ -208,6 +279,18 @@ impl TokenVerifier {
 
         if claims.exp <= now {
             return Err(VerifyError::Expired);
+        }
+
+        // THE PLANE BOUNDARY (fail-closed, both directions): a token is admissible exactly on the
+        // plane whose audience it carries. No arm falls through.
+        match (expected_aud, claims.aud.as_deref()) {
+            // Plain data-plane token on the plain data plane.
+            (None, None) => {}
+            // Audience-bound token on the ingress expecting exactly that audience.
+            (Some(expected), Some(aud)) if expected == aud => {}
+            // Everything else: an MCP token on the data plane, a plain token on an
+            // audience-checked ingress, or a different audience URI.
+            _ => return Err(VerifyError::AudienceMismatch),
         }
         Ok(claims)
     }

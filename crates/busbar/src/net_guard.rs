@@ -25,7 +25,88 @@
 //!
 //! Pure (no I/O, no globals), so each predicate is unit-testable in isolation; the tests live here.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+/// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
+/// even though they are not IP literals. Blocked case-insensitively by [`dns_name_is_internal`].
+///
+/// The `localhost` family is deliberately NOT here: it is a SEPARATE arm in
+/// [`dns_name_is_internal`], because `config_validate::ssrf_blocked_host` allows `localhost` (a
+/// legitimate local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping
+/// the two lists apart is what lets one guard opt out of the localhost arm without also opting out
+/// of the metadata one.
+pub(crate) const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
+
+/// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
+/// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
+/// and the two cloud-metadata endpoints that sit on PUBLIC / IETF-reserved addresses outside every
+/// one of those ranges (Azure WireServer and OCI IMDS), which the range predicates would otherwise
+/// miss entirely.
+///
+/// This is the predicate `observability::host_is_internal` was written around, hoisted here so the
+/// A2A card fetch (`a2a::fetch`) reuses it rather than growing a fourth copy. Duplicated SECURITY
+/// logic is the one place a documented divergence does not neutralize drift: a contributor
+/// hardening one guard against a new range would silently miss the others.
+pub(crate) fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
+    const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
+    const OCI_IMDS: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 192);
+    v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_private()
+        || is_cgnat_shared_v4(v4)
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || *v4 == AZURE_WIRESERVER
+        || *v4 == OCI_IMDS
+}
+
+/// TRUE for an IPv6 literal no busbar guard may connect to.
+///
+/// The ORDER is load-bearing and is the reason this is one function rather than three call sites.
+/// `::1` must be caught by `is_loopback()` FIRST: under `to_ipv4()` it canonicalizes to `0.0.0.1`,
+/// which is not a v4 loopback, so an embedded-v4 arm placed first would let it through. Then the
+/// embedded-v4 arm runs BEFORE the v6 range masks, because `[::ffff:127.0.0.1]` and
+/// `[::169.254.169.254]` match no v6 mask at all yet a connecting stack still routes them to the
+/// embedded v4 target. `to_ipv4()` rather than `to_ipv4_mapped()`: it is the superset that also
+/// covers the IPv4-COMPATIBLE form.
+pub(crate) fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
+    if v6.is_loopback() {
+        return true;
+    }
+    if let Some(v4) = v6.to_ipv4() {
+        return ipv4_is_internal(&v4);
+    }
+    v6.is_unspecified() || is_unique_local_v6(v6) || is_link_local_v6(v6)
+}
+
+/// TRUE for any resolved address a busbar guard must refuse to connect to.
+///
+/// This is the predicate a RESOLVE-THEN-PIN guard applies to what the resolver actually answered,
+/// which is the only form of the check that survives a DNS rebind: a name is not an address, and
+/// the address is what a socket connects to.
+pub(crate) fn ip_is_internal(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => ipv4_is_internal(v4),
+        IpAddr::V6(v6) => ipv6_is_internal(v6),
+    }
+}
+
+/// TRUE for a DNS NAME that is internal by definition rather than by resolution: the cloud-metadata
+/// names in [`METADATA_HOSTS`], and the `localhost` family RFC 6761 reserves to loopback.
+///
+/// A trailing FQDN-root dot is stripped first. `getaddrinfo` resolves `localhost.` and
+/// `metadata.google.internal.` to the same targets as the bare spelling, but the trailing dot makes
+/// an exact compare miss by one byte — which is a bypass, not a curiosity.
+pub(crate) fn dns_name_is_internal(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if METADATA_HOSTS.iter().any(|m| host.eq_ignore_ascii_case(m)) {
+        return true;
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .rsplit_once('.')
+            .is_some_and(|(_, tld)| tld.eq_ignore_ascii_case("localhost"))
+}
 
 /// IPv6 unique-local range `fc00::/7` (the first 7 bits are `1111110`). No stable std predicate
 /// exists for this range on the pinned toolchain, so the leading bits are checked directly.

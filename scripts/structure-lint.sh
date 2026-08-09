@@ -604,6 +604,28 @@ CHOKE_POINTS=(
   #         declaration omits. The v1 router's recording layer PANICS on that under-claim at the
   #         moment of emission, and the class test fails on the mirror-image over-claim.
   'D-openapi-taxonomy|TAXONOMY-BYPASS|crates/busbar/src/admin/v1/contract/taxonomy.rs (declared_errors)|crates/busbar/src/admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit|declare the ErrKind in contract::taxonomy::declared_errors|-|openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list'
+
+  # ── E ── core route admission: one table, declared AT the mount. Enforced differently — there is
+  #         no pattern to ban, because the hazard is a route mounted with no declared bar, and
+  #         `CoreRouter::route` is the only way core routes reach a router and it cannot be called
+  #         without one. The class test walks the resulting table and asserts the property over
+  #         EVERY route, so a new route joins the assertion instead of escaping it.
+  # ── F ── the trusted-upstream trust LIFECYCLE: one plane-neutral machine, the pinned artifact a
+  #         type parameter. Enforced differently — the hazard is not a call somebody hand-rolls, it
+  #         is a plane's VOCABULARY leaking into the machine, after which the sibling plane can no
+  #         longer parameterise it and writes a parallel copy instead. The class test reads the
+  #         module's own code and fails on any plane noun in it.
+  'F-trust-lifecycle|TRUST-PLANE-LEAK|crates/busbar/src/trust/mod.rs (Approval / TrustState / Drift, generic over PinnedArtifact)|crates/busbar/src/trust/tests/genericity_tests.rs::the_lifecycle_names_no_plane_in_its_code|keep the plane noun in the artifact, the capability name or the caller, never in the lifecycle|-|the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit'
+
+  # -- G -- the same choke point from the OTHER side: a plane PARAMETERISES the lifecycle, it never
+  #         re-declares one. F stops a plane's vocabulary leaking INTO the machine; this stops a copy
+  #         of the machine leaking OUT into a plane. Enforced differently, for the same reason F is:
+  #         the hazard is a declaration, not a call somebody hand-rolls. The class test reads the
+  #         plane's own production code and fails on any re-declaration of the machine's types or
+  #         verbs.
+  'G-trust-parameterised|TRUST-MACHINE-FORK|crates/busbar/src/a2a/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)|crates/busbar/src/a2a/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own|supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs|-|two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined'
+
+  'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 
 hdr "choke-point registry (every hazard class has ONE owner; no hand-rolled bypass)"

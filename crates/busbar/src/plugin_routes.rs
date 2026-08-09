@@ -350,7 +350,7 @@ pub(crate) fn paths_awaiting_restart(
 /// reachable-in-principle and saved only by the dispatcher's matching gap), while the dispatcher 405'd
 /// a request axum had already routed to the plugin. One arm closes both halves together, which is the
 /// only safe way to close either.
-fn route_method_of(method: &Method) -> Option<RouteMethod> {
+pub(crate) fn route_method_of(method: &Method) -> Option<RouteMethod> {
     match *method {
         Method::GET | Method::HEAD => Some(RouteMethod::Get),
         Method::POST => Some(RouteMethod::Post),
@@ -362,7 +362,7 @@ fn route_method_of(method: &Method) -> Option<RouteMethod> {
 }
 
 /// The axum [`MethodFilter`] for a declared [`RouteMethod`].
-fn method_filter_of(m: RouteMethod) -> MethodFilter {
+pub(crate) fn method_filter_of(m: RouteMethod) -> MethodFilter {
     match m {
         RouteMethod::Get => MethodFilter::GET,
         RouteMethod::Post => MethodFilter::POST,

@@ -390,6 +390,18 @@ pub(crate) struct RootCfg {
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
     pub(crate) public_url: Option<String>,
+    /// The VALIDATED MCP resource (`mcp:`), or `None` when this deployment is not an MCP server.
+    /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
+    /// re-parses the canonical URI or re-derives the mount path.
+    pub(crate) mcp: Option<crate::mcp::McpResource>,
+    /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
+    ///
+    /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
+    /// happens to it is building the catalogue snapshot, which is a separate value with its own
+    /// generation. Lowering it here would give the registry two representations that could disagree
+    /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
+    /// DERIVING state from intent-versus-observation instead of storing it.
+    pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -465,6 +477,11 @@ pub(crate) struct RootCfg {
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub(crate) export_defs: ExportDefs,
+    /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
+    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
+    /// control plane derives its runtime `AgentRegistration` from this plus what the store has
+    /// accumulated. Nothing here is accumulation.
+    pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -511,7 +528,12 @@ pub(crate) struct TlsCfg {
 /// The built-in `keys` (data-plane signed-key verifier) and `admin-tokens` (operator credential)
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. `admin-tokens` carrying its `token:` secret ref).
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+// `Serialize` is required by the overlay's per-entry MERGE (`config::patch::merge_entry`): an
+// overlay entry is a PATCH, so the base entry has to be projected back to JSON in order to be
+// patched. The projection is config-internal and round-trips straight back into this same struct;
+// it reaches no reader and no HTTP response, which is the distinction the settings-leak lint's
+// category (c) turns on.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
 pub(crate) struct IdentityProviderCfg {
     /// The module backing this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth`
@@ -554,7 +576,9 @@ pub(crate) struct IdentityProviderCfg {
     // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     // `settings:` the operator WROTE. Every admin read of it serves
     // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
+    // `service::redact_settings_bags` first. The struct now derives `Serialize`, and that
+    // serialization has exactly ONE consumer: the overlay's per-entry merge, which projects the
+    // base entry to JSON, patches it, and parses it straight back into this same struct.
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -629,7 +653,9 @@ pub(crate) type RoleBindings =
 /// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
 /// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
 /// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+// `Serialize` for the same single reason `IdentityProviderCfg` has it: it is a nested field of one,
+// so the overlay's per-entry merge projection needs it. Config-internal, never a reader-facing view.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BrowserLoginCfg {
     /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
@@ -1518,7 +1544,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
 /// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
 /// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
-/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.4/1.5.6): reserve the same two
+/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.5/1.5.6): reserve the same two
 /// words in every plane section, even where a plane chooses not to implement one, so the word space is
 /// identical across planes.
 ///
@@ -1751,7 +1777,7 @@ pub(crate) enum HookStage {
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
 /// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
-/// MCP tool-invocation stage in 1.5.4 or an A2A delegation stage in 1.5.6 would retroactively make
+/// MCP tool-invocation stage in 1.5.5 or an A2A delegation stage in 1.5.6 would retroactively make
 /// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
 /// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
 /// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
@@ -2598,6 +2624,24 @@ pub(crate) struct DeployCfg {
     /// shippable catalog that config.yaml's `providers:` map references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
+    /// The top-level `mcp:` block (1.5.5): busbar's own MCP endpoint, as an OAuth 2.1 resource
+    /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
+    /// ingress and no `.well-known` document, and nothing joins the route table. See
+    /// [`crate::mcp::McpCfg`].
+    #[serde(default)]
+    pub(crate) mcp: Option<crate::mcp::McpCfg>,
+    /// The top-level `tools:` NAMED-DEFINITION map (1.5.5) — THE MCP PLANE's registry: server name →
+    /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
+    /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
+    /// section an entry is written in IS which plane it is on: a `tools:` entry is an MCP server
+    /// and an `agents:` entry is an A2A agent, so there is no second declaration that could
+    /// disagree with the first.
+    ///
+    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
+    /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
+    /// exposes (the rooms). A deployment may configure either without the other.
+    #[serde(default)]
+    pub(crate) tools: crate::mcp::config::ToolsCfg,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
@@ -2668,6 +2712,12 @@ pub(crate) struct DeployCfg {
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
     pub(crate) export: ExportDefs,
+    /// The top-level `agents:` NAMED-DEFINITION map (1.5.6): agent NAME →
+    /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
+    /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
+    /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
+    #[serde(default)]
+    pub(crate) agents: crate::a2a::config::AgentsCfg,
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -4190,6 +4240,24 @@ pub(crate) fn resolve(
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
+    // THE A2A PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
+    // per-agent lists are checked at parse (`a2a::config::validate_agent`); the section list has no
+    // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
+    if let Err(e) = crate::a2a::config::validate_section_hooks(&deploy.agents.all_agent_hooks) {
+        errors.push(e);
+    }
+    // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
+    // reference is an operator believing a control is attached that is not, so it is an error and
+    // not a warning, exactly as it is for `auth.chain`.
+    for (agent, def) in &deploy.agents.agents {
+        for hook in deploy.agents.all_agent_hooks.iter().chain(def.hooks.iter()) {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
     for (name, def) in &deploy.hooks {
         if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
             errors.push(format!(
@@ -4210,6 +4278,24 @@ pub(crate) fn resolve(
     // all-pools attach (`pools.hooks:`) becomes the runtime `global_hooks` list — the ONLY global
     // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
+
+    // THE `tools:` PLANE's hook references, held to the SAME rules as the pool plane's: bare names
+    // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
+    // silently dropped attachment. A dropped reference leaves an operator believing a control is
+    // attached that is not, which is worse than the typo it came from.
+    if let Err(e) = crate::mcp::config::validate_section_hooks(&deploy.tools.all_server_hooks) {
+        errors.push(e);
+    }
+    for (server, def) in &deploy.tools.servers {
+        for hook in deploy.tools.all_server_hooks.iter().chain(def.hooks.iter()) {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
+                     `hooks:` map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
@@ -4251,10 +4337,26 @@ pub(crate) fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
+    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: an MCP plane
+    // whose canonical URI is malformed would advertise one audience in its metadata document and
+    // expect another in its verifier, and every correctly-behaved client in the world would obtain a
+    // token this server then refuses. A boot refusal names the field and what to type; a runtime one
+    // is discovered by an agent that cannot connect and cannot say why.
+    let mcp = match deploy.mcp.as_ref().map(crate::mcp::McpResource::from_cfg) {
+        None => None,
+        Some(Ok(resource)) => Some(resource),
+        Some(Err(e)) => {
+            errors.push(e.to_string());
+            None
+        }
+    };
+
     if errors.is_empty() {
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
+            mcp,
+            tool_defs: deploy.tools.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),
@@ -4305,6 +4407,7 @@ pub(crate) fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
+            agent_defs: deploy.agents.clone(),
         })
     } else {
         Err(errors)
@@ -4314,3 +4417,7 @@ pub(crate) fn resolve(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/named_map_merge_tests.rs"]
+mod named_map_merge_tests;

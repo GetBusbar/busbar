@@ -911,7 +911,8 @@ pub(crate) async fn decide_policy_order(
         #[cfg(test)]
         {
             match (gov, caller_token) {
-                (Some(g), Some(tok)) => g.verify_token(tok, crate::store::now()),
+                // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience).
+                (Some(g), Some(tok)) => g.verify_token(tok, crate::store::now(), None),
                 _ => None,
             }
         }

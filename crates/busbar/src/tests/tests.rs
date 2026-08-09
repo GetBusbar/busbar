@@ -1175,6 +1175,10 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
+        tool_defs: Default::default(),
+        // Not an MCP server.
+        mcp: None,
+        agent_defs: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         public_url: None,
@@ -1478,7 +1482,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let now = crate::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
     assert!(
-        gov.verify_token(&old_token, now).is_some(),
+        gov.verify_token(&old_token, now, None).is_some(),
         "valid pre-rotation"
     );
 
@@ -1487,7 +1491,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     build_once(cfg_with_credentials(&token_path, &key_path), Some(&prior)).expect("apply");
 
     assert!(
-        gov.verify_token(&old_token, now).is_none(),
+        gov.verify_token(&old_token, now, None).is_none(),
         "a token minted under the PRE-rotation signing key must stop verifying after the reload"
     );
     let spec2 = crate::governance::NewKeySpec {
@@ -1500,7 +1504,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         .mint_signed(spec2, now + 10_000, now)
         .expect("mint under the new key");
     assert!(
-        gov.verify_token(&fresh, now).is_some(),
+        gov.verify_token(&fresh, now, None).is_some(),
         "the engine mints AND verifies under the rotated key (signer and verifier swap as one unit)"
     );
 

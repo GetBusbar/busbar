@@ -581,6 +581,13 @@ pub(crate) struct NamedDefView {
     /// The instance NAME: the map key, and the token every reference site uses.
     pub(crate) name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
+    ///
+    /// OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
+    /// `agents:`, whose entries describe endpoints somebody else runs
+    /// ([`NamedMapSection::requires_module`](crate::config::named_map::NamedMapSection::requires_module)).
+    /// Every section that HAS a module requires it to be non-empty, so this can never be omitted
+    /// for one that does.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
@@ -601,6 +608,22 @@ pub(crate) struct NamedDefView {
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) browser_login_configured: Option<bool>,
+    /// `agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |
+    /// `cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration
+    /// list needs to SEE which entries have no root; a mechanism that could only be discovered by
+    /// reading the config file is a mechanism nobody audits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pin_mechanism: Option<String>,
+    /// `agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a
+    /// root but no fingerprint is the normal state of a fresh entry awaiting approval, and it is
+    /// the state an operator most needs to be able to see.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fingerprint_pinned: Option<bool>,
+    /// `agents` ONLY: the re-verification cadence this registration carries, as written. The
+    /// backend `url:` is deliberately NOT projected here: it is the real remote endpoint and is
+    /// never client-visible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reverify_ttl: Option<String>,
     /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
     /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
     /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is

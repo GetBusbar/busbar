@@ -3468,6 +3468,10 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
+                tool_defs: Default::default(),
+                // Not an MCP server.
+                mcp: None,
+                agent_defs: Default::default(),
                 upstream_credentials: crate::auth::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,

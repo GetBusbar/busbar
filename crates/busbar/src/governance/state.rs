@@ -92,9 +92,19 @@ impl GovState {
     /// success. `None` = not a valid+authorized busbar token OR no signer configured OR the sub
     /// resolves to no binding (a token for a deleted key). The distinction is logged, never
     /// surfaced (no enumeration oracle - the auth path maps every `None` to one opaque 401).
-    pub(crate) fn verify_token(&self, token: &str, now: u64) -> Option<Arc<VirtualKey>> {
+    ///
+    /// `expected_aud` is the PLANE boundary (1.5.5 P1): the data plane passes `None`, meaning a
+    /// token carrying ANY audience is rejected here; the MCP ingress passes its canonical URI and
+    /// rejects a token whose audience is absent or different. Enforced inside
+    /// [`TokenVerifier::verify`](super::signing::TokenVerifier::verify), never per handler.
+    pub(crate) fn verify_token(
+        &self,
+        token: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Option<Arc<VirtualKey>> {
         let material = self.signing_material()?;
-        let claims = match material.verifier.verify(token, now) {
+        let claims = match material.verifier.verify(token, now, expected_aud) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "signed-token verify rejected");

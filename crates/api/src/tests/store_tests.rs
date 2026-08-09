@@ -63,7 +63,7 @@ fn scope_allowed_pool_kind_c6_semantics() {
 /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
 ///
 /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-/// matters because 1.5.4 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
+/// matters because 1.5.5 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
 /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
 /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
 /// version bump.
@@ -79,9 +79,9 @@ fn scope_allowed_cross_kind_is_fail_closed() {
     assert!(k.scope_allowed("pool", "fast"));
     for future_kind in ["mcp_server", "agent", "some_kind_not_invented_yet"] {
         assert!(
-                !k.scope_allowed(future_kind, "fast"),
-                "a pool-only grant must grant NOTHING for the future kind '{future_kind}' — the unlisted-kind case is FAIL-CLOSED and frozen"
-            );
+            !k.scope_allowed(future_kind, "fast"),
+            "a pool-only grant must grant NOTHING for the future kind '{future_kind}' — the unlisted-kind case is FAIL-CLOSED and frozen"
+        );
         assert!(!k.scope_allowed(future_kind, "anything-else"));
     }
 
@@ -132,7 +132,7 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     assert!(
         json.contains(r#""allowed_pools":["fast","slow"]"#),
         "wire field must be the bare-string array under the `allowed_pools` name, no `kind` \
-             wrapper anywhere: {json}"
+         wrapper anywhere: {json}"
     );
     assert!(
         !json.contains("kind"),
@@ -168,6 +168,89 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
         json_empty.contains(r#""allowed_pools":[]"#),
         "explicit-empty grant serializes as a bare `[]`, same as before: {json_empty}"
     );
+}
+
+/// Scope KINDS survive a store wire round-trip (1.5.5).
+///
+/// Before the kind-partitioned wire fields existed, `allowed_scopes_wire` serialized every
+/// entry's bare `value` under `allowed_pools` and deserialized every one back as
+/// `kind: "pool"` - so an `mcp_server` grant silently became a POOL grant on any store
+/// round-trip: a loss of the MCP grant AND an escalation into pool access. Each kind now has
+/// its OWN named wire field (`allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools`),
+/// partitioned on write and reassembled on read.
+#[test]
+fn scope_kinds_survive_store_round_trip() {
+    let mut k = sample_key();
+    k.allowed_scopes = Some(vec![
+        ScopeRef::pool("fast"),
+        ScopeRef::mcp_server("filesystem"),
+        ScopeRef::mcp_tool("filesystem_read_file"),
+    ]);
+    let json = serde_json::to_string(&k).expect("serialize");
+    let rt: VirtualKey = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        rt.allowed_scopes, k.allowed_scopes,
+        "scope kinds must survive a store round-trip intact: {json}"
+    );
+
+    // The escalation guard: an MCP grant must NEVER come back as a pool grant.
+    assert!(!rt.scope_allowed("pool", "filesystem"));
+    assert!(!rt.scope_allowed("pool", "filesystem_read_file"));
+    assert!(rt.scope_allowed("mcp_server", "filesystem"));
+    assert!(rt.scope_allowed("mcp_tool", "filesystem_read_file"));
+    assert!(rt.scope_allowed("pool", "fast"));
+}
+
+/// A scope kind with no registered wire field is a HARD serialize error - never silently
+/// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.6
+/// adds `agent`, this is the test that forces it to get its own named wire field before an
+/// `agent` grant can be persisted at all.
+#[test]
+fn unknown_scope_kind_is_a_hard_serialize_error() {
+    let mut k = sample_key();
+    k.allowed_scopes = Some(vec![ScopeRef {
+        kind: "agent".to_string(),
+        value: "planner".to_string(),
+    }]);
+    let err = serde_json::to_string(&k);
+    assert!(
+        err.is_err(),
+        "an unregistered scope kind must fail serialization, got: {err:?}"
+    );
+}
+
+/// The MCP wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
+/// pre-1.5.5 byte-identity contract holds), and readable when present. An explicit-empty
+/// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
+#[test]
+fn mcp_scope_wire_fields_are_additive() {
+    // Pool-only and None grants must not grow mcp fields on the wire.
+    let pool_only = sample_key();
+    let v = serde_json::to_value(&pool_only).unwrap();
+    assert!(v.get("allowed_mcp_servers").is_none(), "{v}");
+    assert!(v.get("allowed_mcp_tools").is_none(), "{v}");
+
+    // A wire body carrying the new fields reassembles into kind-tagged scopes.
+    let wire = r#"{"id":"vk_9","generation_hash":"h","name":"n","allowed_pools":[],"allowed_mcp_servers":["filesystem"],"allowed_mcp_tools":["filesystem_read_file"],"enabled":true,"created_at":1}"#;
+    let k: VirtualKey = serde_json::from_str(wire).unwrap();
+    assert_eq!(
+        k.allowed_scopes,
+        Some(vec![
+            ScopeRef::mcp_server("filesystem"),
+            ScopeRef::mcp_tool("filesystem_read_file"),
+        ])
+    );
+    assert!(
+        !k.scope_allowed("pool", "filesystem"),
+        "empty pool set stays empty"
+    );
+
+    // MCP-only grant round-trips with an explicit-empty `allowed_pools` (an explicit list was
+    // set, so the pool set must stay the EMPTY set on the wire, never absent/null = "all").
+    let json = serde_json::to_string(&k).unwrap();
+    let rt: VirtualKey = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt.allowed_scopes, k.allowed_scopes);
+    assert!(!rt.scope_allowed("pool", "anything"));
 }
 
 /// The redacting `Debug` - the guard for the structured-logging surface, since
@@ -578,4 +661,122 @@ fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
     );
     // limit above the total count: everything is kept, no panic on the subtraction.
     assert_eq!(s.list_audit_tail(100).unwrap().len(), 5);
+}
+
+/// THE TASK-STORE DEFAULTS ARE BACKWARD-COMPATIBLE AND SILENT, and both halves matter.
+///
+/// A store plugin is a SIGNED ARTIFACT that can predate this trait method by releases. If the task
+/// methods had no default, every existing backend would fail to compile against the new contract; if
+/// they defaulted to an ERROR, every task submission on such a backend would fail at runtime. So
+/// they default to "accepted, and nothing kept" — the RAM default's documented behaviour — and the
+/// engine learns whether a deployment actually has durability by READING A TASK BACK, never by
+/// trusting the write's return value. This test pins that, because a future change of the defaults
+/// to something louder would silently break every deployed plugin.
+#[test]
+fn the_task_store_methods_default_to_accepting_and_keeping_nothing() {
+    /// A backend written before the task methods existed: it implements the six REQUIRED methods
+    /// and nothing else. That it compiles at all is half the assertion.
+    struct PreTaskBackend;
+    impl Store for PreTaskBackend {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(Vec::new())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    let s = PreTaskBackend;
+    let task = TaskRow {
+        task_id: "t-1".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        direction: "inbound".to_string(),
+        state: "working".to_string(),
+        agent_id: "planner".to_string(),
+        artifact_cursor: 3,
+        push_callback: String::new(),
+        created_at: 10,
+        updated_at: 11,
+    };
+    let event = TaskEventRow {
+        task_id: "t-1".to_string(),
+        seq: 1,
+        ts: 10,
+        kind: "task.submitted".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        agent_id: String::new(),
+        state: "submitted".to_string(),
+        request_id: "req-1".to_string(),
+        prev_hash: String::new(),
+        hash: "deadbeef".to_string(),
+    };
+
+    // The writes are ACCEPTED — a legacy backend must not fail a task submission.
+    assert!(s.put_task(&task).is_ok());
+    assert!(s.append_task_event(&event).is_ok());
+    // And nothing is kept. This is the assertion the durability layer is built on: the only honest
+    // way to know a deployment is durable is to read back, and here the read-back is empty.
+    assert_eq!(s.get_task("t-1").unwrap(), None);
+    assert!(s.list_tasks().unwrap().is_empty());
+    assert!(s.list_task_events("t-1").unwrap().is_empty());
+    assert_eq!(s.purge_tasks_before(u64::MAX).unwrap(), 0);
+}
+
+/// The task rows round-trip through serde unchanged. They cross a plugin ABI, so a field whose
+/// serialized name drifts is a field a backend silently stops persisting.
+#[test]
+fn task_rows_round_trip_through_the_store_seam_encoding() {
+    let task = TaskRow {
+        task_id: "t-1".to_string(),
+        context_id: "ctx-1".to_string(),
+        principal: "key-1".to_string(),
+        direction: "outbound".to_string(),
+        state: "auth-required".to_string(),
+        agent_id: "planner".to_string(),
+        artifact_cursor: 7,
+        push_callback: "https://caller.example/cb".to_string(),
+        created_at: 10,
+        updated_at: 20,
+    };
+    let json = serde_json::to_string(&task).unwrap();
+    assert_eq!(serde_json::from_str::<TaskRow>(&json).unwrap(), task);
+    // The wire names are the field names, spelled out here so a rename is a visible diff rather
+    // than a silent data loss on the next deploy of an older backend.
+    for field in [
+        "task_id",
+        "context_id",
+        "principal",
+        "direction",
+        "state",
+        "agent_id",
+        "artifact_cursor",
+        "push_callback",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(
+            json.contains(field),
+            "`{field}` must be on the wire: {json}"
+        );
+    }
 }

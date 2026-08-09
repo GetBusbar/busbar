@@ -625,7 +625,7 @@ async fn credential_submit_issues_via_shared_seam() {
         .governance
         .as_ref()
         .unwrap()
-        .verify_token(&key, crate::store::now())
+        .verify_token(&key, crate::store::now(), None)
         .is_some());
 }
 
@@ -686,11 +686,11 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
     let gov = app.governance.as_ref().unwrap();
     let now = crate::store::now();
     assert!(
-        gov.verify_token(&key1, now).is_none(),
+        gov.verify_token(&key1, now, None).is_none(),
         "the prior token must stop verifying after Refresh (rotation)"
     );
     assert!(
-        gov.verify_token(&key2, now).is_some(),
+        gov.verify_token(&key2, now, None).is_some(),
         "the new token verifies"
     );
 }
@@ -1160,6 +1160,148 @@ async fn auth_token_absent_from_admin_router() {
     );
     ah.abort();
     dh.abort();
+}
+
+/// THE BYPASS IS PER-ROUTER, NOT PER-PROCESS (1.5.5).
+/// `/auth/token` is mounted on the DATA router only (`auth_token_absent_from_admin_router` pins
+/// that). Its auth bypass must be equally absent from the admin plane: a bypass declared by the
+/// PROCESS rather than by the ROUTER that mounted the route means the admin listener waves through
+/// a path it does not serve, answering an unauthenticated caller 404 (the path is unknown here)
+/// instead of 401 (you are not admitted here). That is the exact drift a core route-auth table
+/// generated at mount time exists to make impossible.
+#[tokio::test]
+async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
+        .public_url("https://busbar.example.com")
+        .build();
+    let (_data, admin, _handle) = crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
+
+    let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin_addr = admin_listener.local_addr().unwrap();
+    let ah = tokio::spawn(async move { axum::serve(admin_listener, admin).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let hit = client
+        .get(format!("http://{admin_addr}/auth/token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        hit.status().as_u16(),
+        401,
+        "the /auth/token bypass belongs to the DATA router that mounts it; on the admin router the \
+         path is unmounted and unauthenticated, so the auth chain must answer it"
+    );
+
+    // /healthz IS mounted on the admin router and IS declared open there — the control that proves
+    // the assertion above is about the declaration, not about admin being closed to everything.
+    let health = client
+        .get(format!("http://{admin_addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        health.status().as_u16(),
+        401,
+        "/healthz is declared open on the admin router and must stay open (this app has no lanes, \
+         so the probe itself answers 503 — what matters is that auth did not answer it)"
+    );
+    ah.abort();
+}
+
+/// NEAR-MISS MATRIX for the core route-auth table (1.5.5).
+/// A bypass is worth exactly as much as its exactness: a
+/// declaration that matched a prefix, a trailing slash, a case fold, or any method would hand every
+/// neighbouring path the same free pass, which is how an authorization server's public metadata
+/// route ends up opening the routes beside it.
+///
+/// The METHOD axis is new with the table and is the one that could not be stated in terms of the
+/// old middleware: the bypass was a bare path equality, so `PUT /auth/token` rode it and was
+/// answered by axum's 405 without the chain ever running. A declaration is per method, so an
+/// undeclared method on a declared-open path takes the normal bar.
+#[tokio::test]
+async fn core_route_bypass_is_exact_in_path_and_method() {
+    crate::metrics::init();
+    let mut cfg = crate::config::AuthCfg::default_none();
+    cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
+    let auth = std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg));
+    let app = crate::test_support::TestApp::new()
+        .auth(auth)
+        .public_url("https://busbar.example.com")
+        .build();
+    let (base, handle) = serve(app).await;
+    let client = reqwest::Client::new();
+
+    // Controls: the two declarations themselves, on their declared methods. HEAD is included
+    // because axum serves it from the GET arm, so the table must resolve it there too — the
+    // half-closed hazard `plugin_routes::route_method_of` already documents.
+    for (method, path) in [
+        (reqwest::Method::GET, "/healthz"),
+        (reqwest::Method::HEAD, "/healthz"),
+        (reqwest::Method::GET, "/auth/token"),
+    ] {
+        let r = client
+            .request(method.clone(), format!("{base}{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            r.status().as_u16(),
+            401,
+            "{method} {path} is declared open and must bypass the chain"
+        );
+    }
+    // POST /auth/token bypasses the MIDDLEWARE and then runs the chain in its own handler, so an
+    // unauthenticated POST legitimately ends in 401 — from the handler, not from the middleware.
+    // What proves the bypass is that the request REACHED a handler at all.
+    let p = client
+        .post(format!("{base}/auth/token"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        p.status().as_u16() != 404 && p.status().as_u16() != 405,
+        "POST /auth/token is declared open and must reach its handler, which runs the chain itself"
+    );
+
+    // Near misses: every one takes the normal bar (401), never the bypass.
+    for (method, path) in [
+        (reqwest::Method::PUT, "/auth/token"),
+        (reqwest::Method::DELETE, "/auth/token"),
+        (reqwest::Method::PUT, "/healthz"),
+        (reqwest::Method::GET, "/auth"),
+        (reqwest::Method::GET, "/auth/"),
+        (reqwest::Method::GET, "/auth/token/"),
+        (reqwest::Method::GET, "/auth/tokenx"),
+        (reqwest::Method::GET, "/healthz/"),
+        (reqwest::Method::GET, "/healthzx"),
+        (reqwest::Method::GET, "/HEALTHZ"),
+        (reqwest::Method::GET, "/AUTH/TOKEN"),
+        // Forward guards for the authorization-server surface (par. 5.3): none of these is mounted
+        // yet, and until one is DECLARED open it must answer with the chain, not with a bypass.
+        (reqwest::Method::GET, "/.well-known"),
+        (
+            reqwest::Method::GET,
+            "/.well-known/oauth-authorization-server",
+        ),
+        (reqwest::Method::GET, "/oauth"),
+        (reqwest::Method::GET, "/oauth/authorize"),
+        (reqwest::Method::POST, "/oauth/token"),
+    ] {
+        let r = client
+            .request(method.clone(), format!("{base}{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status().as_u16(),
+            401,
+            "{method} {path} is a near miss on a declared-open route and must take the normal bar"
+        );
+    }
+    handle.abort();
 }
 
 // ── test helpers: serve an app + mock IdP endpoints ──────────────────────────────────────────────

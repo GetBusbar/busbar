@@ -2329,7 +2329,8 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "rotation must not arm a legacy bearer secret on a signed-token key"
     );
     assert!(
-        gov.verify_token(&new_token, crate::store::now()).is_some(),
+        gov.verify_token(&new_token, crate::store::now(), None)
+            .is_some(),
         "the re-minted token authenticates"
     );
 
@@ -8154,7 +8155,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     // The token resolves its binding right after mint.
     let now = crate::store::now();
     let resolved = gov
-        .verify_token(&token, now)
+        .verify_token(&token, now, None)
         .expect("a fresh token verifies");
     assert_eq!(
         resolved.id, id,
@@ -8172,7 +8173,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     assert_eq!(del.status().as_u16(), 204, "delete is a 204");
     assert!(gov.is_revoked(&id), "delete denylists the subject");
     assert!(
-        gov.verify_token(&token, now).is_none(),
+        gov.verify_token(&token, now, None).is_none(),
         "a deleted key's token no longer verifies"
     );
 
@@ -8205,7 +8206,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     let token = created["token"].as_str().unwrap().to_string();
     let now = crate::store::now();
     assert!(
-        gov.verify_token(&token, now).is_some(),
+        gov.verify_token(&token, now, None).is_some(),
         "verifies before revoke"
     );
 
@@ -8233,7 +8234,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     // …but the subject is denylisted, so the token no longer verifies.
     assert!(gov.is_revoked(&id), "the subject is denylisted");
     assert!(
-        gov.verify_token(&token, now).is_none(),
+        gov.verify_token(&token, now, None).is_none(),
         "a revoked subject's token no longer verifies"
     );
 
@@ -12638,6 +12639,15 @@ identity-providers:
   admin-tokens:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
+tools:
+  base-mcp:
+    url: https://mcp.internal/fs
+    pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }
+agents:
+  base-agent:
+    url: https://a2a.example/planner
+    pin:
+      mechanism: unpinned
 "
         .to_string()
             + if base_export {
@@ -12723,7 +12733,27 @@ async fn named_map_app_opts(
                 "token": {"file": dir.join("admin.token").to_string_lossy()}
             }))
             .unwrap(),
+        )
+        // The MCP plane's base entry, seeded to match the file exactly — same reason the
+        // identity-provider and export base entries are: a `TestApp` does not parse config.yaml, so
+        // without this the read surface and disk truth would disagree and the base-protection guard
+        // would be measuring the disagreement rather than the guard.
+        .mcp_server(
+            "base-mcp",
+            serde_json::from_value(serde_json::json!({
+                "url": "https://mcp.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
+            }))
+            .unwrap(),
         );
+    // The A2A plane's base entry, mirroring the fixture config above. It is `unpinned` on purpose:
+    // the point of these fixtures is the generic CRUD surface, and an entry with a real root would
+    // need key material that says nothing about the routes under test.
+    builder = builder.agent_def(
+        "base-agent",
+        serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
+            .unwrap(),
+    );
     builder = if base_export {
         builder.export_def(
             "base-metrics",
@@ -13628,6 +13658,12 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
+        // The MCP plane has no backing plugin, so its valid definition names no `module:` at all —
+        // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
+        "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
+        // The A2A plane's entries are NOT plugin instances, so a legal definition here names a URL
+        // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
+        "agents" => r#"{"url":"https://a2a.example/x","pin":{"mechanism":"unpinned"}}"#.to_string(),
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
     // (label, method, relative path, If-Match, body, want status, want code)
@@ -13644,6 +13680,8 @@ async fn drive_named_map_errors() {
     for (section, base) in [
         ("identity-providers", "base-idp"),
         ("export", "base-metrics"),
+        ("tools", "base-mcp"),
+        ("agents", "base-agent"),
     ] {
         let c = |label: &str,
                  method: &'static str,
@@ -13684,11 +13722,23 @@ async fn drive_named_map_errors() {
                 "invalid_request",
             ),
             c(
-                "put_empty_module",
+                // On a plugin-instance section this is the empty-`module:` guard. On `tools:` there
+                // is no `module:` at all, so the same document is refused by the typed
+                // `deny_unknown_fields` parse — one status, two reasons, and both are the section's
+                // own grammar rather than a hardcoded rule in the handler.
+                "put_bad_definition",
                 "PUT",
                 format!("/{section}/x"),
                 None,
-                Some(r#"{"module":""}"#.into()),
+                Some(if section == "agents" {
+                    // A pin whose mechanism needs material and carries none. On the other sections
+                    // the equivalent nonsense is an empty `module:`; the CONDITION being witnessed
+                    // (`Validation/InvalidConfig`) is the same one either way.
+                    r#"{"url":"https://a2a.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
+                        .to_string()
+                } else {
+                    r#"{"module":""}"#.to_string()
+                }),
                 400,
                 "invalid_request",
             ),
@@ -13861,7 +13911,16 @@ async fn drive_named_map_errors() {
     // NO DISK BASE: an EPHEMERAL busbar (started without config files) has no base truth to merge a
     // named-map change onto, so every write verb refuses up front — the condition the disk fixtures
     // above can never reach.
-    {
+    //
+    // ONE SERVER PER SECTION, and that is about the RATE LIMITER rather than isolation. Every verb
+    // below is a CONFIG-class admin mutation, budgeted at 10/min PER PRINCIPAL, and failed attempts
+    // spend the budget too (that is the anti-enumeration rule, working as designed). The section
+    // list is now four long — the two 1.5.3 sections plus a plane section each for `tools:` and
+    // `agents:` — so twelve probes against one server would start answering 429 at the eleventh and
+    // the error taxonomy this test exists to pin would go unchecked from there on. The limiter is a
+    // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
+    // made the test pass by weakening the thing it shares with production.
+    for section in ["identity-providers", "export", "tools", "agents"] {
         crate::metrics::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -13870,7 +13929,7 @@ async fn drive_named_map_errors() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        for section in ["identity-providers", "export"] {
+        {
             for (label, method, rel, body) in [
                 (
                     "put",

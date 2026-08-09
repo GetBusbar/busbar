@@ -143,8 +143,8 @@ fn first_call_provisions_second_call_reuses_one_row() {
         "exactly one binding row after two logins"
     );
     // Both tokens verify (the second just carries a fresher exp).
-    assert!(gov.verify_token(&t1, 1000).is_some());
-    assert!(gov.verify_token(&t2, 2000).is_some());
+    assert!(gov.verify_token(&t1, 1000, None).is_some());
+    assert!(gov.verify_token(&t2, 2000, None).is_some());
 }
 
 /// THE 1.5.2 TOKEN-EXCHANGE FIX. A self-serve exchange must produce a USABLE key:
@@ -244,19 +244,19 @@ fn refresh_invalidates_old_token() {
     let gov = gov();
     let (_b, old) = gov.issue_self("sam", None, 100_000, 1000).unwrap();
     assert!(
-        gov.verify_token(&old, 1000).is_some(),
+        gov.verify_token(&old, 1000, None).is_some(),
         "old token valid before refresh"
     );
 
     let (_b2, fresh) = gov.refresh_self("sam", None, 100_000, 2000).unwrap();
     // Old token now fails (its binding was tombstoned / rotated away).
     assert!(
-        gov.verify_token(&old, 2000).is_none(),
+        gov.verify_token(&old, 2000, None).is_none(),
         "refresh must invalidate the prior token"
     );
     // The new token verifies, and there is still exactly one live self row.
     assert!(
-        gov.verify_token(&fresh, 2000).is_some(),
+        gov.verify_token(&fresh, 2000, None).is_some(),
         "fresh token valid"
     );
     assert_eq!(
@@ -294,7 +294,7 @@ fn hmac_sig_token_rejected_bad_signature() {
         payload_b64,
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(forged_sig)
     );
-    let err = verifier.verify(&forged, 1000).unwrap_err();
+    let err = verifier.verify(&forged, 1000, None).unwrap_err();
     assert_eq!(
         err,
         crate::governance::signing::VerifyError::BadSignature,
@@ -309,7 +309,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
     let gov = gov();
     let (binding, token) = gov.issue_self("sam", None, 5000, 1000).unwrap();
     let resolved = gov
-        .verify_token(&token, 1000)
+        .verify_token(&token, 1000, None)
         .expect("standard token verifies");
     assert_eq!(resolved.id, binding.id);
     assert_eq!(resolved.group.as_deref(), Some("user:sam"));
@@ -576,7 +576,7 @@ async fn resolve_then_issue_via_real_seam() {
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
     let now = crate::store::now();
-    assert!(gov.verify_token(&issued.secret, now).is_some());
+    assert!(gov.verify_token(&issued.secret, now, None).is_some());
 }
 
 /// A real OIDC/GitHub/LDAP plugin sets `principal.id = "oidc:<sub>"` (module-namespaced). Such an id
@@ -600,7 +600,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         "the whole sub lives inside the user: namespace"
     );
     assert!(gov
-        .verify_token(&issued.secret, crate::store::now())
+        .verify_token(&issued.secret, crate::store::now(), None)
         .is_some());
 }
 

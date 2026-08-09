@@ -52,6 +52,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod a2a;
 mod admin;
 mod auth;
 mod auth_cache;
@@ -59,6 +60,7 @@ mod billing;
 mod breaker;
 mod config;
 mod config_validate;
+mod core_routes;
 mod cost;
 // The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
@@ -77,11 +79,13 @@ mod ir;
 mod json;
 mod limits;
 mod lossless;
+mod mcp;
 mod media;
 mod metrics;
 mod net_guard;
 mod observability;
 mod operation;
+mod plane;
 mod plugin_routes;
 mod profile;
 mod proto;
@@ -93,12 +97,13 @@ mod telemetry;
 #[cfg(test)]
 mod test_support;
 mod tls;
+mod trust;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{routing::get, routing::post, Router};
+use axum::Router;
 
 use auth::AuthMiddleware;
 
@@ -961,6 +966,55 @@ async fn run() {
         }
     }
 
+    // DURABLE A2A TASK STATE. A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted
+    // waiting on a human, and can outlive the process that started it. An in-memory task table
+    // therefore loses every in-flight task and every interrupt on restart, which is the difference
+    // between a suspend/resume that is real and one that is nominal. Same shape as the durable audit
+    // above and for the same reasons: the configured governance store is the single durable home
+    // (store-or-RAM rule), attached as a write-through SINK and read back here.
+    //
+    // The RAM default (`store: memory`) implements none of the task methods, so the sink no-ops and
+    // the restore reads nothing — in-flight tasks are ephemeral BY DESIGN there, exactly as the
+    // audit log is. That is reported rather than papered over.
+    if let Some(gov) = app.governance.as_ref() {
+        let store = gov.store();
+        crate::a2a::taskstore::TASKS.set_sink(store.clone());
+        match crate::a2a::taskstore::TASKS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::a2a::taskstore::Rehydrated::default() => {}
+            Ok(r) => {
+                tracing::info!(
+                    active = r.active,
+                    terminal = r.terminal,
+                    unreadable = r.unreadable,
+                    "A2A in-flight tasks rehydrated from the durable governance store"
+                );
+                // An UNREADABLE row is an in-flight task that this binary cannot resume. Reported
+                // separately and at WARN, because summing it into the restored count is how a task
+                // that silently ceased to exist across a deploy stays invisible.
+                if r.unreadable > 0 {
+                    tracing::warn!(
+                        rows = r.unreadable,
+                        "persisted A2A task rows could not be read back and are NOT resumable; \
+                         they were most likely written by a different engine version"
+                    );
+                }
+                // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so
+                // it is logged at ERROR and names the task rather than being folded into a count.
+                for brk in &r.chain_breaks {
+                    tracing::error!(
+                        task_id = %brk.task_id,
+                        break_detail = %brk,
+                        "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not read durable A2A task state; in-flight tasks start empty"
+            ),
+        }
+    }
+
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
@@ -1029,6 +1083,26 @@ async fn run() {
         // exits its own loop on the shutdown broadcast; nothing here needs to join it.
         std::mem::drop(crate::governance::spawn_budget_flusher(
             gov,
+            shutdown_tx.subscribe(),
+        ));
+    }
+
+    // THE A2A RE-VERIFICATION JOB. An approval is a statement about a document at a moment and
+    // nothing keeps it true; the pin catches a change only when somebody looks, and this is what
+    // makes somebody look. Spawned only when `agents:` defines a plane — a deployment that fronts
+    // no agents starts no job — and spawned once here rather than on apply, for the same reason the
+    // flusher is: a second job against the same registry would double every fetch and race every
+    // ledger stamp.
+    if let Some(plane) = app_handle.load().a2a.clone() {
+        tracing::info!(
+            agents = plane.len(),
+            tick_secs = crate::a2a::scheduler::REVERIFY_TICK.as_secs(),
+            "a2a: re-verification job started"
+        );
+        // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
+        // lifetime and exits its own loop on the shutdown broadcast.
+        std::mem::drop(crate::a2a::scheduler::spawn_reverifier(
+            plane,
             shutdown_tx.subscribe(),
         ));
     }
@@ -3629,6 +3703,13 @@ pub(crate) fn build_app_from_config(
         |p| p.boot_route_paths.clone(),
     );
 
+    // THE A2A PLANE, lowered ONCE and read twice below: as the registry the re-verification job
+    // sweeps, and as the source of the dispatch table's A2A admission facts. Lowering it twice would
+    // let the mounted surface and the registry behind it come from two different readings of one
+    // config generation.
+    let a2a_plane =
+        crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref());
+
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
@@ -3660,6 +3741,13 @@ pub(crate) fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
+        agent_defs: cfg.agent_defs.clone(),
+        // THE A2A PLANE, built only when `agents:` defines one. A deployment that fronts no agents
+        // gets `None` here and nothing downstream: no registry, no re-verification job. Built from
+        // THIS generation's config on every apply, deliberately — a registration an operator
+        // removed must stop being re-verified, and one whose pin they changed must be judged
+        // against the pin they now declare.
+        a2a: a2a_plane.clone(),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -3678,6 +3766,43 @@ pub(crate) fn build_app_from_config(
         admin_modules,
         login_methods,
         public_url: cfg.public_url.clone(),
+        // The MCP plane, and the dispatch table that governs it, are built from ONE validated
+        // object in ONE act: the resource that mounts the ingress is the same resource whose
+        // canonical URI becomes the audience the middleware enforces there. Absent `mcp:`, the
+        // dispatch table is empty and `admission_for` answers `None` for every path, so the
+        // audience check costs one `Option` test on the hot path and changes nothing.
+        //
+        // THE SECOND CONSUMER. A2A mounts and admits through the very same two verbs, with its own
+        // strings and no new code in `plane/` — which is the claim that module's own doc made when
+        // it was written for a consumer that did not exist yet. A2A admits only when it has a
+        // RECEIVING side (`A2aPlane::admission` answers `None` without a `public_url`), so a
+        // delegation-only deployment claims no path and binds no audience.
+        planes: Arc::new({
+            let mut dispatch = crate::plane::PlaneDispatch::default();
+            if let Some(r) = cfg.mcp.as_ref() {
+                dispatch = dispatch
+                    .mount(crate::plane::Plane::Mcp, r.mount_path())
+                    .admit(crate::plane::Plane::Mcp, r.admission());
+            }
+            if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
+                dispatch = dispatch
+                    .mount(crate::plane::Plane::A2a, crate::a2a::serve::MOUNT_PATH)
+                    .admit(crate::plane::Plane::A2a, admission);
+            }
+            dispatch
+        }),
+        mcp: cfg.mcp.clone().map(Arc::new),
+        // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
+        // construction, so every config apply — including one that changes nothing about `tools:` —
+        // moves the generation and a call admitted under the previous one is refused at dispatch —
+        // an in-flight call cannot outlive the approval it was admitted under, which is the whole
+        // point of taking the generation here rather than reading config at dispatch time.
+        // Building it beside the `App` is what makes the swap atomic: the
+        // whole `Arc<App>` is replaced under one lock, so there is no window in which the catalogue
+        // and the config that produced it disagree.
+        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
+        mcp_servers: Arc::new(cfg.tool_defs.clone()),
+        mcp_pool: Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),
@@ -3775,15 +3900,22 @@ fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle (both planes mount from it).
     let plugin_routes = app.plugin_routes.clone();
+    // The MCP resource is captured before `app` moves into the handle, for the same reason the
+    // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
+    // set is not something a later hot-swap can rewrite.
+    let mcp = app.mcp.clone();
+    let a2a = app.a2a.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let router = admin::transport::mount(base_data_router(&plugin_routes), &admin::JsonV1);
+    let (router, core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
+    let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
+        core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
@@ -3800,10 +3932,27 @@ fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
-) -> Router<std::sync::Arc<state::AppHandle>> {
-    let router = Router::new()
-        .route("/stats", get(endpoints::stats))
-        .route("/healthz", get(endpoints::healthz));
+    mcp: Option<&crate::mcp::McpResource>,
+    a2a: Option<&std::sync::Arc<crate::a2a::plane::A2aPlane>>,
+) -> (
+    Router<std::sync::Arc<state::AppHandle>>,
+    crate::core_routes::CoreRouteTable,
+) {
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
+    // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
+    // not a thing this function can produce.
+    let router = crate::core_routes::CoreRouter::new()
+        .route("/stats", RouteMethod::Get, RouteAuth::Key, endpoints::stats)
+        // The liveness probe is the one always-open core route: a probe must not require a caller
+        // token. Declared here rather than asserted by the middleware, so the openness belongs to
+        // the route and travels with whichever router mounts it.
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::healthz,
+        );
     // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
     // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
     // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
@@ -3815,7 +3964,12 @@ fn base_data_router(
         // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
         // an external dashboard built against a hook repoints here and just works.
         // Stale-while-revalidate; never blocks on a hook socket.
-        router.route("/metrics/hooks", get(crate::hooks::scrape::handler))
+        router.route(
+            "/metrics/hooks",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            crate::hooks::scrape::handler,
+        )
     } else {
         router
     };
@@ -3825,31 +3979,127 @@ fn base_data_router(
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
         // Governance-scoped like /stats (restricted keys see only their reachable names).
         // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
-        // only; the auth middleware bypasses this exact path (the handler runs the chain itself).
+        // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
+        // needs the identified principal to self-scope the minted key). The declaration is what
+        // confines that bypass to this router: the admin plane, which does not mount the route,
+        // does not inherit its bypass.
         .route(
             crate::auth::exchange::AUTH_TOKEN_PATH,
-            get(crate::auth::token::browser).post(crate::auth::exchange::exchange),
+            RouteMethod::Get,
+            RouteAuth::None,
+            crate::auth::token::browser,
         )
-        .route("/v1/models", get(endpoints::list_models))
-        .route("/v1beta/models", get(endpoints::list_models_v1beta))
-        .route("/{name}/v1/messages", post(ingress::named))
-        .route("/{provider}/{model}/v1/messages", post(ingress::adhoc));
+        .route(
+            crate::auth::exchange::AUTH_TOKEN_PATH,
+            RouteMethod::Post,
+            RouteAuth::None,
+            crate::auth::exchange::exchange,
+        )
+        .route(
+            "/v1/models",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            endpoints::list_models,
+        )
+        .route(
+            "/v1beta/models",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            endpoints::list_models_v1beta,
+        )
+        .route(
+            "/{name}/v1/messages",
+            RouteMethod::Post,
+            RouteAuth::Key,
+            ingress::named,
+        )
+        .route(
+            "/{provider}/{model}/v1/messages",
+            RouteMethod::Post,
+            RouteAuth::Key,
+            ingress::adhoc,
+        );
+    // THE MCP PLANE, mounted only when `mcp:` is configured. A deployment that is not an MCP server
+    // carries none of these routes: no ingress, no metadata document, nothing in the route table and
+    // therefore nothing for the auth middleware to consult. That is the same posture the AS design
+    // requires of its own routes, and it is what makes "is this deployment an MCP server?" a
+    // question the mounted surface answers rather than a config flag someone has to trust.
+    //
+    // The paths are CONCRETE, derived from the operator's canonical URI at mount time. No prefix
+    // matching anywhere: `/.well-known/oauth-protected-resource/mcp` is registered as that exact
+    // string, so the auth middleware's exact-match discipline survives a route whose path is not a
+    // literal (see `core_routes::CoreRoute::path`).
+    let router = match mcp {
+        None => router,
+        Some(resource) => router
+            // RFC 9728 §3: the protected-resource metadata document is READ WITHOUT CREDENTIALS.
+            // It must be — every caller who needs it is by definition one that does not have a
+            // token yet, so requiring one would be a discovery loop with no entrance. This is the
+            // ONE open route on this plane and it says so at the mount, where the openness travels
+            // with the route rather than being asserted from a distance.
+            .route(
+                resource.metadata_path().to_string(),
+                RouteMethod::Get,
+                RouteAuth::None,
+                crate::mcp::resource::metadata,
+            )
+            // The endpoint itself. `RouteAuth::Key` sends it through the normal chain, where the
+            // plane's admission facts make the verifier require this deployment's canonical URI as
+            // the token's audience — the RFC 8707 confused-deputy defence, enforced in the verifier
+            // rather than in the handler so a route added here later cannot forget it.
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Post,
+                RouteAuth::Key,
+                crate::mcp::ingress::rpc,
+            )
+            // GET and DELETE answer 405: this revision has no GET stream and no sessions. They are
+            // `RouteAuth::Key` like the POST, so an anonymous caller gets the 401 challenge and the
+            // 405 is only ever shown to an admitted one — a protected resource should not describe
+            // its own surface before it knows who is asking.
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Get,
+                RouteAuth::Key,
+                crate::mcp::ingress::legacy_verb,
+            )
+            .route(
+                resource.mount_path().to_string(),
+                RouteMethod::Delete,
+                RouteAuth::Key,
+                crate::mcp::ingress::legacy_verb,
+            ),
+    };
+
+    // THE A2A PLANE, mounted on exactly the same terms and by the plane's own module: no `agents:`
+    // (or no `public_url`, so no receiving side) means no route in the table at all, which is what
+    // keeps "is this deployment an A2A server?" a question the mounted surface answers.
+    let router = crate::a2a::ingress::mount(router, a2a);
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
     // route wired after it would never match. The admin-auth routes are mounted on the admin listener
     // instead (see `build_split_routers_with_limits`), physically absent from this data plane.
-    let router = crate::plugin_routes::mount_plugin_routes(router, plugin_routes, false);
+    // They carry their OWN declared auth (`plugin_routes::PluginRouteTable`), so they are outside
+    // the core table by construction rather than by omission.
+    let router =
+        router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
     router
-        // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows through the
-        // catch-all: Router (dumb protocol ID from path+headers) → that protocol's RequestHandler
-        // (reads path+body, decides the operation) → its OperationHandler cell. Adding a protocol or
-        // an operation never touches this file. Unknown paths / wrong methods keep the pre-collapse
-        // native-envelope 404/405 shaping (no bare-proxy tells).
-        .fallback(ingress::protocol_dispatch)
-        // Wrong-method hits on a VALID path (axum's built-in 405) get the same native-envelope
-        // treatment as the 404 fallback above.
-        .method_not_allowed_fallback(method_not_allowed_handler)
+        .map_router(|r| {
+            r
+                // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows
+                // through the catch-all: Router (dumb protocol ID from path+headers) → that
+                // protocol's RequestHandler (reads path+body, decides the operation) → its
+                // OperationHandler cell. Adding a protocol or an operation never touches this file.
+                // Unknown paths / wrong methods keep the pre-collapse native-envelope 404/405
+                // shaping (no bare-proxy tells). A fallback claims no path, so it declares no route:
+                // it takes the normal data-plane bar like any unclaimed path always has.
+                .fallback(ingress::protocol_dispatch)
+                // Wrong-method hits on a VALID path (axum's built-in 405) get the same
+                // native-envelope treatment as the 404 fallback above.
+                .method_not_allowed_fallback(method_not_allowed_handler)
+        })
+        .into_parts()
 }
 
 /// Apply the shared middleware stack — auth chain, request-body cap, 413 reshaping, server-timing —
@@ -3858,6 +4108,7 @@ fn base_data_router(
 /// hot-swaps (they share one `handle`).
 fn apply_common_layers(
     router: Router<std::sync::Arc<state::AppHandle>>,
+    core_routes: crate::core_routes::CoreRouteTable,
     handle: &std::sync::Arc<state::AppHandle>,
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
@@ -3870,6 +4121,12 @@ fn apply_common_layers(
             handle.clone(),
             auth::auth_middleware,
         ))
+        // THIS ROUTER's core route-auth table, handed to the auth middleware. Applied AFTER the
+        // auth layer, which in axum means OUTSIDE it, so the extension is present by the time the
+        // middleware extracts it. Per-router (not per-process) on purpose: the data plane and the
+        // admin plane mount different core routes, and a route's bypass belongs to the plane that
+        // serves it.
+        .layer(axum::Extension(std::sync::Arc::new(core_routes)))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
         // (`limits::translate_body_max_bytes`) — both read the SAME knob so an accepted request is
@@ -3913,11 +4170,15 @@ fn build_split_routers_with_limits(
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
+    let mcp = app.mcp.clone();
+    let a2a = app.a2a.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
+    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
     let data = apply_common_layers(
-        base_data_router(&plugin_routes),
+        data,
+        data_core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
@@ -3927,13 +4188,19 @@ fn build_split_routers_with_limits(
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
     // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route
     // stays behind the admin auth chain.
-    let admin = admin::transport::mount(
-        Router::new().route("/healthz", get(endpoints::healthz)),
-        &admin::JsonV1,
-    );
+    let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            busbar_plugin_loader::RouteMethod::Get,
+            busbar_plugin_loader::RouteAuth::None,
+            endpoints::healthz,
+        )
+        .into_parts();
+    let admin = admin::transport::mount(admin, &admin::JsonV1);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,
+        admin_core_routes,
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
