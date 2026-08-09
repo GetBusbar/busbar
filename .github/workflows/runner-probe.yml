@@ -1,0 +1,17 @@
+name: runner probe (temporary)
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - shell: bash
+        run: |
+          echo "runner=${{ matrix.runner }}"
+          uname -a || true
+          rustc -vV || true
+          python3 -V || python -V || true
