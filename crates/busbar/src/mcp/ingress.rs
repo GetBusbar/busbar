@@ -130,10 +130,16 @@ pub(crate) async fn legacy_verb() -> Response {
 /// made the middleware verify the token's audience against this deployment's canonical URI. Anything
 /// reaching this function is an admitted caller.
 pub(crate) async fn rpc(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The snapshot this request runs on, taken ONCE. `method::Ctx` also carries the handle, because
+    // dispatch re-reads the LIVE snapshot to compare pin generations (§14.2) — a comparison against
+    // this same value could never fail.
+    let app = handle.load();
     // The resource is present whenever this route is mounted — the mount is what creates it. The
     // fallback exists only so a future refactor that mounts the route without the config produces a
     // clean refusal instead of a panic on a request path.
@@ -304,16 +310,27 @@ pub(crate) async fn rpc(
         );
     }
 
-    // (6) DISPATCH. No method is implemented yet, so every well-formed request lands here. `404`
-    // with `-32601` is the required answer for an unimplemented method, and it does not become
-    // wrong when methods are added — it becomes the default arm of the table.
-    error_response(
-        StatusCode::NOT_FOUND,
-        id,
-        code::METHOD_NOT_FOUND,
-        &format!("Method `{method}` is not implemented by this server."),
-        None,
-    )
+    // (6) DISPATCH. The method table owns everything from here: the CATALOGUE reads and the
+    // DISPATCH path, both computed under the caller's grant. A method the table does not carry falls
+    // through to `404` + `-32601`, which was always the correct answer for an unimplemented method
+    // and did not have to change when the table gained entries.
+    let ctx = crate::mcp::method::Ctx {
+        app: &app,
+        handle: &handle,
+        gov: &gov,
+        actor: principal.actor_id(),
+    };
+    let params = obj.get("params");
+    match crate::mcp::method::dispatch(&ctx, method, params, id.clone()) {
+        Some(response) => response,
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            id,
+            code::METHOD_NOT_FOUND,
+            &format!("Method `{method}` is not implemented by this server."),
+            None,
+        ),
+    }
 }
 
 /// Whether `origin` is a LOOPBACK origin, which is always accepted regardless of the operator's
@@ -404,7 +421,10 @@ fn header_mismatch(id: Option<serde_json::Value>, description: &str) -> Response
 
 /// One JSON-RPC error envelope builder, so the status and the code cannot drift apart across the
 /// eight refusals above and every future one.
-fn error_response(
+///
+/// Visible to the method table for exactly that reason: a second builder in `method.rs` would be a
+/// second place for a status and a code to disagree, and the pair is the whole contract.
+pub(super) fn error_response(
     status: StatusCode,
     id: Option<serde_json::Value>,
     code: i64,

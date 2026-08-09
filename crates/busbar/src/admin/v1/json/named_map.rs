@@ -662,6 +662,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
+        NamedMapSection::Tools => app.mcp_servers.servers.contains_key(name),
     }
 }
 
@@ -692,16 +693,22 @@ fn validate_definition(
     }
     let Some(obj) = def.as_object() else {
         return Err(AdminError::Validation(format!(
-            "a {} definition must be an object (`{{\"module\": …}}`)",
+            "a {} definition must be an object",
             section.singular()
         )));
     };
-    let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
-    if module.trim().is_empty() {
-        return Err(AdminError::Validation(format!(
-            "a {} must name its backing plugin via a non-empty `module:`",
-            section.singular()
-        )));
+    // `module:` is required only of a PLUGIN-INSTANCE section. An MCP server is a remote endpoint
+    // somebody else runs; there is no plugin behind it to name, and demanding one would make the
+    // API refuse exactly the definitions `config.yaml` accepts — the two-grammars defect this
+    // handler's `validate_def` call exists to prevent.
+    if section.requires_module() {
+        let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
+        if module.trim().is_empty() {
+            return Err(AdminError::Validation(format!(
+                "a {} must name its backing plugin via a non-empty `module:`",
+                section.singular()
+            )));
+        }
     }
     if let Some(serde_json::Value::Object(settings)) = obj.get("settings") {
         crate::admin::v1::service::validate_hook_settings_size(settings)?;

@@ -12639,6 +12639,10 @@ identity-providers:
   admin-tokens:
     module: admin-tokens
     token: { file: ADMIN_TOKEN_FILE }
+tools:
+  base-mcp:
+    url: https://mcp.internal/fs
+    pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }
 "
         .to_string()
             + if base_export {
@@ -12722,6 +12726,18 @@ async fn named_map_app_opts(
             serde_json::from_value(serde_json::json!({
                 "module": "admin-tokens",
                 "token": {"file": dir.join("admin.token").to_string_lossy()}
+            }))
+            .unwrap(),
+        )
+        // The MCP plane's base entry, seeded to match the file exactly — same reason the
+        // identity-provider and export base entries are: a `TestApp` does not parse config.yaml, so
+        // without this the read surface and disk truth would disagree and the base-protection guard
+        // would be measuring the disagreement rather than the guard.
+        .mcp_server(
+            "base-mcp",
+            serde_json::from_value(serde_json::json!({
+                "url": "https://mcp.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
             }))
             .unwrap(),
         );
@@ -13629,6 +13645,9 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
+        // The MCP plane has no backing plugin, so its valid definition names no `module:` at all —
+        // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
+        "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
     // (label, method, relative path, If-Match, body, want status, want code)
@@ -13645,6 +13664,7 @@ async fn drive_named_map_errors() {
     for (section, base) in [
         ("identity-providers", "base-idp"),
         ("export", "base-metrics"),
+        ("tools", "base-mcp"),
     ] {
         let c = |label: &str,
                  method: &'static str,
@@ -13685,7 +13705,11 @@ async fn drive_named_map_errors() {
                 "invalid_request",
             ),
             c(
-                "put_empty_module",
+                // On a plugin-instance section this is the empty-`module:` guard. On `tools:` there
+                // is no `module:` at all, so the same document is refused by the typed
+                // `deny_unknown_fields` parse — one status, two reasons, and both are the section's
+                // own grammar rather than a hardcoded rule in the handler.
+                "put_bad_definition",
                 "PUT",
                 format!("/{section}/x"),
                 None,
@@ -13871,7 +13895,7 @@ async fn drive_named_map_errors() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        for section in ["identity-providers", "export"] {
+        for section in ["identity-providers", "export", "tools"] {
             for (label, method, rel, body) in [
                 (
                     "put",

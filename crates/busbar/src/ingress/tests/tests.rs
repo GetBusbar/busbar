@@ -21,6 +21,8 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
+        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
+        mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
         // path in this fixture is asserted against.
         mcp: None,

@@ -293,6 +293,10 @@
         "tls": {
           "optional": true,
           "type": "TlsCfg"
+        },
+        "tools": {
+          "optional": true,
+          "type": "crate::mcp::config::ToolsCfg"
         }
       },
       "kind": "struct",

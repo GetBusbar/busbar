@@ -194,7 +194,10 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 66, "expected exactly 66 admin operations");
+    // 71 = 66 + the five generic named-map routes the `tools:` section (1.5.5 MCP) adds. The
+    // count is a FLOOR-and-CEILING on purpose: a route added without a stable `operationId`, and a
+    // route silently removed, both land here.
+    assert_eq!(checked, 71, "expected exactly 71 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -578,6 +581,7 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // `If-Match`. Enumerated per section so a new section shows up here as a deliberate edit.
         ("delete", "/api/v1/admin/identity-providers/{name}"),
         ("delete", "/api/v1/admin/export/{name}"),
+        ("delete", "/api/v1/admin/tools/{name}"),
     ];
 
     let doc = openapi_doc();
@@ -636,8 +640,8 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 22,
-        "22 mutating operations take a body; a change here is a deliberate API change"
+        declared, 24,
+        "24 mutating operations take a body; a change here is a deliberate API change. 24 = 22 +          the `tools:` section's PUT and PATCH-settings (its DELETE is bodyless, above)"
     );
 }
 

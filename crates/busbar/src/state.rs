@@ -397,6 +397,30 @@ pub(crate) struct App {
     /// the mount path from this ONE object, so the value advertised to clients and the value the
     /// verifier compares against cannot be two different strings.
     pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
+    /// THE MCP CATALOGUE SNAPSHOT for this config generation (`mcp-design.md` §3.9a): every
+    /// registered server, its approved tools/prompts/resources, and the monotonic PIN GENERATION the
+    /// snapshot was built under.
+    ///
+    /// It rides the `App` because that is where the atomic swap already is — a config apply replaces
+    /// the whole `Arc<App>` under one lock, so the catalogue is replaced atomically without a second
+    /// hot-swap mechanism to keep correct. The generation is what makes the swap DETECTABLE from
+    /// inside a request: dispatch re-reads the live snapshot and refuses a call whose identity was
+    /// resolved under a generation the operator has since replaced (§14.2), which is the defence
+    /// §3.9b used to spell as session tombstoning and which a stateless protocol reduces to this.
+    ///
+    /// Present even on a deployment with no `tools:` block, as an EMPTY catalogue. `Option` would
+    /// have made "MCP is not configured" and "MCP is configured with nothing registered" the same
+    /// value, and they answer differently: the first has no endpoint, the second answers every
+    /// catalogue with an empty list.
+    pub(crate) mcp_catalogue: Arc<crate::mcp::catalogue::Catalogue>,
+    /// The `tools:` REGISTRY as the operator wrote it — operator INTENT (owner ruling 3), carried
+    /// beside the catalogue that is derived from it.
+    ///
+    /// Both, and not one: the catalogue is the answer-shaped projection the data plane reads, and
+    /// this is the definition-shaped document the ADMIN plane reads and writes. Deriving the admin
+    /// read back out of the catalogue would mean reconstructing what the operator typed from what
+    /// busbar computed, and a round trip that loses a field loses it silently.
+    pub(crate) mcp_servers: Arc<crate::mcp::config::ToolsCfg>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

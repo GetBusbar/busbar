@@ -3697,6 +3697,14 @@ pub(crate) fn build_app_from_config(
                 }),
         ),
         mcp: cfg.mcp.clone().map(Arc::new),
+        // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
+        // construction, so every config apply — including one that changes nothing about `tools:` —
+        // moves the generation and a call admitted under the previous one is refused at dispatch
+        // (`mcp-design.md` §14.2). Building it beside the `App` is what makes the swap atomic: the
+        // whole `Arc<App>` is replaced under one lock, so there is no window in which the catalogue
+        // and the config that produced it disagree.
+        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
+        mcp_servers: Arc::new(cfg.tool_defs.clone()),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),

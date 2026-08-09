@@ -737,6 +737,7 @@ pub(crate) struct TestApp {
     /// The validated MCP resource for the built App. `None` (the default) = not an MCP server, and
     /// the built router mounts no MCP route at all — which is what every pre-existing test expects.
     mcp: Option<crate::mcp::McpResource>,
+    tool_defs: crate::mcp::config::ToolsCfg,
     role_bindings: Option<crate::config::RoleBindings>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
@@ -774,6 +775,7 @@ pub(crate) struct TestApp {
 impl TestApp {
     pub(crate) fn new() -> Self {
         Self {
+            tool_defs: Default::default(),
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
@@ -977,6 +979,24 @@ impl TestApp {
     pub(crate) fn mcp(mut self, cfg: &crate::mcp::McpCfg) -> Self {
         self.mcp =
             Some(crate::mcp::McpResource::from_cfg(cfg).expect("test mcp config must be valid"));
+        self
+    }
+
+    /// Register one `tools:` entry — one MCP server — through the SAME value validation the file
+    /// path and the admin write path run.
+    ///
+    /// It validates rather than accepting the struct: a test that hand-assembled a registration
+    /// could declare a combination boot refuses (an `unpinned` server carrying key material, a
+    /// `stdio` transport nothing implements) and would then be asserting against a deployment that
+    /// cannot exist.
+    pub(crate) fn mcp_server(
+        mut self,
+        name: &str,
+        def: crate::mcp::config::McpServerDefCfg,
+    ) -> Self {
+        crate::mcp::config::validate_server(name, &def)
+            .expect("test tools: entry must be valid config");
+        self.tool_defs.servers.insert(name.to_string(), def);
         self
     }
 
@@ -1192,6 +1212,10 @@ impl TestApp {
                 },
             )),
             mcp: self.mcp.clone().map(std::sync::Arc::new),
+            mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
+                &self.tool_defs,
+            )),
+            mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),

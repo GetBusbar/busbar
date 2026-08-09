@@ -394,6 +394,14 @@ pub(crate) struct RootCfg {
     /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
     /// re-parses the canonical URI or re-derives the mount path.
     pub(crate) mcp: Option<crate::mcp::McpResource>,
+    /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
+    ///
+    /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
+    /// happens to it is building the catalogue snapshot, which is a separate value with its own
+    /// generation. Lowering it here would give the registry two representations that could disagree
+    /// about what the operator approved, which is precisely the disagreement §12.2 removes from the
+    /// trust lifecycle by deriving state instead of storing it.
+    pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -2617,6 +2625,16 @@ pub(crate) struct DeployCfg {
     /// [`crate::mcp::McpCfg`].
     #[serde(default)]
     pub(crate) mcp: Option<crate::mcp::McpCfg>,
+    /// The top-level `tools:` NAMED-DEFINITION map (1.5.5) — THE MCP PLANE's registry: server name →
+    /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
+    /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
+    /// section an entry is written in IS which plane it is on (`mcp-design.md` §5.1).
+    ///
+    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
+    /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
+    /// exposes (the rooms). A deployment may configure either without the other.
+    #[serde(default)]
+    pub(crate) tools: crate::mcp::config::ToolsCfg,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
@@ -4230,6 +4248,24 @@ pub(crate) fn resolve(
     // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
+    // THE `tools:` PLANE's hook references, held to the SAME rules as the pool plane's: bare names
+    // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
+    // silently dropped attachment. A dropped reference leaves an operator believing a control is
+    // attached that is not, which is worse than the typo it came from.
+    if let Err(e) = crate::mcp::config::validate_section_hooks(&deploy.tools.all_server_hooks) {
+        errors.push(e);
+    }
+    for (server, def) in &deploy.tools.servers {
+        for hook in deploy.tools.all_server_hooks.iter().chain(def.hooks.iter()) {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
+                     `hooks:` map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
+
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
     // behind a bearer token alone. Loopback binds are safe (unreachable off-host); an explicit
@@ -4289,6 +4325,7 @@ pub(crate) fn resolve(
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
             mcp,
+            tool_defs: deploy.tools.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),

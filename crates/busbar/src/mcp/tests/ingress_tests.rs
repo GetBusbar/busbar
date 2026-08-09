@@ -44,6 +44,15 @@ async fn serve(origins: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
 
 /// A well-formed request envelope for `method`. Every mirrored header agrees with the body, so a
 /// test that wants a mismatch introduces exactly one and nothing else can be responsible.
+/// A method the server genuinely does NOT implement.
+///
+/// Before the method table landed, EVERY method took the `-32601` arm, so any name served as the
+/// "the request reached dispatch" control. Now that `tools/*`, `prompts/*`, `resources/*` and
+/// `server/discover` answer, a control has to be a method that is really absent — otherwise the
+/// tests below would be asserting `404` against a surface that returns `200`, and the day one of
+/// them turned green for the wrong reason nobody would know which.
+const UNIMPLEMENTED: &str = "completion/complete";
+
 fn well_formed(method: &str) -> (serde_json::Value, Vec<(&'static str, String)>) {
     // `_meta` sits under `params`, which is where the schema puts it and where every real client
     // sends it. An earlier version of this helper put it at the top level; the tests all passed and
@@ -100,7 +109,7 @@ fn err(v: &serde_json::Value) -> i64 {
 #[tokio::test]
 async fn an_unimplemented_method_is_404_with_method_not_found() {
     let (url, h) = serve(Vec::new()).await;
-    let (body, headers) = well_formed("tools/list");
+    let (body, headers) = well_formed(UNIMPLEMENTED);
     let (status, json) = post(&url, &body, &headers).await;
     assert_eq!(status, 404, "an unimplemented method must not be a 200");
     assert_eq!(err(&json), -32601);
@@ -136,7 +145,7 @@ async fn get_and_delete_are_405_because_the_stream_and_sessions_are_gone() {
 #[tokio::test]
 async fn a_session_id_header_is_ignored_and_never_echoed() {
     let (url, h) = serve(Vec::new()).await;
-    let (body, mut headers) = well_formed("tools/list");
+    let (body, mut headers) = well_formed(UNIMPLEMENTED);
     headers.push(("mcp-session-id", "stale-session".to_string()));
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(&body);
@@ -251,10 +260,10 @@ async fn the_name_header_is_required_where_it_is_required_and_decoded_before_com
     let mut ok = base.clone();
     ok.push(("mcp-name", "search".to_string()));
     let (status, json) = post(&url, &body, &ok).await;
-    assert_eq!(
+    assert_ne!(
         (status, err(&json)),
-        (404, -32601),
-        "an agreeing Mcp-Name must reach dispatch"
+        (400, -32020),
+        "an agreeing Mcp-Name must reach dispatch, not the header-mismatch arm"
     );
 
     // The base64 sentinel decodes before comparison. A server comparing the ENCODED form would
@@ -262,9 +271,9 @@ async fn the_name_header_is_required_where_it_is_required_and_decoded_before_com
     let mut sentinel = base.clone();
     sentinel.push(("mcp-name", format!("=?base64?{}?=", b64("search"))));
     let (status, json) = post(&url, &body, &sentinel).await;
-    assert_eq!(
+    assert_ne!(
         (status, err(&json)),
-        (404, -32601),
+        (400, -32020),
         "a sentinel-encoded Mcp-Name that decodes to the body's name must be accepted"
     );
 
@@ -294,20 +303,19 @@ async fn the_name_header_is_required_where_it_is_required_and_decoded_before_com
         ("mcp-name", "file:///a".to_string()),
     ];
     let (status, json) = post(&url, &body, &read).await;
-    assert_eq!(
+    assert_ne!(
         (status, err(&json)),
-        (404, -32601),
-        "resources/read uses uri"
+        (400, -32020),
+        "resources/read mirrors params.uri, so an agreeing header is not a mismatch"
     );
 
     // And it is NOT required on a method that does not take a target. Requiring it everywhere would
     // refuse conforming clients.
     let (list_body, list_headers) = well_formed("tools/list");
-    let (status, json) = post(&url, &list_body, &list_headers).await;
+    let (status, _json) = post(&url, &list_body, &list_headers).await;
     assert_eq!(
-        (status, err(&json)),
-        (404, -32601),
-        "tools/list must not require Mcp-Name"
+        status, 200,
+        "tools/list must not require Mcp-Name, and it is now an implemented method"
     );
 
     h.abort();
@@ -410,12 +418,12 @@ async fn an_origin_is_refused_unless_the_operator_listed_it() {
     let (body, headers) = well_formed("tools/list");
 
     let (status, _) = post(&url, &body, &headers).await;
-    assert_eq!(status, 404, "no Origin at all must be unaffected");
+    assert_eq!(status, 200, "no Origin at all must be unaffected");
 
     let mut allowed = headers.clone();
     allowed.push(("origin", "https://app.example.com".to_string()));
     let (status, _) = post(&url, &body, &allowed).await;
-    assert_eq!(status, 404, "a listed Origin must be admitted");
+    assert_eq!(status, 200, "a listed Origin must be admitted");
 
     // LOOPBACK is always allowed, allowlist or not. A browser sends a loopback `Origin` only for a
     // document served FROM loopback, which is already inside the trust boundary; the rebinding
@@ -430,7 +438,7 @@ async fn an_origin_is_refused_unless_the_operator_listed_it() {
         let mut loopback = headers.clone();
         loopback.push(("origin", local.to_string()));
         let (status, _) = post(&url, &body, &loopback).await;
-        assert_eq!(status, 404, "loopback Origin `{local}` must be admitted");
+        assert_eq!(status, 200, "loopback Origin `{local}` must be admitted");
     }
 
     for bad in [
@@ -469,11 +477,11 @@ async fn the_default_origin_allowlist_is_empty_and_therefore_closed() {
     loopback.push(("origin", "http://localhost:3999".to_string()));
     let (status, _) = post(&url, &body, &loopback).await;
     assert_eq!(
-        status, 404,
+        status, 200,
         "loopback is admitted even with an empty allowlist"
     );
     let (status, _) = post(&url, &body, &headers).await;
-    assert_eq!(status, 404, "an agent sending no Origin is still served");
+    assert_eq!(status, 200, "an agent sending no Origin is still served");
     h.abort();
 }
 

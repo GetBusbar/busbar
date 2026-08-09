@@ -271,11 +271,13 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
 
     // THE CONTROL, and it comes first because without it the refusals below prove only that this
     // deployment refuses everything. A token naming THIS resource is admitted and reaches the MCP
-    // handler, which answers 404/-32601 because no method is implemented yet.
+    // handler, which answers `tools/list` with the (empty, on this deployment) grant-scoped
+    // catalogue. It used to answer 404/-32601 because no method was implemented; the assertion moved
+    // with the surface, and it is still the same control.
     let ours = call(jwt(&format!(r#"{{"aud":"{CANONICAL}","sub":"alice"}}"#))).await;
     assert_eq!(
         ours.status().as_u16(),
-        404,
+        200,
         "a token minted for this resource must be admitted and reach the MCP handler — without \
          this the refusals below are indistinguishable from a closed door"
     );

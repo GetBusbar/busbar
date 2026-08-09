@@ -95,6 +95,23 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
         // Give `McpCfg` a `SecretRef`-typed field later and this breaks again, which is correct.
         mcp: _,
+        // `tool_defs` carries NO credential TODAY, and the claim is checkable rather than asserted:
+        // `McpServerDefCfg` is `url` + `pin` + three capability MAPS + `transport` + `aud` +
+        // `grants` + `max_input_required_rounds` + `upstream_credentials` + `hooks`, and there is no
+        // `SecretRef` anywhere under `mcp/`.
+        //   * `pin.key` is a VERIFICATION value (an issuer public key or a certificate SPKI hash).
+        //     Publishing it would cost nothing; it is the operator's trust root, not their secret.
+        //   * `aud` is an RFC 8707 resource indicator — an identifier the authorization server is
+        //     asked to mint FOR, and one that appears in a token any upstream can read.
+        //   * `upstream_credentials` is `Own | Passthrough`, a `Copy` mode selector — the same type
+        //     the top-level `upstream_credentials: _` above already declines for the same reason.
+        //   * the three `*_allow` maps hold approved hashes, descriptions and schemas, all of which
+        //     are published verbatim in `tools/list`.
+        // WHEN §5.1's per-server `credential:` (`kind: secret`) ref lands, a server WILL hold a
+        // `SecretRef` and this arm must start walking it. That is not left to memory:
+        // `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE, so the layer-2 test fails with
+        // the type named the moment one appears here.
+        tool_defs: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();

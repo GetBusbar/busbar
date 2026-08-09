@@ -1235,6 +1235,7 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
+            NamedMapSection::Tools => crate::mcp::admin_view::list(&self.app),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1270,6 +1271,7 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
+            NamedMapSection::Tools => crate::mcp::admin_view::get(&self.app, name),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a

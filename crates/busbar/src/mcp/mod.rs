@@ -51,16 +51,33 @@
 //! - `Origin` validation is a MUST, `403` on an invalid one — the DNS-rebinding defence for a
 //!   gateway that may be reachable from a browser context.
 //!
+//! ## The rooms behind the door
+//!
+//! The JSON-RPC method surface — the CATALOGUE (`tools/list`, `prompts/list`, `resources/list`,
+//! `server/discover`) and DISPATCH (`tools/call`, `prompts/get`, `resources/read`) — lives in
+//! [`method`], computed over the versioned snapshot in [`catalogue`], scoped by the caller's key
+//! grants, sanitised by [`sanitize`] and bounded by [`inputreq`]. A method absent from that table
+//! still takes the `404` / `-32601` arm, which was never a placeholder: it is the correct answer for
+//! an unimplemented method and it stayed correct unchanged when the table gained entries.
+//!
+//! The registry those answers are computed from is the `tools:` config block ([`config`]), which is
+//! the MCP plane in the same sense `pools:` is the LLM plane.
+//!
 //! ## What is deliberately NOT here
 //!
-//! The JSON-RPC method surface itself — `tools/list`, `tools/call`, the CATALOGUE and DISPATCH paths
-//! — is a separate unit and is not mounted by this module. Every method therefore resolves to the
-//! `404` / `-32601` arm today, which is not a placeholder: it is the correct answer for a server
-//! that implements no methods, and it stays correct unchanged once the method table has entries.
-//! What this module owns is the door, not the rooms.
+//! The CLIENT direction (§2.1). Nothing in this module opens a connection to an upstream MCP server,
+//! so a `tools/call` runs every governance check and then fails at the round trip with a
+//! busbar-attributed error. That is stated in [`method::dispatch_upstream`] rather than papered over
+//! with a stub result, because a fake result makes every check above it pass for the wrong reason.
 
+pub(crate) mod admin_view;
+pub(crate) mod catalogue;
+pub(crate) mod config;
 pub(crate) mod ingress;
+pub(crate) mod inputreq;
+pub(crate) mod method;
 pub(crate) mod resource;
+pub(crate) mod sanitize;
 
 use serde::{Deserialize, Serialize};
 

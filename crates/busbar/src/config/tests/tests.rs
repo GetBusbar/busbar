@@ -41,6 +41,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 /// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
+        tools: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
         mcp: None,
