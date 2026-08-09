@@ -140,7 +140,7 @@ pub(crate) enum Refusal {
     ///
     /// Deliberately narrow. `input-required-result-missing-input-response` makes re-asking a
     /// `SHOULD`, and that case — a caller sending `inputResponses` with no state, or with the wrong
-    /// keys — lands on round 0 and is answered with a fresh ask rather than here. What is left is a
+    /// keys — lands on the opening round and is answered with a fresh ask rather than here. What is left is a
     /// caller holding good state that answered nothing, which is not a caller that can be helped by
     /// being asked the same thing again.
     Unanswered { capability: String, missing: String },
@@ -254,7 +254,7 @@ pub(crate) fn decide(
     }
 
     // (2) WHICH ROUND IS THIS? Read from the sealed state, never from a counter busbar holds between
-    // requests and never from anything the caller can write. A caller with no state is at round 0.
+    // requests and never from anything the caller can write. A caller with no state has not started one.
     let next_round = match retry.state {
         None => {
             // `mrtr.mdx` client requirements: a client MUST NOT invent state. Responses without one
@@ -301,7 +301,7 @@ pub(crate) fn decide(
     };
 
     // (5) A round past the first must actually have been answered. `missing-input-response` makes
-    // re-asking the SHOULD, and that case lands on round 0 above and is answered with a fresh ask.
+    // re-asking the SHOULD, and that case lands on the opening round above and is answered with a fresh ask.
     if next_round > 0 {
         let answered = retry
             .responses

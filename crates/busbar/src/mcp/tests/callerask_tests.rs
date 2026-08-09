@@ -100,7 +100,7 @@ fn a_capability_that_declares_no_ask_refuses_state_rather_than_verifying_it() {
     ));
 }
 
-/// Round 1: the configured ask, sealed, with the state busbar minted.
+/// The opening round: the configured ask, sealed, with the state busbar minted.
 #[test]
 fn a_configured_ask_is_emitted_with_state_busbar_minted() {
     let rounds = vec![round("user_name", "elicitation/create")];
@@ -110,7 +110,7 @@ fn a_configured_ask_is_emitted_with_state_busbar_minted() {
         round,
     } = decide_with(&rounds, &all_capabilities(), Retry::default())
     else {
-        panic!("round 1 must ask");
+        panic!("the first round must ask");
     };
     assert_eq!(round, 0);
     assert_eq!(asks.len(), 1);
@@ -191,7 +191,7 @@ fn a_retry_carrying_busbars_own_state_proceeds_to_dispatch() {
     let AskDecision::Ask { request_state, .. } =
         decide_with(&rounds, &all_capabilities(), Retry::default())
     else {
-        panic!("round 1 asks");
+        panic!("the first round asks");
     };
     let responses =
         serde_json::json!({ "user_name": { "action": "accept", "content": { "name": "Alice" } } });
@@ -217,7 +217,7 @@ fn a_tampered_state_is_refused_and_is_not_answered_with_another_ask() {
     let AskDecision::Ask { request_state, .. } =
         decide_with(&rounds, &all_capabilities(), Retry::default())
     else {
-        panic!("round 1 asks");
+        panic!("the first round asks");
     };
     let tampered = format!("{request_state}-TAMPERED");
     let responses = serde_json::json!({ "user_name": { "action": "accept", "content": {} } });
@@ -247,7 +247,7 @@ fn one_callers_state_is_not_redeemable_by_another() {
     let AskDecision::Ask { request_state, .. } =
         decide_with(&rounds, &all_capabilities(), Retry::default())
     else {
-        panic!("round 1 asks");
+        panic!("the first round asks");
     };
     let responses = serde_json::json!({ "user_name": { "action": "accept", "content": {} } });
     let mut b = bind();
@@ -285,7 +285,7 @@ fn a_second_round_asks_again_with_a_different_state() {
         request_state: s1, ..
     } = decide_with(&rounds, &all_capabilities(), Retry::default())
     else {
-        panic!("round 1 asks");
+        panic!("the first round asks");
     };
     let responses = serde_json::json!({ "step1": { "action": "accept", "content": {} } });
     let AskDecision::Ask {
@@ -301,12 +301,12 @@ fn a_second_round_asks_again_with_a_different_state() {
         },
     )
     else {
-        panic!("round 2 asks again");
+        panic!("the second round asks again");
     };
     assert_eq!(round, 1);
     assert_eq!(asks[0].key, "step2");
     assert_ne!(s1, s2, "the suite requires the state to have changed");
-    // And round 3 completes.
+    // And the third round completes.
     let responses2 = serde_json::json!({ "step2": { "action": "accept", "content": {} } });
     assert_eq!(
         decide_with(
@@ -322,7 +322,7 @@ fn a_second_round_asks_again_with_a_different_state() {
 }
 
 /// THE BOUND, and the replay it exists to stop. A caller that keeps presenting round-1 state keeps
-/// being at round 1 — it cannot walk past the cap, because the index is inside the seal and not in
+/// being at the first round — it cannot walk past the cap, because the index is inside the seal and not in
 /// anything the caller writes.
 #[test]
 fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
