@@ -205,6 +205,21 @@ hdr "no engine type reaching an admin read carries a raw operator settings bag"
 CANDIDATES=()
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src -name '*.rs' -not -path '*/tests/*' | sort)
 
+# ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
+# Rename `crates/busbar`, move the engine, or mistype the root and this lint reports `ok` forever
+# while nothing is scanned. The floor is not `> 0` (one file is as vacuous as none): it tracks the
+# real tree (123 files when written) with slack for genuine consolidation.
+SCAN_FLOOR=100
+if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
+  hdr "result"
+  note "settings-leak-lint FAILED — SCAN ROOT EMPTY OR MOVED"
+  note "found ${#CANDIDATES[@]} non-test .rs files under crates/busbar/src, expected >= ${SCAN_FLOOR}."
+  note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
+  note "If the engine crate legitimately moved, update the find root above AND this floor together."
+  exit 1
+fi
+note "scan set: ${#CANDIDATES[@]} files under crates/busbar/src (floor ${SCAN_FLOOR})"
+
 hits=""
 for f in "${CANDIDATES[@]}"; do
   h=$(scan_rule "$f") || true

@@ -326,7 +326,21 @@ jobs:
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
-        run: cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `openapi` is a SUBSTRING filter; a filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
+          # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
+          # that quietly collapsed to a single surviving test would still be a coverage hole.
+          out="$(cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
+          if [ "$n" -lt 8 ]; then
+            echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
+            echo "::error::A zero/low-match 'cargo test' exits 0 — this is NOT a pass. Fix the filter"
+            echo "::error::(or lower this floor deliberately, in the same commit that removes tests)."
+            exit 1
+          fi
+          echo "OpenAPI suite: ${n} tests ran (floor 8)"
 
   # CONFIG-STABILITY gate. 1.5.3 is the LAST config-breaking release; after
   # it the config grammar is FROZEN and every future feature may add only NEW OPTIONAL keys/sections/
@@ -459,7 +473,9 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 scripts/executable-config-lint.py --busbar target/debug/busbar --selftest
       - name: Executable-config gate
-        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root .
+        # --min-docs: the gate is vacuously green over an empty extraction set. 50 documents are
+        # found today; the floor is 40 so genuine churn passes and a collapsed extractor cannot.
+        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root . --min-docs 40
 
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in auth plugin
   # COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that provably
@@ -560,7 +576,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Hot-path timing gate
-        run: cargo test --release --locked timing_gate -- --ignored
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT. `timing_gate` is a SUBSTRING filter and these tests are
+          # `#[ignore]`d, so this job is their ONLY execution anywhere. A filter that matches nothing
+          # prints "running 0 tests / test result: ok" and EXITS 0 — rename the tests and the hot-path
+          # timing gate is green forever having measured nothing, with no other job to notice.
+          out="$(cargo test --release --locked timing_gate -- --ignored 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
+            echo "::error::the hot-path timing gate ran ZERO tests (renamed, moved, or un-ignored?)."
+            echo "::error::A zero-match 'cargo test' exits 0 — this is NOT a pass."
+            exit 1
+          }
 
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
   windows:
