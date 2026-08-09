@@ -1,0 +1,154 @@
+name: MCP conformance
+
+# WHERE THIS RUNS, AND WHY IT RUNS HERE.
+#
+# A conformance battery is a statement ABOUT BUSBAR, so it belongs where busbar is built and where a
+# red blocks the release it is about. These legs used to be attempted in the private design repo, on
+# a Gitea instance with no registered runners for it: eight jobs never scheduled and stayed
+# permanently red, and the only two that reported success had executed nothing. A standing red
+# nobody can make green teaches everyone to ignore the repo's status, so the first REAL conformance
+# failure would have looked exactly like the eight expected ones.
+#
+# busbar is a PUBLIC repo, so GitHub-hosted runners are free and already available. That is the
+# org rule (public → `ubuntu-latest`, private → `busbar-selfhosted`) and it is why nothing here
+# needs provisioning.
+#
+# INDEPENDENCE IS A PROPERTY OF AUTHORSHIP, NOT OF LOCATION. The official suite is written and
+# maintained by the people who write the MCP specification and shares none of busbar's code; running
+# it from busbar's CI does not make it ours. What WOULD compromise it is letting product knowledge
+# into the harness, which is why the governance tier (budget, policy, rate limits, tool-list hash
+# pinning, abuse detection) is deliberately NOT run from here.
+#
+# THE TWO-LEG RULE, which is the whole shape of this file:
+#
+#   CONTROL runs ALWAYS. A battery that cannot judge a known-good third-party peer cannot be trusted
+#   to judge ours. A red control leg is a finding about the harness, the pin or the runner — never
+#   about busbar — and it must be visible BEFORE any subject verdict is believed.
+#
+#   SUBJECT SKIPS until armed by one repository variable naming a running busbar MCP endpoint. It
+#   does NOT fail. A job that is red today for a reason that is not a defect is how red stops meaning
+#   defect. The counterweight is in the script: once armed, a run that executes fewer than the full
+#   required scenario set is a HARD failure, because "armed but vacuous" is the state a skip rots
+#   into.
+#
+# This is a separate workflow rather than a job in ci.yml on purpose: the control leg builds a
+# 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
+on:
+  push:
+    branches: [main, dev, qa]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-selftest:
+    name: gate self-test (the coverage assertion cannot be lied to)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # FIRST, and separately from any verdict. The same discipline structure-lint and
+      # no-plugins-gate follow: never trust a gate's verdict before proving the gate still works.
+      # The self-test plants three runs that MUST be refused (no results at all; a run missing a
+      # required scenario; an empty requirement set) and two that must be accepted, so a green below
+      # cannot be produced by an assertion that refuses everything or accepts everything.
+      - name: Prove the anti-vacuity assertion bites
+        run: ./scripts/mcp-conformance.sh --selftest
+
+  official-control:
+    name: official suite · CONTROL (pinned reference SDK)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    # The control peer is a full third-party workspace build. Generous, because a timeout here would
+    # be a red that is not a defect — the exact thing this workflow is arranged to avoid.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      # The control peer's repo pins pnpm through its own lockfile. Installed explicitly rather than
+      # via corepack so the version is visible in the log when a build breaks.
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+      - name: Judge the pinned reference SDK
+        run: ./scripts/mcp-conformance.sh --official-control
+      - name: Publish the control results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-official-control
+          path: .mcp-conformance/control
+          if-no-files-found: warn
+
+  official-subject:
+    name: official suite · SUBJECT (busbar, skips until armed)
+    needs: official-control
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      # `vars`, not `secrets`: an endpoint URL is not a credential, and putting it in `secrets` would
+      # mask it out of the very logs someone debugging an armed run needs to read.
+      - name: Judge busbar
+        env:
+          MCP_CONFORMANCE_SUBJECT_URL: ${{ vars.MCP_CONFORMANCE_SUBJECT_URL }}
+        run: ./scripts/mcp-conformance.sh --official-subject
+      - name: Publish the subject results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-official-subject
+          path: .mcp-conformance/subject
+          if-no-files-found: ignore
+
+  battery:
+    name: in-house battery · CONTROL + SUBJECT (skips until available)
+    needs: gate-selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # THE HONEST GAP, stated here rather than hidden in a green check: the in-house adversarial
+      # and seam battery lives in the private design repo, which is served from a self-hosted host.
+      # It is NOT vendored into this repo, so this job cannot run it by default and skips. That is a
+      # weaker position than the official legs above, which need nothing private and always run —
+      # and it is a decision the owner owes rather than one this workflow should paper over. The two
+      # options are vendoring the battery here (it contains no product knowledge by construction, so
+      # publishing it is safe and arguably makes it more credible) or accepting a release gate that
+      # depends on a self-hosted host being up.
+      - name: Fetch the in-house battery, if reachable
+        id: battery
+        continue-on-error: true
+        env:
+          BATTERY_REPO: ${{ secrets.BUSBAR_PRIVATE_REPO_URL }}
+          BATTERY_REF: ${{ vars.BUSBAR_PRIVATE_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BATTERY_REPO:-}" ]; then
+            echo "BUSBAR_PRIVATE_REPO_URL is not set; the in-house battery will be skipped."
+            exit 0
+          fi
+          git clone --filter=blob:none "$BATTERY_REPO" /tmp/busbar-private
+          git -C /tmp/busbar-private checkout "${BATTERY_REF:-HEAD}"
+          echo "dir=/tmp/busbar-private/testing/mcp-conformance" >> "$GITHUB_OUTPUT"
+      - name: Control leg
+        env:
+          MCP_BATTERY_DIR: ${{ steps.battery.outputs.dir }}
+        run: ./scripts/mcp-conformance.sh --battery-control
+      - name: Subject leg
+        env:
+          MCP_BATTERY_DIR: ${{ steps.battery.outputs.dir }}
+          MCP_SUBJECT_SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
+        run: ./scripts/mcp-conformance.sh --battery-subject

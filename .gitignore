@@ -1,5 +1,8 @@
 # Rust
 /target/
+# Alternate target dirs. Default-features and `--no-default-features` builds MUST NOT share one:
+# proven to make a test shell out to the wrong binary and report a false green.
+/target-*/
 **/*.rs.bk
 *.pdb
 
@@ -53,3 +56,10 @@ mutants-report-live/
 # full suite. Untracked, a failing proptest would trip that assertion TOO, so one flake reports as
 # two failures and the second points at the wrong thing entirely.
 crates/*/proptest-regressions/
+
+# MCP conformance scratch: the pinned third-party control peer's checkout and every run's results.
+# Both are outputs of `scripts/mcp-conformance.sh`, rebuilt from a pin on every run, and a committed
+# results directory is worse than none — a gate that falls back to a stale report is a gate that
+# reports a state it never reached.
+/.mcp-conformance/
+/.sdk-under-test/
