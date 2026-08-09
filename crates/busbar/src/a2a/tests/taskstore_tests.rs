@@ -375,7 +375,7 @@ fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
     );
 }
 
-// ── §7.7: cross-tenant scoping ───────────────────────────────────────────────────────────────
+// ── cross-tenant scoping ─────────────────────────────────────────────────────────────────────
 
 /// A caller may never name or read another tenant's task, and CANNOT TELL a foreign id from a
 /// nonexistent one — a distinguishable not-found is an id-space enumeration oracle.
@@ -418,7 +418,7 @@ fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
     assert!(reg.get_unscoped("t-paused").is_some());
 }
 
-// ── §7.6: retention and compaction ───────────────────────────────────────────────────────────
+// ── retention and compaction ─────────────────────────────────────────────────────────────────
 
 /// Retention drops TERMINAL rows past the window and NEVER an interrupted one, however old. The
 /// interrupt waiting on a human is the row that legitimately sits still longest; collecting it is

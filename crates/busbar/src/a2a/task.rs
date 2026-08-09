@@ -221,8 +221,9 @@ impl std::fmt::Display for TaskError {
     }
 }
 
-/// THE CANONICAL TASK ROW. Exactly the field set §7.6 names as what must survive a restart, plus
-/// the two timestamps the retention policy reads.
+/// THE CANONICAL TASK ROW. Exactly the fields that decide how an in-flight task RESUMES after a
+/// restart — who it belongs to, what state it is in, which agent it went to, and how far its
+/// artifact stream got — plus the two timestamps the retention policy reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Task {
     pub(crate) task_id: String,

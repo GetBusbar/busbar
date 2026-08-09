@@ -294,7 +294,7 @@ impl TaskRegistry {
     /// DISPATCH: record which agent this task was routed to, and chain a `task.delegated` event.
     /// Separate from [`TaskRegistry::transition`] because choosing a target is not a state change —
     /// the task is `working` before and after — but it IS the single most important fact the
-    /// delegating side's provenance has to carry (§5.5: who delegated, to which registered agent).
+    /// delegating side's provenance has to carry: who delegated, to which registered agent.
     pub(crate) fn record_dispatch(
         &self,
         task_id: &str,
@@ -472,8 +472,8 @@ impl TaskRegistry {
     /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any
     /// matching working-set entries. Returns how many durable rows went.
     ///
-    /// The policy lives at the call site, not here: this is the mechanism §7.6 calls "a policy on
-    /// the store, not a new subsystem".
+    /// The policy lives at the call site, not here: retention is a setting on the store, not a
+    /// subsystem of its own, so this file owns the mechanism and nothing about the window.
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
         let removed = match self.sink() {
             Some(store) => store.purge_tasks_before(before)?,

@@ -964,7 +964,7 @@ async fn run() {
         }
     }
 
-    // DURABLE A2A TASK STATE (§7.6). A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted
+    // DURABLE A2A TASK STATE. A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted
     // waiting on a human, and can outlive the process that started it. An in-memory task table
     // therefore loses every in-flight task and every interrupt on restart, which is the difference
     // between a suspend/resume that is real and one that is nominal. Same shape as the durable audit
