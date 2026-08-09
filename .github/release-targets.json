@@ -81,7 +81,9 @@
       "format": "elf",
       "linkage": "dynamic",
       "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-unknown-linux-gnu.tar.gz",
-      "kind": "binary"
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
     },
     {
       "target": "aarch64-unknown-linux-gnu",
@@ -93,7 +95,9 @@
       "format": "elf",
       "linkage": "dynamic",
       "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz",
-      "kind": "binary"
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
     },
     {
       "target": "x86_64-apple-darwin",
@@ -105,7 +109,9 @@
       "format": "macho",
       "linkage": "dynamic",
       "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-apple-darwin.tar.gz",
-      "kind": "binary"
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
     },
     {
       "target": "aarch64-apple-darwin",
@@ -117,7 +123,9 @@
       "format": "macho",
       "linkage": "dynamic",
       "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-apple-darwin.tar.gz",
-      "kind": "binary"
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
     },
     {
       "_pgo_comment": [
@@ -139,7 +147,37 @@
       "format": "pe",
       "linkage": "dynamic",
       "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-pc-windows-msvc.tar.gz",
-      "kind": "binary"
+      "kind": "binary",
+      "published": true,
+      "packaged_into": ""
+    },
+    {
+      "target": "x86_64-unknown-linux-musl",
+      "runner": "ubuntu-latest",
+      "pgo": true,
+      "archive": "tar.gz",
+      "exe": "busbar",
+      "arch": "x86_64",
+      "format": "elf",
+      "linkage": "static",
+      "kind": "binary",
+      "published": false,
+      "packaged_into": "image-linux-amd64",
+      "plugin_asset": ""
+    },
+    {
+      "target": "aarch64-unknown-linux-musl",
+      "runner": "ubuntu-24.04-arm",
+      "pgo": true,
+      "archive": "tar.gz",
+      "exe": "busbar",
+      "arch": "aarch64",
+      "format": "elf",
+      "linkage": "static",
+      "kind": "binary",
+      "published": false,
+      "packaged_into": "image-linux-arm64",
+      "plugin_asset": ""
     },
     {
       "target": "image-linux-amd64",
@@ -152,7 +190,9 @@
       "format": "elf",
       "linkage": "static",
       "archive": "oci",
-      "plugin_asset": ""
+      "plugin_asset": "",
+      "published": false,
+      "packaged_into": ""
     },
     {
       "target": "image-linux-arm64",
@@ -165,7 +205,9 @@
       "format": "elf",
       "linkage": "static",
       "archive": "oci",
-      "plugin_asset": ""
+      "plugin_asset": "",
+      "published": false,
+      "packaged_into": ""
     }
   ],
   "metadata_assets": [
