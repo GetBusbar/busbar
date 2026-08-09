@@ -1,5 +1,11 @@
 # Rust
 /target/
+# ANY cargo target dir, not just the default one. Concurrent worktrees each need their own
+# CARGO_TARGET_DIR (a shared one makes tests shell out to the wrong binary), and the first
+# time that happened the whole 700MB directory was swept into a commit by `git add -A` and
+# only the remote's 100MB file limit caught it.
+/target-*/
+target/
 **/*.rs.bk
 *.pdb
 

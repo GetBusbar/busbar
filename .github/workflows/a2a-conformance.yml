@@ -1,0 +1,452 @@
+name: A2A conformance
+
+# TWO INDEPENDENT INSTRUMENTS, POINTED AT THE SAME PROTOCOL, PLUS A GOVERNANCE PROBE THAT IS
+# DELIBERATELY NOT PART OF EITHER VERDICT.
+#
+#   testing/a2a-harness/     an independent battery written from the published A2A specification
+#                            alone, with adversarial and hostile-peer coverage. It found a real
+#                            defect in a reference implementation.
+#   testing/a2a-tck/         a wrapper around a2aproject/a2a-tck, the publisher's OWN suite, which
+#                            covers all three transports including gRPC across 36 test modules.
+#                            Fetched at a pinned commit, never vendored (see its LICENSING.md).
+#   testing/a2a-governance/  budgets, quarantine, trust lifecycle. PRODUCT policy, not protocol.
+#                            It imports the harness as a library and can never contribute to a
+#                            conformance verdict -- the harness RAISES if a governance test is ever
+#                            registered inside it. A perfectly conformant agent that ignores every
+#                            budget and never quarantines anything scores 100% on conformance.
+#
+# WHY THIS WORKFLOW IS HERE AND NOT WHERE THE BATTERIES WERE WRITTEN. Two workflows once sat in the
+# private design repository asking for `ubuntu-latest`. That repository is hosted on an internal
+# Gitea instance with no registered runners AND no route from GitHub-hosted runners, so eight jobs
+# failed permanently and the only two that went green had executed nothing. A standing red nobody
+# can fix teaches everyone to ignore the signal, which is the same defect these batteries exist to
+# catch, one level up. A conformance battery is a statement ABOUT busbar, so it belongs where
+# busbar is built and where a red blocks the release it is about. Independence is a property of
+# AUTHORSHIP, not of location: these were written without reading busbar's implementation, and the
+# guard that keeps product knowledge out of the harness is enforced in code, not by filesystem
+# distance.
+#
+# busbar is PUBLIC, so per the org rule (public -> GitHub-hosted, private -> busbar-selfhosted)
+# every job here runs on `ubuntu-latest` at no cost, and nothing needs provisioning. There is no
+# secret anywhere in this file, which is what makes "the control legs run ALWAYS" achievable rather
+# than aspirational.
+#
+# THE CONTROL LEGS RUN ALWAYS. A battery that cannot judge a known-good peer cannot be trusted to
+# judge ours, so every run re-establishes that both instruments still produce the pinned verdict
+# against pinned third-party references. THE SUBJECT LEG SKIPS until armed by one variable naming
+# busbar's A2A endpoint, and it does NOT fail. A job that is red today for a reason that is not a
+# defect is how red stops meaning defect.
+#
+# AND `verdict` IS NOT OPTIONAL. Ten green ticks mean nothing if one of them is green because it
+# never ran. The last job asserts, per leg, that the leg reached `success` -- a skipped or
+# cancelled control leg is RED there. That is the only required check.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: a2a-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # NOT COSMETIC, AND NOT A PREFERENCE. a2a-go v2.4.0 serialises task status timestamps in the
+  # HOST's local zone instead of UTC, violating SPEC 5.6.1. On a UTC host the offset is zero, the
+  # bytes end in `Z` anyway, and the defect DISAPPEARS -- and CI runners are UTC. Running the
+  # control legs in UTC would silently retire a real third-party finding. The `tz-is-load-bearing`
+  # job re-runs the same control under TZ=UTC and REQUIRES the pinned baseline to break, so this
+  # line can never quietly become decoration.
+  TZ: America/New_York
+  A2AHT_CONTROL_BIN: /home/runner/.a2aht/bin
+  A2A_TCK_WORK: /home/runner/.a2a-tck
+
+jobs:
+  # ---------------------------------------------------------------- the battery's own machinery
+  harness-selftest:
+    name: harness selftest (before believing any verdict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: The battery's own guards, each made to fail
+        run: |
+          set -euo pipefail
+          python3 testing/a2a-harness/scripts/harness-selftest.py
+
+      # The comparator is machinery too, and it is the piece standing between us and the TCK's own
+      # `grpc: 0/72 (72 skipped)` tick.
+      - name: The TCK baseline comparator, each guard made to fail
+        run: |
+          set -euo pipefail
+          python3 testing/a2a-tck/check-baseline-selftest.py
+
+      # The aggregator's `needs:` list is itself a hand-maintained enumeration, and the last
+      # enumeration in this tree that stopped covering what came after it did so silently. So the
+      # verdict's dependency set is held to SET EQUALITY with the workflow's job set, in both
+      # directions, and every leg it depends on must actually be read by its script.
+      - name: The verdict must depend on, and judge, every leg
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 testing/verdict-covers-every-leg.py
+
+  # -------------------------------------------------------- instrument 1: the independent battery
+  control-a2a-go:
+    name: control a2a-go (${{ matrix.binding }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - binding: rest
+            transport: http_json
+            baseline: control-a2a-go-rest.json
+          - binding: jsonrpc
+            transport: jsonrpc
+            baseline: control-a2a-go-jsonrpc.json
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - name: Install the pinned control
+        run: |
+          set -euo pipefail
+          testing/a2a-harness/scripts/install-control.sh go
+
+      - name: Run the battery against the control
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          # `--allow-red` so the RUN's own exit code is not the verdict. The verdict is the
+          # baseline comparison in the next step: a control is allowed to have known deviations,
+          # it is not allowed to have DIFFERENT ones from yesterday.
+          python3 -m a2aht run \
+            --launch "$A2AHT_CONTROL_BIN/a2a serve --echo --port 9099 --quiet \
+                      ${{ matrix.binding == 'jsonrpc' && '--transport jsonrpc' || '' }}" \
+            --port 9099 \
+            --label "control:a2a-go/${{ matrix.binding }}" \
+            --tier pre-release \
+            --client-drive "$A2AHT_CONTROL_BIN/a2a send {url} hello-from-harness" \
+            --known-deviations baselines/known-deviations-a2a-go.json \
+            --json reports/control.json --allow-red
+
+      - name: The control must still produce its pinned verdict
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          python3 -m a2aht baseline \
+            --report reports/control.json \
+            --baseline "baselines/${{ matrix.baseline }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a2a-battery-control-${{ matrix.binding }}
+          path: testing/a2a-harness/reports/
+
+  control-a2a-python:
+    name: control a2a-python (the second, independent oracle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install the pinned control
+        run: |
+          set -euo pipefail
+          testing/a2a-harness/scripts/install-control.sh python
+      - name: Run the battery against the control
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          SRC="${A2AHT_CONTROL_SRC:-$HOME/.a2aht/src}"
+          # Port 41241 is the sample's own, and the sample path is the one pinned by
+          # install-control.sh's clone of tag v1.1.2.
+          python3 -m a2aht run \
+            --launch "$SRC/venv/bin/python $SRC/a2a-python/samples/hello_world_agent.py" \
+            --port 41241 --label "control:a2a-python" --tier pre-release \
+            --known-deviations baselines/known-deviations-a2a-python.json \
+            --role server \
+            --json reports/control-python.json --allow-red
+      - name: The second control must still produce its pinned verdict
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          python3 -m a2aht baseline \
+            --report reports/control-python.json \
+            --baseline baselines/control-a2a-python.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: a2a-battery-control-python, path: testing/a2a-harness/reports/ }
+
+  negative-control:
+    name: negative control (a broken peer MUST be red)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: A deliberately broken peer must fail the battery
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 -m a2aht fake-peer --port 9402 --broken > /tmp/broken.log 2>&1 &
+          BP=$!
+          sleep 2
+          rc=0
+          python3 -m a2aht run --endpoint http://127.0.0.1:9402 \
+            --label negative-control --tier pull-request --role server \
+            --json reports/negative.json > /tmp/negative.txt 2>&1 || rc=$?
+          kill $BP 2>/dev/null || true
+          cat /tmp/negative.txt
+          # The ONLY acceptable outcome is 1 (tests ran and failed). 0 means the battery blessed a
+          # peer it was built to reject; 3 means it never reached the peer and proved nothing.
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::the broken peer produced exit $rc, expected 1. A battery that cannot fail cannot pass."
+            exit 1
+          fi
+          echo "negative control behaved: the broken peer was rejected."
+
+  swap-proof:
+    name: swap proof (six states the gate must tell apart)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - run: testing/a2a-harness/scripts/install-control.sh go
+      - name: Six states, six different correct verdicts
+        working-directory: testing/a2a-harness
+        run: |
+          set -euo pipefail
+          A2AHT_CONTROL_BIN="$A2AHT_CONTROL_BIN" ./scripts/swap-proof.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: a2a-swap-proof, path: testing/a2a-harness/reports/ }
+
+  tz-is-load-bearing:
+    name: the timezone pin still changes the answer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - run: testing/a2a-harness/scripts/install-control.sh go
+      - name: Under TZ=UTC the pinned baseline MUST break, on the timestamp finding
+        run: |
+          set -euo pipefail
+          testing/a2a-harness/scripts/tz-is-load-bearing.sh
+
+  # ------------------------------------------------------------------- instrument 2: official TCK
+  tck-control:
+    name: official TCK vs control (${{ matrix.leg }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [control-http-json, control-jsonrpc]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - name: Fetch the pinned TCK, run it, and hold it to its pinned verdict
+        run: |
+          set -euo pipefail
+          testing/a2a-tck/run-tck.sh ${{ matrix.leg }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a2a-tck-${{ matrix.leg }}
+          path: /home/runner/.a2a-tck/out/
+
+  # --------------------------------------------------------------- the governance tier, separate
+  governance-probe:
+    name: governance probe (NOT a conformance result)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - run: testing/a2a-harness/scripts/install-control.sh go
+      - name: Observe what a peer can see of governance
+        working-directory: testing/a2a-governance
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 -m a2agov \
+            --launch "$A2AHT_CONTROL_BIN/a2a serve --echo --port 9098 --quiet" \
+            --port 9098 --label "control:a2a-go" \
+            --client-drive "$A2AHT_CONTROL_BIN/a2a send {url} governance-probe" \
+            --json reports/governance.json
+      - name: The probe must have OBSERVED something
+        # The probe never gates on pass/fail -- it reports observations. That is exactly the shape
+        # that can go green having done nothing, so the floor is on the observation count, and the
+        # separation is re-asserted here rather than assumed: a report that claims to be a
+        # conformance result would be a category error worth failing on.
+        working-directory: testing/a2a-governance
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open("reports/governance.json"))
+          n = len(r.get("results", []))
+          if n < 3:
+              sys.exit("governance probe recorded only %d results; it did not run." % n)
+          meta = r.get("meta", {})
+          if not meta.get("not_a_conformance_result"):
+              sys.exit("the governance report does not mark itself as NOT a conformance result. "
+                       "That flag is the thing stopping a governance run being read as a "
+                       "conformance pass.")
+          print("governance probe: %d observations, correctly labelled non-conformance." % n)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: a2a-governance-probe, path: testing/a2a-governance/reports/ }
+
+  # ------------------------------------------------------------------------------ the subject
+  subject:
+    name: subject (busbar's own A2A endpoint)
+    runs-on: ubuntu-latest
+    # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the
+    # aggregator cannot tell "armed and passed" from "unarmed and did nothing" by looking at the
+    # job result -- which is precisely the shape of false green this workflow is built to refuse.
+    # The arm state is therefore an explicit output the verdict reads.
+    outputs:
+      armed: ${{ steps.arm.outputs.armed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      # ARMED BY ONE VARIABLE. Until `vars.BUSBAR_A2A_ENDPOINT` names a reachable endpoint this
+      # job prints how to arm it and stops. It does NOT fail: busbar does not serve A2A yet, and a
+      # job that is red for a reason that is not a defect is how red stops meaning defect.
+      - name: Is the subject armed?
+        id: arm
+        env:
+          ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ENDPOINT:-}" ]; then
+            {
+              echo "### A2A subject leg: NOT ARMED"
+              echo ""
+              echo "busbar's own A2A endpoint has not been named, so the two batteries ran"
+              echo "against their third-party controls only. That proves the INSTRUMENTS work."
+              echo "It proves nothing about busbar."
+              echo ""
+              echo "To arm it:"
+              echo '```'
+              echo "gh variable set BUSBAR_A2A_ENDPOINT -R GetBusbar/busbar -b 'http://127.0.0.1:8080'"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Independent battery against the subject
+        if: steps.arm.outputs.armed == 'true'
+        working-directory: testing/a2a-harness
+        env:
+          ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 -m a2aht run --endpoint "$ENDPOINT" --label subject \
+            --tier pull-request --json reports/subject.json
+
+      - name: Official TCK against the subject
+        if: steps.arm.outputs.armed == 'true'
+        env:
+          BUSBAR_A2A_ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          testing/a2a-tck/run-tck.sh subject
+
+  # ----------------------------------------------------------------------------- the aggregator
+  verdict:
+    name: A2A conformance verdict
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - harness-selftest
+      - control-a2a-go
+      - control-a2a-python
+      - negative-control
+      - swap-proof
+      - tz-is-load-bearing
+      - tck-control
+      - governance-probe
+      - subject
+    steps:
+      # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. Every leg above is required to have reached
+      # `success`. `skipped` and `cancelled` are failures here, because the failure mode this whole
+      # workflow exists to prevent is a tick over a job that executed nothing -- which is exactly
+      # what the eight-failures-two-vacuous-passes run in the old location looked like.
+      #
+      # `subject` is the ONE leg allowed not to have tested anything, and only while it is unarmed
+      # by design. It is named explicitly rather than handled by a wildcard, so arming it moves it
+      # into the strict set instead of leaving a permanent hole -- and the arm state comes from the
+      # job's own published output, not from its result, because an all-steps-skipped job reports
+      # `success`.
+      - name: Every control leg must have EXECUTED
+        env:
+          SELFTEST: ${{ needs.harness-selftest.result }}
+          GO: ${{ needs.control-a2a-go.result }}
+          PY: ${{ needs.control-a2a-python.result }}
+          NEG: ${{ needs.negative-control.result }}
+          SWAP: ${{ needs.swap-proof.result }}
+          TZ_LEG: ${{ needs.tz-is-load-bearing.result }}
+          TCK: ${{ needs.tck-control.result }}
+          GOV: ${{ needs.governance-probe.result }}
+          SUBJECT: ${{ needs.subject.result }}
+          SUBJECT_ARMED: ${{ needs.subject.outputs.armed }}
+        run: |
+          set -euo pipefail
+          fail=0
+          strict () {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2). A control leg that did not EXECUTE is red, not skipped."
+              fail=1
+            else
+              echo "  ok    $1"
+            fi
+          }
+          strict harness-selftest    "$SELFTEST"
+          strict control-a2a-go      "$GO"
+          strict control-a2a-python  "$PY"
+          strict negative-control    "$NEG"
+          strict swap-proof          "$SWAP"
+          strict tz-is-load-bearing  "$TZ_LEG"
+          strict tck-control         "$TCK"
+          strict governance-probe    "$GOV"
+
+          if [ "${SUBJECT_ARMED:-}" = "true" ]; then
+            strict subject "$SUBJECT"
+          elif [ "${SUBJECT_ARMED:-}" = "false" ]; then
+            echo "  --    subject (NOT ARMED: the controls proved the instruments, not busbar)"
+          else
+            echo "::error::subject published no arm state (result: $SUBJECT, armed: '${SUBJECT_ARMED:-}'). The leg did not reach its own arming check, so whether busbar was tested is unknown -- and unknown is red."
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo
+          echo "A2A conformance verdict: every instrument executed and produced its pinned result."
