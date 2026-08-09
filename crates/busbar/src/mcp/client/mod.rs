@@ -44,27 +44,28 @@
 //! quarantine-on-drift and the changes queue. Nothing here re-implements a transition, which is
 //! also what choke point F in `structure-lint.sh` exists to keep true.
 //!
-//! ## WHAT IS NOT BUILT, stated plainly so nobody plans against it
+//! ## WHAT IS AND IS NOT WIRED, stated plainly so nobody plans against it
 //!
-//! There is **no production caller**: no `tools:` config section (goal item 17), no admin verbs
-//! (item 18), no store-side sighting table, and therefore no path by which a real request reaches
-//! this code today. That is the same posture the trust lifecycle shipped under and for the same
-//! reason — the parts with a dependant waiting land ahead of the wiring. The consequence is stated
-//! rather than softened: every property below is proven at the unit and integration seam, and none
-//! of it is proven end-to-end through a live deployment.
+//! There IS a production caller now: `crate::mcp::upstream` joins this direction to the server
+//! direction's `tools/call`. An authenticated inbound tool call resolves to a `VirtualKey`, that key
+//! is handed to [`egress::plan_credential`], and the request that goes out is built, credentialled,
+//! SSRF-checked, address-pinned and pooled by the modules in this table. The transitive
+//! confused-deputy defence is therefore proven AS A PAIR — against an inbound MCP client that
+//! authenticated to busbar's own resource server — in `crate::mcp::tests/deputy_pair_tests.rs`,
+//! rather than against a principal a test constructed.
 //!
-//! The **inbound half of the egress gate** is likewise unproven as a pair.
-//! [`egress::authorise_egress`] binds outbound credential selection to a `busbar_api::VirtualKey`,
-//! which is the real principal type both directions resolve to — but until the server direction's
-//! `tools/call` resolves a caller into one and hands it here, the transitive confused-deputy
-//! defence is proven against a constructed principal, not against an inbound MCP client. A defence
-//! that only means anything once both halves exist is precisely why the two directions ship as one
-//! unit; this module holds up its end and says so precisely.
-
-// NO PRODUCTION CALLER YET — see the module header. Landed ahead of the config section and the admin
-// verbs deliberately, because the integrity properties are the part worth settling and pinning
-// before a wire is built on top of them. Same posture as `crate::trust` and `crate::plane`.
-#![cfg_attr(not(test), allow(dead_code))]
+//! What is still NOT wired, and is stated rather than softened:
+//!
+//! - **`stdio`** spawns and supervises a child, and nothing dispatches over it. The `tools:` grammar
+//!   refuses `transport: stdio` at boot for exactly that reason, so a deployment finds out at boot
+//!   rather than at first dispatch.
+//! - **[`catalogue`]'s live cache and the background refresh that would feed it.** The dispatch path
+//!   validates against the SERVER direction's config-built snapshot, which carries the operator's
+//!   approved digests; nothing in this build polls an upstream's `tools/list` to detect a rug-pull in
+//!   flight. The detection machinery is complete and proven; the job that drives it is not written.
+//! - **[`pool`]'s eviction under real load**, which has no production traffic to be measured against.
+//! - **The admin verbs** (`connect`, `approve`, `changes`, `approve-pin`, `health`), which need a
+//!   store-side sighting table.
 
 pub(crate) mod argguard;
 pub(crate) mod catalogue;
@@ -83,6 +84,21 @@ use identity::ServerId;
 use jsonrpc::ServerRequestGrants;
 use ssrf::SsrfPolicy;
 
+// ── NOT YET WIRED, AND NAMED RATHER THAN BLANKET-ALLOWED ────────────────────────────────────────
+//
+// `tools/call` reaches an upstream through `mcp::upstream`, which composes this module's PARTS
+// directly — `egress` for the grant gate and credential plan, `identity` for the bound name,
+// `jsonrpc`, `pool`, `ssrf`, `transport`. Those all have production callers.
+//
+// The three items below are the CONNECT path, which does not exist yet: an operator-driven fetch of
+// an upstream's tool list, turned into an observation the trust lifecycle can approve. Until the
+// `connect` verb lands there is nothing to construct them from, and inventing a caller to satisfy
+// the linter would be worse than the warning.
+//
+// The allow is on these three items ONLY, not the module, so the moment anything else here loses
+// its caller the build says so. That is the point: the gap stays visible in the code rather than in
+// a tracking document nobody reads.
+#[allow(dead_code)]
 /// How busbar reaches one upstream.
 #[derive(Clone, Debug)]
 pub(crate) enum Endpoint {
@@ -92,6 +108,7 @@ pub(crate) enum Endpoint {
     Stdio { program: String, args: Vec<String> },
 }
 
+#[allow(dead_code)]
 /// ONE REGISTERED UPSTREAM, everything the dispatch path needs about it in one place.
 ///
 /// Deliberately not `serde`-derived. The config face of this record is goal item 17's `tools:`
@@ -119,6 +136,7 @@ pub(crate) struct McpServerRegistration {
     pub(crate) max_input_required_rounds: u32,
 }
 
+#[allow(dead_code)]
 impl McpServerRegistration {
     /// A registration with every optional posture at its fail-closed default: no pin, no credential,
     /// no private addressing, no server-request grants, one input-required round.
@@ -135,6 +153,7 @@ impl McpServerRegistration {
     }
 }
 
+#[allow(dead_code)]
 /// THE CLIENT-DIRECTION ENGINE STATE: the registry, the catalogue cache and the connection pool.
 ///
 /// One object because the three are coupled by a single invariant — the pool must only ever be
@@ -147,6 +166,7 @@ pub(crate) struct McpClientEngine {
     pub(crate) pool: pool::McpConnectionPool,
 }
 
+#[allow(dead_code)]
 impl McpClientEngine {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -197,7 +217,7 @@ mod support;
 #[path = "tests/engine_tests.rs"]
 mod engine_tests;
 
-// The accessors a production caller will need, exercised while there is no production caller.
+// The accessors the not-yet-written refresh job will need, exercised while it does not exist.
 #[cfg(test)]
 #[path = "tests/surface_tests.rs"]
 mod surface_tests;

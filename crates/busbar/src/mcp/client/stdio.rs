@@ -47,6 +47,19 @@
 //! the whole policy is unit-testable without sleeping. A supervision policy verified by waiting is a
 //! supervision policy verified at one timing.
 
+// ── BUILT, TESTED, AND NOT ON THE DISPATCH PATH ─────────────────────────────────────────────────
+//
+// `mcp::upstream` wires the HTTP transport only. The stdio child — spawn, supervise, the
+// `Spawning -> Ready -> Draining -> Dead` machine, the capped backoff and the operator-only breaker
+// reset — is complete and adversarially tested, and nothing calls it, because a `tools:` entry
+// carrying a stdio transport has no dispatch arm yet.
+//
+// That is a REAL GAP and it is named here rather than papered over: stdio is one of the two
+// transports the specification defines, so a deployment fronting a local filesystem or database
+// server cannot be served by this build. Scoped to this module, so anything else in `client/`
+// losing its caller still breaks the build.
+#![allow(dead_code)]
+
 use std::process::Stdio;
 use std::time::Duration;
 

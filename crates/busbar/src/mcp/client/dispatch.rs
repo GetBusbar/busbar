@@ -39,6 +39,18 @@
 //! grant learns nothing about the upstream's current schema — a refusal that leaks the thing it is
 //! refusing access to is a refusal that has failed at half its job.
 
+// ── NO PRODUCTION CALLER YET ────────────────────────────────────────────────────────────────────
+//
+// This is the CLIENT-side dispatch entry point, written when the client direction was the only
+// half that existed. `tools/call` now enters through `mcp::upstream`, which composes the same
+// parts under the SERVER plane's catalogue and trust gate, so this path is redundant on the hot
+// path and kept only for the `connect`/refresh flow that has no verb yet.
+//
+// It is NOT deleted, because its tests are the ones that prove the bound-identity rule holds
+// against a hostile tool description. Scoped to this module so anything else in `client/` losing
+// its caller still breaks the build.
+#![allow(dead_code)]
+
 use super::argguard::{ArgRefusal, ArgScan};
 use super::catalogue::{CatalogueCache, CatalogueSnapshot};
 use super::egress::EgressDenied;

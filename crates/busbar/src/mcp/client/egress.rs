@@ -51,6 +51,7 @@ use busbar_api::{Redacted, VirtualKey};
 /// server authenticates independently, so there is no all-plane auth scalar an operator could set
 /// and no ambient credential for a misconfigured server to fall back to.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // `Static` is reachable from config; no in-tree caller constructs it directly.
 pub(crate) enum UpstreamCredential {
     /// No credential. A public or network-authenticated upstream.
     None,
@@ -94,7 +95,11 @@ pub(crate) struct ExchangeCfg {
 ///   secret to be REACHABLE from the builder in order for its absence downstream to mean anything.
 /// - `upstream_credential` is what the caller holds for the UPSTREAM, present only under
 ///   `passthrough`. This is the only caller-supplied value that may leave.
+///
+/// Built by the CONNECT path, which has no verb yet: `mcp::upstream` passes the caller's
+/// `VirtualKey` straight to `authorise_egress` instead of assembling one of these.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct CallerContext {
     /// The caller's resolved governance row. `scope_allowed` on this is the egress gate's input.
     pub(crate) key: VirtualKey,

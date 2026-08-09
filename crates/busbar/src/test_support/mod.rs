@@ -1216,6 +1216,7 @@ impl TestApp {
                 &self.tool_defs,
             )),
             mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
+            mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),

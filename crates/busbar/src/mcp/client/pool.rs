@@ -72,6 +72,8 @@ impl McpConnectionPool {
     /// The number of live pinned clients. Read by the tests, which is the point: "the pool reuses a
     /// client for a repeated destination" is a claim about this number, and asserting it is how the
     /// claim stops being an assertion about intent.
+    // Reached only by the connect/refresh path, which has no verb yet.
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.clients.lock().map(|m| m.len()).unwrap_or(0)
     }

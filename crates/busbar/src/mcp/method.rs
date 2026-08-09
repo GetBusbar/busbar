@@ -34,22 +34,25 @@
 //! 4. Audit the outcome — the VALIDATED decision, never a rejected call recorded as a successful
 //!    route.
 //!
-//! ## What is honestly NOT here
+//! ## THE UPSTREAM LEG, and the gate that sits in front of it
 //!
-//! There is no upstream leg. The CLIENT direction — busbar calling OUT to external MCP tool servers
-//! — is a separate unit, and nothing in this build opens a connection to an MCP server, so
-//! [`dispatch_upstream`] refuses with a busbar-attributed error. Every step above it is real, runs,
-//! and is asserted on — admission, grant scoping, generation re-validation, budget charging,
-//! metering, the ask gate and the audit row all happen and are observable. What does not happen is
-//! the round trip. This is stated here rather than hidden behind a stub that returns a
-//! plausible-looking result, because a fake result would make every test above it pass for the
-//! wrong reason.
+//! Step 3's round trip is [`super::upstream::call`] — the real CLIENT direction: SSRF-checked,
+//! address-pinned, connection-pooled, and carrying a credential minted for THIS backend. Before the
+//! loop is entered at all, [`super::upstream::authorise`] binds outbound credential selection to the
+//! INBOUND principal's grant. That call is synchronous and reaches nothing, which is the
+//! ordering that matters: a caller whose grant does not cover this tool is refused without busbar
+//! making a token-exchange round trip on its own authorization server.
+//!
+//! Two refusals therefore exist and they are deliberately DISTINGUISHABLE, because "it was refused"
+//! proves nothing about which check refused it: `not_granted` lands at admission, BEFORE the
+//! upstream; `egress_denied` lands at the credential gate; `upstream_failed` lands AFTER everything
+//! else has passed. Each is a different audit word and a different operator remedy.
 
 use axum::http::StatusCode;
 use axum::response::Response;
 
 use super::catalogue::{DispatchRefusal, ToolEntry};
-use super::inputreq::{self, Outcome, Refusal, Round, RoundRecord};
+use super::inputreq::{self, Outcome, Refusal, RoundRecord};
 use super::sanitize;
 
 /// The methods this server implements. A method absent from here takes the ingress `-32601` / `404`
@@ -100,7 +103,7 @@ impl Ctx<'_> {
 
 /// DISPATCH one JSON-RPC method. `None` means "not implemented", which ingress renders as `404` +
 /// `-32601`.
-pub(crate) fn dispatch(
+pub(crate) async fn dispatch(
     ctx: &Ctx<'_>,
     method: &str,
     params: Option<&serde_json::Value>,
@@ -109,7 +112,7 @@ pub(crate) fn dispatch(
     match method {
         "server/discover" => Some(discover(ctx, id)),
         "tools/list" => Some(tools_list(ctx, id)),
-        "tools/call" => Some(tools_call(ctx, params, id)),
+        "tools/call" => Some(tools_call(ctx, params, id).await),
         "prompts/list" => Some(prompts_list(ctx, id)),
         "prompts/get" => Some(prompts_get(ctx, params, id)),
         "resources/list" => Some(resources_list(ctx, id)),
@@ -331,7 +334,7 @@ fn resources_read(
 }
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
-fn tools_call(
+async fn tools_call(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -372,17 +375,35 @@ fn tools_call(
         );
     };
 
-    // (3) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
+    // (3) THE EGRESS GATE — the transitive confused-deputy defence, and it runs BEFORE the loop and before any network I/O.
+    //
+    // The credential busbar would spend on the upstream is bound to the INBOUND principal's grant.
+    // Refusing here rather than inside the loop is what makes "an unauthorised caller cannot even
+    // cause a token-exchange round trip" true rather than merely likely: `authorise` is synchronous
+    // and reaches nothing.
+    let authorised =
+        match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key.as_deref()) {
+            Ok(a) => a,
+            Err(denied) => return refuse_setup(ctx, &selected.namespaced, &denied, id),
+        };
+
+    // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
     // Every concurrency hold taken by `try_admit` is parked here so it lives exactly as long as the
     // dispatch does: an `AdmitGrant` releases its gauges on drop, and dropping it inside the loop
     // would return the slot while the round it guards is still running.
     let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
     let server_id = selected.server.clone();
+    let pool = ctx.app.mcp_pool.as_ref();
     let outcome = inputreq::drive(
         &server_id,
         server.max_input_required_rounds,
-        |_round, _satisfaction| dispatch_upstream(&server.url, &selected, &arguments),
+        // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
+        // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
+        // value crossing a trust boundary for no reason.
+        |round, _satisfaction| {
+            super::upstream::call(pool, &authorised, &arguments, u64::from(round))
+        },
         // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
         // trust, so a revocation between rounds has to bite on the next one — which is the only
         // thing "per-request check" can mean when one logical dispatch is several requests.
@@ -394,21 +415,24 @@ fn tools_call(
                 .map(|s| s.grants)
                 .unwrap_or_default()
         },
-        // Satisfying an ask is the CLIENT direction's job (a granted `sampling` becomes a real LLM
-        // request on busbar's pools). Nothing in this build can do it, and saying so is not the same
-        // as refusing the grant — `Unsatisfiable` and `Ungranted` are different answers with
-        // different operator remedies, which is why they are different arms.
+        // SATISFYING an ask is a separate unit from making the call. A granted `sampling` becomes a
+        // real LLM request on busbar's own pools and budget, an `elicitation` needs a human, and
+        // `roots` needs a filesystem policy; none of the three is built, and saying so is NOT the
+        // same as refusing the grant — `Unsatisfiable` and `Ungranted` are different answers with
+        // different operator remedies, which is why they are different arms. The ask still
+        // TERMINATES here either way: the caller is told busbar declined, never handed the ask.
         |ask| {
             Err(format!(
-                "satisfying a `{}` ask requires the MCP client direction, which is not built in \
-                 this release",
+                "busbar holds the `{}` grant for this server but has no satisfier for that ask in \
+                 this release; the ask terminates here and is not proxied to you",
                 ask.kind
             ))
         },
         |rec| charge_round(ctx, &selected, rec, &mut holds),
-    );
+    )
+    .await;
 
-    // (4) AUDIT the VALIDATED decision — the one that survived every check above, never a call that
+    // (5) AUDIT the VALIDATED decision — the one that survived every check above, never a call that
     // got no further than a refusal.
     let resource = format!("mcp_tool:{}", selected.namespaced);
     match outcome {
@@ -505,26 +529,36 @@ fn charge_round(
     Ok(())
 }
 
-/// THE UPSTREAM LEG, which does not exist in this release.
+/// A refusal from the EGRESS gate — the outbound credential could not be bound to this caller — or
+/// from the credential configuration behind it.
 ///
-/// The CLIENT direction — transports, connection pooling, tool-list caching, credential
-/// injection, RFC 8693 down-scoping — is a separate unit, and none of it is in this build. So this
-/// refuses, with a reason that names the missing unit rather than a generic failure.
-///
-/// It is deliberately NOT a stub that returns a plausible result. A fake result would make the
-/// admission, the generation re-validation, the grant gate, the budget charge and the audit row all
-/// pass while proving nothing about any of them, which is precisely the false green a placeholder
-/// buys.
-fn dispatch_upstream(
-    url: &str,
-    selected: &ToolEntry,
-    _arguments: &serde_json::Value,
-) -> Result<Round, String> {
-    let _ = (url, selected);
-    Err("the MCP client direction is not built in this release, so busbar cannot reach the \
-         registered upstream. Every governance check on this call ran and passed; the round trip is \
-         what is missing."
-        .to_string())
+/// Rendered and audited separately from a catalogue refusal and from an upstream failure, because
+/// all three are refusals and only distinct AUDIT WORDS make them distinguishable afterwards. The
+/// operator remedies are a grant, a secret, and a network respectively.
+fn refuse_setup(
+    ctx: &Ctx<'_>,
+    namespaced: &str,
+    denied: &super::upstream::SetupRefusal,
+    id: Option<serde_json::Value>,
+) -> Response {
+    crate::admin::audit::AUDIT.record_by(
+        "mcp_tool.call",
+        &format!("mcp_tool:{namespaced}"),
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
+    tracing::warn!(
+        tool = %namespaced,
+        reason = denied.audit_reason(),
+        "mcp tools/call refused before the upstream"
+    );
+    error(
+        StatusCode::FORBIDDEN,
+        id,
+        CODE_REFUSED,
+        &denied.to_string(),
+        Some(serde_json::json!({ "reason": denied.audit_reason() })),
+    )
 }
 
 /// A refusal from the catalogue, rendered and audited: the rejection is audited AS a rejection,

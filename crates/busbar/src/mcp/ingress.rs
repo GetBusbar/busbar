@@ -321,7 +321,7 @@ pub(crate) async fn rpc(
         actor: principal.actor_id(),
     };
     let params = obj.get("params");
-    match crate::mcp::method::dispatch(&ctx, method, params, id.clone()) {
+    match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {
         Some(response) => response,
         None => error_response(
             StatusCode::NOT_FOUND,

@@ -84,6 +84,8 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
             transport: None,
             aud: None,
             grants: Default::default(),
+            allow_private: false,
+            token_exchange: None,
             max_input_required_rounds: None,
             upstream_credentials: None,
             hooks: Vec::new(),

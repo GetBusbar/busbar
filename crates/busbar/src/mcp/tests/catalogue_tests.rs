@@ -39,6 +39,8 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
             transport: None,
             aud: None,
             grants: Default::default(),
+            allow_private: false,
+            token_exchange: None,
             max_input_required_rounds: None,
             upstream_credentials: None,
             hooks: Vec::new(),

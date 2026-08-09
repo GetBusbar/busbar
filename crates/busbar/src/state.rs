@@ -423,6 +423,16 @@ pub(crate) struct App {
     /// read back out of the catalogue would mean reconstructing what the operator typed from what
     /// busbar computed, and a round trip that loses a field loses it silently.
     pub(crate) mcp_servers: Arc<crate::mcp::config::ToolsCfg>,
+    /// THE UPSTREAM CONNECTION POOL for the MCP client direction, keyed by `(host, PINNED
+    /// SocketAddr)`.
+    ///
+    /// Engine-owned and shared across config applies, which is deliberate and is why it is not
+    /// rebuilt beside `mcp_catalogue`: a pool rebuilt on every apply is a pool that never reuses a
+    /// connection on a deployment whose config is written through the admin API. It carries no
+    /// authority to leak across an apply either — a pooled socket negotiated nothing under this
+    /// revision, so there is no session on it a revocation would have to invalidate. What must be
+    /// re-checked is the catalogue GENERATION, and that is checked per request.
+    pub(crate) mcp_pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

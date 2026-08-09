@@ -84,6 +84,7 @@ pub(crate) mod inputreq;
 pub(crate) mod method;
 pub(crate) mod resource;
 pub(crate) mod sanitize;
+pub(crate) mod upstream;
 
 use serde::{Deserialize, Serialize};
 

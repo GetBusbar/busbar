@@ -166,6 +166,28 @@ pub(crate) struct ServerEntry {
     /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
     /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
+    /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
+    /// secret.
+    ///
+    /// Resolution happens at DISPATCH, not here, and that is deliberate on two counts. A snapshot is
+    /// compared for equality on every config apply, and a snapshot holding resolved plaintext would
+    /// be a snapshot that has to be compared without printing itself. And a secret that resolves at
+    /// build time is a secret whose rotation needs a restart.
+    pub(crate) upstream: UpstreamPosture,
+}
+
+/// Everything the upstream leg needs about ONE registration that is not already on [`ServerEntry`],
+/// gathered so the dispatch path never reaches back into `ToolsCfg` to find out what it may do.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct UpstreamPosture {
+    /// Whether this upstream may live on a private / loopback address. Fail-closed default.
+    pub(crate) allow_private: bool,
+    /// `own` (busbar's own credential) or `passthrough` (the caller's). Absent ⇒ `own`.
+    pub(crate) credentials: Option<crate::auth::UpstreamCreds>,
+    /// The RFC 8693 exchange, if the operator configured one. Absent ⇒ no credential is sent.
+    pub(crate) token_exchange: Option<super::config::TokenExchangeCfg>,
+    /// The RFC 8707 resource indicator — `tools.<server>.aud`. The exchanged token is bound to it.
+    pub(crate) aud: Option<String>,
 }
 
 /// THE VERSIONED SNAPSHOT. Immutable once built; replaced wholesale, never mutated in place.
@@ -527,6 +549,12 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         max_input_required_rounds: def
             .max_input_required_rounds
             .unwrap_or(super::config::DEFAULT_MAX_INPUT_REQUIRED_ROUNDS),
+        upstream: UpstreamPosture {
+            allow_private: def.allow_private,
+            credentials: def.upstream_credentials,
+            token_exchange: def.token_exchange.clone(),
+            aud: def.aud.clone(),
+        },
     }
 }
 
