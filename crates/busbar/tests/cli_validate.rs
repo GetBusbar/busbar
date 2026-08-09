@@ -766,3 +766,63 @@ fn validate_ok_on_valid_root_overlay() {
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// B1, THE END-TO-END PROOF: a config whose OAuth confidential-client secret references an env var
+/// that is NOT SET must exit 1 from `--validate`.
+///
+/// `identity-providers.<name>.browser_login.client_secret` is a `SecretRef` like any other, and the
+/// core itself presents it during the code-to-token exchange. It was absent from
+/// `config_validate::secret_refs`, which was a hand-written list of paths, so `--validate` walked
+/// straight past it and printed `ok: config valid` with exit 0 for a deployment whose every hosted
+/// login would fail at runtime. The list now fails CLOSED: it is derived from exhaustive
+/// destructures the compiler enforces, backed by a source scan that fails when a new secret-bearing
+/// TYPE appears.
+///
+/// The env var is removed explicitly rather than merely left unset, so an unrelated variable in the
+/// developer's or the runner's environment can never turn this test green by accident.
+#[test]
+fn validate_fails_on_unresolvable_browser_login_client_secret() {
+    const UNSET_VAR: &str = "BUSBAR_TEST_B1_OIDC_CLIENT_SECRET_NEVER_SET";
+    let dir = fixture_dir("b1-browser-login-secret");
+    write_configs(
+        &dir,
+        &format!(
+            "public_url: \"https://busbar.example.com\"\n\
+             identity-providers:\n\
+             \x20 admin-tokens:\n\
+             \x20   module: admin-tokens\n\
+             \x20   token: {{ env: BUSBAR_ADMIN_TOKEN }}\n\
+             \x20   browser_login:\n\
+             \x20     client_id: busbar-web\n\
+             \x20     client_secret: {{ env: {UNSET_VAR} }}\n\
+             auth:\n\
+             \x20 admin_auth: [admin-tokens]\n"
+        ),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env_remove(UNSET_VAR)
+        .env("MOCK_KEY", "test-key-value")
+        .env("BUSBAR_ADMIN_TOKEN", "test-admin-token")
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        code, 1,
+        "an unset browser_login client_secret must FAIL --validate, not be silently skipped: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("ok: config valid"),
+        "--validate must not report the config valid: {stdout}"
+    );
+    assert!(
+        stderr.contains("browser_login.client_secret") && stderr.contains(UNSET_VAR),
+        "the error must NAME the config path and the unset variable so it is actionable: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
