@@ -13,15 +13,26 @@
 //! depth, including members busbar does not model — and fails if the backend authority appears
 //! anywhere in it.
 //!
-//! ## The vendor's signature is REMOVED, not carried
+//! ## The vendor's signature is REMOVED, and BUSBAR'S REPLACES IT
 //!
 //! A card busbar has rewritten is no longer the document the vendor signed, so the vendor's
 //! signature over it cannot verify. Carrying it would publish a signature that fails, which is
 //! worse than publishing none: a client that checks would reject busbar's card, and a client that
 //! does not check is being shown a credential-shaped member that means nothing. So `signatures` is
-//! dropped, and this is the honest boundary of the receiving side — **busbar does not sign the cards it serves
-//! today**. That is stated rather than papered over, because "busbar's card IS the thing external
-//! callers pin against" is a design sentence this build does not yet make true.
+//! dropped — and then busbar signs the document it is actually publishing, with its own
+//! ([`super::sign::CardSigner`]) key, over the SAME canonicalisation busbar demands of every card
+//! it verifies. An external caller therefore has something to pin busbar BY, which is what makes
+//! busbar the trusted-issuer side of its own trust model rather than only the verifier side.
+//!
+//! The signature is attached LAST, after the rewrite and after the leak check. Signing earlier
+//! would sign a document that is not the one served, and a signature over a different document is
+//! the failure this whole member exists to avoid.
+//!
+//! Signing is OPTIONAL AT THE SEAM and refuses nothing: a deployment with no signing key (the
+//! governance-off test path) serves the card unsigned rather than serving no card. That is stated
+//! rather than silent, because the alternative — refusing to serve — would turn "this deployment
+//! has no governance" into "this deployment has no A2A", which is a different decision than the one
+//! being made here.
 //!
 //! ## The backend's `securitySchemes` are REPLACED, not merged
 //!
@@ -51,6 +62,10 @@ pub(crate) enum ServeError {
     /// served un-rewritten: serving the backend's own endpoints because our base URL was
     /// misconfigured is the failure this whole module exists to prevent.
     BadPublicUrl(String),
+    /// The rewritten card could not be signed. Refused rather than served unsigned: a deployment
+    /// that HAS a signing key and failed to use it would be publishing a card whose missing
+    /// signature is indistinguishable, to a caller, from a deployment that never had one.
+    Sign(super::sign::SignError),
     /// The backend authority still appears in the card after the rewrite, at the named paths.
     ///
     /// Refused rather than served with a warning. The served card's entire purpose is to point
@@ -67,6 +82,7 @@ impl std::fmt::Display for ServeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServeError::Card(e) => write!(f, "{e}"),
+            ServeError::Sign(e) => write!(f, "{e}"),
             ServeError::BadPublicUrl(u) => write!(
                 f,
                 "cannot serve an agent card: `public_url` is not a URL (`{u}`), so there is no \
@@ -142,11 +158,15 @@ fn absolute(public_url: &str, path: &str) -> Result<String, ServeError> {
 /// through it, published by busbar, with the backend authority intact. Cards carry unmodelled
 /// members by design; a rewrite that only covers the ones busbar parses is a rewrite that covers
 /// the cards nobody was trying to leak through.
+///
+/// `signer` is busbar's own agent-card issuer key. `None` means this deployment holds no signing
+/// key at all; see the module note on why that serves an unsigned card rather than refusing.
 pub(crate) fn rewrite_card(
     backend_card: &Value,
     backend_url: &str,
     public_url: &str,
     agent_id: &str,
+    signer: Option<&super::sign::CardSigner>,
 ) -> Result<Value, ServeError> {
     let obj = backend_card
         .as_object()
@@ -219,7 +239,15 @@ pub(crate) fn rewrite_card(
             });
         }
     }
-    Ok(served)
+
+    // ── AND LAST, BUSBAR'S OWN SIGNATURE, over the document that is actually served. ──
+    //
+    // After the rewrite and after the leak check, because a signature over anything other than the
+    // published bytes is a signature over a document nobody will ever see.
+    match signer {
+        Some(signer) => Ok(signer.sign_card(&served).map_err(ServeError::Sign)?),
+        None => Ok(served),
+    }
 }
 
 /// Replace every URL-shaped string whose host is the backend's with busbar's endpoint, at every

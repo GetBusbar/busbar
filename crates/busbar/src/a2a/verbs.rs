@@ -54,6 +54,23 @@ use super::pin::CardPin;
 use super::reverify::{self, Due, Ledger, Policy};
 use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
+/// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
+///
+/// Two facts rather than one, because an A2A card's signature is OPTIONAL and an unsigned card's
+/// only authenticity root is the transport it came over. A seam that carried the document alone
+/// would make `cert_spki` unobservable through the verb layer while the re-verification sweep could
+/// see it — one plane with two answers about the same registration, decided by which code path
+/// asked.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SightedCard {
+    /// The document AS RECEIVED. Never a re-serialization; see [`CardSource::fetch_card`].
+    pub(crate) document: serde_json::Value,
+    /// The `sha256/…` SPKI pin of the certificate the SERVING hop presented, where the hop ran over
+    /// TLS. `None` on plaintext, and `None` is a refusal for a transport-pinned registration rather
+    /// than a pass.
+    pub(crate) peer_spki: Option<String>,
+}
+
 /// WHERE A CARD COMES FROM. Implemented by the delegating side's fetcher; implemented by a stub in
 /// tests. The verbs never learn whether the answer came from a socket or a fixture.
 ///
@@ -71,7 +88,7 @@ pub(crate) trait CardSource {
     /// discards every unmodelled member, so a fingerprint computed downstream of one would be blind
     /// to exactly the silent rug-pull the pin exists to catch. This seam originally carried
     /// the projection; the type is what makes the mistake impossible rather than remembered.
-    fn fetch_card(&self, agent_id: &str) -> Result<serde_json::Value, String>;
+    fn fetch_card(&self, agent_id: &str) -> Result<SightedCard, String>;
 }
 
 /// HOW A CARD BECOMES AN OBSERVATION: the JWS verification against the operator-pinned issuer key,
@@ -90,7 +107,7 @@ pub(crate) trait CardObserver {
     /// Takes the document AS RECEIVED for the reason [`CardSource::fetch_card`] returns one: the
     /// signature covers the canonical received bytes with `signatures` removed, and the fingerprint
     /// covers the canonical received bytes entire. Neither is computable from busbar's projection.
-    fn observe(&self, card: &serde_json::Value) -> Result<Observation<CardPin>, String>;
+    fn observe(&self, card: &SightedCard) -> Result<Observation<CardPin>, String>;
 }
 
 /// THE TWO SEAMS, TRAVELLING TOGETHER. Fetch and verify are separate concerns but they are never

@@ -360,6 +360,23 @@ impl GovState {
         self.signing_material().map(|m| m.signer.kid().to_string())
     }
 
+    /// BUSBAR'S AGENT-CARD ISSUER KEY, derived from the token signing key.
+    ///
+    /// A DERIVED SUBKEY, never the token signer itself — see
+    /// [`crate::governance::signing::TokenSigner::derived_subkey_seed`] for the blast radius that
+    /// buys. `None` when this node has no signing key at all, which is the governance-off path;
+    /// [`crate::a2a::serve::rewrite_card`] then serves an unsigned card rather than no card.
+    ///
+    /// Built per call rather than cached, and cheap enough to be: one SHA-256 and one ed25519 key
+    /// expansion, on a card read rather than on the request hot path. A cached copy would be a
+    /// second place the signing key lives that a rotation has to remember to invalidate, and
+    /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
+    /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
+    pub(crate) fn a2a_card_signer(&self) -> Option<crate::a2a::sign::CardSigner> {
+        self.signing_material()
+            .map(|m| crate::a2a::sign::CardSigner::derived_from(&m.signer))
+    }
+
     // ── SELF-SERVE (token-exchange) deterministic keys — 1.5.2 "Model B" ─────────────────────────
     //
     // A principal that authenticates through the browser/`POST /auth/token` flow gets ONE key,

@@ -32,6 +32,20 @@
 //! strictly worse one — any machine on the path could then serve the card — so it is not available
 //! here and there is no knob for it.
 //!
+//! ## Reading the peer certificate does not mean trusting one
+//!
+//! An unsigned agent card has no JWS root, and the only authenticity root left for it is the
+//! certificate the endpoint proved it held the key for. So this transport records the leaf
+//! certificate's SubjectPublicKeyInfo pin ([`super::spki::spki_pin`]) on every TLS hop.
+//!
+//! **The certificate is read AFTER the ordinary verification, off a handshake that already
+//! succeeded.** `reqwest`'s `tls_info` hands back the leaf of a connection the chain-and-name check
+//! already accepted; a handshake that failed produces no response and therefore no pin. There is
+//! consequently no path in this file that turns "we saw a certificate" into "we accepted a
+//! certificate", and the knob that would switch verification off appears nowhere in this crate — a
+//! pin obtained that way would be strictly worse than no pin, because it would read to an operator
+//! as a network-layer root while accepting any certificate on the path.
+//!
 //! ## Blocking, on a thread of its own
 //!
 //! The fetch seam is synchronous, and the client is async. Each call runs its future to completion
@@ -159,6 +173,32 @@ impl reqwest::dns::Resolve for DelegatingDns {
     }
 }
 
+/// THE PEER'S TRANSPORT-LAYER IDENTITY, off a response whose handshake already verified.
+///
+/// `None` on a plaintext hop and `None` where the certificate cannot be read. Neither is softened
+/// into a pass anywhere downstream: [`super::verify`] refuses a transport-pinned registration whose
+/// fetch produced no observed pin, because "we could not look" and "it matched" are the two answers
+/// a pin exists to keep apart.
+///
+/// A certificate that does not parse is logged and reported as absent rather than propagated as a
+/// hard transport error. The distinction matters and it is deliberate: a signed-card registration
+/// does not care about the certificate at all and must not lose its card because a peer's DER was
+/// odd, while a transport-pinned one refuses on `None` two layers up anyway. Fail-closed lands in
+/// the module that knows whether the answer was needed.
+fn peer_spki_of(resp: &reqwest::Response) -> Option<String> {
+    let der = resp
+        .extensions()
+        .get::<reqwest::tls::TlsInfo>()?
+        .peer_certificate()?;
+    match super::spki::spki_pin(der) {
+        Ok(pin) => Some(pin),
+        Err(e) => {
+            tracing::warn!(error = %e, "a2a: the card endpoint's certificate yielded no SPKI pin");
+            None
+        }
+    }
+}
+
 /// THE REAL TRANSPORT: one `reqwest` GET per hop, to the PINNED ADDRESS.
 pub(crate) struct ReqwestTransport {
     /// The resolver the CLIENT is given. Production installs [`NoSecondLookup`]; the tests install
@@ -225,6 +265,10 @@ impl Transport for ReqwestTransport {
                     // A 3xx is a fresh, fully untrusted URL that the GUARD must see. A client that
                     // followed it would perform the next hop with no guard at all.
                     .redirect(reqwest::redirect::Policy::none())
+                    // THE PEER CERTIFICATE, on the response. This ASKS FOR NOTHING: it does not
+                    // change which certificates are accepted, only whether the one that was
+                    // accepted is readable afterwards. See the module note.
+                    .tls_info(true)
                     .timeout(timeout)
                     .dns_resolver(dns)
                     // THE PIN. A host→address override for the one host this request is about, so
@@ -250,6 +294,11 @@ impl Transport for ReqwestTransport {
                     .await
                     .map_err(|e| with_cause(&e))?;
                 let status = resp.status().as_u16();
+                // READ BEFORE THE BODY, because reading the body consumes the response. The
+                // certificate belongs to THIS connection: taking it later, from a fresh one, would
+                // be asking the host a second time what certificate it serves, which is a second
+                // question an attacker gets to answer differently.
+                let peer_spki = peer_spki_of(&resp);
                 let location = resp
                     .headers()
                     .get(reqwest::header::LOCATION)
@@ -271,6 +320,7 @@ impl Transport for ReqwestTransport {
                         status,
                         location,
                         body: bytes.to_vec(),
+                        peer_spki,
                     }),
                 }
             })
@@ -330,3 +380,12 @@ impl LiveCardFetch {
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
+
+// A SECOND TEST MODULE, and it is a sibling of the first rather than a section inside it because it
+// asks a different question of the same machinery: `transport_tests` proves the pin does not weaken
+// the connection, and this one proves what the connection PROVES. It reuses that file's TLS harness
+// deliberately — a second server fixture would be a second thing that could stop matching
+// production.
+#[cfg(test)]
+#[path = "tests/transport_pin_tests.rs"]
+mod transport_pin_tests;

@@ -46,7 +46,7 @@ impl ScriptedSource {
 }
 
 impl CardSource for ScriptedSource {
-    fn fetch_card(&self, _agent_id: &str) -> Result<serde_json::Value, String> {
+    fn fetch_card(&self, _agent_id: &str) -> Result<SightedCard, String> {
         let mut answers = self.answers.borrow_mut();
         assert!(
             !answers.is_empty(),
@@ -57,7 +57,14 @@ impl CardSource for ScriptedSource {
         // the projection, because everything downstream hashes the received bytes.
         let v = answers.remove(0)?;
         card::parse(&v).map_err(|e| e.to_string())?;
-        Ok(v)
+        // NO TRANSPORT PIN in the scripted source: these verbs are tested against the SIGNED
+        // mechanism, whose root is the operator's issuer key rather than the connection. A stub
+        // that manufactured a certificate observation would be asserting a fact no fixture can
+        // establish.
+        Ok(SightedCard {
+            document: v,
+            peer_spki: None,
+        })
     }
 }
 
@@ -83,7 +90,7 @@ impl ScriptedObserver {
 }
 
 impl CardObserver for ScriptedObserver {
-    fn observe(&self, _card: &serde_json::Value) -> Result<Observation<CardPin>, String> {
+    fn observe(&self, _card: &SightedCard) -> Result<Observation<CardPin>, String> {
         let mut outcome = self.outcome.borrow_mut();
         assert!(
             !outcome.is_empty(),

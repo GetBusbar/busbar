@@ -92,6 +92,7 @@ impl CardEndpoint {
                 status: 200,
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
+                peer_spki: None,
             },
         );
     }
@@ -295,11 +296,12 @@ fn a_signed_mechanism_with_no_key_material_is_refused() {
 }
 
 #[test]
-fn a_transport_pin_this_build_does_not_check_is_refused_rather_than_recorded_as_satisfied() {
-    // THE HONEST ARM. `cert_spki` and `mtls` bind the card endpoint's certificate, and nothing in
-    // the card fetch reads a peer certificate today. Recording the fetch's success as though the
-    // binding had been checked would be the exact failure the pin exists to prevent, arriving from
-    // our side instead of theirs.
+fn a_transport_pin_with_no_certificate_observed_is_refused_rather_than_recorded_as_satisfied() {
+    // THE HONEST ARM, AND IT SURVIVED THE MECHANISM BECOMING REAL. The peer certificate is now
+    // read on every TLS hop, but a hop that produced none — a plaintext endpoint, or a fixture
+    // transport like this one — has established NOTHING about the transport. Recording the fetch's
+    // success as though the binding had been checked would be the exact failure the pin exists to
+    // prevent, arriving from our side instead of theirs.
     let endpoint = CardEndpoint::serving(&a_card("decompose a goal"));
     for (mechanism, label) in [
         (PinMechanism::CertSpki, "cert_spki"),
@@ -319,7 +321,7 @@ fn a_transport_pin_this_build_does_not_check_is_refused_rather_than_recorded_as_
         );
         assert_eq!(
             p.refusal,
-            Some(VerifyRefusal::TransportPinNotVerified(label))
+            Some(VerifyRefusal::TransportPinNotObserved(label))
         );
         assert_eq!(reg.trust_state(), TrustState::Error);
     }
@@ -635,12 +637,14 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                     status: 404,
                     location: None,
                     body: Vec::new(),
+                    peer_spki: None,
                 });
             }
             Ok(HttpResponse {
                 status: 200,
                 location: None,
                 body: self.body.clone(),
+                peer_spki: None,
             })
         }
     }
@@ -687,6 +691,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                 status: 200,
                 location: None,
                 body,
+                peer_spki: None,
             })
         }
     }
@@ -781,11 +786,11 @@ fn the_probe_hands_the_verb_layer_the_document_as_received_and_the_observation_o
 
     let fetched = probe.fetch_card("planner").expect("fetch");
     assert_eq!(
-        fetched, signed,
+        fetched.document, signed,
         "the document travels AS RECEIVED, unmodelled members and all"
     );
     assert_eq!(
-        crate::a2a::card::fingerprint(&fetched).expect("fingerprint"),
+        crate::a2a::card::fingerprint(&fetched.document).expect("fingerprint"),
         crate::a2a::card::fingerprint(&signed).expect("fingerprint")
     );
 

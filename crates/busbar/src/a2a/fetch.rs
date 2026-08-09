@@ -191,12 +191,21 @@ pub(crate) trait Resolver {
 }
 
 /// One HTTP response, reduced to what a card fetch reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HttpResponse {
     pub(crate) status: u16,
     /// The `Location` header, verbatim, for a 3xx. Never followed by the transport itself.
     pub(crate) location: Option<String>,
     pub(crate) body: Vec<u8>,
+    /// THE TRANSPORT-LAYER IDENTITY OF THE PEER: the `sha256/…` pin of the leaf certificate's
+    /// SubjectPublicKeyInfo, where this hop ran over TLS ([`super::spki::spki_pin`]).
+    ///
+    /// `None` on a plaintext hop, and `None` is a REFUSAL upstream rather than a pass: a
+    /// `cert_spki` registration whose fetch produced no certificate has nothing to have been
+    /// pinned against. Carried on the response rather than fetched separately because it is a fact
+    /// about the connection THIS response arrived on, and a second look at "the certificate that
+    /// host serves" would be a second connection an attacker gets to answer differently.
+    pub(crate) peer_spki: Option<String>,
 }
 
 /// The HTTP round trip, as a seam.
@@ -303,6 +312,14 @@ pub(crate) struct FetchedCard {
     pub(crate) chain: Vec<String>,
     /// The address the FINAL hop was pinned to.
     pub(crate) addr: IpAddr,
+    /// The transport-layer identity of the hop that actually served the card: the
+    /// [`HttpResponse::peer_spki`] of the LAST hop, never of the first.
+    ///
+    /// The last hop is the only one that matters and saying so is not pedantry: a redirect chain
+    /// can start at a host an operator pinned and end anywhere, and pinning the certificate of the
+    /// server that merely pointed at the card would authenticate the signpost rather than the
+    /// document.
+    pub(crate) peer_spki: Option<String>,
 }
 
 /// The two well-known discovery paths, canonical first.
@@ -411,6 +428,7 @@ pub(crate) fn fetch_card(
             document,
             chain,
             addr: target.addr,
+            peer_spki: resp.peer_spki,
         });
     }
 }

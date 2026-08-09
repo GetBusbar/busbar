@@ -176,7 +176,7 @@ pub(crate) fn fingerprint(card: &Value) -> Result<String, CardError> {
     if !card.is_object() {
         return Err(CardError::NotAnObject);
     }
-    Ok(sha256_tagged(&canonicalize(card)?))
+    Ok(sha256_tagged(canonicalize(card)?.as_bytes()))
 }
 
 /// THE JWS PAYLOAD: the canonical card with `signatures` removed, because a signature cannot cover
@@ -211,7 +211,7 @@ pub(crate) fn skill_digests(card: &Value) -> Result<BTreeMap<String, String>, Ca
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or(CardError::SkillWithoutId)?;
-        let digest = sha256_tagged(&canonicalize(skill)?);
+        let digest = sha256_tagged(canonicalize(skill)?.as_bytes());
         if out.insert(id.to_string(), digest).is_some() {
             return Err(CardError::DuplicateSkillId(id.to_string()));
         }
@@ -245,8 +245,15 @@ pub(crate) fn parse(card: &Value) -> Result<AgentCard, CardError> {
     serde_json::from_value(card.clone()).map_err(|_| CardError::NotAnObject)
 }
 
-fn sha256_tagged(s: &str) -> String {
-    format!("sha256/{}", B64.encode(Sha256::digest(s.as_bytes())))
+/// THE ONE DIGEST RENDERING THIS PLANE USES: `sha256/<standard base64>`.
+///
+/// Over BYTES rather than over `&str`, because the transport-layer pin
+/// ([`super::spki::spki_pin`]) hashes a DER structure and a second rendering written for it would
+/// be a second spelling of one operator-facing value. An operator comparing a configured pin
+/// against an audit row, and comparing either against what `openssl dgst -sha256 -binary | base64`
+/// printed, has to be comparing one spelling.
+pub(crate) fn sha256_tagged(bytes: &[u8]) -> String {
+    format!("sha256/{}", B64.encode(Sha256::digest(bytes)))
 }
 
 #[cfg(test)]

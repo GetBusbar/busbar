@@ -96,6 +96,7 @@ impl Endpoints {
                 status: 200,
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
+                peer_spki: None,
             },
         );
     }
