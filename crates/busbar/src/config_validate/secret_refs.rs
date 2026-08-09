@@ -91,9 +91,10 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         //     it would cost nothing; it is the operator's trust root, not their secret.
         //   * `upstream_credentials` is `Own | Passthrough` — a `Copy` mode selector, the same type
         //     the top-level `upstream_credentials: _` above already declines for the same reason.
-        // WHEN §5.3's leased outbound credentials land, an agent WILL hold a `SecretRef` and this arm
-        // must start walking it. That is not left to memory: `SECRET_BEARING_TYPES` is keyed off the
-        // `SecretRef` TYPE, so the layer-2 test fails with the type named the moment one appears here.
+        // This is a statement about the fields that exist TODAY, not a permanent one: give an agent a
+        // held outbound credential and it will hold a `SecretRef`, at which point this arm must walk
+        // it. That is not left to memory — `SECRET_BEARING_TYPES` is keyed off the `SecretRef` TYPE,
+        // so the layer-2 test fails with the type named the moment one appears here.
         agent_defs: _,
     } = cfg;
 

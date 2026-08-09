@@ -318,8 +318,7 @@ fn serialize_roundtrip_is_faithful_for_persistence() {
 /// the credentials-generalization redesign.
 #[test]
 fn virtual_key_minimal_json_defaults_optionals() {
-    let minimal =
-        r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
+    let minimal = r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
     let k: VirtualKey = serde_json::from_str(minimal).unwrap();
     assert_eq!(k.allowed_scopes, None, "absent grant = all pools");
     assert_eq!(k.group, None);
