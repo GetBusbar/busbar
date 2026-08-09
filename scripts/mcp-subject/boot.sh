@@ -141,6 +141,168 @@ tools:
       error_handling:
         schema_hash: "sha256:diagnostic-error-handling"
         description: "Always reports a tool-level error."
+      # ── SEP-2322 / MRTR: THE ASKS BUSBAR MAKES OF ITS OWN CALLER ──────────────────────────────
+      #
+      # Every \`ask_caller:\` block below is OPERATOR TEXT. busbar composes an InputRequiredResult
+      # from exactly these bytes, filters it by the capabilities the caller declared in
+      # \`_meta.io.modelcontextprotocol/clientCapabilities\`, and seals it with a requestState busbar
+      # MINTS — bound to the authenticated principal, the method, the tool, a digest of the
+      # arguments and the catalogue generation, with a short TTL and a round index.
+      #
+      # THIS IS NOT A RELAY, AND THE DISTINCTION IS THE WHOLE POINT. An upstream's own
+      # InputRequiredResult still TERMINATES at busbar (\`mcp/inputreq.rs\`): busbar either satisfies
+      # it under a grant the operator gave that server, or fails the call with a busbar-attributed
+      # error. It is never handed to the caller. What is on the wire here is a demand busbar makes
+      # in its own name, which is the only kind it is entitled to make — the same rule that already
+      # makes busbar publish the OPERATOR's tool description rather than the upstream's, applied to
+      # the field where it matters most.
+      #
+      # Minting rather than relaying is also the only conformant option. mrtr.mdx:232 makes it a
+      # MUST to reject state that fails verification, and mrtr.mdx:130 makes an upstream's state
+      # opaque to everyone but that upstream — so a relayer could only forward it blind. Worse,
+      # mrtr.mdx:235 requires the state to bind the authenticated principal, and the only principal
+      # an upstream can see is busbar, identically for every one of busbar's callers: relayed state
+      # would make caller A's state redeemable by caller B.
+      #
+      # NOBODY SHOULD PRETEND THERE IS AN OPERATOR BEHIND THE \`roots/list\` ASK. There is a scenario
+      # behind it. That is legitimate — this is operator config exactly like the six approvals
+      # above, and it puts no \`test_*\` literal into crates/*/src — but it is worth saying out loud
+      # that a real deployment would declare an ask because it wants a confirmation gate, not
+      # because a suite asked for one.
+      input_required_result_elicitation:
+        schema_hash: "sha256:diagnostic-input-required-elicitation"
+        description: "Asks the caller for a name before it runs."
+        ask_caller:
+          # The KEY IS ASSERTED BY NAME by sep-2322-elicitation-incomplete. It is not decorative.
+          - user_name:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "What is your name?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: "Your name"
+                  required: ["name"]
+      input_required_result_sampling:
+        schema_hash: "sha256:diagnostic-input-required-sampling"
+        description: "Asks the caller's model for a completion before it runs."
+        ask_caller:
+          - capital_question:
+              method: sampling/createMessage
+              params:
+                maxTokens: 100
+                messages:
+                  - role: user
+                    content: { type: text, text: "What is the capital of France?" }
+      input_required_result_list_roots:
+        schema_hash: "sha256:diagnostic-input-required-list-roots"
+        description: "Asks the caller for its roots before it runs."
+        ask_caller:
+          - client_roots:
+              method: roots/list
+      input_required_result_request_state:
+        schema_hash: "sha256:diagnostic-input-required-request-state"
+        description: "Asks for input and seals the exchange with request state."
+        ask_caller:
+          - confirmation:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Confirm to continue."
+                requestedSchema:
+                  type: object
+                  properties:
+                    confirm: { type: boolean }
+      input_required_result_multiple_inputs:
+        schema_hash: "sha256:diagnostic-input-required-multiple-inputs"
+        description: "Asks for three kinds of input in one round."
+        ask_caller:
+          # THREE KEYS AND THREE DISTINCT METHODS. sep-2322-multiple-inputs-incomplete asserts both
+          # (>= 3 keys AND a method set containing all three), so two keys sharing a method passes
+          # neither half.
+          - user_name:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "What is your name?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    name: { type: string }
+            summary:
+              method: sampling/createMessage
+              params:
+                maxTokens: 100
+                messages:
+                  - role: user
+                    content: { type: text, text: "Summarise the task." }
+            client_roots:
+              method: roots/list
+      input_required_result_multi_round:
+        schema_hash: "sha256:diagnostic-input-required-multi-round"
+        description: "Asks in two ordered rounds before it runs."
+        # TWO ROUNDS. sep-2322-multi-round-r2 additionally requires the second requestState to
+        # DIFFER from the first; that is a property of the seal (a fresh nonce and an incremented
+        # round index per mint), not of this list.
+        ask_caller:
+          - step1:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Step 1: what is your name?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    name: { type: string }
+          - step2:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Step 2: confirm."
+                requestedSchema:
+                  type: object
+                  properties:
+                    confirm: { type: boolean }
+      input_required_result_tampered_state:
+        schema_hash: "sha256:diagnostic-input-required-tampered-state"
+        description: "Asks for input under integrity-protected request state."
+        ask_caller:
+          - confirmation:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Confirm to continue."
+                requestedSchema:
+                  type: object
+                  properties:
+                    ok: { type: boolean }
+      input_required_result_capabilities:
+        schema_hash: "sha256:diagnostic-input-required-capabilities"
+        description: "Asks only for what the caller declared it can do."
+        # DECLARES ONE OF EACH, deliberately. sep-2322-respect-client-capabilities calls this tool
+        # declaring sampling and omitting elicitation, and fails on EITHER an elicitation ask
+        # surviving OR a complete result — so the filter needs something to remove and something to
+        # keep. A single-ask block would pass one half of that check vacuously.
+        ask_caller:
+          - confirmation:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Confirm to continue."
+                requestedSchema:
+                  type: object
+                  properties:
+                    ok: { type: boolean }
+            draft:
+              method: sampling/createMessage
+              params:
+                maxTokens: 100
+                messages:
+                  - role: user
+                    content: { type: text, text: "Draft a one-line summary." }
     # PROMPTS ARE SERVED FROM THE OPERATOR'S CONFIG, not proxied: a prompt template is an
     # instruction busbar puts into a model's context, so it is the operator's text by construction
     # and there is no upstream round trip to make. The namespaced name is test_simple_prompt.
@@ -151,6 +313,24 @@ tools:
       prompt_with_arguments:
         description: "A prompt that names arguments."
         template: "Prompt with arguments: arg1='{arg1}', arg2='{arg2}'"
+      # sep-2322-non-tool-incomplete drives \`prompts/get\`, not \`tools/call\`. It is the CLEANEST
+      # member of the family for busbar and the one that settles the argument on its own: prompts
+      # are served entirely from the operator's config with NO upstream round trip at all, so the
+      # InputRequiredResult on this path is provably busbar's own — there is no other party in the
+      # exchange for it to have come from.
+      input_required_result_prompt:
+        description: "A prompt that asks the caller for context first."
+        template: "Prompt rendered with the caller-supplied context."
+        ask_caller:
+          - context:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "What context should this prompt use?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    context: { type: string }
 YAML
 }
 

@@ -143,6 +143,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             aud: _,
             grants: _,
             max_input_required_rounds: _,
+            max_caller_ask_rounds: _,
             upstream_credentials: _,
             hooks: _,
             // The SSRF posture for this server. A boolean, and the guard that reads it is the one

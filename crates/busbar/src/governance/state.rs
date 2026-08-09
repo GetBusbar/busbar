@@ -377,6 +377,23 @@ impl GovState {
             .map(|m| crate::a2a::sign::CardSigner::derived_from(&m.signer))
     }
 
+    /// The RAW SIGNING SECRET, for callers that need to DERIVE a key from it rather than sign with
+    /// it. `None` when no signing key is configured, which is the fail-closed answer everywhere it
+    /// is read.
+    ///
+    /// Deliberately returns the secret rather than a ready-made HMAC, so this module keeps knowing
+    /// nothing about what any consumer seals: the MCP ask-state codec
+    /// ([`crate::mcp::askstate::Sealer::derive`]) does its own domain-separated derivation, which is
+    /// what keeps its blobs and this module's virtual-key tokens unable to verify as one another.
+    /// Secret-equivalent: never log it, never put it in a `Debug`.
+    ///
+    /// The FLEET-SHARED property is the reason this is usable for a state seal at all. One logical
+    /// caller-facing exchange spans several independent requests, which different nodes may serve;
+    /// a per-process key would make the second request fail on whichever node did not mint the first.
+    pub(crate) fn signing_secret(&self) -> Option<[u8; 32]> {
+        self.signing_material().map(|m| m.signer.secret_bytes())
+    }
+
     // ── SELF-SERVE (token-exchange) deterministic keys — 1.5.2 "Model B" ─────────────────────────
     //
     // A principal that authenticates through the browser/`POST /auth/token` flow gets ONE key,

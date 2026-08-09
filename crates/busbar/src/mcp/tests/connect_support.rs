@@ -18,6 +18,17 @@ use axum::http::HeaderMap;
 use axum::routing::post;
 use std::sync::{Arc, Mutex};
 
+/// The capabilities a handler-level test declares on the caller's behalf.
+///
+/// ALL THREE, deliberately. These tests are asserting on something else — the grant matrix, the
+/// envelope, the upstream leg — and a narrower declaration would silently change what the
+/// caller-ask capability filter admits, turning an unrelated test red for a reason that is about
+/// this constant. The filter has its own tests, in `callerask_tests.rs`, which declare narrowly on
+/// purpose.
+static ALL_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
+    || serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
+);
+
 /// What the peer currently offers, and what it has been asked.
 #[derive(Debug, Default)]
 pub(crate) struct PeerState {
@@ -175,6 +186,7 @@ pub(crate) fn server_cfg(
                 schema_hash: hash.clone(),
                 description: None,
                 input_schema: None,
+                ask_caller: Vec::new(),
             },
         );
     }
@@ -191,6 +203,7 @@ pub(crate) fn server_cfg(
         aud: None,
         grants: crate::mcp::config::ServerRequestGrants::default(),
         max_input_required_rounds: None,
+        max_caller_ask_rounds: None,
         // The peer is on loopback, which every fail-closed default refuses until an operator says
         // the estate is internal.
         allow_private: true,
@@ -249,6 +262,7 @@ pub(super) async fn call(
         handle: &handle,
         gov,
         actor: "test-principal",
+        capabilities: &ALL_CAPABILITIES,
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

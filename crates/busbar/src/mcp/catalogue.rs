@@ -90,6 +90,11 @@ pub(crate) struct ToolEntry {
     pub(crate) description: Option<String>,
     /// The tool's JSON Schema, echoed verbatim. Opaque to busbar.
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// The rounds of input BUSBAR asks its own caller for before it dispatches this tool. EMPTY ⇒ no
+    /// ask, which is deny-by-default by absence. Carried on the entry rather than re-read from the
+    /// config at dispatch for the same reason everything else here is: the decision reads ONE
+    /// snapshot, and a second source could disagree with the generation the request was admitted on.
+    pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
 }
 
 impl ToolEntry {
@@ -114,6 +119,9 @@ pub(crate) struct PromptEntry {
     pub(crate) namespaced: String,
     pub(crate) description: Option<String>,
     pub(crate) template: Option<String>,
+    /// The rounds of input busbar asks its caller for before it renders this prompt. Same grammar,
+    /// same default, same path — see [`ToolEntry::ask_caller`].
+    pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
 }
 
 /// One exposed resource.
@@ -166,6 +174,9 @@ pub(crate) struct ServerEntry {
     /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
     /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
+    /// The hard cap on rounds busbar may ask ITS OWN CALLER for. `0` disables every `ask_caller` on
+    /// this server at once.
+    pub(crate) max_caller_ask_rounds: u32,
     /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
     /// secret.
     ///
@@ -323,6 +334,7 @@ impl Catalogue {
                         schema_hash: allow.schema_hash.clone(),
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
+                        ask_caller: allow.ask_caller.clone(),
                     },
                 );
             }
@@ -336,6 +348,7 @@ impl Catalogue {
                         namespaced,
                         description: allow.description.clone(),
                         template: allow.template.clone(),
+                        ask_caller: allow.ask_caller.clone(),
                     },
                 );
             }
@@ -581,6 +594,9 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         max_input_required_rounds: def
             .max_input_required_rounds
             .unwrap_or(super::config::DEFAULT_MAX_INPUT_REQUIRED_ROUNDS),
+        max_caller_ask_rounds: def
+            .max_caller_ask_rounds
+            .unwrap_or(super::config::DEFAULT_MAX_CALLER_ASK_ROUNDS),
         upstream: UpstreamPosture {
             allow_private: def.allow_private,
             credentials: def.upstream_credentials,

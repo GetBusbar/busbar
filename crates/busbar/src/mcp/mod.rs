@@ -80,14 +80,38 @@
 //! ## What is deliberately NOT here
 //!
 //! An upstream's ASK — `elicitation/create`, `sampling/createMessage`, `roots/list` arriving as an
-//! `input_required` result — TERMINATES at busbar. It is never proxied onward to the caller, so
-//! busbar never emits an `input_required` result of its own and every result it returns is
-//! `complete`. Proxying one would ask the caller to grant, on the upstream's behalf, authority
-//! busbar itself has just declined to spend.
+//! `input_required` result — TERMINATES at busbar. It is never proxied onward to the caller.
+//! Proxying one would ask the caller to grant, on the upstream's behalf, authority busbar itself has
+//! just declined to spend.
+//!
+//! ## The distinction that replaced "busbar never emits one"
+//!
+//! That sentence used to end "…so busbar never emits an `input_required` result of its own and every
+//! result it returns is `complete`". The first half is the rule; the second half was a CONSEQUENCE
+//! of not having built anything, and stating it as an invariant confused a property busbar must hold
+//! with a feature busbar had not written.
+//!
+//! busbar now does emit `InputRequiredResult`s, and the rule is untouched, because the two are not
+//! the same object and cannot be converted into one another:
+//!
+//! | | authored by | may reach busbar's caller |
+//! |---|---|---|
+//! | [`inputreq::Ask`] | an upstream | NEVER — [`inputreq::Outcome`] has no arm to carry it, and a terminal check in `method.rs` refuses one that somehow arrives anyway |
+//! | [`callerask::CallerAsk`] | the OPERATOR, in `ask_caller:` config | yes — that is what it is for |
+//!
+//! There is no `From` between them, none constructible, and `callerask.rs` is scanned at test time
+//! for so much as the NAME of the modules an upstream's values live in. An operator-authored ask
+//! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
+//! tool description rather than the upstream's — applied to the field where it matters most.
 
 pub(crate) mod admin_view;
 /// THE MCP TRUST VERBS on the admin API — `connect`, `changes`, `health`.
 pub(crate) mod adminverbs;
+/// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
+/// authenticated principal, the request, the catalogue generation, a round index and a TTL.
+pub(crate) mod askstate;
+/// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
+pub(crate) mod callerask;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
 /// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
 /// module header.

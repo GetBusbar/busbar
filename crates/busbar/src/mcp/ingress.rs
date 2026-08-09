@@ -261,7 +261,13 @@ pub(crate) async fn rpc(
     // Bound here rather than at the point of use so the one place capabilities enter the server is
     // visible in the envelope check, next to the version they are negotiated alongside. Its
     // ABSENCE is a refusal — see META_CLIENT_CAPABILITIES.
-    if meta.get(META_CLIENT_CAPABILITIES).is_none() {
+    //
+    // THE VALUE IS NOW CARRIED, not just its presence. It used to be checked and discarded, which
+    // was enough while nothing downstream had a decision to make with it. `mrtr.mdx:246` gives it
+    // one: "Servers MUST NOT send an `inputRequests` that the client has not declared support for in
+    // its capabilities." A server that refused the field's absence and then ignored its contents
+    // would be insisting the client answer a question it never read.
+    let Some(capabilities) = meta.get(META_CLIENT_CAPABILITIES) else {
         return invalid_params(
             id,
             "`params._meta` must carry `io.modelcontextprotocol/clientCapabilities`. With no \
@@ -269,7 +275,8 @@ pub(crate) async fn rpc(
              will not decide on a client's behalf what that client can do; send `{}` to declare \
              none.",
         );
-    }
+    };
+    let capabilities = capabilities.clone();
 
     // (5) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
     // disagreeing about what this request is — so they share one code and one status.
@@ -356,6 +363,7 @@ pub(crate) async fn rpc(
         handle: &handle,
         gov: &gov,
         actor: principal.actor_id(),
+        capabilities: &capabilities,
     };
     let params = obj.get("params");
     match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {

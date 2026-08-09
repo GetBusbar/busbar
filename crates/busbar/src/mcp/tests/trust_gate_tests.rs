@@ -71,6 +71,7 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
             schema_hash: schema_hash.map(str::to_string),
             description: None,
             input_schema: None,
+            ask_caller: Vec::new(),
         },
     );
     let mut c = ToolsCfg::default();
@@ -88,6 +89,7 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
             allow_private: false,
             token_exchange: None,
             max_input_required_rounds: None,
+            max_caller_ask_rounds: None,
             upstream_credentials: None,
             hooks: Vec::new(),
         },

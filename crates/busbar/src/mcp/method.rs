@@ -51,6 +51,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use super::callerask::{self, AskDecision, Bind, Retry};
 use super::catalogue::{DispatchRefusal, ToolEntry};
 use super::client::catalogue::LiveSightings;
 use super::inputreq::{self, Outcome, Refusal, RoundRecord};
@@ -82,6 +83,11 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
 /// that stamps this ([`result`]) is the one place that would have to change if that ever stopped
 /// being true.
 const RESULT_TYPE_COMPLETE: &str = "complete";
+
+/// The one other `resultType` this server returns, and it is returned ONLY by
+/// [`input_required_result`], only for an ask busbar itself composed from operator configuration.
+/// An upstream's `input_required` never reaches this constant — see [`super::inputreq`].
+const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
 
 /// `cacheScope` on every cacheable result: `private`, and it is the only value that is TRUE here,
 /// not a cautious default.
@@ -123,6 +129,14 @@ pub(crate) struct Ctx<'a> {
     pub(crate) gov: &'a crate::governance::GovCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
+    /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
+    /// `params._meta['io.modelcontextprotocol/clientCapabilities']`.
+    ///
+    /// Bound at ingress, where the whole envelope is settled, and carried rather than re-read, so
+    /// every handler decides against the same declaration this request actually made.
+    /// `mrtr.mdx:246` forbids sending an ask the caller has not declared support for; this is the
+    /// only thing that could tell busbar what those are.
+    pub(crate) capabilities: &'a serde_json::Value,
 }
 
 impl Ctx<'_> {
@@ -133,6 +147,15 @@ impl Ctx<'_> {
     /// scopes" — the same posture `pool_allowed` takes on the LLM plane for the same reason. That is
     /// not a fail-open on the MCP plane specifically: with governance off there is no key to carry a
     /// grant, and refusing everything would make an ungoverned deployment unable to serve at all.
+    /// The deployment's signing secret, or `None`. Read through `Ctx` so the two call sites reach it
+    /// the same way and neither reaches for a global.
+    fn gov_signing_secret(&self) -> Option<[u8; 32]> {
+        self.app
+            .governance
+            .as_ref()
+            .and_then(|g| g.signing_secret())
+    }
+
     fn grant(&self) -> impl Fn(&str, &str) -> bool + '_ {
         move |kind: &str, value: &str| {
             self.gov
@@ -397,6 +420,82 @@ fn prompts_get(
             &format!("`{name}` is not a prompt this server exposes."),
         );
     };
+
+    // THE CALLER-ASK DECISION, on the path where there is provably no other party in the exchange.
+    //
+    // A prompt is served ENTIRELY from the operator's config — no upstream round trip is made here
+    // at all, which is why the header of `boot.sh`'s `prompts_allow` says a template "is the
+    // operator's text by construction". An `InputRequiredResult` on this path therefore cannot have
+    // been relayed from anywhere: there is nowhere for it to have come from.
+    //
+    // The arguments digest is over `params.arguments` — the values that get substituted into the
+    // template — so state minted for one rendering cannot be spent on another.
+    let prompt_args = params
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let cap = ctx
+        .app
+        .mcp_catalogue
+        .server(&prompt.server)
+        .map_or(0, |s| s.max_caller_ask_rounds);
+    match caller_ask_decision(
+        ctx,
+        AskSite {
+            method: "prompts/get",
+            capability: &prompt.namespaced,
+            rounds: &prompt.ask_caller,
+            cap,
+            generation: ctx.app.mcp_catalogue.generation(),
+            arguments: &prompt_args,
+        },
+        params,
+    ) {
+        AskDecision::Proceed => {}
+        AskDecision::Refuse(refusal) => {
+            return refuse_ask(
+                ctx,
+                &format!("mcp_prompt:{}", prompt.namespaced),
+                &refusal,
+                id,
+            )
+        }
+        AskDecision::Ask {
+            asks,
+            request_state,
+            round,
+        } => {
+            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            if let Err(reason) = charge_round(
+                ctx,
+                &prompt.namespaced,
+                &RoundRecord {
+                    round,
+                    satisfied: None,
+                },
+                &mut holds,
+            ) {
+                return error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    id,
+                    CODE_REFUSED,
+                    &format!(
+                        "this round of the input exchange for `{}` was refused by your budget: \
+                         {reason}",
+                        prompt.namespaced
+                    ),
+                    Some(serde_json::json!({ "reason": "budget_exhausted" })),
+                );
+            }
+            crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_prompt:{}", prompt.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            return input_required_result(id, &asks, &request_state);
+        }
+    }
     // Substitute FIRST, normalise SECOND — see `substitute_arguments` rule 1. The caller's argument
     // values pass through the same markup strip the operator's template does.
     let text = sanitize::normalise(&substitute_arguments(
@@ -561,6 +660,80 @@ async fn tools_call(
         );
     };
 
+    // (2a) THE CALLER-ASK DECISION — does busbar want something from ITS OWN CALLER before it will
+    // run this at all?
+    //
+    // PLACED HERE, after admission and re-validation and BEFORE the egress gate, for the reason
+    // step 3 gives about itself: an unsatisfied ask must cost no token exchange and no network I/O.
+    // It is also after re-validation rather than before, which matters more: the generation the ask
+    // is sealed under is the LIVE one, so a retry presenting state minted before an approval moved
+    // is refused by the seal rather than served under the approval the operator withdrew.
+    //
+    // THE GRANT IS RE-CHECKED ON EVERY RETRY, and here that is free and total rather than
+    // careful: each retry is a fresh inbound request, so steps 1 and 2 above have already run again
+    // in full — audience, scopes, live generation, live sightings. That is a STRONGER re-check than
+    // the upstream loop's per-round closure, which re-reads the registry but stays inside one
+    // dispatch.
+    match caller_ask_decision(
+        ctx,
+        AskSite {
+            method: "tools/call",
+            capability: &selected.namespaced,
+            rounds: &selected.ask_caller,
+            cap: server.max_caller_ask_rounds,
+            generation: live.mcp_catalogue.generation(),
+            arguments: &arguments,
+        },
+        params,
+    ) {
+        AskDecision::Proceed => {}
+        AskDecision::Refuse(refusal) => {
+            return refuse_ask(
+                ctx,
+                &format!("mcp_tool:{}", selected.namespaced),
+                &refusal,
+                id,
+            )
+        }
+        AskDecision::Ask {
+            asks,
+            request_state,
+            round,
+        } => {
+            // METERED BEFORE IT IS EMITTED, and this is the gap that would otherwise be silent.
+            // `charge_round` runs inside `inputreq::drive`, i.e. per UPSTREAM round — and an ask
+            // returns before the upstream leg is ever entered, so a caller-facing exchange would be
+            // charged exactly ZERO without this. An ask loop that is free is precisely the
+            // amplification the upstream cap exists to stop, pointed the other way.
+            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            if let Err(reason) = charge_round(
+                ctx,
+                &selected.namespaced,
+                &RoundRecord {
+                    round,
+                    satisfied: None,
+                },
+                &mut holds,
+            ) {
+                return refuse(
+                    ctx,
+                    name,
+                    &DispatchRefusal::NotGranted(format!(
+                        "this round of the input exchange was refused by your budget: {reason}"
+                    )),
+                    id,
+                );
+            }
+            crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_tool:{}", selected.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            return input_required_result(id, &asks, &request_state);
+        }
+    }
+
     // (3) THE EGRESS GATE — the transitive confused-deputy defence, and it runs BEFORE the loop and before any network I/O.
     //
     // The credential busbar would spend on the upstream is bound to the INBOUND principal's grant.
@@ -614,7 +787,7 @@ async fn tools_call(
                 ask.kind
             ))
         },
-        |rec| charge_round(ctx, &selected, rec, &mut holds),
+        |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )
     .await;
 
@@ -739,7 +912,7 @@ fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
 /// re-plumbing anything.
 fn charge_round(
     ctx: &Ctx<'_>,
-    selected: &ToolEntry,
+    namespaced: &str,
     rec: &RoundRecord,
     holds: &mut Vec<crate::governance::AdmitGrant>,
 ) -> Result<(), String> {
@@ -752,7 +925,7 @@ fn charge_round(
     // tool call and a model call land in the same budget window rather than in two windows that
     // happen to be close.
     let now = crate::store::now();
-    match gov_state.try_admit(&ctx.app.cost, key, &selected.namespaced, now) {
+    match gov_state.try_admit(&ctx.app.cost, key, namespaced, now) {
         Ok(grant) => holds.push(grant),
         Err(blocked) => return Err(format!("{blocked:?}")),
     }
@@ -761,16 +934,16 @@ fn charge_round(
     // is — which is the whole govern-first thesis in one call.
     gov_state.record_metering(
         &key.id,
-        &selected.namespaced,
+        namespaced,
         crate::plane::Plane::Mcp.key(),
         None,
         now,
     );
     tracing::debug!(
-        tool = %selected.namespaced,
+        capability = %namespaced,
         round = rec.round,
         satisfied = ?rec.satisfied,
-        "mcp tools/call round metered"
+        "mcp round metered"
     );
     Ok(())
 }
@@ -919,6 +1092,154 @@ fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
         axum::Json(serde_json::Value::Object(envelope)),
     )
         .into_response()
+}
+
+/// `resultType: "input_required"` — the ONE result busbar returns that is not `complete`, and the
+/// ONE place it can be produced.
+///
+/// A SEPARATE FUNCTION from [`result`] rather than a branch inside it, and that is the structural
+/// half of the termination rule. [`result`] stamps `complete` unconditionally, so an upstream's
+/// value cannot arrive carrying a discriminator busbar did not choose; this one stamps
+/// `input_required` and can only be called with a [`callerask::CallerAsk`], whose only constructor
+/// takes operator configuration. Which of the two a caller receives is therefore always a busbar
+/// decision, and which one was taken is visible at the call site rather than dependent on what a
+/// third party sent.
+///
+/// `200`, like every other result: an ask is a successful answer to a well-formed request, and the
+/// exchange is unfinished rather than failed.
+fn input_required_result(
+    id: Option<serde_json::Value>,
+    asks: &[callerask::CallerAsk],
+    request_state: &str,
+) -> Response {
+    use axum::response::IntoResponse as _;
+    let mut requests = serde_json::Map::new();
+    for ask in asks {
+        requests.insert(
+            ask.key.clone(),
+            serde_json::json!({ "method": ask.method, "params": ask.params }),
+        );
+    }
+    let mut value = serde_json::Map::new();
+    value.insert("resultType".into(), RESULT_TYPE_INPUT_REQUIRED.into());
+    value.insert("inputRequests".into(), serde_json::Value::Object(requests));
+    value.insert("requestState".into(), request_state.into());
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".into(), "2.0".into());
+    if let Some(id) = id {
+        envelope.insert("id".into(), id);
+    }
+    envelope.insert("result".into(), serde_json::Value::Object(value));
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::Value::Object(envelope)),
+    )
+        .into_response()
+}
+
+/// A refusal from the CALLER-ASK decision, rendered and audited under its own reason word.
+///
+/// `-32602` rather than `-32000` for a state failure, because that is what the conformance suite's
+/// `tampered-state` scenario documents servers answering and, more to the point, what it IS: the
+/// caller sent a `requestState` parameter this server will not accept. Everything else here is a
+/// policy refusal and takes the policy code.
+fn refuse_ask(
+    ctx: &Ctx<'_>,
+    resource: &str,
+    refusal: &callerask::Refusal,
+    id: Option<serde_json::Value>,
+) -> Response {
+    crate::admin::audit::AUDIT.record_by(
+        "mcp.caller_ask",
+        resource,
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
+    tracing::warn!(
+        capability = %resource,
+        reason = refusal.audit_reason(),
+        "mcp caller-ask refused"
+    );
+    let (status, code) = match refusal {
+        callerask::Refusal::StateRejected(_) => (StatusCode::BAD_REQUEST, CODE_INVALID_PARAMS),
+        _ => (StatusCode::FORBIDDEN, CODE_REFUSED),
+    };
+    error(
+        status,
+        id,
+        code,
+        &refusal.to_string(),
+        Some(serde_json::json!({ "reason": refusal.audit_reason() })),
+    )
+}
+
+/// The ask decision for one request, with everything it binds to gathered in one place.
+///
+/// Returns `None` when the call may proceed. Factored out because `tools/call` and `prompts/get`
+/// must make the SAME decision the SAME way — one grammar, two paths — and two copies of a
+/// capability filter is two places for one of them to be forgotten.
+struct AskSite<'a> {
+    /// `tools/call` or `prompts/get`.
+    method: &'a str,
+    /// The namespaced capability.
+    capability: &'a str,
+    /// The operator's ordered rounds for this capability. EMPTY ⇒ no ask.
+    rounds: &'a [super::config::AskRoundCfg],
+    /// The per-server cap on caller-facing rounds.
+    cap: u32,
+    /// The LIVE catalogue generation, sealed into the state.
+    generation: u64,
+    /// The parameters the seal digests — `arguments` on both paths.
+    arguments: &'a serde_json::Value,
+}
+
+fn caller_ask_decision(
+    ctx: &Ctx<'_>,
+    site: AskSite<'_>,
+    params: Option<&serde_json::Value>,
+) -> AskDecision {
+    let AskSite {
+        method,
+        capability,
+        rounds,
+        cap,
+        generation,
+        arguments,
+    } = site;
+    // The SEALING KEY, derived per decision from the deployment's fleet-shared signing secret. No
+    // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
+    let sealer = ctx
+        .gov_signing_secret()
+        .map(|s| super::askstate::Sealer::derive(&s));
+    callerask::decide(
+        rounds,
+        cap,
+        ctx.capabilities,
+        Retry {
+            responses: params.and_then(|p| p.get("inputResponses")),
+            state: params
+                .and_then(|p| p.get("requestState"))
+                .and_then(|v| v.as_str()),
+        },
+        Bind {
+            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not the
+            // actor string: the actor is for reading, the key id is what a grant is bound to. With
+            // governance disabled there is no key, and the constant below is honest about that —
+            // such a deployment has one principal, so binding to it is a true statement rather than
+            // a fake distinction.
+            principal: ctx
+                .gov
+                .key
+                .as_ref()
+                .map_or("<ungoverned>", |k| k.id.as_str()),
+            method,
+            capability,
+            generation,
+            now: crate::store::now(),
+        },
+        &super::askstate::digest_arguments(arguments),
+        sealer.as_ref(),
+    )
 }
 
 /// Delegates to the ingress envelope builder so the status and the code cannot drift apart between

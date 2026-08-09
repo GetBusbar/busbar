@@ -130,6 +130,10 @@ pub(crate) struct ToolAllowCfg {
     /// The tool's JSON Schema, echoed verbatim in `tools/list`. Opaque to busbar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// The input BUSBAR asks its own caller for before it dispatches this tool. ABSENT ⇒ no ask,
+    /// which is deny-by-default and is every deployment that has not opted in. See [`AskEntryCfg`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ask_caller: Vec<AskRoundCfg>,
 }
 
 /// `tools.<server>.prompts_allow.<name>` — one exposed prompt, markup-normalised on the way out.
@@ -146,6 +150,55 @@ pub(crate) struct PromptAllowCfg {
     /// alongside tool output, because a template is exactly as injectable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) template: Option<String>,
+    /// The input BUSBAR asks its own caller for before it renders this prompt. Same grammar and
+    /// same deny-by-default-by-absence as `tools_allow`'s — one grammar, two paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ask_caller: Vec<AskRoundCfg>,
+}
+
+/// ONE ROUND of `ask_caller` — a map from the server-assigned key to the request busbar makes.
+///
+/// A MAP, keyed exactly as the `inputRequests` it becomes on the wire (`mrtr.mdx:132-180`), because
+/// the key is not decoration: the caller addresses its answer to it, and it is what makes one round
+/// answerable. A LIST OF ROUNDS, because a multi-round exchange is a real requirement and a single
+/// map could not express order.
+pub(crate) type AskRoundCfg = indexmap::IndexMap<String, AskEntryCfg>;
+
+/// `tools.<server>.{tools,prompts}_allow.<name>.ask_caller[<round>].<key>` — ONE request busbar
+/// makes OF ITS OWN CALLER before it will run this capability.
+///
+/// ## This is busbar asking, not busbar forwarding, and the distinction is the whole point
+///
+/// An upstream's `InputRequiredResult` TERMINATES at busbar ([`super::inputreq`]) — busbar either
+/// satisfies it under a grant the operator gave that server, or fails the call. It is never handed
+/// onward. What this grammar declares is different in kind: a demand busbar makes IN ITS OWN NAME,
+/// composed from the operator's literal bytes.
+///
+/// **There is no templating and no substitution here, and that is structural rather than a
+/// convention.** [`params`](Self::params) is cloned verbatim onto the wire. The moment a value could
+/// flow from an upstream response into this field, busbar would be laundering an upstream's demand
+/// for authority under its own name with extra steps — and it would look like a feature while it did
+/// it. `mcp/callerask.rs` is scanned at test time for any reference to the modules an upstream's
+/// values live in, precisely so that this stays true by construction.
+///
+/// ## What an operator is actually turning on
+///
+/// A declared `elicitation/create` is a human-in-the-loop confirmation gate, which is the case most
+/// deployments want. A declared `sampling/createMessage` is busbar asking the CALLER'S model to run
+/// a completion on the CALLER'S budget — the mirror image of what `grants:` protects busbar from,
+/// pointed the other way. That is why this is per capability, operator-written, and absent by
+/// default: nothing here happens to a deployment that did not ask for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AskEntryCfg {
+    /// `elicitation/create`, `sampling/createMessage` or `roots/list` — the closed set
+    /// `mrtr.mdx:184-192` names. Anything else is never sent: it names no capability a caller could
+    /// have declared, and `mrtr.mdx:246` forbids sending an ask the caller has not declared.
+    pub(crate) method: String,
+    /// The request `params`, EXACTLY as the operator wrote them. Opaque to busbar and never
+    /// inspected; what validates them is the caller's own schema check on receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) params: Option<serde_json::Value>,
 }
 
 /// `tools.<server>.resources_allow.<uri>` — one exposed resource, markup-normalised on the way out.
@@ -209,6 +262,16 @@ impl ServerRequestGrants {
 /// `InputRequiredResult` forever amplifies cost by a bounded constant rather than an unbounded one.
 pub(crate) const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 
+/// The DEFAULT cap on rounds busbar may ask ITS OWN CALLER for, per capability.
+///
+/// Three for the same reason as the upstream cap, and it bounds a different risk: every round is a
+/// fresh inbound request that busbar charges and meters, so an unbounded caller-facing exchange is a
+/// caller amplifying its own cost against its own budget — which its budget would stop, but a bound
+/// that does not depend on the budget being configured is the one worth having. Deny-by-default here
+/// is the ABSENCE of `ask_caller`, not this number: a capability that declares no ask never asks
+/// whatever this says.
+pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
+
 /// One entry in the top-level `tools:` NAMED-DEFINITION map — one registered external MCP server.
 ///
 /// Operator INTENT only (owner ruling 3). Everything that ACCUMULATES — every observed tool list,
@@ -264,6 +327,17 @@ pub(crate) struct McpServerDefCfg {
     /// [`DEFAULT_MAX_INPUT_REQUIRED_ROUNDS`]. `0` is legal and means "never satisfy one".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) max_input_required_rounds: Option<u32>,
+    /// The cap on rounds busbar may ask ITS OWN CALLER for, per capability of this server. Absent ⇒
+    /// [`DEFAULT_MAX_CALLER_ASK_ROUNDS`]. `0` is legal and is an operator KILL SWITCH: it disables
+    /// every `ask_caller` on this server at once, without editing each capability.
+    ///
+    /// A second, independent bound beside the length of the `ask_caller` list, and it is not
+    /// redundant. The caller-facing loop is spread across INDEPENDENT requests with no session, so
+    /// the round index rides inside the integrity-protected `requestState` rather than in any
+    /// counter busbar holds — a counter held between requests would be a session by another name.
+    /// This cap is what that index is compared against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) max_caller_ask_rounds: Option<u32>,
     /// Outbound credential mode. Same vocabulary as the pool plane's, and DISTINCT from it: every
     /// MCP server authenticates independently, so this plane deliberately has no all-plane
     /// `tools.upstream_credentials` default at all. The reserved word space is
