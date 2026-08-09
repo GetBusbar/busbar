@@ -964,6 +964,55 @@ async fn run() {
         }
     }
 
+    // DURABLE A2A TASK STATE (§7.6). A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted
+    // waiting on a human, and can outlive the process that started it. An in-memory task table
+    // therefore loses every in-flight task and every interrupt on restart, which is the difference
+    // between a suspend/resume that is real and one that is nominal. Same shape as the durable audit
+    // above and for the same reasons: the configured governance store is the single durable home
+    // (store-or-RAM rule), attached as a write-through SINK and read back here.
+    //
+    // The RAM default (`store: memory`) implements none of the task methods, so the sink no-ops and
+    // the restore reads nothing — in-flight tasks are ephemeral BY DESIGN there, exactly as the
+    // audit log is. That is reported rather than papered over.
+    if let Some(gov) = app.governance.as_ref() {
+        let store = gov.store();
+        crate::a2a::taskstore::TASKS.set_sink(store.clone());
+        match crate::a2a::taskstore::TASKS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::a2a::taskstore::Rehydrated::default() => {}
+            Ok(r) => {
+                tracing::info!(
+                    active = r.active,
+                    terminal = r.terminal,
+                    unreadable = r.unreadable,
+                    "A2A in-flight tasks rehydrated from the durable governance store"
+                );
+                // An UNREADABLE row is an in-flight task that this binary cannot resume. Reported
+                // separately and at WARN, because summing it into the restored count is how a task
+                // that silently ceased to exist across a deploy stays invisible.
+                if r.unreadable > 0 {
+                    tracing::warn!(
+                        rows = r.unreadable,
+                        "persisted A2A task rows could not be read back and are NOT resumable; \
+                         they were most likely written by a different engine version"
+                    );
+                }
+                // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so
+                // it is logged at ERROR and names the task rather than being folded into a count.
+                for brk in &r.chain_breaks {
+                    tracing::error!(
+                        task_id = %brk.task_id,
+                        break_detail = %brk,
+                        "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not read durable A2A task state; in-flight tasks start empty"
+            ),
+        }
+    }
+
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
