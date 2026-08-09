@@ -187,7 +187,7 @@
       "applies_when": {
         "kind": "image"
       },
-      "why": "busbar 1.5.3's image did NOT boot under any documented invocation (issue #50): USER 65532:65532 against a root-owned /etc/busbar. The build was green and nothing ran the image. This row runs it."
+      "why": "busbar 1.5.3's image did NOT boot under any documented invocation: USER 65532:65532 against a root-owned /etc/busbar, so the overlay backend was unwritable and boot refused. The build was green and nothing ran the image. This row runs it."
     },
     {
       "id": "image_runs_as_nonroot",

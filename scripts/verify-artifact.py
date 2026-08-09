@@ -485,7 +485,7 @@ def row_pgo_applied(ctx) -> str:
 #
 # The image is a DIFFERENT ARTIFACT CLASS from the release tarballs, and it is the one that has
 # actually broken in production. busbar 1.5.3's image did not boot under ANY documented invocation
-# (issue #50): `USER 65532:65532` against a root-owned `/etc/busbar` in a `FROM scratch` image, so
+# `USER 65532:65532` against a root-owned `/etc/busbar` in a `FROM scratch` image, so
 # the overlay backend was unwritable and boot refused. Every gate was green, because nothing ran the
 # image. These rows run it.
 #
@@ -501,7 +501,7 @@ def _image_ref(ctx) -> str:
         raise AssertionError(
             "no image reference was passed to the verifier (--image), so the image rows could not "
             "run. A row that cannot run is RED, never skipped: these are the rows that would have "
-            "caught issue #50, where the shipped image did not boot at all."
+            "caught the release whose image did not boot at all."
         )
     return ctx.image
 
@@ -515,7 +515,7 @@ def row_image_boots_documented_quickstart(ctx) -> str:
     """Run the image the way the docs tell a user to run it, and require it to serve."""
     ref = _image_ref(ctx)
     # Run it as a SERVER, which is what the quickstart tells a user to do. An earlier draft of this
-    # row ran `--version` and PASSED against the 1.5.3 image -- the very artifact issue #50 says
+    # row ran `--version` and PASSED against the 1.5.3 image -- the very artifact that is known to
     # cannot boot. `--version` prints and exits before the config is loaded, so it proves the binary
     # executes and nothing more. The defect lives in the boot path, so the row has to reach it.
     out = _docker(
@@ -534,7 +534,7 @@ def row_image_boots_documented_quickstart(ctx) -> str:
     if "listening" not in blob.lower():
         raise AssertionError(
             "the image never reported listening, so it did not reach the serving state the "
-            "quickstart tells a user to expect. This is issue #50: 1.5.3's image refused every "
+            "quickstart tells a user to expect. 1.5.3's image refused every "
             "documented form because the overlay backend was unwritable for the non-root UID it "
             "ships.\n  exit=%d\n  %s" % (out.returncode, blob[:600])
         )
