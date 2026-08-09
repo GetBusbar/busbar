@@ -52,8 +52,8 @@ pub(crate) struct TokenClaims {
     /// `GovState::binding_generation_matches`), never against a rotated one.
     #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
     pub(crate) generation: Option<String>,
-    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.4 P1: the MCP plane boundary
-    /// (`mcp-oauth-1.5.4-DESIGN.md` par. 4). `None` = a plain data-plane busbar key (every token
+    /// The AUDIENCE this token is bound to (wire name `a`), 1.5.4: the MCP plane boundary.
+    /// `None` = a plain data-plane busbar key (every token
     /// minted before 1.5.4, and every `/auth/token` key after it). `Some(uri)` = an MCP
     /// authorization-server access token bound to the operator-configured canonical MCP URI.
     /// Enforcement lives in the VERIFIER ([`TokenVerifier::verify`]), never in a handler, so a
@@ -64,9 +64,12 @@ pub(crate) struct TokenClaims {
     #[serde(default, rename = "a", skip_serializing_if = "Option::is_none")]
     pub(crate) aud: Option<String>,
     /// The OAuth CLIENT id this token was minted through (wire name `cid`), for per-client
-    /// attribution (`mcp-oauth-1.5.4-DESIGN.md` par. 8.9). Attribution strength is stated by
-    /// client class there: cryptographically attributable for confidential clients, self-asserted
-    /// for public (PKCE-only) clients. Carried, never an admission input on the data plane.
+    /// attribution. HOW MUCH THAT ATTRIBUTION IS WORTH DEPENDS ON THE CLIENT CLASS, and an audit
+    /// reader has to be told which: a CONFIDENTIAL client authenticated to the authorization
+    /// server, so its `cid` is cryptographically attributable; a PUBLIC (PKCE-only) client did
+    /// not, so its `cid` is self-asserted and names only who the client SAID it was. Carried,
+    /// never an admission input on the data plane — which is exactly why the weaker of the two
+    /// classes is tolerable here and would not be in an authorization decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cid: Option<String>,
 }
@@ -230,8 +233,8 @@ impl TokenVerifier {
     /// the caller pairs this with a `sub`-denylist read (kept separate so the crypto is pure and
     /// testable and the revocation read is the only state touched). `now` is Unix seconds.
     ///
-    /// `expected_aud` is the PLANE the token is being presented on (1.5.4 P1,
-    /// `mcp-oauth-1.5.4-DESIGN.md` par. 4): `None` = the plain data plane, which rejects a token
+    /// `expected_aud` is the PLANE the token is being presented on (1.5.4): `None` = the plain
+    /// data plane, which rejects a token
     /// carrying ANY audience; `Some(uri)` = an audience-checked ingress (the MCP endpoint), which
     /// rejects a token whose audience is absent or different. Enforced HERE in the verifier, not
     /// per handler, so a route added later cannot forget the boundary.

@@ -170,7 +170,7 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     );
 }
 
-/// 1.5.4 P0 (`mcp-oauth-1.5.4-DESIGN.md` §6.2): scope KINDS survive a store wire round-trip.
+/// Scope KINDS survive a store wire round-trip (1.5.4).
 ///
 /// Before the kind-partitioned wire fields existed, `allowed_scopes_wire` serialized every
 /// entry's bare `value` under `allowed_pools` and deserialized every one back as
