@@ -180,6 +180,25 @@ TOOLS.logging_tool = {
   }),
 };
 
+// A1.4 / `tools-call-with-progress`. The ONLY fixture here that answers with a STREAM rather than a
+// single JSON document, because progress is defined by WHEN it arrives: `notifications/progress`
+// frames precede the result on the same response, and a fixture that returned them alongside the
+// result would be testing nothing.
+//
+// THE SPEC RULE THIS ENCODES, and it is a MUST NOT rather than a MAY: a server must not emit
+// progress without a client-supplied `progressToken`. So the token is echoed back as the content
+// when one is present and the string `no-progress-token` when it is not — which is what makes the
+// negative case observable instead of merely absent.
+TOOLS.tool_with_progress = {
+  description: "Reports progress notifications while it runs.",
+  // Marked rather than inferred: `send_stream` below keys off this, so a tool cannot start streaming
+  // by accident.
+  streams: true,
+  result: (progressToken) => ({
+    content: [{ type: "text", text: String(progressToken ?? "no-progress-token") }],
+  }),
+};
+
 const MRTR_FIXTURES = {
   input_required_result_elicitation: "Runs once the caller has supplied its name.",
   input_required_result_sampling: "Runs once the caller has supplied a completion.",
@@ -217,6 +236,41 @@ const send = (res, status, payload) => {
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
+};
+
+/// Answer as `text/event-stream`: the progress notifications first, then the result, each its own
+/// `data:` frame. This is the shape revision `2026-07-28` leaves for SSE — a RESPONSE content type
+/// on the POST, not a standing GET stream — so one request still yields one response, and the only
+/// thing that changes is that it arrives as a sequence.
+const sendStream = (res, id, tool, progressToken) => {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store",
+  });
+  // MUST NOT emit progress without a caller-supplied token. Silence here is the conformant answer,
+  // not a degraded one.
+  if (progressToken !== undefined) {
+    for (const progress of [0, 50, 100]) {
+      const frame = {
+        jsonrpc: "2.0",
+        method: "notifications/progress",
+        params: {
+          progressToken,
+          progress,
+          total: 100,
+          message: `Completed step ${progress} of 100`,
+        },
+      };
+      res.write(`data: ${JSON.stringify(frame)}\n\n`);
+    }
+  }
+  const result = {
+    jsonrpc: "2.0",
+    id,
+    result: { resultType: "complete", ...tool.result(progressToken) },
+  };
+  res.write(`data: ${JSON.stringify(result)}\n\n`);
+  res.end();
 };
 
 const rpcError = (res, status, id, code, message) =>
@@ -264,6 +318,9 @@ createServer((req, res) => {
       const tool = TOOLS[msg?.params?.name];
       if (!tool) {
         return rpcError(res, 200, id, -32602, `unknown tool ${msg?.params?.name}`);
+      }
+      if (tool.streams) {
+        return sendStream(res, id, tool, meta?.progressToken);
       }
       return send(res, 200, {
         jsonrpc: "2.0",

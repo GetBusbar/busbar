@@ -186,6 +186,12 @@ tools:
                       type: string
                       description: "Your name"
                   required: ["name"]
+      # A1.4. The upstream answers this one as a STREAM: progress frames, then the result.
+      # No \`ask_caller:\` -- what is judged is whether busbar carries the upstream's progress
+      # through to its own caller, and an ask would put a different exchange in the way.
+      tool_with_progress:
+        schema_hash: "sha256:diagnostic-tool-with-progress"
+        description: "Reports progress while it runs."
       # SEP-2575, the \`server-stateless\` scenario. Four of its checks reported "Not testable"
       # because these three tools were not exposed, and the suite counts an untestable check as a
       # FAILURE — so the summary read like a broken implementation when nothing had been exercised.
