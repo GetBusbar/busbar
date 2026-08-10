@@ -51,6 +51,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use super::callerask::{self, AskDecision, Bind, Retry};
 use super::catalogue::{DispatchRefusal, ToolEntry};
 use super::client::catalogue::LiveSightings;
 use super::inputreq::{self, Outcome, Refusal, RoundRecord};
@@ -82,6 +83,11 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
 /// that stamps this ([`result`]) is the one place that would have to change if that ever stopped
 /// being true.
 const RESULT_TYPE_COMPLETE: &str = "complete";
+
+/// The one other `resultType` this server returns, and it is returned ONLY by
+/// [`input_required_result`], only for an ask busbar itself composed from operator configuration.
+/// An upstream's `input_required` never reaches this constant — see [`super::inputreq`].
+const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
 
 /// `cacheScope` on every cacheable result: `private`, and it is the only value that is TRUE here,
 /// not a cautious default.
@@ -123,6 +129,14 @@ pub(crate) struct Ctx<'a> {
     pub(crate) gov: &'a crate::governance::GovCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
+    /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
+    /// `params._meta['io.modelcontextprotocol/clientCapabilities']`.
+    ///
+    /// Bound at ingress, where the whole envelope is settled, and carried rather than re-read, so
+    /// every handler decides against the same declaration this request actually made.
+    /// `mrtr.mdx:246` forbids sending an ask the caller has not declared support for; this is the
+    /// only thing that could tell busbar what those are.
+    pub(crate) capabilities: &'a serde_json::Value,
 }
 
 impl Ctx<'_> {
@@ -133,6 +147,15 @@ impl Ctx<'_> {
     /// scopes" — the same posture `pool_allowed` takes on the LLM plane for the same reason. That is
     /// not a fail-open on the MCP plane specifically: with governance off there is no key to carry a
     /// grant, and refusing everything would make an ungoverned deployment unable to serve at all.
+    /// The deployment's signing secret, or `None`. Read through `Ctx` so the two call sites reach it
+    /// the same way and neither reaches for a global.
+    fn gov_signing_secret(&self) -> Option<[u8; 32]> {
+        self.app
+            .governance
+            .as_ref()
+            .and_then(|g| g.signing_secret())
+    }
+
     fn grant(&self) -> impl Fn(&str, &str) -> bool + '_ {
         move |kind: &str, value: &str| {
             self.gov
@@ -158,7 +181,7 @@ pub(crate) async fn dispatch(
         "prompts/list" => Some(prompts_list(ctx, id)),
         "prompts/get" => Some(prompts_get(ctx, params, id)),
         "resources/list" => Some(resources_list(ctx, id)),
-        "resources/templates/list" => Some(resources_templates_list(id)),
+        "resources/templates/list" => Some(resources_templates_list(ctx, id)),
         "resources/read" => Some(resources_read(ctx, params, id)),
         "completion/complete" => Some(completion_complete(id)),
         _ => None,
@@ -258,6 +281,11 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // suggestions to give — see `completion_complete` for why the answer is the empty
                 // set and why that is a complete answer rather than a stub.
                 "completions": {},
+                // Present because busbar EMITS `notifications/message` records about its own
+                // handling of a request, on the response stream of the request they describe. There
+                // is deliberately no `logging/setLevel`: this revision has no session for a level to
+                // live in, so the level is named per request in `_meta` — see `super::sse`.
+                "logging": {},
             },
             "methods": IMPLEMENTED_METHODS,
             "servers": servers,
@@ -397,22 +425,159 @@ fn prompts_get(
             &format!("`{name}` is not a prompt this server exposes."),
         );
     };
+
+    // THE CALLER-ASK DECISION, on the path where there is provably no other party in the exchange.
+    //
+    // A prompt is served ENTIRELY from the operator's config — no upstream round trip is made here
+    // at all, which is why the header of `boot.sh`'s `prompts_allow` says a template "is the
+    // operator's text by construction". An `InputRequiredResult` on this path therefore cannot have
+    // been relayed from anywhere: there is nowhere for it to have come from.
+    //
+    // The arguments digest is over `params.arguments` — the values that get substituted into the
+    // template — so state minted for one rendering cannot be spent on another.
+    let prompt_args = params
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let cap = ctx
+        .app
+        .mcp_catalogue
+        .server(&prompt.server)
+        .map_or(0, |s| s.max_caller_ask_rounds);
+    match caller_ask_decision(
+        ctx,
+        AskSite {
+            method: "prompts/get",
+            capability: &prompt.namespaced,
+            rounds: &prompt.ask_caller,
+            cap,
+            generation: ctx.app.mcp_catalogue.generation(),
+            arguments: &prompt_args,
+        },
+        params,
+    ) {
+        AskDecision::Proceed => {}
+        AskDecision::Refuse(refusal) => {
+            return refuse_ask(
+                ctx,
+                &format!("mcp_prompt:{}", prompt.namespaced),
+                &refusal,
+                id,
+            )
+        }
+        AskDecision::Ask {
+            asks,
+            request_state,
+            round,
+        } => {
+            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            if let Err(reason) = charge_round(
+                ctx,
+                &prompt.namespaced,
+                &RoundRecord {
+                    round,
+                    satisfied: None,
+                },
+                &mut holds,
+            ) {
+                return error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    id,
+                    CODE_REFUSED,
+                    &format!(
+                        "this round of the input exchange for `{}` was refused by your budget: \
+                         {reason}",
+                        prompt.namespaced
+                    ),
+                    Some(serde_json::json!({ "reason": "budget_exhausted" })),
+                );
+            }
+            crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_prompt:{}", prompt.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            return input_required_result(id, &asks, &request_state);
+        }
+    }
     // Substitute FIRST, normalise SECOND — see `substitute_arguments` rule 1. The caller's argument
     // values pass through the same markup strip the operator's template does.
-    let text = sanitize::normalise(&substitute_arguments(
-        prompt.template.as_deref().unwrap_or(""),
-        params,
-    ));
     result(
         id,
         serde_json::json!({
             "description": sanitize::normalise_opt(prompt.description.as_deref()),
-            "messages": [{
-                "role": "user",
-                "content": { "type": "text", "text": text },
-            }],
+            "messages": render_prompt_messages(prompt, params),
         }),
     )
+}
+
+/// The `messages` array `prompts/get` returns, in whichever of the two forms the operator declared.
+///
+/// ONE FUNCTION FOR BOTH FORMS, and that is the point rather than tidiness: the text form and the
+/// typed form must go through the SAME substitute-then-normalise pass. A second rendering path
+/// would be a second place to forget the strip, and a new content type that skipped it would be a
+/// hole opened by a feature nobody thought of as a text surface.
+fn render_prompt_messages(
+    prompt: &super::catalogue::PromptEntry,
+    params: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    use super::config::PromptContentCfg;
+
+    // SUBSTITUTE FIRST, NORMALISE SECOND — `substitute_arguments` rule 1. The caller's argument
+    // values pass through the same markup strip the operator's own text does.
+    let render = |s: &str| sanitize::normalise(&substitute_arguments(s, params));
+
+    if prompt.messages.is_empty() {
+        return vec![serde_json::json!({
+            "role": "user",
+            "content": {
+                "type": "text",
+                "text": render(prompt.template.as_deref().unwrap_or("")),
+            },
+        })];
+    }
+
+    prompt
+        .messages
+        .iter()
+        .map(|m| {
+            let content = match &m.content {
+                PromptContentCfg::Text { text } => serde_json::json!({
+                    "type": "text", "text": render(text),
+                }),
+                // The base64 payload is NOT normalised. `normalise` strips markup from text that
+                // re-enters a model's instruction stream; a media payload is opaque bytes the client
+                // was told the type of, and running a text filter over base64 would corrupt it while
+                // protecting nothing. It is validated as decodable at BOOT instead.
+                PromptContentCfg::Image { data, mime_type } => serde_json::json!({
+                    "type": "image", "data": data, "mimeType": mime_type,
+                }),
+                PromptContentCfg::Audio { data, mime_type } => serde_json::json!({
+                    "type": "audio", "data": data, "mimeType": mime_type,
+                }),
+                PromptContentCfg::Resource { resource } => {
+                    let mut r = serde_json::Map::new();
+                    // The URI substitutes: `test_prompt_with_embedded_resource` takes the URI to
+                    // embed as an ARGUMENT, so a template that could not substitute here could not
+                    // express the shape at all. It is normalised too — a URI carrying an HTML-like
+                    // tag is not a URI, and this one is echoed into a model's context.
+                    r.insert("uri".into(), render(&resource.uri).into());
+                    if let Some(m) = &resource.mime_type {
+                        r.insert("mimeType".into(), m.clone().into());
+                    }
+                    if let Some(t) = &resource.text {
+                        r.insert("text".into(), render(t).into());
+                    }
+                    if let Some(b) = &resource.blob {
+                        r.insert("blob".into(), b.clone().into());
+                    }
+                    serde_json::json!({ "type": "resource", "resource": r })
+                }
+            };
+            serde_json::json!({ "role": m.role, "content": content })
+        })
+        .collect()
 }
 
 /// `resources/list`, with every free-text field markup-normalised on the way out.
@@ -447,26 +612,47 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// `resources/templates/list` — the URI-TEMPLATE catalogue, which for this server is EMPTY, and
-/// says so rather than answering `-32601`.
+/// `resources/templates/list` — the GRANT-SCOPED URI-TEMPLATE catalogue.
 ///
 /// A resource template is a parameterised URI (`file:///logs/{date}.log`) that a client expands and
-/// then reads. busbar's registry has no such concept: `resources_allow:` names CONCRETE resources
-/// the operator approved one at a time, by URI, and approval-by-URI is the whole basis on which a
-/// resource is served at all. A template is an approval of a SHAPE — of every URI matching a
-/// pattern — and granting that is a policy decision the operator has not been given a way to make,
-/// so there is nothing here to enumerate and inventing one would enumerate an approval nobody gave.
+/// then reads. This method answered `[]` unconditionally, and that WAS the complete and correct
+/// answer for as long as the registry had no concept of one: `resources_allow:` named concrete URIs
+/// the operator approved one at a time, a template is an approval of a SHAPE, and the operator had
+/// no way to make that decision. `resource_templates_allow:` is that way, so the empty list stopped
+/// being a fact about the registry and became a fact about this function.
 ///
-/// The empty list is therefore the COMPLETE and correct answer, exactly as it is for a caller whose
-/// grant reaches no tools, and it is a different answer from `-32601`: `-32601` says "this server
-/// does not do templates and never will", which would be a claim about the roadmap, while `[]` says
-/// "this deployment exposes none", which is a claim about the registry and is the one that is true.
-/// It also takes no grant argument, because there is nothing to scope — an empty list is the same
-/// empty list under every grant, and threading one would imply a filtering that does not happen.
-fn resources_templates_list(id: Option<serde_json::Value>) -> Response {
+/// It is scoped by the same two grants as every other catalogue read, and it is scoped for the same
+/// reason: a template names a capability of a server, and a caller with no reach to the server has
+/// no reach to its templates. The empty list survives for a caller whose grant reaches none, which
+/// is where the old answer was right all along.
+fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
+    let grant = ctx.grant();
+    let templates: Vec<serde_json::Value> = ctx
+        .app
+        .mcp_catalogue
+        .resource_templates_for(&grant)
+        .into_iter()
+        .map(|t| {
+            let mut obj = serde_json::Map::new();
+            // The NAMESPACED template, for the reason `resources_list` publishes the namespaced uri:
+            // two servers may legitimately publish one template, and the raw form would let the
+            // second silently answer for the first.
+            obj.insert("uriTemplate".into(), t.namespaced.clone().into());
+            if let Some(n) = sanitize::normalise_opt(t.name.as_deref()) {
+                obj.insert("name".into(), n.into());
+            }
+            if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
+                obj.insert("description".into(), d.into());
+            }
+            if let Some(m) = &t.mime_type {
+                obj.insert("mimeType".into(), m.clone().into());
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
     result(
         id,
-        cache_hints(serde_json::json!({ "resourceTemplates": [] })),
+        cache_hints(serde_json::json!({ "resourceTemplates": templates })),
     )
 }
 
@@ -481,25 +667,82 @@ fn resources_read(
         return invalid_params(id, "`params.uri` is required and must be a string.");
     };
     let grant = ctx.grant();
-    let Some(res) = ctx.app.mcp_catalogue.resource_for(&grant, uri) else {
-        return not_found(
-            id,
-            &format!("`{uri}` is not a resource this server exposes."),
-        );
+    // CONCRETE FIRST, TEMPLATE SECOND, and never the other way round. A URI the operator approved BY
+    // NAME must not be answered by a template that happens to match it: the two are different
+    // approvals, and letting the broader one win would let adding a template silently change what an
+    // already-approved URI returns.
+    let content = match ctx.app.mcp_catalogue.resource_for(&grant, uri) {
+        Some(res) => concrete_resource_content(res),
+        None => match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
+            Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
+            None => {
+                return not_found(
+                    id,
+                    &format!("`{uri}` is not a resource this server exposes."),
+                )
+            }
+        },
     };
+    result(
+        id,
+        cache_hints(serde_json::json!({ "contents": [content] })),
+    )
+}
+
+/// The `ResourceContents` block for a CONCRETE resource.
+///
+/// `text` and `blob` are the schema's two ALTERNATIVES, and exactly one is emitted. Config
+/// validation already refuses a declaration carrying both, so the `else` arm here is the honest
+/// "neither was declared" — an approved resource with no content, which answers the empty text form
+/// rather than an error, because the operator approving a URI and leaving it empty is a statement
+/// about content, not a malformed request.
+fn concrete_resource_content(res: &super::catalogue::ResourceEntry) -> serde_json::Value {
     let mut content = serde_json::Map::new();
     content.insert("uri".into(), res.namespaced.clone().into());
     if let Some(m) = &res.mime_type {
         content.insert("mimeType".into(), m.clone().into());
     }
-    content.insert(
-        "text".into(),
-        sanitize::normalise(res.text.as_deref().unwrap_or("")).into(),
-    );
-    result(
-        id,
-        cache_hints(serde_json::json!({ "contents": [serde_json::Value::Object(content)] })),
-    )
+    match &res.blob {
+        // NOT normalised — see `ResourceAllowCfg::blob`. A markup strip over base64 corrupts the
+        // payload and protects nothing; what protects the client is the boot-time decode check.
+        Some(blob) => {
+            content.insert("blob".into(), blob.clone().into());
+        }
+        None => {
+            content.insert(
+                "text".into(),
+                sanitize::normalise(res.text.as_deref().unwrap_or("")).into(),
+            );
+        }
+    }
+    serde_json::Value::Object(content)
+}
+
+/// The `ResourceContents` block for one EXPANSION of a template.
+///
+/// The URI echoed is the one the CALLER ASKED FOR, not the template. A client correlates the content
+/// it received with the URI it sent; answering with the unexpanded template would hand back an
+/// identifier that names every expansion at once.
+///
+/// The bindings substitute into the content, and the substituted result is normalised — the
+/// parameter values come from the caller's own URI, so they are exactly as attacker-controlled as a
+/// prompt argument and go through exactly the same strip.
+fn templated_resource_content(
+    requested_uri: &str,
+    template: &super::catalogue::ResourceTemplateEntry,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    let mut text = template.text.clone().unwrap_or_default();
+    for (name, value) in bindings {
+        text = text.replace(&format!("{{{name}}}"), value);
+    }
+    let mut content = serde_json::Map::new();
+    content.insert("uri".into(), requested_uri.into());
+    if let Some(m) = &template.mime_type {
+        content.insert("mimeType".into(), m.clone().into());
+    }
+    content.insert("text".into(), sanitize::normalise(&text).into());
+    serde_json::Value::Object(content)
 }
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
@@ -561,6 +804,80 @@ async fn tools_call(
         );
     };
 
+    // (2a) THE CALLER-ASK DECISION — does busbar want something from ITS OWN CALLER before it will
+    // run this at all?
+    //
+    // PLACED HERE, after admission and re-validation and BEFORE the egress gate, for the reason
+    // step 3 gives about itself: an unsatisfied ask must cost no token exchange and no network I/O.
+    // It is also after re-validation rather than before, which matters more: the generation the ask
+    // is sealed under is the LIVE one, so a retry presenting state minted before an approval moved
+    // is refused by the seal rather than served under the approval the operator withdrew.
+    //
+    // THE GRANT IS RE-CHECKED ON EVERY RETRY, and here that is free and total rather than
+    // careful: each retry is a fresh inbound request, so steps 1 and 2 above have already run again
+    // in full — audience, scopes, live generation, live sightings. That is a STRONGER re-check than
+    // the upstream loop's per-round closure, which re-reads the registry but stays inside one
+    // dispatch.
+    match caller_ask_decision(
+        ctx,
+        AskSite {
+            method: "tools/call",
+            capability: &selected.namespaced,
+            rounds: &selected.ask_caller,
+            cap: server.max_caller_ask_rounds,
+            generation: live.mcp_catalogue.generation(),
+            arguments: &arguments,
+        },
+        params,
+    ) {
+        AskDecision::Proceed => {}
+        AskDecision::Refuse(refusal) => {
+            return refuse_ask(
+                ctx,
+                &format!("mcp_tool:{}", selected.namespaced),
+                &refusal,
+                id,
+            )
+        }
+        AskDecision::Ask {
+            asks,
+            request_state,
+            round,
+        } => {
+            // METERED BEFORE IT IS EMITTED, and this is the gap that would otherwise be silent.
+            // `charge_round` runs inside `inputreq::drive`, i.e. per UPSTREAM round — and an ask
+            // returns before the upstream leg is ever entered, so a caller-facing exchange would be
+            // charged exactly ZERO without this. An ask loop that is free is precisely the
+            // amplification the upstream cap exists to stop, pointed the other way.
+            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            if let Err(reason) = charge_round(
+                ctx,
+                &selected.namespaced,
+                &RoundRecord {
+                    round,
+                    satisfied: None,
+                },
+                &mut holds,
+            ) {
+                return refuse(
+                    ctx,
+                    name,
+                    &DispatchRefusal::NotGranted(format!(
+                        "this round of the input exchange was refused by your budget: {reason}"
+                    )),
+                    id,
+                );
+            }
+            crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_tool:{}", selected.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            return input_required_result(id, &asks, &request_state);
+        }
+    }
+
     // (3) THE EGRESS GATE — the transitive confused-deputy defence, and it runs BEFORE the loop and before any network I/O.
     //
     // The credential busbar would spend on the upstream is bound to the INBOUND principal's grant.
@@ -614,7 +931,7 @@ async fn tools_call(
                 ask.kind
             ))
         },
-        |rec| charge_round(ctx, &selected, rec, &mut holds),
+        |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )
     .await;
 
@@ -623,6 +940,47 @@ async fn tools_call(
     let resource = format!("mcp_tool:{}", selected.namespaced);
     match outcome {
         Outcome::Completed(value) => {
+            // (5a) THE TERMINAL ASSERTION, and it is deliberately a SECOND mechanism rather than a
+            // tidier version of the first.
+            //
+            // Whether an upstream's ask ever reaches this arm is decided by a PREDICATE
+            // (`client::jsonrpc::input_required_kind`), and predicates drift: this one spent its
+            // whole life matching a wire shape no conformant server emits, and everything
+            // downstream of it — including a type with no arm capable of carrying an ask — was
+            // correct and unreached. So the value is checked once more here, at the last point
+            // before it becomes bytes, against the FIELDS rather than the discriminator.
+            //
+            // The fields and not just `resultType`, because scrubbing the discriminator alone would
+            // leave `inputRequests` in place: the caller would still receive the upstream's demand
+            // for its password, now labelled `complete`. And a REFUSAL rather than a scrub, because
+            // a result that says it is unfinished is not a finished result, and handing the caller a
+            // silently-truncated one would be answering a question nobody asked.
+            if let Some(field) = upstream_ask_field(&value) {
+                tracing::error!(
+                    tool = %selected.namespaced,
+                    field,
+                    "an upstream's input-required result reached the terminal check: the ask \
+                     recogniser did not catch it"
+                );
+                crate::admin::audit::AUDIT.record_by(
+                    "mcp_tool.call",
+                    &resource,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    ctx.actor,
+                );
+                return error(
+                    StatusCode::FORBIDDEN,
+                    id,
+                    CODE_REFUSED,
+                    &format!(
+                        "MCP server `{}` answered with an input-required result (`{field}`), which \
+                         is a request that YOU spend authority on its behalf. An upstream's ask \
+                         terminates at busbar and is never forwarded to you.",
+                        selected.server
+                    ),
+                    Some(serde_json::json!({ "reason": "ask_not_proxied" })),
+                );
+            }
             crate::admin::audit::AUDIT.record_by(
                 "mcp_tool.call",
                 &resource,
@@ -664,6 +1022,25 @@ async fn tools_call(
     }
 }
 
+/// Which MRTR ask field, if any, an upstream's supposedly-complete result still carries.
+///
+/// Named as a LIST rather than as a check on `resultType`, for the reason the call site gives: the
+/// discriminator is one field and the ask's CONTENT is in the other two, so a check that read only
+/// the discriminator would pass a result that still carried the upstream's `inputRequests`.
+///
+/// Returns the offending field so the refusal and the log can name it — an operator debugging this
+/// needs to know which of the three arrived, because it tells them whether their upstream is
+/// conformant, half-conformant, or something else entirely.
+fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
+    let obj = value.as_object()?;
+    if obj.get("resultType").and_then(|v| v.as_str()) == Some("input_required") {
+        return Some("resultType");
+    }
+    ["inputRequests", "requestState"]
+        .into_iter()
+        .find(|field| obj.contains_key(*field))
+}
+
 /// CHARGE one round on the caller's own budget plane, then meter it.
 ///
 /// The two halves are the LLM path's two halves, called the same way for the same reason: `try_admit`
@@ -679,7 +1056,7 @@ async fn tools_call(
 /// re-plumbing anything.
 fn charge_round(
     ctx: &Ctx<'_>,
-    selected: &ToolEntry,
+    namespaced: &str,
     rec: &RoundRecord,
     holds: &mut Vec<crate::governance::AdmitGrant>,
 ) -> Result<(), String> {
@@ -692,7 +1069,7 @@ fn charge_round(
     // tool call and a model call land in the same budget window rather than in two windows that
     // happen to be close.
     let now = crate::store::now();
-    match gov_state.try_admit(&ctx.app.cost, key, &selected.namespaced, now) {
+    match gov_state.try_admit(&ctx.app.cost, key, namespaced, now) {
         Ok(grant) => holds.push(grant),
         Err(blocked) => return Err(format!("{blocked:?}")),
     }
@@ -701,16 +1078,16 @@ fn charge_round(
     // is — which is the whole govern-first thesis in one call.
     gov_state.record_metering(
         &key.id,
-        &selected.namespaced,
+        namespaced,
         crate::plane::Plane::Mcp.key(),
         None,
         now,
     );
     tracing::debug!(
-        tool = %selected.namespaced,
+        capability = %namespaced,
         round = rec.round,
         satisfied = ?rec.satisfied,
-        "mcp tools/call round metered"
+        "mcp round metered"
     );
     Ok(())
 }
@@ -815,16 +1192,38 @@ fn not_found(id: Option<serde_json::Value>, message: &str) -> Response {
 ///
 /// This is also the ONE place `resultType` is stamped, and it is stamped on every result rather
 /// than at each handler, because `2026-07-28` makes it mandatory on all of them and a field that
-/// each handler has to remember is a field a seventh handler forgets. `or_insert` rather than a
-/// blind overwrite: `tools/call` passes an UPSTREAM's result through here, and rewriting a
-/// statement the upstream made about its own result would be busbar answering for it. See
-/// [`RESULT_TYPE_COMPLETE`] for why every result busbar itself composes is complete.
+/// each handler has to remember is a field a seventh handler forgets.
+///
+/// ## `insert`, not `or_insert`, and the reasoning that changed
+///
+/// This used to `or_insert`, on the stated grounds that `tools/call` passes an UPSTREAM's result
+/// through here and "rewriting a statement the upstream made about its own result would be busbar
+/// answering for it". That reasoning is INVERTED, and enumerating the cases is what shows it —
+/// because the set of results where `or_insert` differs from a plain `insert` is exactly the set
+/// where preserving the upstream's value is wrong:
+///
+/// | what the upstream said | what preserving it does |
+/// |---|---|
+/// | `"complete"` | nothing — `insert` writes the same value |
+/// | `"input_required"` | THE LAUNDERING. Hands busbar's caller an upstream's demand for authority, under busbar's name and busbar's authentication |
+/// | anything else | passes on a result type busbar cannot describe and did not vouch for |
+///
+/// There is no case in which deferring to the upstream is both different and right. And the premise
+/// was wrong too: the value leaving here is not the upstream's statement being relayed, it is
+/// BUSBAR'S OWN RESULT — busbar chose to dispatch, normalised the content
+/// ([`sanitize::normalise_json`]), and signs for what it returns. `resultType` is therefore busbar's
+/// sentence to write, and the only honest thing busbar can write on a result it is handing over as
+/// finished is `complete`.
+///
+/// The one result busbar legitimately marks otherwise is an ask BUSBAR ITSELF composed, and that is
+/// deliberately a DIFFERENT FUNCTION rather than a branch here: see [`input_required_result`]. Two
+/// constructors mean the `resultType` a caller sees is always one busbar chose, and which one is
+/// visible at the call site rather than dependent on what arrived from a third party.
 fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
     use axum::response::IntoResponse as _;
     let mut value = value;
     if let Some(obj) = value.as_object_mut() {
-        obj.entry("resultType")
-            .or_insert_with(|| RESULT_TYPE_COMPLETE.into());
+        obj.insert("resultType".into(), RESULT_TYPE_COMPLETE.into());
     }
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), "2.0".into());
@@ -837,6 +1236,154 @@ fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
         axum::Json(serde_json::Value::Object(envelope)),
     )
         .into_response()
+}
+
+/// `resultType: "input_required"` — the ONE result busbar returns that is not `complete`, and the
+/// ONE place it can be produced.
+///
+/// A SEPARATE FUNCTION from [`result`] rather than a branch inside it, and that is the structural
+/// half of the termination rule. [`result`] stamps `complete` unconditionally, so an upstream's
+/// value cannot arrive carrying a discriminator busbar did not choose; this one stamps
+/// `input_required` and can only be called with a [`callerask::CallerAsk`], whose only constructor
+/// takes operator configuration. Which of the two a caller receives is therefore always a busbar
+/// decision, and which one was taken is visible at the call site rather than dependent on what a
+/// third party sent.
+///
+/// `200`, like every other result: an ask is a successful answer to a well-formed request, and the
+/// exchange is unfinished rather than failed.
+fn input_required_result(
+    id: Option<serde_json::Value>,
+    asks: &[callerask::CallerAsk],
+    request_state: &str,
+) -> Response {
+    use axum::response::IntoResponse as _;
+    let mut requests = serde_json::Map::new();
+    for ask in asks {
+        requests.insert(
+            ask.key.clone(),
+            serde_json::json!({ "method": ask.method, "params": ask.params }),
+        );
+    }
+    let mut value = serde_json::Map::new();
+    value.insert("resultType".into(), RESULT_TYPE_INPUT_REQUIRED.into());
+    value.insert("inputRequests".into(), serde_json::Value::Object(requests));
+    value.insert("requestState".into(), request_state.into());
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".into(), "2.0".into());
+    if let Some(id) = id {
+        envelope.insert("id".into(), id);
+    }
+    envelope.insert("result".into(), serde_json::Value::Object(value));
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::Value::Object(envelope)),
+    )
+        .into_response()
+}
+
+/// A refusal from the CALLER-ASK decision, rendered and audited under its own reason word.
+///
+/// `-32602` rather than `-32000` for a state failure, because that is what the conformance suite's
+/// `tampered-state` scenario documents servers answering and, more to the point, what it IS: the
+/// caller sent a `requestState` parameter this server will not accept. Everything else here is a
+/// policy refusal and takes the policy code.
+fn refuse_ask(
+    ctx: &Ctx<'_>,
+    resource: &str,
+    refusal: &callerask::Refusal,
+    id: Option<serde_json::Value>,
+) -> Response {
+    crate::admin::audit::AUDIT.record_by(
+        "mcp.caller_ask",
+        resource,
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
+    tracing::warn!(
+        capability = %resource,
+        reason = refusal.audit_reason(),
+        "mcp caller-ask refused"
+    );
+    let (status, code) = match refusal {
+        callerask::Refusal::StateRejected(_) => (StatusCode::BAD_REQUEST, CODE_INVALID_PARAMS),
+        _ => (StatusCode::FORBIDDEN, CODE_REFUSED),
+    };
+    error(
+        status,
+        id,
+        code,
+        &refusal.to_string(),
+        Some(serde_json::json!({ "reason": refusal.audit_reason() })),
+    )
+}
+
+/// The ask decision for one request, with everything it binds to gathered in one place.
+///
+/// Returns `None` when the call may proceed. Factored out because `tools/call` and `prompts/get`
+/// must make the SAME decision the SAME way — one grammar, two paths — and two copies of a
+/// capability filter is two places for one of them to be forgotten.
+struct AskSite<'a> {
+    /// `tools/call` or `prompts/get`.
+    method: &'a str,
+    /// The namespaced capability.
+    capability: &'a str,
+    /// The operator's ordered rounds for this capability. EMPTY ⇒ no ask.
+    rounds: &'a [super::config::AskRoundCfg],
+    /// The per-server cap on caller-facing rounds.
+    cap: u32,
+    /// The LIVE catalogue generation, sealed into the state.
+    generation: u64,
+    /// The parameters the seal digests — `arguments` on both paths.
+    arguments: &'a serde_json::Value,
+}
+
+fn caller_ask_decision(
+    ctx: &Ctx<'_>,
+    site: AskSite<'_>,
+    params: Option<&serde_json::Value>,
+) -> AskDecision {
+    let AskSite {
+        method,
+        capability,
+        rounds,
+        cap,
+        generation,
+        arguments,
+    } = site;
+    // The SEALING KEY, derived per decision from the deployment's fleet-shared signing secret. No
+    // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
+    let sealer = ctx
+        .gov_signing_secret()
+        .map(|s| super::askstate::Sealer::derive(&s));
+    callerask::decide(
+        rounds,
+        cap,
+        ctx.capabilities,
+        Retry {
+            responses: params.and_then(|p| p.get("inputResponses")),
+            state: params
+                .and_then(|p| p.get("requestState"))
+                .and_then(|v| v.as_str()),
+        },
+        Bind {
+            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not the
+            // actor string: the actor is for reading, the key id is what a grant is bound to. With
+            // governance disabled there is no key, and the constant below is honest about that —
+            // such a deployment has one principal, so binding to it is a true statement rather than
+            // a fake distinction.
+            principal: ctx
+                .gov
+                .key
+                .as_ref()
+                .map_or("<ungoverned>", |k| k.id.as_str()),
+            method,
+            capability,
+            generation,
+            now: crate::store::now(),
+        },
+        &super::askstate::digest_arguments(arguments),
+        sealer.as_ref(),
+    )
 }
 
 /// Delegates to the ingress envelope builder so the status and the code cannot drift apart between

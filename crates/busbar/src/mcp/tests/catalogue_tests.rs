@@ -20,6 +20,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
                 schema_hash: Some(format!("sha256:{t}")),
                 description: Some(format!("<IMPORTANT>do {t}</IMPORTANT>")),
                 input_schema: None,
+                ask_caller: Vec::new(),
             },
         );
     }
@@ -37,12 +38,14 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
             tools_allow,
             prompts_allow: indexmap::IndexMap::new(),
             resources_allow: indexmap::IndexMap::new(),
+            resource_templates_allow: Default::default(),
             transport: None,
             aud: None,
             grants: Default::default(),
             allow_private: false,
             token_exchange: None,
             max_input_required_rounds: None,
+            max_caller_ask_rounds: None,
             upstream_credentials: None,
             hooks: Vec::new(),
         },

@@ -63,7 +63,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
-use super::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolsCfg, NAMESPACE_SEP};
+use super::config::{
+    McpServerDefCfg, PinMechanism, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
+};
 use crate::trust::Approval;
 
 /// THE PIN GENERATION SOURCE. Monotonic, process-global, bumped once per snapshot BUILD.
@@ -90,6 +92,11 @@ pub(crate) struct ToolEntry {
     pub(crate) description: Option<String>,
     /// The tool's JSON Schema, echoed verbatim. Opaque to busbar.
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// The rounds of input BUSBAR asks its own caller for before it dispatches this tool. EMPTY ⇒ no
+    /// ask, which is deny-by-default by absence. Carried on the entry rather than re-read from the
+    /// config at dispatch for the same reason everything else here is: the decision reads ONE
+    /// snapshot, and a second source could disagree with the generation the request was admitted on.
+    pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
 }
 
 impl ToolEntry {
@@ -114,6 +121,13 @@ pub(crate) struct PromptEntry {
     pub(crate) namespaced: String,
     pub(crate) description: Option<String>,
     pub(crate) template: Option<String>,
+    /// The rounds of input busbar asks its caller for before it renders this prompt. Same grammar,
+    /// same default, same path — see [`ToolEntry::ask_caller`].
+    pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
+    /// The TYPED message list, empty when the operator used the `template:` form. Carried verbatim
+    /// from config: this is the store, and the markup strip happens at the edge, in the writer, on
+    /// the same pass that substitutes the caller's arguments.
+    pub(crate) messages: Vec<PromptMessageCfg>,
 }
 
 /// One exposed resource.
@@ -130,6 +144,28 @@ pub(crate) struct ResourceEntry {
     /// The upstream's own URI, for display and for the eventual outbound call.
     pub(crate) uri: String,
     /// `{server}_{uri}` — what the wire carries and what a grant names.
+    pub(crate) namespaced: String,
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) mime_type: Option<String>,
+    pub(crate) text: Option<String>,
+    /// The base64 form. Mutually exclusive with `text` — refused at config validation, so a
+    /// catalogue entry can never carry both and the writer never has to choose.
+    pub(crate) blob: Option<String>,
+}
+
+/// One exposed RESOURCE TEMPLATE — a parameterised URI and the content one expansion of it returns.
+///
+/// NAMESPACED on the same key as everything else on this plane, for the same reason: two registered
+/// servers may legitimately publish the same template, and a catalogue keyed on the raw one would
+/// let the second silently answer for the first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResourceTemplateEntry {
+    pub(crate) server: String,
+    /// The template as the operator wrote it.
+    pub(crate) uri_template: String,
+    /// `{server}_{uri_template}` — what `resources/templates/list` publishes and what a caller's
+    /// EXPANDED uri is matched against.
     pub(crate) namespaced: String,
     pub(crate) name: Option<String>,
     pub(crate) description: Option<String>,
@@ -166,6 +202,9 @@ pub(crate) struct ServerEntry {
     /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
     /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
+    /// The hard cap on rounds busbar may ask ITS OWN CALLER for. `0` disables every `ask_caller` on
+    /// this server at once.
+    pub(crate) max_caller_ask_rounds: u32,
     /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
     /// secret.
     ///
@@ -204,6 +243,11 @@ pub(crate) struct Catalogue {
     /// Keyed by the NAMESPACED uri — see [`ResourceEntry`] for why the raw one was not safe to key
     /// on.
     resources: BTreeMap<String, ResourceEntry>,
+    /// Keyed by the NAMESPACED uri TEMPLATE. A separate map from `resources` on purpose: a
+    /// concrete URI is found by lookup and a template by MATCHING, and merging the two would make
+    /// every concrete read pay for a scan — and, worse, would let a template shadow a concrete
+    /// resource the operator approved by name.
+    resource_templates: BTreeMap<String, ResourceTemplateEntry>,
 }
 
 impl Default for Catalogue {
@@ -217,6 +261,7 @@ impl Default for Catalogue {
             tools: BTreeMap::new(),
             prompts: BTreeMap::new(),
             resources: BTreeMap::new(),
+            resource_templates: BTreeMap::new(),
         }
     }
 }
@@ -310,6 +355,7 @@ impl Catalogue {
         let mut tools = BTreeMap::new();
         let mut prompts = BTreeMap::new();
         let mut resources = BTreeMap::new();
+        let mut resource_templates = BTreeMap::new();
         for (id, def) in &cfg.servers {
             servers.insert(id.clone(), server_entry(id, def));
             for (tool, allow) in &def.tools_allow {
@@ -323,6 +369,7 @@ impl Catalogue {
                         schema_hash: allow.schema_hash.clone(),
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
+                        ask_caller: allow.ask_caller.clone(),
                     },
                 );
             }
@@ -336,6 +383,8 @@ impl Catalogue {
                         namespaced,
                         description: allow.description.clone(),
                         template: allow.template.clone(),
+                        ask_caller: allow.ask_caller.clone(),
+                        messages: allow.messages.clone(),
                     },
                 );
             }
@@ -351,6 +400,22 @@ impl Catalogue {
                         description: allow.description.clone(),
                         mime_type: allow.mime_type.clone(),
                         text: allow.text.clone(),
+                        blob: allow.blob.clone(),
+                    },
+                );
+            }
+            for (template, allow) in &def.resource_templates_allow {
+                let namespaced = namespaced(id, template);
+                resource_templates.insert(
+                    namespaced.clone(),
+                    ResourceTemplateEntry {
+                        server: id.clone(),
+                        uri_template: template.clone(),
+                        namespaced,
+                        name: allow.name.clone(),
+                        description: allow.description.clone(),
+                        mime_type: allow.mime_type.clone(),
+                        text: allow.text.clone(),
                     },
                 );
             }
@@ -361,6 +426,7 @@ impl Catalogue {
             tools,
             prompts,
             resources,
+            resource_templates,
         }
     }
 
@@ -420,6 +486,43 @@ impl Catalogue {
         self.prompts
             .get(namespaced_name)
             .filter(|p| granted(grant, &p.server, &p.namespaced))
+    }
+
+    /// The grant-scoped resource-TEMPLATE catalogue.
+    pub(crate) fn resource_templates_for(
+        &self,
+        grant: &dyn Fn(&str, &str) -> bool,
+    ) -> Vec<&ResourceTemplateEntry> {
+        self.resource_templates
+            .values()
+            .filter(|t| granted(grant, &t.server, &t.namespaced))
+            .collect()
+    }
+
+    /// MATCH a caller's EXPANDED uri against the grant-scoped templates.
+    ///
+    /// Returns the template it matched and the parameter bindings the match produced. `None` covers
+    /// "no template matches" and "not yours" alike, which is the same answer
+    /// [`Catalogue::resource_for`] gives and for the same reason: distinguishing them would let a
+    /// caller probe for the shape of an approval it does not hold.
+    ///
+    /// Deterministic on a collision: the map is ordered, so the FIRST matching template by
+    /// namespaced key wins and wins the same way on every process. That is a weaker property than
+    /// refusing an ambiguity outright, and it is called out here rather than left to be discovered —
+    /// two templates of one server that both match one URI is an operator writing two overlapping
+    /// approvals, and which one they meant is a question the registry cannot answer for them.
+    pub(crate) fn resource_template_for(
+        &self,
+        grant: &dyn Fn(&str, &str) -> bool,
+        namespaced_uri: &str,
+    ) -> Option<(
+        &ResourceTemplateEntry,
+        std::collections::BTreeMap<String, String>,
+    )> {
+        self.resource_templates
+            .values()
+            .filter(|t| granted(grant, &t.server, &t.namespaced))
+            .find_map(|t| match_uri_template(&t.namespaced, namespaced_uri).map(|p| (t, p)))
     }
 
     /// Look one resource up by its NAMESPACED uri under the caller's grant.
@@ -518,6 +621,64 @@ impl Catalogue {
     }
 }
 
+/// MATCH one RFC 6570 level-1 URI template against a concrete URI, returning the bindings.
+///
+/// Level 1 only — the config grammar refuses everything else ([`super::config::validate_uri_template`]),
+/// so this function never has to guess at an operator whose expansion rules it does not implement.
+///
+/// TWO RULES ABOUT WHAT A PARAMETER MAY SWALLOW, and both exist because a template is an APPROVAL of
+/// a URI shape:
+///
+/// 1. A binding is NON-EMPTY. `test://template//data` is not an expansion of
+///    `test://template/{id}/data`; treating it as one would make the approval cover a URI with a
+///    missing segment.
+/// 2. A binding contains NO `/`. Without that, `test://template/{id}/data` matches
+///    `test://template/a/b/c/data` and one declaration silently approves an entire subtree — which
+///    is precisely the "approval of a shape" the operator did not write.
+///
+/// The literal between two parameters is found at its FIRST occurrence, which with rule 2 makes the
+/// match unique: a longer candidate binding would have to contain the separator that rule 2 forbids.
+fn match_uri_template(
+    template: &str,
+    uri: &str,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut bindings = std::collections::BTreeMap::new();
+    let mut t = template;
+    let mut u = uri;
+    loop {
+        let Some(open) = t.find('{') else {
+            // No parameter left: the rest must match exactly, or a template would match every URI
+            // that merely starts the same way.
+            return (t == u).then_some(bindings);
+        };
+        let literal = &t[..open];
+        if !u.starts_with(literal) {
+            return None;
+        }
+        u = &u[literal.len()..];
+        let after = &t[open + 1..];
+        let close = after.find('}')?;
+        let name = &after[..close];
+        t = &after[close + 1..];
+        // The literal that ENDS this binding, up to the next parameter or the end of the template.
+        let stop = &t[..t.find('{').unwrap_or(t.len())];
+        let value = if stop.is_empty() {
+            let v = u;
+            u = "";
+            v
+        } else {
+            let at = u.find(stop)?;
+            let v = &u[..at];
+            u = &u[at..];
+            v
+        };
+        if value.is_empty() || value.contains('/') {
+            return None;
+        }
+        bindings.insert(name.to_string(), value.to_string());
+    }
+}
+
 /// BOTH grants, and the order is the one an operator reads: the server first (may this caller reach
 /// this upstream at all), then the capability.
 fn granted(grant: &dyn Fn(&str, &str) -> bool, server: &str, namespaced_name: &str) -> bool {
@@ -581,6 +742,9 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         max_input_required_rounds: def
             .max_input_required_rounds
             .unwrap_or(super::config::DEFAULT_MAX_INPUT_REQUIRED_ROUNDS),
+        max_caller_ask_rounds: def
+            .max_caller_ask_rounds
+            .unwrap_or(super::config::DEFAULT_MAX_CALLER_ASK_ROUNDS),
         upstream: UpstreamPosture {
             allow_private: def.allow_private,
             credentials: def.upstream_credentials,

@@ -51,6 +51,33 @@
 //! this function can return that a caller could serialise back onto the wire. A rule enforced by a
 //! missing enum variant cannot be forgotten by a later edit in the way a rule enforced by a comment
 //! can.
+//!
+//! ## THE HALF OF THAT CLAIM THAT WAS NOT TRUE, AND WHAT NOW MAKES IT TRUE
+//!
+//! The sentence above is worth reading twice, because it was correct and it was not enough, and the
+//! gap between those two things was a live confused-deputy hole from the day this module was
+//! written until the day it was closed.
+//!
+//! A type with no arm to carry an ask only binds on values that ARRIVE HERE AS ASKS, and that is
+//! decided earlier, by a predicate. `client::jsonrpc::input_required_kind` tested
+//! `result.type == "input_required"` and read `result.request` as a string. MRTR has neither field:
+//! the discriminator is `resultType` and the asks are a MAP at `inputRequests`. So a conformant
+//! upstream's ask failed the predicate, was reported as an ordinary result, arrived here as
+//! `Round::Done`, left as `Outcome::Completed`, and was written to busbar's own caller VERBATIM.
+//! A registered tool server could ask busbar's caller for its password and busbar would deliver the
+//! demand under its own name, with its own authentication on it.
+//!
+//! Nobody caught it because the only tests that exercised the predicate minted busbar's invented
+//! shape: the fixture and the parser agreed with each other, and with no server in existence.
+//!
+//! There are now THREE mechanisms, and they are independent on purpose:
+//!
+//! 1. the predicate, rewritten against the specification's shape;
+//! 2. this type, unchanged — it was always right;
+//! 3. a TERMINAL CHECK in `method.rs`, which reads the ask's FIELDS rather than its discriminator at
+//!    the last point before the value becomes bytes, and refuses. It exists because mechanism 1 is a
+//!    predicate, predicates drift, and this one drifted for its entire life without a single test
+//!    noticing.
 
 /// One ask an upstream returned inside its result.
 #[derive(Clone, Debug, PartialEq, Eq)]

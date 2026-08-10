@@ -56,6 +56,17 @@ async fn serve(origins: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
 /// missing: this revision carries no session to hold a log level across requests, so a client asks
 /// for logging per request in `_meta` and there is nothing for a `setLevel` RPC to set. A test
 /// asserting `404` against a method that could never exist would be asserting nothing.
+///
+/// RE-EXAMINED WHEN `notifications/message` LANDED, because that is exactly the change that could
+/// have turned this control into a lie. It did not, and the reason is worth stating rather than
+/// assuming. `logging/setLevel` exists to SET A LEVEL THAT PERSISTS, and its own schema description
+/// says so: *"the server should send all logs at this level and higher to the client as
+/// notifications/message"* — a standing instruction, for later messages. Under `2026-07-28` there is
+/// no later: no handshake, no session, no standing stream, so an RPC that set a level would have
+/// nowhere to keep it and nothing to apply it to. busbar therefore reads the level from the
+/// request's own `_meta` and emits the records on that request's own response stream
+/// (`crate::mcp::sse`), which is the only shape a stateless protocol leaves. The absence is
+/// unchanged and it is still principled.
 const UNIMPLEMENTED: &str = "logging/setLevel";
 
 fn well_formed(method: &str) -> (serde_json::Value, Vec<(&'static str, String)>) {

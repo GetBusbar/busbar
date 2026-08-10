@@ -31,6 +31,9 @@
 //! 6. Protocol version support (`-32022`, `400`), only once we know the request was well formed —
 //!    telling a malformed request which versions we speak answers a question it did not ask.
 //! 7. Method dispatch, whose miss is `-32601` with `404`.
+//! 8. RESPONSE FRAMING — `application/json` or an SSE stream, by the client's own stated preference,
+//!    plus the `notifications/message` records busbar produced while answering. Last, because what
+//!    it frames is the answer. See [`super::sse`].
 //!
 //! ## What this module does NOT do
 //!
@@ -43,6 +46,8 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+
+use super::sse;
 
 /// The single MCP protocol revision busbar implements.
 ///
@@ -261,7 +266,13 @@ pub(crate) async fn rpc(
     // Bound here rather than at the point of use so the one place capabilities enter the server is
     // visible in the envelope check, next to the version they are negotiated alongside. Its
     // ABSENCE is a refusal — see META_CLIENT_CAPABILITIES.
-    if meta.get(META_CLIENT_CAPABILITIES).is_none() {
+    //
+    // THE VALUE IS NOW CARRIED, not just its presence. It used to be checked and discarded, which
+    // was enough while nothing downstream had a decision to make with it. `mrtr.mdx:246` gives it
+    // one: "Servers MUST NOT send an `inputRequests` that the client has not declared support for in
+    // its capabilities." A server that refused the field's absence and then ignored its contents
+    // would be insisting the client answer a question it never read.
+    let Some(capabilities) = meta.get(META_CLIENT_CAPABILITIES) else {
         return invalid_params(
             id,
             "`params._meta` must carry `io.modelcontextprotocol/clientCapabilities`. With no \
@@ -269,7 +280,8 @@ pub(crate) async fn rpc(
              will not decide on a client's behalf what that client can do; send `{}` to declare \
              none.",
         );
-    }
+    };
+    let capabilities = capabilities.clone();
 
     // (5) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
     // disagreeing about what this request is — so they share one code and one status.
@@ -356,9 +368,10 @@ pub(crate) async fn rpc(
         handle: &handle,
         gov: &gov,
         actor: principal.actor_id(),
+        capabilities: &capabilities,
     };
     let params = obj.get("params");
-    match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {
+    let response = match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {
         Some(response) => response,
         None => error_response(
             StatusCode::NOT_FOUND,
@@ -367,7 +380,74 @@ pub(crate) async fn rpc(
             &format!("Method `{method}` is not implemented by this server."),
             None,
         ),
+    };
+
+    // (8) THE RESPONSE FRAMING, and the log records that ride it.
+    //
+    // Last, and it has to be last: what is framed is the ANSWER, so the answer has to exist. This is
+    // also the only ordering under which a `notifications/message` record can describe the outcome
+    // rather than merely the intent — a record emitted before dispatch could say what busbar was
+    // asked to do and never what it did.
+    //
+    // A client that did not ask for a stream is unaffected: `prefers_event_stream` is false for
+    // every `Accept` that puts `application/json` first, which is every MCP client that has not
+    // deliberately asked otherwise, so this is a new answer to a new question rather than a change
+    // to the old one.
+    if !sse::prefers_event_stream(&headers) {
+        return response;
     }
+    let level = sse::requested_level(Some(meta));
+    let logs: Vec<sse::LogRecord> = request_log(method, obj, &response)
+        .into_iter()
+        .filter(|r| sse::level_allows(level, r.level))
+        .collect();
+    sse::as_event_stream(response, &logs).await
+}
+
+/// The `notifications/message` records busbar produces about ITS OWN handling of one request.
+///
+/// Two records, and they are two rather than one on purpose. The `debug` one states what was
+/// dispatched; the second states how it ended. A client that asks for `info` (the default) sees only
+/// the outcome, which is what a log is for; a client that asks for `debug` sees both, which is what
+/// makes the level filter something a caller can observe working rather than something it has to
+/// take on trust.
+///
+/// The records describe BUSBAR, never an upstream. An upstream's own log records are not relayed:
+/// they would arrive at busbar's caller under busbar's name, which is the same laundering an
+/// upstream's `InputRequiredResult` is refused for. `logger` is prefixed `busbar.` so that stays
+/// visible in a client's log even when nobody is thinking about it.
+fn request_log(
+    method: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+    response: &Response,
+) -> Vec<crate::mcp::sse::LogRecord> {
+    let target = name_source_of(method)
+        .and_then(|source| obj.get("params").and_then(|p| p.get(source)).cloned());
+    let status = response.status().as_u16();
+    // The STATUS, not the body: the body has already been consumed into the response and re-reading
+    // it here would mean buffering the answer twice. The status/code pair is one contract
+    // (`error_response` builds both together), so the status is a faithful statement of the outcome.
+    let ok = response.status() == StatusCode::OK;
+    vec![
+        crate::mcp::sse::LogRecord {
+            level: "debug",
+            logger: "busbar.mcp.dispatch",
+            data: serde_json::json!({
+                "message": "dispatching MCP method",
+                "method": method,
+                "target": target,
+            }),
+        },
+        crate::mcp::sse::LogRecord {
+            level: if ok { "info" } else { "warning" },
+            logger: "busbar.mcp.dispatch",
+            data: serde_json::json!({
+                "message": if ok { "MCP method completed" } else { "MCP method refused" },
+                "method": method,
+                "httpStatus": status,
+            }),
+        },
+    ]
 }
 
 /// Whether `origin` is a LOOPBACK origin, which is always accepted regardless of the operator's
@@ -503,3 +583,17 @@ mod ingress_tests;
 #[cfg(test)]
 #[path = "tests/request_meta_tests.rs"]
 mod request_meta_tests;
+
+// The RESPONSE FRAMING battery. Mounted from the INGRESS rather than from [`super::sse`] on purpose:
+// every test in it drives a real socket and asserts on what a CLIENT received, which is a statement
+// about this handler's last step, not about the framing helper in isolation.
+#[cfg(test)]
+#[path = "tests/sse_tests.rs"]
+mod sse_tests;
+
+// The CONTENT battery — binary resources, resource templates, typed prompt content and the
+// missing-client-capability refusal. Mounted here for the same reason `sse_tests` is: every case in
+// it drives a real socket and judges what a CLIENT received.
+#[cfg(test)]
+#[path = "tests/content_tests.rs"]
+mod content_tests;

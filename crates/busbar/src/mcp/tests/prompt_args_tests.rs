@@ -29,6 +29,17 @@ use crate::state::{App, AppHandle};
 use crate::test_support::TestApp;
 use std::sync::Arc;
 
+/// The capabilities a handler-level test declares on the caller's behalf.
+///
+/// ALL THREE, deliberately. These tests are asserting on something else — the grant matrix, the
+/// envelope, the upstream leg — and a narrower declaration would silently change what the
+/// caller-ask capability filter admits, turning an unrelated test red for a reason that is about
+/// this constant. The filter has its own tests, in `callerask_tests.rs`, which declare narrowly on
+/// purpose.
+static ALL_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
+    || serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
+);
+
 /// A registered server carrying one templated prompt. The template's markup is the operator's own
 /// and must be stripped; the argument values a test supplies are the caller's and must be stripped
 /// by the same pass.
@@ -39,6 +50,8 @@ fn server_with_prompt() -> McpServerDefCfg {
         PromptAllowCfg {
             description: Some("a greeting".to_string()),
             template: Some("Hello, {name}! You asked about {topic}.".to_string()),
+            ask_caller: Vec::new(),
+            messages: Vec::new(),
         },
     );
     McpServerDefCfg {
@@ -50,12 +63,14 @@ fn server_with_prompt() -> McpServerDefCfg {
         tools_allow: indexmap::IndexMap::new(),
         prompts_allow,
         resources_allow: indexmap::IndexMap::new(),
+        resource_templates_allow: Default::default(),
         transport: None,
         aud: None,
         grants: ServerRequestGrants::default(),
         allow_private: false,
         token_exchange: None,
         max_input_required_rounds: None,
+        max_caller_ask_rounds: None,
         upstream_credentials: None,
         hooks: Vec::new(),
     }
@@ -84,6 +99,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
         handle: &handle,
         gov: &gov,
         actor: "test-principal",
+        capabilities: &ALL_CAPABILITIES,
     };
     let params = serde_json::json!({ "name": "fs_greet", "arguments": arguments });
     let response = crate::mcp::method::dispatch(&ctx, "prompts/get", Some(&params), Some(1.into()))
@@ -155,6 +171,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
         handle: &handle,
         gov: &gov,
         actor: "test-principal",
+        capabilities: &ALL_CAPABILITIES,
     };
     let params = serde_json::json!({
         "ref": { "type": "ref/prompt", "name": "fs_greet" },

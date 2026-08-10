@@ -245,6 +245,32 @@ impl ServerAsk {
             ServerAsk::Roots => "roots",
         }
     }
+
+    /// The ORDER OF DANGER, used to collapse a multi-method `inputRequests` map to the one kind the
+    /// grant gate will test. Ranked by what satisfying the ask would actually SPEND:
+    ///
+    /// - `sampling` is an LLM completion on busbar's own pools and budget — money, and unbounded;
+    /// - `elicitation` interrupts a human;
+    /// - `roots` discloses filesystem structure.
+    ///
+    /// Written as a rank rather than a `match` on pairs so a fourth kind cannot be added without
+    /// giving it a position — which is the decision that would otherwise be made by whichever arm
+    /// somebody happened to write first.
+    fn rank(self) -> u8 {
+        match self {
+            ServerAsk::Roots => 0,
+            ServerAsk::Elicitation => 1,
+            ServerAsk::Sampling => 2,
+        }
+    }
+
+    fn most_privileged(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 /// Parse an upstream response body.
@@ -282,23 +308,70 @@ pub(crate) fn parse_response(body: &[u8]) -> RpcOutcome {
 }
 
 /// Recognise an `InputRequiredResult` and which authority it is asking for.
+///
+/// ## The shape this reads is the SPECIFICATION'S, and the correction matters more than it looks
+///
+/// This function used to test `result.type == "input_required"` and read `result.request` as a
+/// string. Neither key exists in MRTR. `mrtr.mdx:126-180` and the schema's `InputRequiredResult`
+/// agree: the discriminator is **`resultType`**, and the asks are a **map** at `inputRequests`
+/// whose values are request objects each naming a `method`.
+///
+/// So a CONFORMANT upstream's ask failed this predicate, was returned as an ordinary
+/// [`RpcOutcome::Result`], became `Outcome::Completed`, and was written onto the wire to busbar's
+/// own caller verbatim — `resultType`, `inputRequests`, `requestState` and all. The type-level
+/// guarantee in [`crate::mcp::inputreq`] (an `Outcome` with no arm that can carry an `Ask`) was real
+/// and was never reached, because whether control reaches it is decided HERE. A rule enforced by a
+/// missing enum variant still needs the predicate that routes to it to be correct.
+///
+/// The reason the tests did not catch it is worth recording next to the fix: the only fixtures that
+/// exercised this minted busbar's own invented shape, so the parser and the fixture agreed with each
+/// other and with no server in existence.
+///
+/// ## Why an ask with no `inputRequests` is still an ask
+///
+/// `mrtr.mdx:245` makes `inputRequests` and `requestState` individually OPTIONAL — a server must
+/// include at least ONE of them. Keying recognition off `inputRequests` alone would therefore let an
+/// upstream slip an ask past this gate by omitting the field the spec says it may omit.
+///
+/// ## Why the MOST PRIVILEGED method in the map decides
+///
+/// One `inputRequests` map may name several methods at once. Judging against the first key iterated
+/// would let an upstream smuggle a `sampling/createMessage` — a real LLM call on busbar's pools and
+/// budget — behind a `roots/list` it knows the operator granted. The gate downstream tests ONE kind,
+/// so the kind reported here must be the one with the most to lose.
 fn input_required_kind(result: &serde_json::Value) -> Option<ServerAsk> {
     let obj = result.as_object()?;
-    // MRTR (SEP-2322) marks the result with a discriminator; the ask itself names the method the
-    // client would have to run.
-    if obj.get("type").and_then(|v| v.as_str()) != Some("input_required") {
+    let by_spec = obj.get("resultType").and_then(|v| v.as_str()) == Some("input_required");
+    // The shape busbar itself once invented. No conformant server emits it, so this can only ever
+    // catch a NON-conformant upstream — and refusing that upstream's ask is still the right answer,
+    // which is the whole reason to keep a line that should never fire.
+    let legacy = obj.get("type").and_then(|v| v.as_str()) == Some("input_required");
+    if !by_spec && !legacy {
         return None;
     }
-    match obj.get("request").and_then(|v| v.as_str()) {
-        Some("sampling/createMessage") => Some(ServerAsk::Sampling),
-        Some("elicitation/create") => Some(ServerAsk::Elicitation),
-        Some("roots/list") => Some(ServerAsk::Roots),
-        // An input-required result naming something we do not recognise is still an ask, and an
-        // unrecognised ask is refused rather than passed through as a plain result — which is what
-        // returning `None` here would do. Mapping it to the most privileged kind makes the refusal
-        // land on a grant an operator has to have set deliberately.
-        _ => Some(ServerAsk::Sampling),
+
+    let mut kind: Option<ServerAsk> = None;
+    if let Some(requests) = obj.get("inputRequests").and_then(|v| v.as_object()) {
+        for request in requests.values() {
+            let named = match request.get("method").and_then(|v| v.as_str()) {
+                Some("sampling/createMessage") => ServerAsk::Sampling,
+                Some("elicitation/create") => ServerAsk::Elicitation,
+                Some("roots/list") => ServerAsk::Roots,
+                // An ask naming something we do not recognise is STILL AN ASK, and an unrecognised
+                // ask is refused rather than passed through — which is what dropping it would do.
+                // Mapping it to the most privileged kind makes the refusal land on a grant an
+                // operator has to have set deliberately.
+                _ => ServerAsk::Sampling,
+            };
+            kind = Some(match kind {
+                None => named,
+                Some(worst) => worst.most_privileged(named),
+            });
+        }
     }
+    // An ask that names no method at all — `requestState` only, or the legacy shape — is judged
+    // against the most privileged grant for the same reason.
+    Some(kind.unwrap_or(ServerAsk::Sampling))
 }
 
 /// The per-server grants, unchanged by the stateless revision. What moved is WHERE they are

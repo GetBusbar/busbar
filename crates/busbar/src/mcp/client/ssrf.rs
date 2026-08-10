@@ -38,7 +38,7 @@
 //! targets sub-100µs, while dispatch is milliseconds-class and does DNS. This runs on dispatch, and
 //! the separation is what lets it do a blocking-class lookup without breaking the selection number.
 
-use crate::net_guard::{is_alternate_ipv4_encoding, is_cgnat_shared_v4, is_link_local_v6};
+use crate::net_guard::is_alternate_ipv4_encoding;
 use std::net::{IpAddr, SocketAddr};
 
 /// The operator's addressing posture for ONE upstream. Per server rather than global, because the
@@ -159,52 +159,19 @@ impl PinnedTarget {
     }
 }
 
-/// Cloud metadata service addresses. Refused unconditionally.
-///
-/// Addresses rather than hostnames, because this check runs AFTER resolution: a hostname denylist is
-/// defeated by any name the attacker controls that resolves here, which is the entire attack.
-fn is_cloud_metadata(addr: &IpAddr) -> bool {
-    match addr {
-        // AWS / Azure / GCP / OpenStack / DigitalOcean IMDS, and Alibaba's.
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            o == [169, 254, 169, 254] || o == [169, 254, 170, 2] || o == [100, 100, 100, 200]
-        }
-        // IMDSv6.
-        IpAddr::V6(v6) => v6.segments() == [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254],
-    }
-}
-
-/// Whether `addr` is an address no MCP upstream should be reachable at without an explicit operator
-/// opt-in.
-fn is_internal(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_documentation()
-                || is_cgnat_shared_v4(v4)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || crate::net_guard::is_unique_local_v6(v6)
-                || is_link_local_v6(v6)
-                // An IPv4-mapped address (`::ffff:127.0.0.1`) is an IPv4 address wearing a v6
-                // costume; check the address it maps to, or the whole v4 ruleset is bypassed by a
-                // AAAA record.
-                || v6
-                    .to_ipv4_mapped()
-                    .map(|m| is_internal(&IpAddr::V4(m)))
-                    .unwrap_or(false)
-        }
-    }
-}
+// THE TWO ADDRESS PREDICATES LIVE IN `crate::net_guard`, NOT HERE.
+//
+// This module used to keep its own composite built from three imported atoms, and it drifted from
+// the shared one in three ways at once. It unwrapped IPv6 with `to_ipv4_mapped()` where the shared
+// predicate uses `to_ipv4()`, so `[::169.254.169.254]` — the IPv4-COMPATIBLE spelling of the AWS
+// metadata endpoint — matched no v6 range, unwrapped to nothing, and was connected to.
+// Unconditionally: the metadata arm is meant to refuse before `allow_private` is ever consulted.
+// It also missed Azure WireServer and OCI IMDS entirely, because those sit on ordinary-looking
+// addresses that no range predicate catches, while its own comment claimed to cover them.
+//
+// `net_guard.rs` predicted this in writing before it happened: "a contributor hardening one guard
+// against a new range would silently miss the others." Importing atoms and re-deriving the
+// composite is the same defect as copying the composite. Call the shared predicates.
 
 /// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
 ///
@@ -345,13 +312,13 @@ pub(crate) fn check_addresses(
 ) -> Result<(), SsrfRefusal> {
     for sa in addrs {
         let ip = sa.ip();
-        if is_cloud_metadata(&ip) {
+        if crate::net_guard::ip_is_cloud_metadata(&ip) {
             return Err(SsrfRefusal::CloudMetadata {
                 host: host.to_string(),
                 addr: ip,
             });
         }
-        if is_internal(&ip) && !policy.allow_private {
+        if crate::net_guard::ip_is_internal(&ip) && !policy.allow_private {
             return Err(SsrfRefusal::InternalAddress {
                 host: host.to_string(),
                 addr: ip,

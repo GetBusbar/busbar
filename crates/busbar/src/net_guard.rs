@@ -58,6 +58,13 @@ pub(crate) fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         || v4.is_broadcast()
         || *v4 == AZURE_WIRESERVER
         || *v4 == OCI_IMDS
+        // MULTICAST and DOCUMENTATION arrived here from the MCP client's own copy when the two were
+        // unified. The copy had them and this one did not, so the A2A card fetch — which already
+        // used this predicate — was the weaker of the two without anyone deciding that. Neither is
+        // a plausible destination for an upstream a caller nominates, and `224.0.0.1` reaches every
+        // host on the local segment.
+        || v4.is_multicast()
+        || v4.is_documentation()
 }
 
 /// TRUE for an IPv6 literal no busbar guard may connect to.
@@ -76,7 +83,39 @@ pub(crate) fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4() {
         return ipv4_is_internal(&v4);
     }
-    v6.is_unspecified() || is_unique_local_v6(v6) || is_link_local_v6(v6)
+    v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
+}
+
+/// TRUE for a resolved address that is a CLOUD-METADATA endpoint.
+///
+/// Separate from [`ip_is_internal`] because the two have different POLICIES, not different data: an
+/// internal address may be reached when an operator sets `allow_private`, and a metadata endpoint
+/// may never be reached at all. Folding them together would make `allow_private` a switch that
+/// hands out cloud credentials.
+///
+/// The v6 arm unwraps with `to_ipv4()`, not `to_ipv4_mapped()`, for the reason [`ipv6_is_internal`]
+/// gives: `to_ipv4()` is the superset that also covers the IPv4-COMPATIBLE form, so
+/// `[::169.254.169.254]` is caught. A guard that only unwrapped the MAPPED form let exactly that
+/// literal through — it matched no v6 range, unwrapped to nothing, and was connected to.
+pub(crate) fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
+    /// AWS/Azure/GCP/OpenStack/DigitalOcean IMDS, ECS task metadata, and Alibaba's.
+    const V4: &[Ipv4Addr] = &[
+        Ipv4Addr::new(169, 254, 169, 254),
+        Ipv4Addr::new(169, 254, 170, 2),
+        Ipv4Addr::new(100, 100, 100, 200),
+        Ipv4Addr::new(168, 63, 129, 16),
+        Ipv4Addr::new(192, 0, 0, 192),
+    ];
+    match addr {
+        IpAddr::V4(v4) => V4.contains(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return V4.contains(&v4);
+            }
+            // IMDSv6.
+            v6.segments() == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254]
+        }
+    }
 }
 
 /// TRUE for any resolved address a busbar guard must refuse to connect to.

@@ -119,6 +119,46 @@ const TOOLS = {
   },
 };
 
+// ── THE SEP-2322 FIXTURE TOOLS ───────────────────────────────────────────────────────────────────
+//
+// These exist so the `input-required-result-*` scenarios have a tool to name. They are the ORDINARY
+// KIND: each returns a plain complete result and knows nothing whatsoever about MRTR.
+//
+// That is the whole point, and it is worth being explicit because the opposite would be the easy
+// mistake. The ask those scenarios observe is BUSBAR'S OWN — composed from the operator's
+// `ask_caller:` configuration in boot.sh, filtered by the caller's declared capabilities, and sealed
+// with a `requestState` busbar mints. It is emitted BEFORE busbar dispatches anywhere, so on the
+// first request this upstream is never contacted at all. What it serves is the retry: the call that
+// finally runs once the caller has answered.
+//
+// An upstream that returned an `InputRequiredResult` of its own would be testing the opposite
+// property, and busbar's answer to that is a refusal — see `mcp/inputreq.rs`. That case is exercised
+// by the in-tree battery's hostile peer, deliberately not here: this fixture is a content source,
+// and a content source that also mounted an attack would make every red ambiguous.
+const MRTR_FIXTURES = {
+  input_required_result_elicitation: "Runs once the caller has supplied its name.",
+  input_required_result_sampling: "Runs once the caller has supplied a completion.",
+  input_required_result_list_roots: "Runs once the caller has supplied its roots.",
+  input_required_result_request_state: "Runs once the caller has echoed the request state.",
+  input_required_result_multiple_inputs: "Runs once the caller has answered every requested input.",
+  input_required_result_multi_round: "Runs once the caller has completed both input rounds.",
+  input_required_result_tampered_state: "Runs once the caller has echoed unmodified request state.",
+  input_required_result_capabilities: "Runs once the caller has supplied a completion.",
+};
+
+for (const [name, description] of Object.entries(MRTR_FIXTURES)) {
+  TOOLS[name] = {
+    description,
+    // `state-ok` is in the text because the `request-state` scenario's DESCRIPTION asks for it. Its
+    // checks do not read it (they only test `isCompleteResult`), so this is not what makes that
+    // scenario pass — it is here so a human reading the transcript can see that the round busbar
+    // gated actually ran.
+    result: () => ({
+      content: [{ type: "text", text: `state-ok: ${name} completed after the requested input.` }],
+    }),
+  };
+}
+
 const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => ({
   name,
   description: t.description,
