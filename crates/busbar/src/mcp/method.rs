@@ -593,7 +593,8 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             // The NAMESPACED uri. Two registered servers may legitimately expose the same upstream
             // URI, and keying the catalogue on the raw one made the second silently replace the
             // first — a name overlap arriving through a key nobody thought of as a name.
-            obj.insert("uri".into(), r.namespaced.clone().into());
+            // THE RAW URI, because that is what a client hands back on `resources/read`.
+            obj.insert("uri".into(), r.uri.clone().into());
             if let Some(n) = sanitize::normalise_opt(r.name.as_deref()) {
                 obj.insert("name".into(), n.into());
             }
@@ -637,7 +638,8 @@ fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Res
             // The NAMESPACED template, for the reason `resources_list` publishes the namespaced uri:
             // two servers may legitimately publish one template, and the raw form would let the
             // second silently answer for the first.
-            obj.insert("uriTemplate".into(), t.namespaced.clone().into());
+            // The operator's own template, for the same reason: the caller expands what it is given.
+            obj.insert("uriTemplate".into(), t.uri_template.clone().into());
             if let Some(n) = sanitize::normalise_opt(t.name.as_deref()) {
                 obj.insert("name".into(), n.into());
             }
@@ -671,17 +673,36 @@ fn resources_read(
     // NAME must not be answered by a template that happens to match it: the two are different
     // approvals, and letting the broader one win would let adding a template silently change what an
     // already-approved URI returns.
-    let content = match ctx.app.mcp_catalogue.resource_for(&grant, uri) {
-        Some(res) => concrete_resource_content(res),
-        None => match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
-            Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
-            None => {
-                return not_found(
-                    id,
-                    &format!("`{uri}` is not a resource this server exposes."),
-                )
+    let content = match ctx.app.mcp_catalogue.resource_by_uri(&grant, uri) {
+        super::catalogue::ResourceLookup::One(res) => concrete_resource_content(res),
+        // NEVER A GUESS. Two servers this caller can reach both expose this URI, so which one was
+        // meant is a question only the caller can answer. The whole reason the catalogue was
+        // namespaced was that this case used to be resolved SILENTLY, by config order, and served
+        // one server's content to a caller who had asked for the other's.
+        super::catalogue::ResourceLookup::Ambiguous(servers) => {
+            return error(
+                StatusCode::CONFLICT,
+                id,
+                CODE_REFUSED,
+                &format!(
+                    "`{uri}` is exposed by more than one server you are granted ({}). \
+                     Name the server's own resource, or narrow the grant.",
+                    servers.join(", ")
+                ),
+                Some(serde_json::json!({ "reason": "resource_ambiguous", "servers": servers })),
+            );
+        }
+        super::catalogue::ResourceLookup::NotFound => {
+            match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
+                Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
+                None => {
+                    return not_found(
+                        id,
+                        &format!("`{uri}` is not a resource this server exposes."),
+                    )
+                }
             }
-        },
+        }
     };
     result(
         id,
@@ -698,7 +719,8 @@ fn resources_read(
 /// about content, not a malformed request.
 fn concrete_resource_content(res: &super::catalogue::ResourceEntry) -> serde_json::Value {
     let mut content = serde_json::Map::new();
-    content.insert("uri".into(), res.namespaced.clone().into());
+    // ECHOED AS ASKED. A client correlates this block to its own request by this field.
+    content.insert("uri".into(), res.uri.clone().into());
     if let Some(m) = &res.mime_type {
         content.insert("mimeType".into(), m.clone().into());
     }

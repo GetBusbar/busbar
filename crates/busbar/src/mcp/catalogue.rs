@@ -130,6 +130,23 @@ pub(crate) struct PromptEntry {
     pub(crate) messages: Vec<PromptMessageCfg>,
 }
 
+/// The answer to "which resource did this caller mean by this URI".
+///
+/// Three arms rather than an `Option`, because the third is not an absence: two servers the caller
+/// can reach both exposing one URI is a question the registry genuinely cannot answer, and collapsing
+/// it into `None` would report an ambiguity as a not-found.
+#[derive(Debug)]
+pub(crate) enum ResourceLookup<'a> {
+    /// Exactly one, after the caller's grant narrowed the field.
+    One(&'a ResourceEntry),
+    /// No such resource, OR the caller holds no grant for it. Deliberately one arm: a catalogue that
+    /// distinguishes them leaks the existence of what it hides.
+    NotFound,
+    /// The caller is granted MORE THAN ONE server exposing this URI. Carries their names, sorted, so
+    /// the refusal can tell the operator what to disambiguate.
+    Ambiguous(Vec<String>),
+}
+
 /// One exposed resource.
 ///
 /// NAMESPACED like everything else, and that is a correction rather than a symmetry: keying the
@@ -514,26 +531,61 @@ impl Catalogue {
     pub(crate) fn resource_template_for(
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
-        namespaced_uri: &str,
+        uri: &str,
     ) -> Option<(
         &ResourceTemplateEntry,
         std::collections::BTreeMap<String, String>,
     )> {
+        // Matched against the OPERATOR'S OWN template, not the namespaced spelling, for the same
+        // reason a concrete resource is now addressed by its own URI: the caller expands the
+        // template it was published, and it is published raw.
         self.resource_templates
             .values()
             .filter(|t| granted(grant, &t.server, &t.namespaced))
-            .find_map(|t| match_uri_template(&t.namespaced, namespaced_uri).map(|p| (t, p)))
+            .find_map(|t| match_uri_template(&t.uri_template, uri).map(|p| (t, p)))
     }
 
-    /// Look one resource up by its NAMESPACED uri under the caller's grant.
-    pub(crate) fn resource_for(
+    /// Look one resource up BY THE URI THE PROTOCOL DEFINES, under the caller's grant.
+    ///
+    /// A resource IS its URI in the MCP model, so that is what a caller addresses it by. The
+    /// namespacing this catalogue was built on is NOT deleted — it stays as the grant value and the
+    /// map key, both of which must remain unique per (server, uri) — but it is no longer what a
+    /// client has to say.
+    ///
+    /// THE COLLISION IS RESOLVED BY THE CALLER'S GRANT, not by insertion order. The defect the
+    /// namespacing fixed was two servers exposing one URI silently serving each other's content,
+    /// decided by `BTreeMap::insert` over an insertion-ordered config. Narrowing by grant FIRST makes
+    /// that impossible by construction: a server the caller cannot reach is filtered out before
+    /// anything is selected, so a caller granted only A can never be served B whatever both expose.
+    ///
+    /// The residual case — a caller granted BOTH — is the only genuinely ambiguous one, and it is
+    /// [`ResourceLookup::Ambiguous`], never a pick. The defect being fixed was a SILENT resolution;
+    /// answering it with a loud refusal is categorically better than a quiet guess, even when the
+    /// guess would usually be right.
+    pub(crate) fn resource_by_uri(
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
-        namespaced_uri: &str,
-    ) -> Option<&ResourceEntry> {
-        self.resources
-            .get(namespaced_uri)
-            .filter(|r| granted(grant, &r.server, &r.namespaced))
+        uri: &str,
+    ) -> ResourceLookup<'_> {
+        let mut matches = self
+            .resources
+            .values()
+            .filter(|r| r.uri == uri && granted(grant, &r.server, &r.namespaced));
+        let Some(first) = matches.next() else {
+            return ResourceLookup::NotFound;
+        };
+        let rest: Vec<&ResourceEntry> = matches.collect();
+        if rest.is_empty() {
+            return ResourceLookup::One(first);
+        }
+        // Ordered, because the refusal names them and an operator comparing two runs must not see
+        // the same ambiguity reported two different ways.
+        let mut servers: Vec<String> = std::iter::once(first)
+            .chain(rest)
+            .map(|r| r.server.clone())
+            .collect();
+        servers.sort();
+        ResourceLookup::Ambiguous(servers)
     }
 
     /// ADMISSION: resolve a namespaced tool name to a bound identity under the caller's grant.

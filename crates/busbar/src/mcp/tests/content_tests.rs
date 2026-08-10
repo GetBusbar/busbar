@@ -114,7 +114,7 @@ async fn a_resource_declared_with_blob_is_served_as_a_blob() {
     let (status, body) = call(
         &url,
         "resources/read",
-        serde_json::json!({ "uri": "bin_test://static-binary" }),
+        serde_json::json!({ "uri": "test://static-binary" }),
     )
     .await;
     assert_eq!(status, 200, "{body}");
@@ -198,7 +198,7 @@ async fn declared_templates_are_enumerated() {
         .as_array()
         .unwrap_or_else(|| panic!("no resourceTemplates array: {body}"));
     assert_eq!(templates.len(), 1, "{body}");
-    assert_eq!(templates[0]["uriTemplate"], "tpl_test://template/{id}/data");
+    assert_eq!(templates[0]["uriTemplate"], "test://template/{id}/data");
     assert_eq!(templates[0]["name"], "Templated data");
     assert_eq!(templates[0]["mimeType"], "application/json");
 }
@@ -213,7 +213,7 @@ async fn an_expanded_template_uri_resolves_and_substitutes() {
     let (status, body) = call(
         &url,
         "resources/read",
-        serde_json::json!({ "uri": "tpl_test://template/123/data" }),
+        serde_json::json!({ "uri": "test://template/123/data" }),
     )
     .await;
     assert_eq!(status, 200, "{body}");
@@ -221,7 +221,7 @@ async fn an_expanded_template_uri_resolves_and_substitutes() {
     // The URI ECHOED IS THE ONE THE CALLER ASKED FOR, not the template. A client correlates the
     // content it got with the URI it sent; answering with the unexpanded template would hand back an
     // identifier that names every expansion at once.
-    assert_eq!(content["uri"], "tpl_test://template/123/data", "{body}");
+    assert_eq!(content["uri"], "test://template/123/data", "{body}");
     let text = content["text"].as_str().unwrap_or_default();
     assert!(
         text.contains("123"),
@@ -243,11 +243,11 @@ async fn a_uri_that_matches_no_template_is_still_not_found() {
     let (url, _h) = serve("tpl", TEMPLATE_SERVER).await;
     for uri in [
         // Right prefix, wrong tail.
-        "tpl_test://template/123/other",
+        "test://template/123/other",
         // A variable must not swallow a path separator, or one template claims the whole subtree.
-        "tpl_test://template/123/extra/data",
+        "test://template/123/extra/data",
         // An EMPTY expansion is not an expansion.
-        "tpl_test://template//data",
+        "test://template//data",
         // Another server's spelling.
         "other_test://template/123/data",
     ] {
