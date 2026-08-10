@@ -303,6 +303,37 @@ tools:
                 messages:
                   - role: user
                     content: { type: text, text: "Draft a one-line summary." }
+    # RESOURCES, LIKE PROMPTS, ARE THE OPERATOR'S OWN CONTENT — served from this config with no
+    # upstream round trip, because a resource an operator approved BY URI is a thing they vouched
+    # for, and proxying the body would let the upstream edit what it was approved to serve.
+    #
+    # THE URIs ARE THE SUITE'S OWN, verbatim, and that is the point of this block. Until the routing
+    # key changed, busbar published `test_test://static-text` for a resource whose URI is
+    # `test://static-text` — so a suite that asks for the identifier the SPEC fixes could not reach
+    # it, and declaring these here would have proved nothing. The URI is now the wire identity, so
+    # these are addressable exactly as the reference server's are.
+    resources_allow:
+      "test://static-text":
+        name: "Static Text Resource"
+        description: "A static text resource for testing"
+        mime_type: "text/plain"
+        text: "This is the content of the static text resource."
+      # A 1x1 PNG, the reference server's own bytes. `blob` rather than `text` because
+      # ResourceContents is a union of the two forms and base64 in a text field is prose to every
+      # client that reads it.
+      "test://static-binary":
+        name: "Static Binary Resource"
+        description: "A static binary resource (image) for testing"
+        mime_type: "image/png"
+        blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+    # A TEMPLATE is an approval over a SHAPE rather than over one URI, which is why it is a separate
+    # map: `{id}` is bound from the caller's expanded URI and substituted into the body.
+    resource_templates_allow:
+      "test://template/{id}/data":
+        name: "Resource Template"
+        description: "A resource template with parameter substitution"
+        mime_type: "application/json"
+        text: '{"id":"{id}","templateTest":true,"data":"Data for ID: {id}"}'
     # PROMPTS ARE SERVED FROM THE OPERATOR'S CONFIG, not proxied: a prompt template is an
     # instruction busbar puts into a model's context, so it is the operator's text by construction
     # and there is no upstream round trip to make. The namespaced name is test_simple_prompt.
