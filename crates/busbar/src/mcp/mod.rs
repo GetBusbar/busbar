@@ -121,6 +121,21 @@ pub(crate) mod catalogue;
 /// the same governance boundary this module's front door opens — same revision, same trust
 /// lifecycle, same scope kinds, opposite initiator.
 pub(crate) mod client;
+
+tokio::task_local! {
+    /// PER-REQUEST slot the outbound transport appends an upstream's `notifications/progress` frames
+    /// to, and that `ingress` drains when it frames the answer.
+    ///
+    /// A task-local rather than a return value, for the same reason `UPSTREAM_RTT_US` is one: the
+    /// frames are produced four layers below the code that emits them (`client::transport` ->
+    /// `upstream` -> `inputreq` -> `method` -> `ingress`), and every one of those layers models a
+    /// SINGLE JSON-RPC answer. Threading a second, optional, usually-empty channel through all four
+    /// would put a progress-shaped hole in four signatures that have nothing to do with progress.
+    ///
+    /// Scoped by `ingress`, so a request that never enters that path simply has no slot and the
+    /// transport's append is a no-op — which is what makes this safe to write from a shared client.
+    pub(crate) static UPSTREAM_PROGRESS: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+}
 pub(crate) mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison.

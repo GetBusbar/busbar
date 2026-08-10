@@ -125,12 +125,41 @@ impl HttpTransport {
             }
         }
         let body = if is_sse {
+            // CAPTURE THE PROGRESS BEFORE DISCARDING THE REST. Everything ahead of the final frame
+            // used to be dropped here, progress included — and the loss was documented rather than
+            // fixed (`last_sse_data`'s own comment). Progress is the one non-final frame busbar's
+            // caller is entitled to, so it is lifted into the per-request slot on the way past.
+            //
+            // Silent when there is no slot: a request outside `ingress`'s scope simply has nowhere
+            // to put them, which is the correct answer rather than an error.
+            let progress = progress_frames(&raw);
+            if !progress.is_empty() {
+                let _ = super::super::UPSTREAM_PROGRESS.try_with(|slot| {
+                    if let Ok(mut v) = slot.lock() {
+                        v.extend(progress);
+                    }
+                });
+            }
             last_sse_data(&raw)
         } else {
             raw.to_vec()
         };
         Ok(TransportResponse { status, body })
     }
+}
+
+/// Every `notifications/progress` frame in an SSE body, in arrival order.
+///
+/// Only that method: a stream may carry other notifications, and relaying whatever happened to be
+/// there would let an upstream inject arbitrary JSON-RPC into busbar's answer to its own caller.
+/// This is an allowlist of exactly one method for exactly that reason.
+pub(crate) fn progress_frames(raw: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(raw)
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
+        .filter(|v| v.get("method").and_then(|m| m.as_str()) == Some("notifications/progress"))
+        .collect()
 }
 
 /// The payload of the LAST `data:` field in an SSE body.

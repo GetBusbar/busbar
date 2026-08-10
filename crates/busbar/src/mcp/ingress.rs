@@ -371,7 +371,18 @@ pub(crate) async fn rpc(
         capabilities: &capabilities,
     };
     let params = obj.get("params");
-    let response = match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {
+    // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
+    // Created unconditionally and usually left empty — the cost is one Arc per request, against
+    // threading an optional channel through four layers that each model a single answer.
+    let progress_slot: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let response = match super::UPSTREAM_PROGRESS
+        .scope(
+            progress_slot.clone(),
+            crate::mcp::method::dispatch(&ctx, method, params, id.clone()),
+        )
+        .await
+    {
         Some(response) => response,
         None => error_response(
             StatusCode::NOT_FOUND,
@@ -401,7 +412,13 @@ pub(crate) async fn rpc(
         .into_iter()
         .filter(|r| sse::level_allows(level, r.level))
         .collect();
-    sse::as_event_stream(response, &logs).await
+    // The upstream's progress, if this request made an upstream call that produced any. Drained
+    // rather than read: the slot belongs to this request and nothing after this point may re-emit.
+    let progress = progress_slot
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default();
+    sse::as_event_stream(response, &logs, &progress).await
 }
 
 /// The `notifications/message` records busbar produces about ITS OWN handling of one request.

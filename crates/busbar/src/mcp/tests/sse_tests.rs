@@ -21,10 +21,6 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 /// client — the wire spelling is exactly the thing that must not be refactorable.
 const META_LOGGING_LEVEL: &str = "io.busbar/loggingLevel";
 
-/// An MCP-enabled app with an OPEN auth chain, and one registered server whose prompts and
-/// resources are the operator's own. Open on purpose, for the reason `ingress_tests::serve` states:
-/// these tests are about the RESPONSE FRAMING, and every one of them must reach the handler to say
-/// anything at all.
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
     crate::metrics::init();
     let app = TestApp::new()
@@ -322,4 +318,56 @@ async fn a_json_response_carries_no_notifications_because_it_cannot() {
     )
     .await;
     assert!(!text.contains("notifications/message"), "{text}");
+}
+
+/// A1.4, THE HALF THAT NOW EXISTS: progress frames on an upstream stream are CAPTURED rather than
+/// discarded, and are emitted to busbar's caller AHEAD of the result.
+///
+/// `last_sse_data` used to drop every non-final frame, progress included — its own doc comment
+/// admitted the loss. This asserts the capture and the ordering directly, because the end-to-end
+/// path cannot be exercised yet: busbar never sends a `progressToken` upstream (it appears nowhere
+/// outside tests), and a conformant upstream MUST NOT emit progress without one. See the module
+/// note on `progress_frames`.
+#[tokio::test]
+async fn upstream_progress_is_captured_and_emitted_before_the_result() {
+    let raw = concat!(
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",",
+        "\"params\":{\"progressToken\":\"tok-1\",\"progress\":0,\"total\":100}}\n\n",
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\"}}\n\n",
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",",
+        "\"params\":{\"progressToken\":\"tok-1\",\"progress\":100,\"total\":100}}\n\n",
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n\n",
+    );
+    let frames = crate::mcp::client::transport::progress_frames(raw.as_bytes());
+    assert_eq!(frames.len(), 2, "both progress frames captured: {frames:?}");
+    // AN ALLOWLIST OF ONE METHOD. A stream may carry other notifications, and relaying whatever
+    // happened to be there would let an upstream inject arbitrary JSON-RPC into busbar's own answer.
+    assert!(
+        frames
+            .iter()
+            .all(|f| f["method"] == "notifications/progress"),
+        "only progress is lifted, never every notification: {frames:?}"
+    );
+
+    // Emitted BEFORE the result: a progress frame reports work that happened before the result
+    // existed, so a client reading the stream in order must meet it first.
+    use axum::response::IntoResponse as _;
+    let response = (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } })),
+    )
+        .into_response();
+    let framed = crate::mcp::sse::as_event_stream(response, &[], &frames).await;
+    let bytes = axum::body::to_bytes(framed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    let first = text
+        .find("notifications/progress")
+        .expect("progress on the stream");
+    let result_at = text.find("\"result\"").expect("result on the stream");
+    assert!(
+        first < result_at,
+        "progress must precede the result: {text}"
+    );
 }

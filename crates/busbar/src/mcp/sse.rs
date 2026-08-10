@@ -209,7 +209,11 @@ pub(crate) fn prefers_event_stream(headers: &HeaderMap) -> bool {
 /// cannot happen from [`super::ingress::error_response`] or `method::result` and is passed through
 /// rather than guessed at, because a stream framing a body this function did not understand would be
 /// this function inventing content.
-pub(crate) async fn as_event_stream(response: Response, logs: &[LogRecord]) -> Response {
+pub(crate) async fn as_event_stream(
+    response: Response,
+    logs: &[LogRecord],
+    progress: &[serde_json::Value],
+) -> Response {
     if response.status() != StatusCode::OK {
         return response;
     }
@@ -225,6 +229,13 @@ pub(crate) async fn as_event_stream(response: Response, logs: &[LogRecord]) -> R
     };
 
     let mut out = String::new();
+    // PROGRESS FIRST, and it is not a style choice: a progress frame reports work that happened
+    // BEFORE the result existed, so emitting it after the result would describe the past in the
+    // future tense to a client reading the stream in order. The logs follow for the same reason —
+    // they describe the completed handling.
+    for frame in progress {
+        push_event(&mut out, frame);
+    }
     for log in logs {
         push_event(&mut out, &log.envelope());
     }
