@@ -1189,6 +1189,11 @@ fn refuse(
 /// `-32602` would say the arguments were wrong and `-32601` would say the method was missing, and
 /// both would send an operator debugging the wrong thing.
 const CODE_REFUSED: i64 = -32000;
+
+/// `MissingRequiredClientCapability` — the MCP-band sibling of `-32020` (header mismatch) and
+/// `-32022` (unsupported protocol version). Emitted on ONE arm only; see the comment at its single
+/// call site in `refuse_ask` for why this is one arm rather than a class.
+const CODE_MISSING_CLIENT_CAPABILITY: i64 = -32021;
 /// JSON-RPC standard: the params were structurally wrong.
 const CODE_INVALID_PARAMS: i64 = -32602;
 
@@ -1326,17 +1331,49 @@ fn refuse_ask(
         reason = refusal.audit_reason(),
         "mcp caller-ask refused"
     );
-    let (status, code) = match refusal {
-        callerask::Refusal::StateRejected(_) => (StatusCode::BAD_REQUEST, CODE_INVALID_PARAMS),
-        _ => (StatusCode::FORBIDDEN, CODE_REFUSED),
+    // `-32021` ON EXACTLY ONE ARM, and the narrowness is the whole correctness argument.
+    //
+    // `content_tests.rs` B6 records why this code is correctly WITHHELD when an UPSTREAM's ask is
+    // refused: there the caller's capability is not what decides the outcome — the OPERATOR's grant
+    // is — so a client that DOES declare the capability gets the byte-identical refusal, and an
+    // earlier attempt that generalised the code turned a `403` policy refusal into a `400` blamed on
+    // the caller. That path is `refuse_setup`, and it stays untouched.
+    //
+    // On THIS path the capability really is what stopped the request: busbar filtered its own minted
+    // ask down to nothing, and sending an ask the caller cannot answer is exactly what
+    // `PAT.MRTR.NO-UNDECLARED-CAPABILITY` forbids. So the caller IS the party who can act on it, and
+    // naming the capability is the actionable answer rather than a leak of anything it could not
+    // already infer from its own declaration.
+    let (status, code, data) = match refusal {
+        callerask::Refusal::StateRejected(_) => (
+            StatusCode::BAD_REQUEST,
+            CODE_INVALID_PARAMS,
+            serde_json::json!({ "reason": refusal.audit_reason() }),
+        ),
+        callerask::Refusal::NoDeclaredCapability { required, .. } => {
+            // A `ClientCapabilities` OBJECT, not a list of names: the schema defines the field as an
+            // object of capability objects, and a client validating the error against that schema
+            // cannot read an array. Same information, the shape the spec fixed for it.
+            let caps: serde_json::Map<String, serde_json::Value> = required
+                .iter()
+                .map(|k| ((*k).to_string(), serde_json::json!({})))
+                .collect();
+            (
+                StatusCode::BAD_REQUEST,
+                CODE_MISSING_CLIENT_CAPABILITY,
+                serde_json::json!({
+                    "reason": refusal.audit_reason(),
+                    "requiredCapabilities": caps,
+                }),
+            )
+        }
+        _ => (
+            StatusCode::FORBIDDEN,
+            CODE_REFUSED,
+            serde_json::json!({ "reason": refusal.audit_reason() }),
+        ),
     };
-    error(
-        status,
-        id,
-        code,
-        &refusal.to_string(),
-        Some(serde_json::json!({ "reason": refusal.audit_reason() })),
-    )
+    error(status, id, code, &refusal.to_string(), Some(data))
 }
 
 /// The ask decision for one request, with everything it binds to gathered in one place.
