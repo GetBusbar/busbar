@@ -37,6 +37,47 @@ listen: "0.0.0.0:8080"
 #   client_ca: { file: /etc/busbar/admin-client-ca.pem }   # present ⇒ mTLS required on the admin plane
 # admin_require_mtls: true                               # false ⇒ waive the exposed-admin mTLS guard
 
+# ── busbar AS an OAuth 2.1 authorization server (oauth_as:) ──────────────────────────────────────
+# ABSENT BY DEFAULT, and absent means nothing is built: no server, no store, no signing key, no
+# background sweep and no route. Uncomment it only if agents must log in to busbar WITHOUT an
+# identity provider - which is the case Codex, ChatGPT and Claude.ai are in, because enterprise IdPs
+# do not enable RFC 7591 dynamic client registration.
+#
+# With an IdP, leave this out: busbar is the OAuth RESOURCE server, tokens come from Okta/Entra/
+# Auth0, and `mcp.authorization_servers` names them. The two modes are independent and both ship.
+#
+# oauth_as:
+#   # RFC 8414 `issuer`: this authorization server's identity, and the base every endpoint is
+#   # derived from - `{issuer}/authorize`, `{issuer}/token`, `{issuer}/jwks`, `{issuer}/consent`,
+#   # and `/.well-known/oauth-authorization-server` with the issuer's PATH appended AFTER it
+#   # (RFC 8414 s3.1 puts the well-known segment first; RFC 9728 puts it last - the two documents
+#   # this deployment serves build their paths in opposite orders).
+#   # No trailing slash, no query, no fragment: all three are boot refusals, because RFC 9207 has
+#   # clients compare this value byte-for-byte.
+#   issuer: "https://gw.example.com"
+#
+#   # The ES256 signing key: base64 of a PKCS#8 v1 DER P-256 private key. Produce one with
+#   #   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER | base64
+#   # OMITTED is legal and generates an EPHEMERAL key at boot, with a warning: every token the
+#   # deployment issued stops verifying when the process restarts. Fine for a trial, wrong for
+#   # anything else. There is deliberately no default key - a default would be a published private
+#   # key that signs valid tokens for every deployment that never set this field.
+#   signing_key: { env: BUSBAR_AS_SIGNING_KEY }
+#
+#   # WHAT A SELF-REGISTERED CLIENT GETS, AND NOTHING MORE. Empty by default, so a client that
+#   # registers itself and asks for a scope is REFUSED (`invalid_client_metadata`) rather than
+#   # quietly narrowed. This is a ceiling, and nothing at runtime moves it.
+#   default_grant: []
+#
+#   # RFC 7591 dynamic client registration. OFF by default: it is an endpoint that lets an
+#   # anonymous caller create a client, and the `2026-07-28` MCP revision marks it DEPRECATED
+#   # (retained for backwards compatibility with the clients that ship today). Turn it on only if
+#   # your agents need it.
+#   dynamic_registration: false
+#
+#   # Access token lifetime in seconds; default 600. Short on purpose - clients refresh.
+#   access_token_ttl_secs: 600
+
 # ── Client authentication ────────────────────────────────────────────────────────────────────────
 # identity-providers - DEFINE each identity provider ONCE (name -> {module, settings,
 # max_admin_scope, token}); auth.chain / auth.admin_auth / role_bindings then REFERENCE it BY BARE
