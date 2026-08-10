@@ -371,3 +371,16 @@ async fn upstream_progress_is_captured_and_emitted_before_the_result() {
         "progress must precede the result: {text}"
     );
 }
+
+// A1.4, STILL OWED: a dedicated test that the upstream never sees the CALLER'S token.
+//
+// The conformance battery proves progress reaches the caller end to end (37/37), and the unit test
+// above proves capture, the one-method allowlist and the ordering. Neither proves the MINT/MAP
+// property — that `busbar-<request_id>` goes out and the caller's own value comes back — which is
+// the SECURITY half: a caller-chosen opaque value forwarded upstream is a correlator for that caller
+// across every call it makes.
+//
+// An attempt at that test is not in the tree because it needs the trust-gate setup the conformance
+// subject's config has (approved digests) and this harness does not, and a test that silently made
+// no upstream call at all would assert nothing while looking green. It is written down here rather
+// than left as a gap somebody has to rediscover.

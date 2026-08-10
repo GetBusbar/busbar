@@ -135,8 +135,8 @@ impl HttpTransport {
             let progress = progress_frames(&raw);
             if !progress.is_empty() {
                 let _ = super::super::UPSTREAM_PROGRESS.try_with(|slot| {
-                    if let Ok(mut v) = slot.lock() {
-                        v.extend(progress);
+                    if let Ok(mut ch) = slot.lock() {
+                        ch.frames.extend(progress);
                     }
                 });
             }
