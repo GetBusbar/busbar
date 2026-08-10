@@ -95,6 +95,10 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // COMPILE until someone decided, and that is the whole value of the exhaustive destructure.
         // Give `McpCfg` a `SecretRef`-typed field later and this breaks again, which is correct.
         mcp: _,
+        // `oauth_as:` DOES carry a `SecretRef` — the ES256 signing key — and it is walked below
+        // rather than declined here. It is the one secret on that plane, and it is the highest-value
+        // one in the process: whoever holds it forges every token this deployment will ever issue.
+        oauth_as,
         // `tool_defs` DOES carry a credential, and the arm that said otherwise was correct only
         // until RFC 8693 token exchange landed. It said, in as many words, "give a server a held
         // credential and it will hold a `SecretRef`, at which point this arm must walk it" — and
@@ -128,6 +132,15 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+
+    // THE AUTHORIZATION SERVER'S SIGNING KEY. `--validate` must be able to resolve it, because the
+    // alternative is a deployment that boots, advertises a JWKS, and fails on the first token
+    // request of the day with a secret module error.
+    if let Some(identity) = oauth_as {
+        if let Some(key) = identity.signing_key() {
+            refs.push(("oauth_as.signing_key".to_string(), key));
+        }
+    }
 
     // MCP SERVERS: `tools.<name>.token_exchange.subject_token` is BUSBAR'S OWN token, the SUBJECT of
     // an RFC 8693 exchange — never the caller's. It resolves through the same `env` / `file` /
@@ -389,6 +402,10 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // The A2A plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
     // registered agent. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
     ("ClientIdentityCfg", SecretBearing::Walked),
+    // The authorization server's ES256 signing key. Reached from `RootCfg` through
+    // `oauth_as -> AsIdentity::signing_key`, which is why the VALIDATED identity carries the
+    // reference rather than consuming it at `resolve` time.
+    ("OauthAsCfg", SecretBearing::Walked),
     (
         "AuthDeployCfg",
         SecretBearing::NotInResolvedConfig(

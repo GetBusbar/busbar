@@ -83,6 +83,7 @@ mod mcp;
 mod media;
 mod metrics;
 mod net_guard;
+mod oauth_as;
 mod observability;
 mod operation;
 mod plane;
@@ -3771,6 +3772,56 @@ pub(crate) fn build_app_from_config(
     let a2a_plane =
         crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref());
 
+    // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
+    // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
+    // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
+    //
+    // The RFC 8707 `allowed_resources` list is busbar's OWN protected resources and nothing else.
+    // Left unset, `oauth-as` would mint a token carrying whatever `resource` a client asked for in
+    // its `aud`, which any resource server verifying against our JWKS would then honour — so the
+    // list is derived here, from the planes this deployment actually serves, rather than configured
+    // separately where it could disagree with them.
+    let oauth_as_plane = match cfg.oauth_as.as_ref() {
+        None => None,
+        Some(identity) => {
+            let key_material = match identity.signing_key() {
+                None => {
+                    tracing::warn!(
+                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                         generated. Every token this deployment issues stops verifying when the \
+                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
+                    );
+                    None
+                }
+                Some(reference) => Some(
+                    secret_resolver
+                        .resolve_string(reference)
+                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
+                ),
+            };
+            let protected_resources: Vec<String> = cfg
+                .mcp
+                .as_ref()
+                .map(|r| r.canonical_uri().to_string())
+                .into_iter()
+                .collect();
+            let plane = crate::oauth_as::plane::AsPlane::build(
+                identity.clone(),
+                key_material.as_deref(),
+                protected_resources,
+            )
+            .map_err(|e| e.to_string())?;
+            let plane = Arc::new(plane);
+            // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
+            // it runs when it is called and never otherwise. Spawned here, once per generation.
+            crate::oauth_as::plane::spawn_sweeper(
+                Arc::clone(plane.server()),
+                std::time::Duration::from_secs(60),
+            );
+            Some(plane)
+        }
+    };
+
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
@@ -3853,6 +3904,7 @@ pub(crate) fn build_app_from_config(
             dispatch
         }),
         mcp: cfg.mcp.clone().map(Arc::new),
+        oauth_as: oauth_as_plane.clone(),
         // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
         // construction, so every config apply — including one that changes nothing about `tools:` —
         // moves the generation and a call admitted under the previous one is refused at dispatch —
@@ -3973,12 +4025,18 @@ fn build_router_with_limits(
     // set is not something a later hot-swap can rewrite.
     let mcp = app.mcp.clone();
     let a2a = app.a2a.clone();
+    let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
+    let (router, core_routes) = base_data_router(
+        &plugin_routes,
+        mcp.as_deref(),
+        a2a.as_ref(),
+        oauth_as.as_ref(),
+    );
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -4002,6 +4060,7 @@ fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
     mcp: Option<&crate::mcp::McpResource>,
     a2a: Option<&std::sync::Arc<crate::a2a::plane::A2aPlane>>,
+    oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -4143,6 +4202,10 @@ fn base_data_router(
     // (or no `public_url`, so no receiving side) means no route in the table at all, which is what
     // keeps "is this deployment an A2A server?" a question the mounted surface answers.
     let router = crate::a2a::ingress::mount(router, a2a);
+    // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
+    // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
+    // metadata document and nothing in the route table.
+    let router = crate::oauth_as::routes::mount(router, oauth_as);
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -4240,10 +4303,16 @@ fn build_split_routers_with_limits(
     let plugin_routes = app.plugin_routes.clone();
     let mcp = app.mcp.clone();
     let a2a = app.a2a.clone();
+    let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(&plugin_routes, mcp.as_deref(), a2a.as_ref());
+    let (data, data_core_routes) = base_data_router(
+        &plugin_routes,
+        mcp.as_deref(),
+        a2a.as_ref(),
+        oauth_as.as_ref(),
+    );
     let data = apply_common_layers(
         data,
         data_core_routes,

@@ -28,6 +28,7 @@ fn minimal_app() -> Arc<App> {
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
         // path in this fixture is asserted against.
         mcp: None,
+        oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
         agent_defs: Default::default(),
         // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.

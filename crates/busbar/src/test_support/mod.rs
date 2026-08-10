@@ -1179,6 +1179,10 @@ impl TestApp {
             // Built from the SAME lowering production uses, so a test that configures agents gets
             // the same registry a deployment would and one that configures none gets no plane.
             a2a: a2a_plane.clone(),
+            // No authorization server unless a test asks for one, which is the production default
+            // and is what keeps every existing test's route table unchanged by this plane's
+            // arrival.
+            oauth_as: None,
             agent_defs: self.agent_defs,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),

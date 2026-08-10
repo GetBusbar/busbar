@@ -364,6 +364,10 @@
           "optional": false,
           "type": "HashMap<String, ModelCfg>"
         },
+        "oauth_as": {
+          "optional": true,
+          "type": "crate::oauth_as::config::OauthAsCfg"
+        },
         "per_request_fee": {
           "optional": true,
           "type": "i64"
@@ -972,6 +976,37 @@
         "upstream_model": {
           "optional": true,
           "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "OauthAsCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "access_token_ttl_secs": {
+          "optional": true,
+          "type": "u64"
+        },
+        "default_grant": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "dynamic_registration": {
+          "optional": true,
+          "type": "bool"
+        },
+        "issuer": {
+          "optional": false,
+          "type": "String"
+        },
+        "key_id": {
+          "optional": true,
+          "type": "String"
+        },
+        "signing_key": {
+          "optional": true,
+          "type": "SecretRef"
         }
       },
       "kind": "struct",
