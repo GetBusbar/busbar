@@ -31,6 +31,12 @@ Busbar, and Busbar speaks onward under its own identity.
   is an open string rather than a closed enum: `pool` for the LLM plane,
   `mcp_server` and `mcp_tool` for MCP, `agent` for A2A. A fourth plane is new
   *data*, not new code.
+- **One availability decision.** The circuit breaker is keyed on the *target* being
+  called, not on the shape of the caller: a pool member, a registered MCP tool
+  server, or a registered A2A agent. The same Closed → Open → HalfOpen state
+  machine, the same cause attribution, the same cooldown backoff and the same
+  single-flight recovery probe run on all three planes. See
+  [Circuit-breaker state](#circuit-breaker-state-on-all-three-planes) below.
 - **One audit chain**, hash-chained across all of it.
 - **One outbound guard.** Every address a plane is about to reach is checked
   against cloud-metadata and internal ranges with alternate-encoding
@@ -51,10 +57,10 @@ anonymous caller the inventory.
 ## Request lifecycle — an LLM call, traced
 
 The trace below follows a **model** request, because it is the path that exercises
-every seam: protocol translation, pool selection and failure disposition are
-LLM-plane mechanics. The MCP and A2A planes enter at their own ingress and rejoin
-at the shared steps — authentication, admission, audit and metering are the same
-code on all three.
+every seam: protocol translation, pool selection and failover are LLM-plane
+mechanics. The MCP and A2A planes enter at their own ingress and rejoin at the
+shared steps — authentication, admission, breaker availability, audit and metering
+are the same code on all three.
 
 <svg viewBox="0 0 700 1140" role="img" aria-label="A request enters over any of six wire protocols and hits the axum HTTP router, whose route fixes the ingress protocol. Auth middleware applies token, passthrough or none, or a virtual-key lookup for governance. If governance is enabled it runs allowed-pools, budget and rate-limit checks, returning 403 or 429 on failure. Pool and lane selection uses affinity preference then smooth weighted round-robin over the healthy candidate subset. Each attempt, up to the failover cap, translates the request to the lane protocol via the intermediate representation, rewrites the model and injects credentials, POSTs upstream, and classifies the outcome into relay, failover or dead-lane. The response is passed through when the protocol matches or translated frame-by-frame when it differs, usage is tapped to charge the virtual key, and the reply returns to the client." style="width:100%;height:auto;max-width:700px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
@@ -353,12 +359,56 @@ the breaker fault and emits a native error in the caller's protocol, an SSE
 `error` event for SSE clients, a binary `:message-type: exception` frame for
 Bedrock-ingress (AWS eventstream) clients.
 
-## Circuit-breaker state
+## Circuit-breaker state, on all three planes
 
-Breaker state is **per-(pool, lane)**, stored in `crates/busbar/src/store/mod.rs`. The FSM is Closed →
-Open → HalfOpen → Closed, with exponential cooldown backoff and single-flight
-half-open probing. See [operations.md](operations.md) for the full state machine,
-trip modes, and recovery behavior.
+Breaker state is stored in `crates/busbar/src/store/mod.rs`. The FSM is Closed → Open
+→ HalfOpen → Closed, with exponential cooldown backoff and single-flight half-open
+probing. See [operations.md](operations.md) and
+[circuit-breaker.md](circuit-breaker.md) for the full state machine, trip modes, and
+recovery behavior.
+
+The breaker is keyed on the **target** a request is about to reach. A target is a
+pool member on the LLM plane, a registered tool server on MCP, or a registered agent
+on A2A — three identities, one state machine:
+
+| plane | breaker target | configured at |
+|---|---|---|
+| LLM | a `(pool, lane)` cell | `pools.<pool>.breaker:` |
+| MCP | one registered tool server | `tools.<server>.breaker:` |
+| A2A | one registered agent | `agents.<agent>.breaker:` |
+
+**One struct, three places.** `BreakerCfg` — the cooldown bounds and the `trip:`
+condition — is the same struct in all three, with the same defaults and the same
+validation. There is no MCP breaker grammar and no A2A breaker grammar to learn;
+what you already know from `pools:` is the whole of it.
+
+**What generalises, and what deliberately does not.** The state machine and the cause
+attribution need a target identity and a failure history, and neither of those is
+LLM-shaped. *Member selection* is different: it needs substitutable members, and on
+MCP and A2A there are none. A tool is namespaced to the server that exports it, so
+`acme_read_file` exists on exactly one server; an A2A task addressed to one agent
+cannot be served by a different agent. **There is therefore no failover on the MCP or
+A2A planes, and `failover:` does not appear under `tools:` or `agents:` — its absence
+is the statement.** These planes are the case §4 already describes on the LLM side:
+*the degenerate case, a single-member candidate set of weight 1.* Not new machinery —
+a case the engine already models, now reached from two more ingresses.
+
+**What the caller gets when a target is Open** is protocol-native on each plane, and
+the difference matters more than it looks:
+
+| plane | refusal |
+|---|---|
+| LLM | the pool's `on_exhausted` policy — failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` |
+| MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` |
+| A2A | a task in state **`rejected`** (not `failed`), returned with its task id |
+
+On MCP this is an error, **never a tool result with `isError: true`**. `isError` means
+the tool ran and failed; a tripped breaker means the call never happened. Reporting
+the second as the first hands the model a false premise about the world, and the model
+then reasons from it. On A2A, `rejected` says *we did not accept this work*, where
+`failed` would say *we tried and it broke* — and the caller keeps the task id, so the
+calling agent owns the retry decision rather than inheriting a schedule Busbar
+invented for it.
 
 ## Observability hooks
 

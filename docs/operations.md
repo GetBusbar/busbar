@@ -256,10 +256,11 @@ Service/Ingress + a PodDisruptionBudget; on VMs it is N hosts behind an external
 
 Three things are worth understanding before you scale out:
 
-- **Circuit-breaker and lane health are per-instance.** Each instance learns upstream
-  health independently from its own traffic. This is correct (a lane that's dead for
-  one instance is usually dead for all) and a new instance re-learns within seconds.
-  Nothing is shared or needs sharing.
+- **Circuit-breaker and target health are per-instance.** Each instance learns
+  upstream health independently from its own traffic, on every plane — lanes, tool
+  servers and agents alike. This is correct (a target that's dead for one instance is
+  usually dead for all) and a new instance re-learns within seconds. Nothing is
+  shared or needs sharing.
 - **Session affinity is per-instance.** The `affinity` header pins a session to a lane
   *within one instance*. Across instances, an LB that spreads a client's requests will
   spread its affinity too. If you depend on affinity, enable **sticky sessions** at the
@@ -332,6 +333,12 @@ The breaker decides health from real request outcomes (passive), with optional
 active probing layered on top. The disposition pipeline (see
 [architecture.md](architecture.md)) decides *whether* an outcome counts as an
 upstream fault; this section covers *what happens to the lane* once it does.
+
+The breaker is keyed on the **target** about to be called, and it runs on all three
+planes: a pool member (LLM), a registered tool server (MCP), a registered agent
+(A2A). The subsections below describe the LLM plane, whose vocabulary is pools and
+lanes; [across the planes](#the-breaker-across-the-planes) covers what changes and
+what does not on the other two.
 
 Breaker state is **per-(pool, lane)**: a lane that is a member of more than one pool
 carries independent Open/Closed/HalfOpen state, streak, cooldown, and error window in
@@ -422,6 +429,35 @@ exceeds `max_cooldown_secs`. Defaults (no `breaker:` block): base 15s, max 120s.
   probe (or organic half-open probe) brings it back. An **auth** hard-down also relays the
   error to the caller; a **billing** hard-down fails the request over to another
   member.
+
+### The breaker across the planes
+
+Configure it in the same three-key shape, with the same struct in each place —
+`pools.<pool>.breaker:`, `tools.<server>.breaker:`, `agents.<agent>.breaker:`. Omit
+the block and you get the defaults. Full detail, with worked YAML, is in
+[circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
+
+**Why an operator cares.** With no breaker on a plane, an upstream that is hard down
+— revoked auth, lapsed billing — does not fail fast: every call pays the full request
+timeout, holds a concurrency slot while it does, and retries pile onto a server that
+is already in trouble. Worse, nothing says so. The first report comes from a user.
+With the breaker, the target trips, subsequent calls are refused immediately, and the
+trip is a signal that names the server or the agent and the cause.
+
+**There is no failover on MCP or A2A**, and that is a design decision rather than a
+gap: a tool is namespaced to the server that exports it and an A2A task is addressed
+to a specific agent, so there is nothing to reroute to. `failover:` is not accepted
+under `tools:` or `agents:`. What the breaker gives these planes is failing *fast*
+instead of *slowly*, plus the signal.
+
+**What a caller sees when a target is Open:**
+
+- **MCP** — `503` with `Retry-After` set from the breaker's cooldown expiry, and a
+  JSON-RPC error carrying `reason`, `server` and `retry_after_ms`. It is an error,
+  **not** a tool result with `isError: true`: the call never happened, and telling a
+  model otherwise makes it reason from a false premise.
+- **A2A** — the task is **`rejected`** (not `failed`) and comes back with a task id,
+  so the calling agent — not Busbar — decides whether to retry.
 
 ## Active health probing
 
