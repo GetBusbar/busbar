@@ -128,7 +128,15 @@ pub(crate) enum AskDecision {
 pub(crate) enum Refusal {
     /// The caller declared none of the capabilities this round's asks need. Refusing rather than
     /// proceeding is the empty-filter trap in the module header.
-    NoDeclaredCapability { capability: String, round: u32 },
+    NoDeclaredCapability {
+        capability: String,
+        round: u32,
+        /// The DISTINCT client-capability keys this round's asks needed, in the operator's own
+        /// order. Carried because the refusal is only actionable if it names what to declare, and
+        /// `capability` above is the namespaced TOOL — a different noun that happens to share the
+        /// word.
+        required: Vec<&'static str>,
+    },
     /// The per-server cap on caller-facing rounds was reached.
     RoundCapExceeded { capability: String, cap: u32 },
     /// The presented `requestState` failed verification.
@@ -165,7 +173,9 @@ impl Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refusal::NoDeclaredCapability { capability, round } => write!(
+            Refusal::NoDeclaredCapability {
+                capability, round, ..
+            } => write!(
                 f,
                 "`{capability}` requires input from you before it runs, and your \
                  `_meta.io.modelcontextprotocol/clientCapabilities` declares none of the \
@@ -333,9 +343,20 @@ pub(crate) fn decide(
 
     // (7) THE EMPTY-FILTER TRAP. See the module header: this must be `Refuse`, never `Proceed`.
     if asks.is_empty() {
+        // The keys this round WOULD have needed, computed from the operator's own asks rather than
+        // guessed, de-duplicated but order-preserving so two runs report one refusal identically.
+        let mut required: Vec<&'static str> = Vec::new();
+        for (key, cfg) in this_round.iter() {
+            if let Some(k) = CallerAsk::from_config(key, cfg).capability_key() {
+                if !required.contains(&k) {
+                    required.push(k);
+                }
+            }
+        }
         return AskDecision::Refuse(Refusal::NoDeclaredCapability {
             capability: bind.capability.to_string(),
             round: next_round,
+            required,
         });
     }
 

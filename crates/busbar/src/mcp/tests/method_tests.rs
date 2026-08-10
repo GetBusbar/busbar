@@ -592,3 +592,99 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     assert_eq!(row.outcome, crate::admin::audit::OUTCOME_REJECTED);
     assert_eq!(row.principal, "test-principal");
 }
+
+// ── SEP-2575: A MINTED ASK THE CALLER CANNOT ANSWER IS `-32021`, NOT `-32000` ──────────────────
+//
+// `content_tests.rs` B6 records at length why `-32021` is correctly WITHHELD when an UPSTREAM's ask
+// is refused: there the caller's capability is not what decides the outcome — the operator's grant
+// is — so a client that DOES declare the capability gets the byte-identical refusal, and telling it
+// to go and acquire one would send it to fix the thing that was already right.
+//
+// B6 then names the exception in writing, and this is it: "WHERE `-32021` IS GENUINELY OWED is the
+// capability FILTER on an ask busbar mints ITSELF". On this path the capability really is what stops
+// the request — busbar would otherwise send an `inputRequests` the client cannot answer, which
+// `PAT.MRTR.NO-UNDECLARED-CAPABILITY` forbids — so the caller IS the party who can act on it, and
+// naming the capability is the actionable answer rather than a leak.
+//
+// The conformance battery asserts both halves separately
+// (`sep-2575-server-rejects-undeclared-capability` and `sep-2575-missing-capability-http-400`), so
+// the status and the code are both load-bearing and are asserted separately here too.
+fn asking_tool(server: &str, tool: &str, method: &str) -> McpServerDefCfg {
+    let mut round = indexmap::IndexMap::new();
+    round.insert(
+        "llm_answer".to_string(),
+        crate::mcp::config::AskEntryCfg {
+            method: method.to_string(),
+            params: Some(serde_json::json!({ "maxTokens": 16 })),
+        },
+    );
+    let mut tools_allow = indexmap::IndexMap::new();
+    tools_allow.insert(
+        tool.to_string(),
+        ToolAllowCfg {
+            schema_hash: Some(format!("sha256:{tool}")),
+            description: Some("asks the caller before it runs".to_string()),
+            input_schema: Some(serde_json::json!({ "type": "object" })),
+            ask_caller: vec![round],
+        },
+    );
+    let mut def = poisoned_server(server, "unused");
+    def.tools_allow = tools_allow;
+    def
+}
+
+#[tokio::test]
+async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .mcp(&mcp_cfg())
+        .mcp_server(
+            "fs",
+            asking_tool("fs", "needs_sampling", "sampling/createMessage"),
+        )
+        .build();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_needs_sampling")]);
+
+    // The caller declares NOTHING, which is exactly what the scenario does.
+    let handle = Arc::new(AppHandle::new(app.clone()));
+    let none: serde_json::Value = serde_json::json!({});
+    let ctx = crate::mcp::method::Ctx {
+        app: &app,
+        handle: &handle,
+        gov: &g,
+        actor: "test-principal",
+        capabilities: &none,
+    };
+    let params = serde_json::json!({ "name": "fs_needs_sampling", "arguments": {} });
+    let response = crate::mcp::method::dispatch(&ctx, "tools/call", Some(&params), Some(1.into()))
+        .await
+        .expect("tools/call is in the method table");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+
+    assert_eq!(
+        body["error"]["code"], -32021,
+        "a capability the caller never declared is what stops THIS request, so it is \
+         MissingRequiredClientCapability rather than the generic -32000: {body}"
+    );
+    assert_eq!(
+        status, 400,
+        "sep-2575-missing-capability-http-400 asserts the STATUS separately from the code: {body}"
+    );
+    // A `ClientCapabilities` OBJECT, not a list of names. The schema defines the field as an object
+    // of capability objects (`{"sampling": {}}`), and the suite validates it against that schema —
+    // so an array of strings is the right INFORMATION in a shape no conformant client can read.
+    assert_eq!(
+        body["error"]["data"]["requiredCapabilities"],
+        serde_json::json!({ "sampling": {} }),
+        "requiredCapabilities must be a ClientCapabilities object: {body}"
+    );
+    // NOT an isError tool result: the tool never ran.
+    assert!(
+        body.pointer("/result").is_none(),
+        "a refused setup must not be reported as a tool RESULT: {body}"
+    );
+}
