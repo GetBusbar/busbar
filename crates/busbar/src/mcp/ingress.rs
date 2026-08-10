@@ -597,3 +597,10 @@ mod sse_tests;
 #[cfg(test)]
 #[path = "tests/content_tests.rs"]
 mod content_tests;
+
+// A1.3 — the resource routing key. Mounted here because its headline case drives a real socket for
+// the same reason the two above do: the claim is about what a CLIENT can address, and the four
+// official scenarios that were failing sent exactly that request.
+#[cfg(test)]
+#[path = "tests/resource_uri_tests.rs"]
+mod resource_uri_tests;

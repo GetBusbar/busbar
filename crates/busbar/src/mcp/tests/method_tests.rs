@@ -271,7 +271,7 @@ async fn prompts_and_resources_are_sanitised_on_the_way_out() {
         &app,
         &g,
         "resources/read",
-        serde_json::json!({ "uri": "fs_file:///notes.txt" }),
+        serde_json::json!({ "uri": "file:///notes.txt" }),
     )
     .await;
     assert_eq!(s, 200);
