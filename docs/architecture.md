@@ -5,7 +5,56 @@ Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
 `ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
 pipeline**.
 
-## Request lifecycle
+## Three planes, one core
+
+Busbar carries three kinds of traffic, and the point of the architecture is that
+they are three *ingresses onto one core* rather than three products sharing a
+process.
+
+| plane | inbound — Busbar is the server | outbound — Busbar is the client |
+|---|---|---|
+| **LLM** | six wire protocols on `/v1/*` and friends | every provider or pool you configure |
+| **MCP** | `/mcp` — an MCP server your agents log in to | the MCP tool servers you register |
+| **A2A** | `/a2a/agents/{id}` — the agents you front | the backend agent a task is relayed to |
+
+Each plane is bidirectional, and that is the whole claim: a caller speaks to
+Busbar, and Busbar speaks onward under its own identity.
+
+**What all three share, exactly once:**
+
+- **One authentication chain**, failing closed on every plane.
+- **One admission decision.** An inbound MCP `tools/call` authenticates with a
+  virtual key exactly as a model request does, and is charged against the same
+  budget and the same rate limits in the same step. There is no separate MCP
+  meter and no separate MCP budget.
+- **One grant vocabulary.** Authorization is `ScopeRef{kind, value}`, and `kind`
+  is an open string rather than a closed enum: `pool` for the LLM plane,
+  `mcp_server` and `mcp_tool` for MCP, `agent` for A2A. A fourth plane is new
+  *data*, not new code.
+- **One audit chain**, hash-chained across all of it.
+- **One outbound guard.** Every address a plane is about to reach is checked
+  against cloud-metadata and internal ranges with alternate-encoding
+  normalisation, the connection is pinned to the vetted address, and redirects
+  are refused in both directions.
+
+**What is specific to each, because the threat is specific.** On MCP, a tool's
+schema is hash-pinned at approval and a drifted tool is quarantined rather than
+called — a tool description is an instruction to a model, so a server that
+rewrites its own description tomorrow is a live attack, not a version bump. On
+A2A, an agent card is fetched through the same guard, verified Ed25519-only, and
+pinned so the same card six hours later is checked against the one you approved.
+Busbar's own card is served unauthenticated at `/.well-known/agent-card.json`
+because that is where a conformant client looks first, and it deliberately names
+**no** fronted agent: an endpoint that cannot ask who is calling must not hand an
+anonymous caller the inventory.
+
+## Request lifecycle — an LLM call, traced
+
+The trace below follows a **model** request, because it is the path that exercises
+every seam: protocol translation, pool selection and failure disposition are
+LLM-plane mechanics. The MCP and A2A planes enter at their own ingress and rejoin
+at the shared steps — authentication, admission, audit and metering are the same
+code on all three.
 
 <svg viewBox="0 0 700 1140" role="img" aria-label="A request enters over any of six wire protocols and hits the axum HTTP router, whose route fixes the ingress protocol. Auth middleware applies token, passthrough or none, or a virtual-key lookup for governance. If governance is enabled it runs allowed-pools, budget and rate-limit checks, returning 403 or 429 on failure. Pool and lane selection uses affinity preference then smooth weighted round-robin over the healthy candidate subset. Each attempt, up to the failover cap, translates the request to the lane protocol via the intermediate representation, rewrites the model and injects credentials, POSTs upstream, and classifies the outcome into relay, failover or dead-lane. The response is passed through when the protocol matches or translated frame-by-frame when it differs, usage is tapped to charge the virtual key, and the reply returns to the client." style="width:100%;height:auto;max-width:700px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
@@ -317,3 +366,95 @@ Metrics are emitted at the ingress boundary (`busbar_requests_total`, the durati
 histogram) and at each upstream attempt/failure/trip/failover/translation
 (`crates/busbar/src/metrics.rs`, `crates/busbar/src/proxy/engine/mod.rs`). Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
+
+## How it deploys, simplest first
+
+Busbar is **one static binary** with no interpreter, no sidecar and no database
+required to start. The topologies below are the same binary with progressively
+more of its optional seams turned on; nothing is a different build or a different
+edition.
+
+All three planes are in the one binary. Serving MCP or fronting agents is a
+`tools:` or `agents:` block in the config, not another process to run.
+
+**1. One process, no store.** A binary and a config file. Virtual keys, budgets
+and breaker state live in memory. This is a complete, working deployment — it
+forgets accrued usage on restart, and nothing else. Suitable for a single node, a
+development environment, or an air-gapped box where a database is a liability
+rather than an asset.
+
+**2. One process, durable.** Add a `store:` and the same process persists what it
+would otherwise forget: keys, credentials, usage ledgers, the audit chain, the
+revocation denylist, agent tasks and the MCP call log. Backends ship as signed
+plugins — SQLite, PostgreSQL, MySQL and Valkey — so the storage decision is a
+config line rather than a rebuild.
+
+**3. A fleet behind a load balancer.** Several processes sharing one store. Each
+member is independent on the request path and converges through the store: a key
+revoked on one member reaches the others through the denylist, and usage
+accrues into shared ledgers. A *deployment* is the cluster; a *member* is one
+process, and the distinction is load-bearing because per-process state — config
+version, boot epoch, in-memory audit ring — is real and observable per member.
+
+The **admin plane is a separate listener** in every topology. It binds to
+loopback by default, and exposing it further requires mutual TLS. Reaching the
+data port does not reach the control surface: they are different sockets with
+different authentication. See [Security](https://getbusbar.com/security/).
+
+## What is in the store, and what is deliberately not
+
+The store is a **durability sink, never a lookup on the request path.** Admission
+— `try_admit`, which decides whether a request is allowed — makes **zero** store
+calls. Budgets and the revocation denylist are hydrated into memory at boot and
+written through afterwards, off the request path. This is why storage choice does
+not appear in the latency numbers on the [performance page](https://getbusbar.com/performance/):
+a slow database makes writes slow, not requests slow.
+
+**Persisted:** virtual keys (secret **hashed** — the store holds a verifier, not
+the key), outbound credentials, usage ledgers as accumulated per-model token
+counts, the hash-chained audit record, the revocation denylist, A2A tasks and
+their events, and the MCP tool-call log.
+
+**Never persisted, and each for a reason:**
+
+- **Spend.** There is no money column. Spend is *derived at read time* from
+  accumulated tokens times the current `rate_card`, so correcting a rate re-prices
+  past and present windows on the next read instead of leaving a stale number
+  nobody can recompute.
+- **Prompts, completions, and message content.** No request or response body
+  reaches the store on any path. Content leaves Busbar only as its own named
+  export stream an operator turns on for one specific sink, or to a plugin under
+  an explicit per-hook grant that defaults to `no`. It never rides along inside
+  something already subscribed to.
+- **A caller's own credential.** It authenticates the request and is not stored,
+  forwarded upstream, or reused as Busbar's identity to anyone.
+
+## Credentials, in both directions
+
+The two directions are separate mechanisms on purpose, because the interesting
+failure is not leaking a key outright — it is using the right key on the wrong
+hop.
+
+**Inbound**, a caller presents a virtual key carrying its own scopes, budget and
+rate limits. Comparison is constant-time. Revocation is immediate and does not
+touch a provider account.
+
+**Outbound**, each backend is reached with a credential chosen for that backend,
+resolved from the configured secret source. A caller's key is never forwarded and
+never substituted for Busbar's own. On the MCP and A2A planes the outbound
+credential is bound to the inbound principal by a type whose private field makes a
+call site that forgets to bind it a compile error rather than a review comment.
+
+## Plugins, and what they are trusted with
+
+Stores, hooks, exporters and auth providers load as **signed dynamic libraries**.
+Identity comes from the signed manifest, never the filename: the publisher
+signature is verified over a canonical manifest, and the manifest's `sha256` pins
+it to the exact library bytes. An unsigned, wrong-key, tampered-library or
+tampered-manifest load is refused.
+
+A plugin sees what its declared grants allow and nothing more. Message content in
+particular is gated behind a per-hook `prompt: no | ro | rw` grant that defaults
+to `no`, is immutable after registration, and requires `full` admin scope to raise.
+Busbar can also be built with plugins compiled out entirely, which is a distinct
+CI-gated configuration rather than a documentation claim.
