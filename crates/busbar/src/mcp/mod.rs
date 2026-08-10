@@ -131,6 +131,9 @@ pub(crate) mod inputreq;
 pub(crate) mod method;
 pub(crate) mod resource;
 pub(crate) mod sanitize;
+/// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
+/// revision removed the GET stream, not Server-Sent Events — see the module header.
+pub(crate) mod sse;
 pub(crate) mod upstream;
 
 use serde::{Deserialize, Serialize};

@@ -199,6 +199,7 @@ pub(crate) fn server_cfg(
         tools_allow: allow,
         prompts_allow: indexmap::IndexMap::new(),
         resources_allow: indexmap::IndexMap::new(),
+        resource_templates_allow: Default::default(),
         transport: None,
         aud: None,
         grants: crate::mcp::config::ServerRequestGrants::default(),

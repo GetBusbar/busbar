@@ -331,6 +331,36 @@ tools:
                   type: object
                   properties:
                     context: { type: string }
+      # THE TYPED FORM. A "template:" is a single {type:"text"} message and cannot express an image
+      # or an embedded resource at all — base64 in a "text" field is prose to every client that
+      # reads it — so these two are written with "messages:", which is the shape B4 added. They are
+      # still ENTIRELY the operator's own content: a prompt is an instruction busbar puts into a
+      # model's context, so there is no upstream round trip to make and nothing here is proxied.
+      prompt_with_image:
+        description: "A prompt carrying an image and a question about it."
+        messages:
+          - content:
+              type: image
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+              mime_type: "image/png"
+          - content:
+              type: text
+              text: "Please analyze the image above."
+      prompt_with_embedded_resource:
+        description: "A prompt carrying an embedded resource and a question about it."
+        messages:
+          # The URI is the caller's own resourceUri argument, substituted the same way a text
+          # template's placeholders are — which is what the scenario asks for and what a template
+          # form could not have expressed.
+          - content:
+              type: resource
+              resource:
+                uri: "{resourceUri}"
+                mime_type: "text/plain"
+                text: "Embedded resource content for testing."
+          - content:
+              type: text
+              text: "Please process the embedded resource above."
 YAML
 }
 

@@ -152,6 +152,12 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             tools_allow: _,
             prompts_allow: _,
             resources_allow: _,
+            // The exposed capabilities. Each is operator-authored CONTENT — a description, a
+            // template, a typed message, a URI template and the bytes it answers with — and none of
+            // them is a credential reference: a resource's `blob:` is base64 media the operator
+            // pasted, not a pointer into a secret store, so there is nothing here for `--validate`
+            // to resolve. Named rather than covered by `..` so the compiler keeps asking.
+            resource_templates_allow: _,
         } = server;
         if let Some(tx) = token_exchange {
             let crate::mcp::config::TokenExchangeCfg {

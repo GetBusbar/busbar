@@ -83,6 +83,7 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
             tools_allow,
             prompts_allow: indexmap::IndexMap::new(),
             resources_allow: indexmap::IndexMap::new(),
+            resource_templates_allow: Default::default(),
             transport: None,
             aud: None,
             grants: Default::default(),

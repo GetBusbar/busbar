@@ -51,6 +51,7 @@ fn server_with_prompt() -> McpServerDefCfg {
             description: Some("a greeting".to_string()),
             template: Some("Hello, {name}! You asked about {topic}.".to_string()),
             ask_caller: Vec::new(),
+            messages: Vec::new(),
         },
     );
     McpServerDefCfg {
@@ -62,6 +63,7 @@ fn server_with_prompt() -> McpServerDefCfg {
         tools_allow: indexmap::IndexMap::new(),
         prompts_allow,
         resources_allow: indexmap::IndexMap::new(),
+        resource_templates_allow: Default::default(),
         transport: None,
         aud: None,
         grants: ServerRequestGrants::default(),
