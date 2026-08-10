@@ -186,6 +186,35 @@ tools:
                       type: string
                       description: "Your name"
                   required: ["name"]
+      # SEP-2575, the \`server-stateless\` scenario. Four of its checks reported "Not testable"
+      # because these three tools were not exposed, and the suite counts an untestable check as a
+      # FAILURE — so the summary read like a broken implementation when nothing had been exercised.
+      #
+      # \`missing_capability\` asks for a SAMPLING round trip while the scenario declares NO
+      # capabilities, so what is judged is busbar's own refusal: \`-32021\`
+      # (MissingRequiredClientCapability) rather than the generic \`-32000\` every other upstream
+      # failure collapses to. The ask lives here rather than in the fixture for the same reason every
+      # other one does — busbar composes the demand in its OWN name and never relays the upstream's.
+      missing_capability:
+        schema_hash: "sha256:diagnostic-missing-capability"
+        description: "Requires the caller's sampling capability before it runs."
+        ask_caller:
+          - llm_answer:
+              method: sampling/createMessage
+              params:
+                maxTokens: 16
+                messages:
+                  - role: user
+                    content: { type: text, text: "Reply with the single word: pong" }
+      # Must NOT ask the caller for anything: the check asserts the response stream carries no
+      # INDEPENDENT top-level JSON-RPC request, so an \`ask_caller:\` here would be the very thing
+      # being tested for.
+      streaming_elicitation:
+        schema_hash: "sha256:diagnostic-streaming-elicitation"
+        description: "Returns a result whose stream carries no independent requests."
+      logging_tool:
+        schema_hash: "sha256:diagnostic-logging-tool"
+        description: "Exercises the request-scoped, logLevel-gated log channel."
       input_required_result_sampling:
         schema_hash: "sha256:diagnostic-input-required-sampling"
         description: "Asks the caller's model for a completion before it runs."

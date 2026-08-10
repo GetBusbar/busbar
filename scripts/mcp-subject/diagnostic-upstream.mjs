@@ -135,6 +135,51 @@ const TOOLS = {
 // property, and busbar's answer to that is a refusal — see `mcp/inputreq.rs`. That case is exercised
 // by the in-tree battery's hostile peer, deliberately not here: this fixture is a content source,
 // and a content source that also mounted an attack would make every red ambiguous.
+// SEP-2575 (the `server-stateless` scenario). Three tools whose ABSENCE made four of that
+// scenario's checks report "Not testable" rather than pass or fail — a shape worth naming, because
+// an untestable check is counted as a FAILURE by the suite and reads in the summary exactly like a
+// broken implementation.
+//
+// `missing_capability` is the interesting one: it asks the caller for a SAMPLING round trip, and the
+// scenario calls it declaring NO capabilities. What is being judged is busbar's own refusal —
+// `-32021 MissingRequiredClientCapability` rather than the generic `-32000` — so the ask is
+// configured in `boot.sh`'s `ask_caller:` and this fixture only supplies the body for the round that
+// runs once the caller HAS answered.
+TOOLS.missing_capability = {
+  description:
+    "SEP-2575: requires the `sampling` client capability (drives the -32021 undeclared-capability rejection)",
+  result: () => ({
+    content: [{ type: "text", text: "sampling round-trip complete" }],
+  }),
+};
+
+// A plain successful call. The check asserts only that the response stream carries no INDEPENDENT
+// top-level JSON-RPC request — so the tool must NOT elicit, and the reference server's own does not
+// either. Returning content is the whole fixture.
+TOOLS.streaming_elicitation = {
+  description:
+    "SEP-2575: yields a response stream carrying no independent top-level JSON-RPC requests",
+  result: () => ({
+    content: [
+      { type: "text", text: "stream observed: result frames only, no top-level requests" },
+    ],
+  }),
+};
+
+// The no-log-without-logLevel rule. The scenario omits `_meta` logging level and asserts that NO
+// `notifications/message` frame appears. Busbar's log records ride the SSE response stream and are
+// filtered by the level named in the request's own `_meta` — so what this fixture exercises is
+// busbar's gating, not the upstream's.
+TOOLS.logging_tool = {
+  description:
+    "SEP-2575: logs through the request-scoped, logLevel-gated channel so the no-log-without-logLevel rule is exercised",
+  result: () => ({
+    content: [
+      { type: "text", text: "logged through the request-scoped, logLevel-gated channel" },
+    ],
+  }),
+};
+
 const MRTR_FIXTURES = {
   input_required_result_elicitation: "Runs once the caller has supplied its name.",
   input_required_result_sampling: "Runs once the caller has supplied a completion.",
