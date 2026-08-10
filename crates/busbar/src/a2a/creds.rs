@@ -26,6 +26,31 @@
 //! is used. A lease is not a revocation mechanism and does not pretend to be one; it bounds how
 //! long a resolved secret is allowed to sit in memory being reused.
 //!
+//! ## THE SECOND RULE, and it is not the first one restated: the TRANSITIVE CONFUSED DEPUTY
+//!
+//! "The caller's key never leaves" is a statement about WHICH SECRET travels. It says nothing about
+//! WHOSE AUTHORITY is spent. busbar is both directions at once, so an authenticated inbound call can
+//! cause busbar to spend its OWN standing credential on a backend agent the caller was never
+//! entitled to reach — and every byte of that hop is busbar's own, so rule one is satisfied while
+//! the caller has just gained reach it does not hold. A client-only gateway cannot have this bug:
+//! it has no inbound principal to be confused about. The sibling plane states the same thing and
+//! closes it at its credential-selection site (`mcp/client/egress.rs`, rule 2). This is that gate
+//! for the A2A plane.
+//!
+//! **The outbound credential is bound to the inbound principal's grant**, and the binding is a TYPE
+//! rather than a call-ordering convention. [`authorise_egress`] is the only way to obtain an
+//! [`EgressGrant`], [`EgressGrant`]'s field is private to this module so no other module can build
+//! one, and [`mint`] and [`mint_from`] both REQUIRE one. Forgetting the check is therefore a
+//! COMPILE error at the call site rather than a review comment — which matters because the caller
+//! that will forget is the one that does not exist yet.
+//!
+//! The agent id the lease is minted FOR is read off the grant rather than passed beside it. A
+//! signature that took both would admit the one combination that defeats the whole gate: authorise
+//! against `planner`, mint against `payments`.
+//!
+//! Fail-closed, and never a fallback: a caller with no grant gets [`EgressDenied::NoAgentGrant`] and
+//! NO credential. Falling back to the registration's own credential is precisely the deputy.
+//!
 //! ## The record holds a HANDLE, never the secret
 //!
 //! [`OutboundCredential`] carries a [`crate::config::SecretRef`] — the module plus its settings —
@@ -33,15 +58,103 @@
 //! the Agent Card, and never in a debug rendering: [`Lease`] has a hand-written `Debug` for exactly
 //! the reason `VirtualKey` and `CredentialSecret` do.
 
-// NO PRODUCTION CALLER: this module is entirely the DELEGATING direction. A lease is the credential
-// busbar presents when it calls OUT to a vendor agent, and this branch mounts the RECEIVING side
-// only. The config that feeds it IS live — `secret_refs` walks `OutboundCredential` and boot
-// validates the lease TTL — so the shape is under test from the config end while the mint stays
-// uncalled.
+// MOUNTED. `mint_from` and `Lease::header_for` are on the hot path: `ingress::rpc` mints a lease
+// per relayed submission and the lease is the ONLY credential that goes on the hop. `mint` itself —
+// the whole-registration form — still has no production caller, because the hot path holds a cloned
+// handle rather than a registration (cloning one per request would copy a cached Agent Card per
+// call); it stays as the place the "no parameter for a caller credential" property is asserted
+// against a real registration.
 #![cfg_attr(not(test), allow(dead_code))]
+
+use busbar_api::VirtualKey;
 
 use crate::config::secret::SecretResolver;
 use crate::config::SecretRef;
+
+/// WHY NO OUTBOUND CREDENTIAL MAY BE SELECTED FOR THIS CALLER.
+///
+/// Named rather than folded into [`LeaseError`], because these are refusals about the CALLER's
+/// authority and the rest are refusals about the CONFIGURATION. An operator reading "the caller
+/// holds no grant" acts differently from one reading "the secret did not resolve".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EgressDenied {
+    /// The inbound principal holds no `agent:<id>` grant for the target. FAIL CLOSED: busbar does
+    /// not spend its own credential on behalf of a caller that is not itself authorised for the
+    /// backend agent.
+    NoAgentGrant { caller: String, agent_id: String },
+    /// The key is disabled, tombstoned or expired. A key that may not authenticate may certainly not
+    /// cause a credential to be minted, and a lease outliving the key that occasioned it is a hop
+    /// nobody's grant covers.
+    KeyNotLive { caller: String },
+}
+
+impl std::fmt::Display for EgressDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EgressDenied::NoAgentGrant { caller, agent_id } => write!(
+                f,
+                "key `{caller}` holds no `{}:{agent_id}` grant, so NO outbound credential is \
+                 selected for it: busbar does not spend its own credential on behalf of a caller \
+                 that is not itself authorised for the backend agent",
+                super::inbound::SCOPE_KIND_AGENT
+            ),
+            EgressDenied::KeyNotLive { caller } => write!(
+                f,
+                "key `{caller}` is not live, so no outbound credential is leased for it"
+            ),
+        }
+    }
+}
+
+/// PROOF THAT THE INBOUND PRINCIPAL IS ITSELF AUTHORISED FOR THIS BACKEND AGENT.
+///
+/// The whole value of this type is that it cannot be built anywhere but [`authorise_egress`]: the
+/// field is private to this module, so no other module in the crate can construct one, and the mint
+/// functions take one by reference. A future delegating call site that forgot the grant check does
+/// not compile.
+///
+/// It borrows the agent id rather than copying it so that the id the check was made against and the
+/// id the lease is minted for are the same bytes, not two strings that agree today.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EgressGrant<'a> {
+    agent_id: &'a str,
+}
+
+impl EgressGrant<'_> {
+    /// The agent this grant is for. Read by the mint rather than passed beside it; see the module
+    /// note on why a second parameter would defeat the gate.
+    pub(crate) fn agent_id(&self) -> &str {
+        self.agent_id
+    }
+}
+
+/// THE EGRESS GATE: may busbar spend a credential on this backend agent ON BEHALF OF THIS CALLER?
+///
+/// `VirtualKey::scope_allowed` is reused verbatim rather than reimplemented: its cross-kind
+/// fail-closed semantics are frozen at 1.5.3 and a second implementation of a frozen rule is a
+/// second chance to get it wrong. It is the SAME predicate [`super::inbound::authorize`] and
+/// [`super::catalogue`] ask, and asking it again here is not redundancy — those two answer "what may
+/// this caller SEE and INVOKE", and this one answers "what may busbar's own credentials be spent
+/// on", which is a different question asked at a different moment by a function that may one day
+/// have a call site the other two never reach.
+pub(crate) fn authorise_egress<'a>(
+    caller: &VirtualKey,
+    agent_id: &'a str,
+    now: u64,
+) -> Result<EgressGrant<'a>, EgressDenied> {
+    if !caller.is_live() || !caller.enabled || caller.expires_at.is_some_and(|exp| now >= exp) {
+        return Err(EgressDenied::KeyNotLive {
+            caller: caller.id.clone(),
+        });
+    }
+    if !caller.scope_allowed(super::inbound::SCOPE_KIND_AGENT, agent_id) {
+        return Err(EgressDenied::NoAgentGrant {
+            caller: caller.id.clone(),
+            agent_id: agent_id.to_string(),
+        });
+    }
+    Ok(EgressGrant { agent_id })
+}
 
 /// Where a leased credential is placed on the outbound request.
 ///
@@ -203,28 +316,62 @@ impl Lease {
     }
 }
 
-/// MINT A LEASE for one hop.
+/// MINT A LEASE for one hop, against a registration.
 ///
-/// The signature is the security property: it takes the REGISTRATION and the clock, and there is no
-/// parameter through which an inbound caller's credential could arrive. A future edit that wanted
-/// to forward one would have to add an argument, which is a change a reviewer sees.
+/// TWO security properties live in this signature and they are DIFFERENT claims:
+///
+/// - There is NO PARAMETER through which an inbound caller's CREDENTIAL could arrive. A future edit
+///   that wanted to forward one would have to add an argument, which is a change a reviewer sees.
+/// - There IS a parameter through which the inbound caller's GRANT must arrive, and it is a type
+///   only [`authorise_egress`] can produce. Passing the check is not optional, and skipping it is
+///   not a mistake this function can be made in.
+///
+/// The registration must be the one the grant was taken against; that is CHECKED rather than
+/// assumed, because a caller holding a grant for one agent and a registration for another is
+/// exactly the mix-up the gate exists to stop.
 pub(crate) fn mint(
+    grant: &EgressGrant<'_>,
     registration: &super::registry::AgentRegistration,
     resolver: &SecretResolver,
     now_ms: u64,
 ) -> Result<Lease, LeaseError> {
+    if registration.agent_id != grant.agent_id() {
+        return Err(LeaseError::WrongAgent {
+            minted_for: grant.agent_id().to_string(),
+            used_for: registration.agent_id.clone(),
+        });
+    }
     let cred = registration
         .outbound_cred
         .as_ref()
         .ok_or_else(|| LeaseError::NotConfigured(registration.agent_id.clone()))?;
+    mint_from(grant, cred, resolver, now_ms)
+}
+
+/// MINT A LEASE from the GRANT and the HANDLE alone.
+///
+/// The hot path holds a cloned handle rather than the whole registration (a registration carries a
+/// cached Agent Card, and cloning one per request would copy a document per call), so this is the
+/// entry point [`super::relay`] uses and [`mint`] delegates to.
+///
+/// THE AGENT ID IS READ OFF THE GRANT, not passed beside it. A signature taking both would admit
+/// the one combination that defeats the gate entirely: authorise against the agent the caller
+/// holds, mint against the one it does not.
+pub(crate) fn mint_from(
+    grant: &EgressGrant<'_>,
+    cred: &OutboundCredential,
+    resolver: &SecretResolver,
+    now_ms: u64,
+) -> Result<Lease, LeaseError> {
+    let agent_id = grant.agent_id();
     let secret = resolver
         .resolve_string(&cred.secret)
         .map_err(|err| LeaseError::Unresolved {
-            agent_id: registration.agent_id.clone(),
+            agent_id: agent_id.to_string(),
             err,
         })?;
     Ok(Lease {
-        agent_id: registration.agent_id.clone(),
+        agent_id: agent_id.to_string(),
         placement: cred.placement.clone(),
         secret,
         expires_at_ms: now_ms.saturating_add(cred.lease_ttl_ms),

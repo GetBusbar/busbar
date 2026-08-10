@@ -51,12 +51,21 @@
 //! The fetch seam is synchronous, and the client is async. Each call runs its future to completion
 //! on a DEDICATED thread with its own current-thread runtime, which is safe whether the caller sits
 //! on a runtime worker or on a plain thread — a nested `block_on` on a runtime thread would panic.
-//! The same shape the plugin downloader uses, for the same reason. A card fetch happens on a
-//! re-verification tick, not on the request hot path, so a thread and a client per hop is a cost
-//! that is not worth engineering away.
+//! The same shape the plugin downloader uses, for the same reason.
+//!
+//! A card fetch happens on a re-verification tick, so a thread and a client per hop was a cost not
+//! worth engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
+//! request hot path. Two consequences, and only one of them is fixed here. The blocking is handled
+//! at the call site — `ingress::rpc` enters this seam through `spawn_blocking`, so no axum worker is
+//! held for a backend agent's think time. The CLIENT PER HOP is not: every relayed submission builds
+//! a fresh `reqwest::Client` and therefore a fresh TLS session, with no connection reuse. That is a
+//! real per-request cost and it is recorded here rather than hidden, because the fix — a client
+//! cache keyed by host and pinned address — is a cache of objects that carry the pin, and getting
+//! that wrong reintroduces the hazard this whole file exists to remove.
 
-// PARTLY UNMOUNTED. The live card fetch is driven by the re-verification job. The pieces a
-// caller-supplied root or an injected client would use are reached only by tests today.
+// PARTLY UNMOUNTED. The live card fetch is driven by the re-verification job and the relay POST by
+// the receiving ingress. The pieces a caller-supplied root or an injected client would use are
+// reached only by tests today.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::net::{IpAddr, SocketAddr};
@@ -64,10 +73,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
+use super::relay::{ChunkFlow, RelayTransport, StreamHead};
 
 /// How long one hop may take, end to end. An agent card is a small JSON document from a host an
 /// operator named; a hop that has not completed in this long is not going to.
 pub(crate) const CARD_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long ONE RELAYED TASK SUBMISSION may take, end to end.
+///
+/// Six times the card ceiling, because the two hops are not the same shape: a card is a small
+/// static document, and a relayed `message/send` is the backend agent actually doing the work the
+/// caller asked for. A ceiling tuned for a document read would turn every slow-but-healthy agent
+/// into a `502`. It is still a ceiling rather than none: an unbounded relay is a way to pin a
+/// blocking thread per request for as long as an upstream feels like holding it.
+pub(crate) const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a STREAMING relay may hold its thread. Longer than the unary ceiling and still finite,
+/// for the same reason: a stream is legitimately long-lived, and an unbounded one is a way to pin a
+/// thread per request forever. `reqwest`'s `timeout` covers the whole request INCLUDING the body,
+/// which is what makes this the right knob rather than a read timeout.
+pub(crate) const RELAY_STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Run one future to completion on a DEDICATED thread with its own current-thread runtime.
 ///
@@ -239,8 +264,33 @@ impl ReqwestTransport {
     }
 }
 
-impl Transport for ReqwestTransport {
-    fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+/// ONE PINNED HOP, shared by the card fetch and the relay.
+///
+/// The two callers differ in method, headers, body and ceiling and in NOTHING ELSE, so they share
+/// one execution path. That is not tidiness: the pin, the refusing resolver, the no-redirect policy
+/// and the capped read are the security properties of this file, and a second copy of them is a
+/// second place for one of them to go missing. When the relay was first written as its own
+/// `reqwest` call it silently had none of them, and every test that did not reach a socket stayed
+/// green.
+struct Hop<'a> {
+    url: &'a reqwest::Url,
+    /// The address the guard judged. The socket goes HERE; see the pin below.
+    addr: IpAddr,
+    headers: &'a [(String, String)],
+    body: Option<Vec<u8>>,
+}
+
+/// The connection facts a hop needs, derived from the URL and the pinned address once.
+struct Wire {
+    host: String,
+    pinned: SocketAddr,
+    url: reqwest::Url,
+}
+
+impl ReqwestTransport {
+    /// Normalise the host and pair it with the pinned socket. Shared by the buffered and streaming
+    /// paths so a future edit cannot pin one and not the other.
+    fn wire_for(url: &reqwest::Url, addr: IpAddr) -> Result<Wire, String> {
         let Some(raw_host) = url.host_str() else {
             return Err(format!("`{url}` has no host to connect to"));
         };
@@ -251,48 +301,78 @@ impl Transport for ReqwestTransport {
         let Some(port) = url.port_or_known_default() else {
             return Err(format!("`{url}` has no port and its scheme implies none"));
         };
-        let pinned = SocketAddr::new(addr, port);
+        Ok(Wire {
+            host,
+            pinned: SocketAddr::new(addr, port),
+            url: url.clone(),
+        })
+    }
 
+    /// The client every hop on this plane is made with. THE PIN, the refusing resolver, the
+    /// no-redirect policy and the readable peer certificate, in one place.
+    fn client_for(
+        &self,
+        wire: &Wire,
+        timeout: Duration,
+    ) -> Result<reqwest::Client, reqwest::Error> {
         let dns = Arc::new(DelegatingDns(Arc::clone(&self.dns)));
-        let roots = self.extra_roots.clone();
-        let timeout = self.timeout;
+        let mut builder = reqwest::Client::builder()
+            // A 3xx is a fresh, fully untrusted URL that the GUARD must see. A client that
+            // followed it would perform the next hop with no guard at all.
+            .redirect(reqwest::redirect::Policy::none())
+            // THE PEER CERTIFICATE, on the response. This ASKS FOR NOTHING: it does not
+            // change which certificates are accepted, only whether the one that was
+            // accepted is readable afterwards. See the module note.
+            .tls_info(true)
+            .timeout(timeout)
+            .dns_resolver(dns)
+            // THE PIN. A host→address override for the one host this request is about, so
+            // the socket goes to the address the guard already judged. It overrides the
+            // client's resolver rather than replacing it, which is why the refusing
+            // resolver above is still reachable if this line is ever lost.
+            //
+            // The REQUEST is unchanged: it still carries the host, so the `Host` header, the
+            // TLS SNI and the certificate's name check are all still about the hostname.
+            // Rewriting the URL to the address would have connected to the same socket and
+            // silently changed all three.
+            .resolve(&wire.host, wire.pinned);
+        for root in self.extra_roots.clone() {
+            builder = builder.add_root_certificate(root);
+        }
+        builder.build()
+    }
+
+    fn execute(
+        &self,
+        what: &'static str,
+        method: reqwest::Method,
+        hop: Hop<'_>,
+        timeout: Duration,
+    ) -> Result<HttpResponse, String> {
+        let Hop {
+            url,
+            addr,
+            headers,
+            body,
+        } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
-        let url = url.clone();
+        let wire = Self::wire_for(url, addr)?;
+        let headers = headers.to_vec();
+        let url = wire.url.clone();
+        let client = self
+            .client_for(&wire, timeout)
+            .map_err(|e| format!("could not build the {what} client: {}", with_cause(&e)))?;
 
-        on_a_dedicated_runtime("agent card fetch", move |rt| {
+        on_a_dedicated_runtime(what, move |rt| {
             rt.block_on(async move {
-                let mut builder = reqwest::Client::builder()
-                    // A 3xx is a fresh, fully untrusted URL that the GUARD must see. A client that
-                    // followed it would perform the next hop with no guard at all.
-                    .redirect(reqwest::redirect::Policy::none())
-                    // THE PEER CERTIFICATE, on the response. This ASKS FOR NOTHING: it does not
-                    // change which certificates are accepted, only whether the one that was
-                    // accepted is readable afterwards. See the module note.
-                    .tls_info(true)
-                    .timeout(timeout)
-                    .dns_resolver(dns)
-                    // THE PIN. A host→address override for the one host this request is about, so
-                    // the socket goes to the address the guard already judged. It overrides the
-                    // client's resolver rather than replacing it, which is why the refusing
-                    // resolver above is still reachable if this line is ever lost.
-                    //
-                    // The REQUEST is unchanged: it still carries `host`, so the `Host` header, the
-                    // TLS SNI and the certificate's name check are all still about the hostname.
-                    // Rewriting the URL to the address would have connected to the same socket and
-                    // silently changed all three.
-                    .resolve(&host, pinned);
-                for root in roots {
-                    builder = builder.add_root_certificate(root);
+                let mut req = client.request(method, url.clone());
+                for (name, value) in &headers {
+                    req = req.header(name, value);
                 }
-                let client = builder.build().map_err(|e| {
-                    format!("could not build the card-fetch client: {}", with_cause(&e))
-                })?;
-
-                let resp = client
-                    .get(url.clone())
-                    .send()
-                    .await
-                    .map_err(|e| with_cause(&e))?;
+                if let Some(body) = body {
+                    req = req.body(body);
+                }
+                let resp = req.send().await.map_err(|e| with_cause(&e))?;
                 let status = resp.status().as_u16();
                 // READ BEFORE THE BODY, because reading the body consumes the response. The
                 // certificate belongs to THIS connection: taking it later, from a fresh one, would
@@ -307,7 +387,7 @@ impl Transport for ReqwestTransport {
 
                 // Read to the cap PLUS ONE. Stopping exactly at the cap would make an
                 // exactly-at-the-limit body indistinguishable from an oversized one; one byte over
-                // is what lets the fetch driver's own ceiling check make that call.
+                // is what lets the driver's own ceiling check make that call.
                 let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
                 match end {
                     crate::proxy::ReadEnd::TransportError => {
@@ -325,6 +405,140 @@ impl Transport for ReqwestTransport {
                 }
             })
         })
+    }
+}
+
+impl Transport for ReqwestTransport {
+    fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+        self.execute(
+            "agent card fetch",
+            reqwest::Method::GET,
+            Hop {
+                url,
+                addr,
+                headers: &[],
+                body: None,
+            },
+            self.timeout,
+        )
+    }
+}
+
+/// THE RELAY POST, THROUGH THE SAME PINNED HOP.
+///
+/// The only differences from the card fetch are the method, the headers, the body and a longer
+/// ceiling. Everything that makes the hop safe is [`ReqwestTransport::execute`]'s, so it cannot be
+/// true of one caller and false of the other.
+impl RelayTransport for ReqwestTransport {
+    fn post(
+        &self,
+        url: &reqwest::Url,
+        addr: IpAddr,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<HttpResponse, String> {
+        self.execute(
+            "a2a task relay",
+            reqwest::Method::POST,
+            Hop {
+                url,
+                addr,
+                headers,
+                body: Some(body.to_vec()),
+            },
+            RELAY_TIMEOUT,
+        )
+    }
+
+    /// THE STREAMING RELAY, THROUGH THE SAME PINNED CLIENT.
+    ///
+    /// The head is read and returned before a single byte of body is delivered, because a relay
+    /// that has already written to its caller cannot then answer a 502. A non-2xx never reaches the
+    /// chunk loop at all: its body is read to the cap and handed back whole so the driver can
+    /// report the status with the backend's own words in the log.
+    fn post_stream(
+        &self,
+        url: &reqwest::Url,
+        addr: IpAddr,
+        headers: &[(String, String)],
+        body: &[u8],
+        on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
+    ) -> Result<StreamHead, String> {
+        let wire = Self::wire_for(url, addr)?;
+        let headers = headers.to_vec();
+        let body = body.to_vec();
+        let url = wire.url.clone();
+        let cap = self.max_body_bytes.saturating_add(1);
+        let client = self.client_for(&wire, RELAY_STREAM_TIMEOUT).map_err(|e| {
+            format!(
+                "could not build the a2a stream relay client: {}",
+                with_cause(&e)
+            )
+        })?;
+
+        on_a_dedicated_runtime("a2a task stream relay", move |rt| {
+            rt.block_on(async move {
+                let mut req = client.post(url.clone()).body(body);
+                for (name, value) in &headers {
+                    req = req.header(name, value);
+                }
+                let mut resp = req.send().await.map_err(|e| with_cause(&e))?;
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+
+                // A NON-2xx OR A NON-STREAM is read whole, to the cap. Neither is a stream, and
+                // pretending either was one would hand the caller SSE framing over a document the
+                // backend sent as a document.
+                if !(200..300).contains(&status) || !content_type.starts_with("text/event-stream") {
+                    let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
+                    if matches!(end, crate::proxy::ReadEnd::TransportError) {
+                        return Err(format!("`{url}`: the connection failed mid-body"));
+                    }
+                    return Ok(StreamHead {
+                        status,
+                        content_type,
+                        body: bytes.to_vec(),
+                    });
+                }
+
+                loop {
+                    match resp.chunk().await {
+                        Ok(Some(chunk)) => {
+                            if on_chunk(&chunk) == ChunkFlow::Stop {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        // A stream that dies mid-body is reported as a transport failure. The
+                        // driver has already written what arrived, so this is what turns "the
+                        // caller's stream just stopped" into a line an operator can read.
+                        Err(e) => return Err(with_cause(&e)),
+                    }
+                }
+                Ok(StreamHead {
+                    status,
+                    content_type,
+                    body: Vec::new(),
+                })
+            })
+        })
+    }
+}
+
+impl super::relay::RelaySeam for LiveCardFetch {
+    fn resolver(&self) -> &dyn Resolver {
+        &self.resolver
+    }
+    fn transport(&self) -> &dyn RelayTransport {
+        &self.transport
+    }
+    fn policy(&self) -> &FetchPolicy {
+        &self.policy
     }
 }
 

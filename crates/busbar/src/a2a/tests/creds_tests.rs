@@ -30,6 +30,30 @@ fn registration_with(cred: Option<OutboundCredential>) -> AgentRegistration {
     r
 }
 
+/// A key granted exactly `agent:planner`, which is what every mint below is authorised by.
+///
+/// There is no way to reach a mint without one, and that is the point of the type: the grant is the
+/// inbound principal's authority for THIS backend, and a mint that could be reached without it is
+/// busbar spending its own credential on behalf of a caller that never held the reach.
+fn a_caller() -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: "k-caller".to_string(),
+        generation_hash: String::new(),
+        name: "caller".to_string(),
+        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+            kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
+            value: "planner".to_string(),
+        }]),
+        enabled: true,
+        created_at: 0,
+        group: None,
+        labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
+    }
+}
+
 #[test]
 fn a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at() {
     let cred = OutboundCredential {
@@ -38,7 +62,14 @@ fn a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at() 
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
-    let lease = mint(&reg, &SecretResolver::builtins_only(), 1_000).expect("mint");
+    let lease = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        1_000,
+    )
+    .expect("mint");
 
     assert_eq!(
         lease.expires_at_ms(),
@@ -69,7 +100,14 @@ fn a_named_header_placement_carries_the_value_verbatim() {
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
-    let lease = mint(&reg, &SecretResolver::builtins_only(), 0).expect("mint");
+    let lease = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        0,
+    )
+    .expect("mint");
     assert_eq!(
         lease.header_for("planner", 0).expect("live lease"),
         ("x-api-key".to_string(), "abc123".to_string())
@@ -84,7 +122,14 @@ fn a_lease_stops_working_at_its_expiry_rather_than_being_checked_by_the_caller()
         lease_ttl_ms: 5_000,
     };
     let reg = registration_with(Some(cred));
-    let lease = mint(&reg, &SecretResolver::builtins_only(), 1_000).expect("mint");
+    let lease = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        1_000,
+    )
+    .expect("mint");
 
     assert!(lease.header_for("planner", 5_999).is_ok(), "still live");
     // Reaching the expiry IS expired: the lease says it is usable UNTIL this instant.
@@ -108,7 +153,14 @@ fn a_lease_minted_for_one_agent_is_refused_on_a_hop_to_another() {
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
-    let lease = mint(&reg, &SecretResolver::builtins_only(), 0).expect("mint");
+    let lease = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        0,
+    )
+    .expect("mint");
     assert_eq!(
         lease.header_for("summarizer", 0).expect_err("wrong agent"),
         LeaseError::WrongAgent {
@@ -122,7 +174,14 @@ fn a_lease_minted_for_one_agent_is_refused_on_a_hop_to_another() {
 fn a_registration_with_no_credential_refuses_rather_than_delegating_unauthenticated() {
     let reg = registration_with(None);
     assert_eq!(
-        mint(&reg, &SecretResolver::builtins_only(), 0).expect_err("no credential"),
+        mint(
+            &authorise_egress(&a_caller(), "planner", 0)
+                .expect("the caller is granted `agent:planner`"),
+            &reg,
+            &SecretResolver::builtins_only(),
+            0,
+        )
+        .expect_err("no credential"),
         LeaseError::NotConfigured("planner".to_string())
     );
 }
@@ -135,7 +194,14 @@ fn an_unresolvable_handle_fails_closed_and_names_the_agent() {
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
-    let err = mint(&reg, &SecretResolver::builtins_only(), 0).expect_err("unresolvable");
+    let err = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        0,
+    )
+    .expect_err("unresolvable");
     assert!(
         matches!(err, LeaseError::Unresolved { ref agent_id, .. } if agent_id == "planner"),
         "got {err:?}"
@@ -152,7 +218,14 @@ fn the_lease_never_renders_the_secret_in_a_debug_line() {
         lease_ttl_ms: 60_000,
     };
     let reg = registration_with(Some(cred));
-    let lease = mint(&reg, &SecretResolver::builtins_only(), 0).expect("mint");
+    let lease = mint(
+        &authorise_egress(&a_caller(), "planner", 0)
+            .expect("the caller is granted `agent:planner`"),
+        &reg,
+        &SecretResolver::builtins_only(),
+        0,
+    )
+    .expect("mint");
     let rendered = format!("{lease:?}");
     assert!(
         !rendered.contains("SUPER-SECRET-VALUE"),
@@ -225,4 +298,66 @@ fn the_callers_credential_has_no_path_to_a_delegate() {
              the caller's credential must have no path to a delegate."
         );
     }
+}
+
+/// THE SECOND RULE, AND IT IS A DIFFERENT CLAIM: busbar's OWN credential is not spent on behalf of a
+/// caller that is not itself authorised for the backend agent.
+///
+/// The test above would be entirely green against a relay that violates this one — every byte on the
+/// hop would be busbar's own, and the caller would still have gained reach it does not hold. That is
+/// the transitive confused deputy, and it exists only because busbar is both directions at once.
+#[test]
+fn busbars_own_credential_is_not_spent_for_a_caller_that_holds_no_grant_on_the_backend() {
+    let cred = OutboundCredential {
+        secret: secret_file("deputy", "BUSBARS-OWN-VENDOR-TOKEN"),
+        placement: CredentialPlacement::Bearer,
+        lease_ttl_ms: 60_000,
+    };
+    let reg = registration_with(Some(cred));
+    let caller = a_caller(); // granted `agent:planner`, and nothing else
+
+    // The granted agent authorises, and the lease is minted. The control: without it, the refusal
+    // below would be equally green against a gate that refuses everything.
+    let grant = authorise_egress(&caller, "planner", 0).expect("the granted agent authorises");
+    assert!(mint(&grant, &reg, &SecretResolver::builtins_only(), 0).is_ok());
+
+    // A DIFFERENT backend the same caller holds no grant on: no grant, therefore no mint, therefore
+    // no credential. There is no second path to a lease — `mint` and `mint_from` both take the
+    // witness, so this refusal is not one a call site can route around.
+    let denied = authorise_egress(&caller, "payments", 0).expect_err("no grant, no credential");
+    assert_eq!(
+        denied,
+        EgressDenied::NoAgentGrant {
+            caller: "k-caller".to_string(),
+            agent_id: "payments".to_string(),
+        }
+    );
+
+    // And the grant is not transferable between agents: reading the id off the grant is what makes
+    // "authorise against one, mint against another" unexpressible rather than merely discouraged.
+    let mut other = AgentRegistration::registered("payments", "https://a2a.vendor/payments");
+    other.outbound_cred = reg.outbound_cred.clone();
+    assert!(matches!(
+        mint(&grant, &other, &SecretResolver::builtins_only(), 0),
+        Err(LeaseError::WrongAgent { .. })
+    ));
+}
+
+/// A WILDCARD PRINCIPAL (`allowed_scopes: None`) IS STILL A PRINCIPAL, and it is granted every
+/// agent — which is `scope_allowed`'s frozen meaning for an OMITTED list and not something this
+/// gate may reinterpret. Pinned so that a future edit "hardening" the gate by reading a wildcard as
+/// the empty set does not silently break every small deployment.
+#[test]
+fn a_wildcard_principal_is_granted_every_agent_because_that_is_what_an_omitted_list_means() {
+    let mut caller = a_caller();
+    caller.allowed_scopes = None;
+    assert!(authorise_egress(&caller, "planner", 0).is_ok());
+    assert!(authorise_egress(&caller, "payments", 0).is_ok());
+
+    // An EXPLICIT EMPTY list is the empty set, never "all".
+    caller.allowed_scopes = Some(Vec::new());
+    assert!(matches!(
+        authorise_egress(&caller, "planner", 0),
+        Err(EgressDenied::NoAgentGrant { .. })
+    ));
 }

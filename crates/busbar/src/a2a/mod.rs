@@ -31,13 +31,23 @@
 // [`catalogue::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
-// TWELVE OF THIS PLANE'S TWENTY-FOUR MODULES still contain surface with no production caller, and
-// each now carries its OWN narrowed attribute at the top of its own file, stating what is driven and
-// what is not. Twelve do not, and are warning-clean for the first time: `ingress`, `serve`,
-// `inbound`, `plane`, `scheduler`, `reverify`, `verify`, `fetch`, `anomaly`, `jws`, `card` and
-// `canonical`. The residue is coherent rather than scattered — it is the DELEGATING direction, the
-// operator-driven trust verbs, push-notification delivery, and the task verbs a completion relay
-// would drive.
+// AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::rpc` makes to the registered backend
+// agent: it guards and pins the target through the SAME `fetch::resolve_and_pin` the card fetch
+// uses, RE-ASKS the trust question against the live registry immediately before the socket so a
+// mid-flight demotion is not something an in-flight request escapes, presents BUSBAR'S OWN leased
+// credential or none, and turns every way the hop can fail into a busbar-attributed error rather
+// than a Task envelope for work that never started. A single answer comes back under busbar's task
+// identity; a streamed one comes back as SSE, event by event, under the same identity. An INTERRUPT
+// comes back as itself and the task is persisted paused, which on an asynchronous plane is the
+// NORMAL path rather than an edge case. Every outcome lands on the per-task provenance chain.
+//
+// ELEVEN OF THIS PLANE'S TWENTY-FIVE MODULES still contain surface with no production caller, and
+// each carries its OWN narrowed attribute at the top of its own file, stating what is driven and
+// what is not. Fourteen do not, and are warning-clean: `ingress`, `serve`, `inbound`, `plane`,
+// `relay`, `pushnotify`, `scheduler`, `reverify`, `verify`, `fetch`, `anomaly`, `jws`, `card` and
+// `canonical`. The residue is coherent rather than scattered — it is the operator-driven trust
+// verbs, push-notification DELIVERY (registration is live; delivery is not), and the task-read
+// verbs.
 //
 // Narrowing this way is the point. A plane-wide attribute made an unused item ANYWHERE here
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
@@ -59,6 +69,7 @@ pub(crate) mod plane;
 pub(crate) mod provenance;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
+pub(crate) mod relay;
 pub(crate) mod reverify;
 pub(crate) mod scheduler;
 pub(crate) mod serve;
