@@ -290,3 +290,213 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
         "the battery must contain both accepted and refused documents; refused: {file_rejects:?}"
     );
 }
+
+// ── `publish_as` — the OPTIONAL wire-name override, and the invariant it moves ───────────────────
+//
+// `{server}_{tool}` protects one property: ONE PUBLISHED NAME RESOLVES TO EXACTLY ONE
+// `(server, tool)`. Today it holds by construction. With an override it holds by
+// `validate_published_names`, and these tests are what say so — including the case a naive
+// implementation misses, which is an override colliding with a name NOBODY TYPED.
+
+use crate::mcp::config::validate_published_names;
+
+/// Every name the catalogue would PUBLISH for `cfg`, sorted — read off the built snapshot rather
+/// than recomputed from the config, so a test cannot agree with a formula the catalogue no longer
+/// uses.
+fn published_names(cfg: &ToolsCfg) -> Vec<String> {
+    let cat = crate::mcp::catalogue::Catalogue::build(cfg);
+    let mut names: Vec<String> = cat
+        .tools_for(&|_, _| true)
+        .into_iter()
+        .map(|t| t.namespaced.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// THE DEFAULT IS UNCHANGED, and this is the test that has to keep passing forever: a config that
+/// writes no `publish_as:` publishes exactly what it published before the field existed. No
+/// migration, no grant to re-audit.
+#[test]
+fn absent_publish_as_publishes_the_namespaced_default_byte_for_byte() {
+    let cfg = parse(LOCKED_EXAMPLE).expect("the locked example must parse");
+    assert_eq!(
+        cfg.servers["filesystem"].tools_allow["read_file"].publish_as,
+        None
+    );
+    validate_published_names(&cfg).expect("no override can never collide with itself");
+
+    assert_eq!(
+        published_names(&cfg),
+        vec!["filesystem_read_file".to_string()],
+        "the namespaced default must still be the published name"
+    );
+}
+
+/// The override is READ, and it is the name the CATALOGUE publishes — which is the same string
+/// `tools/call` dispatches on and an `mcp_tool:` grant names.
+#[test]
+fn publish_as_is_the_published_name_and_the_namespaced_default_is_then_gone() {
+    let cfg = parse(
+        r#"
+github:
+  url: "https://mcp.internal/gh"
+  pin: { mechanism: unpinned }
+  tools_allow:
+    greet:
+      publish_as: greet
+"#,
+    )
+    .expect("an override must parse");
+    validate_published_names(&cfg).expect("one tool cannot collide with itself");
+
+    let cat = crate::mcp::catalogue::Catalogue::build(&cfg);
+    let all = cat.tools_for(&|_, _| true);
+    // ONE name, not two: the override REPLACES the default rather than aliasing it. Two names for
+    // one tool would mean an `mcp_tool:` grant on one of them silently missing the other, and the
+    // uniqueness check would then be validating a set that is not what is published.
+    assert_eq!(
+        all.len(),
+        1,
+        "the override replaces the default; it does not alias it"
+    );
+    assert_eq!(all[0].namespaced, "greet");
+    assert_eq!(all[0].server, "github");
+    assert_eq!(all[0].tool, "greet");
+}
+
+/// RED 1 — TWO OVERRIDES COLLIDING. The obvious case, and the only one a naive check catches.
+#[test]
+fn two_publish_as_overrides_that_collide_refuse_the_config() {
+    let cfg = parse(
+        r#"
+alpha:
+  url: "https://a/"
+  pin: { mechanism: unpinned }
+  tools_allow: { greet_a: { publish_as: greet } }
+beta:
+  url: "https://b/"
+  pin: { mechanism: unpinned }
+  tools_allow: { greet_b: { publish_as: greet } }
+"#,
+    )
+    .expect("both servers are individually well-formed; the collision is cross-server");
+    let err =
+        validate_published_names(&cfg).expect_err("two tools published as `greet` must refuse");
+    assert!(err.contains("published as `greet`"), "{err}");
+    // BOTH sides named, because the operator has to know which two lines to look at.
+    assert!(
+        err.contains("tools.alpha.tools_allow.greet_a.publish_as"),
+        "{err}"
+    );
+    assert!(
+        err.contains("tools.beta.tools_allow.greet_b.publish_as"),
+        "{err}"
+    );
+}
+
+/// RED 2 — THE SUBTLE CASE, and the reason the check is against the WHOLE PUBLISHED SET rather than
+/// override-against-override.
+///
+/// `publish_as: foo_bar` collides with server `foo`'s tool `bar`, which namespaces to `foo_bar`.
+/// NOBODY TYPED `foo_bar` on the `foo` side — it is a name the default MECHANISM produced — so an
+/// implementation that compared overrides only to each other finds nothing to compare against,
+/// accepts this config, and lets one wire name resolve to two `(server, tool)` pairs. Because
+/// `catalogue::granted` keys the `mcp_tool` grant on the published name, that is one grant silently
+/// authorizing two upstreams.
+#[test]
+fn an_override_colliding_with_a_namespaced_default_refuses_the_config() {
+    let cfg = parse(
+        r#"
+foo:
+  url: "https://foo/"
+  pin: { mechanism: unpinned }
+  tools_allow: { bar: {} }
+other:
+  url: "https://other/"
+  pin: { mechanism: unpinned }
+  tools_allow: { anything: { publish_as: foo_bar } }
+"#,
+    )
+    .expect("neither server is individually wrong; only the pair is");
+    let err = validate_published_names(&cfg)
+        .expect_err("an override must not shadow another server's namespaced default");
+    assert!(err.contains("published as `foo_bar`"), "{err}");
+    // The DEFAULT side is described as the default, not as a `publish_as:` the operator can go and
+    // delete — it is a name nothing typed.
+    assert!(
+        err.contains("the default `{server}_{tool}` name of `tools.foo.tools_allow.bar`"),
+        "{err}"
+    );
+    assert!(
+        err.contains("tools.other.tools_allow.anything.publish_as"),
+        "{err}"
+    );
+}
+
+/// The same collision in the OTHER declaration order. Config order must not decide whether a
+/// config boots: an operator who reorders two server blocks has changed nothing.
+#[test]
+fn the_default_versus_override_collision_is_refused_in_either_declaration_order() {
+    let cfg = parse(
+        r#"
+aaa:
+  url: "https://a/"
+  pin: { mechanism: unpinned }
+  tools_allow: { anything: { publish_as: zzz_bar } }
+zzz:
+  url: "https://z/"
+  pin: { mechanism: unpinned }
+  tools_allow: { bar: {} }
+"#,
+    )
+    .expect("parses");
+    let err = validate_published_names(&cfg).expect_err("order must not decide this");
+    assert!(err.contains("published as `zzz_bar`"), "{err}");
+}
+
+/// An override that spells the namespaced default is NOT a collision — it publishes the same one
+/// name the default would have. Refusing it would refuse a config that changes nothing.
+#[test]
+fn an_override_equal_to_its_own_namespaced_default_is_not_a_collision() {
+    let cfg = parse(
+        r#"
+foo:
+  url: "https://foo/"
+  pin: { mechanism: unpinned }
+  tools_allow: { bar: { publish_as: foo_bar } }
+"#,
+    )
+    .expect("parses");
+    validate_published_names(&cfg).expect("one tool, one name — whichever way it is spelled");
+    assert_eq!(published_names(&cfg), vec!["foo_bar".to_string()]);
+}
+
+/// A published name nothing can call and nothing can grant on is refused where the operator is,
+/// per server, rather than at a `tools/call` an hour later that never matches.
+#[test]
+fn an_empty_or_padded_publish_as_is_refused_by_the_per_server_value_rules() {
+    for bad in ["\"\"", "\"   \"", "\" greet\"", "\"greet \""] {
+        let yaml = format!(
+            "gh:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n  \
+             tools_allow: {{ greet: {{ publish_as: {bad} }} }}\n"
+        );
+        let err = parse(&yaml).expect_err("`publish_as: {bad}` must be refused");
+        assert!(err.contains("publish_as"), "{bad}: {err}");
+    }
+}
+
+/// ONE GRAMMAR, TWO PATHS for the per-server half: the admin write path refuses a malformed
+/// `publish_as:` exactly as `config.yaml` does, because both reach `validate_server`.
+#[test]
+fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does() {
+    let def = serde_json::json!({
+        "url": "https://x/",
+        "pin": { "mechanism": "unpinned" },
+        "tools_allow": { "greet": { "publish_as": "  " } },
+    });
+    let err = crate::config::named_map::NamedMapSection::Tools
+        .validate_def("gh", &def)
+        .expect_err("the API must reject exactly what the file rejects");
+    assert!(err.contains("publish_as"), "{err}");
+}

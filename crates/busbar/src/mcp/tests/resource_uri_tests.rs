@@ -36,6 +36,13 @@ use std::sync::Arc;
 
 /// The client capabilities every case here declares. Each test module carries its own rather than
 /// sharing one, which is the existing convention on this plane.
+/// NO CUSTOM `Mcp-Param-*` HEADERS. Every `Ctx` built here drives a method directly rather than
+/// through the HTTP ingress, so there is no header map to inherit and an empty one is the honest
+/// stand-in. The SEP-2243 custom-param validation this field feeds is a header/body agreement
+/// check: with no headers and no annotated tool it has nothing to compare and correctly passes.
+static NO_HEADERS: std::sync::LazyLock<axum::http::HeaderMap> =
+    std::sync::LazyLock::new(axum::http::HeaderMap::new);
+
 static ALL_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
     || serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
 );
@@ -113,6 +120,7 @@ async fn call(
         gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
+        headers: &NO_HEADERS,
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

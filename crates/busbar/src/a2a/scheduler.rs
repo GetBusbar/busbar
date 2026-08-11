@@ -182,16 +182,17 @@ pub(crate) fn spawn_reverifier(
 
 /// The wall clock in MILLISECONDS, which is the unit the cadence is written in.
 ///
-/// `crate::store::now()` is seconds and is the ledger's unit; the re-verification ledger records
-/// milliseconds because a TTL an operator writes as `30s` needs sub-second arithmetic to be
-/// anything other than "some time in that second". A clock that went backwards is not smoothed here
-/// — [`super::reverify::due`] has an arm for exactly that and treats it as DUE, and hiding it would
-/// hide a corrected or tampered clock reading as permanent freshness.
+/// DELEGATES to [`crate::store::now_ms`] rather than reading the clock again. This function used to
+/// own the arithmetic, and the MCP task plane grew an identical one with the opposite signedness —
+/// two functions of one name over one clock, differing in a way no reviewer sees. Unifying the
+/// concern is the fix; keeping the local name is what lets the two call sites keep reading in their
+/// own plane's vocabulary.
+///
+/// A clock that went backwards is deliberately not smoothed — [`super::reverify::due`] has an arm
+/// for exactly that and treats it as DUE, and hiding it would hide a corrected or tampered clock
+/// reading as permanent freshness.
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    crate::store::now_ms()
 }
 
 #[cfg(test)]

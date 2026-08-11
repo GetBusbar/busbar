@@ -166,6 +166,10 @@ pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;
+/// SEP-2663 — the TASKS EXTENSION: `tools/call` answered with a task, then `tasks/get` /
+/// `tasks/update` / `tasks/cancel`. See the module header for what is and is not claimed about
+/// durability.
+pub(crate) mod tasks;
 pub(crate) mod upstream;
 
 use serde::{Deserialize, Serialize};

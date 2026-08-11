@@ -45,6 +45,33 @@
 //! budget, a user prompt, a filesystem-root disclosure) that the operator never granted it.
 //! Absent means denied, and it means denied because [`ServerRequestGrants::default`] is three
 //! `false`s — a field an operator forgets to write is a field that grants nothing.
+//!
+//! ## `publish_as` moves ONE invariant from construction to validation, and pays for it
+//!
+//! `{server}{NAMESPACE_SEP}{tool}` is the DEFAULT wire name and it is unchanged: every config that
+//! never writes [`ToolAllowCfg::publish_as`] publishes byte-identical names, so there is no
+//! migration and no grant to re-audit. What the override buys is the single-upstream deployment,
+//! which today forces every client onto renamed tools for a namespace with exactly one occupant.
+//!
+//! The property `{server}_{tool}` exists to protect is **one wire name resolves to exactly one
+//! `(server, tool)`**. That property is not negotiable; only its MECHANISM is. Today it holds BY
+//! CONSTRUCTION. With an override it holds BY VALIDATION —
+//! [`validate_published_names`], which builds the FULL published set (every namespaced name AND
+//! every override) and refuses boot on any duplicate, naming both sides.
+//!
+//! **Per-TOOL and not per-server**, because `tools_allow.<tool>` is already the block where one
+//! operator vouches for one tool — its approved digest, the description busbar publishes instead of
+//! the upstream's, its input schema, its `ask_caller` gate. "And its wire name is X" is the same
+//! kind of statement by the same person at the same moment. A per-server switch would rename every
+//! tool that server exposes on one line; per-tool, the blast radius is exactly the name that was
+//! typed.
+//!
+//! **The subtle collision is the whole reason the check is against the whole set.** A bare
+//! `publish_as: foo_bar` collides with server `foo`'s tool `bar`, which namespaces to `foo_bar`.
+//! An implementation that compared overrides only to each other would pass that config and let one
+//! wire name resolve to two `(server, tool)` pairs — which, because `catalogue::granted` keys the
+//! `mcp_tool` grant on the PUBLISHED name, would silently change who can call what. That is why a
+//! collision is a LOUD BOOT REFUSAL and never an automatic rename.
 
 use serde::{Deserialize, Serialize};
 
@@ -130,10 +157,99 @@ pub(crate) struct ToolAllowCfg {
     /// The tool's JSON Schema, echoed verbatim in `tools/list`. Opaque to busbar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// THE WIRE NAME busbar publishes for this tool, overriding the default
+    /// `{server}{NAMESPACE_SEP}{tool}`. OPTIONAL — absent means the namespaced default, exactly as
+    /// before this field existed, which is why no existing config changes.
+    ///
+    /// It is the value `tools/list` emits as `name`, the value `tools/call` is dispatched on, and —
+    /// because [`crate::mcp::catalogue`] keys authorization on the published name — the value an
+    /// `mcp_tool:` scope grant must name. Setting it therefore CHANGES WHO CAN CALL THIS TOOL, which
+    /// is precisely why it lives in `tools_allow.<tool>` beside the approved digest rather than on
+    /// the server: the operator who vouches for the tool is the operator who names it.
+    ///
+    /// The uniqueness invariant is enforced by [`validate_published_names`] against the whole
+    /// published set, so an override that shadows another server's namespaced name refuses boot.
+    ///
+    /// NOT the RFC 8693 refresh scope: `mcp::connect::refresh_scope` keeps asking for the namespaced
+    /// spelling, because that scope is what busbar requests of an AUTHORIZATION SERVER about a
+    /// registration, not what busbar publishes to its own callers. One field, one meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) publish_as: Option<String>,
     /// The input BUSBAR asks its own caller for before it dispatches this tool. ABSENT ⇒ no ask,
     /// which is deny-by-default and is every deployment that has not opted in. See [`AskEntryCfg`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ask_caller: Vec<AskRoundCfg>,
+    /// SEP-2663: whether a `tools/call` on this tool may — or must — be answered with a task rather
+    /// than a result. A REGISTRATION-TIME declaration, not a runtime property, because that is what
+    /// the `-32021` gate is keyed off: a client that did not declare the tasks extension has to be
+    /// refused BEFORE the handler runs, and the only thing that can decide that before the handler
+    /// runs is what the operator wrote here. See [`TaskSupport`].
+    #[serde(default, skip_serializing_if = "TaskSupport::is_none")]
+    pub(crate) task_support: TaskSupport,
+    /// The input busbar asks its own caller for FROM INSIDE the task, surfaced on `tasks/get` as
+    /// `inputRequests` and answered with `tasks/update`.
+    ///
+    /// A SEPARATE LIST from [`ask_caller`](Self::ask_caller) rather than a mode flag on it, because
+    /// the two are different exchanges and the difference is visible on the wire. `ask_caller:` is
+    /// the SEP-2322 synchronous loop: busbar answers `tools/call` with an `InputRequiredResult` and
+    /// the caller retries. This one is the SEP-2663 loop: busbar answers with a `CreateTaskResult`,
+    /// parks the task in `input_required`, and the caller answers out of band. A single list with a
+    /// mode switch would let one edit silently change which shape an existing deployment's callers
+    /// receive; two lists cannot.
+    ///
+    /// Requires [`task_support`](Self::task_support) other than `none` — see `validate_server`: a
+    /// tool that never creates a task has no task for these to be asked inside of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) task_ask_caller: Vec<AskRoundCfg>,
+}
+
+/// `tools.<server>.tools_allow.<tool>.task_support` — SEP-2663's registration-time declaration.
+///
+/// THREE VALUES AND NOT A BOOLEAN, because the extension distinguishes three postures and the
+/// middle one is the common case:
+///
+/// - `none` (the DEFAULT, and every tool that predates this grammar) — this tool is answered
+///   synchronously, always. A client that declared the tasks extension still gets a plain
+///   `ToolResult`, which is exactly what the extension says a server may do.
+/// - `optional` — busbar answers with a `CreateTaskResult` when the caller declared the extension,
+///   and synchronously when it did not. No client is locked out by an operator turning this on.
+/// - `required` — busbar CANNOT answer this tool synchronously, so a caller that did not declare
+///   the extension is refused with `-32021` before the handler runs, naming the extension in
+///   `data.requiredCapabilities`. This is the posture for a tool whose work genuinely outlives a
+///   request, and it is the one an operator must opt into deliberately, because it makes the tool
+///   invisible-in-practice to every client that has not implemented the extension.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TaskSupport {
+    /// Answered synchronously, always. The default, so nothing changes for a config that says
+    /// nothing.
+    #[default]
+    None,
+    /// A task when the caller declared the extension; a synchronous result when it did not.
+    Optional,
+    /// A task always, and `-32021` for a caller that cannot receive one.
+    Required,
+}
+
+impl TaskSupport {
+    /// Serde skip predicate — `none` is the default, so writing it back out would put a key into
+    /// every serialised tool that no operator typed.
+    pub(crate) fn is_none(&self) -> bool {
+        matches!(self, TaskSupport::None)
+    }
+
+    /// Whether a `tools/call` on this tool creates a task, given what the caller declared.
+    ///
+    /// The caller's declaration is read from the ONE place this revision puts it —
+    /// `params._meta['io.modelcontextprotocol/clientCapabilities']` — so a session-level
+    /// declaration and SEP-2575's per-request override are literally the same field and cannot
+    /// disagree.
+    pub(crate) fn creates_task(&self, client_declared: bool) -> bool {
+        match self {
+            TaskSupport::None => false,
+            TaskSupport::Optional | TaskSupport::Required => client_declared,
+        }
+    }
 }
 
 /// `tools.<server>.prompts_allow.<name>` — one exposed prompt, markup-normalised on the way out.
@@ -718,8 +834,43 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
         ));
     }
 
-    for tool in def.tools_allow.keys() {
+    for (tool, allow) in &def.tools_allow {
         validate_capability_name(&at, "tools_allow", tool)?;
+        // A task-scoped ask on a tool that never creates a task has no task to be asked inside of,
+        // so it would be silently unreachable: the caller would get a plain result and never see
+        // the confirmation gate the operator wrote. Refused at boot, where the operator is, rather
+        // than at a dispatch an hour later that simply does not ask.
+        if !allow.task_ask_caller.is_empty() && allow.task_support.is_none() {
+            return Err(format!(
+                "{at}: `tools_allow.{tool}.task_ask_caller:` is the input busbar asks its caller for \
+                 from INSIDE a task, and `task_support:` is absent or `none`, so this tool never \
+                 creates one. The ask would never be emitted. Set `task_support: optional` (or \
+                 `required`), or move the rounds to `ask_caller:` for the synchronous exchange."
+            ));
+        }
+        // THE SHAPE of an override, not its uniqueness — uniqueness needs every OTHER server and is
+        // therefore `validate_published_names`, which runs where the whole registry is in hand. A
+        // blank or whitespace-padded wire name is refused here because it is wrong on its own
+        // without reference to anything else: `tools/list` would publish a name no client can type
+        // back, and `mcp_tool:` would grant on it.
+        if let Some(publish_as) = &allow.publish_as {
+            if publish_as.trim().is_empty() {
+                return Err(format!(
+                    "{at}: `tools_allow.{tool}.publish_as:` is empty. It is the wire name busbar \
+                     publishes for this tool and the value an `mcp_tool:` grant names; an empty one \
+                     can be neither called nor granted. Give it a name, or drop the key to publish \
+                     the default `{name}{NAMESPACE_SEP}{tool}`."
+                ));
+            }
+            if publish_as.trim() != publish_as.as_str() {
+                return Err(format!(
+                    "{at}: `tools_allow.{tool}.publish_as: {publish_as:?}` has leading or trailing \
+                     whitespace. The published name is compared byte-for-byte against a caller's \
+                     `tools/call` name and against an `mcp_tool:` grant, so padding that an operator \
+                     cannot see would make both silently miss. Write it without the spaces."
+                ));
+            }
+        }
     }
     for (prompt, allow) in &def.prompts_allow {
         validate_capability_name(&at, "prompts_allow", prompt)?;
@@ -811,6 +962,100 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
 
     for hook in &def.hooks {
         refuse_cross_plane_reference(&at, hook)?;
+    }
+    Ok(())
+}
+
+/// Where a published wire name CAME FROM, so a collision error can name both sides the way the
+/// operator will have to fix them: one of them is a line they typed, the other may be a name nobody
+/// typed at all.
+struct PublishedName {
+    server: String,
+    tool: String,
+    /// `true` when the name came from `publish_as:`, `false` when it is the `{server}_{tool}`
+    /// default. Carried rather than re-derived, because re-deriving means comparing the name to
+    /// `namespaced(server, tool)` and getting the wrong answer for the one config where it matters:
+    /// `publish_as:` set to exactly the default.
+    overridden: bool,
+}
+
+impl PublishedName {
+    /// The half of the error message that describes ONE claimant.
+    fn describe(&self) -> String {
+        let Self {
+            server,
+            tool,
+            overridden,
+        } = self;
+        if *overridden {
+            format!("`tools.{server}.tools_allow.{tool}.publish_as:`")
+        } else {
+            format!(
+                "the default `{{server}}{NAMESPACE_SEP}{{tool}}` name of \
+                 `tools.{server}.tools_allow.{tool}`"
+            )
+        }
+    }
+}
+
+/// THE UNIQUENESS INVARIANT, once, over the WHOLE registry: one published wire name resolves to
+/// exactly one `(server, tool)`.
+///
+/// This is the validation that replaces the guarantee `{server}_{tool}` used to give by
+/// construction, so it has to be TOTAL in both directions or it is not a replacement:
+///
+/// 1. It walks EVERY tool of EVERY server, building each one's published name — the `publish_as:`
+///    override where there is one, the namespaced default where there is not.
+/// 2. It compares against that whole set. **Not overrides against each other.** The collision that
+///    a naive check misses is an override against a DEFAULT: `publish_as: foo_bar` on any server
+///    collides with server `foo`'s tool `bar`, and nobody typed `foo_bar` on the `foo` side for the
+///    naive check to compare it with. An implementation that only compared overrides to overrides
+///    would accept that config and look correct doing it.
+///
+/// A collision is refused rather than resolved. Resolving it — last-writer-wins, or an automatic
+/// suffix — would leave one wire name pointing at a `(server, tool)` the operator did not choose,
+/// and because [`crate::mcp::catalogue`] keys the `mcp_tool` grant on the published name, that
+/// silently moves an authorization decision. A boot refusal an operator reads is strictly better
+/// than a dispatch an hour later that reaches the wrong upstream.
+///
+/// Called from [`crate::config::resolve`], which is the ONE point every path converges on: boot,
+/// `busbar --validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all
+/// run it over the EFFECTIVE registry (file base + applied overlay). Deliberately NOT called from
+/// `ToolsCfg`'s `Deserialize`: that sees only the file, so a server added through the API would
+/// never be compared against it — a check that looked total and was not.
+pub(crate) fn validate_published_names(cfg: &ToolsCfg) -> Result<(), String> {
+    let mut published: std::collections::BTreeMap<String, PublishedName> =
+        std::collections::BTreeMap::new();
+    for (server, def) in &cfg.servers {
+        for (tool, allow) in &def.tools_allow {
+            // THE SAME TWO LINES `Catalogue::build` runs, through the SAME function, and that is
+            // load-bearing rather than tidy: this check is only meaningful if the set it walks is
+            // byte-identical to the set that is published. A second local `{server}_{tool}` formula
+            // here would validate one set and publish another the day either changed.
+            let overridden = allow.publish_as.is_some();
+            let name = allow
+                .publish_as
+                .clone()
+                .unwrap_or_else(|| super::catalogue::namespaced(server, tool));
+            let claim = PublishedName {
+                server: server.clone(),
+                tool: tool.clone(),
+                overridden,
+            };
+            if let Some(prior) = published.get(&name) {
+                return Err(format!(
+                    "`tools`: two tools would both be published as `{name}` — {} and {}. A \
+                     published name is the wire name `tools/list` emits, the name `tools/call` \
+                     dispatches on, AND the value an `mcp_tool:` grant names, so one name meaning \
+                     two (server, tool) pairs would make one grant silently authorize both. busbar \
+                     refuses to boot rather than pick one. Change one `publish_as:`, or remove it \
+                     to publish the `{{server}}{NAMESPACE_SEP}{{tool}}` default.",
+                    prior.describe(),
+                    claim.describe(),
+                ));
+            }
+            published.insert(name, claim);
+        }
     }
     Ok(())
 }

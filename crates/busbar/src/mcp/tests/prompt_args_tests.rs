@@ -36,6 +36,13 @@ use std::sync::Arc;
 /// caller-ask capability filter admits, turning an unrelated test red for a reason that is about
 /// this constant. The filter has its own tests, in `callerask_tests.rs`, which declare narrowly on
 /// purpose.
+/// NO CUSTOM `Mcp-Param-*` HEADERS. Every `Ctx` built here drives a method directly rather than
+/// through the HTTP ingress, so there is no header map to inherit and an empty one is the honest
+/// stand-in. The SEP-2243 custom-param validation this field feeds is a header/body agreement
+/// check: with no headers and no annotated tool it has nothing to compare and correctly passes.
+static NO_HEADERS: std::sync::LazyLock<axum::http::HeaderMap> =
+    std::sync::LazyLock::new(axum::http::HeaderMap::new);
+
 static ALL_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
     || serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
 );
@@ -100,6 +107,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
         gov: &gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
+        headers: &NO_HEADERS,
     };
     let params = serde_json::json!({ "name": "fs_greet", "arguments": arguments });
     let response = crate::mcp::method::dispatch(&ctx, "prompts/get", Some(&params), Some(1.into()))
@@ -172,6 +180,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
         gov: &gov,
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
+        headers: &NO_HEADERS,
     };
     let params = serde_json::json!({
         "ref": { "type": "ref/prompt", "name": "fs_greet" },

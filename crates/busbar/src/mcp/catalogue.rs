@@ -81,7 +81,12 @@ pub(crate) struct ToolEntry {
     pub(crate) server: String,
     /// The bare tool name as the upstream spells it.
     pub(crate) tool: String,
-    /// `{server}_{tool}` — THE ROUTING KEY, and the value an `mcp_tool` grant names.
+    /// THE PUBLISHED WIRE NAME — the routing key, and the value an `mcp_tool` grant names.
+    ///
+    /// `{server}_{tool}` unless the operator wrote `tools_allow.<tool>.publish_as:`, which is the
+    /// only thing that can make it anything else. Uniqueness across the whole registry is not this
+    /// field's to keep: `config::validate_published_names` refuses boot on a duplicate, so a
+    /// snapshot can only be built from a registry where every one of these is distinct.
     pub(crate) namespaced: String,
     /// The APPROVED schema/description hash — the pin every refresh is diffed against, which is how
     /// a rug-pull is caught. `None` means the operator has allowed the tool but approved no hash,
@@ -97,6 +102,14 @@ pub(crate) struct ToolEntry {
     /// config at dispatch for the same reason everything else here is: the decision reads ONE
     /// snapshot, and a second source could disagree with the generation the request was admitted on.
     pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
+    /// SEP-2663's REGISTRATION-TIME task declaration. Carried on the entry for the same reason
+    /// `ask_caller` is: the `-32021` gate fires before the handler runs, so it has to read the same
+    /// snapshot the request was admitted on rather than a second lookup that could disagree.
+    pub(crate) task_support: super::config::TaskSupport,
+    /// The rounds of input busbar asks its caller for from INSIDE the task. EMPTY ⇒ the task runs
+    /// straight through. See `config::ToolAllowCfg::task_ask_caller` for why this is a separate list
+    /// from `ask_caller` rather than a mode on it.
+    pub(crate) task_ask_caller: Vec<super::config::AskRoundCfg>,
 }
 
 impl ToolEntry {
@@ -376,7 +389,16 @@ impl Catalogue {
         for (id, def) in &cfg.servers {
             servers.insert(id.clone(), server_entry(id, def));
             for (tool, allow) in &def.tools_allow {
-                let namespaced = namespaced(id, tool);
+                // THE PUBLISHED NAME: the operator's `publish_as:` where they wrote one, the
+                // `{server}_{tool}` default where they did not — which is every config that
+                // predates the field, so nothing that exists today changes. Uniqueness across the
+                // whole registry is `config::validate_published_names`, which has already refused
+                // boot by the time a snapshot is built; this is the only place that decides which
+                // of the two spellings a name IS.
+                let namespaced = allow
+                    .publish_as
+                    .clone()
+                    .unwrap_or_else(|| namespaced(id, tool));
                 tools.insert(
                     namespaced.clone(),
                     ToolEntry {
@@ -387,6 +409,8 @@ impl Catalogue {
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
                         ask_caller: allow.ask_caller.clone(),
+                        task_support: allow.task_support,
+                        task_ask_caller: allow.task_ask_caller.clone(),
                     },
                 );
             }

@@ -4297,6 +4297,17 @@ pub(crate) fn resolve(
         }
     }
 
+    // THE `tools:` PLANE's PUBLISHED-NAME UNIQUENESS, and it has to run HERE rather than inside
+    // `validate_server` because it is the one MCP rule that is not about one server: a
+    // `publish_as:` override on one registration can collide with the `{server}_{tool}` default of
+    // another, and neither server can see the other. `resolve` is where the whole EFFECTIVE registry
+    // exists — file base plus whatever the admin API applied — and it is the single point boot,
+    // `--validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all pass
+    // through, so a config that boots is exactly the config that validates.
+    if let Err(e) = crate::mcp::config::validate_published_names(&deploy.tools) {
+        errors.push(e);
+    }
+
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
     // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
     // behind a bearer token alone. Loopback binds are safe (unreachable off-host); an explicit

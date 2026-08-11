@@ -3632,3 +3632,56 @@ fn root_settings_doc_lists_only_fields_that_exist() {
         );
     }
 }
+
+/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR, which is what makes it a `--validate` error.
+///
+/// `busbar --validate`, boot, the admin config-apply rebuild and the admin dry-run validate
+/// endpoint all reach `resolve`, and none of them reaches `mcp::config::validate_published_names`
+/// any other way. If the check were wired only into the `ToolsCfg` `Deserialize` it would never see
+/// a server the admin API applied, and a config that validated would not be the config that boots.
+/// So the wiring itself is the thing under test here, not the rule.
+#[test]
+fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
+    // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
+    // the one that survives a partial implementation of the rule.
+    let tools: crate::mcp::config::ToolsCfg = serde_yaml::from_str(
+        r#"
+foo:
+  url: "https://foo/"
+  pin: { mechanism: unpinned }
+  tools_allow: { bar: {} }
+other:
+  url: "https://other/"
+  pin: { mechanism: unpinned }
+  tools_allow: { anything: { publish_as: foo_bar } }
+"#,
+    )
+    .expect("both servers are individually valid");
+
+    let mut deploy = base_deploy();
+    deploy.tools = tools;
+    let errors = resolve(&deploy, &HashMap::new())
+        .expect_err("resolve must refuse a config whose published names are not unique");
+    assert!(
+        errors.iter().any(|e| e.contains("published as `foo_bar`")),
+        "{errors:?}"
+    );
+
+    // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
+    let ok: crate::mcp::config::ToolsCfg = serde_yaml::from_str(
+        r#"
+foo:
+  url: "https://foo/"
+  pin: { mechanism: unpinned }
+  tools_allow: { bar: {} }
+other:
+  url: "https://other/"
+  pin: { mechanism: unpinned }
+  tools_allow: { anything: { publish_as: other_name } }
+"#,
+    )
+    .unwrap();
+    let mut deploy = base_deploy();
+    deploy.tools = ok;
+    resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
+}
