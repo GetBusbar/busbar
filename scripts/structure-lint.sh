@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Structure lint — enforces the code-layout invariants in docs/code-layout.md so the tree stays
 # navigable ("I'm looking for X, I know where it is") instead of drifting back to giant, inconsistent
-# files. Four checks, all greppable, no external deps. Exit non-zero on any violation.
+# files, plus the behavioural invariants that only a structural read of the tree can catch: the
+# choke-point registry, request-path purity (§A7) and plane coherence (§A6).
+# Six checks, all greppable, no external deps. Exit non-zero on any violation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -176,6 +178,115 @@ scan_inline_tests() { awk "$TEST_SCOPE_AWK"'
   }
 ' "$@"; }
 
+# ══ THE FUNCTION-BODY SCANNER (invariant 5's engine) ═════════════════════════════════════════════
+#
+# Some invariants are not "this call appears nowhere in the tree" — they are "this call appears
+# nowhere in THIS FUNCTION". `GovState::try_admit` may not touch the store; every other function in
+# the same file may. A file-wide grep cannot express that, so this scanner extracts ONE named
+# function's body by brace depth and applies the rule inside it.
+#
+# It reads the CODE portion of each line (the `code` variable from TEST_SCOPE_AWK, which is empty
+# for a whole-line comment and has a trailing `// …` stripped when the line holds no string
+# literal). That matters here more than anywhere else: the function this was written for has a doc
+# comment that says the words "no store round-trip", and a scanner that read `$0` would report the
+# PROSE PROMISING the invariant as a violation OF it.
+#
+# Output: one `file:line: what` per hit, plus a trailing `#SPAN <first> <last>` per definition found.
+# The caller REQUIRES at least one `#SPAN`: a rule whose function was renamed away silently scans
+# nothing and reports nothing, which is indistinguishable from a pass. That is the false green this
+# project has already been burned by twice, so "function not found" is RED.
+scan_fn_body() {   # $1 = file; env: RP_FN, LINT_PAT, LINT_WHAT, LINT_UNLESS
+  awk "$TEST_SCOPE_AWK"'
+  FNR==1 { infn=0; depth=0; opened=0; start=0 }
+  {
+    c = code
+    # Arm on the DEFINITION line: `fn <name>` followed by `(` or `<` (a generic parameter list).
+    # `pub(crate)`, `async`, `unsafe` and `const` prefixes are all accepted; indentation is not
+    # constrained, because the function may be a free fn or a method inside an impl block.
+    if (!infn && !gated && c ~ ("^[[:space:]]*(pub[[:space:]]*(\\([^)]*\\)[[:space:]]*)?)?((async|unsafe|const)[[:space:]]+)*fn[[:space:]]+" ENVIRON["RP_FN"] "[[:space:]]*[(<]")) {
+      infn = 1; depth = 0; opened = 0; start = FNR
+    }
+    if (infn) {
+      d = _braces(c)
+      depth += d
+      if (d != 0) opened = 1
+      if (ENVIRON["LINT_UNLESS"] != "" && c ~ ENVIRON["LINT_UNLESS"]) { }
+      else if (c ~ ENVIRON["LINT_PAT"]) printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"]
+      # A signature spanning several lines has not opened its body yet, so `opened` gates the close.
+      if (opened && depth <= 0) { infn = 0; printf "#SPAN %d %d\n", start, FNR }
+    }
+  }
+  END { if (infn) printf "#SPAN %d %d\n", start, FNR }   # unterminated: report what was scanned
+' "$1"; }
+
+# ══ THE PLANE DECLARATION SCANNER (invariant 6's engine) ═════════════════════════════════════════
+#
+# Prints one `symbol<TAB>file:line` per TOP-LEVEL declaration — a free `fn`, or a `struct` / `enum`
+# / `trait` / `union` — in the files handed to it. `#[cfg(test)]`-gated regions and whole-line
+# comments are excluded by TEST_SCOPE_AWK, which is what keeps the A6.1 finding from becoming a
+# false positive: the word `breaker` appears under `mcp/` and `a2a/` only as PROSE IN COMMENTS, and
+# prose is not a declaration.
+#
+# TOP-LEVEL — anchored at column 0 — is the whole trick, and it is why this rule is usable at all.
+# A method inside an `impl` block is indented, and its name is scoped by its type, so `fn new`,
+# `fn fmt`, `fn len` and `fn default` (which collide across every pair of modules in any Rust
+# codebase) never reach the comparison. What survives is a free function or a type: a name its
+# author CHOSE, at file scope, with nothing scoping it. Two planes choosing the same one is the
+# signal.
+scan_plane_decls() {   # $1.. = files
+  awk "$TEST_SCOPE_AWK"'
+  gated || is_comment { next }
+  {
+    if (match($0, /^(pub[[:space:]]*(\([^)]*\)[[:space:]]*)?)?((async|unsafe|const)[[:space:]]+)*fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+      s = substr($0, RSTART, RLENGTH); sub(/^.*fn[[:space:]]+/, "", s)
+      printf "%s\t%s:%d\n", s, FILENAME, FNR; next
+    }
+    if (match($0, /^(pub[[:space:]]*(\([^)]*\)[[:space:]]*)?)?(struct|enum|trait|union)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
+      s = substr($0, RSTART, RLENGTH); sub(/^.*[[:space:]]/, "", s)
+      printf "%s\t%s:%d\n", s, FILENAME, FNR; next
+    }
+  }' "$@"; }
+
+# Collates `scan_plane_decls` output across N planes and prints, for every symbol declared at top
+# level in TWO OR MORE of them, one line: `symbol<TAB>plane:file:line[ plane:file:line …]`.
+# Arguments are `<plane-key>=<dir>` pairs, so the self-test can point it at a fixture corpus and
+# exercise the REAL collation rather than a copy of it.
+plane_dup_table() {   # $1.. = plane=dir
+  local spec plane dir f
+  for spec in "$@"; do
+    plane="${spec%%=*}"; dir="${spec#*=}"
+    [ -d "$dir" ] || continue
+    local files=()
+    while IFS= read -r f; do files+=("$f"); done < <(find "$dir" -name '*.rs' -not -path '*/tests/*' | sort)
+    [ ${#files[@]} -eq 0 ] && continue
+    scan_plane_decls "${files[@]}" | sed "s|^\([^	]*\)	|\1	${plane}	|"
+  done | awk -F'\t' '
+    { key = $1 SUBSEP $2
+      if (!(key in seenplane)) { seenplane[key] = 1; planes[$1]++ }
+      where[$1] = where[$1] (where[$1] == "" ? "" : " ") $2 ":" $3 }
+    END { for (s in planes) if (planes[s] >= 2) printf "%s\t%s\n", s, where[s] }' | sort
+}
+
+# The same question asked of FILE NAMES rather than symbols, because a concern can be duplicated
+# without a single name colliding. `mcp/catalogue.rs` and `a2a/catalogue.rs` are two implementations
+# of "the catalogue" whatever they call their types, and the module name is the author's own
+# statement of which concern the file is. `mod.rs` is excluded: it is Rust's spelling of "this
+# directory", not a concern.
+plane_dup_modules() {   # $1.. = plane=dir
+  local spec plane dir
+  for spec in "$@"; do
+    plane="${spec%%=*}"; dir="${spec#*=}"
+    [ -d "$dir" ] || continue
+    find "$dir" -name '*.rs' -not -path '*/tests/*' \
+      | sed "s|^\(.*/\([^/]*\.rs\)\)$|\2	${plane}	\1|" | grep -v '^mod\.rs	' | sort -u
+  done | awk -F'\t' '
+    { key = $1 SUBSEP $2
+      if (key in seenplane) next
+      seenplane[key] = 1
+      n[$1]++; where[$1] = where[$1] (where[$1] == "" ? "" : " ") $2 ":" $3 }
+    END { for (m in n) if (n[m] >= 2) printf "%s\t%s\n", m, where[m] }' | sort
+}
+
 # ══ SELF-TEST: the scanner that guards the tree is itself guarded ════════════════════════════════
 #
 # `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` above (not a copy) over a fixture
@@ -233,6 +344,81 @@ selftest_inline_case() {   # $1 = relative path, stdin = fixture source
     note "SELFTEST FAIL [$rel] inline-test: reported {${got}} but expected {${want}}"
     selftest_fail=1
   else selftest_pass=$((selftest_pass+1)); fi
+  return 0
+}
+
+# Invariant 5's fixture helper. `$1` = case name, `$2` = the function the rule is scoped to, stdin =
+# the fixture. A probe line declares its verdict with a trailing `//= HIT`; a fixture that expects
+# the function NOT to be found anywhere says so with a `//= NOFN` line, which is how the false-green
+# arm (the rule silently scanning nothing) is itself tested.
+selftest_fnbody_case() {   # $1 = name, $2 = fn, stdin = fixture source
+  local name="$1" fn="$2" src want got out spans
+  src="$SELFTEST_DIR/$name.rs"
+  cat > "$src"
+  selftest_ran=$((selftest_ran+1))
+  if [ ! -s "$src" ]; then
+    note "SELFTEST FAIL [$name] fn-body: fixture is missing or empty at $src"
+    selftest_fail=1; return 0
+  fi
+  RP_FN="$fn"
+  LINT_PAT='[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]'; LINT_WHAT='probe'; LINT_UNLESS=''
+  export RP_FN LINT_PAT LINT_WHAT LINT_UNLESS
+  out=$(scan_fn_body "$src")
+  got=$({ printf '%s\n' "$out" | grep -v '^#SPAN' || true; } | cut -d: -f2 | sort -n | tr '\n' ' ')
+  want=$({ grep -n '//= HIT' "$src" || true; } | cut -d: -f1 | sort -n | tr '\n' ' ')
+  spans=$({ printf '%s\n' "$out" | grep -c '^#SPAN ' || true; } | tr -d ' ')
+  # `printf` of an empty capture still emits one blank line, so an empty result arrives as a lone
+  # space. Trim both sides or "no hits" and "no hits" compare unequal and every clean case fails.
+  got=$(printf '%s' "$got" | sed 's/^ *//; s/ *$//')
+  want=$(printf '%s' "$want" | sed 's/^ *//; s/ *$//')
+  unset RP_FN LINT_PAT LINT_WHAT LINT_UNLESS
+  if [ "$got" != "$want" ]; then
+    note "SELFTEST FAIL [$name] fn-body: flagged lines {${got}} but expected {${want}}"
+    selftest_fail=1; return 0
+  fi
+  if grep -q '//= NOFN' "$src"; then
+    if [ "$spans" != "0" ]; then
+      note "SELFTEST FAIL [$name] fn-body: expected the function NOT to be found, but ${spans} definition(s) were scanned"
+      selftest_fail=1; return 0
+    fi
+  elif [ "$spans" = "0" ]; then
+    note "SELFTEST FAIL [$name] fn-body: the function was never found, so the case asserted nothing"
+    selftest_fail=1; return 0
+  fi
+  selftest_pass=$((selftest_pass+1))
+  return 0
+}
+
+# Invariant 6's fixture helper. `$1` = case name; the remaining arguments are `<relative path>` files
+# read from a single here-doc separated by lines reading `--- <path>`, which keeps a whole two-plane
+# corpus in one readable block. Expectations live IN the corpus: `//= DUP <symbol>` and
+# `//= DUPMOD <file.rs>` name what the collation MUST report, and anything else it reports is a
+# false positive that fails the case.
+selftest_plane_case() {   # $1 = name, stdin = corpus (`--- <path>` separated)
+  local name="$1" root cur want got wantm gotm
+  root="$SELFTEST_DIR/planes/$name"
+  rm -rf "$root"; mkdir -p "$root/p1" "$root/p2"
+  cur=""
+  while IFS= read -r line; do
+    case "$line" in
+      '--- '*) cur="$root/${line#--- }"; mkdir -p "$(dirname "$cur")"; : > "$cur" ;;
+      *) [ -n "$cur" ] && printf '%s\n' "$line" >> "$cur" ;;
+    esac
+  done
+  selftest_ran=$((selftest_ran+1))
+  if [ -z "$(find "$root" -name '*.rs')" ]; then
+    note "SELFTEST FAIL [$name] plane: corpus is empty at $root"
+    selftest_fail=1; return 0
+  fi
+  got=$(plane_dup_table   "p1=$root/p1" "p2=$root/p2" | cut -f1 | sort | tr '\n' ' ')
+  gotm=$(plane_dup_modules "p1=$root/p1" "p2=$root/p2" | cut -f1 | sort | tr '\n' ' ')
+  want=$({ grep -rh '//= DUP '    "$root" || true; } | sed -E 's|.*//= DUP ||;s|[[:space:]]+$||' | sort -u | tr '\n' ' ')
+  wantm=$({ grep -rh '//= DUPMOD ' "$root" || true; } | sed -E 's|.*//= DUPMOD ||;s|[[:space:]]+$||' | sort -u | tr '\n' ' ')
+  if [ "$got" != "$want" ] || [ "$gotm" != "$wantm" ]; then
+    note "SELFTEST FAIL [$name] plane: symbols {${got}} expected {${want}}; modules {${gotm}} expected {${wantm}}"
+    selftest_fail=1; return 0
+  fi
+  selftest_pass=$((selftest_pass+1))
   return 0
 }
 
@@ -468,6 +654,149 @@ mod b {
 }
 RS
 
+  # ══ the request-path rule (invariant 5) ════════════════════════════════════════════════════════
+  # The probe is a `store` reference; `//= HIT` marks the lines the rule MUST flag. Every case here
+  # is a way the function-scoped scanner could scan the wrong lines and still report a pass.
+
+  # ⑬ SCOPE. The rule is scoped to ONE function: its body is scanned and its neighbours are not,
+  #    even though the same call in the same file is entirely legitimate one function down.
+  selftest_fnbody_case fnbody_scope try_admit <<'RS'
+fn before(&self) {
+    let _ = self.store.get("x");
+}
+
+pub(crate) fn try_admit(&self, now: u64) -> bool {
+    let _ = self.store.get("x");                                     //= HIT
+    if now > 0 {
+        let _ = Store::get(&self.store, "y");                        //= HIT
+    }
+    true
+}
+
+fn after(&self) {
+    let _ = self.store.get("x");
+}
+RS
+
+  # ⑭ PROSE IS NOT CODE, and this is the case that made the scanner read `code` rather than `$0`:
+  #    the real function's own doc comment PROMISES "no store round-trip", and a scanner that read
+  #    the raw line would report the promise as a breach of itself. A trailing comment on a code
+  #    line is stripped for the same reason. `restore_from_store` is a whole-word test: it CONTAINS
+  #    `store` and must not trip.
+  selftest_fnbody_case fnbody_prose try_admit <<'RS'
+/// SYNCHRONOUS and INFALLIBLE: no store round-trip, no await, ever.
+pub(crate) fn try_admit(&self) -> bool {
+    // A store call here would be a latency regression on every request.
+    let n = self.cells.len();                                        // no store on this path
+    let _ = self.restore_from_store_count;
+    let _ = self.store.get("x");                                     //= HIT
+    n > 0
+}
+RS
+
+  # ⑮ A MULTI-LINE SIGNATURE still resolves to its own body, and the body still CLOSES — otherwise
+  #    the scanner runs to end-of-file and every later function is reported as this one's.
+  selftest_fnbody_case fnbody_multiline_sig try_admit <<'RS'
+pub(crate) fn try_admit(
+    &self,
+    key: &VirtualKey,
+    now: u64,
+) -> Result<Grant, Blocked> {
+    let _ = self.store.get("x");                                     //= HIT
+    Ok(Grant::default())
+}
+
+fn unrelated() {
+    let _ = self.store.get("x");
+}
+RS
+
+  # ⑯ PREFIX SAFETY. A rule written for `try_admit` must not arm on `try_admit_breaker`; if it did,
+  #    the invariant would be enforced against a function it was never written about and would go
+  #    red for the wrong reason (or, worse, green because the real one was never reached).
+  selftest_fnbody_case fnbody_prefix try_admit <<'RS'
+//= NOFN
+fn try_admit_breaker(&self, pool: &str) -> bool {
+    let _ = self.store.get("x");
+    true
+}
+RS
+
+  # ⑰ THE FALSE-GREEN ARM. The function has been renamed away. The scanner must find NOTHING, so
+  #    the caller can turn "nothing scanned" into RED instead of into a pass. This is the shape the
+  #    project has already been burned by: an unarmed gate reporting success.
+  selftest_fnbody_case fnbody_renamed_away try_admit <<'RS'
+//= NOFN
+pub(crate) fn try_admit_v2(&self) -> bool {
+    let _ = self.store.get("x");
+    true
+}
+RS
+
+  # ══ the plane-coherence rule (invariant 6) ═════════════════════════════════════════════════════
+  # `//= DUP <symbol>` / `//= DUPMOD <file>` in the corpus name exactly what the collation must
+  # report. Anything else it reports is a false positive and fails the case.
+
+  # ⑱ THE SIGNAL, and the four shapes that must NOT be it. GOAL §A6.1 is the reason the third one
+  #    is here: the circuit breaker is NOT duplicated, and the `breaker` mentions under `mcp/` and
+  #    `a2a/` are PROSE IN COMMENTS. A lint that grepped for the word would have reported a
+  #    duplicate breaker and been wrong about the one thing the goal had just verified in code.
+  selftest_plane_case signal_and_its_lookalikes <<'RS'
+--- p1/chain.rs
+//= DUP compute_hash
+//= DUP ChainBreak
+fn compute_hash(row: &Row) -> String { String::new() }
+
+pub(crate) enum ChainBreak {
+    Missing,
+}
+
+// This plane has no breaker; try_admit_breaker lives in the LLM plane and is called from
+// proxy/engine/walk.rs. Naming it here is prose, not a declaration.
+impl Chain {
+    fn new() -> Self { Chain }
+    fn len(&self) -> usize { 0 }
+}
+
+#[cfg(test)]
+fn only_in_tests() -> u32 { 0 }
+--- p2/provenance.rs
+fn compute_hash(row: &Row) -> String { String::new() }
+
+pub(crate) enum ChainBreak {
+    Missing,
+}
+
+// The breaker is keyed by (pool, lane) and this plane does not have lanes, so try_admit_breaker
+// is not called here either.
+impl Chain {
+    fn new() -> Self { Chain }
+    fn len(&self) -> usize { 0 }
+}
+
+#[cfg(test)]
+fn only_in_tests() -> u32 { 0 }
+RS
+
+  # ⑲ MODULE NAMES. A concern can be duplicated without one symbol colliding, so the file name is a
+  #    second, independent signal. `mod.rs` names a directory rather than an idea and is exempt;
+  #    files under a `tests/` dir are not implementations and are exempt too.
+  selftest_plane_case module_names <<'RS'
+--- p1/catalogue.rs
+//= DUPMOD catalogue.rs
+pub(crate) struct ToolEntry;
+--- p1/mod.rs
+pub(crate) mod catalogue;
+--- p1/tests/shared_tests.rs
+fn helper() {}
+--- p2/catalogue.rs
+pub(crate) struct AgentCandidate;
+--- p2/mod.rs
+pub(crate) mod catalogue;
+--- p2/tests/shared_tests.rs
+fn helper() {}
+RS
+
   # A self-test that asserted nothing would report exactly what a passing one reports. So the count
   # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
   if [ "$selftest_ran" -eq 0 ]; then
@@ -677,6 +1006,281 @@ for row in "${CHOKE_POINTS[@]}"; do
 done
 unset LINT_PAT LINT_WHAT LINT_UNLESS
 [ "$ck" -eq 0 ] && note "ok (${#CHOKE_POINTS[@]} choke points registered, class tests present, no bypass)"
+
+# ══ Invariant 5: THE REQUEST PATH DOES NOT TOUCH THE STORE (GOAL §A7) ════════════════════════════
+#
+# `GovState::try_admit` makes ZERO store calls. The store is a DURABILITY SINK — the ledger flushes
+# to it behind the request — and it is never on the path a request waits on. That is not a nicety:
+# every published latency number depends on it, and the function's own doc comment states it
+# ("SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await)").
+#
+# It was true on the day this check was written and NOTHING ENFORCED IT. A doc comment is not an
+# enforcement mechanism; the first `self.store.get_…()` added inside the admission path to answer
+# "what was this key's spend yesterday?" would be correct-looking, would pass every test, and would
+# put a network round-trip under every admitted request.
+#
+# WHY A FUNCTION-SCOPED RULE AND NOT A CHOKE POINT ROW: the choke-point registry bans a pattern
+# TREE-WIDE with a list of allowed files. Here the same call is entirely legitimate one function
+# further down the same file — `flush_durable` exists to make store calls. The unit of the rule is
+# the function, so the rule needs `scan_fn_body`, not `scan_rule`.
+#
+# ── Row format (fields separated by `|`) ─────────────────────────────────────────────────────────
+#   1. id       — stable name for the invariant.
+#   2. tag      — the violation label.
+#   3. file     — the file holding the function.
+#   4. fn       — the function name, as an awk ERE fragment (usually a literal).
+#   5. rules    — `;`-separated `<awk-ERE>>><what it is>[>><unless-ERE>]`.
+#   6. remedy   — the one-line instruction printed with every violation.
+#   7. why      — one line: why this function in particular may not do that.
+REQUEST_PATH=(
+  # `store` / `Store` as a WHOLE WORD, so `restore_from_store` and `store_id` do not trip it while
+  # `self.store`, `store.get(`, `&dyn Store` and `Store::` all do. Word boundaries are spelled with
+  # explicit non-identifier classes because `\b`/`\<` are not portable across the awks this script
+  # runs on, and the mid-line and end-of-line cases are two rules because `|` is the row separator
+  # (see MALFORMED-ROW below). A line inside a function body always has leading whitespace, so the
+  # start-of-line case cannot arise. `.await` rides the same row because it is the same invariant
+  # seen from the other side: the reason the store may not appear here is that nothing on this path
+  # may suspend, and an `.await` is how a round-trip gets in.
+  'A7-govstate-try-admit|STORE-ON-REQUEST-PATH|crates/busbar/src/governance/state.rs|try_admit|[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]>>a store reference inside the admission path;[^A-Za-z0-9_][Ss]tore$>>a store reference inside the admission path;\.await>>an await inside the admission path (it is declared SYNCHRONOUS and INFALLIBLE)|keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it|the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O'
+)
+
+hdr "request-path purity (the store is a durability sink, never on the request path)"
+rp=0
+for row in "${REQUEST_PATH[@]}"; do
+  IFS='|' read -r rp_id rp_tag rp_file rp_fn rp_rules rp_remedy rp_why extra <<<"$row"
+  if [ -n "$extra" ] || [ -z "$rp_why" ] || [ -z "$rp_rules" ]; then
+    note "MALFORMED-ROW: ${rp_id} — a field contains a literal '|' (the row separator). Rewrite the"
+    note "  pattern without alternation, or split it into another ';'-separated rule."
+    fail=1; rp=1
+    continue
+  fi
+  # The subject must EXIST. A rule pointed at a file that was moved, or a function that was renamed,
+  # scans nothing and prints nothing — which reads exactly like a pass. It is not one.
+  if [ ! -f "$rp_file" ]; then
+    note "SUBJECT-MISSING: ${rp_id} — ${rp_file} does not exist; point the row at the function's new home"
+    fail=1; rp=1
+    continue
+  fi
+  IFS=';' read -r -a rp_rulelist <<<"$rp_rules"
+  rp_span=""
+  for rule in "${rp_rulelist[@]}"; do
+    IFS='>' read -r LINT_PAT LINT_WHAT LINT_UNLESS <<<"${rule//>>/>}"
+    export LINT_PAT LINT_WHAT LINT_UNLESS
+    RP_FN="$rp_fn"; export RP_FN
+    out=$(scan_fn_body "$rp_file")
+    rp_span=$(printf '%s\n' "$out" | grep '^#SPAN ' || true)
+    hits=$(printf '%s\n' "$out" | grep -v '^#SPAN ' | grep -v '^$' || true)
+    if [ -n "$hits" ]; then
+      while IFS= read -r h; do note "${rp_tag}: $h — ${rp_remedy}"; done <<<"$hits"
+      fail=1; rp=1
+    fi
+  done
+  if [ -z "$rp_span" ]; then
+    note "SUBJECT-MISSING: ${rp_id} — ${rp_file} declares no \`fn ${rp_fn}\`, so this invariant scanned"
+    note "  NOTHING and would have reported a pass. Point the row at the function's new name (${rp_why})."
+    fail=1; rp=1
+  else
+    while IFS= read -r s; do
+      set -- $s
+      note "scanned ${rp_file}::${rp_fn} lines $2-$3 ($(( $3 - $2 + 1 )) lines)"
+    done <<<"$rp_span"
+  fi
+done
+unset LINT_PAT LINT_WHAT LINT_UNLESS RP_FN
+if [ "$rp" -eq 0 ]; then note "ok (${#REQUEST_PATH[@]} request-path invariant(s) enforced)"; fi
+
+# ══ Invariant 6: NO PLANE-LOCAL REIMPLEMENTATION OF A SHARED CONCERN (GOAL §A6) ══════════════════
+#
+# THE RULE: a property that holds on one plane holds on all of them, or the difference is written
+# down and defended. Three of this release's security defects came from one concern implemented two
+# or three times — one copy gets fixed, the other does not, and the divergence surfaces as a hole.
+#
+# THE MECHANISM, and it is deliberately mechanical rather than clever. Two signals, both of them
+# facts about the source and neither of them a judgement call:
+#
+#   SYMBOL — the same TOP-LEVEL name (a free `fn`, or a `struct`/`enum`/`trait`) declared in two
+#            planes. Top-level is what makes this usable: methods inside `impl` blocks are scoped by
+#            their type, so `new`, `fmt`, `len` and `default` never reach the comparison. A free
+#            `fn compute_hash` in `mcp/` and a free `fn compute_hash` in `a2a/` is two authors
+#            naming the same idea at file scope, twice.
+#   MODULE — the same file name in two planes. A concern can be duplicated without one name
+#            colliding; `mcp/catalogue.rs` beside `a2a/catalogue.rs` is the author's own statement
+#            of which concern each file is. `mod.rs` is excluded — it names a directory, not an idea.
+#
+# COMMENTS ARE NOT DECLARATIONS, and that is load-bearing here. GOAL §A6.1 records that the circuit
+# breaker is NOT duplicated: there is exactly one `try_admit_breaker`, and the `breaker` mentions
+# under `mcp/` and `a2a/` are PROSE IN COMMENTS. A grep-for-the-word lint would have reported a
+# duplicate breaker and been wrong. This one reads declarations, through TEST_SCOPE_AWK, so prose
+# and `#[cfg(test)]` code are both invisible to it.
+#
+# ── THE LEDGER, and why the lint ships with one ──────────────────────────────────────────────────
+# Every row below is duplication that EXISTS TODAY. The lint was proven red against exactly this
+# list before the list was written (see the commit message); the ledger records the debt so `dev` is
+# green while the unification is done concern by concern, and so a SEVENTH duplicate cannot be added
+# quietly. Two rules make it a ledger and not an amnesty:
+#
+#   * A ledger row that no longer matches is a HARD ERROR ("STALE-LEDGER"), so the row cannot rot,
+#     and the moment a unification lands the lint tells you to delete its row.
+#   * ADDING a row for NEW code is not a fix, it is evading the check. Shrinking is the only
+#     permitted edit, exactly as for GRANDFATHERED_OVERSIZED above.
+#
+# Class `DEBT` is duplication that is owed a unification, and its concern id names what is owed.
+# Class `DISTINCT` is a name two unrelated concerns happen to share; it must still be written down,
+# because "these two are unrelated" is a claim, and an undocumented one is indistinguishable from
+# duplication nobody noticed.
+#
+# Row format:  <symbol-or-module> | DEBT|DISTINCT | <concern id, or - for DISTINCT> | <note>
+PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
+
+# The concerns, and where each one's single implementation should end up. `-` for an owner means
+# THERE IS NO SHARED HOME YET, which is itself the finding: the concern has only plane-local copies.
+PLANE_CONCERNS=(
+  'catalogue|-|one catalogue generic over the plane, keyed by plane::Plane; the entry type is the plane-specific part'
+  'guarded-fetch|crates/busbar/src/net_guard.rs|route every attacker-influenced fetch through net_guard: one resolver, one pin, one redirect refusal'
+  'hash-chain-audit|-|one append-only hash chain generic over the record type; admin/audit.rs is the oldest of the three and the natural donor'
+  'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
+  'ingress|crates/busbar/src/ingress|one plane-neutral admission in ingress/, with the plane supplying its wire reader'
+  'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
+  'plane-config|-|one sections container keyed by plane::Plane::config_section — the spine already exists at crates/busbar/src/plane/mod.rs'
+  'plane-admin-verbs|crates/busbar/src/admin|one admin verb surface parameterised by plane, not one handler set per plane'
+  'trust-pinning|crates/busbar/src/trust|GOAL §A2.2: resolve the bare-name collision, then parameterise the one trust lifecycle'
+)
+
+PLANE_LEDGER="
+compute_hash|DEBT|hash-chain-audit|mcp/calllog.rs and a2a/provenance.rs are line-for-line the same chain, plus a third in admin/audit.rs
+verify_chain|DEBT|hash-chain-audit|the same verifier written twice; a fix to one has already had to be hand-copied to the other
+ChainBreak|DEBT|hash-chain-audit|two identical error types for one failure mode
+ChainBreakKind|DEBT|hash-chain-audit|two identical kind enums for one failure mode
+resolve_and_pin|DEBT|guarded-fetch|mcp/client/ssrf.rs and a2a/fetch.rs each resolve-and-pin their own way; net_guard is the shared home
+PinnedTarget|DEBT|guarded-fetch|two pinned-target types for one DNS-rebinding defence
+split_url|DEBT|guarded-fetch|two hand-rolled URL splitters (mcp/client/ssrf.rs, a2a/pushnotify.rs) that must agree with the HTTP client and with each other
+authorise_egress|DEBT|outbound-credentials|one egress gate per plane; the grant kinds differ, the gate does not
+EgressDenied|DEBT|outbound-credentials|two refusal enums for one refusal
+rpc|DEBT|ingress|mcp/ingress.rs and a2a/ingress.rs each mount their own JSON-RPC entry point
+refuse|DEBT|ingress|two per-plane refusal shapers; the wire shape of a refusal is not plane-specific
+not_found|DEBT|ingress|two per-plane 404 shapers
+metadata|DEBT|ingress|the RFC 9728 protected-resource metadata document, written once per plane, verified 2026-08-11 to be the same document with the same audience rule
+connect|DEBT|plane-admin-verbs|the admin connect verb implemented once per plane
+declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
+PinMechanism|DEBT|trust-pinning|GOAL §A2.2 names this bare-name collision as a blocker on the MCP config fingerprint
+validate_section_hooks|DEBT|plane-config|per-plane config-section validation, twice
+refuse_cross_plane_reference|DEBT|plane-config|the cross-plane reference refusal written once per plane — the one rule that most needs to be identical on both
+catalogue.rs|DEBT|catalogue|the catalogue module exists once per plane
+config.rs|DEBT|plane-config|the config module exists once per plane
+ingress.rs|DEBT|ingress|the ingress module exists once per plane
+transport.rs|DEBT|guarded-fetch|the outbound transport exists once per plane
+judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/catalogue.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
+revalidate|DISTINCT|-|mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other.
+Transport|DISTINCT|-|mcp/config.rs is a config ENUM naming stdio/http/sse; a2a/fetch.rs is a TRAIT abstracting the HTTP client for tests. Unrelated shapes that share a noun.
+"
+
+# `plane_dup_*` are pure functions of the tree; this walks their output against the ledger.
+# `$1` = what kind of duplicate ("symbol"/"module"), stdin = the table. It is called with its input
+# REDIRECTED rather than piped, so it runs in this shell and its `fail=1` survives; the same loop on
+# the right-hand side of a pipe would set `fail` in a subshell and the violation would vanish.
+check_plane_dups() {
+  local kind="$1" sym where row class concern note_txt owner remedy
+  while IFS=$'\t' read -r sym where; do
+    [ -z "$sym" ] && continue
+    printf '%s\n' "$sym" >> "$PLANE_SEEN"
+    row=$(printf '%s\n' "$PLANE_LEDGER" | grep "^${sym}|" || true)
+    if [ -z "$row" ]; then
+      note "PLANE-DUPLICATE (${kind}): \`${sym}\` — ${where}"
+      printf 'x\n' >> "$PLANE_UNLEDGERED"
+      fail=1; pl=1
+      continue
+    fi
+    IFS='|' read -r _ class concern note_txt <<<"$row"
+    case "$class" in
+      DEBT)
+        if ! printf '%s\n' "${PLANE_CONCERNS[@]}" | grep -q "^${concern}|"; then
+          note "MALFORMED-LEDGER: \`${sym}\` names concern \`${concern}\`, which is not in PLANE_CONCERNS"
+          fail=1; pl=1
+          continue
+        fi
+        owner=$(printf '%s\n' "${PLANE_CONCERNS[@]}" | grep "^${concern}|" | cut -d'|' -f2)
+        remedy=$(printf '%s\n' "${PLANE_CONCERNS[@]}" | grep "^${concern}|" | cut -d'|' -f3)
+        [ "$owner" = "-" ] && owner="NO SHARED HOME YET"
+        printf '%s|%s|%s|%s|%s\n' "$concern" "$sym" "$where" "$owner" "$remedy" >> "$PLANE_DEBT"
+        ;;
+      DISTINCT) : ;;
+      *)
+        note "MALFORMED-LEDGER: \`${sym}\` has class \`${class}\`; it must be DEBT or DISTINCT"
+        fail=1; pl=1
+        ;;
+    esac
+  done
+}
+
+hdr "plane coherence (no plane-local reimplementation of a shared concern)"
+pl=0
+PLANE_TMP=$(mktemp -d); PLANE_SEEN="$PLANE_TMP/seen"; PLANE_DEBT="$PLANE_TMP/debt"
+PLANE_UNLEDGERED="$PLANE_TMP/unledgered"
+: > "$PLANE_SEEN"; : > "$PLANE_DEBT"; : > "$PLANE_UNLEDGERED"
+# shellcheck disable=SC2086  # PLANE_ROOTS is a deliberate `plane=dir` word list
+check_plane_dups symbol < <(plane_dup_table   $PLANE_ROOTS)
+# shellcheck disable=SC2086
+check_plane_dups module < <(plane_dup_modules $PLANE_ROOTS)
+
+# The remedy is printed ONCE per run rather than once per hit: a wall of repeated instructions is
+# how a reader learns to scroll past the list instead of reading it.
+if [ -s "$PLANE_UNLEDGERED" ]; then
+  note "$(wc -l < "$PLANE_UNLEDGERED" | tr -d ' ') name(s) above are declared in two planes and are NOT on the ledger."
+  note "  A shared concern grew a second, plane-local implementation — the shape that produced three of"
+  note "  this release's security defects, because one copy gets fixed and the other does not."
+  note "  HOW TO FIX, in order of preference:"
+  note "    1. Move the one implementation to the concern's shared owner and call it from both planes."
+  note "    2. Parameterise the shared one over the plane. The spine is crates/busbar/src/plane/mod.rs"
+  note "       and choke points F and G above are the shape that already works."
+  note "    3. If the two really are UNRELATED, add a DISTINCT row to PLANE_LEDGER in this script"
+  note "       naming why — a one-line claim you are willing to sign, not a bare exemption."
+  note "  Adding a DEBT row for NEW code is not a fix; it is evading the check. The ledger only shrinks."
+fi
+
+# THE LEDGER MAY NOT ROT, and it may not be sloppy either. A row for duplication that is no longer
+# there is a row nobody will delete, and a ledger nobody prunes stops being a debt list and becomes a
+# permanent exemption. A row with a missing field, or a second row for a name already listed, is a
+# row that reads as an exemption while asserting nothing.
+while IFS='|' read -r sym class concern note_txt extra; do
+  [ -z "$sym" ] && continue
+  if [ -n "$extra" ] || [ -z "$note_txt" ] || [ -z "$class" ]; then
+    note "MALFORMED-LEDGER: \`${sym}\` — a row is \`name|DEBT-or-DISTINCT|concern-or-dash|why\`, four"
+    note "  fields, and the WHY may not be empty. (A literal '|' in the note shifts every field.)"
+    fail=1; pl=1
+  fi
+  if [ "$class" = "DISTINCT" ] && [ "$concern" != "-" ]; then
+    note "MALFORMED-LEDGER: \`${sym}\` is DISTINCT, so its concern field must be \`-\`, not \`${concern}\`"
+    fail=1; pl=1
+  fi
+  if [ "$(printf '%s\n' "$PLANE_LEDGER" | grep -c "^${sym}|")" -gt 1 ]; then
+    note "MALFORMED-LEDGER: \`${sym}\` has more than one row; one name, one verdict"
+    fail=1; pl=1
+  fi
+  if ! grep -qx "$sym" "$PLANE_SEEN"; then
+    note "STALE-LEDGER: \`${sym}\` is on PLANE_LEDGER but is no longer duplicated across planes."
+    note "  If you unified it — thank you — DELETE its row from PLANE_LEDGER in scripts/structure-lint.sh."
+    fail=1; pl=1
+  fi
+done <<<"$PLANE_LEDGER"
+
+# The debt is REPORTED, every run, grouped by concern. A debt list nobody prints is a debt list
+# nobody pays; this is the §A6 catalogue, generated from the tree rather than transcribed from it.
+if [ -s "$PLANE_DEBT" ]; then
+  n_concerns=$(cut -d'|' -f1 "$PLANE_DEBT" | sort -u | wc -l | tr -d ' ')
+  n_rows=$(wc -l < "$PLANE_DEBT" | tr -d ' ')
+  note "known duplication, ledgered and owed a unification: ${n_rows} name(s) across ${n_concerns} concern(s)"
+  while IFS= read -r c; do
+    owner=$(grep "^${c}|" "$PLANE_DEBT" | head -1 | cut -d'|' -f4)
+    remedy=$(grep "^${c}|" "$PLANE_DEBT" | head -1 | cut -d'|' -f5)
+    note "  [${c}] shared owner: ${owner}"
+    note "      remedy: ${remedy}"
+    while IFS='|' read -r _ sym where _ _; do
+      note "      · ${sym} — ${where}"
+    done < <(grep "^${c}|" "$PLANE_DEBT")
+  done < <(cut -d'|' -f1 "$PLANE_DEBT" | sort -u)
+fi
+rm -rf "$PLANE_TMP"
+if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
 
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
