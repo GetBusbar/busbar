@@ -72,6 +72,7 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
             description: None,
             input_schema: None,
             ask_caller: Vec::new(),
+            ..ToolAllowCfg::default()
         },
     );
     let mut c = ToolsCfg::default();

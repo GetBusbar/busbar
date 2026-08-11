@@ -72,6 +72,13 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
     "resources/templates/list",
     "resources/read",
     "completion/complete",
+    // SEP-2663. The three v2 tasks methods, and ONLY the three: `tasks/result` and `tasks/list`
+    // were REMOVED by the extension's v2 wire — the result is inlined on `tasks/get` and there is
+    // no list — so their absence here is what makes them answer `-32601`, which is the conformant
+    // answer and not a gap. See `super::tasks`.
+    "tasks/get",
+    "tasks/update",
+    "tasks/cancel",
 ];
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
@@ -88,6 +95,12 @@ const RESULT_TYPE_COMPLETE: &str = "complete";
 /// [`input_required_result`], only for an ask busbar itself composed from operator configuration.
 /// An upstream's `input_required` never reaches this constant — see [`super::inputreq`].
 const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
+
+/// SEP-2663's discriminator, returned ONLY by [`task_result`] and only for a task busbar itself
+/// just created. Like `input_required`, it can never carry an upstream's value: an upstream answers
+/// busbar's own request, and busbar's decision to answer its caller asynchronously is taken before
+/// the upstream is contacted at all.
+const RESULT_TYPE_TASK: &str = "task";
 
 /// `cacheScope` on every cacheable result: `private`, and it is the only value that is TRUE here,
 /// not a cautious default.
@@ -137,6 +150,15 @@ pub(crate) struct Ctx<'a> {
     /// `mrtr.mdx:246` forbids sending an ask the caller has not declared support for; this is the
     /// only thing that could tell busbar what those are.
     pub(crate) capabilities: &'a serde_json::Value,
+    /// THE REQUEST HEADERS, carried for exactly one reason: SEP-2243's `Mcp-Param-*` custom headers
+    /// are validated against the tool's `x-mcp-header` annotations, and those annotations live in
+    /// the OPERATOR's `input_schema` — which ingress cannot read, because reading it means resolving
+    /// the tool under the caller's grant, and that is the catalogue's job and happens here.
+    ///
+    /// So the envelope checks that need no catalogue stay in ingress and the one that does lands
+    /// here, rather than ingress growing a grant-scoped lookup or this module growing a second
+    /// header parser. Both halves still answer `-32020` / `400`.
+    pub(crate) headers: &'a axum::http::HeaderMap,
 }
 
 impl Ctx<'_> {
@@ -184,8 +206,170 @@ pub(crate) async fn dispatch(
         "resources/templates/list" => Some(resources_templates_list(ctx, id)),
         "resources/read" => Some(resources_read(ctx, params, id)),
         "completion/complete" => Some(completion_complete(id)),
+        "tasks/get" => Some(tasks_get(ctx, params, id)),
+        "tasks/update" => Some(tasks_update(ctx, params, id)),
+        "tasks/cancel" => Some(tasks_cancel(ctx, params, id)),
         _ => None,
     }
+}
+
+/// The `-32021` gate every tasks-namespace method sits behind.
+///
+/// SEP-2663 makes the whole task surface conditional on the client having declared the extension:
+/// a client that did not is not merely uninterested, it is a client that cannot receive a
+/// `CreateTaskResult`, so answering its `tasks/get` would be answering about a task it could never
+/// have been given. `-32601` would be the wrong answer and busbar's old one — it says the method
+/// does not exist, when what is true is that this caller has not asked for it.
+///
+/// Returns `Some(response)` when the request must be refused.
+fn refuse_undeclared_tasks(
+    ctx: &Ctx<'_>,
+    id: &Option<serde_json::Value>,
+) -> Option<axum::response::Response> {
+    if super::tasks::client_declares_tasks(ctx.capabilities) {
+        return None;
+    }
+    Some(missing_tasks_capability(id.clone()))
+}
+
+/// The `-32021` refusal itself, in one place so the code, the status and the `requiredCapabilities`
+/// payload cannot drift between the two things that emit it — the tasks methods and a `tools/call`
+/// on a `task_support: required` tool.
+///
+/// `400`, because `MissingRequiredClientCapabilityError` fixes the status: "For HTTP, the response
+/// status code MUST be `400 Bad Request`."
+fn missing_tasks_capability(id: Option<serde_json::Value>) -> Response {
+    error(
+        StatusCode::BAD_REQUEST,
+        id,
+        CODE_MISSING_CLIENT_CAPABILITY,
+        &format!(
+            "This request needs the `{}` extension, and it was not declared in \
+             `params._meta.io.modelcontextprotocol/clientCapabilities.extensions`. Declare it — \
+             per session or on this one request — and retry.",
+            super::tasks::TASKS_EXTENSION_ID
+        ),
+        Some(serde_json::json!({
+            "reason": "tasks_extension_not_declared",
+            "requiredCapabilities": super::tasks::required_tasks_capability(),
+        })),
+    )
+}
+
+/// Resolve `params.taskId` for THIS caller, or the refusal that replaces it.
+///
+/// An unknown id is `-32602`, which SEP-2663 fixes for exactly this case, and an id belonging to
+/// ANOTHER caller takes the identical arm rather than a `403`. That is deliberate: two different
+/// answers would tell a caller which ids exist, and a task id is the only credential a poll
+/// presents.
+///
+/// The error arm is BOXED because a `Response` is a large value and the success arm is one `Arc`:
+/// an unboxed `Result` would make every caller of this function move the whole refusal envelope
+/// around on the happy path.
+fn resolve_task(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: &Option<serde_json::Value>,
+) -> Result<std::sync::Arc<super::tasks::McpTask>, Box<Response>> {
+    let Some(task_id) = string_param(params, "taskId") else {
+        return Err(Box::new(invalid_params(
+            id.clone(),
+            "`params.taskId` is required and must be a string.",
+        )));
+    };
+    super::tasks::TASKS
+        .get(task_id, task_principal(ctx))
+        .ok_or_else(|| {
+            Box::new(invalid_params(
+                id.clone(),
+                "No task with that `taskId` exists for this caller.",
+            ))
+        })
+}
+
+/// The principal a task is filed under. The KEY ID where there is one, and one honest constant
+/// where governance is disabled — such a deployment has exactly one caller, so filing every task
+/// under it is a true statement rather than a fabricated distinction. The same reasoning
+/// `caller_ask_decision` uses to bind request state.
+fn task_principal<'a>(ctx: &'a Ctx<'_>) -> &'a str {
+    ctx.gov
+        .key
+        .as_ref()
+        .map_or("<ungoverned>", |k| k.id.as_str())
+}
+
+/// `tasks/get` — the DetailedTask, with the tool result INLINED once the task is terminal.
+///
+/// There is no `tasks/result`: SEP-2663 removed it precisely so a client cannot observe a task as
+/// complete and then fail to fetch what it completed with.
+fn tasks_get(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
+        return refusal;
+    }
+    match resolve_task(ctx, params, &id) {
+        Ok(task) => result(id, task.detailed()),
+        Err(refusal) => *refusal,
+    }
+}
+
+/// `tasks/update` — deliver `inputResponses`, acked with an EMPTY `{resultType:"complete"}`.
+///
+/// The ack carries no task envelope, and that is the SEP-2322 discriminator rule rather than
+/// terseness: a response carrying `taskId`/`status` would be a second, racing view of the task
+/// beside `tasks/get`, and a client would have to decide which of the two to believe. One reader.
+fn tasks_update(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
+        return refusal;
+    }
+    let task = match resolve_task(ctx, params, &id) {
+        Ok(task) => task,
+        Err(refusal) => return *refusal,
+    };
+    // ABSENT is treated as empty rather than refused. The method's job is to deliver what the
+    // client has; a client that has nothing yet has sent a well-formed, if pointless, request.
+    let responses = params
+        .and_then(|p| p.get("inputResponses"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    super::tasks::TASKS.update(&task.id, task_principal(ctx), &responses);
+    result(id, serde_json::json!({}))
+}
+
+/// `tasks/cancel` — the same empty ack, and IDEMPOTENT on a task that has already settled.
+///
+/// Idempotent rather than `-32602`, because the alternative makes every client handle a race it
+/// cannot avoid: a task can terminate between the poll that observed it running and the cancel
+/// that followed. The spec reserves `-32602` for ids the server does not recognise, and a task it
+/// finished a moment ago is one it recognises perfectly well.
+fn tasks_cancel(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    if let Some(refusal) = refuse_undeclared_tasks(ctx, &id) {
+        return refusal;
+    }
+    let task = match resolve_task(ctx, params, &id) {
+        Ok(task) => task,
+        Err(refusal) => return *refusal,
+    };
+    super::tasks::TASKS.cancel(&task.id, task_principal(ctx));
+    crate::admin::audit::AUDIT.record_by(
+        "mcp_task.cancel",
+        &format!("mcp_task:{}", task.id),
+        crate::admin::audit::OUTCOME_APPLIED,
+        ctx.actor,
+    );
+    result(id, serde_json::json!({}))
 }
 
 /// `completion/complete` — argument autocompletion, which for this server is always the EMPTY set.
@@ -286,6 +470,22 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // is deliberately no `logging/setLevel`: this revision has no session for a level to
                 // live in, so the level is named per request in `_meta` — see `super::sse`.
                 "logging": {},
+                // SEP-2663, advertised UNCONDITIONALLY — unlike the counts below, which are scoped
+                // to what this caller can reach.
+                //
+                // The asymmetry is deliberate and it is the difference between a CATALOGUE and a
+                // PROTOCOL. `tools`/`prompts`/`resources` describe what this caller may see, and a
+                // caller whose grant reaches nothing legitimately sees nothing. An extension
+                // describes what the SERVER can do with the wire: `tasks/get`, `tasks/update` and
+                // `tasks/cancel` are implemented, gated only on the caller's own declaration, and
+                // answer correctly for every caller — including one who currently holds no
+                // task-supporting tool, for whom the honest answer is "the surface exists, you have
+                // nothing on it" rather than "the surface does not exist".
+                //
+                // It is advertised under `extensions` and NOT as a v1-style `capabilities.tasks`
+                // slot, because the extension REPLACED that surface rather than living beside it,
+                // and a server advertising both would be claiming two protocols at once.
+                "extensions": { super::tasks::TASKS_EXTENSION_ID: {} },
             },
             "methods": IMPLEMENTED_METHODS,
             "servers": servers,
@@ -776,7 +976,7 @@ async fn tools_call(
     let Some(name) = string_param(params, "name") else {
         return invalid_params(id, "`params.name` is required and must be a string.");
     };
-    let arguments = params
+    let mut arguments = params
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
@@ -825,6 +1025,29 @@ async fn tools_call(
             id,
         );
     };
+
+    // (2a-i) SEP-2243 CUSTOM PARAM HEADERS. Validated here, where the tool's approved `inputSchema`
+    // is finally in hand, and BEFORE any decision that costs anything: a header/body disagreement is
+    // a malformed request, and a malformed request must not be charged, dispatched or asked about.
+    if let Some(refusal) = custom_param_mismatch(ctx, &selected, &arguments) {
+        return header_mismatch(id, &refusal);
+    }
+
+    // (2a-ii) THE TASKS GATE. A `task_support: required` tool CANNOT be answered synchronously, so a
+    // caller that did not declare the extension is refused before the handler runs — which is what
+    // makes the declaration a registration-time property rather than something busbar could work
+    // out by trying. See `super::tasks`.
+    if matches!(selected.task_support, super::config::TaskSupport::Required)
+        && !super::tasks::client_declares_tasks(ctx.capabilities)
+    {
+        crate::admin::audit::AUDIT.record_by(
+            "mcp_tool.call",
+            &format!("mcp_tool:{}", selected.namespaced),
+            crate::admin::audit::OUTCOME_REJECTED,
+            ctx.actor,
+        );
+        return missing_tasks_capability(id);
+    }
 
     // (2a) THE CALLER-ASK DECISION — does busbar want something from ITS OWN CALLER before it will
     // run this at all?
@@ -898,6 +1121,47 @@ async fn tools_call(
             );
             return input_required_result(id, &asks, &request_state);
         }
+    }
+
+    // (2b) THE ASK ANSWERS BECOME ARGUMENTS.
+    //
+    // An `ask_caller:` entry keyed `user_name` gathers a value, and the value is bound to the tool
+    // argument of that name. That is what an operator writing the ask means by it: the point of
+    // asking is that the answer reaches the tool. Discarding it — which is what busbar did — made
+    // the whole exchange a gate with no output, and made it impossible to observe from the result
+    // whether the round the caller answered had had any effect at all.
+    //
+    // AFTER `caller_ask_decision`, never before, and that ordering is load-bearing: the request
+    // state is sealed over a digest of the arguments AS THE CALLER SENT THEM, so merging first
+    // would make a retry's digest disagree with the seal minted on the previous round and every
+    // multi-round exchange would fail verification on round two.
+    if let Some(responses) = params
+        .and_then(|p| p.get("inputResponses"))
+        .and_then(|v| v.as_object())
+    {
+        let merged = arguments.as_object_mut();
+        if let Some(merged) = merged {
+            for (key, value) in responses {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    // (2c) THE TASK PATH. Everything above has already decided that this call is admitted, current,
+    // authorised to ask, and answered — so the only remaining question is whether the answer is a
+    // RESULT or a TASK, and that is the operator's declaration crossed with the caller's.
+    //
+    // PLACED AFTER the ask loop deliberately, which is the SEP-2663 composition rule (commit
+    // 451f5e1): a tool that gathers input synchronously and then escalates to async returns
+    // `InputRequiredResult` on the early rounds — carrying no `taskId`, because no task exists yet
+    // — and `CreateTaskResult` on the last. Creating the task first would mint an id for an
+    // exchange that might never be answered, and would put a `requestState` and a `taskId` on the
+    // wire together, which the extension separates precisely so a client need not deduplicate them.
+    if selected
+        .task_support
+        .creates_task(super::tasks::client_declares_tasks(ctx.capabilities))
+    {
+        return create_task(ctx, &server, &selected, arguments, id).await;
     }
 
     // (3) THE EGRESS GATE — the transitive confused-deputy defence, and it runs BEFORE the loop and before any network I/O.
@@ -1042,6 +1306,172 @@ async fn tools_call(
             )
         }
     }
+}
+
+/// CREATE a task for a `tools/call` that will be answered asynchronously.
+///
+/// The ordering here is the whole of `sep-2663-durable-create-strong-consistency`, and it is
+/// stricter than "spawn then reply": the egress gate runs FIRST — so a caller with no grant is
+/// refused synchronously and never learns a task id — then the row is written, then the runner is
+/// attached, and only then is the id returned. A `tasks/get` issued with no delay after the
+/// `CreateTaskResult` therefore always resolves, because the row existed before the id did.
+async fn create_task(
+    ctx: &Ctx<'_>,
+    server: &super::catalogue::ServerEntry,
+    selected: &ToolEntry,
+    arguments: serde_json::Value,
+    id: Option<serde_json::Value>,
+) -> Response {
+    // The SAME egress gate the synchronous path runs, in the same position relative to the network:
+    // synchronous, reaching nothing, before anything is spent. A task must not be a way to get past
+    // a check by being answered later.
+    let authorised =
+        match super::upstream::authorise(server, selected, &arguments, ctx.gov.key.as_deref()) {
+            Ok(a) => a,
+            Err(denied) => return refuse_setup(ctx, &selected.namespaced, &denied, id),
+        };
+
+    // CHARGED ONCE, HERE, and this is the only moment at which a refusal can still be reported to
+    // the caller as a refusal. Once the `CreateTaskResult` is on the wire the request has been
+    // answered, so a later budget failure could only be expressed by failing the task — which
+    // reports a cost decision as an execution failure. See `tasks::run` for the other half.
+    let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+    if let Err(reason) = charge_round(
+        ctx,
+        &selected.namespaced,
+        &RoundRecord {
+            round: 0,
+            satisfied: None,
+        },
+        &mut holds,
+    ) {
+        return refuse(
+            ctx,
+            &selected.namespaced,
+            &DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}")),
+            id,
+        );
+    }
+    // The admission hold is RELEASED rather than parked for the life of the task. A concurrency
+    // slot models a request in flight, and the request ends here; holding it for a task that may
+    // run for minutes would make the gauge report queue depth for something that is not queued.
+    drop(holds);
+
+    let task = super::tasks::TASKS.create(task_principal(ctx));
+    let created = task.created();
+    super::tasks::spawn(
+        std::sync::Arc::clone(&task),
+        super::tasks::Runner {
+            pool: std::sync::Arc::clone(&ctx.app.mcp_pool),
+            handle: std::sync::Arc::clone(ctx.handle),
+            authorised,
+            arguments,
+            server_id: selected.server.clone(),
+            max_rounds: server.max_input_required_rounds,
+            task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
+        },
+    );
+    crate::admin::audit::AUDIT.record_by(
+        "mcp_tool.call",
+        &format!("mcp_tool:{}", selected.namespaced),
+        crate::admin::audit::OUTCOME_APPLIED,
+        ctx.actor,
+    );
+    task_result(id, created)
+}
+
+/// SEP-2243 §"Server Behavior for Custom Headers" — validate every `Mcp-Param-*` header this tool's
+/// approved schema declares, against the body it is supposed to mirror.
+///
+/// Returns the refusal message, or `None` when the request is consistent.
+///
+/// ## What is being defended, and why it is not merely a formality
+///
+/// The header exists so an intermediary can route or shape on a parameter without parsing the body.
+/// The moment the two can disagree, the intermediary and the executor are acting on two different
+/// requests — the proxy rate-limits on `tenant: alpha` while the server runs the call for
+/// `tenant: beta`. So a disagreement is not a nuisance to be reconciled by preferring one side; it
+/// is a malformed request, and both sides being present and unequal is the case that matters.
+///
+/// The FOUR RULES, each of which the suite exercises separately:
+///
+/// 1. `=?base64?…?=` is decoded STRICTLY. Invalid padding or a non-alphabet character is a
+///    rejection, not a best-effort decode — a lenient decoder makes two intermediaries disagree
+///    about the same bytes.
+/// 2. A value WITHOUT the complete wrapper is LITERAL. Not "looks like base64, try it": a value
+///    that happens to be valid base64 must not be silently decoded into something else.
+/// 3. The decoded value must equal the body's argument.
+/// 4. A header OMITTED while the body carries the argument is a mismatch. The header is how the
+///    intermediary sees the parameter, and a parameter it cannot see is one it cannot act on.
+fn custom_param_mismatch(
+    ctx: &Ctx<'_>,
+    selected: &ToolEntry,
+    arguments: &serde_json::Value,
+) -> Option<String> {
+    let properties = selected
+        .input_schema
+        .as_ref()?
+        .get("properties")?
+        .as_object()?;
+    for (property, definition) in properties {
+        let Some(suffix) = definition.get("x-mcp-header").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let header_name = format!("mcp-param-{suffix}");
+        let header = ctx
+            .headers
+            .get(&header_name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim);
+        // The BODY value as a string. A non-string argument has no header rendering this revision
+        // fixes, so it is left alone rather than stringified into a comparison busbar invented.
+        let body = arguments.get(property).and_then(|v| v.as_str());
+        match (header, body) {
+            (None, None) => continue,
+            (None, Some(_)) => {
+                return Some(format!(
+                    "`{property}` carries an `x-mcp-header` annotation, so a request whose body \
+                     sets it must also carry the `Mcp-Param-{suffix}` header. Without it an \
+                     intermediary routes on a parameter it cannot see."
+                ))
+            }
+            (Some(_), None) => {
+                return Some(format!(
+                    "The `Mcp-Param-{suffix}` header is set but the body's `arguments.{property}` \
+                     is absent or is not a string, so there is nothing for it to mirror."
+                ))
+            }
+            (Some(header), Some(body)) => {
+                let Some(decoded) = super::ingress::decode_param_sentinel(header) else {
+                    return Some(format!(
+                        "The `Mcp-Param-{suffix}` header carries a `=?base64?…?=` sentinel whose \
+                         contents are not valid Base64. It is refused rather than decoded \
+                         leniently: two intermediaries that disagree about the same bytes are two \
+                         different requests."
+                    ));
+                };
+                if decoded != body {
+                    return Some(format!(
+                        "The `Mcp-Param-{suffix}` header does not match the body's \
+                         `arguments.{property}`."
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The `HeaderMismatch` refusal, delegating to the ingress builder so the `-32020`/`400` pair
+/// cannot drift between the envelope checks and this one.
+fn header_mismatch(id: Option<serde_json::Value>, message: &str) -> Response {
+    error(
+        StatusCode::BAD_REQUEST,
+        id,
+        super::ingress::code::HEADER_MISMATCH,
+        message,
+        None,
+    )
 }
 
 /// Which MRTR ask field, if any, an upstream's supposedly-complete result still carries.
@@ -1301,6 +1731,33 @@ fn input_required_result(
         envelope.insert("id".into(), id);
     }
     envelope.insert("result".into(), serde_json::Value::Object(value));
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::Value::Object(envelope)),
+    )
+        .into_response()
+}
+
+/// `resultType: "task"` — the THIRD and last discriminator busbar returns, and the third separate
+/// constructor.
+///
+/// Three constructors rather than one with a parameter, for the reason [`result`] gives about the
+/// second: which discriminator a caller receives is always a decision busbar took at a visible call
+/// site, never a value that arrived from a third party and was passed through. [`result`] stamps
+/// `complete` unconditionally, [`input_required_result`] can only be called with operator-composed
+/// asks, and this one can only be called with a task busbar itself just created.
+fn task_result(id: Option<serde_json::Value>, created: serde_json::Value) -> Response {
+    use axum::response::IntoResponse as _;
+    let mut value = created;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("resultType".into(), RESULT_TYPE_TASK.into());
+    }
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".into(), "2.0".into());
+    if let Some(id) = id {
+        envelope.insert("id".into(), id);
+    }
+    envelope.insert("result".into(), value);
     (
         StatusCode::OK,
         axum::Json(serde_json::Value::Object(envelope)),

@@ -99,7 +99,7 @@ const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 /// JSON-RPC error codes this module emits. Named rather than inlined because three of the four are
 /// MCP extensions rather than JSON-RPC standard codes, and a bare `-32022` in a match arm is a
 /// magic number nobody can check against the schema.
-mod code {
+pub(super) mod code {
     /// JSON-RPC standard: the body was not valid JSON.
     pub(super) const PARSE_ERROR: i64 = -32700;
     /// JSON-RPC standard: valid JSON, but not a valid request object.
@@ -115,7 +115,7 @@ mod code {
     /// vocabulary for a body defect.
     pub(super) const INVALID_PARAMS: i64 = -32602;
     /// MCP `HeaderMismatchError`: an HTTP header disagreed with the body. Always `400`.
-    pub(super) const HEADER_MISMATCH: i64 = -32020;
+    pub(in crate::mcp) const HEADER_MISMATCH: i64 = -32020;
     /// MCP `UnsupportedProtocolVersionError`: carries `data.requested` and `data.supported`. Always
     /// `400`.
     pub(super) const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
@@ -369,6 +369,7 @@ pub(crate) async fn rpc(
         gov: &gov,
         actor: principal.actor_id(),
         capabilities: &capabilities,
+        headers: &headers,
     };
     let params = obj.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
@@ -531,13 +532,20 @@ fn is_loopback_origin(origin: &str) -> bool {
 
 /// Which `params` member `Mcp-Name` mirrors for `method`, or `None` when the header is not required.
 ///
-/// The three methods are enumerated rather than pattern-matched on a prefix: `tools/call` requires
-/// it and `tools/list` does not, so any rule shorter than the list is a rule that gets one of them
-/// wrong.
+/// The methods are enumerated rather than pattern-matched on a prefix, and the tasks namespace is
+/// why that matters rather than being fastidious: `tasks/get` carries the header and `tasks/result`
+/// — a method this revision REMOVED — does not, so a `tasks/*` prefix rule would answer `-32020`
+/// (your headers are wrong) to a request whose only defect is that it names a method that no longer
+/// exists, which must be `-32601`. Any rule shorter than the list gets one of them wrong.
+///
+/// SEP-2663 §"Streamable HTTP: Routing Headers" extends SEP-2243's requirement to the three tasks
+/// methods, mirroring `params.taskId` — so an intermediary can route a poll to the node holding the
+/// task without parsing the body, which is the whole purpose of the header.
 fn name_source_of(method: &str) -> Option<&'static str> {
     match method {
         "tools/call" | "prompts/get" => Some("name"),
         "resources/read" => Some("uri"),
+        "tasks/get" | "tasks/update" | "tasks/cancel" => Some("taskId"),
         _ => None,
     }
 }
@@ -549,6 +557,14 @@ fn name_source_of(method: &str) -> Option<&'static str> {
 /// encoded would decode a value the client sent verbatim. Returns `None` only when a well-formed
 /// sentinel wraps something that is not valid Base64 or not valid UTF-8, which is a malformed
 /// request rather than a mismatch — both answer `-32020`, but the message differs.
+///
+/// Exposed to the method table as [`decode_param_sentinel`] under its SEP-2243 name, because the
+/// `Mcp-Param-*` custom headers use the identical encoding and a second decoder would be a second
+/// place for "what counts as a sentinel" to be decided differently.
+pub(super) fn decode_param_sentinel(value: &str) -> Option<String> {
+    decode_sentinel(value)
+}
+
 fn decode_sentinel(value: &str) -> Option<String> {
     let Some(inner) = value
         .strip_prefix("=?base64?")

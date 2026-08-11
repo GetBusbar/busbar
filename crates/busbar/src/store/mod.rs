@@ -87,6 +87,29 @@ pub(crate) fn now() -> u64 {
         .as_secs()
 }
 
+/// The same wall clock in MILLISECONDS.
+///
+/// Beside [`now`] rather than in either plane, because two planes needed it and each had grown its
+/// own: `a2a::scheduler` for re-verification cadence, `mcp::tasks` for task timestamps and TTL.
+/// They agreed on the clock and disagreed on the SIGNEDNESS — one `u64`, one `i64` — which is the
+/// shape of defect that reads correctly in review and produces a wrong comparison or a silent wrap
+/// at whichever boundary the two eventually meet at. One function, one type, no boundary.
+///
+/// `u64`, matching [`now`]: this clock is a duration since the epoch and a negative one is not a
+/// time this process can observe. A caller doing signed arithmetic against it casts once, at the
+/// point where it knows what a backwards step would mean, rather than the clock guessing for it.
+///
+/// SECONDS remains the ledger's unit and is unchanged. Milliseconds exist for the two places that
+/// genuinely need sub-second arithmetic — a TTL an operator writes as `30s`, and a task poll
+/// interval — where a second-granularity clock would answer "some time in that second".
+pub(crate) fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 // Test-clock storage, THREAD-LOCAL.
 //
 // CRITICAL #1: these must NOT be function-local statics. A `static` declared inside a function body

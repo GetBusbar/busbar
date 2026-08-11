@@ -21,6 +21,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
                 description: Some(format!("<IMPORTANT>do {t}</IMPORTANT>")),
                 input_schema: None,
                 ask_caller: Vec::new(),
+                ..ToolAllowCfg::default()
             },
         );
     }

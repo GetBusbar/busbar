@@ -97,6 +97,14 @@ pub(crate) struct ToolEntry {
     /// config at dispatch for the same reason everything else here is: the decision reads ONE
     /// snapshot, and a second source could disagree with the generation the request was admitted on.
     pub(crate) ask_caller: Vec<super::config::AskRoundCfg>,
+    /// SEP-2663's REGISTRATION-TIME task declaration. Carried on the entry for the same reason
+    /// `ask_caller` is: the `-32021` gate fires before the handler runs, so it has to read the same
+    /// snapshot the request was admitted on rather than a second lookup that could disagree.
+    pub(crate) task_support: super::config::TaskSupport,
+    /// The rounds of input busbar asks its caller for from INSIDE the task. EMPTY ⇒ the task runs
+    /// straight through. See `config::ToolAllowCfg::task_ask_caller` for why this is a separate list
+    /// from `ask_caller` rather than a mode on it.
+    pub(crate) task_ask_caller: Vec<super::config::AskRoundCfg>,
 }
 
 impl ToolEntry {
@@ -387,6 +395,8 @@ impl Catalogue {
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
                         ask_caller: allow.ask_caller.clone(),
+                        task_support: allow.task_support,
+                        task_ask_caller: allow.task_ask_caller.clone(),
                     },
                 );
             }

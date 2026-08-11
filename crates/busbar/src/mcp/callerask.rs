@@ -390,6 +390,31 @@ pub(crate) fn decide(
     }
 }
 
+/// ONE round's asks, built from the operator's map and filtered to what THIS caller declared it can
+/// answer — the same construction and the same filter [`decide`] applies to the synchronous loop.
+///
+/// Exposed for the SEP-2663 task path (`super::tasks`), which asks the same operator-written rounds
+/// from inside a task rather than across a retry. It is the same rule in both places for the reason
+/// `mrtr.mdx:246` gives: a server must not send an `inputRequests` the client has not declared
+/// support for, and where the ask is carried does not change who has to be able to answer it.
+///
+/// There is deliberately no `request_state` here and none is minted. SEP-2663 removed the field
+/// from the v2 wire: a task is addressed by its own `taskId`, which busbar minted and holds, so
+/// there is no round-trip through the caller for a seal to protect.
+pub(crate) fn asks_for_round(
+    round: &AskRoundCfg,
+    capabilities: &serde_json::Value,
+) -> Vec<CallerAsk> {
+    round
+        .iter()
+        .map(|(key, cfg)| CallerAsk::from_config(key, cfg))
+        .filter(|ask| {
+            ask.capability_key()
+                .is_some_and(|k| declared(capabilities, k))
+        })
+        .collect()
+}
+
 /// Has the caller declared `key` in `_meta.io.modelcontextprotocol/clientCapabilities`?
 ///
 /// PRESENCE of the member, per the schema — the value is an options object and `{}` is a complete

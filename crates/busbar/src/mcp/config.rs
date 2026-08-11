@@ -134,6 +134,77 @@ pub(crate) struct ToolAllowCfg {
     /// which is deny-by-default and is every deployment that has not opted in. See [`AskEntryCfg`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ask_caller: Vec<AskRoundCfg>,
+    /// SEP-2663: whether a `tools/call` on this tool may — or must — be answered with a task rather
+    /// than a result. A REGISTRATION-TIME declaration, not a runtime property, because that is what
+    /// the `-32021` gate is keyed off: a client that did not declare the tasks extension has to be
+    /// refused BEFORE the handler runs, and the only thing that can decide that before the handler
+    /// runs is what the operator wrote here. See [`TaskSupport`].
+    #[serde(default, skip_serializing_if = "TaskSupport::is_none")]
+    pub(crate) task_support: TaskSupport,
+    /// The input busbar asks its own caller for FROM INSIDE the task, surfaced on `tasks/get` as
+    /// `inputRequests` and answered with `tasks/update`.
+    ///
+    /// A SEPARATE LIST from [`ask_caller`](Self::ask_caller) rather than a mode flag on it, because
+    /// the two are different exchanges and the difference is visible on the wire. `ask_caller:` is
+    /// the SEP-2322 synchronous loop: busbar answers `tools/call` with an `InputRequiredResult` and
+    /// the caller retries. This one is the SEP-2663 loop: busbar answers with a `CreateTaskResult`,
+    /// parks the task in `input_required`, and the caller answers out of band. A single list with a
+    /// mode switch would let one edit silently change which shape an existing deployment's callers
+    /// receive; two lists cannot.
+    ///
+    /// Requires [`task_support`](Self::task_support) other than `none` — see `validate_server`: a
+    /// tool that never creates a task has no task for these to be asked inside of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) task_ask_caller: Vec<AskRoundCfg>,
+}
+
+/// `tools.<server>.tools_allow.<tool>.task_support` — SEP-2663's registration-time declaration.
+///
+/// THREE VALUES AND NOT A BOOLEAN, because the extension distinguishes three postures and the
+/// middle one is the common case:
+///
+/// - `none` (the DEFAULT, and every tool that predates this grammar) — this tool is answered
+///   synchronously, always. A client that declared the tasks extension still gets a plain
+///   `ToolResult`, which is exactly what the extension says a server may do.
+/// - `optional` — busbar answers with a `CreateTaskResult` when the caller declared the extension,
+///   and synchronously when it did not. No client is locked out by an operator turning this on.
+/// - `required` — busbar CANNOT answer this tool synchronously, so a caller that did not declare
+///   the extension is refused with `-32021` before the handler runs, naming the extension in
+///   `data.requiredCapabilities`. This is the posture for a tool whose work genuinely outlives a
+///   request, and it is the one an operator must opt into deliberately, because it makes the tool
+///   invisible-in-practice to every client that has not implemented the extension.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TaskSupport {
+    /// Answered synchronously, always. The default, so nothing changes for a config that says
+    /// nothing.
+    #[default]
+    None,
+    /// A task when the caller declared the extension; a synchronous result when it did not.
+    Optional,
+    /// A task always, and `-32021` for a caller that cannot receive one.
+    Required,
+}
+
+impl TaskSupport {
+    /// Serde skip predicate — `none` is the default, so writing it back out would put a key into
+    /// every serialised tool that no operator typed.
+    pub(crate) fn is_none(&self) -> bool {
+        matches!(self, TaskSupport::None)
+    }
+
+    /// Whether a `tools/call` on this tool creates a task, given what the caller declared.
+    ///
+    /// The caller's declaration is read from the ONE place this revision puts it —
+    /// `params._meta['io.modelcontextprotocol/clientCapabilities']` — so a session-level
+    /// declaration and SEP-2575's per-request override are literally the same field and cannot
+    /// disagree.
+    pub(crate) fn creates_task(&self, client_declared: bool) -> bool {
+        match self {
+            TaskSupport::None => false,
+            TaskSupport::Optional | TaskSupport::Required => client_declared,
+        }
+    }
 }
 
 /// `tools.<server>.prompts_allow.<name>` — one exposed prompt, markup-normalised on the way out.
@@ -718,8 +789,20 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
         ));
     }
 
-    for tool in def.tools_allow.keys() {
+    for (tool, allow) in &def.tools_allow {
         validate_capability_name(&at, "tools_allow", tool)?;
+        // A task-scoped ask on a tool that never creates a task has no task to be asked inside of,
+        // so it would be silently unreachable: the caller would get a plain result and never see
+        // the confirmation gate the operator wrote. Refused at boot, where the operator is, rather
+        // than at a dispatch an hour later that simply does not ask.
+        if !allow.task_ask_caller.is_empty() && allow.task_support.is_none() {
+            return Err(format!(
+                "{at}: `tools_allow.{tool}.task_ask_caller:` is the input busbar asks its caller for \
+                 from INSIDE a task, and `task_support:` is absent or `none`, so this tool never \
+                 creates one. The ask would never be emitted. Set `task_support: optional` (or \
+                 `required`), or move the rounds to `ask_caller:` for the synchronous exchange."
+            ));
+        }
     }
     for (prompt, allow) in &def.prompts_allow {
         validate_capability_name(&at, "prompts_allow", prompt)?;

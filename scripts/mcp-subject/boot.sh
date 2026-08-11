@@ -270,6 +270,63 @@ tools:
       streaming_elicitation:
         schema_hash: "sha256:diagnostic-streaming-elicitation"
         description: "Returns a result whose stream carries no independent requests."
+      # ── SEP-2663 COMPOSITION: \`test\` + \`tool_with_task\` = \`test_tool_with_task\` ─────────────
+      #
+      # The one tasks fixture that belongs on THIS server rather than on its own, because the name
+      # the suite asks for already carries the \`test_\` prefix busbar's namespacing produces here.
+      #
+      # \`task_support: required\` AND an \`ask_caller:\` round, which is the whole point of the
+      # scenario: round 1 is the SYNCHRONOUS SEP-2322 ask (an InputRequiredResult carrying no
+      # taskId, because no task exists yet), and round 2 — the retry that answers it — escalates to
+      # a CreateTaskResult. A server that wired MRTR and tasks as independent surfaces returns a
+      # plain result on round 2 and fails.
+      #
+      # The gathered answer must survive into the TASK's eventual result, end to end. busbar binds
+      # an ask keyed \`user_name\` to the tool argument of that name, and the upstream echoes it —
+      # see \`tool_with_task\` in diagnostic-upstream.mjs.
+      tool_with_task:
+        schema_hash: "sha256:diagnostic-tool-with-task"
+        description: "Gathers a name, then escalates to a task that greets it."
+        task_support: required
+        ask_caller:
+          - user_name:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "What is your name?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: "Your name"
+                  required: ["name"]
+      # ── SEP-2243 CUSTOM PARAM HEADERS ────────────────────────────────────────────────────────
+      #
+      # THE SCHEMA IS THE FIXTURE. The suite scans \`tools/list\` for the first tool whose
+      # \`inputSchema\` carries an \`x-mcp-header\` annotation on a STRING property, then drives six
+      # cases against the header that annotation names. Without one, all five of that scenario's
+      # requirement checks report "not testable" — which the suite counts as a FAILURE, so the
+      # summary reads like a broken implementation while nothing has been exercised.
+      #
+      # It is declared HERE, in operator config, because busbar publishes the OPERATOR's schema and
+      # never the upstream's: the annotation is an operator's statement that this parameter is
+      # mirrored into an HTTP header for intermediaries to route on, and an upstream that could
+      # rewrite it could decide which of its own parameters got policed.
+      #
+      # \`tenant\` is not decorative. A tenant selector is the realistic case for this feature and
+      # the reason the mismatch rule is a MUST rather than a nicety: if the header and the body can
+      # disagree, the proxy rate-limits one tenant while the server runs the call for another.
+      header_param:
+        schema_hash: "sha256:diagnostic-header-param"
+        description: "Echoes a parameter that is mirrored into an Mcp-Param request header."
+        input_schema:
+          type: object
+          properties:
+            tenant:
+              type: string
+              description: "The tenant this call is for; mirrored into Mcp-Param-Tenant."
+              x-mcp-header: "Tenant"
       logging_tool:
         schema_hash: "sha256:diagnostic-logging-tool"
         description: "Exercises the request-scoped, logLevel-gated log channel."
@@ -479,6 +536,163 @@ tools:
           - content:
               type: text
               text: "Please process the embedded resource above."
+
+  # ── THE SEP-2663 TASK SERVERS ─────────────────────────────────────────────────────────────────
+  #
+  # FIVE REGISTRATIONS FOR FIVE TOOLS, and the fan-out is the routing key doing its job rather than
+  # being worked around. busbar's wire name is \`{server}_{tool}\`, so the bare names the tasks
+  # scenarios ask for are produced by choosing the server id that composes each one:
+  #
+  #     slow     + compute    = slow_compute
+  #     failing  + job        = failing_job
+  #     protocol + error_job  = protocol_error_job
+  #     confirm  + delete     = confirm_delete
+  #     multi    + input      = multi_input
+  #
+  # Every one goes through the REAL registration path in full — a declared authenticity root and a
+  # per-tool approved digest — exactly as \`test\` and \`json\` do, and for the reason this file's
+  # header gives: a tool the operator has not approved a digest for is catalogued and refuses to
+  # dispatch, so an approval had to be written for each.
+  #
+  # \`greet\` IS DELIBERATELY ABSENT AND ITS ABSENCE IS NOT AN OVERSIGHT. It is the one name the
+  # suite asks for that contains no separator, so no server id composes it, and there is no way to
+  # publish an un-namespaced name. The routing key is a locked design property — it is what stops
+  # two registered servers exposing the same tool name from silently answering for each other — and
+  # changing it to satisfy a fixture is not a decision this file may take. The checks that name
+  # \`greet\` stay red, visibly, rather than being reached by weakening the property they sit behind.
+  slow:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      # \`optional\`, NOT \`required\`, and the difference is asserted directly:
+      # sep-2663-server-rejects-undeclared-client calls this tool from a session that declared
+      # nothing and requires a plain synchronous ToolResult with content[]. \`required\` would answer
+      # -32021 there, which is the correct answer for a different declaration and the wrong one for
+      # this tool.
+      compute:
+        schema_hash: "sha256:diagnostic-slow-compute"
+        description: "Sleeps for the requested number of seconds and then returns a result."
+        task_support: optional
+        input_schema:
+          type: object
+          properties:
+            seconds:
+              type: number
+              description: "How long the work takes."
+            label:
+              type: string
+              description: "A label echoed back in the result."
+
+  failing:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      # \`required\` HERE, and it is what tasks-required-task-error reads. That scenario calls this
+      # tool from a client that declared no extension and requires -32021 with
+      # data.requiredCapabilities — an error returned BEFORE the handler runs, which is only
+      # possible because the declaration is registration-time config rather than something busbar
+      # could discover by trying.
+      #
+      # The tool's own behaviour is a TOOL-LEVEL error, which is a different axis entirely: with the
+      # extension declared it creates a task, the task runs, and the run reports failure — so the
+      # terminal status is \`completed\` with \`result.isError\`, never \`failed\`.
+      job:
+        schema_hash: "sha256:diagnostic-failing-job"
+        description: "Always reports a tool-execution error."
+        task_support: required
+
+  protocol:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      # The OTHER half of the error-semantics pair: this upstream answers a JSON-RPC error, so
+      # nothing ran and there is no tool output to report. The task settles \`failed\` with an
+      # inlined error{code,message} and no \`result\` at all.
+      error_job:
+        schema_hash: "sha256:diagnostic-protocol-error-job"
+        description: "Fails at the protocol level rather than reporting a tool error."
+        task_support: optional
+
+  confirm:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      # \`task_ask_caller:\` RATHER THAN \`ask_caller:\`, and the two are not interchangeable.
+      # \`ask_caller:\` is the SEP-2322 synchronous exchange — busbar answers tools/call with an
+      # InputRequiredResult and the caller retries, which is what the eight input-required-result
+      # fixtures above use. This one is the SEP-2663 exchange: busbar answers with a
+      # CreateTaskResult, parks the task in \`input_required\`, surfaces the ask as the task's
+      # \`inputRequests\`, and the caller answers with tasks/update. Writing this round under
+      # \`ask_caller:\` would produce the wrong shape on the wire for the same operator intent, which
+      # is exactly why they are two lists and not one list with a mode.
+      delete:
+        schema_hash: "sha256:diagnostic-confirm-delete"
+        description: "Deletes the named file once the caller has confirmed."
+        task_support: optional
+        task_ask_caller:
+          - confirmation:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Confirm deletion?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    confirm: { type: boolean }
+                  required: ["confirm"]
+        input_schema:
+          type: object
+          properties:
+            filename:
+              type: string
+              description: "The file to delete."
+
+  multi:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      # TWO KEYS IN ONE ROUND, which is what makes partial fulfilment testable at all: the scenario
+      # answers one key, requires the task to STAY \`input_required\` with only the other still
+      # listed, then answers the second and requires it to complete. Two SEPARATE rounds would park
+      # on one key at a time and the partial case would never arise.
+      input:
+        schema_hash: "sha256:diagnostic-multi-input"
+        description: "Runs once the caller has answered both parallel input requests."
+        task_support: optional
+        task_ask_caller:
+          - first_name:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "What is your name?"
+                requestedSchema:
+                  type: object
+                  properties:
+                    name: { type: string }
+            second_confirm:
+              method: elicitation/create
+              params:
+                mode: form
+                message: "Confirm to continue."
+                requestedSchema:
+                  type: object
+                  properties:
+                    confirm: { type: boolean }
 YAML
 }
 
