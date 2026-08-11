@@ -1607,3 +1607,222 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
          success: {missing_override:?}"
     );
 }
+
+// ── ALREADY-SIGNED PLUGINS MUST KEEP WORKING ────────────────────────────────────────────────────
+//
+// Adding the ten variants is only additive if a plugin built against an SDK that predates them
+// still loads and still behaves EXACTLY as it did. That plugin cannot decode `PutTask`, so its
+// `store_dispatch` answers the undecodable-request signal, and `DynStore` must turn that into the
+// trait default the engine would have received before any of this existed — never an error, and
+// never a boot failure.
+//
+// This uses the IN-TREE example plugin rather than the sibling sqlite fixture the denylist
+// fallback tests use, so it runs on every machine and in every job instead of skipping wherever a
+// sibling checkout is absent. A compatibility promise that only gets checked where somebody happens
+// to have cloned a second repo is not a checked promise.
+
+/// A `DynStore` over the in-tree store example plugin with the `call`/`free` seam faked, so a test
+/// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
+/// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
+fn dyn_example_store_with_fake_call() -> Option<DynStore> {
+    let path = store_example_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
+    let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
+        .expect("stage the in-tree store example plugin for the fake-call harness");
+    let mut raw = wire_up_raw(
+        lib,
+        "{}",
+        "fake-call-example".to_string(),
+        abi_kind::STORE,
+        abi_kind::STORE,
+        Some(staged),
+    )
+    .expect("wire up raw");
+    raw.call = fake_call;
+    raw.free = fake_free;
+    Some(DynStore { raw })
+}
+
+/// Run `op` against a store whose seam returns `(status, body)`, once per shape.
+fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
+    store: &DynStore,
+    op: impl Fn(&DynStore) -> StoreResult<T>,
+    expected: T,
+    what: &str,
+) {
+    // The two shapes an undecodable request has ever had on the wire: the current SDK's crisp
+    // `STATUS_UNSUPPORTED`, and the v1 SDK's `STATUS_PROTOCOL` carrying the `malformed request
+    // JSON:` body. Both mean "this plugin predates the variant".
+    let shapes: &[(i32, &'static [u8], &str)] = &[
+        (
+            STATUS_UNSUPPORTED,
+            b"malformed request JSON: unknown variant",
+            "a current-SDK plugin rebuilt before the task variants existed",
+        ),
+        (
+            STATUS_PROTOCOL,
+            b"malformed request JSON: unknown variant `PutTask`, expected one of `PutKey`",
+            "a v1-SDK plugin, the shape every v1 generation actually emitted",
+        ),
+    ];
+    for (status, body, who) in shapes {
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        let out = op(store).unwrap_or_else(|e| {
+            panic!(
+                "`{what}` against {who} returned an ERROR ({e:?}). An already-signed plugin that \
+                 cannot decode the request must get the pre-existing trait default, not a failure \
+                 — anything else breaks a plugin that was working before this change landed."
+            )
+        });
+        assert_eq!(
+            out, expected,
+            "`{what}` against {who} must answer exactly the trait default the engine got before \
+             these variants existed"
+        );
+    }
+}
+
+/// A plugin that predates all ten variants keeps working: every new op degrades to the SAME
+/// accept-and-keep-nothing default the engine took from the trait before the ABI carried them.
+#[test]
+fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
+    let Some(store) = dyn_example_store_with_fake_call() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let task = sample_task_row("task-old", "working", 1);
+    let event = TaskEventRow {
+        task_id: "task-old".into(),
+        seq: 1,
+        ts: 1,
+        kind: "task.submitted".into(),
+        context_id: "ctx".into(),
+        principal: "vk".into(),
+        agent_id: "a".into(),
+        state: "submitted".into(),
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    };
+    let call = McpCallRecord {
+        principal: "vk".into(),
+        seq: 1,
+        ts: 1,
+        server: "s".into(),
+        tool: "t".into(),
+        outcome: "dispatched".into(),
+        reason: String::new(),
+        tool_digest: "sha256:a".into(),
+        pin_generation: 1,
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    };
+
+    under_old_plugin_shapes(&store, |s| s.put_task(&task), (), "put_task");
+    under_old_plugin_shapes(&store, |s| s.get_task("task-old"), None, "get_task");
+    under_old_plugin_shapes(&store, |s| s.list_tasks(), Vec::new(), "list_tasks");
+    under_old_plugin_shapes(&store, |s| s.purge_tasks_before(9), 0, "purge_tasks_before");
+    under_old_plugin_shapes(
+        &store,
+        |s| s.append_task_event(&event),
+        (),
+        "append_task_event",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_task_events("task-old"),
+        Vec::new(),
+        "list_task_events",
+    );
+    under_old_plugin_shapes(&store, |s| s.append_mcp_call(&call), (), "append_mcp_call");
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_mcp_calls("vk"),
+        Vec::new(),
+        "list_mcp_calls",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_mcp_call_principals(),
+        Vec::new(),
+        "list_mcp_call_principals",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.purge_mcp_calls_before(9),
+        0,
+        "purge_mcp_calls_before",
+    );
+}
+
+/// The other half of the same promise, and the one that keeps the fallback honest: NOTHING except
+/// the undecodable-request signal is defaulted. A real backend error, a caught panic and a
+/// caller-protocol violation all PROPAGATE, so a genuine durability failure can never be laundered
+/// into "the plugin is just old" — which would report a discarded task as success all over again,
+/// this time with the variants present.
+#[test]
+fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
+    let Some(store) = dyn_example_store_with_fake_call() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let task = sample_task_row("task-err", "working", 1);
+    let failures: &[(i32, &'static [u8], &str)] = &[
+        (STATUS_ERR, b"disk full", "a real backend error"),
+        (STATUS_PANIC, b"panicked in put_task", "a caught panic"),
+        (
+            STATUS_PROTOCOL,
+            b"",
+            "a bare STATUS_PROTOCOL — a v1 caught panic, a null handle, or a caller-protocol \
+             violation",
+        ),
+        (99, b"", "an unknown status from a future or broken plugin"),
+    ];
+    for (status, body, what) in failures {
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.put_task(&task).is_err(),
+            "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
+             variants were added to close"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.get_task("task-err").is_err(),
+            "`get_task` must FAIL on {what}, never answer `None` — 'the task is gone' and 'the \
+             backend is broken' are different answers"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.append_task_event(&event_free_probe()).is_err(),
+            "`append_task_event` must FAIL on {what}"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.list_task_events("task-err").is_err(),
+            "`list_task_events` must FAIL on {what}"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.purge_tasks_before(9).is_err(),
+            "`purge_tasks_before` must FAIL on {what}, never report 0 purged"
+        );
+    }
+}
+
+/// A throwaway `TaskEventRow` for the failure-shape sweep, where the contents are irrelevant.
+fn event_free_probe() -> TaskEventRow {
+    TaskEventRow {
+        task_id: "task-err".into(),
+        seq: 1,
+        ts: 1,
+        kind: "task.submitted".into(),
+        context_id: "ctx".into(),
+        principal: "vk".into(),
+        agent_id: "a".into(),
+        state: "submitted".into(),
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    }
+}
