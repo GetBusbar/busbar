@@ -81,7 +81,12 @@ pub(crate) struct ToolEntry {
     pub(crate) server: String,
     /// The bare tool name as the upstream spells it.
     pub(crate) tool: String,
-    /// `{server}_{tool}` — THE ROUTING KEY, and the value an `mcp_tool` grant names.
+    /// THE PUBLISHED WIRE NAME — the routing key, and the value an `mcp_tool` grant names.
+    ///
+    /// `{server}_{tool}` unless the operator wrote `tools_allow.<tool>.publish_as:`, which is the
+    /// only thing that can make it anything else. Uniqueness across the whole registry is not this
+    /// field's to keep: `config::validate_published_names` refuses boot on a duplicate, so a
+    /// snapshot can only be built from a registry where every one of these is distinct.
     pub(crate) namespaced: String,
     /// The APPROVED schema/description hash — the pin every refresh is diffed against, which is how
     /// a rug-pull is caught. `None` means the operator has allowed the tool but approved no hash,
@@ -384,7 +389,16 @@ impl Catalogue {
         for (id, def) in &cfg.servers {
             servers.insert(id.clone(), server_entry(id, def));
             for (tool, allow) in &def.tools_allow {
-                let namespaced = namespaced(id, tool);
+                // THE PUBLISHED NAME: the operator's `publish_as:` where they wrote one, the
+                // `{server}_{tool}` default where they did not — which is every config that
+                // predates the field, so nothing that exists today changes. Uniqueness across the
+                // whole registry is `config::validate_published_names`, which has already refused
+                // boot by the time a snapshot is built; this is the only place that decides which
+                // of the two spellings a name IS.
+                let namespaced = allow
+                    .publish_as
+                    .clone()
+                    .unwrap_or_else(|| namespaced(id, tool));
                 tools.insert(
                     namespaced.clone(),
                     ToolEntry {

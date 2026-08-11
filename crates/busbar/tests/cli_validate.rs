@@ -835,3 +835,71 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--validate` REFUSES A PUBLISHED-NAME COLLISION, driven through the REAL binary.
+///
+/// `tools_allow.<tool>.publish_as:` is an optional override of the `{server}_{tool}` wire name, and
+/// the invariant it moves off construction — one published name resolving to exactly one
+/// `(server, tool)` — is now kept by validation. A validation that boot runs and `--validate` does
+/// not is worse than no validation: an operator would dry-run green in CI and watch the same file
+/// refuse to boot. Both reach `config::resolve`, and driving the binary is what proves it rather
+/// than asserting it.
+///
+/// THE COLLISION UNDER TEST IS THE SUBTLE ONE — an override against a namespaced default nobody
+/// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
+/// only to each other would exit 0 here and look correct doing it.
+#[test]
+fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
+    let dir = fixture_dir("publish-as-collision");
+    write_configs(
+        &dir,
+        r#"tools:
+  foo:
+    url: "https://foo.internal/mcp"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other.internal/mcp"
+    pin: { mechanism: unpinned }
+    tools_allow:
+      anything:
+        publish_as: foo_bar
+"#,
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let all = format!("{stdout}{stderr}");
+    assert_eq!(code, 1, "a colliding config must not validate clean: {all}");
+    assert!(all.contains("published as `foo_bar`"), "{all}");
+    // BOTH claimants named — one is a line the operator typed, the other is a name the DEFAULT
+    // produced, and an error that named only the typed one would send them looking for a second
+    // `publish_as:` that does not exist.
+    assert!(all.contains("tools.foo.tools_allow.bar"), "{all}");
+    assert!(
+        all.contains("tools.other.tools_allow.anything.publish_as"),
+        "{all}"
+    );
+
+    // GREEN, one name changed and nothing else: the refusal is about the collision, not about
+    // `publish_as:` existing. Without this half the test above is satisfied by a build that refuses
+    // every override.
+    write_configs(
+        &dir,
+        r#"tools:
+  foo:
+    url: "https://foo.internal/mcp"
+    pin: { mechanism: unpinned }
+    tools_allow: { bar: {} }
+  other:
+    url: "https://other.internal/mcp"
+    pin: { mechanism: unpinned }
+    tools_allow:
+      anything:
+        publish_as: greet
+"#,
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "distinct published names must validate clean: {stdout}{stderr}"
+    );
+}

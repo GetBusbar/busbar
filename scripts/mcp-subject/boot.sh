@@ -554,12 +554,8 @@ tools:
   # header gives: a tool the operator has not approved a digest for is catalogued and refuses to
   # dispatch, so an approval had to be written for each.
   #
-  # \`greet\` IS DELIBERATELY ABSENT AND ITS ABSENCE IS NOT AN OVERSIGHT. It is the one name the
-  # suite asks for that contains no separator, so no server id composes it, and there is no way to
-  # publish an un-namespaced name. The routing key is a locked design property — it is what stops
-  # two registered servers exposing the same tool name from silently answering for each other — and
-  # changing it to satisfy a fixture is not a decision this file may take. The checks that name
-  # \`greet\` stay red, visibly, rather than being reached by weakening the property they sit behind.
+  # \`greet\` IS THE SIXTH, AND IT IS REACHED THE OTHER WAY. It is the one name the suite asks for
+  # that contains no separator, so no server id composes it — see \`greeter:\` below.
   slow:
     url: "http://127.0.0.1:$upstream_port/mcp"
     allow_private: true
@@ -693,6 +689,49 @@ tools:
                   type: object
                   properties:
                     confirm: { type: boolean }
+
+  # ── \`greet\`: THE ONE NAME NO SERVER ID COMPOSES ───────────────────────────────────────────────
+  #
+  # Every other bare name the suite asks for contains the separator, so it is produced by choosing
+  # the server id that composes it — \`slow\`+\`compute\`, \`json\`+\`schema_2020_12_tool\`, and the rest.
+  # \`greet\` has no separator, so \`{server}{_}{tool}\` cannot express it at all. That is not a fixture
+  # problem to work around, and it was not worked around: the grammar gained
+  # \`tools_allow.<tool>.publish_as:\`, an OPTIONAL per-tool wire-name override whose ABSENCE leaves
+  # every existing config publishing byte-identical names.
+  #
+  # THE INVARIANT IS NOT WEAKENED, IT IS RE-KEPT. One published name must resolve to exactly one
+  # (server, tool) — because \`mcp/catalogue.rs\` gates on \`grant("mcp_server", server) &&
+  # grant("mcp_tool", published)\`, so a name meaning two pairs would mean one grant authorizing
+  # two upstreams. It used to hold by construction; it now holds by
+  # \`mcp::config::validate_published_names\`, which builds the FULL published set — every namespaced
+  # default AND every override — and REFUSES BOOT on a duplicate, naming both sides. So this
+  # registration is exactly as safe as the five above and it fails loudly, at boot, if it ever stops
+  # being.
+  #
+  # THE REAL PATH, with nothing bypassed: a declared authenticity root and a per-tool approved
+  # digest, like every other fixture here. No \`task_support\`, because all four checks that call this
+  # tool require a plain synchronous ToolResult with a non-empty content[] — a tool that could
+  # answer with a task would make the sync baseline depend on which branch ran.
+  #
+  # The server id \`greeter\` is not decorative either: it is the proof that the default would have
+  # been \`greeter_greet\` and that \`publish_as\` is what makes it \`greet\`.
+  greeter:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      greet:
+        publish_as: greet
+        schema_hash: "sha256:diagnostic-greet"
+        description: "Returns a greeting for the supplied name."
+        input_schema:
+          type: object
+          properties:
+            name:
+              type: string
+              description: "Who to greet."
 YAML
 }
 

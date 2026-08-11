@@ -244,9 +244,12 @@ for (const [name, description] of Object.entries(MRTR_FIXTURES)) {
 // `multi` + `input`. That is the same device the `test` and `json` registrations already use, and it
 // goes through the REAL namespacing with nothing bypassed — see this file's header.
 //
-// `greet` is the ONE name in the suite that has no separator in it, and there is therefore no server
-// id that produces it. It is left unreachable deliberately rather than worked around: the routing
-// key is a locked design property and changing it is not a fixture's decision to take.
+// `greet` is the ONE name in the suite that has no separator in it, so no server id produces it.
+// It is reached by the OTHER mechanism, which is an owner decision and not a fixture's: the
+// registration writes `tools_allow.greet.publish_as: greet`. The property the routing key protects —
+// one wire name resolving to exactly one (server, tool) — is unchanged; what changed is that it is
+// now kept by `mcp::config::validate_published_names`, which refuses boot on a duplicate, instead of
+// by construction. See `greeter:` in boot.sh and TOOLS.greet below.
 //
 // WHAT THESE FIXTURES ARE AND ARE NOT. They are a CONTENT SOURCE, exactly as the content tools
 // above are. The whole task lifecycle — creating the task, parking it on input, resuming it,
@@ -336,6 +339,24 @@ TOOLS.tool_with_task = {
       content: [{ type: "text", text: `Hello, ${name}! (gathered during the MRTR phase)` }],
     };
   },
+};
+
+// `greet` — THE SYNCHRONOUS BASELINE the tasks scenarios measure everything else against.
+//
+// Four checks call it and all four require the SAME thing: a plain `ToolResult` with a non-empty
+// `content[]`, no `resultType: "task"` and no top-level `taskId`. So it declares no `task_support`
+// in boot.sh and does no work here — a tool that could ever answer with a task would make
+// `TasksSyncToolCall` pass or fail depending on which branch ran, which is the opposite of a
+// baseline.
+//
+// It is reachable because the registration in boot.sh writes `publish_as: greet`. See the comment
+// there: `greet` carries no separator, so no server id composes it, and it is the one name in the
+// suite the `{server}_{tool}` default cannot express.
+TOOLS.greet = {
+  description: "Returns a greeting for the supplied name, synchronously and always.",
+  result: (_progressToken, args) => ({
+    content: [{ type: "text", text: `Hello, ${args?.name ?? "world"}!` }],
+  }),
 };
 
 // SEP-2243 §"Server Behavior for Custom Headers". The tool exists so busbar has an `x-mcp-header`
