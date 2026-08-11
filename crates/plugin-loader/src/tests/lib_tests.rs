@@ -1255,3 +1255,574 @@ fn load_and_exercise_export_example_plugin() {
     )
     .expect("deliver returns Delivered");
 }
+
+// ── A2A TASK DURABILITY OVER THE REAL PLUGIN PATH ───────────────────────────────────────────────
+//
+// The three row types are imported HERE rather than taken from `use super::*`, so this test
+// compiles unchanged against a `plugin-loader` that does not yet know them. That is not tidiness:
+// it is what let this test be run RED against the pre-fix ABI and watched to report the task
+// missing after the restart, instead of failing to build and proving nothing.
+//
+// The only shape of test that can see the defect these overrides close. `busbar-plugin-abi`'s
+// `StoreRequest` had NO variant for any of the ten A2A-task / MCP-call-log ops and `DynStore`
+// overrode none of them, so a store loaded as a plugin — which is BOTH deployment paths, file-drop
+// and runtime install — fell through to the trait's accept-and-keep-nothing defaults. `put_task`
+// discarded the task and returned `Ok(())`. Every store crate's own unit tests passed the whole
+// time, because they never cross the ABI.
+
+/// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
+/// `secret_example_plugin_path`/`export_example_plugin_path`, including checking BOTH the uplifted
+/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
+/// `cargo test -p busbar-plugin-loader` only produces the latter).
+///
+/// Under `CI` a missing cdylib is a HARD failure. Unlike the sqlite fixture this plugin is an
+/// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
+/// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
+/// end: a green run that proved nothing about durability.
+use busbar_api::{McpCallRecord, TaskEventRow, TaskRow};
+
+fn store_example_plugin_path() -> Option<std::path::PathBuf> {
+    let candidate = (|| {
+        let exe = std::env::current_exe().ok()?;
+        let profile_dir = exe.parent()?.parent()?;
+        let name = plugin_library_filename("busbar_store_example_plugin");
+        let uplifted = profile_dir.join(&name);
+        let raw = profile_dir.join("deps").join(&name);
+        [uplifted, raw]
+            .into_iter()
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
+    })();
+    if candidate.is_none() && std::env::var_os("CI").is_some() {
+        panic!(
+            "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
+             build busbar_store_example_plugin (checked both the uplifted target dir and \
+             target/deps). Refusing to silently skip the ONLY end-to-end proof that a task written \
+             through a plugin store survives a restart."
+        );
+    }
+    candidate
+}
+
+/// A `TaskRow` with every field set to something distinguishable, so a round trip that drops or
+/// transposes a field fails rather than passing on a mostly-empty row.
+fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> TaskRow {
+    TaskRow {
+        task_id: task_id.to_string(),
+        context_id: "ctx-42".into(),
+        principal: "vk_owner".into(),
+        direction: "inbound".into(),
+        state: state.to_string(),
+        agent_id: "agent-7".into(),
+        artifact_cursor: 3,
+        push_callback: "https://example.invalid/hook".into(),
+        created_at: 1_000,
+        updated_at,
+    }
+}
+
+/// THE TEST. Load the store as a PLUGIN, write a task (plus its provenance chain and an MCP call
+/// record), then RESTART the plugin — drop the handle, unload the library, `dlopen` it again and
+/// `busbar_open` a fresh instance whose only possible source of state is the bytes on disk — and
+/// read everything back over the same ABI.
+///
+/// Against the ABI as it stood before the ten variants were added this fails at the first
+/// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
+#[test]
+fn task_state_written_through_a_plugin_store_survives_a_restart() {
+    let Some(lib) = store_example_plugin_path() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    // A private file for this test's own durable state; `load_store` passes it to the plugin's
+    // `open`, which is what selects the fixture's file-backed mode.
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-task-durability-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create durable dir");
+    let state_file = dir.join("durable.json");
+    let cfg = serde_json::json!({ "durable_path": state_file.to_string_lossy() }).to_string();
+
+    let task = sample_task_row("task-abc", "input-required", 2_000);
+    let event = TaskEventRow {
+        task_id: "task-abc".into(),
+        seq: 1,
+        ts: 1_500,
+        kind: "task.submitted".into(),
+        context_id: "ctx-42".into(),
+        principal: "vk_owner".into(),
+        agent_id: "agent-7".into(),
+        state: "submitted".into(),
+        request_id: "req-9".into(),
+        prev_hash: String::new(),
+        hash: "deadbeef".into(),
+    };
+    let call = McpCallRecord {
+        principal: "vk_owner".into(),
+        seq: 1,
+        ts: 1_600,
+        server: "srv".into(),
+        tool: "srv_echo".into(),
+        outcome: "dispatched".into(),
+        reason: String::new(),
+        tool_digest: "sha256:aaa".into(),
+        pin_generation: 4,
+        request_id: "req-9".into(),
+        prev_hash: String::new(),
+        hash: "cafebabe".into(),
+    };
+
+    // ── BEFORE THE RESTART: write through the plugin, and assert NOTHING ──────────────────────
+    //
+    // Deliberately no read-back here. The failure this test exists to show is the one AFTER the
+    // restart, and an assertion in this block would fire first and report a same-process symptom
+    // instead — which is exactly what happened on the first red run. The same-handle round trip is
+    // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
+    {
+        let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+        store.put_task(&task).expect("put_task");
+        store.append_task_event(&event).expect("append_task_event");
+        store.append_mcp_call(&call).expect("append_mcp_call");
+        // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
+        // held in memory goes with it.
+    }
+
+    // ── THE RESTART: a fresh dlopen and a fresh `busbar_open` ─────────────────────────────────
+    let store = load_store(&lib, &cfg).expect("re-load store example plugin after the restart");
+
+    assert_eq!(
+        store.get_task("task-abc").expect("get_task after restart"),
+        Some(task.clone()),
+        "THE WHOLE POINT: a task written through the plugin ABI must still be there after a \
+         restart. `None` here is the production defect — `put_task` reported success and the \
+         engine kept nothing."
+    );
+    assert_eq!(
+        store.list_tasks().expect("list_tasks after restart"),
+        vec![task.clone()]
+    );
+    assert_eq!(
+        store
+            .list_task_events("task-abc")
+            .expect("list_task_events after restart"),
+        vec![event],
+        "the provenance chain must survive with `hash`/`prev_hash` verbatim"
+    );
+    assert_eq!(
+        store
+            .list_mcp_calls("vk_owner")
+            .expect("list_mcp_calls after restart"),
+        vec![call]
+    );
+    assert_eq!(
+        store
+            .list_mcp_call_principals()
+            .expect("list_mcp_call_principals after restart"),
+        vec!["vk_owner".to_string()],
+        "the boot enumeration must find the principal whose chain this process never saw written"
+    );
+
+    // ── the two retention ops, which return a COUNT rather than `Ok(0)` from a defaulted no-op ──
+    assert_eq!(
+        store.purge_tasks_before(3_000).expect("purge_tasks_before"),
+        0,
+        "an `input-required` task is NEVER purged by age — it is exactly the row waiting on a human"
+    );
+    let terminal = sample_task_row("task-done", "completed", 2_000);
+    store.put_task(&terminal).expect("put_task terminal");
+    assert_eq!(
+        store.purge_tasks_before(3_000).expect("purge_tasks_before"),
+        1,
+        "the TERMINAL row is purged, and the count comes from the plugin, not a default"
+    );
+    assert_eq!(
+        store
+            .purge_mcp_calls_before(2_000)
+            .expect("purge_mcp_calls_before"),
+        1
+    );
+
+    // The purge is durable too: a third open sees the compacted state.
+    drop(store);
+    let store = load_store(&lib, &cfg).expect("re-load after the purge");
+    assert_eq!(
+        store.list_tasks().expect("list_tasks").len(),
+        1,
+        "the purge must have been written through, not just applied in the plugin's memory"
+    );
+    assert!(store
+        .list_mcp_calls("vk_owner")
+        .expect("list_mcp_calls")
+        .is_empty());
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same-handle round trip, split out of the durability test so that a failure there names the
+/// RESTART rather than being pre-empted by a same-process symptom. This is the narrower claim: a
+/// task written through the plugin ABI is readable back through the plugin ABI at all.
+#[test]
+fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
+    let Some(lib) = store_example_plugin_path() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-task-roundtrip-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create durable dir");
+    let cfg = serde_json::json!({ "durable_path": dir.join("durable.json").to_string_lossy() })
+        .to_string();
+
+    let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+    let task = sample_task_row("task-rt", "working", 5_000);
+    store.put_task(&task).expect("put_task");
+    assert_eq!(
+        store.get_task("task-rt").expect("get_task"),
+        Some(task),
+        "`put_task` returned Ok — the task must actually be there. `None` means the write was \
+         discarded at the ABI and the success was a lie."
+    );
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every `Store` trait method has a `StoreRequest` variant AND a `DynStore` override — checked by
+/// PARSING THE SOURCE, because neither gap is a compile error.
+///
+/// A missing `StoreRequest` variant is invisible to the compiler (the trait has a default), and a
+/// missing `DynStore` override is invisible for the same reason: `impl Store for DynStore` compiles
+/// perfectly while silently inheriting an accept-and-keep-nothing default for an op the backend
+/// implements. That is precisely how ten methods reached `dev` with the engine dropping every write
+/// over the deployment path, and it was found by accident rather than by any check. This is the
+/// check.
+///
+/// Source parsing is admittedly crude, and it is the honest tool for the job: there is no runtime
+/// reflection over a Rust trait, and a `#[deny]`-style compile-time proof would need a proc macro
+/// owning both the trait and the enum. The failure mode of a parser that drifts is a FALSE ALARM
+/// naming the method it could not find, which is a loud, cheap thing to fix — the opposite of the
+/// silent pass it replaces.
+#[test]
+fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
+    fn snake(camel: &str) -> String {
+        let mut out = String::new();
+        for (i, c) in camel.char_indices() {
+            if c.is_uppercase() && i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        }
+        out
+    }
+
+    let trait_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../api/src/store.rs"));
+    let abi_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugin-abi/src/lib.rs"
+    ));
+    let loader_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+
+    // The trait's methods: `fn <name>` at exactly four spaces of indent, after `pub trait Store`.
+    let trait_body = trait_src
+        .split_once("pub trait Store")
+        .expect("the Store trait")
+        .1;
+    let methods: Vec<&str> = trait_body
+        .lines()
+        .filter_map(|l| l.strip_prefix("    fn "))
+        .filter_map(|l| l.split(['(', '<', ' ']).next())
+        .collect();
+    assert!(
+        methods.len() > 30,
+        "the trait parser found only {} methods — it has drifted from the source shape and would \
+         pass vacuously: {methods:?}",
+        methods.len()
+    );
+
+    // The wire enum's variants, snake_cased back to the method name they mirror one-to-one.
+    let enum_body = abi_src
+        .split_once("pub enum StoreRequest {")
+        .expect("the StoreRequest enum")
+        .1
+        .split_once("\n}\n")
+        .expect("the end of StoreRequest")
+        .0;
+    let variants: Vec<String> = enum_body
+        .lines()
+        .filter_map(|l| l.strip_prefix("    "))
+        .filter(|l| l.starts_with(|c: char| c.is_uppercase()))
+        .filter_map(|l| l.split(['(', '{', ',', ' ']).next())
+        .map(snake)
+        .collect();
+    // The enum parser's own sanity check is deliberately NOT a count. A count floor here would be
+    // measuring the very thing this test reports on, so a tree that is genuinely missing variants
+    // fails with "the parser has drifted" — misdirection, and observed on this test's first red
+    // run. Anchor on variants that have existed since v1 instead: if those parse, the parser works,
+    // and any absence below is a real absence.
+    for anchor in ["put_key", "list_denylist", "lookup_credential_secret"] {
+        assert!(
+            variants.iter().any(|v| v == anchor),
+            "the enum parser did not find `{anchor}`, which has always been there — the parser has \
+             drifted from the source shape and every check below would pass vacuously: {variants:?}"
+        );
+    }
+
+    // `DynStore`'s overrides.
+    let dynstore_body = loader_src
+        .split_once("impl Store for DynStore {")
+        .expect("impl Store for DynStore")
+        .1;
+    let overrides: Vec<&str> = dynstore_body
+        .lines()
+        .filter_map(|l| l.strip_prefix("    fn "))
+        .filter_map(|l| l.split(['(', '<', ' ']).next())
+        .collect();
+
+    let missing_variant: Vec<&&str> = methods
+        .iter()
+        .filter(|m| !variants.iter().any(|v| v == *m))
+        .collect();
+    assert!(
+        missing_variant.is_empty(),
+        "these `Store` methods have NO `StoreRequest` variant, so a plugin store can never be \
+         asked to perform them and the trait's default silently answers instead: {missing_variant:?}"
+    );
+
+    let missing_override: Vec<&&str> = methods.iter().filter(|m| !overrides.contains(*m)).collect();
+    assert!(
+        missing_override.is_empty(),
+        "these `Store` methods are NOT overridden by `DynStore`, so every plugin-loaded backend \
+         silently inherits the trait default for them — the write is discarded and reports \
+         success: {missing_override:?}"
+    );
+}
+
+// ── ALREADY-SIGNED PLUGINS MUST KEEP WORKING ────────────────────────────────────────────────────
+//
+// Adding the ten variants is only additive if a plugin built against an SDK that predates them
+// still loads and still behaves EXACTLY as it did. That plugin cannot decode `PutTask`, so its
+// `store_dispatch` answers the undecodable-request signal, and `DynStore` must turn that into the
+// trait default the engine would have received before any of this existed — never an error, and
+// never a boot failure.
+//
+// This uses the IN-TREE example plugin rather than the sibling sqlite fixture the denylist
+// fallback tests use, so it runs on every machine and in every job instead of skipping wherever a
+// sibling checkout is absent. A compatibility promise that only gets checked where somebody happens
+// to have cloned a second repo is not a checked promise.
+
+/// A `DynStore` over the in-tree store example plugin with the `call`/`free` seam faked, so a test
+/// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
+/// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
+fn dyn_example_store_with_fake_call() -> Option<DynStore> {
+    let path = store_example_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
+    let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
+        .expect("stage the in-tree store example plugin for the fake-call harness");
+    let mut raw = wire_up_raw(
+        lib,
+        "{}",
+        "fake-call-example".to_string(),
+        abi_kind::STORE,
+        abi_kind::STORE,
+        Some(staged),
+    )
+    .expect("wire up raw");
+    raw.call = fake_call;
+    raw.free = fake_free;
+    Some(DynStore { raw })
+}
+
+/// Run `op` against a store whose seam returns `(status, body)`, once per shape.
+fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
+    store: &DynStore,
+    op: impl Fn(&DynStore) -> StoreResult<T>,
+    expected: T,
+    what: &str,
+) {
+    // The two shapes an undecodable request has ever had on the wire: the current SDK's crisp
+    // `STATUS_UNSUPPORTED`, and the v1 SDK's `STATUS_PROTOCOL` carrying the `malformed request
+    // JSON:` body. Both mean "this plugin predates the variant".
+    let shapes: &[(i32, &'static [u8], &str)] = &[
+        (
+            STATUS_UNSUPPORTED,
+            b"malformed request JSON: unknown variant",
+            "a current-SDK plugin rebuilt before the task variants existed",
+        ),
+        (
+            STATUS_PROTOCOL,
+            b"malformed request JSON: unknown variant `PutTask`, expected one of `PutKey`",
+            "a v1-SDK plugin, the shape every v1 generation actually emitted",
+        ),
+    ];
+    for (status, body, who) in shapes {
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        let out = op(store).unwrap_or_else(|e| {
+            panic!(
+                "`{what}` against {who} returned an ERROR ({e:?}). An already-signed plugin that \
+                 cannot decode the request must get the pre-existing trait default, not a failure \
+                 — anything else breaks a plugin that was working before this change landed."
+            )
+        });
+        assert_eq!(
+            out, expected,
+            "`{what}` against {who} must answer exactly the trait default the engine got before \
+             these variants existed"
+        );
+    }
+}
+
+/// A plugin that predates all ten variants keeps working: every new op degrades to the SAME
+/// accept-and-keep-nothing default the engine took from the trait before the ABI carried them.
+#[test]
+fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
+    let Some(store) = dyn_example_store_with_fake_call() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let task = sample_task_row("task-old", "working", 1);
+    let event = TaskEventRow {
+        task_id: "task-old".into(),
+        seq: 1,
+        ts: 1,
+        kind: "task.submitted".into(),
+        context_id: "ctx".into(),
+        principal: "vk".into(),
+        agent_id: "a".into(),
+        state: "submitted".into(),
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    };
+    let call = McpCallRecord {
+        principal: "vk".into(),
+        seq: 1,
+        ts: 1,
+        server: "s".into(),
+        tool: "t".into(),
+        outcome: "dispatched".into(),
+        reason: String::new(),
+        tool_digest: "sha256:a".into(),
+        pin_generation: 1,
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    };
+
+    under_old_plugin_shapes(&store, |s| s.put_task(&task), (), "put_task");
+    under_old_plugin_shapes(&store, |s| s.get_task("task-old"), None, "get_task");
+    under_old_plugin_shapes(&store, |s| s.list_tasks(), Vec::new(), "list_tasks");
+    under_old_plugin_shapes(&store, |s| s.purge_tasks_before(9), 0, "purge_tasks_before");
+    under_old_plugin_shapes(
+        &store,
+        |s| s.append_task_event(&event),
+        (),
+        "append_task_event",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_task_events("task-old"),
+        Vec::new(),
+        "list_task_events",
+    );
+    under_old_plugin_shapes(&store, |s| s.append_mcp_call(&call), (), "append_mcp_call");
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_mcp_calls("vk"),
+        Vec::new(),
+        "list_mcp_calls",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.list_mcp_call_principals(),
+        Vec::new(),
+        "list_mcp_call_principals",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.purge_mcp_calls_before(9),
+        0,
+        "purge_mcp_calls_before",
+    );
+}
+
+/// The other half of the same promise, and the one that keeps the fallback honest: NOTHING except
+/// the undecodable-request signal is defaulted. A real backend error, a caught panic and a
+/// caller-protocol violation all PROPAGATE, so a genuine durability failure can never be laundered
+/// into "the plugin is just old" — which would report a discarded task as success all over again,
+/// this time with the variants present.
+#[test]
+fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
+    let Some(store) = dyn_example_store_with_fake_call() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let task = sample_task_row("task-err", "working", 1);
+    let failures: &[(i32, &'static [u8], &str)] = &[
+        (STATUS_ERR, b"disk full", "a real backend error"),
+        (STATUS_PANIC, b"panicked in put_task", "a caught panic"),
+        (
+            STATUS_PROTOCOL,
+            b"",
+            "a bare STATUS_PROTOCOL — a v1 caught panic, a null handle, or a caller-protocol \
+             violation",
+        ),
+        (99, b"", "an unknown status from a future or broken plugin"),
+    ];
+    for (status, body, what) in failures {
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.put_task(&task).is_err(),
+            "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
+             variants were added to close"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.get_task("task-err").is_err(),
+            "`get_task` must FAIL on {what}, never answer `None` — 'the task is gone' and 'the \
+             backend is broken' are different answers"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.append_task_event(&event_free_probe()).is_err(),
+            "`append_task_event` must FAIL on {what}"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.list_task_events("task-err").is_err(),
+            "`list_task_events` must FAIL on {what}"
+        );
+        FAKE_CALL.with(|c| c.set((*status, *body)));
+        assert!(
+            store.purge_tasks_before(9).is_err(),
+            "`purge_tasks_before` must FAIL on {what}, never report 0 purged"
+        );
+    }
+}
+
+/// A throwaway `TaskEventRow` for the failure-shape sweep, where the contents are irrelevant.
+fn event_free_probe() -> TaskEventRow {
+    TaskEventRow {
+        task_id: "task-err".into(),
+        seq: 1,
+        ts: 1,
+        kind: "task.submitted".into(),
+        context_id: "ctx".into(),
+        principal: "vk".into(),
+        agent_id: "a".into(),
+        state: "submitted".into(),
+        request_id: "r".into(),
+        prev_hash: String::new(),
+        hash: "h".into(),
+    }
+}

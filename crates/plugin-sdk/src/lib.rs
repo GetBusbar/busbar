@@ -149,6 +149,25 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             R::Unit
         }
         Q::ListDenylist => R::Denylist(store.list_denylist()?),
+        Q::PutTask(t) => {
+            store.put_task(&t)?;
+            R::Unit
+        }
+        Q::GetTask(task_id) => R::Task(store.get_task(&task_id)?),
+        Q::ListTasks => R::Tasks(store.list_tasks()?),
+        Q::PurgeTasksBefore(before) => R::Purged(store.purge_tasks_before(before)?),
+        Q::AppendTaskEvent(e) => {
+            store.append_task_event(&e)?;
+            R::Unit
+        }
+        Q::ListTaskEvents(task_id) => R::TaskEvents(store.list_task_events(&task_id)?),
+        Q::AppendMcpCall(rec) => {
+            store.append_mcp_call(&rec)?;
+            R::Unit
+        }
+        Q::ListMcpCalls(principal) => R::McpCalls(store.list_mcp_calls(&principal)?),
+        Q::ListMcpCallPrincipals => R::McpCallPrincipals(store.list_mcp_call_principals()?),
+        Q::PurgeMcpCallsBefore(before) => R::Purged(store.purge_mcp_calls_before(before)?),
     })
 }
 

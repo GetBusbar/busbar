@@ -470,6 +470,8 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
  "busbar-store-memory",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

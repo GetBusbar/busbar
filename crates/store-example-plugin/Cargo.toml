@@ -9,9 +9,17 @@ description = "A hermetic trivial kind:store plugin cdylib, wrapping the in-tree
 license = "Apache-2.0"
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for the C ABI delivery; rlib is REQUIRED for `cargo test` to actually emit the cdylib
+# artifact at all when this crate has no in-crate #[test]s of its own — with cdylib-only, `cargo
+# test` builds a trivial "0 tests" harness for this package but never produces the .so/.dylib.
+# plugin-loader's durability test dlopens the real built cdylib, so without this it would find
+# nothing under a scoped `cargo test -p busbar-plugin-loader`. Same fix, same reason, as
+# busbar-secret-example-plugin's.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
 busbar-store-memory = { path = "../store-memory" }
+serde = { workspace = true }
+serde_json = { workspace = true }
