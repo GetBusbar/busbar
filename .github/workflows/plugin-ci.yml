@@ -45,14 +45,6 @@ on:
         required: false
         type: string
         default: "none"
-      extra_sibling_test_command:
-        description: >-
-          Optional extra shell command run from the sibling busbarAI checkout after this repo's own
-          tests pass — e.g. `cargo test -p busbar-store-postgres` to also exercise the monorepo's
-          own live-service test against the same running container.
-        required: false
-        type: string
-        default: ""
       busbar_ref:
         description: "Which busbar branch to check out as the sibling dependency"
         required: false
@@ -239,16 +231,27 @@ jobs:
           BUSBAR_TEST_LDAP_URL: ${{ inputs.service == 'openldap' && 'ldap://127.0.0.1:389' || '' }}
         run: cargo test
 
-      - name: cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)
-        if: inputs.extra_sibling_test_command != ''
-        working-directory: busbarAI
-        env:
-          BUSBAR_TEST_POSTGRES_URL: ${{ inputs.service == 'postgres' && 'postgres://busbar:busbar@localhost:5432/busbar_test' || '' }}
-          VALKEY_URL: ${{ inputs.service == 'valkey' && 'redis://localhost:6379/0' || '' }}
-          BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
-          BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
-          BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
-        run: ${{ inputs.extra_sibling_test_command }}
+      # REMOVED, and deliberately not replaced by a skippable equivalent: a step named
+      # `cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)`
+      # used to sit here behind `if: inputs.extra_sibling_test_command != ''`. NO CALLER IN THE
+      # FLEET EVER PASSED THAT INPUT, so on every run of every plugin repo the step reported
+      # `skipped` while the job reported `success` — a leg that read like the one place a plugin was
+      # exercised against the engine, and had never run once. That is the same "a skipped step reads
+      # as a passed step" shape the A2A conformance leg cost this release, and a gate nobody can
+      # tell apart from coverage is worse than no gate.
+      #
+      # It is gone rather than armed because there is nothing left for it to run: it existed to call
+      # `cargo test -p busbar-store-<backend>` against the monorepo's own copy of a store crate, and
+      # those crates no longer live in busbarAI — each backend's real logic is now in its own repo,
+      # covered by the `cargo test` step ABOVE (which cannot skip). The engine-side integration
+      # coverage this step pretended to give is what the FILE-DROP, INSTALL-AND-SERVE and
+      # EXECUTABLE-CONFIG steps below actually do — a real busbar boot with the real plugin — plus
+      # each store repo's own over-the-ABI e2e, whose `plugin_path()` PANICS under CI rather than
+      # skipping when the cdylib is missing.
+      #
+      # A repo that genuinely needs a second, service-backed job should declare it as its own job,
+      # the way store-valkey's `migrate-destructive-wipe-test` does: visible, named, and impossible
+      # to confuse with a skip.
 
       - name: Build busbar-plugin-pack (from the sibling checkout)
         working-directory: busbarAI
