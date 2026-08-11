@@ -104,6 +104,14 @@ impl Peer {
     pub(crate) fn calls(&self) -> usize {
         self.methods().iter().filter(|m| *m == "tools/call").count()
     }
+
+    /// How many `tools/list` requests reached the wire — i.e. how many times this peer was actually
+    /// REFRESHED. The load-bearing number for "the refresh timer honours the operator's cadence":
+    /// a sweep that ignored `refresh_ttl:` would contact every registered upstream on every tick,
+    /// and no assertion about busbar's own return value could tell you that it had.
+    pub(crate) fn list_calls(&self) -> usize {
+        self.methods().iter().filter(|m| *m == "tools/list").count()
+    }
 }
 
 async fn endpoint(
@@ -191,6 +199,7 @@ pub(crate) fn server_cfg(
         );
     }
     McpServerDefCfg {
+        refresh_ttl: None,
         url: peer.mcp_url(),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,
@@ -225,7 +234,7 @@ pub(crate) fn mcp_cfg() -> crate::mcp::McpCfg {
 }
 
 /// A `GovCtx` holding a key granted exactly `pairs`.
-pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
+pub(crate) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
     let scopes = pairs
         .iter()
         .map(|(kind, value)| busbar_api::ScopeRef {
@@ -251,7 +260,7 @@ pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovC
 }
 
 /// Drive one JSON-RPC method against the built app, exactly as the ingress does.
-pub(super) async fn call(
+pub(crate) async fn call(
     app: &std::sync::Arc<crate::state::App>,
     gov: &crate::governance::GovCtx,
     method: &str,

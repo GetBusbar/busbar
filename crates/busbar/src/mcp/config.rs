@@ -412,6 +412,19 @@ pub(crate) const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 /// whatever this says.
 pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
+/// THE DEPLOYMENT-WIDE REFRESH CADENCE a registration gets when it spells no `refresh_ttl:`.
+///
+/// Deliberately the same `6h` as the sibling plane's [`crate::a2a::config::DEFAULT_REVERIFY_TTL`],
+/// because the two are the same decision about the same risk — how long a hash-pinned upstream may
+/// have drifted before anybody looks — and an operator who learns the number on one plane should not
+/// find a different one on the other. If a reason ever emerges for them to differ, it goes in
+/// writing next to whichever one moves.
+///
+/// A DEFAULT and not an opt-in: the whole point of A2.1 is that the rug-pull defence runs without an
+/// operator present, and a cadence that has to be switched on per server is a defence that is off on
+/// every registration whose author did not know to switch it on.
+pub(crate) const DEFAULT_MCP_REFRESH_TTL: &str = "6h";
+
 /// One entry in the top-level `tools:` NAMED-DEFINITION map — one registered external MCP server.
 ///
 /// Operator INTENT only (owner ruling 3). Everything that ACCUMULATES — every observed tool list,
@@ -424,6 +437,16 @@ pub(crate) struct McpServerDefCfg {
     pub(crate) url: String,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is `unpinned`.
     pub(crate) pin: ServerPinCfg,
+    /// `<n><s|m|h|d>` — how long an observation stays fresh before the upstream's tool list is
+    /// re-fetched and re-hashed by the refresh timer. Absent ⇒ [`DEFAULT_MCP_REFRESH_TTL`].
+    ///
+    /// This is the ONE cadence knob on this plane, and it is deliberately the only one. There is no
+    /// key that slows DETECTION, none that delays a QUARANTINE, and no per-server "skip if it failed
+    /// last time" — every one of those would be a window an upstream could open for itself by
+    /// misbehaving, and choosing when to misbehave is entirely within its gift. See
+    /// [`crate::mcp::scheduler`], which has no knob at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) refresh_ttl: Option<String>,
     /// The approved tools, as a MAP so each carries its approved schema hash.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) tools_allow: indexmap::IndexMap<String, ToolAllowCfg>,
@@ -669,6 +692,35 @@ impl<'de> Deserialize<'de> for ToolsCfg {
 /// admin write path calls it from
 /// [`crate::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
 /// different grammars — the ONE GRAMMAR, TWO PATHS rule.
+/// THE OPERATOR'S REFRESH CADENCE for one registration, lifted into the plane-neutral
+/// [`crate::trust::reverify::Policy`] the timer consumes.
+///
+/// Config in, policy out, no clock and no I/O — so the cadence an operator wrote and the cadence the
+/// decision uses are provably the same value rather than two parallel readings of it. Deliberately
+/// the same shape as [`crate::a2a::config::policy_for`], because it feeds the same `due`.
+///
+/// `recovery_backoff_ms` is **zero**, and that is a stated difference from the A2A plane rather than
+/// an oversight. The backoff exists to disbelieve a CLEAN answer for a while after a drift, and
+/// applying it needs a `settle` step that can decline to adopt an observation. The MCP cache's
+/// [`crate::mcp::client::catalogue::ServerCatalogue::observe`] has no such arm — it adopts what it
+/// saw — so a non-zero value here would be a number that is read and then ignored, which is worse
+/// than no number at all. `due` does not consult it. Giving MCP the recovery hold is real work on
+/// `observe`, and it is not what A2.1 is: A2.1 is that the DEMOTION happens with nobody watching,
+/// and demotion is the half that is never held on either plane.
+pub(crate) fn refresh_policy_for(
+    def: &McpServerDefCfg,
+) -> Result<crate::trust::reverify::Policy, String> {
+    let ttl = def
+        .refresh_ttl
+        .as_deref()
+        .unwrap_or(DEFAULT_MCP_REFRESH_TTL);
+    let ttl_ms = crate::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    Ok(crate::trust::reverify::Policy {
+        ttl_ms,
+        recovery_backoff_ms: 0,
+    })
+}
+
 pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
     let at = format!("`tools.{name}`");
 
@@ -727,6 +779,13 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
              no authenticity root; key material that is never verified against reads to an operator \
              as protection that does not exist. Name the real mechanism, or drop the key."
         ));
+    }
+
+    // The cadence is parsed at BOOT, so a malformed `refresh_ttl:` lands on the operator who wrote
+    // it rather than silently falling back to a default six hours later — a defence that quietly
+    // uses a cadence the operator did not write is a defence whose behaviour nobody can predict.
+    if let Some(ttl) = def.refresh_ttl.as_deref() {
+        crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `refresh_ttl:` {e}"))?;
     }
 
     if matches!(def.transport, Some(Transport::Stdio)) {

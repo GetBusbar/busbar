@@ -139,6 +139,8 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             // Not credentials, each for the reason recorded at the destructure above.
             url: _,
             pin: _,
+            // A duration string driving the refresh timer's cadence. Not a credential.
+            refresh_ttl: _,
             transport: _,
             aud: _,
             grants: _,

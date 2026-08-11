@@ -81,6 +81,7 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         },
     );
     McpServerDefCfg {
+        refresh_ttl: None,
         url: format!("https://{id}.internal/mcp"),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

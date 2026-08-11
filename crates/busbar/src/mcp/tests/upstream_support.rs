@@ -392,6 +392,7 @@ pub(super) fn exchanging_server(
         );
     }
     McpServerDefCfg {
+        refresh_ttl: None,
         url: peer.mcp_url(),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

@@ -82,6 +82,7 @@ fn cfg_with(
     c.servers.insert(
         "fs".to_string(),
         McpServerDefCfg {
+            refresh_ttl: None,
             url: "https://fs.internal/mcp".to_string(),
             pin: ServerPinCfg { mechanism, key },
             tools_allow,

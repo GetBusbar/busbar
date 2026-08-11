@@ -163,6 +163,9 @@ pub(crate) mod inputreq;
 pub(crate) mod method;
 pub(crate) mod resource;
 pub(crate) mod sanitize;
+/// THE REFRESH TIMER — what calls `connect::refresh` on a tick, so quarantine-on-drift happens with
+/// no operator present. The MCP half of the defence the A2A plane already had.
+pub(crate) mod scheduler;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;

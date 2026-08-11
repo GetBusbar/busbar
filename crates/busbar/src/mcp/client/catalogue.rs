@@ -223,6 +223,14 @@ pub(crate) struct ServerCatalogue {
     /// sighting carries only digests: an operator approval screen needs the definition, and the
     /// markup-normalisation needs the description text.
     pub(crate) observed: BTreeMap<String, ToolDef>,
+    /// THE REFRESH LEDGER: when this server was last contacted, when drift was last seen, and how
+    /// often. Store state in a wired deployment, exactly as the sighting is, and it lives here for
+    /// the same reason — this cache is what survives a config apply
+    /// (`main.rs` carries `mcp_sightings` across), so a reload cannot reset a server's freshness
+    /// clock and buy an upstream a fresh window.
+    ///
+    /// Read by [`crate::mcp::scheduler`] and by nothing on the request path.
+    pub(crate) ledger: crate::trust::reverify::Ledger,
 }
 
 impl ServerCatalogue {
@@ -234,6 +242,7 @@ impl ServerCatalogue {
             approval: Approval::registered(),
             sighting: Sighting::Never,
             observed: BTreeMap::new(),
+            ledger: crate::trust::reverify::Ledger::default(),
         }
     }
 
@@ -251,6 +260,7 @@ impl ServerCatalogue {
             approval,
             sighting: Sighting::Never,
             observed: BTreeMap::new(),
+            ledger: crate::trust::reverify::Ledger::default(),
         }
     }
 

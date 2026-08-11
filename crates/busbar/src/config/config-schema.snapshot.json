@@ -879,6 +879,10 @@
           "optional": true,
           "type": "indexmap::IndexMap<String, PromptAllowCfg>"
         },
+        "refresh_ttl": {
+          "optional": true,
+          "type": "String"
+        },
         "resource_templates_allow": {
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceTemplateAllowCfg>"
