@@ -127,29 +127,36 @@ impl std::fmt::Display for AsCfgError {
 ///
 /// Holds no key and no server object — those are runtime state and live on [`super::plane::AsPlane`].
 /// This is the config half, so it can be compared, logged and swapped without touching a secret.
+/// The fields are `pub(crate)` for ONE reason, and it is not convenience: every value in this struct
+/// is still read through the accessors below, but `config_validate::secret_refs` must be able to
+/// DESTRUCTURE it exhaustively. That walker's whole design is that a newly added secret-bearing
+/// field is a COMPILE error rather than an oversight, and a walk through an accessor cannot deliver
+/// that — `identity.signing_key()` keeps compiling on the day somebody adds a second `SecretRef`
+/// here, and the new secret is then one `--validate` reports as fine and the process fails on at
+/// runtime. The destructure is the enforcement; the visibility is what the destructure costs.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AsIdentity {
-    issuer: String,
+    pub(crate) issuer: String,
     /// The path component of `issuer`, normalised, so a tenant-prefixed issuer
     /// (`https://host/tenant`) mounts its endpoints under that prefix rather than at the root.
-    issuer_path: String,
-    metadata_path: String,
-    authorize_path: String,
-    token_path: String,
-    register_path: Option<String>,
-    jwks_path: String,
-    consent_path: String,
-    default_grant: Vec<String>,
-    dynamic_registration: bool,
-    access_token_ttl: std::time::Duration,
-    key_id: String,
+    pub(crate) issuer_path: String,
+    pub(crate) metadata_path: String,
+    pub(crate) authorize_path: String,
+    pub(crate) token_path: String,
+    pub(crate) register_path: Option<String>,
+    pub(crate) jwks_path: String,
+    pub(crate) consent_path: String,
+    pub(crate) default_grant: Vec<String>,
+    pub(crate) dynamic_registration: bool,
+    pub(crate) access_token_ttl: std::time::Duration,
+    pub(crate) key_id: String,
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
     ///
     /// It lives on the validated identity rather than being consumed at `resolve` time because
     /// `config_validate::secret_refs` walks `RootCfg` and must be able to SEE it: a secret the
     /// walker cannot reach is a secret nothing checks, and that walker's whole design is that
     /// omission is a compile error rather than an oversight.
-    signing_key: Option<SecretRef>,
+    pub(crate) signing_key: Option<SecretRef>,
 }
 
 /// RFC 8414 §3.1: the well-known segment goes BEFORE the issuer's path, not after it. This is the

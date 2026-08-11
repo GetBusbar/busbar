@@ -136,8 +136,34 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     // THE AUTHORIZATION SERVER'S SIGNING KEY. `--validate` must be able to resolve it, because the
     // alternative is a deployment that boots, advertises a JWKS, and fails on the first token
     // request of the day with a secret module error.
+    //
+    // Destructured EXHAUSTIVELY rather than read through `identity.signing_key()`, because the
+    // accessor would keep compiling on the day a second `SecretRef` is added to the validated
+    // identity, and that second secret would then be one `--validate` calls fine and the process
+    // fails on at runtime. Everything below `signing_key` is a derived endpoint path or a policy
+    // number, and none of them can ever carry a credential — but each is named here so that
+    // ADDING one is a compile error somebody has to answer.
     if let Some(identity) = oauth_as {
-        if let Some(key) = identity.signing_key() {
+        let crate::oauth_as::config::AsIdentity {
+            signing_key,
+            // The issuer and the eight paths derived from it. Public by construction: every one of
+            // them is published in the RFC 8414 metadata document.
+            issuer: _,
+            issuer_path: _,
+            metadata_path: _,
+            authorize_path: _,
+            token_path: _,
+            register_path: _,
+            jwks_path: _,
+            consent_path: _,
+            // Policy, not credential: the scope ceiling, whether registration is open, the token
+            // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+            default_grant: _,
+            dynamic_registration: _,
+            access_token_ttl: _,
+            key_id: _,
+        } = identity;
+        if let Some(key) = signing_key {
             refs.push(("oauth_as.signing_key".to_string(), key));
         }
     }
@@ -402,10 +428,19 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // The A2A plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
     // registered agent. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
     ("ClientIdentityCfg", SecretBearing::Walked),
-    // The authorization server's ES256 signing key. Reached from `RootCfg` through
-    // `oauth_as -> AsIdentity::signing_key`, which is why the VALIDATED identity carries the
-    // reference rather than consuming it at `resolve` time.
-    ("OauthAsCfg", SecretBearing::Walked),
+    // The authorization server's ES256 signing key — the highest-value secret in the process, since
+    // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
+    // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
+    // reference verbatim rather than consuming it at `resolve` time.
+    ("AsIdentity", SecretBearing::Walked),
+    (
+        "OauthAsCfg",
+        SecretBearing::NotInResolvedConfig(
+            "the DESERIALIZE-side `oauth_as:` block. `resolve` lowers it into `AsIdentity`, which \
+             IS walked, and every `--validate`/boot check runs against the RESOLVED config. Same \
+             shape as `mcp:` → `McpResource`, and the same reason.",
+        ),
+    ),
     (
         "AuthDeployCfg",
         SecretBearing::NotInResolvedConfig(
