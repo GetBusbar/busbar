@@ -142,6 +142,7 @@ fn signed_agent(host: &str, k: &SigningKey) -> AgentDefCfg {
         reverify_ttl: Some("60s".to_string()),
         recovery_backoff: Some("5m".to_string()),
         protocol_version: None,
+        allow_private: false,
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),
@@ -414,4 +415,72 @@ fn reporting_a_sweep_is_separate_from_deciding_it() {
     report(&sweep(&plane, &FixedResolver, &endpoints, 2_000));
     endpoints.serve("a2a.vendor", &signed_by(&key(2), a_card("moved")));
     report(&sweep(&plane, &FixedResolver, &endpoints, 70_000));
+}
+
+// ── THE PER-REGISTRATION `allow_private`, THROUGH THE SCHEDULED PATH ─────────────────────────────
+
+/// THE SWEEP READS THE SAME KNOB THE OPERATOR-DRIVEN VERBS READ.
+///
+/// This is the failure that would otherwise be invisible until six hours after a deployment went
+/// live: an operator approves a loopback agent through `POST /agents/{name}/approve`, the plane
+/// serves, and then the FIRST re-verification sweep fetches with a policy that never heard of
+/// `allow_private`, records a refusal as a failed contact, and silently demotes the agent to
+/// `Error`. A plane-wide policy would have produced exactly that, which is why
+/// `A2aPlane::fetch_policy_for` exists and why the sweep narrows per registration.
+#[test]
+fn the_sweep_honours_the_registrations_own_allow_private() {
+    let k = key(3);
+    let card = signed_by(&k, a_card("echo"));
+    let endpoints = Endpoints::new();
+    // A LOOPBACK endpoint, over plaintext — the shape a hermetic rig and a laptop have.
+    endpoints.served.borrow_mut().insert(
+        "http://127.0.0.1:9000/.well-known/agent-card.json".to_string(),
+        HttpResponse {
+            status: 200,
+            location: None,
+            body: serde_json::to_vec(&card).expect("serialize"),
+            peer_spki: None,
+        },
+    );
+
+    let mut opted_in = signed_agent("a2a.vendor", &k);
+    opted_in.url = "http://127.0.0.1:9000/agent".to_string();
+    opted_in.allow_private = true;
+    let mut refused = opted_in.clone();
+    refused.allow_private = false;
+
+    let plane = plane_of(&[("opted-in", opted_in), ("refused", refused)]);
+    let outcomes = sweep(&plane, &FixedResolver, &endpoints, 1_000);
+
+    let seen = outcomes
+        .iter()
+        .find(|o| o.agent_id == "opted-in")
+        .expect("swept");
+    assert!(
+        seen.pass.refusal.is_none(),
+        "`allow_private: true` must reach its own loopback backend: {:?}",
+        seen.pass.refusal
+    );
+
+    let blocked = outcomes
+        .iter()
+        .find(|o| o.agent_id == "refused")
+        .expect("swept");
+    assert!(
+        blocked.pass.refusal.is_some(),
+        "and the registration that did NOT opt in is refused on the same sweep, from the same \
+         plane — the knob is per registration, not per deployment"
+    );
+
+    // AND THE TWO ARE SEPARATELY STATED, which is the whole claim: one plane, two answers, decided
+    // by the operator's own line rather than by whichever agent the sweep reached first.
+    plane.with_registrations_mut(|regs| {
+        let opted = regs.iter().find(|r| r.agent_id == "opted-in").expect("reg");
+        let seen = opted.sighting.clone();
+        assert!(
+            matches!(seen, crate::trust::Sighting::Seen(_)),
+            "the opted-in registration has a real sighting to approve: {seen:?}"
+        );
+    });
+    assert_eq!(state_of(&plane, "refused"), TrustState::Error);
 }

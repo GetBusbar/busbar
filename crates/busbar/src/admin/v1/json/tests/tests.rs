@@ -194,16 +194,17 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    // 79 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
+    // 81 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
     // (1.5.5 MCP) and `agents:` (1.5.6 A2A) + the THREE MCP trust verbs on `tools:`
-    // (`POST .../connect`, `GET .../changes`, `GET .../health`), which are specific to that
-    // section rather than part of the generic named-map shape. The count is a FLOOR-and-CEILING
+    // (`POST .../connect`, `GET .../changes`, `GET .../health`) + the TWO A2A trust verbs on
+    // `agents:` (`POST .../connect`, `POST .../approve`), which are specific to their section
+    // rather than part of the generic named-map shape. The count is a FLOOR-and-CEILING
     // on purpose: a route added without a stable `operationId`, and a route silently removed,
     // both land here.
     //
     // This assertion is why the two planes could not land on `dev` independently without one of
     // them noticing the other: 76 was correct for either plane alone and wrong for both together.
-    assert_eq!(checked, 79, "expected exactly 79 admin operations");
+    assert_eq!(checked, 81, "expected exactly 81 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -594,6 +595,11 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // `Path` — no body extractor. There is nothing a caller could put in a body that would
         // change what it does, so documenting one would describe a parameter that does not exist.
         ("post", "/api/v1/admin/tools/{name}/connect"),
+        // The A2A plane's PREVIEW verb, bodyless for the same reason: the agent to look at rides
+        // the path, and there is nothing a caller could put in a body that would change what it
+        // does. Its sibling `POST /agents/{name}/approve` is NOT here — that one carries the
+        // fingerprint the operator is attesting they saw, which is the whole trust root.
+        ("post", "/api/v1/admin/agents/{name}/connect"),
     ];
 
     let doc = openapi_doc();
@@ -652,9 +658,11 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 26,
-        "26 mutating operations take a body; a change here is a deliberate API change. 26 = 22 \
-         + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above)"
+        declared, 27,
+        "27 mutating operations take a body; a change here is a deliberate API change. 27 = 22 \
+         + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
+         A2A plane's approve verb, whose body carries the fingerprint the \
+         operator is attesting they read"
     );
 }
 

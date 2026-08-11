@@ -278,8 +278,8 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         let crate::a2a::config::AgentDefCfg {
             upstream_credential,
             // An endpoint URL, an out-of-band VERIFICATION pin, two cadence strings, a pinned
-            // protocol version, a `Copy` credential-mode selector, egress scope names and bare hook
-            // names. None of them is a credential, and `pin.key` is the one that most looks like
+            // protocol version, a private-address opt-in, a `Copy` credential-mode selector, egress
+            // scope names and bare hook names. None of them is a credential, and `pin.key` is the one that most looks like
             // one: it is the public half of the operator's trust root, and an operator who cannot
             // publish it has the wrong value in the field.
             url: _,
@@ -287,6 +287,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             reverify_ttl: _,
             recovery_backoff: _,
             protocol_version: _,
+            allow_private: _,
             upstream_credentials: _,
             egress_scopes: _,
             hooks: _,

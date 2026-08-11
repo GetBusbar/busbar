@@ -25,6 +25,7 @@ fn signed(fingerprint: Option<&str>) -> AgentDefCfg {
         reverify_ttl: None,
         recovery_backoff: None,
         protocol_version: None,
+        allow_private: false,
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),
@@ -468,6 +469,7 @@ fn an_entry_round_trips_through_its_document_form() {
         reverify_ttl: Some("15m".to_string()),
         recovery_backoff: Some("1h".to_string()),
         protocol_version: Some("1.0".to_string()),
+        allow_private: true,
         upstream_credentials: Some(crate::auth::UpstreamCreds::Own),
         upstream_credential: Some(crate::a2a::creds::OutboundCredential {
             secret: crate::config::SecretRef::env("VENDOR_TOKEN"),
@@ -495,4 +497,40 @@ impl UnwrapErrDisplay for Result<(), String> {
             Err(e) => e,
         }
     }
+}
+
+/// `allow_private:` IS THE `tools:` SPELLING, ON THE `agents:` PLANE.
+///
+/// Same key, same default, same fail-closed floor. The three assertions are the three ways an
+/// operator meets the field: absent, written `false`, and written `true`. Before this, the key was
+/// a `deny_unknown_fields` REJECT — a hermetic rig could not point busbar at an agent it also ran,
+/// and the operator was told the key does not exist rather than that the posture is deliberate.
+#[test]
+fn the_agents_grammar_takes_the_same_allow_private_its_tools_sibling_takes() {
+    let absent: AgentsCfg = serde_yaml::from_str(
+        "echo:\n  url: \"https://echo.example/agent\"\n  pin:\n    mechanism: unpinned\n",
+    )
+    .expect("an entry that says nothing about it must still parse");
+    assert!(
+        !absent.agents["echo"].allow_private,
+        "ABSENT IS THE FLOOR. Reading an unwritten field as permission is how an SSRF gets into a \
+         config nobody wrote it in."
+    );
+
+    let opted_in: AgentsCfg = serde_yaml::from_str(
+        "echo:\n  url: \"http://127.0.0.1:9000/agent\"\n  allow_private: true\n  pin:\n    \
+         mechanism: unpinned\n",
+    )
+    .expect("`allow_private:` must be a key this grammar knows");
+    assert!(opted_in.agents["echo"].allow_private);
+    validate_agent("echo", &opted_in.agents["echo"]).expect("and it must survive validation");
+
+    // And the SAME KEY on the sibling plane, read from the sibling's own struct, so a rename on
+    // either plane fails here rather than being discovered by an operator whose config stopped
+    // working on one plane only.
+    let mcp: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(
+        "url: \"http://127.0.0.1:9001/mcp\"\nallow_private: true\npin:\n  mechanism: unpinned\n",
+    )
+    .expect("the `tools:` grammar spells it the same way");
+    assert!(mcp.allow_private);
 }

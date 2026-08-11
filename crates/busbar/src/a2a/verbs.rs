@@ -44,10 +44,16 @@
 //! wants — including the answers a real network makes hard to produce on demand, like "the same host
 //! served a different card the second time".
 
-// NO PRODUCTION CALLER YET for the verbs themselves. The two TRAITS below are implemented in
-// production by `verify::RegistrationProbe`, so the seam is live; what is missing is the operator
-// surface that drives `connect`/`sync`/`operator_suspend`/`operator_resume` — a trust transition
-// is a human decision, and the admin routes that carry it are not mounted on this branch.
+// `connect` IS NOW MOUNTED. `super::adminverbs` drives it from `POST /api/v1/admin/agents/{name}/
+// connect`, over `verify::RegistrationProbe`, and the approval half is
+// `POST .../approve` through `super::pin::approve_registration`. Until that landed, this file was
+// tested and unreachable, and a busbar booted from YAML could not serve a fronted agent by any
+// sequence of operator actions.
+//
+// STILL UNMOUNTED, and named rather than left to be discovered: `sync`, `operator_suspend` and
+// `operator_resume`. The re-verification the first forces happens on the timer, and the other two
+// are the out-of-band-intelligence override; each needs its own admin verb and its own audit row,
+// and adding them alongside `connect` would have been three unreviewed surfaces instead of one.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::pin::CardPin;

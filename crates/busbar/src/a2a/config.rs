@@ -38,8 +38,12 @@
 //! operator believing a control is attached that is not.
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
-// `declared_pin`: reading an operator's DECLARED fingerprint is only useful to the `connect` verb
-// that captures a sighting for a human to approve, and that verb has no admin surface yet.
+// `declared_pin`. The `connect`/`approve` verbs it was waiting for are now mounted
+// (`super::adminverbs`), and they deliberately do NOT consult it: an approval locks the pin that was
+// OBSERVED and verified against the operator's out-of-band root, and the operator attests to it by
+// echoing the fingerprint back. Handing `Approval::approve` a declared pin as the override would
+// lock a value nobody's fetch confirmed. So this stays a reader with no caller until a surface that
+// genuinely wants the declared value — a config-vs-observed diff — exists to want it.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use serde::{Deserialize, Serialize};
@@ -171,6 +175,27 @@ pub(crate) struct AgentDefCfg {
     /// registration that follows whatever the upstream now claims has no pin at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) protocol_version: Option<String>,
+    /// MAY THIS AGENT LIVE ON A PRIVATE OR LOOPBACK ADDRESS, AND BE REACHED OVER PLAINTEXT.
+    ///
+    /// The SAME spelling, the same semantics and the same fail-closed default as
+    /// [`crate::mcp::config::McpServerDefCfg::allow_private`], deliberately, because the two are one
+    /// operator concept and an operator who has learned it on `tools:` must not have to learn it
+    /// again here. What it permits, exactly as on the sibling plane:
+    ///
+    /// - a plaintext `http://` card endpoint, and
+    /// - a host that resolves to a loopback, link-local, RFC1918 or CGNAT address.
+    ///
+    /// WHAT IT NEVER PERMITS, and this is the half that makes the knob safe to have: a
+    /// CLOUD-METADATA endpoint. `169.254.169.254` and its family are refused whether this is set or
+    /// not — see [`crate::net_guard::ip_is_cloud_metadata`], whose own doc gives the reason: an
+    /// `allow_private` that reached IMDS would be a configuration flag that hands out cloud
+    /// credentials.
+    ///
+    /// Default FALSE. A hermetic rig, a laptop and a sidecar are real deployments, and every one of
+    /// them is also what an SSRF looks like from inside the process — so it is the operator saying
+    /// it out loud, per registration, or it does not happen.
+    #[serde(default)]
+    pub(crate) allow_private: bool,
     /// Outbound credential mode at delegation time. Same vocabulary as the pool plane's — and
     /// `passthrough` is REFUSED here, loudly, by [`validate_agent`]. The word is reserved on every
     /// plane so the vocabulary is learned once; a plane that cannot honor a VALUE says so rather

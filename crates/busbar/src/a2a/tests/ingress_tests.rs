@@ -22,6 +22,7 @@ fn unpinned_agent(url: &str) -> AgentDefCfg {
         reverify_ttl: None,
         recovery_backoff: None,
         protocol_version: None,
+        allow_private: false,
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),

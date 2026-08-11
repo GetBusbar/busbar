@@ -402,6 +402,21 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Post, "/tools/{name}/connect") => {
             de![Validation / InvalidConfig, NotFound / UnknownResource,]
         }
+        // ── The A2A trust verbs ───────────────────────────────────────────────────────────────
+        //
+        // `connect` is a PREVIEW and takes no body, so its only refusal is the unknown name: a card
+        // that will not fetch or will not verify is a 200 carrying `state: error` and the reason,
+        // because the request succeeded and what it found is that the endpoint cannot be
+        // authenticated. `approve` adds the two ways an operator's own submission can be wrong — a
+        // body that is not `{"fingerprint": …}`, and a fingerprint that is not the one the endpoint
+        // is serving. Both are `invalid_request`, and the second is the arm that keeps the approval
+        // a statement about a document a human actually read.
+        (Post, "/agents/{name}/connect") => de![NotFound / UnknownResource,],
+        (Post, "/agents/{name}/approve") => de![
+            Validation / MalformedBody,
+            Validation / InvalidConfig,
+            NotFound / UnknownResource,
+        ],
         // ── Groups (the limit tree) ───────────────────────────────────────────────────────────
         (Post, "/groups") => de![
             Validation / InvalidTree,

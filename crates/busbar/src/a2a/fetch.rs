@@ -66,6 +66,17 @@ pub(crate) struct FetchPolicy {
     /// card still fails JWS verification, so this is not a hole in the trust root — it is a hole in
     /// everything that is not the trust root, which is why it is opt-in.
     pub(crate) allow_plaintext: bool,
+    /// MAY THIS FETCH REACH A PRIVATE OR LOOPBACK ADDRESS. The `agents.<name>.allow_private:` knob,
+    /// lowered per registration by [`super::plane::A2aPlane::fetch_policy_for`].
+    ///
+    /// The SAME name and the same meaning as the `tools:` grammar's, because it is one operator
+    /// concept and two spellings of it would be two things to learn and two things to get wrong.
+    /// It relaxes the loopback/private ARMS of the guard below and NOTHING else: a cloud-metadata
+    /// name and a cloud-metadata address are refused with this set, exactly as
+    /// [`crate::mcp::client::ssrf::check_addresses`] refuses them, and the alternate-IPv4-encoding
+    /// arm is likewise unconditional. An `allow_private` that reached IMDS would be a config flag
+    /// that hands out cloud credentials.
+    pub(crate) allow_private: bool,
 }
 
 impl Default for FetchPolicy {
@@ -74,6 +85,7 @@ impl Default for FetchPolicy {
             max_redirects: 3,
             max_body_bytes: 512 * 1024,
             allow_plaintext: false,
+            allow_private: false,
         }
     }
 }
@@ -121,7 +133,8 @@ impl std::fmt::Display for FetchRefusal {
             FetchRefusal::NotHttps { url, scheme } => write!(
                 f,
                 "agent card URL `{url}` uses scheme `{scheme}`; a card fetched over plaintext can \
-                 be rewritten in flight. Use https://, or set the endpoint's plaintext opt-in."
+                 be rewritten in flight. Use https://, or set this registration's \
+                 `allow_private: true` if the endpoint is a loopback or private one you meant."
             ),
             FetchRefusal::NoHost(u) => write!(f, "agent card URL `{u}` has no host"),
             FetchRefusal::InternalHostName { host, why } => write!(
@@ -131,7 +144,8 @@ impl std::fmt::Display for FetchRefusal {
             FetchRefusal::InternalAddress { host, addr } => write!(
                 f,
                 "SSRF guard refused the agent card fetch: host `{host}` resolved to the internal \
-                 address {addr}"
+                 address {addr}; set this registration's `allow_private: true` if reaching it is \
+                 deliberate. A cloud-metadata address is refused whatever that is set to."
             ),
             FetchRefusal::ResolutionFailed { host, err } => {
                 write!(f, "agent card host `{host}` did not resolve: {err}")
@@ -232,7 +246,15 @@ pub(crate) fn resolve_and_pin(
         reqwest::Url::parse(url).map_err(|_| FetchRefusal::NotAUrl(url.trim().to_string()))?;
 
     let scheme = parsed.scheme().to_ascii_lowercase();
-    let scheme_ok = scheme == "https" || (policy.allow_plaintext && scheme == "http");
+    // `allow_private` ADMITS PLAINTEXT, because that is what the word means on the sibling plane:
+    // `mcp::client::ssrf::precheck` refuses `http://` with exactly `!https && !policy.allow_private`.
+    // One knob covering both is not a shortcut — an operator pointing busbar at `http://127.0.0.1`
+    // has made one decision, and making them write two flags to express it would teach that the
+    // second flag is the harmless one. `allow_plaintext` remains its own field because a plaintext
+    // fetch of a PUBLIC host is a different, worse thing than a plaintext fetch of loopback and the
+    // policy has to be able to say so.
+    let plaintext_ok = policy.allow_plaintext || policy.allow_private;
+    let scheme_ok = scheme == "https" || (plaintext_ok && scheme == "http");
     if !scheme_ok {
         return Err(FetchRefusal::NotHttps {
             url: parsed.to_string(),
@@ -251,10 +273,27 @@ pub(crate) fn resolve_and_pin(
     let host = host.strip_suffix('.').unwrap_or(host);
 
     // ── STRUCTURAL REFUSALS: true about the NAME, so no resolver is consulted. ──
-    if dns_name_is_internal(host) {
+    //
+    // THE METADATA ARM IS SPLIT OUT AND IS UNCONDITIONAL. `dns_name_is_internal` answers for two
+    // populations at once — the cloud-metadata names and the `localhost` family — and only the
+    // second of them is something `allow_private` may speak for. Asking the merged question under
+    // the knob would make `allow_private: true` a way to fetch `metadata.google.internal`, which is
+    // the one outcome the sibling plane's guard orders its checks specifically to prevent
+    // (`mcp::client::ssrf::check_addresses` tests metadata BEFORE it consults the flag).
+    if crate::net_guard::METADATA_HOSTS
+        .iter()
+        .any(|m| host.eq_ignore_ascii_case(m))
+    {
         return Err(FetchRefusal::InternalHostName {
             host: host.to_string(),
-            why: "a cloud-metadata or loopback name",
+            why: "a cloud-metadata name",
+        });
+    }
+    if !policy.allow_private && dns_name_is_internal(host) {
+        return Err(FetchRefusal::InternalHostName {
+            host: host.to_string(),
+            why: "a loopback name; set this registration's `allow_private: true` if that is \
+                  deliberate",
         });
     }
     if is_alternate_ipv4_encoding(host) {
@@ -267,12 +306,7 @@ pub(crate) fn resolve_and_pin(
     // resolver is not merely unnecessary here, it is wrong — a stub that echoes literals back is
     // one more thing that could disagree with this check.
     if let Ok(addr) = host.parse::<IpAddr>() {
-        if ip_is_internal(&addr) {
-            return Err(FetchRefusal::InternalAddress {
-                host: host.to_string(),
-                addr,
-            });
-        }
+        judge_address(host, addr, policy)?;
         return Ok(PinnedTarget { url: parsed, addr });
     }
 
@@ -288,17 +322,37 @@ pub(crate) fn resolve_and_pin(
     }
     // A MIXED ANSWER IS A HOSTILE ANSWER. Refused whole, never filtered down to the address that
     // happens to be acceptable — see the module note.
-    if let Some(bad) = addrs.iter().find(|a| ip_is_internal(a)) {
-        return Err(FetchRefusal::InternalAddress {
-            host: host.to_string(),
-            addr: *bad,
-        });
+    for addr in &addrs {
+        judge_address(host, *addr, policy)?;
     }
 
     Ok(PinnedTarget {
         url: parsed,
         addr: addrs[0],
     })
+}
+
+/// JUDGE ONE RESOLVED ADDRESS, in the order that makes [`FetchPolicy::allow_private`] safe to have.
+///
+/// Metadata FIRST and unconditionally, then the internal ranges, which are the only population the
+/// knob speaks for. This is the same ordering — and the same reason for it —
+/// [`crate::mcp::client::ssrf::check_addresses`] uses: a flag that meant "this endpoint is internal"
+/// must never also mean "and may therefore read IMDS". The two are one function rather than two call
+/// sites so the literal-host arm and the resolved-answer arm cannot be ordered differently.
+fn judge_address(host: &str, addr: IpAddr, policy: &FetchPolicy) -> Result<(), FetchRefusal> {
+    if crate::net_guard::ip_is_cloud_metadata(&addr) {
+        return Err(FetchRefusal::InternalAddress {
+            host: host.to_string(),
+            addr,
+        });
+    }
+    if ip_is_internal(&addr) && !policy.allow_private {
+        return Err(FetchRefusal::InternalAddress {
+            host: host.to_string(),
+            addr,
+        });
+    }
+    Ok(())
 }
 
 /// A card that was fetched, with the chain it was fetched over.

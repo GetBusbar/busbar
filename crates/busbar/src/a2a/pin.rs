@@ -32,9 +32,10 @@
 //! second-class would be teaching it one plane's vocabulary, and the sibling plane would inherit a
 //! rule it never asked for.
 
-// PARTLY UNMOUNTED. The artifact and its refusals are driven by the re-verification sweep; the
-// accessors and the mechanism-specific constructors that only an operator-driven `connect` would
-// reach are not, for the same reason `verbs` is not.
+// PARTLY UNMOUNTED. The artifact and its refusals are driven by the re-verification sweep, and
+// `approve_registration` — the A2A cap on approving an unrooted registration — is now driven by
+// `super::adminverbs::approve`. What remains without a caller is the mechanism-specific
+// construction `pin_a_signed_card` performs for a mechanism the sweep does not reach.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::{card, jws};

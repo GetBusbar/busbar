@@ -88,6 +88,19 @@ impl AdminTransport for JsonV1 {
                 get(crate::mcp::adminverbs::changes),
             )
             .route("/tools/{name}/health", get(crate::mcp::adminverbs::health))
+            // THE A2A TRUST VERBS, the same addition on the `agents` section and mounted here
+            // beside their MCP siblings so the two planes' operator surfaces are read together.
+            // Without these the `agents:` surface is CRUD only, every registration stays `Pending`
+            // — the fail-closed floor its only constructor puts it in — and no sequence of operator
+            // actions can make a fronted agent serve. See `crate::a2a::adminverbs`.
+            .route(
+                "/agents/{name}/connect",
+                post(crate::a2a::adminverbs::connect),
+            )
+            .route(
+                "/agents/{name}/approve",
+                post(crate::a2a::adminverbs::approve),
+            )
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))

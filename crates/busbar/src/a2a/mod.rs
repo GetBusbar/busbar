@@ -41,18 +41,25 @@
 // comes back as itself and the task is persisted paused, which on an asynchronous plane is the
 // NORMAL path rather than an edge case. Every outcome lands on the per-task provenance chain.
 //
-// ELEVEN OF THIS PLANE'S TWENTY-FIVE MODULES still contain surface with no production caller, and
-// each carries its OWN narrowed attribute at the top of its own file, stating what is driven and
-// what is not. Fourteen do not, and are warning-clean: `ingress`, `serve`, `inbound`, `plane`,
-// `relay`, `pushnotify`, `scheduler`, `reverify`, `verify`, `fetch`, `anomaly`, `jws`, `card` and
-// `canonical`. The residue is coherent rather than scattered — it is the operator-driven trust
-// verbs, push-notification DELIVERY (registration is live; delivery is not), and the task-read
-// verbs.
+// AND THE TRUST VERBS ARE NOW REACHABLE. [`adminverbs`] mounts `POST /agents/{name}/connect` and
+// `POST /agents/{name}/approve` on the admin API, which is what takes a registration out of the
+// fail-closed `Pending` its only constructor puts it in. Before that, [`verbs::connect`] was
+// written, unit-tested and callable from nothing: `A2aPlane::from_config` rightly refuses to lift a
+// declared pin into an approval, so a busbar booted from YAML fronted agents it could never serve,
+// and every A2A test in the tree passed while it did. The shape is the MCP plane's
+// (`mcp::adminverbs`) rather than a second one, deliberately.
+//
+// MODULES WITH RESIDUAL SURFACE THAT NO PRODUCTION PATH CALLS still carry their OWN narrowed
+// attribute at the top of their own file, stating what is driven and what is not. The residue is
+// coherent rather than scattered — it is the trust verbs `connect` did not bring with it (`sync`,
+// `suspend`, `resume`), push-notification DELIVERY (registration is live; delivery is not), and the
+// task-read verbs.
 //
 // Narrowing this way is the point. A plane-wide attribute made an unused item ANYWHERE here
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
+pub(crate) mod adminverbs;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
