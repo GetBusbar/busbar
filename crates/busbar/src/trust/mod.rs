@@ -433,6 +433,12 @@ impl<A: PinnedArtifact> Approval<A> {
     }
 }
 
+/// THE RE-VERIFICATION CADENCE — when to look again at a pinned upstream, and what to believe when
+/// the answer keeps changing. Promoted here from `crate::a2a` on its SECOND consumer, which is the
+/// move that module's own header specified: "it stays where its one caller is, and moves when a
+/// second plane wants it". The MCP refresh timer is that second plane.
+pub(crate) mod reverify;
+
 #[cfg(test)]
 #[path = "tests/lifecycle_tests.rs"]
 mod lifecycle_tests;

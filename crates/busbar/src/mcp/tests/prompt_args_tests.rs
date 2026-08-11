@@ -23,7 +23,7 @@
 //! argument reads as complete and means something else.
 
 use crate::mcp::config::{
-    McpServerDefCfg, PinMechanism, PromptAllowCfg, ServerPinCfg, ServerRequestGrants,
+    McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ServerPinCfg, ServerRequestGrants,
 };
 use crate::state::{App, AppHandle};
 use crate::test_support::TestApp;
@@ -62,9 +62,10 @@ fn server_with_prompt() -> McpServerDefCfg {
         },
     );
     McpServerDefCfg {
+        refresh_ttl: None,
         url: "https://upstream.example.com/mcp".to_string(),
         pin: ServerPinCfg {
-            mechanism: PinMechanism::Unpinned,
+            mechanism: McpPinMechanism::Unpinned,
             key: None,
         },
         tools_allow: indexmap::IndexMap::new(),

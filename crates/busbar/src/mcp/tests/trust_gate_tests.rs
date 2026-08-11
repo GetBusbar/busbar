@@ -30,15 +30,15 @@
 
 use super::{Catalogue, DispatchRefusal};
 use crate::mcp::client::catalogue::LiveSightings;
-use crate::mcp::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolAllowCfg, ToolsCfg};
+use crate::mcp::config::{McpPinMechanism, McpServerDefCfg, ServerPinCfg, ToolAllowCfg, ToolsCfg};
 
 /// Every mechanism the grammar admits, so the matrix below is exhaustive over the enum rather than
 /// over the two arms somebody remembered.
-const MECHANISMS: &[PinMechanism] = &[
-    PinMechanism::PinnedPubkey,
-    PinMechanism::CertSpki,
-    PinMechanism::Mtls,
-    PinMechanism::Unpinned,
+const MECHANISMS: &[McpPinMechanism] = &[
+    McpPinMechanism::PinnedPubkey,
+    McpPinMechanism::CertSpki,
+    McpPinMechanism::Mtls,
+    McpPinMechanism::Unpinned,
 ];
 
 /// Every shape an approved hash can take in config: absent, present, and present-but-empty. The
@@ -53,9 +53,9 @@ const HASHES: &[Option<&str>] = &[None, Some("sha256:approved"), Some("")];
 /// `validate_server` would accept. That is what makes the matrix an equivalence proof about the
 /// deployments that can exist; the registrations validation refuses are covered separately, below,
 /// because there the two decisions deliberately DISAGREE.
-fn cfg_of(mechanism: PinMechanism, schema_hash: Option<&str>) -> ToolsCfg {
+fn cfg_of(mechanism: McpPinMechanism, schema_hash: Option<&str>) -> ToolsCfg {
     let key = match mechanism {
-        PinMechanism::Unpinned => None,
+        McpPinMechanism::Unpinned => None,
         _ => Some("sha256/K=".to_string()),
     };
     cfg_with(mechanism, key, schema_hash)
@@ -63,7 +63,11 @@ fn cfg_of(mechanism: PinMechanism, schema_hash: Option<&str>) -> ToolsCfg {
 
 /// The same fixture with the key material stated EXPLICITLY, so a test can build the registrations
 /// `validate_server` refuses and assert what the gate does with one anyway.
-fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&str>) -> ToolsCfg {
+fn cfg_with(
+    mechanism: McpPinMechanism,
+    key: Option<String>,
+    schema_hash: Option<&str>,
+) -> ToolsCfg {
     let mut tools_allow = indexmap::IndexMap::new();
     tools_allow.insert(
         "read".to_string(),
@@ -79,6 +83,7 @@ fn cfg_with(mechanism: PinMechanism, key: Option<String>, schema_hash: Option<&s
     c.servers.insert(
         "fs".to_string(),
         McpServerDefCfg {
+            refresh_ttl: None,
             url: "https://fs.internal/mcp".to_string(),
             pin: ServerPinCfg { mechanism, key },
             tools_allow,
@@ -115,10 +120,10 @@ fn full_grant(kind: &str, value: &str) -> bool {
 /// against the routed gate; it decides nothing in production, which is the whole point of the
 /// deletion it licensed.
 fn deleted_inline_decision(
-    mechanism: PinMechanism,
+    mechanism: McpPinMechanism,
     schema_hash: Option<&str>,
 ) -> Result<(), DispatchRefusal> {
-    if matches!(mechanism, PinMechanism::Unpinned) {
+    if matches!(mechanism, McpPinMechanism::Unpinned) {
         return Err(DispatchRefusal::NotPinned("fs".to_string()));
     }
     if schema_hash.is_none() {
@@ -185,7 +190,7 @@ fn the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered() {
 /// look like from the equivalence matrix alone.
 #[test]
 fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admitted() {
-    let c = cfg_with(PinMechanism::CertSpki, None, Some("sha256:approved"));
+    let c = cfg_with(McpPinMechanism::CertSpki, None, Some("sha256:approved"));
     let def = c.servers.get("fs").expect("fixture server");
 
     // It cannot BOOT: the registration is refused where an operator finds out, at config load.
@@ -204,7 +209,7 @@ fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admi
         "a mechanism word with nothing behind it is not an authenticity root"
     );
     assert_eq!(
-        deleted_inline_decision(PinMechanism::CertSpki, Some("sha256:approved")),
+        deleted_inline_decision(McpPinMechanism::CertSpki, Some("sha256:approved")),
         Ok(()),
         "the deleted decision admitted it, which is why this divergence is written down"
     );
@@ -217,14 +222,14 @@ fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admi
 /// an admission-only comparison and still lose the operator the answer to "why".
 #[test]
 fn the_two_refusal_reasons_survive_the_reroute_and_stay_distinct() {
-    let unpinned = Catalogue::build(&cfg_of(PinMechanism::Unpinned, Some("sha256:approved")));
+    let unpinned = Catalogue::build(&cfg_of(McpPinMechanism::Unpinned, Some("sha256:approved")));
     assert_eq!(
         unpinned.resolve(&full_grant, LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotPinned("fs".to_string())),
         "no authenticity root ⇒ no locked pin ⇒ pending, whatever the tool's hash says"
     );
 
-    let pending = Catalogue::build(&cfg_of(PinMechanism::CertSpki, None));
+    let pending = Catalogue::build(&cfg_of(McpPinMechanism::CertSpki, None));
     assert_eq!(
         pending.resolve(&full_grant, LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotApproved("fs_read".to_string())),
@@ -244,7 +249,7 @@ fn the_two_refusal_reasons_survive_the_reroute_and_stay_distinct() {
 /// the comparison is against the digest of THIS capability, looked up by THIS capability's name.
 #[test]
 fn approval_is_per_capability_on_one_pinned_server() {
-    let mut c = cfg_of(PinMechanism::CertSpki, Some("sha256:approved"));
+    let mut c = cfg_of(McpPinMechanism::CertSpki, Some("sha256:approved"));
     c.servers
         .get_mut("fs")
         .expect("fixture server")

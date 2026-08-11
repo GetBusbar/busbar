@@ -277,6 +277,31 @@ mod tests {
 }
 RS
 
+  # (6) TWO PLANES, ONE BARE NAME. The fingerprint is keyed by the bare Rust ident with no module
+  #     path, so a second file declaring a same-named type would REPLACE the first — the replaced
+  #     grammar stops being covered at all, and the classifier reports the swap as a break in a
+  #     grammar nobody edited. This is not hypothetical: `a2a/config.rs` and `mcp/config.rs` both
+  #     had a `PinMechanism`, with different variants, and adding the second to the tracked set
+  #     produced `PinMechanism::jws_issuer_key: enum variant REMOVED` out of a commit that did not
+  #     touch A2A. The generator must REFUSE, not last-one-wins.
+  mkdir -p "$tmp/collide"
+  cat >"$tmp/collide/plane_a.rs" <<'RS'
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PinMechanismFx {
+    JwsIssuerKey,
+    Unpinned,
+}
+RS
+  cat >"$tmp/collide/plane_b.rs" <<'RS'
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PinMechanismFx {
+    PinnedPubkey,
+    Unpinned,
+}
+RS
+
   gen_fp() { # <fixture.rs> <out.json> — fingerprint one throwaway source tree
     rm -rf "$tmp/gsrc"
     mkdir -p "$tmp/gsrc"
@@ -361,6 +386,24 @@ PY
     'assert "TestOnlyFx" not in t and sorted(t["RealFx"]["fields"]) == ["real_key"], sorted(t)' \
     "$tmp/fx-cfgtest.json"
 
+  # HOLE 5 — a DUPLICATE bare name across two tracked files was a silent last-one-wins overwrite.
+  # The control proves the two fixtures each fingerprint fine ALONE, so the RED below is the
+  # collision and not a broken fixture.
+  "$PY" "$GEN" gen "$tmp/collide/plane_a.rs" >/dev/null 2>&1
+  verdict "control: one plane's PinMechanism alone is fine" 0 "$?"
+  "$PY" "$GEN" gen "$tmp/collide/plane_b.rs" >/dev/null 2>&1
+  verdict "control: the other plane's alone is fine" 0 "$?"
+  # Together they collide. Exit 1 (SystemExit) — neither a silent pass nor a normal RED.
+  "$PY" "$GEN" gen "$tmp/collide/plane_a.rs" "$tmp/collide/plane_b.rs" >/dev/null 2>&1
+  verdict "a DUPLICATE bare name across files is REFUSED" 1 "$?"
+  # And the refusal must NAME both files, or an operator cannot act on it. The message is captured to
+  # a FILE and grepped separately rather than piped: under `set -o pipefail` the pipeline would carry
+  # python's exit 1 no matter what grep found, and reading a pipe's status as the command's is how
+  # this repo has already manufactured a false verdict.
+  "$PY" "$GEN" gen "$tmp/collide/plane_a.rs" "$tmp/collide/plane_b.rs" >/dev/null 2>"$tmp/collide.err"
+  grep -q "plane_a.rs.*plane_b.rs" "$tmp/collide.err"
+  verdict "the collision refusal names BOTH declaring files" 0 "$?"
+
   # ── COVERAGE: the assertions above are about fixtures. These are about the REAL tracked set, so
   # the gate cannot be capable-in-principle while covering nothing that ships.
   hdr "self-test: COVERAGE of the real tracked source set"
@@ -379,6 +422,20 @@ PY
 assert not bad, bad'
   py_assert "coverage: deny_unknown_fields is read from the source, not stubbed" \
     'assert any(v.get("deny_unknown_fields") for v in t.values()), "no type reported deny_unknown_fields"'
+  # The `tools:` grammar (#60). `tools: ToolsCfg` was in the snapshot as a bare TYPE NAME and
+  # nothing under it was, so `tools.<server>.url` could be retyped and a `transport:` value dropped
+  # with ZERO delta. These assert the per-server keys an operator actually writes.
+  py_assert "coverage: the MCP \`tools:\` server grammar IS fingerprinted" \
+    'f = t["McpServerDefCfg"]["fields"]
+assert f["url"] == {"type": "String", "optional": False}, f["url"]
+assert {"pin", "tools_allow", "prompts_allow", "resources_allow", "grants"} <= set(f), sorted(f)'
+  py_assert "coverage: the MCP pin mechanisms are fingerprinted" \
+    'assert t["McpPinMechanism"]["variants"] == ["cert_spki", "mtls", "pinned_pubkey", "unpinned"], t["McpPinMechanism"]'
+  # The collision resolution, asserted as a PROPERTY rather than trusted to a rename: the A2A pin
+  # grammar must still be present and still be A2A's. If a future edit reintroduces the clash, the
+  # generator now refuses outright — this is the belt to that braces.
+  py_assert "coverage: the A2A pin grammar SURVIVED the MCP addition" \
+    'assert t["PinMechanism"]["variants"] == ["cert_spki", "jws_issuer_key", "mtls", "unpinned"], t["PinMechanism"]'
 
   # A tracked source that vanished must be a HARD ERROR. If a rename could silently shrink the
   # tracked set, the whole gate could be disabled by moving a file.
@@ -389,7 +446,7 @@ assert not bad, bad'
   # is the false green this project has already been burned by three times in one night. Assert the
   # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
   # coverage is itself RED.
-  local want_cases=43
+  local want_cases=50
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."

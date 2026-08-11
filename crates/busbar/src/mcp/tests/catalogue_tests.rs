@@ -7,7 +7,7 @@
 
 use super::{Catalogue, DispatchRefusal};
 use crate::mcp::client::catalogue::LiveSightings;
-use crate::mcp::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolAllowCfg, ToolsCfg};
+use crate::mcp::config::{McpPinMechanism, McpServerDefCfg, ServerPinCfg, ToolAllowCfg, ToolsCfg};
 
 /// A registered server with `tools` approved AT a hash (so it serves) and `pending` allowed with no
 /// hash (so it is catalogued and does not serve).
@@ -31,9 +31,10 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
     (
         id.to_string(),
         McpServerDefCfg {
+            refresh_ttl: None,
             url: format!("https://{id}.internal/mcp"),
             pin: ServerPinCfg {
-                mechanism: PinMechanism::CertSpki,
+                mechanism: McpPinMechanism::CertSpki,
                 key: Some("sha256/K=".to_string()),
             },
             tools_allow,
@@ -180,7 +181,7 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
 fn an_unpinned_server_never_dispatches() {
     let (name, mut def) = server("dev", &["read"], &[]);
     def.pin = ServerPinCfg {
-        mechanism: PinMechanism::Unpinned,
+        mechanism: McpPinMechanism::Unpinned,
         key: None,
     };
     let cat = Catalogue::build(&cfg(vec![(name, def)]));

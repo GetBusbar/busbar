@@ -17,7 +17,7 @@
 //! perfectly and is not mounted.
 
 use crate::mcp::config::{
-    McpServerDefCfg, PinMechanism, PromptAllowCfg, ResourceAllowCfg, ServerPinCfg,
+    McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ResourceAllowCfg, ServerPinCfg,
     ServerRequestGrants, ToolAllowCfg,
 };
 use crate::state::{App, AppHandle};
@@ -89,9 +89,10 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         },
     );
     McpServerDefCfg {
+        refresh_ttl: None,
         url: format!("https://{id}.internal/mcp"),
         pin: ServerPinCfg {
-            mechanism: PinMechanism::CertSpki,
+            mechanism: McpPinMechanism::CertSpki,
             key: Some("sha256/K=".to_string()),
         },
         tools_allow,

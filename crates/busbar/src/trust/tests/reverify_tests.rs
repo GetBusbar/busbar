@@ -7,9 +7,9 @@
 //! would actually try: stop the clock, refuse connections, flap, or wait out a backoff it earned
 //! earlier. The happy path is the last test in the file, and it is the least interesting one.
 
+use super::super::{Observation, TrustState};
 use super::*;
 use crate::a2a::pin::{approve_registration, CardPin};
-use crate::trust::{Observation, TrustState};
 use std::collections::BTreeMap;
 
 fn policy() -> Policy {

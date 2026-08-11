@@ -3,7 +3,7 @@
     "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (enforced by the config-stability gate).",
     "frozen_at": "1.5.3",
     "generator": "scripts/config-schema.py gen",
-    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, and UpstreamCreds"
+    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the MCP `tools:` grammar"
   },
   "types": {
     "AdvancedCfg": {
@@ -130,6 +130,21 @@
       "deserialize": "manual",
       "fields": {},
       "kind": "struct"
+    },
+    "AskEntryCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "method": {
+          "optional": false,
+          "type": "String"
+        },
+        "params": {
+          "optional": true,
+          "type": "serde_json::Value"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
     },
     "AuthDeployCfg": {
       "deny_unknown_fields": true,
@@ -822,6 +837,88 @@
       "kind": "struct",
       "transparent": false
     },
+    "McpPinMechanism": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "cert_spki",
+        "mtls",
+        "pinned_pubkey",
+        "unpinned"
+      ]
+    },
+    "McpServerDefCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "allow_private": {
+          "optional": true,
+          "type": "bool"
+        },
+        "aud": {
+          "optional": true,
+          "type": "String"
+        },
+        "grants": {
+          "optional": true,
+          "type": "ServerRequestGrants"
+        },
+        "hooks": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "max_caller_ask_rounds": {
+          "optional": true,
+          "type": "u32"
+        },
+        "max_input_required_rounds": {
+          "optional": true,
+          "type": "u32"
+        },
+        "pin": {
+          "optional": false,
+          "type": "ServerPinCfg"
+        },
+        "prompts_allow": {
+          "optional": true,
+          "type": "indexmap::IndexMap<String, PromptAllowCfg>"
+        },
+        "refresh_ttl": {
+          "optional": true,
+          "type": "String"
+        },
+        "resource_templates_allow": {
+          "optional": true,
+          "type": "indexmap::IndexMap<String, ResourceTemplateAllowCfg>"
+        },
+        "resources_allow": {
+          "optional": true,
+          "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
+        },
+        "token_exchange": {
+          "optional": true,
+          "type": "TokenExchangeCfg"
+        },
+        "tools_allow": {
+          "optional": true,
+          "type": "indexmap::IndexMap<String, ToolAllowCfg>"
+        },
+        "transport": {
+          "optional": true,
+          "type": "Transport"
+        },
+        "upstream_credentials": {
+          "optional": true,
+          "type": "crate::auth::UpstreamCreds"
+        },
+        "url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "ModelCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1147,6 +1244,78 @@
         "rw"
       ]
     },
+    "PromptAllowCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "ask_caller": {
+          "optional": true,
+          "type": "Vec<AskRoundCfg>"
+        },
+        "description": {
+          "optional": true,
+          "type": "String"
+        },
+        "messages": {
+          "optional": true,
+          "type": "Vec<PromptMessageCfg>"
+        },
+        "template": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "PromptContentCfg": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "audio",
+        "image",
+        "resource",
+        "text"
+      ]
+    },
+    "PromptMessageCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "content": {
+          "optional": false,
+          "type": "PromptContentCfg"
+        },
+        "role": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "PromptResourceCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "blob": {
+          "optional": true,
+          "type": "String"
+        },
+        "mime_type": {
+          "optional": true,
+          "type": "String"
+        },
+        "text": {
+          "optional": true,
+          "type": "String"
+        },
+        "uri": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "ProviderAuth": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1422,6 +1591,56 @@
       "kind": "struct",
       "transparent": false
     },
+    "ResourceAllowCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "blob": {
+          "optional": true,
+          "type": "String"
+        },
+        "description": {
+          "optional": true,
+          "type": "String"
+        },
+        "mime_type": {
+          "optional": true,
+          "type": "String"
+        },
+        "name": {
+          "optional": true,
+          "type": "String"
+        },
+        "text": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ResourceTemplateAllowCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "description": {
+          "optional": true,
+          "type": "String"
+        },
+        "mime_type": {
+          "optional": true,
+          "type": "String"
+        },
+        "name": {
+          "optional": true,
+          "type": "String"
+        },
+        "text": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "ResponseHeadersCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1561,6 +1780,40 @@
       "kind": "struct",
       "transparent": false
     },
+    "ServerPinCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "key": {
+          "optional": true,
+          "type": "String"
+        },
+        "mechanism": {
+          "optional": false,
+          "type": "McpPinMechanism"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ServerRequestGrants": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "elicitation": {
+          "optional": true,
+          "type": "bool"
+        },
+        "roots": {
+          "optional": true,
+          "type": "bool"
+        },
+        "sampling": {
+          "optional": true,
+          "type": "bool"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "StoreCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1594,6 +1847,62 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "TokenExchangeCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "subject_token": {
+          "optional": false,
+          "type": "crate::config::SecretRef"
+        },
+        "subject_token_type": {
+          "optional": true,
+          "type": "String"
+        },
+        "token_url": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ToolAllowCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "ask_caller": {
+          "optional": true,
+          "type": "Vec<AskRoundCfg>"
+        },
+        "description": {
+          "optional": true,
+          "type": "String"
+        },
+        "input_schema": {
+          "optional": true,
+          "type": "serde_json::Value"
+        },
+        "schema_hash": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ToolsCfg": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
+    "Transport": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "stdio",
+        "streamable_http"
+      ]
     },
     "UpstreamCreds": {
       "deny_unknown_fields": false,
@@ -1724,6 +2033,15 @@
         "module",
         "settings"
       ]
+    },
+    "manual-de ToolsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
+    },
+    "type AskRoundCfg": {
+      "kind": "alias",
+      "target": "indexmap::IndexMap<String, AskEntryCfg>"
     },
     "type AuthMethods": {
       "kind": "alias",

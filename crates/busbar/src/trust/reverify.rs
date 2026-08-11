@@ -38,7 +38,7 @@
 //! had a known second consumer waiting before a line of it existed. This does not, so it stays where
 //! its one caller is, and moves when a second plane wants it.
 
-use crate::trust::{Approval, PinnedArtifact, Sighting};
+use super::{Approval, PinnedArtifact, Sighting};
 
 /// The operator's cadence. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]

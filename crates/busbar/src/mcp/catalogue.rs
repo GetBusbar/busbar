@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{
-    McpServerDefCfg, PinMechanism, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
+    McpPinMechanism, McpServerDefCfg, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
 };
 use crate::trust::Approval;
 
@@ -235,6 +235,13 @@ pub(crate) struct ServerEntry {
     /// The hard cap on rounds busbar may ask ITS OWN CALLER for. `0` disables every `ask_caller` on
     /// this server at once.
     pub(crate) max_caller_ask_rounds: u32,
+    /// THE REFRESH CADENCE the operator wrote for this registration, lifted at build time.
+    ///
+    /// It rides on the entry rather than being re-read from `ToolsCfg` by the timer, for the same
+    /// reason every other field here does: the snapshot is what the engine holds, and a sweep that
+    /// reached back into the config document to find out how often to look would be a second reader
+    /// of the operator's intent that could disagree with the first.
+    pub(crate) refresh_policy: crate::trust::reverify::Policy,
     /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
     /// secret.
     ///
@@ -484,6 +491,17 @@ impl Catalogue {
 
     pub(crate) fn server(&self, id: &str) -> Option<&ServerEntry> {
         self.servers.get(id)
+    }
+
+    /// EVERY registration, in deterministic id order.
+    ///
+    /// The refresh timer's reach, and the reason it is a plain iterator over the whole map with no
+    /// filter argument: a sweep that could be handed a subset is a sweep that can be handed an empty
+    /// one, and "which servers get watched" is not a decision this plane wants spread across call
+    /// sites. [`crate::mcp::scheduler::sweep`] asks
+    /// [`crate::trust::reverify::due`] about every entry this yields and lets IT answer.
+    pub(crate) fn servers(&self) -> impl Iterator<Item = &ServerEntry> {
+        self.servers.values()
     }
 
     /// THE GRANT-SCOPED TOOL CATALOGUE for one caller.
@@ -788,7 +806,7 @@ fn refusal_reason(server: &ServerEntry, entry: &ToolEntry) -> DispatchRefusal {
 /// [`crate::trust::Approval::registered`] — pending, and serving nothing. That is a fact about what
 /// is CONSTRUCTIBLE, which is why `unpinned` cannot be talked into serving by a later edit here.
 fn declared_pin(pin: &ServerPinCfg) -> Option<TransportPin> {
-    if matches!(pin.mechanism, PinMechanism::Unpinned) {
+    if matches!(pin.mechanism, McpPinMechanism::Unpinned) {
         return None;
     }
     let key = pin.key.as_deref().filter(|k| !k.trim().is_empty())?;
@@ -821,6 +839,18 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         max_caller_ask_rounds: def
             .max_caller_ask_rounds
             .unwrap_or(super::config::DEFAULT_MAX_CALLER_ASK_ROUNDS),
+        // `validate_server` already parsed this and refused a malformed one at boot, so the only way
+        // to reach the fallback is a code path that skipped validation. Falling back to the default
+        // cadence is the fail-CLOSED answer: a server that ends up unswept is a server whose drift
+        // nobody would ever see.
+        refresh_policy: super::config::refresh_policy_for(def).unwrap_or(
+            crate::trust::reverify::Policy {
+                ttl_ms: crate::admin::parse_duration_secs(super::config::DEFAULT_MCP_REFRESH_TTL)
+                    .unwrap_or(6 * 60 * 60)
+                    .saturating_mul(1_000),
+                recovery_backoff_ms: 0,
+            },
+        ),
         upstream: UpstreamPosture {
             allow_private: def.allow_private,
             credentials: def.upstream_credentials,

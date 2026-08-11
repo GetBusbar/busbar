@@ -556,18 +556,27 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // `detection_backoff:` or `demotion_grace:`, and both would be a window an upstream can open
     // for itself by flapping. The cadence's own field set is enumerated here, and the ONLY held
     // direction it may name is recovery.
-    let reverify_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/a2a/reverify.rs"),
-    )
-    .expect("readable source");
-    let config_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/a2a/config.rs"),
-    )
-    .expect("readable source");
-    let verify_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/a2a/verify.rs"),
-    )
-    .expect("readable source");
+    // `reverify.rs` moved to `src/trust/` when the MCP refresh timer became its second consumer.
+    // The ratchet moved with it — a path that silently stopped resolving would be this guard
+    // quietly covering nothing, which is the failure mode it exists to prevent, turned inward.
+    let read = |rel: &str| -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the cadence ratchet cannot read `{rel}`: {e}. If the file \
+                 moved, MOVE THE RATCHET — do not drop the path."
+                )
+            })
+    };
+    let reverify_src = read("src/trust/reverify.rs");
+    let config_src = read("src/a2a/config.rs");
+    let verify_src = read("src/a2a/verify.rs");
+    // THE OTHER PLANE'S CADENCE, held to the identical rule. MCP now has a `refresh_ttl:` and a
+    // sweep of its own, and both drive the SAME `due`. A knob that slowed detection or delayed a
+    // quarantine would be exactly as dangerous there, and a ratchet that guarded only the plane it
+    // was written for would be the plane-local drift this release has already been bitten by.
+    let mcp_config_src = read("src/mcp/config.rs");
+    let mcp_scheduler_src = read("src/mcp/scheduler.rs");
 
     let code = |s: &str| -> String {
         s.lines()
@@ -580,9 +589,11 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     };
 
     for (what, src) in [
-        ("reverify.rs", code(&reverify_src)),
-        ("config.rs", code(&config_src)),
-        ("verify.rs", code(&verify_src)),
+        ("trust/reverify.rs", code(&reverify_src)),
+        ("a2a/config.rs", code(&config_src)),
+        ("a2a/verify.rs", code(&verify_src)),
+        ("mcp/config.rs", code(&mcp_config_src)),
+        ("mcp/scheduler.rs", code(&mcp_scheduler_src)),
     ] {
         for banned in [
             "detection_backoff",

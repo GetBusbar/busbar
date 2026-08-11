@@ -1087,6 +1087,33 @@ async fn run() {
         ));
     }
 
+    // THE MCP REFRESH JOB — the same defence as the A2A one below, on the other plane, and the
+    // reason it exists is that until it did, quarantine-on-drift needed an operator to be present.
+    // `mcp::connect::refresh` had exactly ONE production caller and it was the admin verb
+    // `POST /admin/tools/{name}/connect`, so an upstream that swapped a tool's schema against an
+    // unattended deployment was detected exactly never. Schema hash-pinning with automatic drift
+    // quarantine is the one defence the competitive survey found nobody else shipping; it is not
+    // automatic if it waits for a human.
+    //
+    // Spawned only when there is a registration to sweep — a deployment with no `tools:` servers
+    // starts no job — and spawned ONCE here rather than on apply, for the same reason the flusher
+    // and the A2A job are: a second job against the same registry would double every fetch and race
+    // every ledger stamp. It holds the HANDLE, not the app, so a config apply is picked up on the
+    // next tick rather than sweeping a generation the operator has already replaced.
+    if !app_handle.load().mcp_catalogue.is_empty() {
+        tracing::info!(
+            tick_secs = crate::mcp::scheduler::REFRESH_TICK.as_secs(),
+            "mcp: tool-list refresh job started; registered servers are re-hashed on their own \
+             `refresh_ttl:` and quarantined on drift with no operator present"
+        );
+        // Handle intentionally dropped, exactly as the A2A job's is: it runs for the process
+        // lifetime and exits its own loop on the shutdown broadcast.
+        std::mem::drop(crate::mcp::scheduler::spawn_refresher(
+            app_handle.clone(),
+            shutdown_tx.subscribe(),
+        ));
+    }
+
     // THE A2A RE-VERIFICATION JOB. An approval is a statement about a document at a moment and
     // nothing keeps it true; the pin catches a change only when somebody looks, and this is what
     // makes somebody look. Spawned only when `agents:` defines a plane — a deployment that fronts

@@ -78,7 +78,11 @@ pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
 pub(crate) mod relay;
-pub(crate) mod reverify;
+// THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no
+// call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
+// refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
+// before a second copy can drift from the first.
+pub(crate) use crate::trust::reverify;
 pub(crate) mod scheduler;
 pub(crate) mod serve;
 pub(crate) mod sign;
