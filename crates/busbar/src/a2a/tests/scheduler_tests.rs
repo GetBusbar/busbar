@@ -21,6 +21,7 @@ use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
 use crate::a2a::fetch::HttpResponse;
 use crate::a2a::jws::ED25519_SPKI_PREFIX;
 use crate::a2a::reverify::Due;
+use crate::a2a::scheduler::CardTransports;
 use crate::trust::TrustState;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
@@ -145,6 +146,7 @@ fn signed_agent(host: &str, k: &SigningKey) -> AgentDefCfg {
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),
+        client_identity: None,
         hooks: Vec::new(),
     }
 }
@@ -164,7 +166,7 @@ fn sweep_one(
     now_ms: u64,
     agent_id: &str,
 ) -> Option<SweepOutcome> {
-    sweep(plane, &FixedResolver, endpoints, now_ms)
+    sweep(plane, &FixedResolver, &OneForAll(endpoints), now_ms)
         .into_iter()
         .find(|o| o.agent_id == agent_id)
 }
@@ -172,7 +174,7 @@ fn sweep_one(
 /// Take the plane through its first successful contact and APPROVE what was seen, which is the
 /// operator act every later drift is measured against.
 fn approve_after_first_sweep(plane: &A2aPlane, endpoints: &Endpoints, agent_id: &str) {
-    sweep(plane, &FixedResolver, endpoints, 1_000);
+    sweep(plane, &FixedResolver, &OneForAll(endpoints), 1_000);
     plane.with_registrations_mut(|regs| {
         let reg = regs
             .iter_mut()
@@ -322,7 +324,7 @@ fn every_registration_is_swept_on_every_tick_and_a_failing_one_is_not_backed_off
 
     let mut now = 1_000;
     for tick in 1..=3 {
-        let outcomes = sweep(&plane, &FixedResolver, &endpoints, now);
+        let outcomes = sweep(&plane, &FixedResolver, &OneForAll(&endpoints), now);
         assert_eq!(
             outcomes.len(),
             3,
@@ -363,7 +365,7 @@ fn an_agent_the_operator_removed_is_not_reverified_against_a_remembered_pin() {
     // the pins map — the shape a partially-applied config would produce.
     plane.with_registrations_mut(|regs| regs[0].agent_id = "renamed".to_string());
 
-    let outcomes = sweep(&plane, &FixedResolver, &endpoints, 1_000);
+    let outcomes = sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000);
     assert!(
         outcomes.is_empty(),
         "an agent this generation's config does not declare is not swept"
@@ -395,7 +397,11 @@ async fn the_job_exits_on_the_shutdown_broadcast() {
     let k = key(1);
     let plane = plane_of(&[("planner", signed_agent("a2a.vendor", &k))]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let job = spawn_reverifier(plane, shutdown_rx);
+    let job = spawn_reverifier(
+        plane,
+        &crate::a2a::transport::ClientIdentities::new(),
+        shutdown_rx,
+    );
     shutdown_tx.send(()).expect("the receiver is live");
     job.await.expect("the job exits cleanly on the broadcast");
 }
@@ -410,8 +416,70 @@ fn reporting_a_sweep_is_separate_from_deciding_it() {
     endpoints.serve("a2a.vendor", &signed_by(&k, a_card("decompose a goal")));
     let plane = plane_of(&[("planner", signed_agent("a2a.vendor", &k))]);
 
-    report(&sweep(&plane, &FixedResolver, &endpoints, 1_000));
-    report(&sweep(&plane, &FixedResolver, &endpoints, 2_000));
+    report(&sweep(
+        &plane,
+        &FixedResolver,
+        &OneForAll(&endpoints),
+        1_000,
+    ));
+    report(&sweep(
+        &plane,
+        &FixedResolver,
+        &OneForAll(&endpoints),
+        2_000,
+    ));
     endpoints.serve("a2a.vendor", &signed_by(&key(2), a_card("moved")));
-    report(&sweep(&plane, &FixedResolver, &endpoints, 70_000));
+    report(&sweep(
+        &plane,
+        &FixedResolver,
+        &OneForAll(&endpoints),
+        70_000,
+    ));
+}
+
+// ── THE TRANSPORT IS ASKED FOR PER REGISTRATION ──────────────────────────────────────────────────
+
+/// A bundle that records WHICH agent each transport was asked for, and hands out a different
+/// transport per agent so the sweep cannot pass by luck.
+struct PerAgent {
+    endpoints: Endpoints,
+    asked: RefCell<Vec<String>>,
+}
+
+impl CardTransports for PerAgent {
+    fn for_agent(&self, agent_id: &str) -> &dyn Transport {
+        self.asked.borrow_mut().push(agent_id.to_string());
+        &self.endpoints
+    }
+}
+
+/// THE STRUCTURAL FIX, AT THE SWEEP: every registration gets its transport asked for BY NAME.
+///
+/// `sweep` used to take one `&dyn Transport` and use it for all of them, which is why an outbound
+/// client identity — per registration by definition — had nowhere to live. The assertion is on the
+/// SEQUENCE: one lookup per registration, in registry order, with the registration's own id. A
+/// sweep that resolved the transport once outside the loop would produce one entry, or none.
+#[test]
+fn the_sweep_asks_for_a_transport_per_registration_by_agent_id() {
+    let k = key(1);
+    let bundle = PerAgent {
+        endpoints: Endpoints::new(),
+        asked: RefCell::new(Vec::new()),
+    };
+    bundle
+        .endpoints
+        .serve("a2a.vendor", &signed_by(&k, a_card("decompose a goal")));
+    let plane = plane_of(&[
+        ("planner", signed_agent("a2a.vendor", &k)),
+        ("payments", signed_agent("payments.vendor", &k)),
+    ]);
+
+    let outcomes = sweep(&plane, &FixedResolver, &bundle, 1_000);
+
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(
+        bundle.asked.into_inner(),
+        vec!["planner".to_string(), "payments".to_string()],
+        "each registration must be given the transport that belongs to IT"
+    );
 }

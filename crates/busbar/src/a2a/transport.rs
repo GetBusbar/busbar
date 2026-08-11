@@ -68,12 +68,14 @@
 // reached only by tests today.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
+use super::scheduler::CardTransports;
 
 /// How long one hop may take, end to end. An agent card is a small JSON document from a host an
 /// operator named; a hop that has not completed in this long is not going to.
@@ -224,6 +226,63 @@ fn peer_spki_of(resp: &reqwest::Response) -> Option<String> {
     }
 }
 
+/// THE CLIENT CERTIFICATES THIS DEPLOYMENT PRESENTS, by agent id.
+///
+/// Resolved ONCE, at boot, by [`resolve_client_identities`] — not per hop and not per sweep. Two
+/// reasons, and the second is the one that matters: a private key re-read from `env` or a file on
+/// every tick is a private key crossing the resolver seam on every tick, and a key that fails to
+/// resolve at 03:00 would silently stop a registration being re-verified rather than stopping the
+/// operator at boot.
+pub(crate) type ClientIdentities = BTreeMap<String, reqwest::Identity>;
+
+/// RESOLVE EVERY `agents.<name>.client_identity` INTO A USABLE CLIENT CERTIFICATE. FAIL-CLOSED.
+///
+/// The PEM bytes come through [`crate::tls::read_pem`] — the same function busbar's own inbound
+/// listener loads its cert and key with — so there is exactly one place in the tree that turns a
+/// [`crate::config::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
+/// read. The cert and the key are concatenated because that is the single buffer
+/// `reqwest::Identity::from_pem` takes; the pairing is checked there, by the TLS stack, rather than
+/// by a second parser here.
+///
+/// An error is returned rather than logged and skipped. A registration whose client certificate did
+/// not load is a registration that can never be contacted, and a deployment that boots into that
+/// state reads to an operator as working.
+pub(crate) fn resolve_client_identities(
+    cfg: &super::config::AgentsCfg,
+    resolver: &crate::config::secret::SecretResolver,
+) -> Result<ClientIdentities, String> {
+    let mut out = ClientIdentities::new();
+    for (name, def) in &cfg.agents {
+        let Some(identity) = def.client_identity.as_ref() else {
+            continue;
+        };
+        let mut pem = crate::tls::read_pem(resolver, &identity.cert, "client cert")
+            .map_err(|e| format!("`agents.{name}.client_identity.cert`: {e}"))?;
+        // A PEM section must start at the beginning of a line. A chain that ends without a trailing
+        // newline would otherwise glue its `-----END-----` to the key's `-----BEGIN-----`, and the
+        // resulting parse error would name the key rather than the missing byte.
+        if !pem.ends_with(b"\n") {
+            pem.push(b'\n');
+        }
+        pem.extend_from_slice(
+            &crate::tls::read_pem(resolver, &identity.key, "client key")
+                .map_err(|e| format!("`agents.{name}.client_identity.key`: {e}"))?,
+        );
+        // NEVER echoes the buffer: the error is the TLS stack's own, and the buffer holds a private
+        // key.
+        let id = reqwest::Identity::from_pem(&pem).map_err(|e| {
+            format!(
+                "`agents.{name}.client_identity`: the certificate ({}) and key ({}) are not a \
+                 usable client identity: {e}",
+                identity.cert.describe(),
+                identity.key.describe()
+            )
+        })?;
+        out.insert(name.clone(), id);
+    }
+    Ok(out)
+}
+
 /// THE REAL TRANSPORT: one `reqwest` GET per hop, to the PINNED ADDRESS.
 pub(crate) struct ReqwestTransport {
     /// The resolver the CLIENT is given. Production installs [`NoSecondLookup`]; the tests install
@@ -237,6 +296,12 @@ pub(crate) struct ReqwestTransport {
     /// so a test can stand up a real TLS server and assert what the handshake did, which is the
     /// only way the SNI and certificate-verification claims above are checkable at all.
     extra_roots: Vec<reqwest::Certificate>,
+    /// THE CLIENT CERTIFICATE THIS TRANSPORT PRESENTS, for the ONE agent it was built for. `None`
+    /// where the operator named none, which is the honest outcome against an mTLS peer: the peer
+    /// closes the handshake with `CertificateRequired` and the fetch reports that. There is no
+    /// fallback identity and no plane-wide one — a transport carrying an identity belonging to
+    /// another registration would present busbar as somebody it was not asked to be.
+    identity: Option<reqwest::Identity>,
 }
 
 impl ReqwestTransport {
@@ -253,7 +318,19 @@ impl ReqwestTransport {
             max_body_bytes: policy.max_body_bytes,
             timeout: CARD_FETCH_TIMEOUT,
             extra_roots: Vec::new(),
+            identity: None,
         }
+    }
+
+    /// THE OUTBOUND MUTUAL-TLS LEG: present `identity` on every hop this transport makes.
+    ///
+    /// Consuming, and per TRANSPORT rather than per client, because the whole point of the change
+    /// that introduced it is that one transport can no longer stand for the whole plane: an identity
+    /// that could be attached after the fact is an identity that could be attached to the transport
+    /// a different agent is being fetched with.
+    pub(crate) fn presenting(mut self, identity: reqwest::Identity) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     #[cfg(test)]
@@ -338,6 +415,14 @@ impl ReqwestTransport {
             .resolve(&wire.host, wire.pinned);
         for root in self.extra_roots.clone() {
             builder = builder.add_root_certificate(root);
+        }
+        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and
+        // WEAKENS NOTHING: it is presented only when the peer's `CertificateRequest` asks for one,
+        // and the peer's certificate is still verified by exactly the chain-and-name check above.
+        // The module note's rule holds unchanged — there is still no knob here that turns
+        // verification off.
+        if let Some(identity) = self.identity.clone() {
+            builder = builder.identity(identity);
         }
         builder.build()
     }
@@ -548,17 +633,77 @@ impl super::relay::RelaySeam for LiveCardFetch {
 /// A caller holding a resolver and a transport from different places could pair a real transport
 /// with a fixture resolver, which is the one combination that would look tested and connect
 /// wherever the client felt like.
+/// ## ONE TRANSPORT PER AGENT, not one per plane
+///
+/// This object used to hold a single [`ReqwestTransport`] and hand the same one to every
+/// registration the sweep walked. That was the structural reason `pin.mechanism: mtls` could not be
+/// made to work: a client identity is per REGISTRATION — it is the certificate this operator agreed
+/// to present to THAT vendor — and there was nowhere to put one that did not immediately become the
+/// identity presented to everybody. So the identities are built into transports HERE, once per
+/// config generation, and [`CardTransports::for_agent`] hands the sweep the one that belongs to the
+/// registration it is looking at.
 pub(crate) struct LiveCardFetch {
     resolver: TokioResolver,
+    /// The transport for a registration that names NO client identity, and the one the relay seam
+    /// and the probe still use. It presents no certificate, which against an mTLS peer means the
+    /// hop is refused — loudly, by the peer — rather than made with somebody else's identity.
     transport: ReqwestTransport,
+    /// The transports that DO carry an identity, by agent id. Built once, from the identities
+    /// resolved at boot; a registration absent from here gets `transport` above.
+    per_agent: BTreeMap<String, ReqwestTransport>,
     policy: FetchPolicy,
 }
 
 impl LiveCardFetch {
     pub(crate) fn new(policy: FetchPolicy) -> Self {
+        Self::presenting(policy, &ClientIdentities::new())
+    }
+
+    /// The production bundle for a plane whose registrations name client certificates.
+    ///
+    /// Takes the identities by reference and clones per agent, because a `reqwest::Identity` is a
+    /// parsed key that several transports may need over a process lifetime and the caller resolved
+    /// them once.
+    pub(crate) fn presenting(policy: FetchPolicy, identities: &ClientIdentities) -> Self {
+        let per_agent = identities
+            .iter()
+            .map(|(agent_id, identity)| {
+                (
+                    agent_id.clone(),
+                    ReqwestTransport::new(&policy).presenting(identity.clone()),
+                )
+            })
+            .collect();
         Self {
             resolver: TokioResolver,
             transport: ReqwestTransport::new(&policy),
+            per_agent,
+            policy,
+        }
+    }
+
+    /// EVERY transport in this bundle, with one extra trust anchor. Test-only.
+    ///
+    /// It exists for one assertion that cannot be made any other way: that the per-agent transports
+    /// carry DIFFERENT client identities. Proving that needs two real mTLS peers, and a real peer
+    /// needs a server certificate the client will accept — so the root has to reach the transports
+    /// THIS BUNDLE built, not a hand-made one beside them. Applying it uniformly is what leaves the
+    /// identity as the only thing that varies between the hops under test.
+    #[cfg(test)]
+    pub(crate) fn trusting_root(self, pem: &[u8]) -> Self {
+        let Self {
+            resolver,
+            transport,
+            per_agent,
+            policy,
+        } = self;
+        Self {
+            resolver,
+            transport: transport.trusting_root(pem),
+            per_agent: per_agent
+                .into_iter()
+                .map(|(id, t)| (id, t.trusting_root(pem)))
+                .collect(),
             policy,
         }
     }
@@ -591,6 +736,19 @@ impl LiveCardFetch {
     }
 }
 
+/// THE SWEEP'S SEAM, ANSWERED PER REGISTRATION.
+///
+/// The registration's own transport where it has one, and the identity-free one otherwise. Never a
+/// substitute: an agent whose certificate did not resolve never reaches here at all, because
+/// [`resolve_client_identities`] refuses at boot.
+impl CardTransports for LiveCardFetch {
+    fn for_agent(&self, agent_id: &str) -> &dyn Transport {
+        self.per_agent
+            .get(agent_id)
+            .map_or(&self.transport as &dyn Transport, |t| t as &dyn Transport)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
@@ -603,3 +761,11 @@ mod transport_tests;
 #[cfg(test)]
 #[path = "tests/transport_pin_tests.rs"]
 mod transport_pin_tests;
+
+// A THIRD TEST MODULE, and a sibling for the same reason the second one is: it asks what the
+// connection PROVES ABOUT BUSBAR rather than about the peer. It reuses the first file's TLS harness
+// and CA generator deliberately — a second server fixture would be a second thing that could stop
+// matching production.
+#[cfg(test)]
+#[path = "tests/transport_mtls_tests.rs"]
+mod transport_mtls_tests;

@@ -126,7 +126,12 @@ pub(crate) fn install_crypto_provider() {
 
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
 /// source-named message. Never logs contents.
-fn read_pem(
+///
+/// `pub(crate)` because the A2A plane's OUTBOUND client identity
+/// (`crate::a2a::transport::resolve_client_identities`) loads its cert and key through this one
+/// function too. One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second
+/// place for the "never echo what you read" rule to be forgotten.
+pub(crate) fn read_pem(
     resolver: &crate::config::secret::SecretResolver,
     secret: &crate::config::SecretRef,
     what: &str,

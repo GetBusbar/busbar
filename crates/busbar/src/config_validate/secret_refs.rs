@@ -277,6 +277,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     for (name, def) in agents {
         let crate::a2a::config::AgentDefCfg {
             upstream_credential,
+            client_identity,
             // An endpoint URL, an out-of-band VERIFICATION pin, two cadence strings, a pinned
             // protocol version, a `Copy` credential-mode selector, egress scope names and bare hook
             // names. None of them is a credential, and `pin.key` is the one that most looks like
@@ -300,6 +301,15 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
                 lease_ttl_ms: _,
             } = cred;
             refs.push((format!("agents.{name}.upstream_credential.secret"), secret));
+        }
+        // THE OUTBOUND CLIENT IDENTITY. Both halves are references and both are walked: an
+        // unresolvable `cert:` fails the handshake exactly as an unresolvable `key:` does, and
+        // `--validate` that checked only the secret half would report a config that cannot connect
+        // as valid.
+        if let Some(identity) = client_identity {
+            let crate::a2a::config::ClientIdentityCfg { cert, key } = identity;
+            refs.push((format!("agents.{name}.client_identity.cert"), cert));
+            refs.push((format!("agents.{name}.client_identity.key"), key));
         }
     }
 
@@ -373,6 +383,9 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // The A2A plane's LEASED outbound delegation credential. Reached from `RootCfg` through
     // `agent_defs -> agents.<name>.upstream_credential`.
     ("OutboundCredential", SecretBearing::Walked),
+    // The A2A plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
+    // registered agent. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
+    ("ClientIdentityCfg", SecretBearing::Walked),
     (
         "AuthDeployCfg",
         SecretBearing::NotInResolvedConfig(

@@ -63,6 +63,10 @@
     "AgentDefCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "client_identity": {
+          "optional": true,
+          "type": "ClientIdentityCfg"
+        },
         "egress_scopes": {
           "optional": true,
           "type": "Vec<String>"
@@ -230,6 +234,21 @@
         "limits": {
           "optional": true,
           "type": "Vec<LimitCfg>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "ClientIdentityCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "cert": {
+          "optional": false,
+          "type": "crate::config::SecretRef"
+        },
+        "key": {
+          "optional": false,
+          "type": "crate::config::SecretRef"
         }
       },
       "kind": "struct",

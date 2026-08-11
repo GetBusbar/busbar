@@ -33,6 +33,20 @@
 //! `recovery_backoff_ms` is `u64::MAX` — THROUGH THIS SWEEP, so the claim is a property of the code
 //! that actually runs rather than of the function underneath it.
 //!
+//! ## ONE TRANSPORT PER REGISTRATION, and it is a correctness property rather than a refactor
+//!
+//! This file used to build ONE transport and use it for every registration on the plane. That read
+//! as an efficiency, and it was a defect with a name: `pin.mechanism: mtls` could be written in
+//! config and could never work, because the client certificate busbar must present is per
+//! REGISTRATION — it is the certificate this operator agreed to present to THAT vendor — and a
+//! single plane-wide transport has exactly one place to put one. Anywhere it went, it went to
+//! everybody.
+//!
+//! So the sweep takes a [`CardTransports`] and asks it, INSIDE the loop, for the transport belonging
+//! to the registration it is about to re-verify. The bundle is built once per config generation from
+//! identities resolved at boot, so the per-agent shape costs a map lookup per registration per tick
+//! and no key material is touched on the tick at all.
+//!
 //! ## There is no final sweep at shutdown, and that is not the flusher's mistake repeated
 //!
 //! The write-behind flusher does a final flush on the shutdown signal because unflushed spend is
@@ -58,6 +72,42 @@ use super::verify::{reverify_once, Pass};
 /// which is integer arithmetic over a struct.
 pub(crate) const REVERIFY_TICK: Duration = Duration::from_secs(30);
 
+/// WHICH TRANSPORT ONE REGISTRATION IS RE-VERIFIED OVER.
+///
+/// THE SEAM THAT USED NOT TO EXIST, and its absence was the whole of the `mtls` defect. [`sweep`]
+/// took a single `&dyn Transport` and used it for every registration on the plane, so an outbound
+/// client identity — which is per registration by definition, being the certificate this operator
+/// agreed to present to THAT vendor — had nowhere to live. Any place it could have been put would
+/// have been a place that presented it to everybody.
+///
+/// It is deliberately not a factory returning an owned transport: the production implementation
+/// builds one transport per agent ONCE per config generation, and a `-> Box<dyn Transport>` would
+/// have invited a rebuild per agent per tick, which is a fresh TLS client every thirty seconds for
+/// every registration.
+pub(crate) trait CardTransports {
+    /// The transport for `agent_id`. Total, because a sweep must never skip a registration: an
+    /// agent with no client identity gets one that presents no certificate and is refused by an
+    /// mTLS peer, which is an observation the ledger should record rather than a hole in the sweep.
+    fn for_agent(&self, agent_id: &str) -> &dyn Transport;
+}
+
+/// ONE TRANSPORT FOR EVERY REGISTRATION — the shape this file used to have, kept as a NAMED adapter
+/// so what it costs is legible at the call site.
+///
+/// It is `#[cfg(test)]`, so it is not merely unused in production — it is ABSENT from the release
+/// binary. A future caller that wants one transport for the whole plane has to write the words "one
+/// for all" and compile it in, which is the review conversation the old signature never prompted.
+/// It exists for the tests whose subject is the re-verification cadence rather than the connection.
+#[cfg(test)]
+pub(crate) struct OneForAll<'a>(pub(crate) &'a dyn Transport);
+
+#[cfg(test)]
+impl CardTransports for OneForAll<'_> {
+    fn for_agent(&self, _agent_id: &str) -> &dyn Transport {
+        self.0
+    }
+}
+
 /// WHAT ONE SWEEP DID TO ONE REGISTRATION, so the outcome can be logged and surfaced rather than
 /// re-derived by a reader who would have to guess.
 #[derive(Debug)]
@@ -79,7 +129,7 @@ pub(crate) struct SweepOutcome {
 pub(crate) fn sweep(
     plane: &A2aPlane,
     resolver: &dyn Resolver,
-    transport: &dyn Transport,
+    transports: &dyn CardTransports,
     now_ms: u64,
 ) -> Vec<SweepOutcome> {
     let policy: FetchPolicy = plane.fetch_policy().clone();
@@ -93,6 +143,11 @@ pub(crate) fn sweep(
             let Some(pin_cfg) = plane.pin_for(&reg.agent_id).cloned() else {
                 continue;
             };
+            // THE TRANSPORT THAT BELONGS TO THIS REGISTRATION, carrying this registration's client
+            // certificate and no other's. Asked for INSIDE the loop, per agent, which is the entire
+            // structural change: one transport per plane could only ever have presented one
+            // identity.
+            let transport = transports.for_agent(&reg.agent_id);
             let pass = reverify_once(
                 reg, &pin_cfg, resolver, transport, &policy, now_ms,
                 // THE TIMER IS NOT AN OPERATOR. `sync` outranks the timer; the timer never claims
@@ -145,23 +200,32 @@ pub(crate) fn report(outcomes: &[SweepOutcome]) {
 /// JOIN it rather than guess a wall-clock duration.
 pub(crate) fn spawn_reverifier(
     plane: Arc<A2aPlane>,
+    identities: &crate::a2a::transport::ClientIdentities,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
+    // THE PER-AGENT TRANSPORTS, BUILT ONCE for the job's lifetime rather than per tick. The
+    // identities were resolved at boot and the plane the job holds is this generation's, so
+    // rebuilding the bundle every thirty seconds would re-derive a constant — and, now that a
+    // transport can carry a private key, would do so with key material in hand on every tick.
+    let live = Arc::new(LiveCardFetch::presenting(
+        plane.fetch_policy().clone(),
+        identities,
+    ));
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(REVERIFY_TICK) => {
                     let plane = Arc::clone(&plane);
+                    let live = Arc::clone(&live);
                     // OFF THE REACTOR. A card fetch is a blocking socket read behind a guard that
                     // resolves, pins and connects synchronously; running it on a worker thread
                     // would stall every request sharing that thread for as long as an upstream
                     // chose to take.
                     let swept = tokio::task::spawn_blocking(move || {
-                        let live = LiveCardFetch::new(plane.fetch_policy().clone());
                         let outcomes = sweep(
                             &plane,
                             live.resolver(),
-                            live.transport(),
+                            live.as_ref(),
                             now_ms(),
                         );
                         report(&outcomes);
