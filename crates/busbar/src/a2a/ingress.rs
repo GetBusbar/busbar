@@ -105,6 +105,52 @@ pub(crate) async fn metadata(CurrentApp(app): CurrentApp) -> Response {
         .into_response()
 }
 
+/// BUSBAR'S OWN AGENT CARD at `/.well-known/agent-card.json`, unauthenticated.
+///
+/// The specification makes serving a card a MUST (§8.2) and this is the path a stock A2A client
+/// asks for first. See [`super::serve::self_card`] for why it is auth-exempt and, more importantly,
+/// for what is deliberately left out of it — this endpoint cannot ask who is calling, so it must
+/// not name the agents busbar fronts.
+pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
+    let Some(plane) = app.a2a.as_ref() else {
+        return not_found();
+    };
+    // NO PUBLIC URL, NO CARD. A deployment with no receiving side is not an A2A server, and a card
+    // whose `url` was guessed would point callers somewhere busbar does not answer.
+    let Some(public_url) = plane.public_url() else {
+        return no_receiving_side();
+    };
+    // Signed by the same key that signs the fronted cards, read from the same place, so what an
+    // external caller pins busbar by is one key rather than one per path.
+    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
+    match super::serve::self_card(public_url, signer.as_ref()) {
+        Ok(doc) => (
+            [
+                (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/json; charset=utf-8",
+                ),
+            ],
+            axum::Json(doc),
+        )
+            .into_response(),
+        // A card busbar cannot build is a 500, not an empty 200. The one failure that reaches here
+        // is a `public_url` that will not parse, and answering with a hollow document would publish
+        // a card asserting an endpoint nobody can reach.
+        Err(e) => {
+            tracing::error!(error = %e, "could not build busbar's own agent card");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": { "code": "internal", "message": "the agent card could not be built" }
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// 404 in this plane's envelope. Used where the mount exists but the plane does not, which is
 /// unreachable while the mount and the config are created in one act, and is still answered rather
 /// than unwrapped because this is a request path.
@@ -1103,6 +1149,17 @@ pub(crate) fn mount(
             RouteMethod::Get,
             RouteAuth::None,
             metadata,
+        )
+        // THE DISCOVERY PATH THE SPECIFICATION MANDATES. Auth-exempt for the reason given on
+        // `serve::self_card`: this document is what tells a caller which credential to present, so
+        // demanding one to read it is circular. It is mounted alongside the RFC 9728 metadata path
+        // because they are the same kind of thing — the two documents a client reads BEFORE it has
+        // a token.
+        .route(
+            super::card::WELL_KNOWN_CARD_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            well_known_card,
         )
         .route(
             format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),

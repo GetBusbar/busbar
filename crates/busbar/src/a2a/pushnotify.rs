@@ -118,49 +118,22 @@ pub(crate) struct PinnedCallback {
     pub(crate) addrs: Vec<IpAddr>,
 }
 
-/// The IPv4 cloud metadata address every major provider uses, plus the IPv6 form. These are the
-/// single highest-value SSRF target in a cloud deployment: an unauthenticated HTTP GET there returns
-/// instance credentials.
-const METADATA_V4: [u8; 4] = [169, 254, 169, 254];
-
 /// Is this address one busbar must never be talked into fetching?
 ///
-/// `is_global` is deliberately not used even where it is stable: its definition has moved between
-/// toolchain versions, and a security predicate whose meaning depends on the compiler is one that
-/// changes behaviour on an unrelated upgrade. The ranges are enumerated instead.
+/// THIS IS NOW ONE LINE, and the line is the point. It used to be a forty-line private range table
+/// on this plane, and the table was WRONG in a way that reading it could not reveal: Azure's
+/// WireServer at `168.63.129.16` is a PUBLIC address, so every range check in the copy missed it,
+/// while the copy's own doc comment claimed to cover "a cloud metadata address". A caller could
+/// register that as a push callback and have busbar fetch Azure's platform metadata on its behalf.
+/// The shared predicate had it; this plane did not, because a copy is only correct on the day it is
+/// written.
+///
+/// The tear-out went the other way too — the three ranges this copy had and the shared predicate
+/// did not (`0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`) moved INTO
+/// [`crate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
+/// ordering is the whole discipline: widen the shared predicate to the union, then delete the copy.
 pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_broadcast()
-                || crate::net_guard::is_cgnat_shared_v4(v4)
-                || o == METADATA_V4
-                // 0.0.0.0/8 "this network" — routed to the local host by several stacks.
-                || o[0] == 0
-                // 192.0.0.0/24 IETF protocol assignments, 198.18.0.0/15 benchmarking: neither is a
-                // legitimate webhook destination and both are reachable inside some fabrics.
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || crate::net_guard::is_unique_local_v6(v6)
-                || crate::net_guard::is_link_local_v6(v6)
-                // An IPv4-mapped/compatible v6 address is an IPv4 address wearing a hat. Unwrap it
-                // and apply the v4 rules, or `::ffff:169.254.169.254` walks straight through.
-                || v6
-                    .to_ipv4_mapped()
-                    .or_else(|| v6.to_ipv4())
-                    .is_some_and(|v4| is_internal_addr(&IpAddr::V4(v4)))
-        }
-    }
+    crate::net_guard::ip_is_internal(ip)
 }
 
 /// Split a URL into `(scheme, host)` without pulling in a URL parser.

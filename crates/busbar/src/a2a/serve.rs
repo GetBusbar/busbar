@@ -200,21 +200,11 @@ pub(crate) fn rewrite_card(
     out.remove("signatures");
 
     // ── THE SECURITY SCHEMES, replaced. See the module note. ──
-    let mut schemes = Map::new();
-    schemes.insert(
-        INBOUND_SCHEME_NAME.to_string(),
-        json!({
-            "type": "http",
-            "scheme": "bearer",
-            "description": format!(
-                "A busbar credential of kind `{CREDENTIAL_KIND_A2A_INBOUND}`, presented on the \
-                 `{INBOUND_HEADER}` header. busbar authorises it against this fronted agent and \
-                 meters the task against the presenting key's budget."
-            ),
-        }),
+    out.insert(
+        "securitySchemes".to_string(),
+        Value::Object(inbound_security_schemes()),
     );
-    out.insert("securitySchemes".to_string(), Value::Object(schemes));
-    out.insert("security".to_string(), json!([{ INBOUND_SCHEME_NAME: [] }]));
+    out.insert("security".to_string(), inbound_security_requirement());
 
     // ── AND THEN EVERY OTHER STRING IN THE DOCUMENT, at every depth. ──
     //
@@ -247,6 +237,100 @@ pub(crate) fn rewrite_card(
     match signer {
         Some(signer) => Ok(signer.sign_card(&served).map_err(ServeError::Sign)?),
         None => Ok(served),
+    }
+}
+
+/// THE ONE DESCRIPTION of how a caller authenticates to this plane.
+///
+/// Shared by the fronted-agent cards and by busbar's own card at the well-known path, because two
+/// copies of an auth description drift and the drifted one is the document a client actually reads.
+/// The published card is how a caller LEARNS which scheme to present; if it disagrees with what the
+/// middleware enforces, every conformant client is wrong through no fault of its own.
+fn inbound_security_schemes() -> Map<String, Value> {
+    let mut schemes = Map::new();
+    schemes.insert(
+        INBOUND_SCHEME_NAME.to_string(),
+        json!({
+            "type": "http",
+            "scheme": "bearer",
+            "description": format!(
+                "A busbar credential of kind `{CREDENTIAL_KIND_A2A_INBOUND}`, presented on the \
+                 `{INBOUND_HEADER}` header. busbar authorises it against this fronted agent and \
+                 meters the task against the presenting key's budget."
+            ),
+        }),
+    );
+    schemes
+}
+
+fn inbound_security_requirement() -> Value {
+    json!([{ INBOUND_SCHEME_NAME: [] }])
+}
+
+/// BUSBAR'S OWN AGENT CARD, served unauthenticated at [`super::card::WELL_KNOWN_CARD_PATH`].
+///
+/// WHY THIS EXISTS AT ALL. The specification makes it a MUST — "A2A Servers MUST make an Agent Card
+/// available" (§8.2) — and the path is `/.well-known/agent-card.json`. Until this existed busbar
+/// answered 404 there, which meant busbar was not discoverable by any conformant A2A client: a
+/// stock client asks the well-known path FIRST and has nowhere else to look. The conformance
+/// battery reported this as `SUBJECT NOT REACHABLE`, and the tempting fix was to point the battery
+/// at the mounted path instead. That would have turned the leg green and left the product
+/// undiscoverable — the check would have been measuring our harness rather than our conformance.
+///
+/// WHY IT IS UNAUTHENTICATED. The specification never writes "this path MUST be unauthenticated",
+/// and that silence is worth stating rather than papering over. But the two-tier model only works
+/// one way round: the public card is what TELLS a caller which schemes to present (§3.1.11 — the
+/// extended card's client "MUST authenticate the request using one of the schemes declared in the
+/// public `AgentCard.securitySchemes`"). Requiring a credential to read the document that names the
+/// credential is circular, so this is served with `RouteAuth::None`, exactly like the RFC 9728
+/// metadata path next to it.
+///
+/// WHAT IS DELIBERATELY NOT IN IT — the part that is a SECURITY decision, not a formatting one:
+///
+///   * **No skills, and no enumeration of the fronted agents.** busbar is a gateway; the skills
+///     belong to the agents behind it. Publishing them here would hand an unauthenticated caller
+///     the internal agent inventory — every agent id, every capability, every vendor — from a path
+///     that by design cannot ask who is asking. The per-agent cards stay behind `RouteAuth::Key`
+///     where they already are, and a caller who is entitled to one gets it there.
+///   * **`extendedAgentCard: false`.** busbar does not implement `getAuthenticatedExtendedCard`.
+///     Claiming a capability the binary does not have is the exact defect this release keeps
+///     finding: a document asserting a property nothing tested. When that verb lands, this flips,
+///     and not before.
+///
+/// The card IS signed when this deployment holds a signing key, for the same reason a fronted card
+/// is: it gives an external caller something to pin busbar by.
+pub(crate) fn self_card(
+    public_url: &str,
+    signer: Option<&super::sign::CardSigner>,
+) -> Result<Value, ServeError> {
+    let card = json!({
+        "protocolVersion": super::registry::DEFAULT_PROTOCOL_VERSION,
+        "name": "busbar",
+        "description":
+            "An AI gateway. Agents reach the agents busbar fronts through this endpoint; busbar \
+             authorises, meters and records every task. The agents themselves are not listed here \
+             — ask for the one you are entitled to at the per-agent card path.",
+        "version": env!("CARGO_PKG_VERSION"),
+        "provider": { "organization": "busbar" },
+        "supportedInterfaces": [
+            { "url": canonical_uri(public_url)?, "protocolBinding": "JSONRPC" }
+        ],
+        "defaultInputModes": ["text/plain", "application/json"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "capabilities": {
+            "streaming": true,
+            "pushNotifications": true,
+            "stateTransitionHistory": true,
+            "extendedAgentCard": false,
+        },
+        "skills": [],
+        "securitySchemes": Value::Object(inbound_security_schemes()),
+        "security": inbound_security_requirement(),
+    });
+
+    match signer {
+        Some(signer) => Ok(signer.sign_card(&card).map_err(ServeError::Sign)?),
+        None => Ok(card),
     }
 }
 

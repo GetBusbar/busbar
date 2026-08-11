@@ -40,8 +40,8 @@ pub(crate) const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metada
 /// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
 /// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
 /// and the two cloud-metadata endpoints that sit on PUBLIC / IETF-reserved addresses outside every
-/// one of those ranges (Azure WireServer and OCI IMDS), which the range predicates would otherwise
-/// miss entirely.
+/// one of those ranges (Azure WireServer, and OCI IMDS via the `192.0.0.0/24` it sits inside),
+/// which the range predicates would otherwise miss entirely.
 ///
 /// This is the predicate `observability::host_is_internal` was written around, hoisted here so the
 /// A2A card fetch (`a2a::fetch`) reuses it rather than growing a fourth copy. Duplicated SECURITY
@@ -49,7 +49,7 @@ pub(crate) const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metada
 /// hardening one guard against a new range would silently miss the others.
 pub(crate) fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
     const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
-    const OCI_IMDS: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 192);
+    let o = v4.octets();
     v4.is_loopback()
         || v4.is_link_local()
         || v4.is_private()
@@ -57,7 +57,6 @@ pub(crate) fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         || v4.is_unspecified()
         || v4.is_broadcast()
         || *v4 == AZURE_WIRESERVER
-        || *v4 == OCI_IMDS
         // MULTICAST and DOCUMENTATION arrived here from the MCP client's own copy when the two were
         // unified. The copy had them and this one did not, so the A2A card fetch — which already
         // used this predicate — was the weaker of the two without anyone deciding that. Neither is
@@ -65,6 +64,22 @@ pub(crate) fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         // host on the local segment.
         || v4.is_multicast()
         || v4.is_documentation()
+        // ── THE THREE ROWS BELOW ARRIVED FROM `a2a::pushnotify`'s PRIVATE COPY when that copy was
+        //    torn out. The tear-out is only safe if this predicate already covers everything the
+        //    copy covered, and it did not: a plane that stopped using its own table and started
+        //    using this one would have SILENTLY WIDENED what it accepts. That is the drift this
+        //    module exists to prevent, arriving in the shape of a cleanup.
+        //
+        // 0.0.0.0/8 "this network" (RFC 1122 §3.2.1.3). `is_unspecified()` is ONLY `0.0.0.0`, so
+        // `0.1.2.3` was reachable through every guard that used this predicate — and several
+        // stacks route the whole block to the local host.
+        || o[0] == 0
+        // 192.0.0.0/24 IETF protocol assignments. OCI's IMDS at `192.0.0.192` sits INSIDE this /24,
+        // so the /24 subsumes the old single-address constant rather than sitting beside it.
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        // 198.18.0.0/15 benchmarking (RFC 2544). Not a legitimate destination, and routed inside
+        // some fabrics.
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
 }
 
 /// TRUE for an IPv6 literal no busbar guard may connect to.
