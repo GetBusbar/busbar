@@ -48,6 +48,11 @@
 use super::identity::ToolKey;
 use crate::mcp::ingress::PROTOCOL_VERSION;
 
+/// The `_meta` key a progress token travels under, both directions. Serialised as `null` when
+/// absent, which `serde_json` omits from the object rather than sending — so a caller that asked for
+/// no progress produces an outbound `_meta` byte-identical to the one busbar sent before this.
+const META_PROGRESS_TOKEN: &str = "progressToken";
+
 /// The `_meta` key carrying a request's protocol version. Imported semantics, restated as a private
 /// constant only because the ingress keeps its own private; the ingress test suite and this module's
 /// pin the same literal, and `tests/wire_tests.rs` asserts they agree.
@@ -105,6 +110,20 @@ pub(crate) fn tools_call(
 ) -> OutboundRequest {
     // The UN-namespaced name: see the module header.
     let name = key.tool();
+    // BUSBAR'S OWN TOKEN, not the caller's. Sent only when the caller asked for progress at all —
+    // a server MUST NOT emit progress without a token, so sending none is how busbar says "this
+    // caller did not ask". Derived from `request_id`, which is already unique per outbound call, so
+    // two concurrent calls cannot be told apart by the upstream as one conversation.
+    let progress_token: Option<String> = super::super::UPSTREAM_PROGRESS
+        .try_with(|slot| {
+            slot.lock().ok().and_then(|ch| {
+                ch.caller_token
+                    .as_ref()
+                    .map(|_| format!("busbar-{request_id}"))
+            })
+        })
+        .ok()
+        .flatten();
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
@@ -114,6 +133,7 @@ pub(crate) fn tools_call(
             "arguments": arguments,
             "_meta": {
                 META_PROTOCOL_VERSION: PROTOCOL_VERSION,
+                META_PROGRESS_TOKEN: progress_token,
                 // busbar declares NO client capabilities. Sampling, elicitation and roots are
                 // deny-by-default per server, and declaring a capability we then refuse to
                 // honour invites an upstream to build a call sequence around it. Declaring the empty

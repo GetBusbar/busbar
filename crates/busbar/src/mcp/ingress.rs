@@ -371,7 +371,22 @@ pub(crate) async fn rpc(
         capabilities: &capabilities,
     };
     let params = obj.get("params");
-    let response = match crate::mcp::method::dispatch(&ctx, method, params, id.clone()).await {
+    // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
+    // Created unconditionally and usually left empty — the cost is one Arc per request, against
+    // threading an optional channel through four layers that each model a single answer.
+    // The caller's own token, lifted once here so the outbound builder can decide whether to ask the
+    // upstream for progress at all, and so the frames can be mapped back to it on the way out.
+    let progress_slot = std::sync::Arc::new(std::sync::Mutex::new(super::ProgressChannel {
+        caller_token: meta.get("progressToken").cloned().filter(|v| !v.is_null()),
+        frames: Vec::new(),
+    }));
+    let response = match super::UPSTREAM_PROGRESS
+        .scope(
+            progress_slot.clone(),
+            crate::mcp::method::dispatch(&ctx, method, params, id.clone()),
+        )
+        .await
+    {
         Some(response) => response,
         None => error_response(
             StatusCode::NOT_FOUND,
@@ -393,7 +408,17 @@ pub(crate) async fn rpc(
     // every `Accept` that puts `application/json` first, which is every MCP client that has not
     // deliberately asked otherwise, so this is a new answer to a new question rather than a change
     // to the old one.
-    if !sse::prefers_event_stream(&headers) {
+    // A CALLER THAT SUPPLIED A `progressToken` HAS ASKED FOR PROGRESS, and a stream is the only
+    // shape progress can arrive in — so the token is itself a request for one, independent of how
+    // the `Accept` list happened to be ordered.
+    //
+    // This does NOT loosen the preference rule for anything else. Every MCP client sends both media
+    // types, so answering SSE on mere membership would return a stream to every client on earth;
+    // `prefers_event_stream` still decides that, unchanged. What is added is one narrow, explicit
+    // ask: a client that named a token cannot be answered without a stream, and silently dropping
+    // the progress it asked for would be the wrong half of the trade.
+    let asked_for_progress = meta.get("progressToken").is_some_and(|v| !v.is_null());
+    if !sse::prefers_event_stream(&headers) && !asked_for_progress {
         return response;
     }
     let level = sse::requested_level(Some(meta));
@@ -401,7 +426,26 @@ pub(crate) async fn rpc(
         .into_iter()
         .filter(|r| sse::level_allows(level, r.level))
         .collect();
-    sse::as_event_stream(response, &logs).await
+    // The upstream's progress, if this request made an upstream call that produced any. Drained
+    // rather than read: the slot belongs to this request and nothing after this point may re-emit.
+    // MAPPED BACK to the caller's own token. The frames still carry busbar's minted one, and a
+    // client correlates progress to its request by that field — so relaying the upstream's spelling
+    // would be uncorrelatable, and relaying busbar's would leak an internal identifier.
+    let progress: Vec<serde_json::Value> = {
+        let mut ch = progress_slot
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+        if let Some(token) = ch.caller_token.clone() {
+            for f in &mut ch.frames {
+                if let Some(p) = f.get_mut("params").and_then(|p| p.as_object_mut()) {
+                    p.insert("progressToken".to_string(), token.clone());
+                }
+            }
+        }
+        ch.frames
+    };
+    sse::as_event_stream(response, &logs, &progress).await
 }
 
 /// The `notifications/message` records busbar produces about ITS OWN handling of one request.

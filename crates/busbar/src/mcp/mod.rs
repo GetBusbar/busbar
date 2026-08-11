@@ -121,6 +121,38 @@ pub(crate) mod catalogue;
 /// the same governance boundary this module's front door opens — same revision, same trust
 /// lifecycle, same scope kinds, opposite initiator.
 pub(crate) mod client;
+
+/// The per-request progress channel: what the CALLER asked to be told, and what the upstream said.
+///
+/// BUSBAR MINTS ITS OWN TOKEN FOR THE UPSTREAM LEG and maps it back on the way out; it does not
+/// forward the caller's. That is the discipline the rest of this plane already follows — busbar
+/// publishes the OPERATOR's tool descriptions rather than the upstream's, mints its own
+/// `requestState`, and never relays an upstream's ask — and it is the conservative direction here
+/// for a concrete reason: a `progressToken` is a caller-CHOSEN opaque value, so forwarding it hands
+/// an upstream a correlator for one caller across every call that caller makes.
+#[derive(Debug, Default)]
+pub(crate) struct ProgressChannel {
+    /// The token the CALLER supplied, if any. `None` means the caller asked for no progress — and
+    /// busbar then sends no token upstream, because a server MUST NOT emit progress without one.
+    pub(crate) caller_token: Option<serde_json::Value>,
+    /// Frames the upstream produced, in arrival order, still carrying BUSBAR's minted token.
+    pub(crate) frames: Vec<serde_json::Value>,
+}
+
+tokio::task_local! {
+    /// PER-REQUEST slot: `ingress` scopes it, the outbound builder reads the caller's token from it,
+    /// the transport appends the upstream's frames to it, and `ingress` drains it when it frames the
+    /// answer.
+    ///
+    /// A task-local rather than a return value, for the same reason `proxy::UPSTREAM_RTT_US` is one:
+    /// the frames are produced four layers below the code that emits them (`client::transport` ->
+    /// `upstream` -> `inputreq` -> `method` -> `ingress`), and every one of those layers models a
+    /// SINGLE JSON-RPC answer. Threading an optional, usually-empty channel through all four would
+    /// put a progress-shaped hole in four signatures that have nothing to do with progress.
+    ///
+    /// Absent outside `ingress`'s scope, where every access is a deliberate no-op.
+    pub(crate) static UPSTREAM_PROGRESS: std::sync::Arc<std::sync::Mutex<ProgressChannel>>;
+}
 pub(crate) mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison.
