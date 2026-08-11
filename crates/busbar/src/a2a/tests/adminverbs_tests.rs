@@ -102,6 +102,7 @@ fn agent_cfg(url: &str, allow_private: bool) -> AgentDefCfg {
         recovery_backoff: None,
         protocol_version: None,
         allow_private,
+        client_identity: None,
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),

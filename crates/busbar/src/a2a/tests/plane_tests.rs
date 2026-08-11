@@ -37,6 +37,7 @@ fn unpinned_agent(url: &str) -> AgentDefCfg {
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),
+        client_identity: None,
         hooks: Vec::new(),
     }
 }

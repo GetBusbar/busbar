@@ -25,7 +25,7 @@
 //! real client did with them.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -108,7 +108,7 @@ impl CountingResolver {
 
 /// Read one HTTP request off `stream`, up to and including the blank line that ends the headers.
 /// Returns the request line, or `None` if the peer went away first.
-fn read_request(stream: &mut BufReader<&TcpStream>) -> Option<String> {
+pub(crate) fn read_request<R: BufRead>(stream: &mut R) -> Option<String> {
     let mut first = String::new();
     if stream.read_line(&mut first).ok()? == 0 {
         return None;
@@ -125,7 +125,12 @@ fn read_request(stream: &mut BufReader<&TcpStream>) -> Option<String> {
     Some(first.trim_end().to_string())
 }
 
-fn http_response(status: u16, reason: &str, extra: &[(&str, &str)], body: &str) -> Vec<u8> {
+pub(crate) fn http_response(
+    status: u16,
+    reason: &str,
+    extra: &[(&str, &str)],
+    body: &str,
+) -> Vec<u8> {
     let mut out = format!("HTTP/1.1 {status} {reason}\r\n");
     out.push_str("Content-Type: application/json\r\n");
     out.push_str(&format!("Content-Length: {}\r\n", body.len()));
@@ -227,7 +232,7 @@ pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketA
 }
 
 /// A CA plus a leaf certificate signed by it for `sans`. Returns (ca_pem, leaf_pem, leaf_key_pem).
-fn ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
+pub(crate) fn ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
     let ca_kp = KeyPair::generate().expect("ca key");
     let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);

@@ -31,6 +31,14 @@
 //! is where the ruling belongs, and this file only refuses to let it carry key material it would
 //! never use.
 //!
+//! ## The pin is the peer's identity; `client_identity:` is busbar's
+//!
+//! [`ClientIdentityCfg`] is a SIBLING of `pin:`, not a field inside it, because the two describe
+//! opposite ends of the same handshake and only one of them is a trust root. Its `cert:` and `key:`
+//! are ordinary [`crate::config::SecretRef`]s — the same spelling `tls.cert:` uses for busbar's
+//! INBOUND identity — so key material is referenced and never written here, and it resolves through
+//! the one resolver every other secret in the config goes through.
+//!
 //! ## Cross-plane reference is refused, not ignored
 //!
 //! An `agents:` entry may name hooks. It may not name a pool, a tool, or another agent. The
@@ -126,6 +134,36 @@ impl PinMechanism {
     }
 }
 
+/// `agents.<name>.client_identity` — THE CERTIFICATE BUSBAR PRESENTS to this agent's endpoint.
+///
+/// ## Why this is a sibling of `pin:` and not a field inside it
+///
+/// `pin:` answers "how do I know this card is the vendor's". This answers "how does the vendor know
+/// this connection is busbar's". They are opposite directions of the same handshake and only one of
+/// them is a trust root, so folding busbar's own key material into the object whose documented job
+/// is "the operator-supplied trust root" would make `pin:` mean two things.
+///
+/// ## The two fields are SECRET REFERENCES, exactly as `tls:` spells them
+///
+/// `cert:` and `key:` are [`crate::config::SecretRef`]s — `{module, settings}` with the `env` / `file`
+/// sugar — which is the CLEAN-CONFIG rule the whole config surface already obeys and the same
+/// spelling `tls.cert:` / `tls.key:` use for busbar's INBOUND identity. There is deliberately no way
+/// to write PEM bytes here: a private key inlined in config is a private key in every config dump,
+/// every `--validate` output, every admin GET and every version-history row. Reusing `SecretRef`
+/// rather than inventing a path field also means this material resolves through the ONE resolver
+/// (`env`/`file` built in, any `kind: secret` plugin beyond that), so a deployment that keeps its
+/// keys in Vault keeps this one there too without busbar learning a second way to fetch a key.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ClientIdentityCfg {
+    /// PEM certificate chain busbar presents, leaf first. Public material, still a reference:
+    /// operators keep a chain and its key in the same place, and splitting the spelling would be an
+    /// invitation to inline the other one.
+    pub(crate) cert: crate::config::SecretRef,
+    /// PEM private key for `cert:` — PKCS#8, PKCS#1 or SEC1. NEVER the key itself.
+    pub(crate) key: crate::config::SecretRef,
+}
+
 /// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +196,13 @@ pub(crate) struct AgentDefCfg {
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is
     /// `unpinned` — see the module note on why absence is not an acceptable spelling for "none".
     pub(crate) pin: AgentPinCfg,
+    /// THE CLIENT CERTIFICATE BUSBAR PRESENTS ON THE HOP TO THIS AGENT. Required when
+    /// `pin.mechanism: mtls` — that mechanism means "this endpoint is served behind mutual TLS", and
+    /// a registration that says so with nothing to present cannot complete a handshake. Legal, and
+    /// optional, under the other mechanisms: a vendor may demand a client certificate whatever it
+    /// does about signing its card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client_identity: Option<ClientIdentityCfg>,
     /// `<n><s|m|h|d>` — how long a verification stays fresh before the card is re-fetched and
     /// re-verified. Absent ⇒ [`DEFAULT_REVERIFY_TTL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +387,28 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
             "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
              no authenticity root; key material that is never verified against reads to an \
              operator as protection that does not exist. Name the real mechanism, or drop the key."
+        ));
+    }
+
+    // THE CLIENT IDENTITY, matched against the mechanism and the scheme the same way the pin is
+    // matched against its material. `mtls` is defined as "served behind mutual TLS"; a registration
+    // that claims it and names no certificate cannot get past the peer's `CertificateRequired`
+    // alert, and it would fail six hours later on a re-verification tick rather than here.
+    if def.pin.mechanism == PinMechanism::Mtls && def.client_identity.is_none() {
+        return Err(format!(
+            "{at}: `pin.mechanism: mtls` needs `client_identity:` — the `cert:` and `key:` \
+             references to the certificate busbar PRESENTS to this endpoint. `mtls` means the \
+             endpoint is served behind mutual TLS, and a client with nothing to present is refused \
+             at the handshake with `CertificateRequired`, not at the pin."
+        ));
+    }
+    // A client certificate is a TLS-handshake object. Over `http://` there is no handshake to put it
+    // in, so an operator who wrote one there is being protected by nothing while reading the config
+    // as though they were — the same failure the `unpinned`-with-a-key rule above refuses.
+    if def.client_identity.is_some() && def.url.starts_with("http://") {
+        return Err(format!(
+            "{at}: `client_identity:` is a TLS client certificate and `url:` is `http://`, which \
+             has no handshake to present it in. Name an `https://` endpoint, or drop the identity."
         ));
     }
 

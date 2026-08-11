@@ -301,6 +301,7 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
             lease_ttl_ms: 600_000,
         }),
         egress_scopes: Vec::new(),
+        client_identity: None,
         hooks: Vec::new(),
     }
 }

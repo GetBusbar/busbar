@@ -1147,10 +1147,23 @@ async fn run() {
                  callers out of band so they can pin busbar"
             );
         }
+        // THE OUTBOUND CLIENT CERTIFICATES, resolved ONCE, HERE, and fatal if they do not.
+        //
+        // Same discipline as `tls::build_server_config` on the inbound side: a cert/key that does
+        // not load is a startup failure naming its source, never a warning. A registration whose
+        // `client_identity:` did not resolve could never complete a handshake with its endpoint, so
+        // booting past it would produce a deployment that re-verifies nothing for that agent while
+        // reading, in config and in the admin API, as though mutual TLS were configured.
+        let a2a_identities = crate::a2a::transport::resolve_client_identities(
+            &app_handle.load().agent_defs,
+            &app_handle.load().secret_resolver,
+        )
+        .unwrap_or_else(|e| die(format!("a2a: outbound client identity: {e}")));
         // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
         // lifetime and exits its own loop on the shutdown broadcast.
         std::mem::drop(crate::a2a::scheduler::spawn_reverifier(
             plane,
+            &a2a_identities,
             shutdown_tx.subscribe(),
         ));
     }

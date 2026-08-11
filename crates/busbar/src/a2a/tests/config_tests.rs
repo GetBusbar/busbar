@@ -29,6 +29,7 @@ fn signed(fingerprint: Option<&str>) -> AgentDefCfg {
         upstream_credentials: None,
         upstream_credential: None,
         egress_scopes: Vec::new(),
+        client_identity: None,
         hooks: Vec::new(),
     }
 }
@@ -477,6 +478,13 @@ fn an_entry_round_trips_through_its_document_form() {
             lease_ttl_ms: 60_000,
         }),
         egress_scopes: vec!["orchestrator".to_string()],
+        // BOTH HALVES OF THE CLIENT IDENTITY, so the round trip covers the field that carries key
+        // material: a `client_identity:` an admin PATCH silently dropped would leave a registration
+        // unable to complete a handshake it completed a moment earlier.
+        client_identity: Some(crate::a2a::config::ClientIdentityCfg {
+            cert: crate::config::SecretRef::env("BUSBAR_CLIENT_CERT"),
+            key: crate::config::SecretRef::env("BUSBAR_CLIENT_KEY"),
+        }),
         hooks: vec!["dispatch-order".to_string()],
     };
     let doc = serde_json::to_value(&def).expect("an entry must project to a document");
@@ -533,4 +541,123 @@ fn the_agents_grammar_takes_the_same_allow_private_its_tools_sibling_takes() {
     )
     .expect("the `tools:` grammar spells it the same way");
     assert!(mcp.allow_private);
+}
+
+// ── THE OUTBOUND CLIENT IDENTITY ─────────────────────────────────────────────────────────────────
+
+/// The registration an operator writes for a peer behind mutual TLS, parsed field for field.
+///
+/// `cert:` and `key:` are SECRET REFERENCES in the ordinary `{module, settings}` grammar (here in
+/// its `file:` sugar), which is the same spelling `tls.cert:` uses for busbar's inbound identity.
+/// There is no spelling that puts a private key in the config file.
+#[test]
+fn an_mtls_registration_names_its_client_certificate_by_reference() {
+    let cfg = parse(
+        r#"
+planner:
+  url: "https://a2a.vendor/planner"
+  pin:
+    mechanism: mtls
+    key: "sha256/SPKI=="
+  client_identity:
+    cert: { file: /run/secrets/busbar-client.crt }
+    key: { file: /run/secrets/busbar-client.key }
+"#,
+    )
+    .expect("an mtls registration with a client identity must parse");
+
+    let planner = cfg.agents.get("planner").expect("planner is registered");
+    let identity = planner
+        .client_identity
+        .as_ref()
+        .expect("the client identity is carried through");
+    assert_eq!(
+        identity.cert.module,
+        crate::config::secret::SECRET_MODULE_FILE
+    );
+    assert_eq!(
+        identity.key.module,
+        crate::config::secret::SECRET_MODULE_FILE
+    );
+    // The REFERENCE is what the config holds. Nothing here is key material, which is why the type
+    // is safe to `Debug` and safe to serve back from the admin API.
+    assert!(!format!("{identity:?}").contains("BEGIN"));
+}
+
+/// THE DEFECT, AT THE GRAMMAR LEVEL: `mtls` with nothing to present is refused at parse.
+///
+/// It used to be the only spelling available, and it produced a registration that could never
+/// complete a handshake — the peer answers `CertificateRequired` and the fetch fails on a
+/// re-verification tick hours later, at which point the message is a TLS alert rather than a
+/// sentence about the config. Refused here, at boot, on the line the operator wrote.
+#[test]
+fn mtls_without_a_client_identity_is_refused_at_parse() {
+    let err = parse(
+        r#"
+planner:
+  url: "https://a2a.vendor/planner"
+  pin:
+    mechanism: mtls
+    key: "sha256/SPKI=="
+"#,
+    )
+    .expect_err("`mtls` with no client certificate must not parse");
+    assert!(
+        err.contains("`pin.mechanism: mtls` needs `client_identity:`")
+            && err.contains("CertificateRequired"),
+        "the refusal must name the missing key AND what the peer would have done: {err}"
+    );
+}
+
+/// A client certificate over `http://` has no handshake to be presented in.
+#[test]
+fn a_client_identity_on_a_plaintext_endpoint_is_refused() {
+    let err = parse(
+        r#"
+planner:
+  url: "http://a2a.vendor/planner"
+  pin:
+    mechanism: cert_spki
+    key: "sha256/SPKI=="
+  client_identity:
+    cert: { file: /run/secrets/c.crt }
+    key: { file: /run/secrets/c.key }
+"#,
+    )
+    .expect_err("a client certificate on a plaintext endpoint must not parse");
+    assert!(
+        err.contains("has no handshake to present it in"),
+        "the refusal must say why the field cannot work here: {err}"
+    );
+}
+
+/// A client certificate is legal under the OTHER mechanisms, and that is deliberate: a vendor may
+/// demand one whatever it does about signing its card. Only `mtls` REQUIRES it.
+#[test]
+fn a_client_identity_is_legal_alongside_a_signed_card() {
+    parse(
+        r#"
+planner:
+  url: "https://a2a.vendor/planner"
+  pin:
+    mechanism: jws_issuer_key
+    key: "MCowBQYDK2VwAyEA"
+  client_identity:
+    cert: { file: /run/secrets/c.crt }
+    key: { file: /run/secrets/c.key }
+"#,
+    )
+    .expect("a signed card behind a client-certificate-demanding endpoint must be spellable");
+}
+
+/// The admin write path runs the SAME rule. A grammar the file refuses and the API accepts is the
+/// exact defect `validate_agent` was split out to prevent.
+#[test]
+fn the_admin_write_path_refuses_mtls_without_a_client_identity_too() {
+    let mut def = signed(None);
+    def.pin.mechanism = PinMechanism::Mtls;
+    def.pin.key = Some("sha256/SPKI==".to_string());
+    let err = validate_agent("planner", &def)
+        .unwrap_err_display("the admin path must refuse what the file refuses");
+    assert!(err.contains("needs `client_identity:`"), "{err}");
 }
