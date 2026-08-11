@@ -68,3 +68,9 @@ crates/*/proptest-regressions/
 # reports a state it never reached.
 /.mcp-conformance/
 /.sdk-under-test/
+
+# A2A conformance scratch: the booted subject's config, its signing key and each run's captured
+# suite output. Same reasoning as the MCP directory above — every file in here is an output of
+# `scripts/a2a-subject/boot.sh` and a committed one is a report a later run could be read as having
+# produced.
+/.a2a-conformance/

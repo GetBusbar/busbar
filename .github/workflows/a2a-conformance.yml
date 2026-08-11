@@ -33,9 +33,24 @@ name: A2A conformance
 #
 # THE CONTROL LEGS RUN ALWAYS. A battery that cannot judge a known-good peer cannot be trusted to
 # judge ours, so every run re-establishes that both instruments still produce the pinned verdict
-# against pinned third-party references. THE SUBJECT LEG SKIPS until armed by one variable naming
-# busbar's A2A endpoint, and it does NOT fail. A job that is red today for a reason that is not a
-# defect is how red stops meaning defect.
+# against pinned third-party references.
+#
+# THE SUBJECT LEG IS ARMED OR RED. This is a REVERSAL of the previous policy and it is the point of
+# this edit. The leg used to SKIP until `vars.BUSBAR_A2A_ENDPOINT` named a deployment, and it did
+# not fail — the argument being that a job red for a reason that is not a defect is how red stops
+# meaning defect. In practice the variable was NEVER SET: the check named `subject (busbar's own
+# A2A endpoint)` reported `success` on every run with both of its real steps `skipped`, so there
+# has never been an A2A conformance number of any kind. A leg that renders as the identical green
+# tick whether it judged busbar or judged nothing is the exact false green the rest of this file is
+# arranged to refuse.
+#
+# So the arm is no longer a URL. It is a busbar BINARY BUILT FROM THE COMMIT UNDER TEST, booted on
+# loopback by `scripts/a2a-subject/boot.sh` — the same treatment, for the same reasons, that the
+# sibling MCP battery already gives its subject: a release gate that depends on a live deployment
+# produces two unreadable verdicts, a green meaning "the deployment was fine yesterday" and a red
+# meaning "somebody redeployed", and neither is a statement about the commit under test.
+# `vars.BUSBAR_A2A_ENDPOINT` survives as an OPTIONAL EXTRA leg for an operator who also wants a
+# real deployment judged.
 #
 # AND `verdict` IS NOT OPTIONAL. Ten green ticks mean nothing if one of them is green because it
 # never ran. The last job asserts, per leg, that the leg reached `success` -- a skipped or
@@ -82,6 +97,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 testing/a2a-tck/check-baseline-selftest.py
+
+      # The SUBJECT leg's own machinery, and it is machinery for exactly the reason the two above
+      # are: `NOT ARMED, SO NOT RUN` is now a RED state, and a rule whose enforcement is only ever
+      # exercised by the real thing is a rule nobody has watched work. This drives the arming
+      # transition in both directions, proves a non-existent subject binary does not count as an
+      # arm, proves the audience-boundary disproof fails against a peer that admits every
+      # credential, and proves the TCK number cannot be read from a run that reported nothing.
+      - name: The subject leg's arming rule and boundary proof must BITE
+        run: ./scripts/a2a-subject/boot.sh --selftest
 
       # The aggregator's `needs:` list is itself a hand-maintained enumeration, and the last
       # enumeration in this tree that stopped covering what came after it did so silently. So the
@@ -358,64 +382,101 @@ jobs:
 
   # ------------------------------------------------------------------------------ the subject
   subject:
-    name: subject (busbar's own A2A endpoint)
+    name: subject (busbar, built from this commit — ARMED OR RED)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # PUBLISHED, not inferred. A job whose steps all skip still reports `success`, so the
     # aggregator cannot tell "armed and passed" from "unarmed and did nothing" by looking at the
     # job result -- which is precisely the shape of false green this workflow is built to refuse.
-    # The arm state is therefore an explicit output the verdict reads.
+    # The arm state is therefore an explicit output the verdict reads, and the verdict now treats
+    # `false` as RED.
     outputs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      # Node is the credential shim and the token minter, both shared with the MCP subject leg.
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-      # ARMED BY ONE VARIABLE. Until `vars.BUSBAR_A2A_ENDPOINT` names a reachable endpoint this
-      # job prints how to arm it and stops. It does NOT fail: busbar does not serve A2A yet, and a
-      # job that is red for a reason that is not a defect is how red stops meaning defect.
-      - name: Is the subject armed?
-        id: arm
+      # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean
+      # something at all. `CARGO_INCREMENTAL=0`: incremental artifacts are worthless on a fresh
+      # runner and a partially populated incremental cache has produced spurious "unable to copy"
+      # build failures, which is a red that is not a defect.
+      - name: Build the subject from this commit
         env:
-          ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
+          CARGO_INCREMENTAL: '0'
+        run: cargo build --bin busbar
+
+      # This step RECORDS the arm state and does not judge it; the two instrument steps below fail
+      # on their own when unarmed (`boot.sh::require_armed`), and the verdict fails independently on
+      # this output. Two mechanisms for one fact, deliberately: a step re-run in isolation is still
+      # honest, and the verdict still catches a job cancelled before this step ever ran.
+      #
+      # NO SECRET AND NO REPOSITORY VARIABLE ARMS THIS ANY MORE. The arm is a FILE this job just
+      # built, so the leg cannot silently disarm because somebody deleted a variable or let a
+      # deployment lapse -- which is precisely how it came to be disarmed on every run since it was
+      # written. It can only disarm by the build failing, which is itself red.
+      - name: Record the arm state
+        id: arm
         run: |
           set -euo pipefail
-          if [ -z "${ENDPOINT:-}" ]; then
-            {
-              echo "### A2A subject leg: NOT ARMED"
-              echo ""
-              echo "busbar's own A2A endpoint has not been named, so the two batteries ran"
-              echo "against their third-party controls only. That proves the INSTRUMENTS work."
-              echo "It proves nothing about busbar."
-              echo ""
-              echo "To arm it:"
-              echo '```'
-              echo "gh variable set BUSBAR_A2A_ENDPOINT -R GetBusbar/busbar -b 'http://127.0.0.1:8080'"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "armed=false" >> "$GITHUB_OUTPUT"
-          else
+          if [ -x target/debug/busbar ]; then
             echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### A2A subject leg: NOT ARMED — this is RED"
+              echo ""
+              echo "The build produced no busbar binary, so the two instruments could only have run"
+              echo "against their pinned third-party controls. That proves the INSTRUMENTS work. It"
+              echo "proves nothing about busbar."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # NOT conditional on the arm state. Unarmed, these steps FAIL — that is the transition A4.4
+      # is about. `boot.sh` boots busbar on loopback with a fronted agent configured, mints a REAL
+      # audience-bound credential with the signing key this job generated, and PROVES the plane
+      # boundary is still intact (no credential / no audience / wrong audience / flipped signature
+      # must all be 401, and the right token must be admitted) before either instrument starts --
+      # because a leg that reached the endpoint by weakening the thing under test would be reporting
+      # about a busbar nobody runs, which is worse than leaving it unarmed.
       - name: Independent battery against the subject
-        if: steps.arm.outputs.armed == 'true'
-        working-directory: testing/a2a-harness
         env:
-          ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
-        run: |
-          set -euo pipefail
-          mkdir -p reports
-          python3 -m a2aht run --endpoint "$ENDPOINT" --label subject \
-            --tier pull-request --json reports/subject.json
+          A2A_SUBJECT_BUSBAR_BIN: target/debug/busbar
+        run: ./scripts/a2a-subject/boot.sh --battery
 
+      # `!cancelled()` rather than the default, so BOTH instruments report on every run. They are
+      # independent oracles and they fail for different reasons; letting the first red hide the
+      # second would mean bisecting the gate one instrument per run.
       - name: Official TCK against the subject
-        if: steps.arm.outputs.armed == 'true'
+        if: ${{ !cancelled() && steps.arm.outcome == 'success' }}
+        env:
+          A2A_SUBJECT_BUSBAR_BIN: target/debug/busbar
+        run: ./scripts/a2a-subject/boot.sh --tck
+
+      # THE OPTIONAL EXTRA LEG. If an operator also wants a real deployment judged, setting the
+      # variable adds a run against it -- it is never a substitute for the booted subject above, and
+      # it is never soft: a run that happens must pass. Absent, nothing here runs and nothing above
+      # depends on it. Note it judges whatever is deployed there, which may not be this commit.
+      - name: Also judge an external deployment, if one is configured
+        if: ${{ !cancelled() && vars.BUSBAR_A2A_ENDPOINT != '' }}
         env:
           BUSBAR_A2A_ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
-        run: |
-          set -euo pipefail
-          testing/a2a-tck/run-tck.sh subject
+          A2A_SUBJECT_TCK_LOG: .a2a-conformance/tck-external.txt
+        run: ./scripts/a2a-subject/boot.sh --tck
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a2a-subject
+          path: |
+            .a2a-conformance
+            testing/a2a-harness/reports
+          if-no-files-found: warn
 
   # ----------------------------------------------------------------------------- the aggregator
   verdict:
@@ -438,11 +499,13 @@ jobs:
       # workflow exists to prevent is a tick over a job that executed nothing -- which is exactly
       # what the eight-failures-two-vacuous-passes run in the old location looked like.
       #
-      # `subject` is the ONE leg allowed not to have tested anything, and only while it is unarmed
-      # by design. It is named explicitly rather than handled by a wildcard, so arming it moves it
-      # into the strict set instead of leaving a permanent hole -- and the arm state comes from the
-      # job's own published output, not from its result, because an all-steps-skipped job reports
-      # `success`.
+      # `subject` USED TO BE the one leg allowed not to have tested anything, "only while it is
+      # unarmed by design". That exemption is DELETED. It was written when busbar served no A2A at
+      # all, and it decayed into exactly the hole it was shaped like: the leg was unarmed on every
+      # run for its entire life, reported `success` every time, and produced no conformance number
+      # of any kind. `armed=false` is now RED. The arm state still comes from the job's own
+      # published OUTPUT rather than from its result, because an all-steps-skipped job reports
+      # `success` and the two are otherwise indistinguishable from here.
       - name: Every control leg must have EXECUTED
         env:
           SELFTEST: ${{ needs.harness-selftest.result }}
@@ -478,7 +541,8 @@ jobs:
           if [ "${SUBJECT_ARMED:-}" = "true" ]; then
             strict subject "$SUBJECT"
           elif [ "${SUBJECT_ARMED:-}" = "false" ]; then
-            echo "  --    subject (NOT ARMED: the controls proved the instruments, not busbar)"
+            echo "::error::subject published armed=false. NOT ARMED, SO NOT RUN is a RED state: the controls proved the instruments, not busbar. The arm is a busbar binary built from this commit, so an unarmed subject leg means the build produced nothing."
+            fail=1
           else
             echo "::error::subject published no arm state (result: $SUBJECT, armed: '${SUBJECT_ARMED:-}'). The leg did not reach its own arming check, so whether busbar was tested is unknown -- and unknown is red."
             fail=1

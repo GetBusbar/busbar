@@ -1,0 +1,637 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# BOOT BUSBAR AS THE A2A CONFORMANCE SUBJECT, IN THE JOB, ON LOOPBACK.
+#
+# WHY THE SUBJECT IS BOOTED HERE INSTEAD OF BEING A URL SOMEBODY DEPLOYED.
+#
+# The first arming of this leg read an endpoint out of `vars.BUSBAR_A2A_ENDPOINT`, i.e. an
+# externally deployed busbar. That makes a RELEASE GATE depend on a live deployment being up,
+# reachable and correctly configured at the moment CI happens to run, and it makes both verdicts
+# unreadable: a green says "the deployment was fine yesterday" and a red says "somebody
+# redeployed". Neither is a statement about the commit under test, which is the only thing a
+# release gate is for. The sibling MCP battery settled exactly this question the same way
+# (`scripts/mcp-subject/boot.sh`), and the variable is kept only as an OPTIONAL EXTRA leg for an
+# operator who also wants a real deployment judged.
+#
+# It was worse here than there, because the variable was never set: the leg's two real steps were
+# `skipped` on every run while the job reported `success`. There has therefore never been an A2A
+# conformance number of any kind — not a low one, none — and every other job in
+# `.github/workflows/a2a-conformance.yml` judges a pinned third-party peer.
+#
+# THE CREDENTIAL, SOLVED THE SAME HONEST WAY MCP SOLVED IT.
+#
+# busbar's A2A mount is an OAuth resource server. `crates/busbar/src/a2a/serve.rs` derives the
+# plane's RFC 8707 canonical URI from `public_url` (`<public_url>/a2a`), and `auth/mod.rs` refuses
+# any credential whose readable audience is not exactly that — an OPAQUE key is refused outright,
+# so there is no "just use an API key" path. The independent battery can be handed a header
+# (`--auth`), but the official TCK cannot: `run_tck.py` takes `--sut-host` and nothing else.
+#
+# So this job takes the AUTHORIZATION SERVER's role, which is the role it is already in: IT
+# GENERATED THE SIGNING KEY, with `busbar --generate-signing-key`, and handed busbar the same bytes
+# through `auth.signing_key`. Signing one token with a key you own is not a bypass; it is the
+# documented fleet-shared-secret relationship. Every check inside busbar runs untouched, and the
+# token is attached on the CLIENT side of the connection by the same credential shim the MCP leg
+# uses — reused rather than copied, because two spellings of "hold a bearer and attach it" is
+# exactly the duplication that has already produced three security defects in this release.
+#
+# AND THAT CLAIM IS PROVEN, NOT ASSERTED. `prove_the_boundary_is_intact` presents four credentials
+# to the SAME booted process, directly, past the shim:
+#     no credential      -> must be 401
+#     no audience        -> must be 401
+#     a different audience-> must be 401
+#     a flipped signature -> must be 401
+#     the right audience  -> must be ADMITTED (anything but 401/403)
+# If the audience check had been weakened to make this leg reach the endpoint, the first four would
+# stop answering 401 and this function would fail the job.
+#
+# WHAT THE FIFTH PROBE IS ALLOWED TO ANSWER, AND WHY IT IS NOT `200` LIKE MCP'S.
+#
+# On `dev` the right token is ADMITTED and then refused by the TRUST machine, with
+# `503 {"error":{"code":"refused","message":"fronted agent `x` is not serving (Pending)"}}`. That is
+# not an auth failure and it is not a defect in this script; it is the finding this leg exists to
+# surface, and it is written down here rather than tuned away:
+#
+#   1. EVERY REGISTRATION IS BORN `Pending` AND NOTHING PROMOTES IT. `A2aPlane::from_config`
+#      deliberately does not lift the operator's declared pin into an approval, which is the right
+#      call — an approval is a statement about a document that was actually seen. The verb that
+#      captures a sighting for a human to approve (`a2a/verbs.rs::connect`) HAS NO MOUNTED ADMIN
+#      ROUTE: the admin surface for `agents:` is CRUD only (`/api/v1/admin/agents[/{name}]`),
+#      whereas the MCP plane's equivalent verb IS mounted (`mcp::adminverbs::connect`). So a busbar
+#      booted from YAML alone cannot serve a fronted agent at all, by any sequence of operator
+#      actions, and every inbound A2A request answers 503.
+#   2. A LOOPBACK BACKEND IS REFUSED WITH NO OVERRIDE. The card fetch guards `http://` and the
+#      localhost family (`a2a/fetch.rs`), and `AgentDefCfg` has no `allow_private:` — the knob its
+#      MCP sibling gives every `tools:` entry. So even once (1) is fixed, a hermetic A2A rig cannot
+#      point busbar at an agent it also runs.
+#
+# NEITHER IS WORKED AROUND HERE. There is no fixture endpoint, no relaxed guard and no synthetic
+# card handed to the suite: a leg that manufactured a document for the harness to read would be
+# reporting conformance for a busbar nobody can run, which is worse than the unarmed leg it
+# replaces. The registration below therefore names a backend it will never fetch, the subject
+# answers 503, and the instruments report that in their own numbers.
+#
+# MODES
+#   --battery    the independent battery (testing/a2a-harness) against the booted subject
+#   --tck        the official TCK (testing/a2a-tck) against the booted subject
+#   --probe      boot and prove the boundary only; print the endpoint and stop
+#   --selftest   prove the arming rule and the boundary proof BITE, before any verdict is trusted
+#
+# ARMING
+#   A2A_SUBJECT_BUSBAR_BIN   THE ARM: a busbar binary built from THIS COMMIT. Not a URL, not a
+#                            secret, not a repository variable — a FILE this job just built, so the
+#                            leg cannot silently disarm because somebody deleted a variable or let a
+#                            deployment lapse. It can only disarm by the build failing, which is
+#                            itself red.
+#   BUSBAR_A2A_ENDPOINT      an EXTERNAL, already-deployed busbar. OPTIONAL EXTRA only.
+
+set -euo pipefail
+# The repository root, two levels up: this file lives in `scripts/a2a-subject/`. Every path below is
+# written from the root so the script reads the same whether it is invoked from CI, from the root,
+# or from its own directory.
+cd "$(dirname "$0")/../.."
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+# ARMED OR RED, in one function so it can be tested in one place — the same shape and the same
+# reasoning as `mcp-conformance.sh::require_armed`. The death is the point: it is what turns
+# `NOT ARMED, SO NOT RUN` from a green tick into a failure.
+require_armed() {
+  local label="$1"; shift
+  local v
+  for v in "$@"; do
+    if [ -n "${!v:-}" ]; then
+      say "   armed by $v"
+      return 0
+    fi
+  done
+  printf '\n' >&2
+  printf 'FAIL: %s\n' "NOT ARMED, SO NOT RUN — and that is RED." >&2
+  cat >&2 <<BANNER
+
+  This leg judges BUSBAR ($label). Disarmed, it judges nothing, and it reports the
+  same green tick as a leg that judged busbar and passed. That is the false green
+  this whole gate exists to refuse — and it is the state this leg was actually in
+  on every run until now — so an unarmed subject leg FAILS.
+
+  Arm it with any ONE of:
+BANNER
+  for v in "$@"; do printf '      %s=...\n' "$v" >&2; done
+  printf '\n' >&2
+  exit 1
+}
+
+# THE AGENT ID busbar fronts in this rig. One, named, and referenced by every path below so the
+# endpoint the suite is pointed at and the registration it reaches cannot drift apart.
+SUBJECT_AGENT_ID="conformance"
+
+# THREE FREE PORTS, asked of the OS rather than hard-coded. A hard-coded port is a red that is not
+# a defect the first time a runner image happens to have something on it.
+subject_free_ports() {
+  python3 - <<'PY'
+import socket
+socks = []
+for _ in range(3):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    socks.append(s)
+print(" ".join(str(s.getsockname()[1]) for s in socks))
+for s in socks:
+    s.close()
+PY
+}
+
+# The smallest config that makes this deployment an A2A server. Everything absent is absent on
+# purpose: no providers, no models, no pools. The A2A plane needs none of them, and a subject that
+# also carried an LLM fleet would invite a failure that is about the fleet.
+#
+# `public_url:` IS THE WHOLE MOUNT. `A2aPlane::admission()` answers `None` without it and
+# `a2a::ingress::mount` then adds NO ROUTE AT ALL, so a subject missing this line is not an A2A
+# server that fails the suite — it is a busbar the suite cannot see. It names the SUITE-FACING port
+# (the shim), not busbar's own listener, because it is simultaneously the RFC 8707 resource
+# indicator every token must be minted for and the base of every URL the served card publishes: one
+# reading means the address the suite posts to, the audience busbar demands, and the endpoint the
+# card advertises cannot drift apart.
+#
+# `auth.chain: [keys]` IS LOAD-BEARING AND IS THE OPPOSITE OF A SHORTCUT. An empty chain would let
+# the mount answer anonymously and every scenario below would run with no credential at all — the
+# false green this file exists to refuse. The chain is closed and the token is real.
+#
+# `agents.conformance.url` NAMES A BACKEND THIS RIG CANNOT REACH, and that is stated rather than
+# hidden: see the header. It is `https://` and non-loopback because anything else is refused at
+# parse or at fetch, and it changes nothing about the verdict — a reachable backend would leave the
+# registration `Pending` exactly as an unreachable one does, because nothing promotes it.
+subject_write_config() {
+  local dir="$1" suite_port="$2" data_port="$3" admin_port="$4"
+  cat > "$dir/providers.yaml" <<'YAML'
+# No providers. The A2A plane needs none, and an empty catalog cannot fail for a reason that is
+# about a provider.
+{}
+YAML
+  cat > "$dir/config.yaml" <<YAML
+listen: "127.0.0.1:$data_port"
+admin_listen: "127.0.0.1:$admin_port"
+public_url: "http://127.0.0.1:$suite_port"
+providers: {}
+models: {}
+pools: {}
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+  signing_key: { file: $dir/signing.key }
+agents:
+  $SUBJECT_AGENT_ID:
+    url: "https://backend.a2a-conformance.invalid/a2a"
+    # \`unpinned\` is written out loud rather than spelled as an absent field, exactly as the
+    # grammar demands. It is honest here: this rig has no out-of-band root for a backend it can
+    # never fetch, and claiming one would be inventing a trust root.
+    pin: { mechanism: unpinned }
+YAML
+}
+
+# One request to the fronted agent's endpoint, answered with its HTTP status only.
+subject_probe_status() {
+  local url="$1" bearer="${2:-}"
+  local -a auth=()
+  [ -n "$bearer" ] && auth=(-H "authorization: Bearer $bearer")
+  curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${auth[@]}" "$url"
+}
+
+# THE DISPROOF. Five credentials, one process, one endpoint. Four of them MUST be refused, and the
+# fifth MUST be admitted — without which the four are equally consistent with a busbar that refuses
+# everything, which would make the whole leg vacuous in the other direction.
+prove_the_boundary_is_intact() {
+  local direct="$1" plain="$2" bound="$3" wrong="$4"
+  local failures=0 got
+
+  say "   proving the audience boundary is INTACT before believing any verdict from this leg:"
+
+  got=$(subject_probe_status "$direct")
+  if [ "$got" = "401" ]; then say "     ok:  no credential            -> 401"
+  else say "     BAD: no credential            -> $got (expected 401)"; failures=$((failures+1)); fi
+
+  got=$(subject_probe_status "$direct" "$plain")
+  if [ "$got" = "401" ]; then say "     ok:  token with NO audience   -> 401"
+  else say "     BAD: token with NO audience   -> $got (expected 401)"; failures=$((failures+1)); fi
+
+  got=$(subject_probe_status "$direct" "$wrong")
+  if [ "$got" = "401" ]; then say "     ok:  token, WRONG audience    -> 401"
+  else say "     BAD: token, WRONG audience    -> $got (expected 401)"; failures=$((failures+1)); fi
+
+  # The signature, altered by one character. Flipped to a DIFFERENT character deliberately, so the
+  # token stays the same length and still base64url-decodes — a truncated token would be refused as
+  # malformed, which proves the parser works and says nothing about the signature check.
+  local tampered last
+  last="${bound: -1}"
+  if [ "$last" = "A" ]; then tampered="${bound%?}B"; else tampered="${bound%?}A"; fi
+  got=$(subject_probe_status "$direct" "$tampered")
+  if [ "$got" = "401" ]; then say "     ok:  flipped signature        -> 401"
+  else say "     BAD: flipped signature        -> $got (expected 401)"; failures=$((failures+1)); fi
+
+  # THE CONTROL, and the one place this differs from the MCP leg's. MCP requires `200`; here the
+  # bar is ADMITTED, because on `dev` the correctly-bound token is admitted by auth and then refused
+  # by the TRUST machine with `503 … is not serving (Pending)` — the finding in the header. Pinning
+  # `200` would make this script red for the thing the leg is supposed to REPORT, and pinning `503`
+  # would make it red on the day the finding is fixed. So the assertion is the one that is true
+  # either way — the audience boundary let the right token through — and the status is PRINTED, so
+  # nobody has to infer which side of the trust machine answered.
+  got=$(subject_probe_status "$direct" "$bound")
+  case "$got" in
+    401|403|000)
+      say "     BAD: token, RIGHT audience    -> $got (expected to be ADMITTED)"
+      failures=$((failures+1)) ;;
+    *)
+      say "     ok:  token, RIGHT audience    -> $got (admitted past the audience check)" ;;
+  esac
+  SUBJECT_ADMITTED_STATUS="$got"
+
+  [ "$failures" -eq 0 ] || die "the audience boundary did not behave as declared ($failures of 5 \
+probes wrong). Either busbar's plane boundary has been weakened — in which case this leg would be \
+reporting about a busbar nobody runs, and that is worse than leaving it unarmed — or this harness \
+is minting the wrong thing. Either way no verdict from this leg means anything until it is fixed."
+}
+
+# Boot busbar, obtain a credential for it, and put a credential-holding client shim in front.
+# Sets SUBJECT_URL (what the instruments are pointed at), SUBJECT_TOKEN and SUBJECT_PIDS.
+boot_busbar_a2a_subject() {
+  local bin="${A2A_SUBJECT_BUSBAR_BIN:?boot_busbar_a2a_subject needs A2A_SUBJECT_BUSBAR_BIN}"
+  [ -x "$bin" ] || die "A2A_SUBJECT_BUSBAR_BIN=$bin is not an executable. The subject leg judges a \
+busbar built FROM THIS COMMIT; if the build step did not produce one, that is the finding."
+
+  local dir="${A2A_SUBJECT_WORKDIR:-.a2a-conformance/subject-run}"
+  rm -rf "$dir"; mkdir -p "$dir"
+  dir="$(cd "$dir" && pwd)"
+
+  local suite_port data_port admin_port
+  read -r suite_port data_port admin_port <<<"$(subject_free_ports)"
+  [ -n "${admin_port:-}" ] || die "could not obtain three free loopback ports."
+  say "   busbar $data_port · admin $admin_port · suite-facing $suite_port"
+
+  # The signing key. GENERATED BY THIS JOB, which is the whole basis on which it may sign anything:
+  # it is not extracted from busbar, and busbar is handed the same bytes rather than the other way
+  # round.
+  ( umask 077; "$bin" --generate-signing-key > "$dir/signing.key" 2>"$dir/generate-key.log" ) \
+    || { cat "$dir/generate-key.log" >&2; die "busbar --generate-signing-key failed."; }
+
+  subject_write_config "$dir" "$suite_port" "$data_port" "$admin_port"
+
+  # An admin credential for THIS boot only, from the OS CSPRNG. Never a fixed string: the admin
+  # plane is loopback-only here, and a fixed token in a public repository is a habit that
+  # eventually gets copied somewhere it matters.
+  local admin_token
+  admin_token="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+
+  # Started from `$dir` so the mutable-config overlay busbar writes lands in the scratch directory
+  # rather than in the checkout. The REDIRECTION IS ON THE WHOLE SUBSHELL, not on the binary alone:
+  # a subshell that inherits this script's stdout keeps that pipe open for as long as busbar lives,
+  # and a caller reading our output through a pipe would then hang after the script had finished.
+  ( cd "$dir" && BUSBAR_CONFIG="$dir/config.yaml" BUSBAR_ADMIN_TOKEN="$admin_token" \
+      exec "$bin" ) >"$dir/busbar.log" 2>&1 &
+  local busbar_pid=$!
+  SUBJECT_PIDS="$busbar_pid"
+
+  # READINESS BY OBSERVATION, on the plane's OWN unauthenticated metadata document rather than on
+  # `/healthz` — `/healthz` answers 503 on a deployment with no pools, which is correct and says
+  # nothing about whether the A2A plane mounted. A 200 here proves the mount exists; the audience
+  # it publishes is then compared against the one this script minted for, so a `public_url`
+  # misreading is caught here instead of as fourteen unexplained 401s later.
+  local metadata="http://127.0.0.1:$data_port/.well-known/oauth-protected-resource/a2a"
+  local direct="http://127.0.0.1:$data_port/a2a/agents/$SUBJECT_AGENT_ID"
+  local waited=0
+  until [ "$(subject_probe_status "$metadata")" = "200" ]; do
+    kill -0 "$busbar_pid" 2>/dev/null || { cat "$dir/busbar.log" >&2; die "busbar exited during boot."; }
+    waited=$((waited+1))
+    [ "$waited" -lt 60 ] || { cat "$dir/busbar.log" >&2; die "busbar did not publish A2A \
+protected-resource metadata within 60s. Either the plane did not mount — \`agents:\` and \
+\`public_url:\` are both required, and either one missing means NO ROUTE AT ALL rather than a \
+failing one — or busbar never came up."; }
+    sleep 1
+  done
+  say "   busbar ready after ${waited}s"
+
+  local canonical
+  canonical="$(curl -s --max-time 15 "$metadata" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["resource"])')"
+  say "   canonical resource, read from busbar's own metadata: $canonical"
+  [ "$canonical" = "http://127.0.0.1:$suite_port/a2a" ] || die "busbar publishes the audience \
+\`$canonical\`, but this rig points the suite at 127.0.0.1:$suite_port. A token minted for one and \
+spent at the other is refused, and the leg would read as fourteen auth failures instead of as the \
+configuration mistake it is."
+
+  # A REAL BINDING, minted the ordinary way through the admin API. The subject and the generation
+  # are read back off the token it returns; nothing here invents either, because a subject busbar
+  # never minted and a generation that does not match the durable row are both refused — correctly.
+  local plain
+  plain=$(curl -s --max-time 15 -X POST "http://127.0.0.1:$admin_port/api/v1/admin/keys" \
+            -H "authorization: Bearer $admin_token" -H 'content-type: application/json' \
+            -d '{"name":"a2a-conformance-subject"}' \
+          | python3 -c 'import json,sys
+d = sys.stdin.read()
+try:
+    t = json.loads(d)["token"]
+except Exception:
+    sys.exit("the admin API did not return a token: %s" % d)
+sys.stdout.write(t)') \
+    || die "the admin API did not mint a key. Without a real binding there is no subject to bind a \
+token to, and a made-up one would be refused."
+
+  # THE MINTER IS THE MCP LEG'S, REUSED RATHER THAN COPIED. busbar's token format is one format
+  # across both planes — `governance/signing.rs` verifies MCP's and A2A's identically, and only the
+  # `a` (audience) claim differs — so a second copy of it here would be a second thing to keep in
+  # step with a wire format, which is precisely the duplication this release has already paid for
+  # three times.
+  local minter="scripts/mcp-subject/mint-audience-token.mjs"
+  [ -f "$minter" ] || die "$minter is missing; the A2A subject leg mints its credential with the \
+same helper the MCP leg does, because busbar's token format is one format across both planes."
+  local bound wrong
+  bound=$(node "$minter" "$dir/signing.key" "$plain" "$canonical") \
+    || die "could not mint the audience-bound token."
+  # The counterfactual, minted for an audience this deployment is not. Used only to prove the check
+  # is live; if it were ever admitted, the plane boundary would be gone.
+  wrong=$(node "$minter" "$dir/signing.key" "$plain" "${canonical}-not-this-resource") \
+    || die "could not mint the wrong-audience counterfactual."
+
+  prove_the_boundary_is_intact "$direct" "$plain" "$bound" "$wrong"
+
+  # THE SHIM, and the reason it is here rather than a `--auth` flag. The independent battery CAN be
+  # handed a header; the official TCK CANNOT — `run_tck.py` takes `--sut-host` and nothing else. One
+  # rig serving both instruments therefore has to hold the credential where a CLIENT holds it, and
+  # that is exactly what `scripts/mcp-subject/credential-shim.mjs` already is: a transparent
+  # forwarder that adds `Authorization` only when the request carries none. Reused, not copied.
+  node scripts/mcp-subject/credential-shim.mjs "$suite_port" "$data_port" "$bound" \
+    >"$dir/credential-shim.log" 2>&1 &
+  SUBJECT_PIDS="$SUBJECT_PIDS $!"
+
+  local through="http://127.0.0.1:$suite_port/a2a/agents/$SUBJECT_AGENT_ID"
+  waited=0
+  until [ "$(subject_probe_status "$through")" = "$SUBJECT_ADMITTED_STATUS" ]; do
+    waited=$((waited+1))
+    [ "$waited" -lt 30 ] || {
+      cat "$dir/credential-shim.log" >&2
+      die "the credential shim never reproduced the status busbar gave the same token directly \
+($SUBJECT_ADMITTED_STATUS). That is a finding about the shim, not about busbar."
+    }
+    sleep 1
+  done
+  say "   the suite-facing endpoint reaches busbar through a real, verified credential"
+
+  # SET FOR THE CALLER. Deliberately not `local`.
+  # shellcheck disable=SC2034
+  SUBJECT_URL="http://127.0.0.1:$suite_port"
+  # shellcheck disable=SC2034
+  SUBJECT_AGENT_URL="$through"
+  # shellcheck disable=SC2034
+  SUBJECT_TOKEN="$bound"
+  # shellcheck disable=SC2034
+  SUBJECT_DIR="$dir"
+}
+
+reap_subject() { [ -n "${SUBJECT_PIDS:-}" ] && kill $SUBJECT_PIDS 2>/dev/null || true; }
+
+# ---------------------------------------------------------------------------------------------
+# The legs.
+# ---------------------------------------------------------------------------------------------
+
+# The instruments are pointed at whichever subject is armed. The BINARY is the primary arm; the URL
+# is the optional extra, and when it is the only arm the log says out loud that the verdict is about
+# somebody's deployment rather than about this commit.
+arm_subject() {
+  require_armed "A2A subject" A2A_SUBJECT_BUSBAR_BIN BUSBAR_A2A_ENDPOINT
+  if [ -n "${A2A_SUBJECT_BUSBAR_BIN:-}" ]; then
+    boot_busbar_a2a_subject
+    trap reap_subject EXIT
+  else
+    SUBJECT_URL="$BUSBAR_A2A_ENDPOINT"
+    SUBJECT_AGENT_URL="$BUSBAR_A2A_ENDPOINT"
+    SUBJECT_TOKEN=""
+    say "   armed by an EXTERNAL endpoint only: $SUBJECT_URL"
+    say "   NOTE: this judges whatever is deployed there, which may not be this commit."
+  fi
+}
+
+leg_battery() {
+  say "== A2A INDEPENDENT BATTERY · SUBJECT leg (busbar) =="
+  arm_subject
+  mkdir -p testing/a2a-harness/reports
+  # `--card-url` NAMES THE FRONTED AGENT'S ENDPOINT, and it is not a convenience. busbar mounts the
+  # card at `/a2a/agents/{id}` and serves NOTHING at the well-known path on this commit, so without
+  # it the battery's preflight stops at "no agent card at any of […]" and exits 3 having run no
+  # test — a red with no number, which is the state this whole item exists to end. Naming the real
+  # endpoint lets the battery reach busbar and REPORT the well-known gap as one of its own findings
+  # rather than as a reason it could not start. Nothing is silenced: `--card-url` changes where the
+  # card is looked for, never what is asserted about it.
+  #
+  # `--role server`: busbar's A2A CLIENT direction is driven by a relay this rig cannot exercise
+  # (see the header's finding 2), so a `--client-drive` command would be a lie. The client-role
+  # tests report NOT_CONFIGURED and are RED without it, which is the correct answer and is why they
+  # are excluded by ROLE here rather than silenced.
+  local rc=0
+  ( cd testing/a2a-harness && python3 -m a2aht run \
+      --endpoint "$SUBJECT_URL" \
+      --card-url "$SUBJECT_AGENT_URL" \
+      ${SUBJECT_TOKEN:+--auth "authorization: Bearer $SUBJECT_TOKEN"} \
+      --label "subject:busbar" \
+      --tier pull-request \
+      --role server \
+      --json reports/subject.json ) || rc=$?
+  say ""
+  say "   battery exit $rc"
+  # DELIBERATELY NOT BASELINE-COMPARED, for the reason `run-tck.sh` gives for the same decision: a
+  # subject baseline would pin our own defects as the expectation.
+  #
+  # THE TWO REDS ARE NOT THE SAME RED, and conflating them is the failure this item exists to
+  # correct. `1` means the battery ran and busbar failed tests — a NUMBER, printed above. `3` means
+  # the battery never started, so there is no number at all, which is the state this leg has been in
+  # since it was written. They are named separately so a reader of the log can tell "busbar is bad
+  # at A2A" from "busbar was never tested".
+  case "$rc" in
+    0) ;;
+    3) die "the battery could not START: busbar served no agent card, so NOTHING WAS TESTED and \
+there is no conformance number from this instrument. This is not a low score — it is the absence of \
+a score, and it is the exact state A4.4 exists to end. See the header's finding 1: a registration \
+booted from YAML is \`Pending\` for ever, so \`/a2a/agents/{id}\` answers 503 and there is no \
+card anywhere for the battery to read." ;;
+    *) die "the independent battery found defects in busbar's A2A implementation (exit $rc). Read \
+the counts line above; it is the number this leg exists to produce." ;;
+  esac
+}
+
+leg_tck() {
+  say "== A2A OFFICIAL TCK · SUBJECT leg (busbar) =="
+  arm_subject
+  local out="${A2A_SUBJECT_TCK_LOG:-.a2a-conformance/tck-subject.txt}"
+  mkdir -p "$(dirname "$out")"
+  # `run-tck.sh subject` DELIBERATELY EXITS 0 whatever the TCK found — it swallows pytest's status
+  # and, for a subject, does no baseline comparison (correctly: a subject baseline would pin our own
+  # defects as the expectation). So this leg's verdict cannot be that script's exit code, and the
+  # step is piped through `tee` rather than read from `$?`.
+  BUSBAR_A2A_ENDPOINT="$SUBJECT_URL" testing/a2a-tck/run-tck.sh subject 2>&1 | tee "$out"
+  assert_tck_number "$out"
+}
+
+# READ THE NUMBER OUT OF THE TCK'S OWN STDOUT, and refuse both ways it can be absent.
+#
+# AND DO NOT READ `OVERALL COMPATIBILITY`. The TCK prints an `OVERALL COMPATIBILITY: 100.0%` line
+# directly above a table reading `MUST 4 passed / 110 failed of 114` — it is computed from the
+# per-transport rollup, not from the requirement levels, and taken at face value it is the single
+# most dangerous line in this entire gate: it is a printed 100% for an implementation that fails
+# 110 of 114 MUSTs. This function reads the MUST ROW and nothing else, and says so here so nobody
+# later "fixes" it by reading the friendlier number.
+assert_tck_number() {
+  local out="$1"
+  python3 - "$out" <<'PY'
+import re, sys
+
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+
+# The MUST row of the TCK's own level table: │ MUST │ passed │ failed │ skipped │ total │
+row = re.search(r"MUST\s*\D+?(\d+)\s*\D+?(\d+)\s*\D+?(\d+)\s*\D+?(\d+)", text)
+if row is None:
+    sys.exit(
+        "the TCK printed no MUST row, so this leg produced NO NUMBER. An armed leg that executed\n"
+        "nothing is the state the old skipping leg would have rotted into: configured, green and\n"
+        "vacuous. Read the captured output above for why the suite did not report."
+    )
+passed, failed, skipped, total = (int(g) for g in row.groups())
+print("")
+print("A2A OFFICIAL TCK vs busbar (the commit under test), from the suite's own stdout:")
+print("  MUST      %d passed, %d failed, %d skipped, of %d" % (passed, failed, skipped, total))
+if total == 0:
+    sys.exit("the MUST total is zero: the suite ran nothing. That is not a score.")
+print("  => %d/%d MUST requirements met (%.1f%%)" % (passed, total, 100.0 * passed / total))
+print("")
+print("  NOTE: the suite ALSO prints `OVERALL COMPATIBILITY: 100.0%` above this table. That figure")
+print("  is the per-transport rollup, not the requirement result, and it is 100% while 110 of 114")
+print("  MUSTs fail. It is not this gate's number and must never be quoted as one.")
+if failed:
+    sys.exit(
+        "\nbusbar failed %d of %d MUST requirements. That is the number this leg exists to\n"
+        "produce, and it is RED until it is zero." % (failed, total)
+    )
+PY
+}
+
+leg_probe() {
+  say "== A2A SUBJECT · boundary probe only =="
+  arm_subject
+  say "   subject endpoint: $SUBJECT_URL"
+  say "   fronted agent:    $SUBJECT_AGENT_URL"
+}
+
+# --selftest: prove the arming rule and the boundary proof BITE, before any verdict from this
+# script is believed. Same discipline as `mcp-conformance.sh --selftest`: a rule whose enforcement
+# is only ever exercised by the real thing is a rule nobody has watched work.
+selftest() {
+  say "== a2a-subject SELF-TEST (the arming rule cannot be lied to) =="
+  local failures=0
+
+  # RED 1: nothing armed at all. This is the state the leg was ACTUALLY in on every run until now,
+  # so it is the one case that must be watched to fail.
+  if ( unset A2A_ARMTEST_A A2A_ARMTEST_B; require_armed "selftest" A2A_ARMTEST_A A2A_ARMTEST_B ) \
+       >/dev/null 2>&1; then
+    say "  MISS: an unarmed subject leg was accepted"; failures=$((failures+1))
+  else
+    say "  ok: an unarmed subject leg is RED"
+  fi
+
+  # RED 2: an EMPTY variable. An unset repository variable expands to the empty string, not to an
+  # unset name, so this is the shape an unarmed CI run actually has.
+  if ( export A2A_ARMTEST_A=""; require_armed "selftest" A2A_ARMTEST_A A2A_ARMTEST_B ) \
+       >/dev/null 2>&1; then
+    say "  MISS: an EMPTY arming variable was accepted as armed"; failures=$((failures+1))
+  else
+    say "  ok: an empty arming variable is not armed"
+  fi
+
+  # GREEN 1 and 2: armed on the FIRST name, and on the SECOND. Both, because a check that only ever
+  # reads its first argument would pass every red above and still leave the URL leg unarmable.
+  if ( export A2A_ARMTEST_A="x"; require_armed "selftest" A2A_ARMTEST_A A2A_ARMTEST_B ) \
+       >/dev/null 2>&1; then
+    say "  ok: the first arming variable arms the leg"
+  else
+    say "  MISS: a leg armed by its first variable was still refused"; failures=$((failures+1))
+  fi
+  if ( export A2A_ARMTEST_B="x"; require_armed "selftest" A2A_ARMTEST_A A2A_ARMTEST_B ) \
+       >/dev/null 2>&1; then
+    say "  ok: the second arming variable also arms the leg"
+  else
+    say "  MISS: a leg armed by its second variable was refused"; failures=$((failures+1))
+  fi
+
+  # RED 3: a binary that is not there. The arm is a FILE, so "armed" must mean the file exists and
+  # is executable — an arm satisfied by a typo'd path is an arm that disarms silently.
+  if ( A2A_SUBJECT_BUSBAR_BIN="/nonexistent/busbar" boot_busbar_a2a_subject ) >/dev/null 2>&1; then
+    say "  MISS: a non-existent subject binary was accepted as an arm"; failures=$((failures+1))
+  else
+    say "  ok: a non-existent subject binary is RED"
+  fi
+
+  # RED 4: the boundary proof must FAIL when a refusal turns into an admission. Driven against a
+  # local stand-in that answers 200 to everything, which is what a weakened audience check would
+  # look like from here.
+  local port
+  port="$(subject_free_ports | cut -d' ' -f1)"
+  python3 - "$port" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+  local fake=$!
+  local waited=0
+  until [ "$(subject_probe_status "http://127.0.0.1:$port/")" = "200" ]; do
+    waited=$((waited+1)); [ "$waited" -lt 30 ] || break; sleep 1
+  done
+  if ( prove_the_boundary_is_intact "http://127.0.0.1:$port/" p b w ) >/dev/null 2>&1; then
+    say "  MISS: a peer that admits EVERY credential passed the boundary proof"; failures=$((failures+1))
+  else
+    say "  ok: a peer that admits every credential fails the boundary proof"
+  fi
+  kill "$fake" 2>/dev/null || true
+
+  # RED 5: TCK output with NO MUST row. This is what a suite that never reported looks like, and it
+  # is the one shape that would otherwise let an armed leg pass having produced no number.
+  local tmp; tmp="$(mktemp)"
+  printf 'OVERALL COMPATIBILITY: 100.0%%\nnothing else at all\n' > "$tmp"
+  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
+    say "  MISS: TCK output carrying no MUST row was accepted as a result"; failures=$((failures+1))
+  else
+    say "  ok: TCK output with no MUST row produces no number, and is RED"
+  fi
+
+  # RED 6: a MUST row with failures must be RED even when the suite's own `OVERALL COMPATIBILITY`
+  # line says 100%. That combination is not hypothetical — it is verbatim what busbar produces
+  # today.
+  printf 'OVERALL COMPATIBILITY: 100.0%%\n| MUST | 4 | 110 | 0 | 114 |\n' > "$tmp"
+  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
+    say "  MISS: 110 failed MUSTs were accepted because the suite printed 100%"; failures=$((failures+1))
+  else
+    say "  ok: failed MUSTs are RED regardless of the suite's OVERALL COMPATIBILITY line"
+  fi
+
+  # GREEN: a clean MUST row is accepted, so the check above is not one that refuses everything.
+  printf '| MUST | 114 | 0 | 0 | 114 |\n' > "$tmp"
+  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
+    say "  ok: a clean MUST row is accepted"
+  else
+    say "  MISS: a clean MUST row was refused"; failures=$((failures+1))
+  fi
+  rm -f "$tmp"
+
+  [ "$failures" -eq 0 ] || die "$failures self-test expectation(s) did not hold. No verdict from \
+this script means anything until they do."
+  say "  a2a-subject self-test: every arming and boundary expectation held."
+}
+
+case "${1:-}" in
+  --battery)  leg_battery ;;
+  --tck)      leg_tck ;;
+  --probe)    leg_probe ;;
+  --selftest) selftest ;;
+  *) sed -n '/^# MODES/,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
