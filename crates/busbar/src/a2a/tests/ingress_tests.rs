@@ -314,7 +314,7 @@ fn the_served_endpoint_and_the_mounted_path_are_one_derivation() {
 
 #[tokio::test]
 async fn the_well_known_card_is_served_without_a_credential() {
-    // THE SPECIFICATION MAKES THIS A MUST (A2A §8.2), and a 404 here means Busbar is invisible to
+    // THE A2A PROTOCOL SPECIFICATION MAKES THIS A MUST, and a 404 here means Busbar is invisible to
     // every conformant client: a stock client asks this path FIRST and has nowhere else to look.
     // No credential is presented, and that is the whole point — this document is what tells a
     // caller which scheme to present, so demanding one to read it is circular.

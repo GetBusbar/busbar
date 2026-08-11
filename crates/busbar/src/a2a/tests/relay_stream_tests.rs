@@ -512,6 +512,81 @@ async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
     );
 }
 
+/// **THE CALLBACK IS ACTUALLY CALLED.** Through the production router, end to end.
+///
+/// The test above proves the callback was accepted and persisted, and it passed for the whole of
+/// this release while NOTHING EVER DELIVERED. That is the shape of gap this test closes: every step
+/// up to the row had a test, the step after the row had no code, and no test could tell because
+/// there was no socket in the story to be missing. A caller registered a webhook and got silence.
+///
+/// The delivery is detached — the caller's answer does not wait on somebody else's webhook — so
+/// this polls the seam's log rather than asserting immediately after the response.
+#[tokio::test]
+async fn a_registered_callback_is_delivered_to_when_the_task_reaches_a_state() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let mut env = envelope();
+    env["params"]["configuration"] = serde_json::json!({
+        "pushNotificationConfig": { "url": "https://hooks.example.test/cb" }
+    });
+    let (status, body) = call_agent(&h, "planner", &env).await;
+    assert_eq!(status, 200, "{body}");
+    let task_id = body
+        .pointer("/result/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let delivered = loop_until(&h, "https://hooks.example.test/cb").await;
+    let Some(delivered) = delivered else {
+        panic!(
+            "the task completed with a registered push callback and NOTHING was delivered; the \
+             seam saw only: {:?}",
+            h.sent().iter().map(|r| r.url.clone()).collect::<Vec<_>>()
+        )
+    };
+
+    // THE SOCKET WENT TO THE ADDRESS THE DELIVERY-TIME GUARD JUDGED, not to a name a client would
+    // have resolved a second time.
+    assert_eq!(delivered.addr, Some(BACKEND_ADDR));
+
+    // THE BODY IS THE TASK UNDER BUSBAR'S IDENTITY. The backend's own ids are its names for this
+    // work and resolve to nothing in the receiver's later reads.
+    let doc: serde_json::Value =
+        serde_json::from_slice(&delivered.body).expect("the notification is JSON");
+    assert_eq!(doc["id"], task_id);
+    assert_eq!(doc["status"]["state"], "completed");
+    let rendered = String::from_utf8_lossy(&delivered.body);
+    assert!(
+        !rendered.contains("BACKEND-OWN-TASK-ID") && !rendered.contains("BACKEND-OWN-CONTEXT"),
+        "the notification carried the BACKEND's identifiers: {rendered}"
+    );
+
+    // AND NO CREDENTIAL. The receiver is a host the CALLER nominated.
+    let names: Vec<String> = delivered
+        .headers
+        .iter()
+        .map(|(n, _)| n.to_lowercase())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["content-type".to_string()],
+        "{:?}",
+        delivered.headers
+    );
+}
+
+/// Wait for a request to `url` to appear in the seam's log, or give up. The delivery is detached on
+/// purpose, so a bare assertion after the response would be a race the test usually wins.
+async fn loop_until(h: &Harness, url: &str) -> Option<Recorded> {
+    for _ in 0..200 {
+        if let Some(found) = h.sent().into_iter().find(|r| r.url == url) {
+            return Some(found);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    None
+}
+
 // ══ RESTART AND RESUBSCRIBE ══════════════════════════════════════════════════════════════════════
 
 /// AN INTERRUPTED TASK SURVIVES A RESTART WHERE THE BACKEND IS DURABLE, AND IS HONESTLY REPORTED

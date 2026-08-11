@@ -269,8 +269,9 @@ fn inbound_security_requirement() -> Value {
 
 /// BUSBAR'S OWN AGENT CARD, served unauthenticated at [`super::card::WELL_KNOWN_CARD_PATH`].
 ///
-/// WHY THIS EXISTS AT ALL. The specification makes it a MUST — "A2A Servers MUST make an Agent Card
-/// available" (§8.2) — and the path is `/.well-known/agent-card.json`. Until this existed busbar
+/// WHY THIS EXISTS AT ALL. The A2A protocol specification makes it a MUST — "A2A Servers MUST make
+/// an Agent Card available" — and names the path `/.well-known/agent-card.json`. Until this existed
+/// busbar
 /// answered 404 there, which meant busbar was not discoverable by any conformant A2A client: a
 /// stock client asks the well-known path FIRST and has nowhere else to look. The conformance
 /// battery reported this as `SUBJECT NOT REACHABLE`, and the tempting fix was to point the battery
@@ -279,9 +280,10 @@ fn inbound_security_requirement() -> Value {
 ///
 /// WHY IT IS UNAUTHENTICATED. The specification never writes "this path MUST be unauthenticated",
 /// and that silence is worth stating rather than papering over. But the two-tier model only works
-/// one way round: the public card is what TELLS a caller which schemes to present (§3.1.11 — the
-/// extended card's client "MUST authenticate the request using one of the schemes declared in the
-/// public `AgentCard.securitySchemes`"). Requiring a credential to read the document that names the
+/// one way round: the public card is what TELLS a caller which schemes to present — the extended
+/// card's client "MUST authenticate the request using one of the schemes declared in the public
+/// `AgentCard.securitySchemes`", in the specification's own words. Requiring a credential to read
+/// the document that names the
 /// credential is circular, so this is served with `RouteAuth::None`, exactly like the RFC 9728
 /// metadata path next to it.
 ///

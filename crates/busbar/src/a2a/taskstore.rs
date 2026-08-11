@@ -34,9 +34,10 @@
 //! not-found is an enumeration oracle: a caller that can tell the two apart can probe the id space
 //! and learn which task ids exist in other tenants.
 
-// PARTLY UNMOUNTED. `set_sink`, `restore_from_store`, `submit` and `record_dispatch` are all
-// driven — boot rehydrates and the ingress opens a task per call. `advance_cursor`,
-// `set_push_callback`, the scoped reads and `compact` await the relay and the task-read surface.
+// PARTLY UNMOUNTED. `set_sink`, `restore_from_store`, `submit`, `record_dispatch`, `transition`,
+// `advance_cursor` and `set_push_callback` are all driven — boot rehydrates, the ingress opens a
+// task per call, the relay moves its state, and a state change is now also what DELIVERS the
+// caller's push notification. The scoped reads and `compact` await the task-read surface.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::HashMap;
@@ -388,15 +389,47 @@ impl TaskRegistry {
         Ok(candidate)
     }
 
-    /// Register (or clear) this task's push-notification callback. The URL must ALREADY have passed
-    /// [`super::pushnotify::validate`]; this only persists it. Splitting the two keeps the SSRF
-    /// decision in one place instead of one copy per caller.
+    /// Register (or clear) this task's push-notification callback.
+    ///
+    /// THE FULL SSRF DECISION IS STILL MADE ELSEWHERE — twice, and both are load-bearing:
+    /// `ingress::rpc` runs [`super::pushnotify::validate`] against a live resolution before the
+    /// caller's registration is accepted at all, and [`super::pushdeliver`] runs it AGAIN against a
+    /// fresh resolution before every single delivery, because a durable row outlives the DNS answer
+    /// that was checked when it was written.
+    ///
+    /// What this method adds is the part neither of those can provide: a floor. It used to take a
+    /// bare `Option<String>` and persist whatever it was handed, with a doc comment asserting the
+    /// caller had validated. That made the tree safe by COINCIDENCE OF CALL ORDER — true of the one
+    /// caller that existed, and silently untrue for the next one, or for a row somebody wrote into
+    /// the governance store directly. So the resolver-free half of the guard runs here too, and a
+    /// URL it refuses is DROPPED rather than stored.
+    ///
+    /// Dropped rather than returned as an error, deliberately. This is a floor under a check that
+    /// has already happened at the surface where the caller is present to be told; by the time a
+    /// refusable URL reaches this method something upstream has already failed to do its job, and
+    /// the useful response is to make the callback not exist and say so loudly in the log, not to
+    /// fail a task the caller is owed. The registration path still answers `400` at the ingress.
     pub(crate) fn set_push_callback(
         &self,
         task_id: &str,
         callback: Option<String>,
         now: u64,
     ) -> Result<Task, TaskStoreError> {
+        let callback = match callback {
+            Some(url) => match super::pushnotify::structural_refusal(&url) {
+                Some(refusal) => {
+                    tracing::error!(
+                        task = %task_id,
+                        error = %refusal,
+                        "a2a: a push callback the SSRF guard refuses reached the task store and was \
+                         DROPPED; the caller that stored it did not validate first"
+                    );
+                    None
+                }
+                None => Some(url),
+            },
+            None => None,
+        };
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)

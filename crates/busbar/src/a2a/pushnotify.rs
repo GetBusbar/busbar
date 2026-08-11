@@ -36,11 +36,12 @@
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
 
-// PARTLY MOUNTED. `host_of` and `validate` are on the hot path: `ingress::rpc` guards every
-// caller-supplied `pushNotificationConfig.url` through them before `taskstore::set_push_callback`
-// stores it, which is why that function still does not validate — the decision lives here, once.
-// `revalidate` is the DELIVERY path's half, and nothing delivers a push notification yet: a durable
-// callback can outlive the DNS answer that was checked when it was written, so the fresh-resolution
+// FULLY MOUNTED, and the last function to get a caller was the most important one. `host_of` and
+// `validate` guard registration in `ingress::rpc`; `structural_refusal` is the floor inside
+// `taskstore::set_push_callback`; and `revalidate` — which had NO caller anywhere in the tree while
+// this plane accepted, validated, pinned and persisted callbacks that nothing ever delivered to —
+// is `pushdeliver`'s, run against a fresh resolution before every single delivery. A durable
+// callback outlives the DNS answer that was checked when it was written, so the fresh-resolution
 // check belongs to the code that is about to connect rather than to the code that stored it.
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -191,6 +192,63 @@ pub(crate) fn host_of(url: &str) -> Result<String, PushNotifyError> {
     split_url(url).map(|(_scheme, host)| host)
 }
 
+/// What the RESOLVER-FREE half of the guard concluded about a URL.
+enum Structural {
+    /// A canonical IP literal that PASSED the range check. There is nothing to resolve and nothing
+    /// to rebind, so this is already a decision.
+    Literal { host: String, addr: IpAddr },
+    /// A DNS name that passed everything decidable without an answer from a resolver. Whether it is
+    /// safe is NOT yet known, and saying so is the point of the separate variant.
+    Name(String),
+}
+
+/// THE HALF OF THE GUARD THAT NEEDS NO RESOLVER: the scheme, the userinfo trick, the alternate IPv4
+/// encodings, and a canonical IP literal's ranges.
+///
+/// Split out because two callers need exactly this much and cannot have the other half.
+/// [`structural_refusal`] is a defence-in-depth check inside a synchronous store method that has no
+/// resolver seam and must not grow one; [`validate`] is the full guard and calls this first, so
+/// there is ONE implementation of the shared rules rather than two that agree today.
+fn structural_check(url: &str, allow_plaintext: bool) -> Result<Structural, PushNotifyError> {
+    let (scheme, host) = split_url(url)?;
+    match scheme.as_str() {
+        "https" => {}
+        "http" if allow_plaintext => {}
+        other => return Err(PushNotifyError::Scheme(other.to_string())),
+    }
+    if crate::net_guard::is_alternate_ipv4_encoding(&host) {
+        return Err(PushNotifyError::ObfuscatedHost(host));
+    }
+    // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all
+    // — there is nothing to rebind. It still has to pass the same ranges.
+    if let Ok(literal) = host.parse::<IpAddr>() {
+        if is_internal_addr(&literal) {
+            return Err(PushNotifyError::InternalAddress(literal));
+        }
+        return Ok(Structural::Literal {
+            host,
+            addr: literal,
+        });
+    }
+    Ok(Structural::Name(host))
+}
+
+/// THE DEFENCE-IN-DEPTH CHECK for a caller that CANNOT resolve — `Some(refusal)` when the URL is
+/// refusable without asking a nameserver anything, `None` when it is not yet decidable.
+///
+/// `None` is NOT "safe". It means "this is a DNS name and the verdict needs an answer this caller
+/// cannot obtain", and the only correct thing to do with such a URL is to make sure the code that
+/// eventually CONNECTS runs the full [`validate`] against a fresh resolution. That is exactly what
+/// [`super::pushdeliver`] does before every delivery.
+///
+/// This exists because `taskstore::set_push_callback` used to take a bare `Option<String>` and
+/// persist whatever it was handed. Its only caller validated first, so the tree was safe by
+/// coincidence of call order — and a second caller, or a row rehydrated from a store somebody
+/// wrote to directly, had nothing standing between it and a delivery attempt.
+pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
+    structural_check(url, false).err()
+}
+
 /// VALIDATE a caller-supplied (or busbar-registered) callback URL against the addresses it resolves
 /// to RIGHT NOW, and pin those addresses.
 ///
@@ -207,27 +265,16 @@ pub(crate) fn validate(
     resolved: &[IpAddr],
     allow_plaintext: bool,
 ) -> Result<PinnedCallback, PushNotifyError> {
-    let (scheme, host) = split_url(url)?;
-    match scheme.as_str() {
-        "https" => {}
-        "http" if allow_plaintext => {}
-        other => return Err(PushNotifyError::Scheme(other.to_string())),
-    }
-    if crate::net_guard::is_alternate_ipv4_encoding(&host) {
-        return Err(PushNotifyError::ObfuscatedHost(host));
-    }
-    // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all
-    // — there is nothing to rebind. It still has to pass the same ranges.
-    if let Ok(literal) = host.parse::<IpAddr>() {
-        if is_internal_addr(&literal) {
-            return Err(PushNotifyError::InternalAddress(literal));
+    let host = match structural_check(url, allow_plaintext)? {
+        Structural::Literal { host, addr } => {
+            return Ok(PinnedCallback {
+                url: url.to_string(),
+                host,
+                addrs: vec![addr],
+            });
         }
-        return Ok(PinnedCallback {
-            url: url.to_string(),
-            host,
-            addrs: vec![literal],
-        });
-    }
+        Structural::Name(host) => host,
+    };
     if resolved.is_empty() {
         return Err(PushNotifyError::Unresolved(host));
     }

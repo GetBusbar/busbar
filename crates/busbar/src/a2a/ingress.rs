@@ -107,7 +107,8 @@ pub(crate) async fn metadata(CurrentApp(app): CurrentApp) -> Response {
 
 /// BUSBAR'S OWN AGENT CARD at `/.well-known/agent-card.json`, unauthenticated.
 ///
-/// The specification makes serving a card a MUST (§8.2) and this is the path a stock A2A client
+/// The A2A protocol specification makes serving an Agent Card a MUST, and this is the path a
+/// stock A2A client
 /// asks for first. See [`super::serve::self_card`] for why it is auth-exempt and, more importantly,
 /// for what is deliberately left out of it — this endpoint cannot ask who is calling, so it must
 /// not name the agents busbar fronts.
@@ -604,6 +605,11 @@ pub(crate) async fn rpc(
 
     if let Some(pinned) = callback.as_ref() {
         let _ = super::taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now);
+        // THE ADDRESSES THE GUARD JUST JUDGED, kept so the FIRST delivery is a `revalidate` — the
+        // fresh answer must pass the guard AND still overlap this set — rather than a bare
+        // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
+        // read as, a durable pin.
+        super::pushdeliver::remember(&task_id, pinned);
     }
 
     gov_state.record_metering(
@@ -649,13 +655,14 @@ pub(crate) async fn rpc(
             Ok(lease) => Some(lease),
             Err(e) => {
                 tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
-                return fail_task(&task_id, &request_id, now, 502, "upstream_error");
+                return fail_task(&seam, &task_id, &request_id, now, 502, "upstream_error");
             }
         },
         None => None,
     };
 
     let hop_ctx = HopContext {
+        seam: Arc::clone(&seam),
         agent_id: admitted.dispatch.agent_id.clone(),
         backend_url: admitted.dispatch.backend_url.clone(),
         task_id: task_id.clone(),
@@ -681,6 +688,11 @@ pub(crate) async fn rpc(
 /// shapes need the same eleven facts and an eleven-argument function is a function whose arguments
 /// get transposed.
 struct HopContext {
+    /// THE PLANE'S OUTBOUND SEAM, carried so the code that records a task's outcome can also
+    /// DELIVER it. A push notification is the same fact as the state transition and belongs at the
+    /// same instant; reaching for the plane again from `record_state` would be reading the world
+    /// twice to learn one thing.
+    seam: Arc<dyn super::relay::RelaySeam>,
     agent_id: String,
     backend_url: String,
     task_id: String,
@@ -734,6 +746,7 @@ async fn unary_hop(
         Err(join) => {
             tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
             return fail_task(
+                &ctx.seam,
                 &ctx.task_id,
                 &ctx.request_id,
                 ctx.now,
@@ -791,6 +804,11 @@ async fn stream_hop(
     let backend_url = ctx.backend_url.clone();
     let now = ctx.now;
     let now_ms = ctx.now_ms;
+    // A SECOND HANDLE ON THE SEAM for the sink below. The stream's state changes are the caller's
+    // push notifications, and a sink that could not reach the seam would deliver on the unary path
+    // and silently not on the streaming one — a difference no test that stops at the transport can
+    // see.
+    let notify_seam = Arc::clone(&seam);
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -804,7 +822,18 @@ async fn stream_hop(
             // THE TASK'S STATE MOVES AS THE STREAM MOVES, not once at the end. A stream that ends
             // by the process dying must leave the last state it actually reported, not `submitted`.
             if let Some(state) = ev.state {
-                let _ = super::taskstore::TASKS.transition(&task_id, state, now, &request_id);
+                // ALREADY ON A BLOCKING THREAD, so the delivery is made inline rather than spawned:
+                // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
+                // order also means the receiver sees the states in the order they happened.
+                if let Ok(task) =
+                    super::taskstore::TASKS.transition(&task_id, state, now, &request_id)
+                {
+                    if task.push_callback.is_some() {
+                        if let Err(e) = super::pushdeliver::deliver(notify_seam.as_ref(), &task) {
+                            tracing::warn!(task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
+                        }
+                    }
+                }
             }
             if ev.artifact {
                 cursor = cursor.saturating_add(1);
@@ -868,6 +897,7 @@ async fn stream_hop(
             Ok(Ok(super::relay::RelayStream::Streamed)) => {
                 tracing::warn!(task = %ctx.task_id, "a2a: the backend's stream carried no event");
                 fail_task(
+                    &ctx.seam,
                     &ctx.task_id,
                     &ctx.request_id,
                     ctx.now,
@@ -879,6 +909,7 @@ async fn stream_hop(
             Err(join) => {
                 tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
                 fail_task(
+                    &ctx.seam,
                     &ctx.task_id,
                     &ctx.request_id,
                     ctx.now,
@@ -894,17 +925,23 @@ async fn stream_hop(
     let watched_task = ctx.task_id.clone();
     let watched_request = ctx.request_id.clone();
     let watched_now = ctx.now;
+    let watched_seam = Arc::clone(&ctx.seam);
     tokio::spawn(async move {
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(refusal)) => {
                 tracing::warn!(task = %watched_task, error = %refusal, "a2a: the relayed stream ended in a refusal");
-                let _ = super::taskstore::TASKS.transition(
+                // A BROKEN STREAM IS A TERMINAL FAILURE and the caller is told, for the same
+                // reason `fail_task` tells them: silence and "still working" are the same thing to
+                // a receiver, and this is the case where they are most different.
+                if let Ok(task) = super::taskstore::TASKS.transition(
                     &watched_task,
                     super::task::TaskState::Failed,
                     watched_now,
                     &watched_request,
-                );
+                ) {
+                    notify_push(&watched_seam, task);
+                }
             }
             Err(join) => {
                 tracing::error!(task = %watched_task, error = %join, "a2a: the streaming relay thread did not complete");
@@ -943,14 +980,48 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
     if state == super::task::TaskState::Submitted {
         return;
     }
-    if let Err(e) =
-        super::taskstore::TASKS.transition(&ctx.task_id, state, ctx.now, &ctx.request_id)
-    {
-        // Reported, never fatal: the hop SUCCEEDED and the caller is owed its answer. A store that
-        // refused the transition is an operator problem, not a reason to discard a completed piece
-        // of work the caller has already been billed for.
-        tracing::error!(task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+    match super::taskstore::TASKS.transition(&ctx.task_id, state, ctx.now, &ctx.request_id) {
+        // THE STATE CHANGED, SO THE CALLER IS TOLD. This is the line that was missing: a caller
+        // could register a push callback, have it validated, pinned and persisted, and then never
+        // hear anything, because nothing on this plane ever connected to it.
+        Ok(task) => notify_push(&ctx.seam, task),
+        Err(e) => {
+            // Reported, never fatal: the hop SUCCEEDED and the caller is owed its answer. A store
+            // that refused the transition is an operator problem, not a reason to discard a
+            // completed piece of work the caller has already been billed for.
+            tracing::error!(task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+        }
     }
+}
+
+/// DELIVER THIS TASK'S PUSH NOTIFICATION, if it has a callback, without making the caller wait.
+///
+/// DETACHED, and that is a decision rather than a convenience. The caller's answer is already
+/// determined and the receiver is the caller's OWN infrastructure: holding busbar's response open
+/// while somebody else's webhook thinks would let a caller slow busbar down by being slow itself.
+///
+/// ON A BLOCKING THREAD, because the guard performs a real name lookup and the transport blocks a
+/// thread per hop — the same reason the relay and the registration-time guard do.
+///
+/// A task with no callback never spawns anything: the overwhelmingly common case costs one
+/// `Option` test.
+fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::task::Task) {
+    if task.push_callback.is_none() {
+        return;
+    }
+    let seam = Arc::clone(seam);
+    tokio::task::spawn_blocking(move || {
+        let task_id = task.task_id.clone();
+        match super::pushdeliver::deliver(seam.as_ref(), &task) {
+            Ok(()) => tracing::debug!(task = %task_id, "a2a: push notification delivered"),
+            // NEVER fatal to the task, and never retried into a hammer. The outcome is recorded and
+            // the caller's poll will find it; a webhook that is down is the caller's problem to
+            // read in this log line.
+            Err(e) => {
+                tracing::warn!(task = %task_id, error = %e, "a2a: the push notification was not delivered")
+            }
+        }
+    });
 }
 
 /// RENDER A HOP REFUSAL. The refusal's own words go to the LOG, where they name the backend and the
@@ -974,6 +1045,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
         )
             .into_response(),
         _ => fail_task(
+            &ctx.seam,
             &ctx.task_id,
             &ctx.request_id,
             ctx.now,
@@ -991,16 +1063,26 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// so the caller can correlate it with the record busbar kept, and never the backend, because
 /// publishing the backend is publishing the way around every control busbar applies.
 fn fail_task(
+    seam: &Arc<dyn super::relay::RelaySeam>,
     task_id: &str,
     request_id: &str,
     now: u64,
     status: u16,
     code: &'static str,
 ) -> Response {
-    if let Err(e) =
-        super::taskstore::TASKS.transition(task_id, super::task::TaskState::Failed, now, request_id)
-    {
-        tracing::error!(task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+    match super::taskstore::TASKS.transition(
+        task_id,
+        super::task::TaskState::Failed,
+        now,
+        request_id,
+    ) {
+        // A FAILURE IS A TERMINAL STATE AND THE CALLER WANTS IT MOST. A push callback that only
+        // ever fired on success would leave the one case a caller actually needs to be woken for —
+        // work that will never finish — as silence indistinguishable from work still in progress.
+        Ok(task) => notify_push(seam, task),
+        Err(e) => {
+            tracing::error!(task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+        }
     }
     (
         axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
