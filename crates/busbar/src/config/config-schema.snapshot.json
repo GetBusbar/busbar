@@ -63,6 +63,10 @@
     "AgentDefCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "allow_private": {
+          "optional": true,
+          "type": "bool"
+        },
         "egress_scopes": {
           "optional": true,
           "type": "Vec<String>"

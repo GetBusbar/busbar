@@ -612,6 +612,7 @@ fn the_production_bundle_hands_out_the_real_pieces_and_the_operators_policy() {
         max_redirects: 1,
         max_body_bytes: 1234,
         allow_plaintext: true,
+        allow_private: true,
     };
     let live = LiveCardFetch::new(policy.clone());
     assert_eq!(

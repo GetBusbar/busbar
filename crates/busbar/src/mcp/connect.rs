@@ -80,15 +80,12 @@ pub(crate) struct ConnectReport {
 }
 
 impl ConnectReport {
-    /// The operator-facing word for the state. Named once so a rendering cannot invent a sixth.
+    /// The operator-facing word for the state. DELEGATED to [`TrustState::word`] rather than
+    /// matched here: this was the only rendering until the A2A trust surface needed one, and a
+    /// second match statement is how the two planes come to disagree about a string clients branch
+    /// on.
     pub(crate) fn state_word(&self) -> &'static str {
-        match self.state {
-            TrustState::Pending => "pending",
-            TrustState::Approved => "approved",
-            TrustState::Quarantined => "quarantined",
-            TrustState::Suspended => "suspended",
-            TrustState::Error => "error",
-        }
+        self.state.word()
     }
 }
 

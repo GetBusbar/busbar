@@ -82,7 +82,7 @@ pub(crate) fn sweep(
     transport: &dyn Transport,
     now_ms: u64,
 ) -> Vec<SweepOutcome> {
-    let policy: FetchPolicy = plane.fetch_policy().clone();
+    let base: FetchPolicy = plane.fetch_policy().clone();
     plane.with_registrations_mut(|registrations| {
         let mut out = Vec::with_capacity(registrations.len());
         for reg in registrations.iter_mut() {
@@ -92,6 +92,14 @@ pub(crate) fn sweep(
             // mean it.
             let Some(pin_cfg) = plane.pin_for(&reg.agent_id).cloned() else {
                 continue;
+            };
+            // THE POLICY IS PER REGISTRATION, because `allow_private:` is. Read off the record
+            // rather than from `fetch_policy_for` — this closure already holds the registry's write
+            // lock, and re-entering it to read one bool would deadlock. It is the same value: the
+            // record is where `from_config` lowered the operator's line to.
+            let policy = FetchPolicy {
+                allow_private: reg.allow_private,
+                ..base.clone()
             };
             let pass = reverify_once(
                 reg, &pin_cfg, resolver, transport, &policy, now_ms,

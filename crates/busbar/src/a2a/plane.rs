@@ -135,6 +135,7 @@ impl A2aPlane {
             }
             reg.egress_scopes = def.egress_scopes.clone();
             reg.outbound_cred = def.upstream_credential.clone();
+            reg.allow_private = def.allow_private;
             pins.insert(name.clone(), def.pin.clone());
             registrations.push(reg);
         }
@@ -171,6 +172,28 @@ impl A2aPlane {
     /// The one card-fetch policy this plane guards with.
     pub(crate) fn fetch_policy(&self) -> &FetchPolicy {
         &self.fetch_policy
+    }
+
+    /// THE PLANE'S POLICY, NARROWED TO ONE REGISTRATION by that registration's `allow_private:`.
+    ///
+    /// Derived rather than stored, on every ask, so there is exactly one reading of the operator's
+    /// line: the sweep, an operator-driven `connect` and an `approve` all obtain the policy here and
+    /// therefore cannot guard differently — which is the property `fetch_policy` was added to hold
+    /// for the plane-wide half and which a per-agent knob would have broken if each caller assembled
+    /// its own.
+    ///
+    /// An id this plane does not front gets the plane default, which is the fail-closed one. There
+    /// is deliberately no arm that reads "unknown agent ⇒ permissive".
+    pub(crate) fn fetch_policy_for(&self, agent_id: &str) -> FetchPolicy {
+        let allow_private = self.with_registrations(|regs| {
+            regs.iter()
+                .find(|r| r.agent_id == agent_id)
+                .is_some_and(|r| r.allow_private)
+        });
+        FetchPolicy {
+            allow_private,
+            ..self.fetch_policy.clone()
+        }
     }
 
     /// The operator's trust root for one agent. `None` for an id this plane does not front, which

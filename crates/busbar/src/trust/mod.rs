@@ -110,7 +110,7 @@ pub(crate) enum Sighting<A: PinnedArtifact> {
 
 impl<A: PinnedArtifact> Sighting<A> {
     /// The observation, if the last contact succeeded.
-    fn observation(&self) -> Option<&Observation<A>> {
+    pub(crate) fn observation(&self) -> Option<&Observation<A>> {
         match self {
             Sighting::Seen(o) => Some(o),
             _ => None,
@@ -135,6 +135,24 @@ pub(crate) enum TrustState {
     Suspended,
     /// The last contact failed. Never serves, and never silently becomes `Approved`.
     Error,
+}
+
+impl TrustState {
+    /// THE WIRE WORD, named once for every plane.
+    ///
+    /// It lives on the machine rather than beside each plane's admin projection because it is the
+    /// string a UI branches on, and two planes rendering the same state under two spellings is a
+    /// client that handles one of them. This started as `mcp::connect::ConnectReport::state_word`,
+    /// which is now a caller of it; the A2A trust surface would otherwise have been the second copy.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            TrustState::Pending => "pending",
+            TrustState::Approved => "approved",
+            TrustState::Quarantined => "quarantined",
+            TrustState::Suspended => "suspended",
+            TrustState::Error => "error",
+        }
+    }
 }
 
 /// What the last sighting changed relative to what was approved: the changes queue, derived.

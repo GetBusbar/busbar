@@ -3963,6 +3963,40 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    // ── The A2A TRUST VERBS. Additive on top of the generic `agents` section CRUD, and the reason
+    // a fronted agent can leave `Pending` at all. ───────────────────────────────────────────────
+    paths.insert(
+        ap("/agents/{name}/connect"),
+        json!({
+            "post": {
+                "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"},
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/agents/{name}/approve"),
+        json!({
+            "post": {
+                "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the registration's state AFTER the approval, read off the live registry)"},
+                }
+            }
+        }),
+    );
     paths.insert(
         ap("/hooks/{name}/health"),
         json!({
@@ -4698,6 +4732,24 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "get",
         "200",
         crate::mcp::admin_view::McpHealthView
+    );
+    // A2A trust verbs.
+    typed!(
+        "/agents/{name}/connect",
+        "post",
+        "200",
+        crate::a2a::adminverbs::A2aTrustView
+    );
+    typed!(
+        "/agents/{name}/approve",
+        "post",
+        "200",
+        crate::a2a::adminverbs::A2aTrustView
+    );
+    body!(
+        "/agents/{name}/approve",
+        "post",
+        crate::a2a::adminverbs::ApproveReq
     );
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
     typed!("/hooks/{name}/status", "get", "200", sview::HookStatusView);

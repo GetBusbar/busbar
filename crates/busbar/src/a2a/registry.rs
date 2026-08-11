@@ -87,6 +87,11 @@ pub(crate) struct AgentRegistration {
     pub(crate) egress_scopes: Vec<String>,
     /// The outbound credential HANDLE and its lease. Never the secret; see [`super::creds`].
     pub(crate) outbound_cred: Option<super::creds::OutboundCredential>,
+    /// `agents.<name>.allow_private:` — may this registration's endpoint be a private or loopback
+    /// one, reached over plaintext. INTENT, carried on the record so the guard that acts on it and
+    /// the operator's line of YAML are provably the same value; see
+    /// [`super::fetch::FetchPolicy::allow_private`] for what it does and does not permit.
+    pub(crate) allow_private: bool,
 
     // ── ACCUMULATION (store) ─────────────────────────────────────────────────────────────────────
     /// The last contact: what the endpoint presented and offered, or why contact failed.
@@ -119,6 +124,7 @@ impl AgentRegistration {
             thresholds: anomaly::Thresholds::default(),
             egress_scopes: Vec::new(),
             outbound_cred: None,
+            allow_private: false,
             sighting: Sighting::Never,
             cached_card: None,
             ledger: reverify::Ledger::default(),

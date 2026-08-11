@@ -721,3 +721,149 @@ fn both_well_known_paths_are_offered_canonical_first_and_joined_onto_the_origin(
         ]
     );
 }
+
+// ══ `allow_private` — WHAT IT OPENS, AND THE MUCH LONGER LIST OF WHAT IT DOES NOT ════════════════
+
+/// THE KNOB DOES ITS JOB. A hermetic rig runs the agent it points busbar at, and on a laptop that
+/// agent is `http://127.0.0.1:<port>`. Without this there is no way to point busbar at it at all.
+#[test]
+fn allow_private_admits_the_loopback_endpoint_it_is_for() {
+    struct NeverAsked;
+    impl Resolver for NeverAsked {
+        fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+            panic!("a literal needs no resolver, and `{host}` reached one");
+        }
+    }
+    let policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+    for url in [
+        "http://127.0.0.1:8080/agent",
+        "https://127.0.0.1/agent",
+        "https://10.0.0.5/agent",
+        "https://192.168.1.7/agent",
+        "https://[::1]/agent",
+    ] {
+        assert!(
+            resolve_and_pin(url, &NeverAsked, &policy).is_ok(),
+            "`allow_private: true` must actually admit `{url}`, or the knob is decoration"
+        );
+    }
+    // AND THE NAME FORM, which needs a resolver and must be judged on what it answered.
+    let r = ScriptedResolver::new().always("agent.local", vec![ip([127, 0, 0, 1])]);
+    assert!(resolve_and_pin("http://agent.local/agent", &r, &policy).is_ok());
+}
+
+/// THE HALF THAT MAKES THE KNOB SAFE TO HAVE: a cloud-metadata target is refused WITH
+/// `allow_private: true` SET, by literal, by IPv4-mapped literal, by name, and by what a hostile
+/// resolver answers.
+///
+/// This is the one regression that would turn an operator's "this agent is on the internal network"
+/// into "and may therefore read the instance's IAM credentials". It is asserted row by row, against
+/// the flag ON, because the version of this test that only ran with the flag off would have passed
+/// for a guard that consulted the flag first and the metadata list second.
+#[test]
+fn allow_private_never_opens_a_cloud_metadata_target() {
+    let policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+
+    struct NeverAsked;
+    impl Resolver for NeverAsked {
+        fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+            panic!("`{host}` must be refused structurally, before any resolution");
+        }
+    }
+    let structural: &[(&str, &str)] = &[
+        ("https://169.254.169.254/", "AWS/GCP/Azure IMDS link-local"),
+        ("https://169.254.170.2/", "ECS task metadata"),
+        (
+            "https://168.63.129.16/",
+            "Azure WireServer, a PUBLIC address",
+        ),
+        ("https://192.0.0.192/", "OCI IMDS, IETF-reserved"),
+        ("https://[::ffff:169.254.169.254]/", "IPv4-mapped IMDS"),
+        ("https://[::169.254.169.254]/", "IPv4-compatible IMDS"),
+        ("https://metadata.google.internal/", "the GCP metadata NAME"),
+        (
+            "https://metadata.google.internal./",
+            "the metadata name, FQDN-rooted",
+        ),
+        ("https://metadata.internal/", "the metadata NAME"),
+        // THE OBFUSCATED SPELLINGS OF IMDS. `Url::parse` normalises these to the literal, so they
+        // land in the same arm — which is the point: an operator who set `allow_private` for their
+        // sidecar has not thereby permitted `0xa9fea9fe`.
+        ("https://0xa9fea9fe/", "hex IMDS"),
+        ("https://2852039166/", "decimal IMDS"),
+    ];
+    for (url, what) in structural {
+        let err = resolve_and_pin(url, &NeverAsked, &policy).expect_err(&format!(
+            "{url} ({what}) must be refused WITH allow_private set"
+        ));
+        assert!(
+            matches!(
+                err,
+                FetchRefusal::InternalAddress { .. } | FetchRefusal::InternalHostName { .. }
+            ),
+            "{url} ({what}) was refused as {err:?}, which is the wrong reason"
+        );
+    }
+
+    // AND ON THE ANSWER. A name an operator believes is their internal agent, whose nameserver
+    // answers with IMDS, is the rebinding shape of the same attack.
+    let r = ScriptedResolver::new().always("agent.internal", vec![ip([169, 254, 169, 254])]);
+    let err = resolve_and_pin("https://agent.internal/agent", &r, &policy)
+        .expect_err("a resolved metadata address is refused with allow_private set");
+    assert!(
+        matches!(err, FetchRefusal::InternalAddress { .. }),
+        "got {err:?}"
+    );
+}
+
+/// `allow_private` ADMITS PLAINTEXT, because that is what the word means on the `tools:` plane
+/// (`mcp::client::ssrf::precheck` refuses `http://` with exactly `!https && !allow_private`), and a
+/// loopback agent that could only be reached over TLS is a knob that does not do its job.
+#[test]
+fn allow_private_carries_the_plaintext_permission_its_mcp_sibling_carries() {
+    let r = ScriptedResolver::new().always("a2a.vendor", vec![ip(PUBLIC)]);
+    let policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+    assert!(
+        resolve_and_pin("http://a2a.vendor/card", &r, &policy).is_ok(),
+        "one operator decision, one flag — the same one the sibling plane spells"
+    );
+    // AND THE FLOOR IS UNMOVED: with neither opt-in, plaintext is still refused.
+    assert!(matches!(
+        resolve_and_pin("http://a2a.vendor/card", &r, &FetchPolicy::default()),
+        Err(FetchRefusal::NotHttps { .. })
+    ));
+}
+
+/// EVERY ROW OF THE ORIGINAL REFUSAL TABLE IS STILL REFUSED WITH THE FLAG OFF. The knob's default
+/// is the floor, and this is the assertion that the split of `dns_name_is_internal` into a
+/// metadata arm and a loopback arm did not quietly drop one of them.
+#[test]
+fn the_default_policy_still_refuses_the_loopback_family_by_name() {
+    struct NeverAsked;
+    impl Resolver for NeverAsked {
+        fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+            panic!("the guard resolved `{host}`, which it must refuse structurally");
+        }
+    }
+    for url in [
+        "https://localhost/",
+        "https://localhost./",
+        "https://api.localhost/",
+    ] {
+        let err = resolve_and_pin(url, &NeverAsked, &FetchPolicy::default())
+            .expect_err(&format!("{url} must be refused by default"));
+        assert!(
+            matches!(err, FetchRefusal::InternalHostName { .. }),
+            "{url} was refused as {err:?}"
+        );
+    }
+}

@@ -293,6 +293,7 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
         reverify_ttl: None,
         recovery_backoff: None,
         protocol_version: None,
+        allow_private: false,
         upstream_credentials: None,
         upstream_credential: with_credential.then(|| crate::a2a::creds::OutboundCredential {
             secret: busbar_secret_ref::SecretRef::file(secret_file().to_string_lossy().to_string()),

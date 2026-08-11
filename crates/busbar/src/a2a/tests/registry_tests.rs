@@ -193,6 +193,7 @@ fn intent_and_accumulation_are_separable_field_by_field() {
         thresholds,
         egress_scopes,
         outbound_cred,
+        allow_private,
         // ── ACCUMULATION: what happened, and may not be edited. Store. ──
         sighting,
         cached_card,
@@ -214,6 +215,11 @@ fn intent_and_accumulation_are_separable_field_by_field() {
     assert_eq!(thresholds.min_observations, 0);
     assert!(egress_scopes.is_empty());
     assert!(outbound_cred.is_none());
+    assert!(
+        !*allow_private,
+        "the private-address opt-in is INTENT and its floor is off: a registration that came into \
+         existence permitted to reach loopback would be an SSRF the operator never wrote down"
+    );
 
     // Accumulation is empty on a fresh registration, and nothing about the trust answer depends on
     // it having been filled in.
