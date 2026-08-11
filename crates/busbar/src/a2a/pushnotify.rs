@@ -36,11 +36,12 @@
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
 
-// PARTLY MOUNTED. `host_of` and `validate` are on the hot path: `ingress::rpc` guards every
-// caller-supplied `pushNotificationConfig.url` through them before `taskstore::set_push_callback`
-// stores it, which is why that function still does not validate — the decision lives here, once.
-// `revalidate` is the DELIVERY path's half, and nothing delivers a push notification yet: a durable
-// callback can outlive the DNS answer that was checked when it was written, so the fresh-resolution
+// FULLY MOUNTED, and the last function to get a caller was the most important one. `host_of` and
+// `validate` guard registration in `ingress::rpc`; `structural_refusal` is the floor inside
+// `taskstore::set_push_callback`; and `revalidate` — which had NO caller anywhere in the tree while
+// this plane accepted, validated, pinned and persisted callbacks that nothing ever delivered to —
+// is `pushdeliver`'s, run against a fresh resolution before every single delivery. A durable
+// callback outlives the DNS answer that was checked when it was written, so the fresh-resolution
 // check belongs to the code that is about to connect rather than to the code that stored it.
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -118,49 +119,22 @@ pub(crate) struct PinnedCallback {
     pub(crate) addrs: Vec<IpAddr>,
 }
 
-/// The IPv4 cloud metadata address every major provider uses, plus the IPv6 form. These are the
-/// single highest-value SSRF target in a cloud deployment: an unauthenticated HTTP GET there returns
-/// instance credentials.
-const METADATA_V4: [u8; 4] = [169, 254, 169, 254];
-
 /// Is this address one busbar must never be talked into fetching?
 ///
-/// `is_global` is deliberately not used even where it is stable: its definition has moved between
-/// toolchain versions, and a security predicate whose meaning depends on the compiler is one that
-/// changes behaviour on an unrelated upgrade. The ranges are enumerated instead.
+/// THIS IS NOW ONE LINE, and the line is the point. It used to be a forty-line private range table
+/// on this plane, and the table was WRONG in a way that reading it could not reveal: Azure's
+/// WireServer at `168.63.129.16` is a PUBLIC address, so every range check in the copy missed it,
+/// while the copy's own doc comment claimed to cover "a cloud metadata address". A caller could
+/// register that as a push callback and have busbar fetch Azure's platform metadata on its behalf.
+/// The shared predicate had it; this plane did not, because a copy is only correct on the day it is
+/// written.
+///
+/// The tear-out went the other way too — the three ranges this copy had and the shared predicate
+/// did not (`0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`) moved INTO
+/// [`crate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
+/// ordering is the whole discipline: widen the shared predicate to the union, then delete the copy.
 pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_broadcast()
-                || crate::net_guard::is_cgnat_shared_v4(v4)
-                || o == METADATA_V4
-                // 0.0.0.0/8 "this network" — routed to the local host by several stacks.
-                || o[0] == 0
-                // 192.0.0.0/24 IETF protocol assignments, 198.18.0.0/15 benchmarking: neither is a
-                // legitimate webhook destination and both are reachable inside some fabrics.
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || crate::net_guard::is_unique_local_v6(v6)
-                || crate::net_guard::is_link_local_v6(v6)
-                // An IPv4-mapped/compatible v6 address is an IPv4 address wearing a hat. Unwrap it
-                // and apply the v4 rules, or `::ffff:169.254.169.254` walks straight through.
-                || v6
-                    .to_ipv4_mapped()
-                    .or_else(|| v6.to_ipv4())
-                    .is_some_and(|v4| is_internal_addr(&IpAddr::V4(v4)))
-        }
-    }
+    crate::net_guard::ip_is_internal(ip)
 }
 
 /// Split a URL into `(scheme, host)` without pulling in a URL parser.
@@ -218,6 +192,63 @@ pub(crate) fn host_of(url: &str) -> Result<String, PushNotifyError> {
     split_url(url).map(|(_scheme, host)| host)
 }
 
+/// What the RESOLVER-FREE half of the guard concluded about a URL.
+enum Structural {
+    /// A canonical IP literal that PASSED the range check. There is nothing to resolve and nothing
+    /// to rebind, so this is already a decision.
+    Literal { host: String, addr: IpAddr },
+    /// A DNS name that passed everything decidable without an answer from a resolver. Whether it is
+    /// safe is NOT yet known, and saying so is the point of the separate variant.
+    Name(String),
+}
+
+/// THE HALF OF THE GUARD THAT NEEDS NO RESOLVER: the scheme, the userinfo trick, the alternate IPv4
+/// encodings, and a canonical IP literal's ranges.
+///
+/// Split out because two callers need exactly this much and cannot have the other half.
+/// [`structural_refusal`] is a defence-in-depth check inside a synchronous store method that has no
+/// resolver seam and must not grow one; [`validate`] is the full guard and calls this first, so
+/// there is ONE implementation of the shared rules rather than two that agree today.
+fn structural_check(url: &str, allow_plaintext: bool) -> Result<Structural, PushNotifyError> {
+    let (scheme, host) = split_url(url)?;
+    match scheme.as_str() {
+        "https" => {}
+        "http" if allow_plaintext => {}
+        other => return Err(PushNotifyError::Scheme(other.to_string())),
+    }
+    if crate::net_guard::is_alternate_ipv4_encoding(&host) {
+        return Err(PushNotifyError::ObfuscatedHost(host));
+    }
+    // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all
+    // — there is nothing to rebind. It still has to pass the same ranges.
+    if let Ok(literal) = host.parse::<IpAddr>() {
+        if is_internal_addr(&literal) {
+            return Err(PushNotifyError::InternalAddress(literal));
+        }
+        return Ok(Structural::Literal {
+            host,
+            addr: literal,
+        });
+    }
+    Ok(Structural::Name(host))
+}
+
+/// THE DEFENCE-IN-DEPTH CHECK for a caller that CANNOT resolve — `Some(refusal)` when the URL is
+/// refusable without asking a nameserver anything, `None` when it is not yet decidable.
+///
+/// `None` is NOT "safe". It means "this is a DNS name and the verdict needs an answer this caller
+/// cannot obtain", and the only correct thing to do with such a URL is to make sure the code that
+/// eventually CONNECTS runs the full [`validate`] against a fresh resolution. That is exactly what
+/// [`super::pushdeliver`] does before every delivery.
+///
+/// This exists because `taskstore::set_push_callback` used to take a bare `Option<String>` and
+/// persist whatever it was handed. Its only caller validated first, so the tree was safe by
+/// coincidence of call order — and a second caller, or a row rehydrated from a store somebody
+/// wrote to directly, had nothing standing between it and a delivery attempt.
+pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
+    structural_check(url, false).err()
+}
+
 /// VALIDATE a caller-supplied (or busbar-registered) callback URL against the addresses it resolves
 /// to RIGHT NOW, and pin those addresses.
 ///
@@ -234,27 +265,16 @@ pub(crate) fn validate(
     resolved: &[IpAddr],
     allow_plaintext: bool,
 ) -> Result<PinnedCallback, PushNotifyError> {
-    let (scheme, host) = split_url(url)?;
-    match scheme.as_str() {
-        "https" => {}
-        "http" if allow_plaintext => {}
-        other => return Err(PushNotifyError::Scheme(other.to_string())),
-    }
-    if crate::net_guard::is_alternate_ipv4_encoding(&host) {
-        return Err(PushNotifyError::ObfuscatedHost(host));
-    }
-    // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all
-    // — there is nothing to rebind. It still has to pass the same ranges.
-    if let Ok(literal) = host.parse::<IpAddr>() {
-        if is_internal_addr(&literal) {
-            return Err(PushNotifyError::InternalAddress(literal));
+    let host = match structural_check(url, allow_plaintext)? {
+        Structural::Literal { host, addr } => {
+            return Ok(PinnedCallback {
+                url: url.to_string(),
+                host,
+                addrs: vec![addr],
+            });
         }
-        return Ok(PinnedCallback {
-            url: url.to_string(),
-            host,
-            addrs: vec![literal],
-        });
-    }
+        Structural::Name(host) => host,
+    };
     if resolved.is_empty() {
         return Err(PushNotifyError::Unresolved(host));
     }

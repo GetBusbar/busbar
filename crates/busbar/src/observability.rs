@@ -13,8 +13,7 @@ use std::sync::OnceLock;
 // `reqwest::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
 use crate::net_guard::{
-    ipv4_is_internal as net_guard_ipv4_is_internal, is_alternate_ipv4_encoding, is_link_local_v6,
-    is_unique_local_v6,
+    ipv4_is_internal as net_guard_ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding,
 };
 
 // 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
@@ -319,31 +318,14 @@ fn host_is_internal(url: &reqwest::Url) -> bool {
 
             match host.parse::<IpAddr>() {
                 Ok(IpAddr::V4(v4)) => is_internal_v4(&v4),
-                Ok(IpAddr::V6(v6)) => {
-                    // Catch `::1` FIRST: under `to_ipv4()` (below) loopback `::1` canonicalizes to
-                    // `0.0.0.1`, which is NOT a V4 loopback, so the embedded-V4 arm would miss it —
-                    // `is_loopback()` covers it here.
-                    if v6.is_loopback() {
-                        return true;
-                    }
-                    // Canonicalize an embedded IPv4 address FIRST and apply the V4 predicates:
-                    // otherwise `[::ffff:127.0.0.1]` / `[::169.254.169.254]` parse as V6, match none
-                    // of the V6 predicates below, and reach loopback / cloud-metadata — defeating the
-                    // guard. Use `to_ipv4()` rather than `to_ipv4_mapped()`: it is a SUPERSET that
-                    // ALSO covers the IPv4-COMPATIBLE form (`[::a.b.c.d]`, e.g. `[::127.0.0.1]` /
-                    // `[::169.254.169.254]`), where the leading `segments()[0] == 0` makes the
-                    // ULA/link-local masks below miss and `to_ipv4_mapped()` returns None — yet a
-                    // connecting stack still routes it to the embedded v4 target. This keeps parity
-                    // with `config_validate::ssrf_blocked_host`, which deliberately uses `to_ipv4()`.
-                    if let Some(v4) = v6.to_ipv4() {
-                        return is_internal_v4(&v4);
-                    }
-                    v6.is_unspecified()
-                        // unique-local (fc00::/7) and link-local (fe80::/10): via the shared
-                        // net_guard predicates so the two SSRF guards can't drift on the bit-masks.
-                        || is_unique_local_v6(&v6)
-                        || is_link_local_v6(&v6)
-                }
+                // THE V6 ARM IS THE SHARED PREDICATE, not a local transcription of it. It used to be
+                // spelled out here — `is_loopback()`, then `to_ipv4()`, then unspecified /
+                // unique-local / link-local — and the transcription had DROPPED `is_multicast()`,
+                // which `net_guard::ipv6_is_internal` has. `[ff02::1]` is the all-nodes group: it
+                // reaches every host on the segment, and this guard admitted it while the predicate
+                // it was written as a sibling of refused it. The order that arm depends on (loopback
+                // first, embedded-v4 before the v6 masks) is documented once, on `ipv6_is_internal`.
+                Ok(IpAddr::V6(v6)) => ipv6_is_internal(&v6),
                 // Not an IP literal — a DNS name. Block the well-known loopback name `localhost`
                 // (and any `*.localhost` subdomain, which RFC 6761 reserves to loopback) so it can't
                 // be used as an SSRF target; allow any other external-collector hostname. The
@@ -611,18 +593,25 @@ fn otlp_resolves_to_internal(url: &reqwest::Url) -> Option<std::net::IpAddr> {
 /// address can never get different verdicts, which is the inconsistency that makes a guard
 /// bypassable.
 fn otlp_addr_is_internal(ip: &std::net::IpAddr) -> bool {
+    // ONE relaxation of the shared predicate, expressed as a relaxation rather than as a second
+    // table. `http://localhost:4318` is the standard collector, so loopback — and only loopback — is
+    // carved out; everything `net_guard::ip_is_internal` refuses is still refused here. Written this
+    // way so a range added to the shared predicate reaches this guard automatically: the previous
+    // spelling was a hand-copied v6 arm that had already lost `is_multicast()`.
+    !ip_is_loopback(ip) && crate::net_guard::ip_is_internal(ip)
+}
+
+/// LOOPBACK, in every spelling a connecting stack routes to the local host: the v4 `127.0.0.0/8`
+/// block, IPv6 `::1`, and the embedded-v4 forms (`::ffff:127.0.0.1`, `::127.0.0.1`).
+///
+/// `to_ipv4()` rather than `to_ipv4_mapped()`, and `::1` tested FIRST, for the reason
+/// [`crate::net_guard::ipv6_is_internal`] documents: `::1` canonicalizes to `0.0.0.1` under
+/// `to_ipv4()`, which is not a v4 loopback.
+fn ip_is_loopback(ip: &std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
-        IpAddr::V4(v4) => !v4.is_loopback() && is_internal_v4(v4),
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() {
-                return false; // the `::1` loopback collector — allowed
-            }
-            if let Some(v4) = v6.to_ipv4() {
-                return !v4.is_loopback() && is_internal_v4(&v4);
-            }
-            v6.is_unspecified() || is_unique_local_v6(v6) || is_link_local_v6(v6)
-        }
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
     }
 }
 
@@ -703,17 +692,11 @@ fn otlp_host_is_blocked(url: &reqwest::Url) -> bool {
             }
 
             match host.parse::<IpAddr>() {
-                // Loopback is the allowed collector pattern; every other internal v4 is blocked.
-                Ok(IpAddr::V4(v4)) => !v4.is_loopback() && is_internal_v4(&v4),
-                Ok(IpAddr::V6(v6)) => {
-                    if v6.is_loopback() {
-                        return false; // `::1` loopback collector — allowed.
-                    }
-                    if let Some(v4) = v6.to_ipv4() {
-                        return !v4.is_loopback() && is_internal_v4(&v4);
-                    }
-                    v6.is_unspecified() || is_unique_local_v6(&v6) || is_link_local_v6(&v6)
-                }
+                // Loopback is the allowed collector pattern; every other internal address is
+                // blocked, by the SAME predicate the resolved-address arm uses — so an endpoint
+                // written as a literal and the same endpoint reached through a name cannot get
+                // different verdicts, which is the inconsistency that makes a guard bypassable.
+                Ok(ip) => otlp_addr_is_internal(&ip),
                 // DNS name: block the cloud-metadata names (handled above) but ALLOW `localhost`
                 // (and `*.localhost`) — the loopback carve-out — and any external collector hostname.
                 Err(_) => false,

@@ -287,6 +287,15 @@ fn test_validate_webhook_url_rejects_https_internal_hosts() {
         "https://[::1]/hook",                        // IPv6 loopback
         "https://[fe80::1]/hook",                    // IPv6 link-local
         "https://[fc00::1]/hook",                    // IPv6 unique-local
+        // THE RANGES THIS GUARD'S HAND-WRITTEN V6 ARM MISSED while `net_guard::ipv6_is_internal`
+        // — the predicate it was supposed to be a sibling of — had them. v6 multicast reaches every
+        // node on the segment; the IPv4-COMPATIBLE spelling matches no v6 range at all.
+        "https://[ff02::1]/hook",           // IPv6 multicast (all-nodes)
+        "https://[::169.254.169.254]/hook", // IPv4-COMPATIBLE metadata
+        // ...and the v4 ranges the shared predicate gained from `a2a::pushnotify`'s copy.
+        "https://0.1.2.3/hook",    // 0.0.0.0/8 "this network"
+        "https://192.0.0.8/hook",  // IETF protocol assignments 192.0.0.0/24
+        "https://198.18.0.1/hook", // benchmarking 198.18.0.0/15
     ] {
         let res = validate_webhook_url(Some(bad.to_string()));
         assert!(
@@ -684,6 +693,14 @@ fn test_validate_otlp_endpoint_rejects_cloud_metadata_and_internal() {
         "https://[fe80::1]/v1/traces",                // IPv6 link-local
         "https://[fc00::1]/v1/traces",                // IPv6 unique-local
         "https://metadata.google.internal/v1/traces", // cloud-metadata DNS name
+        // The same gaps the webhook guard's hand-written v6 arm had — this arm was a THIRD copy of
+        // the same lines and carried the same omissions.
+        "https://[ff02::1]/v1/traces", // IPv6 multicast (all-nodes)
+        "https://[::169.254.169.254]/v1/traces", // IPv4-COMPATIBLE metadata
+        "https://168.63.129.16/v1/traces", // Azure WireServer (a PUBLIC address)
+        "https://192.0.0.192/v1/traces", // OCI IMDS (a PUBLIC-shaped address)
+        "https://0.1.2.3/v1/traces",   // 0.0.0.0/8 "this network"
+        "https://198.18.0.1/v1/traces", // benchmarking 198.18.0.0/15
         "http://2130706433/v1/traces", // 127.0.0.1 alt encoding is loopback -> allowed below
     ] {
         // The last entry is a loopback alternate encoding and is deliberately exercised in the

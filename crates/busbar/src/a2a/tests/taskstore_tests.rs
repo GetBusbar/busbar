@@ -645,3 +645,29 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     assert_eq!(handle.list_task_events("t-work").unwrap(), events_before);
     assert_eq!(handle.get_task("t-work").unwrap().unwrap(), row_before);
 }
+
+// TEMPORARY RED DEMONSTRATION — deleted in the same change that fixes it. It exists to make the
+// defect visible in a test run rather than in prose: today the store takes a bare `Option<String>`,
+// so a URL the SSRF guard refuses outright is accepted and read back off the task row.
+#[test]
+fn red_demo_the_store_accepts_a_url_the_guard_refuses() {
+    use crate::a2a::pushnotify;
+    let hostile = "https://169.254.169.254/hook";
+    let refusal = pushnotify::validate(hostile, &[], false).expect_err("the guard refuses it");
+
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let reg = process_one(handle);
+    let task = reg
+        .set_push_callback("t-paused", Some(hostile.to_string()), NOW + 6)
+        .expect("stored");
+
+    assert_eq!(
+        task.push_callback,
+        None,
+        "THE STORE PERSISTED A CALLBACK THE SSRF GUARD REFUSES.\n  guard said: {refusal}\n  \
+         stored on the task row: {:?}\n  read back from the registry: {:?}",
+        task.push_callback,
+        reg.get_scoped("key-2", "t-paused").unwrap().push_callback
+    );
+}

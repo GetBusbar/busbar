@@ -74,6 +74,7 @@ pub(crate) mod meter;
 pub(crate) mod pin;
 pub(crate) mod plane;
 pub(crate) mod provenance;
+pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
 pub(crate) mod relay;

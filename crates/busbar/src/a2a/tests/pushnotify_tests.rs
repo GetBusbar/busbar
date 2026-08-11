@@ -48,6 +48,14 @@ fn every_internal_range_is_refused() {
         ("broadcast", v4(255, 255, 255, 255)),
         ("IETF protocol 192.0.0/24", v4(192, 0, 0, 8)),
         ("benchmarking 198.18/15", v4(198, 19, 0, 1)),
+        // AZURE WIRESERVER AND THE DOCUMENTATION BLOCK were missing from this plane's private copy
+        // of the predicate while the shared one in `net_guard` had them. `168.63.129.16` is the
+        // whole point: it is a PUBLIC address, so every range check in the copy missed it, and a
+        // caller could register it as a push callback and have busbar fetch Azure's platform
+        // metadata on its behalf. The copy's own doc claimed to cover "a cloud metadata address".
+        ("Azure WireServer (a PUBLIC address)", v4(168, 63, 129, 16)),
+        ("OCI IMDS", v4(192, 0, 0, 192)),
+        ("documentation 192.0.2/24", v4(192, 0, 2, 1)),
         ("loopback v6", IpAddr::V6(Ipv6Addr::LOCALHOST)),
         ("unspecified v6", IpAddr::V6(Ipv6Addr::UNSPECIFIED)),
         (
@@ -62,6 +70,11 @@ fn every_internal_range_is_refused() {
             "IPv4-MAPPED metadata (an IPv4 address wearing a hat)",
             IpAddr::V6("::ffff:169.254.169.254".parse().unwrap()),
         ),
+        (
+            "IPv4-COMPATIBLE metadata (the spelling that matches no v6 range at all)",
+            IpAddr::V6("::169.254.169.254".parse().unwrap()),
+        ),
+        ("multicast v6", IpAddr::V6("ff02::1".parse().unwrap())),
     ];
     let mut checked = 0usize;
     for (what, ip) in cases {
@@ -77,7 +90,7 @@ fn every_internal_range_is_refused() {
         checked += 1;
     }
     assert_eq!(checked, cases.len());
-    assert!(checked >= 18, "the hostile table did not shrink");
+    assert!(checked >= 23, "the hostile table did not shrink");
 }
 
 /// ONE bad address in the set is a refusal. A hostname resolving to a public address AND the
@@ -214,8 +227,13 @@ fn revalidation_defeats_a_rebind_and_reports_a_wholesale_move_separately() {
     // A wholesale move to a different public address is its OWN finding, not an SSRF one: both
     // answers were public, and telling an operator a public address is "internal" is a lie that
     // trains them to ignore the message.
+    // `198.51.100.7` used to stand in for "a different public address" here. It is RFC 5737
+    // TEST-NET-2 — DOCUMENTATION space, which the shared predicate refuses and this plane's private
+    // copy did not. When the copy was torn out this assertion started reporting `InternalAddress`,
+    // which is the tear-out doing exactly its job: a fixture that was only "public" by the standard
+    // of the weaker table. Replaced with an address that is public by the standard of BOTH.
     assert_eq!(
-        revalidate(&pinned, &[v4(198, 51, 100, 7)], false),
+        revalidate(&pinned, &[v4(8, 8, 4, 4)], false),
         Err(PushNotifyError::PinDrifted {
             host: "caller.example".to_string()
         })
