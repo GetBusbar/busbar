@@ -7,10 +7,15 @@ true by construction. Size reduction is a side effect of getting that right, not
 Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
 the tree cannot drift back into giant, inconsistent files.
 
-The same script enforces one further invariant that is about *behavior* rather than layout — the
-**choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass). It
-belongs to the remediation contract; it is documented in
-[testing.md](testing.md#the-remediation-contract), and § "Running the lint" below covers all four.
+The same script enforces three further invariants that are about *behavior* rather than layout:
+
+- the **choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass).
+  It belongs to the remediation contract and is documented in
+  [testing.md](testing.md#the-remediation-contract);
+- **request-path purity** (§ 5 below) — the store is a durability sink, never on the request path;
+- **plane coherence** (§ 6 below) — no plane grows a local reimplementation of a shared concern.
+
+§ "Running the lint" below covers all of them.
 
 ## 0. Workspace layout: all Rust lives under `crates/`
 
@@ -104,6 +109,57 @@ The filename is a total function of the code's role, so you never hunt:
 Every protocol dialect has the identical shape (`proto/<name>/{mod,reader,writer}.rs` +
 `proto/<name>/tests/`) so learning one lets you find anything in any of the six.
 
+## 5. Request-path purity: the store is a durability sink, never on the request path
+
+`GovState::try_admit` resolves a key's whole enforcement chain, checks every cap and charges every
+bucket **without one store call and without one `await`**. That is not an accident of the current
+implementation; it is the property every published latency number rests on. Durability happens
+*behind* the request — the ledger flushes to the store on its own cadence — never in front of it.
+
+The `REQUEST_PATH` table in `scripts/structure-lint.sh` names the function and the calls it may not
+contain, and the check is **function-scoped**, not tree-wide: the same store call is entirely
+legitimate one function further down the same file, so the unit of the rule has to be the function.
+
+Two things make it evidence rather than decoration:
+
+- a violation is reported as `STORE-ON-REQUEST-PATH` with the exact line, and the remedy names where
+  the work belongs instead;
+- if the named function is renamed or moved, the row reports `SUBJECT-MISSING` and the lint fails.
+  A rule that quietly scans nothing reads exactly like a rule that passed, and that false green has
+  cost this project twice already.
+
+## 6. Plane coherence: one concern, one implementation
+
+A property that holds on one plane holds on all of them, or the difference is written down and
+defended. Three of the 1.5.5 security defects came from one concern implemented two or three times:
+one copy gets fixed, the other does not, and the divergence surfaces as a hole.
+
+The lint reads **declarations**, never prose, and asks two mechanical questions of the `mcp/` and
+`a2a/` trees:
+
+- **symbol** — is the same *top-level* name (a free `fn`, or a `struct`/`enum`/`trait`) declared in
+  both planes? Top-level is what makes this usable: methods inside `impl` blocks are scoped by their
+  type, so `new`, `fmt`, `len` and `default` never reach the comparison.
+- **module** — does the same file name exist in both planes? A concern can be duplicated without one
+  symbol colliding; `mcp/catalogue.rs` beside `a2a/catalogue.rs` is the author's own statement of
+  which concern each file is. `mod.rs` is exempt: it names a directory, not an idea.
+
+Reading declarations rather than words is load-bearing. The circuit breaker is **not** duplicated —
+there is exactly one `try_admit_breaker` and the `breaker` mentions under `mcp/` and `a2a/` are
+comments. A grep-for-the-word lint would have reported a duplicate breaker and been wrong.
+
+`PLANE_LEDGER` records the duplication that exists **today**, each row classified `DEBT` (owed a
+unification, with the concern it belongs to) or `DISTINCT` (two unrelated ideas that happen to share
+a name, with the reason). The ledger is not an amnesty:
+
+- a row whose duplication is gone fails as `STALE-LEDGER`, so the moment a unification lands the
+  lint tells you to delete the row;
+- **shrinking is the only permitted edit.** Adding a `DEBT` row for new code is not a fix, it is
+  evading the check — exactly as for `GRANDFATHERED_OVERSIZED`.
+
+Every run prints the outstanding debt grouped by concern, with each concern's shared owner and the
+remedy, so the § A6 unification list is generated from the tree rather than transcribed from it.
+
 ## Naming vocabulary
 
 Module names use the product/API vocabulary (ingress, egress, pool, lane, hook, operation):
@@ -125,8 +181,10 @@ Non-zero exit on any violation, with the offending path and the fix. It runs in 
 so a PR that reintroduces a giant file or a hybrid module fails before merge — and likewise a PR that
 leaves a test body inline (`INLINE-TEST`), silences one without saying why (`ALLOW-WITHOUT-REASON`),
 hand-rolls a durable write, a plugin export, or a config swap outside its choke point
-(`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), or deletes a choke point's class-level
-test (`MISSING-CLASS-TEST`). See [testing.md](testing.md#the-remediation-contract).
+(`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), deletes a choke point's class-level
+test (`MISSING-CLASS-TEST`), puts a store call or an `await` on the admission path
+(`STORE-ON-REQUEST-PATH`), renames a guarded function out from under its rule (`SUBJECT-MISSING`),
+or grows a second plane-local implementation of a shared concern (`PLANE-DUPLICATE`). See [testing.md](testing.md#the-remediation-contract).
 
 The scanner that decides "is this line test code?" is itself guarded:
 
