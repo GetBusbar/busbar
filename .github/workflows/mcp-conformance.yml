@@ -302,6 +302,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # THE SUBJECT IS BUILT FROM THIS COMMIT, the same change that made the official subject leg
+      # mean something, applied to the leg that never ran at all. This one was armed out of
+      # `vars.MCP_SUBJECT_SERVER_CMD` -- a command line naming a binary on somebody's machine -- and
+      # CI supplied neither it nor its client twin for the whole of 1.5.5, so the leg reported `NOT
+      # ARMED, SO NOT RUN` from the day the rule was written. A variable nobody can set correctly
+      # from a GitHub-hosted runner is not an arm; a file this job just built is.
+      #
+      # `CARGO_INCREMENTAL=0` for the reason the official leg gives: a partially populated
+      # incremental cache has produced spurious build failures, which is a red that is not a defect.
+      - name: Build the subject from this commit
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: cargo build --bin busbar
       - name: Record the arm state
         id: arm
         env:
@@ -309,10 +325,17 @@ jobs:
           CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
         run: |
           set -euo pipefail
-          if [ -z "${SERVER_CMD:-}${CLIENT_CMD:-}" ]; then
-            echo "armed=false" >> "$GITHUB_OUTPUT"
-          else
+          if [ -x target/debug/busbar ] || [ -n "${SERVER_CMD:-}${CLIENT_CMD:-}" ]; then
             echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### MCP in-house battery subject leg: NOT ARMED — this is RED"
+              echo ""
+              echo "The build produced no busbar binary, so the battery could only have run against"
+              echo "its pinned third-party control and its broken fake peers. That proves the"
+              echo "BATTERY works. It proves nothing about busbar."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
       # MCP_NO_SKIPS=1 is set inside the script for this leg: a skipping test is not a passing test.
       # It makes the six `pr`-tier SEAM tests RED while busbar has no MCP CLIENT direction able to
@@ -321,8 +344,15 @@ jobs:
       # inbound audience validation defends nothing without an inbound surface, and outbound
       # down-scoping means nothing without upstreams -- so a green there before the client direction
       # lands would be a lie about exactly the property that matters most.
+      #
+      # The battery speaks stdio and busbar's MCP plane is HTTP, so the leg boots the built binary
+      # exactly as the official leg does and points the battery at it through the transport adapter
+      # in `testing/mcp-conformance/scripts/stdio-http-bridge.mjs`. The repository variables are
+      # still honoured and still take precedence, for an operator judging something that is not this
+      # build -- but nothing in CI depends on one being set any more.
       - name: Judge busbar
         env:
+          MCP_SUBJECT_BUSBAR_BIN: target/debug/busbar
           MCP_SUBJECT_SERVER_CMD: ${{ vars.MCP_SUBJECT_SERVER_CMD }}
           MCP_SUBJECT_CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
           MCP_SUBJECT_UPSTREAM_CONFIG_CMD: ${{ vars.MCP_SUBJECT_UPSTREAM_CONFIG_CMD }}

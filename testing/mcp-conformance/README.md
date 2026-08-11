@@ -67,6 +67,43 @@ node bin/mcp-battery.mjs compare \
 
 Or `MCP_SUBJECT_SERVER_CMD=... ./scripts/run-subject.sh` to do both and diff.
 
+## How busbar itself is armed, and why it is not a variable
+
+For the whole of 1.5.5 the release gate's subject leg reported `NOT ARMED, SO
+NOT RUN` — correctly, and every day. It wanted `MCP_SUBJECT_SERVER_CMD`, a
+repository variable naming *a command that starts an MCP server on stdio*, and
+no such command exists: **busbar has no stdio MCP surface.** Its MCP plane is an
+HTTP OAuth resource server, deliberately. A variable nobody can fill in from a
+GitHub-hosted runner is not an arm.
+
+So the leg is armed the way the official-suite leg is — from the **binary built
+in the job**, never from `vars.*`. `scripts/mcp-conformance.sh --battery-subject`
+boots that binary on loopback via `scripts/mcp-subject/boot.sh` (same real
+audience-bound credential, same proof that the plane boundary is intact before
+any verdict is believed) and points this battery at it through the transport
+adapter:
+
+```
+scripts/stdio-http-bridge.mjs <url>    stdio frames in, Streamable HTTP out
+```
+
+The adapter's header states what it does and does not do. In short: bodies are
+forwarded **byte for byte** and never repaired, results are never synthesised,
+and the mirrored `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers are
+*derived from the body* — so a body that omits one still reaches busbar's own
+answer for that omission rather than being converted into a header defect.
+
+One honest consequence, stated rather than filtered: on this leg the `STDIO.*`
+clauses judge the **adapter**, because busbar has no stdio surface for them to
+judge. They stay in the run — a filter is a knob, and the moment there is a knob
+the number is negotiable — and are read as adapter checks. Everything else
+(error codes, catalogue shape, survival under hostile input, concurrency,
+statelessness) is busbar.
+
+The two arming variables still work and still take precedence, for anyone
+pointing this battery at something that is not this build. Nothing in CI depends
+on one being set.
+
 ## Layout
 
 ```
@@ -80,7 +117,9 @@ src/suites/              server-conformance, server-adversarial, server-concurre
                          client-role, seam
 fakepeer/fake-server.mjs a deliberately misbehaving MCP server, 24 named modes
 control/                 the pinned reference server, client, and known-deviation baseline
-scripts/                 setup-control, run-control, run-subject, negative-control
+scripts/                 setup-control, run-control, run-subject, negative-control,
+                         stdio-http-bridge (the transport adapter that arms an
+                         HTTP-only subject)
 ```
 
 ## The one design rule

@@ -48,7 +48,13 @@
 #                                 extra leg; it is deliberately no longer the primary arm, because a
 #                                 release gate that depends on somebody's deployment being up
 #                                 answers a question about that deployment, not about this commit.
-#   MCP_SUBJECT_SERVER_CMD        a command that starts busbar as an MCP server on stdio
+#                                 IT ALSO ARMS THE IN-HOUSE BATTERY leg, which boots the same
+#                                 binary and reaches it through the stdio→HTTP transport adapter in
+#                                 testing/mcp-conformance/scripts/stdio-http-bridge.mjs. That leg
+#                                 used to want a stdio launch command NOBODY COULD WRITE — busbar
+#                                 has no stdio MCP surface — so it was never once armed.
+#   MCP_SUBJECT_SERVER_CMD        a command that starts an MCP server on stdio. Still honoured, and
+#                                 it takes precedence, for judging something that is not this build.
 #   MCP_SUBJECT_CLIENT_CMD        ... or as an MCP client
 #   MCP_BATTERY_DIR               the in-house battery. Defaults to testing/mcp-conformance IN THIS
 #                                 REPOSITORY and is not expected to be set: the battery was moved
@@ -93,7 +99,7 @@ die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=scripts/mcp-subject/boot.sh
 . "$(dirname "$0")/mcp-subject/boot.sh"
 
-usage() { sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ARMED OR RED, in one place so it can be tested in one place.
 #
@@ -337,7 +343,32 @@ battery_subject() {
   say "== IN-HOUSE BATTERY · SUBJECT leg (busbar) =="
   MCP_BATTERY_DIR="${MCP_BATTERY_DIR:-$DEFAULT_BATTERY_DIR}"
   [ -d "$MCP_BATTERY_DIR" ] || die "the in-house battery is not at $MCP_BATTERY_DIR."
-  require_armed "battery subject" MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
+
+  # ARMED BY A BINARY, exactly as the official subject leg is, and for the same reason: a gate armed
+  # out of `vars.*` is a gate nobody has to arm, and this one nobody did — it spent the whole of
+  # 1.5.5 reporting `NOT ARMED, SO NOT RUN`. The two arming variables survive underneath for an
+  # operator pointing the battery at something else entirely, which is the harness's whole contract
+  # (a target is a launch command and nothing more), but the RELEASE arm is the build.
+  #
+  # The battery drives a target over STDIO and busbar's MCP plane is HTTP; the transport adapter
+  # that joins them is `testing/mcp-conformance/scripts/stdio-http-bridge.mjs`, and its header says
+  # what it does and does not do. It is pointed at the SAME booted subject the official leg uses —
+  # same boot, same real audience-bound credential, same disproof that the plane boundary is intact
+  # before any verdict is believed — so the two legs cannot disagree about which busbar was judged.
+  if [ -z "${MCP_SUBJECT_SERVER_CMD:-}${MCP_SUBJECT_CLIENT_CMD:-}" ] \
+     && [ -n "${MCP_SUBJECT_BUSBAR_BIN:-}" ]; then
+    # A workdir of its own: two legs writing one directory would leave each verdict standing over
+    # the other's evidence, which is the defect `MCP_SUBJECT_OUT` exists to prevent on the official
+    # leg.
+    MCP_SUBJECT_WORKDIR="${MCP_SUBJECT_WORKDIR:-.mcp-conformance/battery-subject-run}" \
+      boot_busbar_subject
+    # shellcheck disable=SC2064
+    trap "kill $SUBJECT_PIDS 2>/dev/null || true" EXIT
+    MCP_SUBJECT_SERVER_CMD="node $(pwd)/$MCP_BATTERY_DIR/scripts/stdio-http-bridge.mjs $SUBJECT_URL"
+    export MCP_SUBJECT_SERVER_CMD
+  fi
+
+  require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
   # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
   # because on the control legs a skip is the harness telling the truth about a peer it was never
   # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched. It
