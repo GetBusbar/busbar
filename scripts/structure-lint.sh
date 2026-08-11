@@ -1162,7 +1162,6 @@ not_found|DEBT|ingress|two per-plane 404 shapers
 metadata|DEBT|ingress|the RFC 9728 protected-resource metadata document, written once per plane, verified 2026-08-11 to be the same document with the same audience rule
 connect|DEBT|plane-admin-verbs|the admin connect verb implemented once per plane
 declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
-PinMechanism|DEBT|trust-pinning|GOAL §A2.2 names this bare-name collision as a blocker on the MCP config fingerprint
 validate_section_hooks|DEBT|plane-config|per-plane config-section validation, twice
 refuse_cross_plane_reference|DEBT|plane-config|the cross-plane reference refusal written once per plane — the one rule that most needs to be identical on both
 catalogue.rs|DEBT|catalogue|the catalogue module exists once per plane

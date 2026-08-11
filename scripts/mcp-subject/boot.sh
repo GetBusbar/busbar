@@ -276,10 +276,10 @@ tools:
       # the suite asks for already carries the \`test_\` prefix busbar's namespacing produces here.
       #
       # \`task_support: required\` AND an \`ask_caller:\` round, which is the whole point of the
-      # scenario: round 1 is the SYNCHRONOUS SEP-2322 ask (an InputRequiredResult carrying no
-      # taskId, because no task exists yet), and round 2 — the retry that answers it — escalates to
+      # scenario: the first round is the SYNCHRONOUS SEP-2322 ask (an InputRequiredResult carrying no
+      # taskId, because no task exists yet), and the second — the retry that answers it — escalates to
       # a CreateTaskResult. A server that wired MRTR and tasks as independent surfaces returns a
-      # plain result on round 2 and fails.
+      # plain result on the second round and fails.
       #
       # The gathered answer must survive into the TASK's eventual result, end to end. busbar binds
       # an ask keyed \`user_name\` to the tool argument of that name, and the upstream echoes it —

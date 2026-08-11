@@ -1848,6 +1848,16 @@
       "kind": "struct",
       "transparent": false
     },
+    "TaskSupport": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "none",
+        "optional",
+        "required"
+      ]
+    },
     "TlsCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1901,9 +1911,21 @@
           "optional": true,
           "type": "serde_json::Value"
         },
+        "publish_as": {
+          "optional": true,
+          "type": "String"
+        },
         "schema_hash": {
           "optional": true,
           "type": "String"
+        },
+        "task_ask_caller": {
+          "optional": true,
+          "type": "Vec<AskRoundCfg>"
+        },
+        "task_support": {
+          "optional": true,
+          "type": "TaskSupport"
         }
       },
       "kind": "struct",

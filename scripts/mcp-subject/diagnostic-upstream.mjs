@@ -321,8 +321,8 @@ TOOLS.input = {
   }),
 };
 
-// THE COMPOSITION TOOL (`test_tool_with_task`). Round 1 is busbar's synchronous MRTR ask; round 2
-// escalates to a task. The scenario asserts END TO END that the answer gathered in round 1 reaches
+// THE COMPOSITION TOOL (`test_tool_with_task`). The first round is busbar's synchronous MRTR ask; the second
+// escalates to a task. The scenario asserts END TO END that the answer gathered in the first round reaches
 // the task's eventual result — an implementation that wires MRTR and tasks as two independent
 // surfaces produces a task result with no trace of the answer and fails here.
 //
