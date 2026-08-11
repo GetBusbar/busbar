@@ -19,8 +19,8 @@
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError,
-    StoreResult, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
+    Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_plugin_abi::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -879,6 +879,131 @@ impl Store for DynStore {
                 other => Err(unexpected(other)),
             },
             || Ok(Vec::new()),
+        )
+    }
+
+    // ── A2A TASK STATE + the MCP CALL LOG ────────────────────────────────────────────────────
+    //
+    // THESE TEN OVERRIDES ARE THE POINT. Without them `DynStore` inherited `Store`'s defaults —
+    // `put_task` returns `Ok(())` having kept nothing, `get_task` returns `None` — so a store plugin
+    // that implements durable tasks flawlessly had every write DISCARDED at this seam while the call
+    // reported success. `DynStore` is what the engine holds for BOTH plugin install paths, so that
+    // was the production behaviour, and a test against a store crate directly cannot see it.
+    //
+    // Every one routes through `call_with_legacy_default` — the same choke point the denylist and
+    // audit ops use — because the wire variants are ADDITIVE: a plugin whose SDK predates them
+    // answers `STATUS_UNSUPPORTED`, and the honest response to "this backend does not know the op"
+    // is the trait's own default, which for all ten is accept-and-keep-nothing. NOTHING ELSE is
+    // defaulted: a real backend error, a caught panic and a caller-protocol violation all propagate,
+    // so a durability failure can never be laundered into an empty read.
+
+    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::PutTask(task.clone()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
+        self.call_with_legacy_default(
+            StoreRequest::GetTask(task_id.to_string()),
+            |r| match r {
+                StoreResponse::Task(t) => Ok(t),
+                other => Err(unexpected(other)),
+            },
+            || Ok(None),
+        )
+    }
+
+    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListTasks,
+            |r| match r {
+                StoreResponse::Tasks(t) => Ok(t),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
+        self.call_with_legacy_default(
+            StoreRequest::PurgeTasksBefore(before),
+            |r| match r {
+                StoreResponse::Purged(n) => Ok(n),
+                other => Err(unexpected(other)),
+            },
+            || Ok(0),
+        )
+    }
+
+    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::AppendTaskEvent(event.clone()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListTaskEvents(task_id.to_string()),
+            |r| match r {
+                StoreResponse::TaskEvents(e) => Ok(e),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::AppendMcpCall(record.clone()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListMcpCalls(principal.to_string()),
+            |r| match r {
+                StoreResponse::McpCalls(c) => Ok(c),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListMcpCallPrincipals,
+            |r| match r {
+                StoreResponse::McpCallPrincipals(p) => Ok(p),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64> {
+        self.call_with_legacy_default(
+            StoreRequest::PurgeMcpCallsBefore(before),
+            |r| match r {
+                StoreResponse::Purged(n) => Ok(n),
+                other => Err(unexpected(other)),
+            },
+            || Ok(0),
         )
     }
 }

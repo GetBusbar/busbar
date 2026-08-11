@@ -43,8 +43,8 @@
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, UsageDelta,
-    UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
+    TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -125,6 +125,13 @@ pub mod kind {
 /// carrying `CredentialMeta`/`CredentialSecret`. A v1-built plugin cannot speak v2 at all — this is
 /// a real breaking bump, correctly gated by the engine's `supported_abi` range check at load,
 /// unlike every other change on this axis so far.
+///
+/// v2 STAYS v2 for the A2A task + MCP call-log ops (1.5.5): the ten
+/// `PutTask`/…/`PurgeMcpCallsBefore` request variants and their five response variants are
+/// ADDITIVE, so an already-signed v2 artifact that predates them still loads and still behaves
+/// exactly as it did. See the block comment on those variants in [`StoreRequest`] for the mechanism
+/// (undecodable variant -> `STATUS_UNSUPPORTED` -> the loader's legacy default, which for all ten is
+/// the trait's own accept-and-keep-nothing default).
 pub const ABI_VERSION: u32 = 2;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
@@ -332,6 +339,44 @@ pub enum StoreRequest {
     },
     /// `list_denylist` - every denied subject id (boot hydrate). ADDITIVE.
     ListDenylist,
+
+    // ── A2A TASK STATE + the MCP CALL LOG ────────────────────────────────────────────────────
+    //
+    // ALL TEN ARE ADDITIVE (ABI stays v2). `StoreRequest` is externally tagged with no
+    // `deny_unknown_fields`, so a plugin built against an SDK that predates these variants simply
+    // cannot DECODE one: `store_dispatch`'s request-decode arm returns `BoundaryOutcome::Unsupported`
+    // -> `STATUS_UNSUPPORTED` -> the loader's `call_with_legacy_default`, which supplies exactly the
+    // trait default the engine would have got anyway. Every one of these ten trait methods is
+    // DEFAULTED accept-and-keep-nothing, so the fallback is byte-for-byte the pre-existing
+    // behaviour and an already-signed v2 artifact keeps loading and working unchanged. Same
+    // reasoning that kept `AppendAudit`/`ListAuditTail`/`AddDenylist` off the version axis.
+    //
+    // WHY THEY HAD TO BE ADDED. Without them `DynStore` — the `dyn Store` the engine holds for
+    // EVERY plugin-loaded backend, which is both the file-drop and the runtime-install path — fell
+    // through to those same defaults. A store plugin that implements `put_task` perfectly had its
+    // every task DISCARDED at the ABI, and `put_task` reported success while doing it. A unit test
+    // against the store crate cannot see that; only a test over the plugin path can.
+    /// `put_task` - UPSERT one A2A task row by `task_id`. See [`busbar_api::Store::put_task`].
+    PutTask(TaskRow),
+    /// `get_task` - the task row for this id, or `None`.
+    GetTask(String),
+    /// `list_tasks` - every persisted task row, terminal ones included (deliberately UNFILTERED).
+    ListTasks,
+    /// `purge_tasks_before` - retention: drop TERMINAL task rows older than `before`.
+    PurgeTasksBefore(u64),
+    /// `append_task_event` - one per-task provenance event, upserted on `(task_id, seq)`. The store
+    /// persists `hash`/`prev_hash` verbatim and never recomputes them.
+    AppendTaskEvent(TaskEventRow),
+    /// `list_task_events` - one task's provenance events, oldest-first by `seq`.
+    ListTaskEvents(String),
+    /// `append_mcp_call` - one MCP tool-call record, append-only within `record.principal`.
+    AppendMcpCall(McpCallRecord),
+    /// `list_mcp_calls` - one principal's call chain, oldest-first by `seq`.
+    ListMcpCalls(String),
+    /// `list_mcp_call_principals` - every principal with at least one record (the boot enumeration).
+    ListMcpCallPrincipals,
+    /// `purge_mcp_calls_before` - retention: drop call records with `ts < before`.
+    PurgeMcpCallsBefore(u64),
 }
 
 /// The success payload for a `call`, matched to the request variant. Store-level errors do NOT ride
@@ -363,6 +408,20 @@ pub enum StoreResponse {
     Audit(Vec<AuditRecord>),
     /// `list_denylist` - every denied subject id (1.5.0 signed-token revocation). ADDITIVE.
     Denylist(Vec<String>),
+    /// `get_task` - the task row, or `None` when this store holds none. ADDITIVE.
+    Task(Option<TaskRow>),
+    /// `list_tasks` - every persisted task row, unfiltered. ADDITIVE.
+    Tasks(Vec<TaskRow>),
+    /// `list_task_events` - one task's provenance chain, oldest-first by `seq`. ADDITIVE.
+    TaskEvents(Vec<TaskEventRow>),
+    /// `list_mcp_calls` - one principal's call chain, oldest-first by `seq`. ADDITIVE.
+    McpCalls(Vec<McpCallRecord>),
+    /// `list_mcp_call_principals` - the principals with a durable call chain. ADDITIVE, and
+    /// deliberately NOT folded into [`StoreResponse::Denylist`] even though both are `Vec<String>`:
+    /// a shared variant would let a plugin answer a denylist hydrate with a principal list (and the
+    /// reverse) with the loader none the wiser, and `unexpected()` is the guard that catches a
+    /// plugin returning the wrong shape for the request it was given.
+    McpCallPrincipals(Vec<String>),
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────
