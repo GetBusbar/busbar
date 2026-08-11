@@ -646,6 +646,32 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
+    // ONE load per distinct resolution, and that load is SINGLE-FLIGHT. See [`resolution`] for why
+    // this is a correctness fix and not a cache for speed's sake. A hook carrying a `SecretRef` is
+    // deliberately NOT eligible (`key` returns `None`) and re-resolves on every call, exactly as
+    // before, because its resolved value can change under us without any of the key's inputs moving.
+    let Some(key) = resolution::key(name, hook, env) else {
+        return gate_transport_uncached(name, hook, env);
+    };
+    let claim = match resolution::admit(key) {
+        resolution::Admission::Published(hit) => return Some(hit),
+        resolution::Admission::Claim(claim) => claim,
+    };
+    let out = gate_transport_uncached(name, hook, env);
+    if let Some(v) = out.as_ref() {
+        claim.publish(v.clone());
+    }
+    out
+}
+
+/// [`gate_transport_named`] with the resolution cache taken out of the picture — the actual secret
+/// resolution + `dlopen` + plugin `open`. Split out so the cache is a single wrapper rather than a
+/// pair of early returns threaded through the body.
+fn gate_transport_uncached(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE the
     // settings cross the ABI (ADR-0010). The FAIL-CLOSED guarantee lives in
     // `HookEnv::preresolve_hook_secrets`, called once from `build_app_from_config` BEFORE any gate is
@@ -685,6 +711,249 @@ fn gate_transport_named(
 /// i.e. the bag that crosses the ABI. Produced ONLY by [`gate_transport_named`] (and its offloaded
 /// wrapper), so a caller cannot obtain one without having gone through the offload.
 type ResolvedSettings = serde_json::Map<String, serde_json::Value>;
+
+/// A resolved hook transport together with the settings bag it was opened against.
+type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
+
+/// SINGLE-FLIGHT ADMISSION AND PUBLICATION FOR HOOK TRANSPORT RESOLUTION.
+///
+/// **This is not a cache for speed. It closes a real defect, and the defect is measurable.**
+///
+/// Resolving a hook transport stages the plugin's verified bytes and `dlopen`s them as a BRAND NEW
+/// image. `dlopen` is serialised process-globally — the dynamic linker's own lock, plus per-inode
+/// code-signature validation on macOS — so the cost of one load is O(number of loads in flight),
+/// not O(size of the library). And this engine calls it on EVERY control-plane touch: per
+/// `push_configure`, per `fetch_status` (i.e. per `/metrics/hooks` scrape refresh, which a
+/// monitoring system performs on a fixed interval forever), per `fetch_schema`, per
+/// `resolve_on_error_chain`, per reload. `busbar_plugin_loader`'s own `intern_name` doc already
+/// names that list as the reason a per-open allocation had to be interned; the load itself was left
+/// alone.
+///
+/// Measured on this tree, on the 2.1 MB `busbar-hook-test-plugin` cdylib (macOS, 18 cores), timing
+/// the `Library::new` call alone:
+///
+/// | how it was run | p50 | p90 | max |
+/// |---|---|---|---|
+/// | one at a time | 250 ms | — | 3.8 s (first in the process) |
+/// | 30 of them, otherwise idle machine | 1.9 s | — | 4.5 s |
+/// | 137 of them, full `cargo test` workspace run | **5.9 s** | **30 s** | **88 s** |
+///
+/// The control plane's 5 s deadline is not a bound on the plugin's behaviour under those numbers —
+/// it is a bet against a globally serialised queue that the engine itself is filling. Raising it
+/// does not help: 88 s is past 60 s too, which is why the previous `cfg(test)` 60 s fork made the
+/// symptom rarer and never removed it. The fix is to stop filling the queue.
+///
+/// **What is admitted.** A resolution is keyed by everything that decides what it IS: the plugin
+/// registry it comes out of (by identity — a `plugins refresh` or a config reload builds a new one),
+/// the plugin name, the hook name (it is the plugin's metrics id and crosses `open`) and the
+/// verbatim settings bag. Same key ⇒ same `dlopen` of the same verified bytes with the same
+/// `cfg_json` ⇒ the same transport, so reuse is not an approximation of the fresh load, it is the
+/// fresh load.
+///
+/// **What is NOT admitted, and this is the part that must not be softened.** A hook whose settings
+/// carry a `SecretRef` gets `None` from [`key`] and is resolved from scratch every single time. Its
+/// resolved value can change (rotation) without any input to the key moving, so a reused transport
+/// would be running last hour's credential while `settings_drift_keys` reported no drift. Freshness
+/// there is the whole point of the secret indirection and it is not traded for a load.
+///
+/// **Single flight.** The claim is held ACROSS the load, so a second resolution of the same key
+/// waits for the first instead of queueing its own `dlopen` behind it. That is what makes an
+/// abandoned resolution harmless: `spawn_blocking` cannot be cancelled, so when
+/// [`offload_bounded`]'s deadline elapses the load runs to completion anyway — and now it publishes,
+/// so the caller that retries adopts it rather than starting the whole thing again.
+///
+/// **Bounded.** At most [`CAP`] published entries, oldest first, and an in-flight claim is never
+/// evicted. Each entry holds one mapped plugin image, which is the same resource a configured hook
+/// holds anyway.
+mod resolution {
+    use super::Resolved;
+    use std::collections::HashMap;
+    use std::sync::{Condvar, Mutex, OnceLock};
+
+    /// Published entries kept at once. Sized for "every hook a deployment configures, across a
+    /// couple of settings generations", not for a working set — the eviction is a leak stop, not a
+    /// hit-rate tuning knob.
+    const CAP: usize = 128;
+
+    struct Entry {
+        /// Insertion order, for the oldest-first eviction.
+        seq: u64,
+        /// A resolution is in progress for this key: waiters block instead of starting their own.
+        in_flight: bool,
+        value: Option<Resolved>,
+    }
+
+    #[derive(Default)]
+    struct Inner {
+        entries: HashMap<u64, Entry>,
+        seq: u64,
+    }
+
+    fn state() -> &'static (Mutex<Inner>, Condvar) {
+        static STATE: OnceLock<(Mutex<Inner>, Condvar)> = OnceLock::new();
+        STATE.get_or_init(|| (Mutex::new(Inner::default()), Condvar::new()))
+    }
+
+    /// The identity of a resolution, or `None` when this hook is not eligible for reuse (any
+    /// `SecretRef` in its settings — see the module doc).
+    pub(super) fn key(
+        name: &str,
+        hook: &crate::config::HookCfg,
+        env: &super::HookEnv,
+    ) -> Option<u64> {
+        use std::hash::{Hash as _, Hasher as _};
+        if hook.settings.values().any(|v| {
+            matches!(
+                crate::config::secret::classify_setting(v),
+                crate::config::secret::SettingShape::Reference(_)
+            )
+        }) {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Registry IDENTITY, not contents: a `plugins refresh` or a config reload installs a NEW
+        // `Arc<PluginRegistry>`, so every entry keyed on the old one is unreachable from that moment
+        // and its plugin bytes can never be served again. The address cannot be recycled while a
+        // resolution using it is live, because the resolving closure holds its own `Arc` clone.
+        (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
+        name.hash(&mut h);
+        hook.plugin.hash(&mut h);
+        serde_json::Value::Object(hook.settings.clone())
+            .to_string()
+            .hash(&mut h);
+        Some(h.finish())
+    }
+
+    /// What a would-be resolver is told: someone already published this exact resolution, or you
+    /// now hold the claim and must do the load.
+    pub(super) enum Admission {
+        Published(Resolved),
+        Claim(Claim),
+    }
+
+    /// The right (and the duty) to perform ONE resolution for a key. `Drop` releases it and wakes
+    /// every waiter, including on panic — a plugin constructor that blows up cannot wedge a key out
+    /// of ever resolving again.
+    pub(super) struct Claim {
+        key: u64,
+        published: bool,
+    }
+
+    impl Claim {
+        /// Publish the resolution this claim was taken out for. Callers that resolved to `None`
+        /// simply drop the claim instead: a failed load is not published, so the next caller retries
+        /// it rather than inheriting a permanent "absent".
+        pub(super) fn publish(mut self, value: Resolved) {
+            let (lock, cv) = state();
+            {
+                let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(e) = inner.entries.get_mut(&self.key) {
+                    e.value = Some(value);
+                }
+            }
+            self.published = true;
+            cv.notify_all();
+            // `self` drops here, releasing the claim (and running the eviction pass).
+        }
+    }
+
+    impl Drop for Claim {
+        fn drop(&mut self) {
+            let (lock, cv) = state();
+            let _evicted = {
+                let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
+                let unpublished = match inner.entries.get_mut(&self.key) {
+                    Some(e) => {
+                        e.in_flight = false;
+                        e.value.is_none()
+                    }
+                    None => false,
+                };
+                if unpublished {
+                    inner.entries.remove(&self.key);
+                }
+                evict_over_cap(&mut inner)
+            };
+            cv.notify_all();
+            // `_evicted` drops HERE, with the lock released — see `evict_over_cap`.
+        }
+    }
+
+    /// Take the claim for `key`, or hand back what a previous resolution published. BLOCKS while
+    /// another resolution of the same key is in flight — that block IS the fix: it is one thread
+    /// waiting on one `dlopen` instead of two threads making each other's `dlopen` slower.
+    pub(super) fn admit(key: u64) -> Admission {
+        let (lock, cv) = state();
+        let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match inner.entries.get(&key) {
+                Some(e) if e.value.is_some() => {
+                    let hit = e.value.clone().expect("checked is_some");
+                    return Admission::Published(hit);
+                }
+                Some(e) if e.in_flight => {
+                    inner = cv.wait(inner).unwrap_or_else(|p| p.into_inner());
+                }
+                _ => {
+                    inner.seq += 1;
+                    let seq = inner.seq;
+                    inner.entries.insert(
+                        key,
+                        Entry {
+                            seq,
+                            in_flight: true,
+                            value: None,
+                        },
+                    );
+                    return Admission::Claim(Claim {
+                        key,
+                        published: false,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Is a resolution for `key` PUBLISHED right now? The observable readiness signal a caller can
+    /// poll on, rather than betting a wall clock on the dynamic linker.
+    #[cfg(test)]
+    pub(super) fn published(key: u64) -> bool {
+        let (lock, _) = state();
+        let inner = lock.lock().unwrap_or_else(|p| p.into_inner());
+        inner.entries.get(&key).is_some_and(|e| e.value.is_some())
+    }
+
+    /// Is a resolution for `key` STILL RUNNING? Tells a caller whose deadline elapsed apart from one
+    /// whose hook genuinely does not resolve — the same `None` reaches both.
+    #[cfg(test)]
+    pub(super) fn in_flight(key: u64) -> bool {
+        let (lock, _) = state();
+        let inner = lock.lock().unwrap_or_else(|p| p.into_inner());
+        inner.entries.get(&key).is_some_and(|e| e.in_flight)
+    }
+
+    /// Drop published entries oldest-first until at most [`CAP`] remain. An in-flight claim is never
+    /// evicted (its `Entry` is the claim's own bookkeeping).
+    fn evict_over_cap(inner: &mut Inner) -> Vec<Entry> {
+        let mut evicted = Vec::new();
+        while inner.entries.len() > CAP {
+            let Some(oldest) = inner
+                .entries
+                .iter()
+                .filter(|(_, e)| !e.in_flight && e.value.is_some())
+                .min_by_key(|(_, e)| e.seq)
+                .map(|(k, _)| *k)
+            else {
+                break; // everything left is in flight; nothing is evictable
+            };
+            evicted.extend(inner.entries.remove(&oldest));
+        }
+        // Handed back rather than dropped here ON PURPOSE: dropping the last `Arc` to a transport
+        // UNLOADS the plugin library, and doing that while holding the admission lock would stall
+        // every other hook's resolution behind a `dlclose`.
+        evicted
+    }
+}
 
 /// The configure-push deadline (spec `configure_timeout_ms` default): distinct from the
 /// per-request gate deadline — configure may do real work (reload a model, open files).
@@ -726,48 +995,30 @@ pub(crate) async fn push_configure(
 
 /// The deadline for RESOLVING a hook transport. `gate_transport_named` stages a copy of the plugin
 /// to disk, `dlopen`s it and runs its constructor; none of that is cancellable, so this bounds the
-/// CALLER, not the work. A timed-out `spawn_blocking` thread is abandoned (bounded at one per hook
-/// by the scrape's `InFlight` claim) — the alternative is a control-plane request that never returns
-/// and a `/metrics/hooks` slot that is never freed for the life of the process.
+/// CALLER, not the work — the alternative is a control-plane request that never returns and a
+/// `/metrics/hooks` slot that is never freed for the life of the process.
+///
+/// A timed-out `spawn_blocking` thread is still abandoned, but abandoning it no longer WASTES it:
+/// it holds the [`resolution`] claim for its key, so nothing queues a second `dlopen` behind it, and
+/// it publishes when it lands, so the next caller adopts the result instead of starting over.
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
 
-/// EVERY control-plane deadline in this module goes through here, and this is A MITIGATION, NOT A
-/// FIX. Say so plainly, because the next person will otherwise read it as solved.
+/// EVERY control-plane deadline in this module goes through here, and it applies the caller's
+/// number VERBATIM — in every build, test binaries included. The funnel is kept because
+/// `push_configure` awaits two deadlines in sequence and a change that reached one and not the other
+/// would read exactly like a change that reached both; it is no longer a place where the value can
+/// fork.
 ///
-/// WHAT IT DOES. In production it applies the caller's deadline verbatim. In the TEST BINARY ONLY it
-/// applies a far larger one. 5s is the right production number: staging a cdylib, `dlopen`ing it and
-/// running its constructor is milliseconds on a machine doing normal work. But the test binary runs
-/// ~2900 tests in parallel on every `cargo test`, and several of them do that same staging and
-/// dlopen while the rest saturate the CPU. The deadline then elapses for reasons that say nothing
-/// about the code, and the caller reports "hook plugin unresolvable" — observed as
-/// `dlopen_configure_acks_exact_version` and `dlopen_status_and_schema_reads` failing roughly one
-/// run in three under `--workspace`, while both pass in isolation in under two seconds.
-///
-/// WHY IT IS A FUNNEL AND NOT A SECOND CONSTANT. The previous shape relaxed `TRANSPORT_RESOLVE_
-/// TIMEOUT_MS` under `cfg(test)` and left `CONFIGURE_TIMEOUT_MS` alone. But `push_configure` awaits
-/// BOTH deadlines in sequence, so the same tests stayed exposed on the second one and kept failing
-/// under load — a half-finished mitigation reads exactly like a finished one. Routing all four call
-/// sites through a single function makes "one relaxed, one forgotten" structurally impossible rather
-/// than a thing to remember.
-///
-/// WHY IT WEAKENS NOTHING. No test asserts on either constant's value, and the timeout ARM itself is
-/// tested elsewhere by handing `offload_bounded_with_deadline` an explicit short deadline, so it
-/// stays deterministic and fast regardless of what this returns. The production constants below are
-/// what ships, untouched.
-///
-/// WHY IT IS STILL NOT THE FIX. A bigger number makes a wall-clock failure rarer, not impossible; a
-/// sufficiently loaded machine still trips 60s, and nothing here tests the bound it names. The
-/// actual repair is to make the deadline an injected PARAMETER (from `HookEnv`/config, defaulting to
-/// `CONFIGURE_TIMEOUT_MS`) so each test states its own bound explicitly and no constant forks
-/// between test and production builds. That is a real refactor across `push_configure`, `status`,
-/// `describe` and their call sites, and it is deliberately not done here.
-#[cfg(not(test))]
+/// **This used to return 60 s under `cfg(test)` and that fork is deleted, not relocated.** It was a
+/// mitigation for `dlopen_configure_acks_exact_version` and `dlopen_status_and_schema_reads` failing
+/// about one run in three under `--workspace`, and it did not work, because the premise was wrong:
+/// the resolve was not "milliseconds on a machine doing normal work" that occasional load pushed
+/// past 5 s. Timed, it was a median of **5.9 s and a worst case of 88 s** across a full workspace
+/// run — past 60 s as comfortably as past 5 s. The cause was the engine opening a fresh `dlopen`ed
+/// image on every control-plane touch against a process-globally serialised linker (see
+/// [`resolution`]); with that closed, the production 5 s is a real bound again and the tests hold it.
 fn applied_deadline(ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
-}
-#[cfg(test)]
-fn applied_deadline(_ms: u64) -> std::time::Duration {
-    std::time::Duration::from_millis(60_000)
 }
 
 /// Run a blocking closure with a deadline, collapsing "ran out of time" and "panicked" into the same
@@ -840,9 +1091,65 @@ async fn gate_transport_offloaded(
     .await
 }
 
+/// THE READINESS SIGNAL for a hook's control-plane transport: block until the loader has PUBLISHED a
+/// resolution for this exact hook, then leave it published for the caller under test to consume.
+///
+/// This exists because a test that asserts on a `configure` ack must not also be asserting that a
+/// `dlopen` finished inside 5 s on whatever machine CI gave it. The honest way to stop that second,
+/// unintended assertion is NOT a bigger number — [`applied_deadline`] records what happened when
+/// that was tried — it is to wait on something observable. [`resolution::published`] is that
+/// something: it is true exactly when the load this test needs has actually completed.
+///
+/// It is a BOUNDED loop with a REAL predicate, and it never widens a deadline. Each attempt runs at
+/// the production 5 s; an attempt that overruns it does not restart the load, because the claim in
+/// [`resolution::admit`] is held across the load and the overrunning thread publishes when it lands
+/// — so the next attempt either finds the value published or waits on the one already in flight.
+/// The attempt count is a HANG DETECTOR, not a budget: if the loader genuinely never publishes,
+/// failing with a message that says so beats a test that never returns.
+///
+/// `false` means the hook resolved to nothing (an unloadable plugin) or is not eligible for
+/// publication at all — a hook carrying a `SecretRef` is resolved fresh every time by design, so
+/// there is no readiness to wait on and the caller should just proceed.
+#[cfg(test)]
+pub(crate) async fn await_transport_published(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+) -> bool {
+    /// Enough attempts that only a genuine hang exhausts them (each attempt is bounded by the
+    /// production resolve deadline).
+    const ATTEMPTS: usize = 24;
+    let Some(key) = resolution::key(name, hook, env) else {
+        return false;
+    };
+    for _ in 0..ATTEMPTS {
+        if resolution::published(key) {
+            return true;
+        }
+        if gate_transport_offloaded(name, hook, env, 0).await.is_some() {
+            // Resolved inside the deadline; `gate_transport_named` published it on the way through.
+            return resolution::published(key);
+        }
+        // `None` is two different things and only one of them is worth waiting for: a load still
+        // running (the caller's deadline elapsed, the claim is still held) versus a hook that
+        // genuinely does not resolve.
+        if !resolution::in_flight(key) {
+            return false;
+        }
+    }
+    panic!(
+        "the loader never published a transport for hook '{name}' after {ATTEMPTS} resolve \
+         attempts; that is a HANG in plugin resolution, not a slow machine"
+    );
+}
+
 /// Fetch a hook's self-reported STATUS (observed settings + metrics) over its transport — the
-/// control-plane read behind `GET /api/v1/admin/hooks/{name}/status`. Fresh transport per call
-/// (never contends the hot request connection); `None` = unsupported/unreachable (fail-open).
+/// control-plane read behind `GET /api/v1/admin/hooks/{name}/status`. Its own transport, never the
+/// hot request path's (that one is resolved at boot and lives in the routing chain); `None` =
+/// unsupported/unreachable (fail-open). The transport is shared with the other control-plane
+/// readers of the SAME hook+settings+registry and no further — see [`resolution`], and note in
+/// particular that a hook carrying a `SecretRef` is still resolved fresh on every one of these
+/// reads, so a rotated credential is picked up on the next scrape exactly as before.
 pub(crate) async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,

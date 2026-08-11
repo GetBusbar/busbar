@@ -68,15 +68,18 @@ fn hook_cdylib() -> Option<PathBuf> {
 ///
 /// Resolving a hook transport stages a copy of the cdylib to disk, `dlopen`s it and runs its
 /// constructor, all under `TRANSPORT_RESOLVE_TIMEOUT_MS` (5s). That deadline is a deliberate
-/// PRODUCTION value and correct: the work is milliseconds on any sane machine. But fifteen of these
-/// tests run concurrently inside a full `cargo test --workspace`, each doing that same staging and
-/// dlopen, and on an oversubscribed machine the 5s can genuinely elapse — the caller then reports
-/// "hook plugin unresolvable" and the test fails for a reason that says nothing about the code.
+/// PRODUCTION value. Fifteen of these tests run concurrently inside a full `cargo test --workspace`,
+/// each doing that same staging and dlopen, and `dlopen` is serialised process-globally, so each
+/// one makes the others slower.
 ///
-/// Observed as an intermittent failure of `dlopen_configure_acks_exact_version` and
-/// `dlopen_status_and_schema_reads`: green in isolation and single-threaded, red roughly one run in
-/// three under `--workspace`. Serialising the tests fixes the oversubscription, which is a
-/// TEST-HARNESS problem, rather than loosening a deadline that protects a real control-plane path.
+/// **This lock is a NARROWING, not the fix, and the note that used to sit here overstated it.** It
+/// said the work "is milliseconds on any sane machine" and that serialising these fifteen tests
+/// "fixes the oversubscription". Measured, both halves were wrong: one uncontended load of this
+/// cdylib is ~250 ms, and across a full workspace run — where far more than these fifteen tests
+/// load plugins — the median load took 5.9 s and the worst 88 s. The engine-side fix is
+/// `hooks::resolution` (single-flight admission and publication, so the engine stops opening a
+/// fresh image per control-plane touch); the lock stays because holding the concurrency down is
+/// still worth having and costs nothing.
 ///
 /// Held only for the STAGING step inside `test_env_needs`, never across an await: that is the part
 /// that competes for disk and CPU, and it is what the callers (sync and async alike) all share. A
@@ -88,8 +91,9 @@ pub(super) static DLOPEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new
 ///
 /// The expensive, deadline-bound part is not staging: it is `gate_transport_named` doing the real
 /// `dlopen` and running the plugin constructor, inside `offload_bounded`'s 5s budget, during the
-/// test body. Fifteen of those racing each other is what actually elapses the deadline. Async
-/// because the guard spans awaits.
+/// test body. Fifteen of those racing each other makes each of them slower — though, as the note on
+/// the staging lock records, the fifteen were never the whole population. Async because the guard
+/// spans awaits.
 pub(super) static DLOPEN_BODY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<HookEnv> {
@@ -1687,6 +1691,18 @@ async fn dlopen_status_and_schema_reads() {
 
 /// `configure` push over the dlopen seam: the test-hook plugin acks the EXACT pushed version → Ok.
 /// (A wrong-version ack rejecting the commit is covered at the DlopenPolicy configure unit level.)
+///
+/// **The one assertion this test makes is about the ACK.** It used to make a second one nobody
+/// intended: that a `dlopen` of the 2.1 MB test cdylib completed inside the control plane's 5 s
+/// deadline, on whatever machine was running `cargo test --workspace` at the time. That second
+/// assertion is what failed — see `hooks::resolution` for the measured numbers (a 5.9 s median and
+/// an 88 s worst case for one `Library::new` under full workspace parallelism) and for why raising
+/// the deadline to 60 s made it rarer rather than gone.
+///
+/// So the resolution is now waited for on the loader's own readiness signal
+/// ([`super::await_transport_published`]) instead of being raced, and `push_configure` then makes
+/// the assertion this test is actually about. Nothing here is more permissive than production: the
+/// deadline the push runs under is the shipped 5 s, unchanged.
 #[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
@@ -1695,9 +1711,78 @@ async fn dlopen_configure_acks_exact_version() {
         return;
     };
     let hook = base_gate();
+    assert!(
+        super::await_transport_published("h", &hook, &env).await,
+        "the loader must publish a transport for a loadable hook plugin"
+    );
     push_configure(&hook, "h", 7, &env)
         .await
         .expect("the plugin acks the pushed version");
+}
+
+/// ONE `dlopen` per distinct resolution, proven the only way that cannot be faked: the two
+/// transports are the SAME `Arc`. Before `hooks::resolution` this returned two independently loaded
+/// images, which is the defect — every control-plane touch (`push_configure`, every `/metrics/hooks`
+/// scrape refresh, every `/schema` read) staged and `dlopen`ed the plugin again against a
+/// process-globally serialised linker.
+///
+/// Watched to FAIL: with the `resolution::admit` call removed from `gate_transport_named` the assert
+/// reports two distinct pointers.
+#[tokio::test]
+async fn one_load_serves_every_resolution_of_the_same_hook() {
+    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let hook = base_gate();
+    let (first, _) = gate_transport_named("h", &hook, &env, 0).expect("first resolve");
+    let (second, _) = gate_transport_named("h", &hook, &env, 0).expect("second resolve");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &second),
+        "a second resolution of the same hook+settings+registry must reuse the published load, \
+         not open a second image"
+    );
+
+    // DIFFERENT settings are a DIFFERENT resolution: the plugin's `open` receives a different
+    // `cfg_json`, so reuse there would be serving the wrong configuration.
+    let mut other = base_gate();
+    other
+        .settings
+        .insert("order".to_string(), serde_json::json!([0]));
+    let (third, _) = gate_transport_named("h", &other, &env, 0).expect("third resolve");
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &third),
+        "a change of settings must resolve a NEW transport, never reuse the old one"
+    );
+}
+
+/// THE EXCLUSION THAT MUST NOT BE SOFTENED: a hook whose settings carry a `SecretRef` is never
+/// eligible for reuse, so a rotated credential is picked up on the very next control-plane call
+/// exactly as it was before. A plain settings bag is eligible.
+///
+/// Watched to FAIL: dropping the `SettingShape::Reference` guard from `resolution::key` makes the
+/// first assert report `Some(..)`.
+#[test]
+fn a_hook_carrying_a_secret_ref_is_never_reused() {
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let mut with_secret = base_gate();
+    with_secret.settings.insert(
+        "licenseKey".to_string(),
+        serde_json::json!({ "env": "BUSBAR_TEST_HOOK_LICENSE_KEY" }),
+    );
+    assert_eq!(
+        super::resolution::key("h", &with_secret, &env),
+        None,
+        "a SecretRef-carrying hook must be resolved fresh every time, never published for reuse"
+    );
+    assert!(
+        super::resolution::key("h", &base_gate(), &env).is_some(),
+        "a hook with no secret indirection is eligible"
+    );
 }
 
 /// The on_error CHAIN fires through LOADED plugins: gate `a` (on_error → gate `b`) resolves a
