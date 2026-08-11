@@ -373,7 +373,7 @@ pub(super) fn exchanging_server(
     subject_token: &str,
 ) -> crate::mcp::config::McpServerDefCfg {
     use crate::mcp::config::{
-        McpServerDefCfg, PinMechanism, ServerPinCfg, ServerRequestGrants, TokenExchangeCfg,
+        McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, TokenExchangeCfg,
         ToolAllowCfg,
     };
     let mut tools_allow = indexmap::IndexMap::new();
@@ -394,7 +394,7 @@ pub(super) fn exchanging_server(
     McpServerDefCfg {
         url: peer.mcp_url(),
         pin: ServerPinCfg {
-            mechanism: PinMechanism::CertSpki,
+            mechanism: McpPinMechanism::CertSpki,
             key: Some("sha256/PEER=".to_string()),
         },
         tools_allow,

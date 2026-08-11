@@ -63,9 +63,29 @@ pub(crate) const NAMESPACE_SEP: &str = "_";
 /// Exactly four, because four is every root an MCP endpoint can actually offer: a signed manifest's
 /// operator-pinned issuer key, the endpoint's certificate SPKI, mutual TLS, or nothing at all —
 /// `pinned_pubkey | cert_spki | mtls | unpinned`.
+///
+/// ## WHY THE `Mcp` PREFIX, and why it is on THIS one and not on A2A's
+///
+/// [`crate::a2a::config::PinMechanism`] is the same concept for the other plane and used to share
+/// this bare name. That was survivable only while the config-grammar fingerprint
+/// (`scripts/config-schema.py`) did not track this file. Its snapshot is a FLAT map keyed by the
+/// bare Rust ident with no module path, so two `PinMechanism`s occupy one key: the second file read
+/// wins, and the first plane's grammar silently stops being covered. Adding `mcp/config.rs` to the
+/// tracked set with the names still clashing produced exactly that —
+/// `PinMechanism::jws_issuer_key: enum variant REMOVED`, a reported break in the A2A grammar from a
+/// commit that did not touch A2A.
+///
+/// The prefix went on the MCP side, not the A2A side, for one reason: A2A's `PinMechanism` is
+/// ALREADY FROZEN in the committed snapshot under that key, and the grammar is additive-only after
+/// 1.5.3 — so renaming it would present to the classifier as a whole-section REMOVAL and would need
+/// a waiver, i.e. laundering a real break to settle a naming argument. This type was in no snapshot
+/// yet, so renaming it costs nothing and needs no waiver.
+///
+/// **No operator's config file changes.** The ident is not wire grammar: `rename_all` below decides
+/// the spellings a document may use, and they are byte-identical before and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PinMechanism {
+pub(crate) enum McpPinMechanism {
     /// A signed tool manifest verified against an operator-supplied, out-of-band issuer public key.
     PinnedPubkey,
     /// No server-side signature exists, so the pin degrades to the endpoint's certificate SPKI hash
@@ -78,21 +98,21 @@ pub(crate) enum PinMechanism {
     Unpinned,
 }
 
-impl PinMechanism {
+impl McpPinMechanism {
     /// Does this mechanism require operator-supplied key material? Three of the four are meaningless
     /// without it, and the fourth is meaningless with it — which is the rule the object form exists
     /// to make expressible.
     fn needs_key(self) -> bool {
-        !matches!(self, PinMechanism::Unpinned)
+        !matches!(self, McpPinMechanism::Unpinned)
     }
 
     /// The config token, for diagnostics. Deliberately the same string `serde` accepts.
     pub(crate) fn token(self) -> &'static str {
         match self {
-            PinMechanism::PinnedPubkey => "pinned_pubkey",
-            PinMechanism::CertSpki => "cert_spki",
-            PinMechanism::Mtls => "mtls",
-            PinMechanism::Unpinned => "unpinned",
+            McpPinMechanism::PinnedPubkey => "pinned_pubkey",
+            McpPinMechanism::CertSpki => "cert_spki",
+            McpPinMechanism::Mtls => "mtls",
+            McpPinMechanism::Unpinned => "unpinned",
         }
     }
 }
@@ -103,7 +123,7 @@ impl PinMechanism {
 pub(crate) struct ServerPinCfg {
     /// Which root this is. REQUIRED: a pin whose mechanism is inferred is a pin whose meaning
     /// changes when the code that infers it changes.
-    pub(crate) mechanism: PinMechanism,
+    pub(crate) mechanism: McpPinMechanism,
     /// The operator-supplied material: an issuer public key, or a certificate SPKI hash. Absent only
     /// for `unpinned`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

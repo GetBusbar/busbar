@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{
-    McpServerDefCfg, PinMechanism, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
+    McpPinMechanism, McpServerDefCfg, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
 };
 use crate::trust::Approval;
 
@@ -764,7 +764,7 @@ fn refusal_reason(server: &ServerEntry, entry: &ToolEntry) -> DispatchRefusal {
 /// [`crate::trust::Approval::registered`] — pending, and serving nothing. That is a fact about what
 /// is CONSTRUCTIBLE, which is why `unpinned` cannot be talked into serving by a later edit here.
 fn declared_pin(pin: &ServerPinCfg) -> Option<TransportPin> {
-    if matches!(pin.mechanism, PinMechanism::Unpinned) {
+    if matches!(pin.mechanism, McpPinMechanism::Unpinned) {
         return None;
     }
     let key = pin.key.as_deref().filter(|k| !k.trim().is_empty())?;

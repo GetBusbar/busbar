@@ -55,6 +55,12 @@ from pathlib import Path
 #     there, so every key an operator writes under an agent had NO fingerprint at all and a
 #     BREAKING change to that grammar passed the additive-only check silently. Only the two files
 #     that declare config types are tracked; the rest of the plane is runtime.
+#   * `crates/busbar/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
+#     MCP server's endpoint, its pin, its allowed tools/prompts/resources/templates, its token
+#     exchange, its request grants — and it was outside the set for the same reason `a2a/` was
+#     (#60). The snapshot recorded `tools: crate::mcp::config::ToolsCfg` and stopped, so retyping
+#     `tools.<server>.url` or dropping a `transport:` value rendered ZERO delta and passed green.
+#     Adding it required resolving a bare-name COLLISION first — see `collide()` in `extract`.
 #
 # A path is a directory (every `*.rs` directly inside it) or a single file. A path that does not
 # exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
@@ -65,6 +71,7 @@ SOURCES = [
     "crates/busbar/src/auth/mod.rs",
     "crates/busbar/src/a2a/config.rs",
     "crates/busbar/src/a2a/creds.rs",
+    "crates/busbar/src/mcp/config.rs",
 ]
 
 
@@ -488,6 +495,10 @@ def extract(paths) -> dict:
     files = resolve_sources(paths)
     sources = {}
     decls = {}
+    # WHERE EACH FINGERPRINTED BARE NAME CAME FROM — see `collide` below. The fingerprint is a FLAT
+    # map keyed by the bare Rust type name, with no module path, so two planes that both call a type
+    # `PinMechanism` occupy one key and the second one read silently REPLACES the first.
+    origin = {}
     for path in files:
         src = strip_cfg_test_mods(strip_comments(path.read_text(encoding="utf-8", errors="replace")))
         sources[path] = src
@@ -497,12 +508,43 @@ def extract(paths) -> dict:
             shape = declared_shape(src, m)
             decls[m.group("name")] = {k: v for k, v in shape.items() if k != "kind"}
 
+    def collide(name, path):
+        """A bare name may be fingerprinted ONCE. A second definition is a HARD ERROR, never a
+        last-one-wins overwrite.
+
+        This used to be an unenforced comment — "config has no duplicate type names across the
+        module" — which was true only while the tracked set was one directory. It stopped being true
+        the moment a SECOND plane's grammar was tracked: `crates/busbar/src/a2a/config.rs` and
+        `crates/busbar/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
+        (`jws_issuer_key` vs `pinned_pubkey`). Sorted by path, MCP's is read second, so it replaced
+        A2A's under the shared key and the classifier reported
+        `PinMechanism::jws_issuer_key: enum variant REMOVED` — a break in a grammar nobody touched,
+        while the A2A pin grammar quietly stopped being fingerprinted AT ALL. Waive that false RED
+        and the real coverage hole is what you are left with.
+
+        So the collision is refused where it happens. Resolve it by giving one of the two types a
+        distinct Rust ident — which is free, because the ident is not wire grammar: `rename_all`
+        decides the variant spellings an operator writes, and it is untouched by a rename."""
+        prior = origin.get(name)
+        if prior is not None:
+            first, second = sorted([prior, str(path)])
+            raise SystemExit(
+                f"config-schema: the bare type name {name!r} is declared in BOTH {first!r} and "
+                f"{second!r}. The fingerprint is keyed by bare name with no module path, so the "
+                "second one read would REPLACE the first — the replaced grammar would stop being "
+                "covered entirely, and the classifier would report the swap as a break in a "
+                "grammar nobody edited. Rename one of the two Rust types (the ident is not wire "
+                "grammar; serde's rename_all decides what an operator actually writes)."
+            )
+        origin[name] = str(path)
+
     for path, src in sources.items():
         for m in ITEM_RE.finditer(src):
             csd = container_serde(m.group("attrs") or "")
             if not csd["is_de"]:
                 continue
             name = m.group("name")
+            collide(name, path)
             if m.group("open") == ";":
                 # unit struct or tuple-struct-with-semicolon; record as opaque struct (no fields)
                 types[name] = {"kind": "struct", "fields": {}, **container_flags(csd)}
@@ -563,7 +605,8 @@ def extract(paths) -> dict:
             "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each "
             "hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map "
             "type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the "
-            "busbar config module, SecretRef, and UpstreamCreds",
+            "busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the "
+            "MCP `tools:` grammar",
         },
         "types": types,
     }

@@ -177,7 +177,7 @@ pub(crate) fn server_cfg(
     peer: &Peer,
     tools_allow: &[(&str, Option<String>)],
 ) -> crate::mcp::config::McpServerDefCfg {
-    use crate::mcp::config::{McpServerDefCfg, PinMechanism, ServerPinCfg, ToolAllowCfg};
+    use crate::mcp::config::{McpPinMechanism, McpServerDefCfg, ServerPinCfg, ToolAllowCfg};
     let mut allow = indexmap::IndexMap::new();
     for (tool, hash) in tools_allow {
         allow.insert(
@@ -193,7 +193,7 @@ pub(crate) fn server_cfg(
     McpServerDefCfg {
         url: peer.mcp_url(),
         pin: ServerPinCfg {
-            mechanism: PinMechanism::CertSpki,
+            mechanism: McpPinMechanism::CertSpki,
             key: Some("sha256/PEER=".to_string()),
         },
         tools_allow: allow,
