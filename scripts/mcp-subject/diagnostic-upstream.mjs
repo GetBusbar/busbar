@@ -199,6 +199,18 @@ TOOLS.tool_with_progress = {
   }),
 };
 
+// `json-schema-2020-12` (SEP-1613 / SEP-2106). The schema is the fixture: the scenario reads the
+// tool's `inputSchema` off `tools/list` and checks the 2020-12 keywords survive the hop. busbar
+// publishes the OPERATOR's declared schema rather than the upstream's, so what this proves is that
+// a full 2020-12 document travels through the `tools:` grammar without being flattened.
+TOOLS.schema_2020_12_tool = {
+  description:
+    "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613, SEP-2106)",
+  result: () => ({
+    content: [{ type: "text", text: "JSON Schema 2020-12 tool called" }],
+  }),
+};
+
 const MRTR_FIXTURES = {
   input_required_result_elicitation: "Runs once the caller has supplied its name.",
   input_required_result_sampling: "Runs once the caller has supplied a completion.",

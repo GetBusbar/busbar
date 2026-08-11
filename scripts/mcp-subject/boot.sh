@@ -109,6 +109,58 @@ mcp:
     - "http://127.0.0.1:$admin_port"
   scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
 tools:
+  # A SECOND REGISTERED SERVER, and its id is load-bearing rather than decorative.
+  #
+  # The suite asks for a tool named `json_schema_2020_12_tool` -- BARE, unlike every other diagnostic
+  # tool it names, which all carry a `test_` prefix. busbar's routing key is `{server}_{tool}` and
+  # there is no way to publish an un-namespaced name, so the id `json` plus the tool
+  # `schema_2020_12_tool` produces exactly the string the scenario looks for, through the REAL
+  # namespacing with nothing bypassed -- the same trick the `test` server already uses, and the same
+  # reason the header of this file gives for it.
+  json:
+    url: "http://127.0.0.1:$upstream_port/mcp"
+    allow_private: true
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+        # `json-schema-2020-12`. THE SCHEMA IS THE POINT: the scenario reads `inputSchema` off
+        # \`tools/list\` and asserts the 2020-12 keywords survived. Declared here in full because busbar
+        # publishes the OPERATOR's schema, never the upstream's -- so this is a test of the \`tools:\`
+        # grammar carrying \$defs / \$anchor / \$ref / allOf / if-then-else without flattening them.
+        schema_2020_12_tool:
+          schema_hash: "sha256:diagnostic-json-schema-2020-12"
+          description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613, SEP-2106)"
+          input_schema:
+            \$schema: "https://json-schema.org/draft/2020-12/schema"
+            type: object
+            \$defs:
+              address:
+                \$anchor: addressDef
+                type: object
+                properties:
+                  street: { type: string }
+                  city: { type: string }
+            properties:
+              name: { type: string }
+              address: { \$ref: "#/\$defs/address" }
+              contactMethod: { type: string, enum: ["phone", "email"] }
+              phone: { type: string }
+              email: { type: string }
+            allOf:
+              - anyOf:
+                  - required: ["phone"]
+                  - required: ["email"]
+            if:
+              properties:
+                contactMethod: { const: "phone" }
+              required: ["contactMethod"]
+            then:
+              required: ["phone"]
+            else:
+              required: ["email"]
+            additionalProperties: false
+
   test:
     url: "http://127.0.0.1:$upstream_port/mcp"
     # The upstream is on loopback and speaks plaintext. allow_private is what an operator must say
