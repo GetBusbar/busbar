@@ -12,13 +12,16 @@
 //! - [`OperationHandler`] — ONE per (protocol × operation). A pure codec: wire ↔ IR, both
 //!   directions, plus the operation-capability surface the engine reads. It never routes, fails
 //!   over, checks auth, bills, or knows another protocol exists.
-//! - [`OpDispatch`] — the thin `(operation, OperationHandler)` handle the streaming engine threads.
-//!   It mostly delegates to the `RequestHandler` vtable; its one bit of logic is honoring a per-lane
-//!   `path` override in `upstream_path` before falling back to the protocol default.
-//!   [`request_handler`] is the registry the catch-all dispatch resolves through.
+//! - [`OpDispatch`] — the thin `(operation, transport, OperationHandler)` handle the streaming
+//!   engine threads: the framed cell, built by [`crate::transport::Transport::frame`] and by
+//!   nothing else. It mostly delegates to the `RequestHandler` vtable; its one bit of logic is
+//!   honoring a per-lane `path` override in `upstream_path` before falling back to the protocol
+//!   default. [`request_handler`] is the registry the catch-all dispatch resolves through.
 //!
 //! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers. Adding an
-//! operation: an OperationHandler + a line in each `RequestHandler` that speaks it. Nothing else moves.
+//! operation: an OperationHandler + a line in each `RequestHandler` that speaks it. Adding a
+//! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
+//! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
 pub(crate) mod anthropic;
 pub(crate) mod bedrock;
@@ -297,11 +300,24 @@ mod contract_tests;
 
 use crate::state::Lane;
 
-/// A `(operation, OperationHandler)` dispatch handle, threaded through the forward engine by value (`Copy`). The
-/// engine reads operation behavior off it without ever naming an operation.
+/// A `(operation, transport, OperationHandler)` dispatch handle — ONE CELL of the matrix, framed —
+/// threaded through the forward engine by value (`Copy`). The engine reads operation behavior off it
+/// without ever naming an operation, and now carries the transport the request arrived on without
+/// ever naming one of those either.
+///
+/// BUILT THROUGH [`crate::transport::Transport::frame`] — the framing constructor, and the only
+/// thing that builds one in this tree. The three axes meet here and nowhere else: routing picks the
+/// protocol, the `RequestHandler` picks the operation (and with it the codec), and the ARRIVAL
+/// picks the transport. What the compiler enforces is the part that matters — no site can hold a
+/// codec without having said which channel it is speaking over, which is the shape whose absence
+/// let a stdio `tools:` entry sit in config with no dispatch arm to reach it.
 #[derive(Clone, Copy)]
 pub(crate) struct OpDispatch {
     pub(crate) operation: Operation,
+    /// The channel this exchange rides. A VALUE, like `operation`: the engine labels with it and
+    /// hands it on, and never compares or matches it (that would be a transport-identity branch,
+    /// which `scripts/structure-lint.sh` refuses outside a `proto/` arm, its handler and its codec).
+    pub(crate) transport: crate::transport::Transport,
     pub(crate) op_handler: &'static dyn OperationHandler,
 }
 
@@ -313,6 +329,11 @@ impl OpDispatch {
     /// must never compare or `match` on it (that would be an operation-identity branch).
     pub(crate) fn name(&self) -> &'static str {
         self.operation.name()
+    }
+    /// The transport this exchange rides — a bounded label, the third axis's counterpart to
+    /// [`Self::name`]. VALUE use only, for exactly the reason [`Self::name`] is.
+    pub(crate) fn transport(&self) -> crate::transport::Transport {
+        self.transport
     }
     pub(crate) fn streaming(&self) -> bool {
         self.op_handler.streaming()
@@ -356,22 +377,23 @@ impl OpDispatch {
 
 /// Chat — operation #1. A const handle to the shared chat OperationHandler, for tests and as the resolver's
 /// fallback. Prefer [`chat`] on the request path so the RequestHandler actually decides the OperationHandler.
-pub(crate) const CHAT: Op = OpDispatch {
-    operation: Operation::Chat,
-    op_handler: &crate::handlers::chat::ChatOperation("openai"),
-};
+pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
+    Operation::Chat,
+    &crate::handlers::chat::ChatOperation("openai"),
+);
 
 /// Resolve the chat dispatch THROUGH the registry — the same path every other operation takes:
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which
 /// OperationHandler handles the request" is honored for chat too, not just the JSON ops. Every protocol
 /// is registered and serves chat, so the fallback is unreachable (kept for total-safety, not behavior).
-pub(crate) fn chat(protocol: &str) -> Op {
+///
+/// The TRANSPORT is the caller's to state, not this resolver's: which channel an exchange arrived on
+/// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
+/// bindings of one agent mean). So it is a parameter, and every caller decides.
+pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
     crate::handlers::request_handler(protocol)
         .and_then(|rh| rh.operation_handler(Operation::Chat))
-        .map(|op_handler| OpDispatch {
-            operation: Operation::Chat,
-            op_handler,
-        })
+        .map(|op_handler| transport.frame(Operation::Chat, op_handler))
         .unwrap_or(CHAT)
 }
 

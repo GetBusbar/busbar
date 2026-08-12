@@ -265,10 +265,11 @@ pub(crate) async fn operation_resolved(
         pool_name,
         affinity_key.as_deref(),
         proto,
-        crate::handlers::OpDispatch {
-            operation,
-            op_handler,
-        },
+        // THE THIRD AXIS IS DECIDED AT THE ARRIVAL, which is the only place that knows it. This is
+        // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
+        // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
+        // and gRPC arrivals get their own entry points and frame the same codecs.
+        crate::transport::Transport::Http.frame(operation, op_handler),
         usage_sink(app, gov, pool_name, charged_at, admit),
     )
     .await;

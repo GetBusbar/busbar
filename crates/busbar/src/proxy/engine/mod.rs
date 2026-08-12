@@ -121,7 +121,7 @@ pub(crate) async fn forward_with_pool_keyed(
     level = HOTPATH_LEVEL,
     name = "forward",
     skip_all,
-    fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), request_id = tracing::field::Empty)
+    fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), transport = op.transport().name(), request_id = tracing::field::Empty)
 )]
 pub(crate) async fn forward_with_pool_parsed(
     app: Arc<App>,

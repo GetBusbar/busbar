@@ -1769,7 +1769,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "p",
         None,
         "anthropic",
-        crate::handlers::chat("anthropic"),
+        crate::handlers::chat("anthropic", crate::transport::Transport::Http),
         None,
     )
     .await;
