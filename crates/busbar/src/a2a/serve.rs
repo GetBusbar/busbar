@@ -219,8 +219,18 @@ pub(crate) fn rewrite_card(
         // a URL busbar can rewrite but still names the backend — a bare authority in a free-text
         // member, say. Serving it anyway would publish the way around busbar in the one document
         // whose entire purpose is to point callers at busbar.
+        //
+        // BUSBAR'S OWN ENDPOINT IS EXEMPT, and only that exact string. When busbar and the agent it
+        // fronts share a host — a sidecar, a single-node deployment, a hermetic rig — the endpoint
+        // the rewrite just WROTE contains the backend's authority, and scanning for the authority
+        // alone reported busbar's own published URL as a leak of the backend. That refused every
+        // card such a deployment could serve, so a co-located busbar could front nothing at all.
+        // The string the rewrite itself produced is not a way around busbar; it IS busbar. Every
+        // other mention on the same host — a bare authority in free text, a second port — still
+        // refuses, which is what `busbars_own_endpoint_is_not_a_leak_when_it_shares_a_host_with_the_backend`
+        // asserts in both directions.
         let mut remaining = Vec::new();
-        collect_mentions(&served, host, &mut remaining);
+        collect_mentions(&served, host, &endpoint, &mut remaining);
         if !remaining.is_empty() {
             return Err(ServeError::BackendLeak {
                 agent_id: agent_id.to_string(),
@@ -362,17 +372,21 @@ fn rewrite_backend_urls(v: &mut Value, backend_host: &str, endpoint: &str) {
 
 /// Every remaining mention of the backend host, with the JSON path it sits at, so the refusal names
 /// the member an operator has to look at rather than merely that one exists.
-fn collect_mentions(v: &Value, backend_host: &str, out: &mut Vec<String>) {
-    fn walk(v: &Value, host: &str, path: &str, out: &mut Vec<String>) {
+///
+/// `ours` is busbar's OWN published endpoint, and a string equal to it is never a mention: see the
+/// note at the call site. The comparison is exact equality, not a prefix or a host match — anything
+/// looser would exempt the very free-text mention the scan exists to catch.
+fn collect_mentions(v: &Value, backend_host: &str, ours: &str, out: &mut Vec<String>) {
+    fn walk(v: &Value, host: &str, ours: &str, path: &str, out: &mut Vec<String>) {
         match v {
             Value::String(s) => {
-                if s.to_lowercase().contains(host) {
+                if s != ours && s.to_lowercase().contains(host) {
                     out.push(path.to_string());
                 }
             }
             Value::Array(a) => {
                 for (i, x) in a.iter().enumerate() {
-                    walk(x, host, &format!("{path}[{i}]"), out);
+                    walk(x, host, ours, &format!("{path}[{i}]"), out);
                 }
             }
             Value::Object(o) => {
@@ -380,13 +394,13 @@ fn collect_mentions(v: &Value, backend_host: &str, out: &mut Vec<String>) {
                     if k.to_lowercase().contains(host) {
                         out.push(format!("{path}.{k} (member NAME)"));
                     }
-                    walk(x, host, &format!("{path}.{k}"), out);
+                    walk(x, host, ours, &format!("{path}.{k}"), out);
                 }
             }
             _ => {}
         }
     }
-    walk(v, backend_host, "$", out);
+    walk(v, backend_host, ours, "$", out);
 }
 
 #[cfg(test)]
