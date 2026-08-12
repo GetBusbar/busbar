@@ -46,31 +46,51 @@
 # If the audience check had been weakened to make this leg reach the endpoint, the first four would
 # stop answering 401 and this function would fail the job.
 #
-# WHAT THE FIFTH PROBE IS ALLOWED TO ANSWER, AND WHY IT IS NOT `200` LIKE MCP'S.
+# WHAT THE FIFTH PROBE IS ALLOWED TO ANSWER, AND WHY IT IS NOT PINNED TO ONE STATUS.
 #
-# On `dev` the right token is ADMITTED and then refused by the TRUST machine, with
-# `503 {"error":{"code":"refused","message":"fronted agent `x` is not serving (Pending)"}}`. That is
-# not an auth failure and it is not a defect in this script; it is the finding this leg exists to
-# surface, and it is written down here rather than tuned away:
+# It asserts ADMITTED, not `200`. The endpoint behind it is a real fronted agent whose backend is a
+# real process, and pinning a status here would make this proof red for something that is not an
+# auth fact. The status is PRINTED so a reader can see which side of the trust machine answered.
 #
-#   1. EVERY REGISTRATION IS BORN `Pending` AND NOTHING PROMOTES IT. `A2aPlane::from_config`
-#      deliberately does not lift the operator's declared pin into an approval, which is the right
-#      call — an approval is a statement about a document that was actually seen. The verb that
-#      captures a sighting for a human to approve (`a2a/verbs.rs::connect`) HAS NO MOUNTED ADMIN
-#      ROUTE: the admin surface for `agents:` is CRUD only (`/api/v1/admin/agents[/{name}]`),
-#      whereas the MCP plane's equivalent verb IS mounted (`mcp::adminverbs::connect`). So a busbar
-#      booted from YAML alone cannot serve a fronted agent at all, by any sequence of operator
-#      actions, and every inbound A2A request answers 503.
-#   2. A LOOPBACK BACKEND IS REFUSED WITH NO OVERRIDE. The card fetch guards `http://` and the
-#      localhost family (`a2a/fetch.rs`), and `AgentDefCfg` has no `allow_private:` — the knob its
-#      MCP sibling gives every `tools:` entry. So even once (1) is fixed, a hermetic A2A rig cannot
-#      point busbar at an agent it also runs.
+# THE FRONTED AGENT IS REAL, AND THAT IS THE CHANGE THIS FILE MOST NEEDED.
 #
-# NEITHER IS WORKED AROUND HERE. There is no fixture endpoint, no relaxed guard and no synthetic
-# card handed to the suite: a leg that manufactured a document for the harness to read would be
-# reporting conformance for a busbar nobody can run, which is worse than the unarmed leg it
-# replaces. The registration below therefore names a backend it will never fetch, the subject
-# answers 503, and the instruments report that in their own numbers.
+# Until now the registration below named `https://backend.a2a-conformance.invalid/a2a` — a backend
+# that could never be fetched — because two things made a hermetic rig impossible, and both are now
+# fixed on `dev` and USED here:
+#
+#   1. A registration is born `Pending` and something must promote it. `A2aPlane::from_config`
+#      deliberately does not lift an operator's declared pin into an approval, which is right: an
+#      approval is a statement about a document a human actually saw. The verbs that capture a
+#      sighting and act on it are now MOUNTED — `POST /api/v1/admin/agents/{name}/connect` and
+#      `.../approve` — so this script drives the sequence a real operator drives, in that order,
+#      echoing back the fingerprint `connect` reported. Nothing is auto-approved.
+#   2. A loopback backend is refused unless the operator says so. `agents.<name>.allow_private:` is
+#      the same knob, the same spelling and the same fail-closed default the `tools:` sibling has,
+#      and it is set here — out loud, in the config this script writes — because the backend really
+#      is on loopback and claiming otherwise would be a lie about the deployment.
+#
+# WHAT THE BACKEND IS, AND WHY IT IS THE PINNED CONTROL.
+#
+# `a2a-go` at the version `testing/a2a-tck/run-tck.sh` already pins as the CONTROL, in `--echo` mode.
+# That is deliberate: the same peer the control legs judge is the peer busbar fronts here, so a
+# difference between the control number and the subject number is a difference BUSBAR made. A
+# hand-written stub would have been a second implementation of A2A whose own defects would land in
+# busbar's column.
+#
+# It is fronted through `signing-vendor.mjs`, which signs the control's card with an Ed25519 issuer
+# key it generates and proxies everything else untouched. That is not a way around any check — see
+# that file's header: busbar refuses to approve a registration with no authenticity root, the two
+# TLS-rooted mechanisms need a certificate the platform trusts, and a JWS-signed card is the root a
+# vendor with no PKI relationship actually offers. busbar performs the whole verification against
+# the operator-supplied key and refuses if it fails.
+#
+# WHAT IS STILL NOT PROVEN HERE, stated rather than left to be discovered:
+#
+#   * THE DELEGATING DIRECTION. busbar's A2A client side is driven by a relay this rig does not
+#     drive from the far end, so `--battery` still runs `--role server`.
+#   * THE gRPC AND HTTP+JSON BINDINGS. busbar's card advertises `JSONRPC` and only `JSONRPC`, so the
+#     TCK skips both and their requirements report as untested rather than as failures busbar has
+#     been given a chance to pass.
 #
 # MODES
 #   --battery    the independent battery (testing/a2a-harness) against the booted subject
@@ -127,13 +147,15 @@ BANNER
 # endpoint the suite is pointed at and the registration it reaches cannot drift apart.
 SUBJECT_AGENT_ID="conformance"
 
-# THREE FREE PORTS, asked of the OS rather than hard-coded. A hard-coded port is a red that is not
+# FIVE FREE PORTS, asked of the OS rather than hard-coded.
+#
+# suite-facing | busbar data | busbar admin | the control agent | the signing vendor in front. A hard-coded port is a red that is not
 # a defect the first time a runner image happens to have something on it.
 subject_free_ports() {
   python3 - <<'PY'
 import socket
 socks = []
-for _ in range(3):
+for _ in range(5):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     socks.append(s)
@@ -149,22 +171,22 @@ PY
 #
 # `public_url:` IS THE WHOLE MOUNT. `A2aPlane::admission()` answers `None` without it and
 # `a2a::ingress::mount` then adds NO ROUTE AT ALL, so a subject missing this line is not an A2A
-# server that fails the suite — it is a busbar the suite cannot see. It names the SUITE-FACING port
+# server that fails the suite -- it is a busbar the suite cannot see. It names the SUITE-FACING port
 # (the shim), not busbar's own listener, because it is simultaneously the RFC 8707 resource
 # indicator every token must be minted for and the base of every URL the served card publishes: one
 # reading means the address the suite posts to, the audience busbar demands, and the endpoint the
 # card advertises cannot drift apart.
 #
 # `auth.chain: [keys]` IS LOAD-BEARING AND IS THE OPPOSITE OF A SHORTCUT. An empty chain would let
-# the mount answer anonymously and every scenario below would run with no credential at all — the
+# the mount answer anonymously and every scenario below would run with no credential at all -- the
 # false green this file exists to refuse. The chain is closed and the token is real.
 #
-# `agents.conformance.url` NAMES A BACKEND THIS RIG CANNOT REACH, and that is stated rather than
-# hidden: see the header. It is `https://` and non-loopback because anything else is refused at
-# parse or at fetch, and it changes nothing about the verdict — a reachable backend would leave the
-# registration `Pending` exactly as an unreachable one does, because nothing promotes it.
+# `agents.conformance` NAMES THE PINNED CONTROL AGENT, on loopback, behind the signing vendor. Every
+# line of it is the operator surface a real deployment uses, and each is written out loud rather
+# than defaulted: see the header for why `allow_private:` is honest here and why the trust root is
+# `jws_issuer_key` rather than one of the two TLS-rooted mechanisms.
 subject_write_config() {
-  local dir="$1" suite_port="$2" data_port="$3" admin_port="$4"
+  local dir="$1" suite_port="$2" data_port="$3" admin_port="$4" vendor_port="$5" issuer="$6"
   cat > "$dir/providers.yaml" <<'YAML'
 # No providers. The A2A plane needs none, and an empty catalog cannot fail for a reason that is
 # about a provider.
@@ -185,11 +207,9 @@ auth:
   signing_key: { file: $dir/signing.key }
 agents:
   $SUBJECT_AGENT_ID:
-    url: "https://backend.a2a-conformance.invalid/a2a"
-    # \`unpinned\` is written out loud rather than spelled as an absent field, exactly as the
-    # grammar demands. It is honest here: this rig has no out-of-band root for a backend it can
-    # never fetch, and claiming one would be inventing a trust root.
-    pin: { mechanism: unpinned }
+    url: "http://127.0.0.1:$vendor_port/"
+    allow_private: true
+    pin: { mechanism: jws_issuer_key, key: "$issuer" }
 YAML
 }
 
@@ -255,6 +275,96 @@ reporting about a busbar nobody runs, and that is worse than leaving it unarmed 
 is minting the wrong thing. Either way no verdict from this leg means anything until it is fixed."
 }
 
+
+# THE PINNED CONTROL BINARY, installed the same way and at the same version `run-tck.sh` pins it.
+# Sets SUBJECT_CONTROL_BIN.
+subject_install_control() {
+  local work="${A2A_TCK_WORK:-${TMPDIR:-/tmp}/a2a-tck-work}"
+  local bin_dir="${A2AHT_CONTROL_BIN:-$work/bin}"
+  mkdir -p "$bin_dir"
+  SUBJECT_CONTROL_BIN="$bin_dir/a2a"
+  if [ ! -x "$SUBJECT_CONTROL_BIN" ]; then
+    # THE VERSION IS READ OUT OF `run-tck.sh`, never spelled a second time. Two spellings of "the
+    # control" is exactly how a subject leg and a control leg end up judging different peers while
+    # both look pinned.
+    local version
+    version="$(sed -n 's/^CONTROL_GO_VERSION="\([^"]*\)".*/\1/p' testing/a2a-tck/run-tck.sh)"
+    [ -n "$version" ] || die "could not read CONTROL_GO_VERSION out of testing/a2a-tck/run-tck.sh; \
+the subject leg must front the SAME peer the control legs judge, and a second spelling of the \
+version here would let the two drift."
+    say "   installing the pinned control agent, a2a-go $version"
+    GOBIN="$bin_dir" go install "github.com/a2aproject/a2a-go/v2/cmd/a2a@$version" \
+      || die "could not install the pinned control agent."
+  fi
+}
+
+# Wait for one URL to answer 200, or die naming what did not come up and showing its log.
+subject_await() {
+  local url="$1" what="$2" log="$3" waited=0
+  until [ "$(subject_probe_status "$url")" = "200" ]; do
+    waited=$((waited+1))
+    [ "$waited" -lt 60 ] || { cat "$log" >&2; die "$what did not come up at $url."; }
+    sleep 1
+  done
+}
+
+# PROMOTE THE REGISTRATION THE WAY AN OPERATOR PROMOTES ONE, and no other way.
+#
+# `connect` fetches, verifies and REPORTS; it grants nothing, by construction. `approve` is a second,
+# explicit act that must echo back the fingerprint `connect` reported — busbar re-fetches and
+# re-verifies and refuses if the two disagree. Nothing here approves anything busbar did not itself
+# authenticate against the operator's issuer key, and there is no path in this script that writes a
+# trust state directly.
+subject_promote() {
+  local admin_port="$1" admin_token="$2" dir="$3"
+  local preview fingerprint
+  preview="$(curl -s --max-time 30 -X POST \
+    "http://127.0.0.1:$admin_port/api/v1/admin/agents/$SUBJECT_AGENT_ID/connect" \
+    -H "authorization: Bearer $admin_token")"
+  printf '%s\n' "$preview" > "$dir/connect.json"
+  fingerprint="$(printf '%s' "$preview" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("fingerprint") or "")
+except Exception:
+    print("")')"
+  [ -n "$fingerprint" ] || die "\`connect\` reported no fingerprint for \`$SUBJECT_AGENT_ID\`, so \
+there is nothing an operator could approve. The preview was: $preview"
+  say "   connect: the card verified against the operator's issuer key, fingerprint $fingerprint"
+
+  local approved state
+  approved="$(curl -s --max-time 30 -X POST \
+    "http://127.0.0.1:$admin_port/api/v1/admin/agents/$SUBJECT_AGENT_ID/approve" \
+    -H "authorization: Bearer $admin_token" -H 'content-type: application/json' \
+    -d "{\"fingerprint\":\"$fingerprint\"}")"
+  printf '%s\n' "$approved" > "$dir/approve.json"
+  state="$(printf '%s' "$approved" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("state") or "")
+except Exception:
+    print("")')"
+  [ "$state" = "approved" ] || die "\`approve\` left \`$SUBJECT_AGENT_ID\` in state \`$state\`, so \
+busbar fronts nothing and every instrument below would be measuring a 503. The answer was: $approved"
+  say "   approve: the registration is APPROVED against the fingerprint the operator saw"
+}
+
+# THE CARD BUSBAR SERVES FOR THE AGENT IT FRONTS, waited for rather than assumed.
+#
+# An approval records the pin; the CARD is cached by the re-verification sweep, which runs on its own
+# tick. Until it has, the registration is approved and has no document to match a task shape
+# against, so the catalogue excludes it and every submission answers 503. That window is a real
+# property of this build and is waited out here rather than papered over — see the report.
+subject_await_serving() {
+  local url="$1" token="$2" waited=0
+  until curl -s --max-time 15 -H "authorization: Bearer $token" "$url" \
+        | grep -q '"protocolVersion"'; do
+    waited=$((waited+1))
+    [ "$waited" -lt 90 ] || die "busbar never served a card for \`$SUBJECT_AGENT_ID\`. The \
+registration is approved, so this is the re-verification sweep not having cached the document."
+    sleep 2
+  done
+  say "   busbar serves the fronted agent's card after ${waited}s of sweep"
+}
+
 # Boot busbar, obtain a credential for it, and put a credential-holding client shim in front.
 # Sets SUBJECT_URL (what the instruments are pointed at), SUBJECT_TOKEN and SUBJECT_PIDS.
 boot_busbar_a2a_subject() {
@@ -266,10 +376,33 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   rm -rf "$dir"; mkdir -p "$dir"
   dir="$(cd "$dir" && pwd)"
 
-  local suite_port data_port admin_port
-  read -r suite_port data_port admin_port <<<"$(subject_free_ports)"
-  [ -n "${admin_port:-}" ] || die "could not obtain three free loopback ports."
+  local suite_port data_port admin_port control_port vendor_port
+  read -r suite_port data_port admin_port control_port vendor_port <<<"$(subject_free_ports)"
+  [ -n "${vendor_port:-}" ] || die "could not obtain five free loopback ports."
   say "   busbar $data_port · admin $admin_port · suite-facing $suite_port"
+  say "   control agent $control_port · signing vendor $vendor_port"
+
+  # ── THE AGENT BUSBAR FRONTS. The PINNED CONTROL, in echo mode, behind the signing vendor. ──
+  #
+  # The same peer `run-tck.sh` judges directly on its control legs, so a gap between the control
+  # number and the subject number is a gap BUSBAR opened. A hand-written stub would have been a
+  # second A2A implementation whose own defects would land in busbar's column.
+  subject_install_control
+  "$SUBJECT_CONTROL_BIN" serve --echo --port "$control_port" --quiet --transport jsonrpc \
+    >"$dir/control-agent.log" 2>&1 &
+  SUBJECT_PIDS="${SUBJECT_PIDS:-}$!"
+  subject_await "http://127.0.0.1:$control_port/.well-known/agent-card.json" \
+    "the pinned control agent" "$dir/control-agent.log"
+
+  node scripts/a2a-subject/signing-vendor.mjs "$vendor_port" "$control_port" "$dir/issuer.spki" \
+    >"$dir/signing-vendor.log" 2>&1 &
+  SUBJECT_PIDS="$SUBJECT_PIDS $!"
+  subject_await "http://127.0.0.1:$vendor_port/.well-known/agent-card.json" \
+    "the signing vendor" "$dir/signing-vendor.log"
+  local issuer
+  issuer="$(cat "$dir/issuer.spki")"
+  [ -n "$issuer" ] || die "the signing vendor published no issuer key, so there is no trust root \
+for this registration and busbar would correctly refuse to approve it."
 
   # The signing key. GENERATED BY THIS JOB, which is the whole basis on which it may sign anything:
   # it is not extracted from busbar, and busbar is handed the same bytes rather than the other way
@@ -277,7 +410,7 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   ( umask 077; "$bin" --generate-signing-key > "$dir/signing.key" 2>"$dir/generate-key.log" ) \
     || { cat "$dir/generate-key.log" >&2; die "busbar --generate-signing-key failed."; }
 
-  subject_write_config "$dir" "$suite_port" "$data_port" "$admin_port"
+  subject_write_config "$dir" "$suite_port" "$data_port" "$admin_port" "$vendor_port" "$issuer"
 
   # An admin credential for THIS boot only, from the OS CSPRNG. Never a fixed string: the admin
   # plane is loopback-only here, and a fixed token in a public repository is a habit that
@@ -292,7 +425,7 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   ( cd "$dir" && BUSBAR_CONFIG="$dir/config.yaml" BUSBAR_ADMIN_TOKEN="$admin_token" \
       exec "$bin" ) >"$dir/busbar.log" 2>&1 &
   local busbar_pid=$!
-  SUBJECT_PIDS="$busbar_pid"
+  SUBJECT_PIDS="$SUBJECT_PIDS $busbar_pid"
 
   # READINESS BY OBSERVATION, on the plane's OWN unauthenticated metadata document rather than on
   # `/healthz` — `/healthz` answers 503 on a deployment with no pools, which is correct and says
@@ -354,6 +487,10 @@ same helper the MCP leg does, because busbar's token format is one format across
   # is live; if it were ever admitted, the plane boundary would be gone.
   wrong=$(node "$minter" "$dir/signing.key" "$plain" "${canonical}-not-this-resource") \
     || die "could not mint the wrong-audience counterfactual."
+
+  # ── THE REGISTRATION IS PROMOTED, by the operator verbs, before anything is measured. ──
+  subject_promote "$admin_port" "$admin_token" "$dir"
+  subject_await_serving "$direct" "$bound"
 
   prove_the_boundary_is_intact "$direct" "$plain" "$bound" "$wrong"
 

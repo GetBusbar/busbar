@@ -76,8 +76,20 @@ impl Recorded {
 /// What the recording transport does when the relay reaches it.
 #[derive(Clone)]
 pub(super) enum Outcome {
-    /// A real HTTP answer: status and body.
+    /// A real HTTP answer: status and body, VERBATIM, whatever was asked. The literal fixture, for
+    /// a test that serves exactly one request or that is asserting something about a `id` the
+    /// backend chose — see [`super::response_id_tests`], where an answer naming another request is
+    /// the whole subject.
     Answers(u16, String),
+    /// The same, from a backend that ANSWERS THE REQUEST IT WAS ASKED: the canned body's JSON-RPC
+    /// `id` is replaced, per call, by the `id` of the request that reached the transport.
+    ///
+    /// For a test that makes MORE THAN ONE call against one fixture. A canned document pinned to a
+    /// single hardcoded `id` is an answer to one request being served to all of them, and now that
+    /// the relay correlates, the second call is correctly refused `502` — a red test that says
+    /// nothing about busbar and everything about the fixture. The lesson is [`backend_ok_for`]'s,
+    /// paid for a second time: a fixture that agrees only with itself proves nothing.
+    AnswersCorrelated(u16, String),
     /// The hop failed at the transport, the way a refused connection or a TLS refusal does.
     Fails(String),
     /// A real SSE stream: these frames, in order, one chunk each.
@@ -135,10 +147,16 @@ impl RelayTransport for RecordingTransport {
     ) -> Result<HttpResponse, String> {
         self.record(url, addr, headers, body, false);
         match &self.outcome {
-            Outcome::Answers(status, body) => Ok(HttpResponse {
+            Outcome::Answers(status, reply) => Ok(HttpResponse {
                 status: *status,
                 location: None,
-                body: body.clone().into_bytes(),
+                body: reply.clone().into_bytes(),
+                peer_spki: None,
+            }),
+            Outcome::AnswersCorrelated(status, reply) => Ok(HttpResponse {
+                status: *status,
+                location: None,
+                body: correlated(reply, body).into_bytes(),
                 peer_spki: None,
             }),
             Outcome::Fails(err) => Err(err.clone()),
@@ -160,11 +178,31 @@ impl RelayTransport for RecordingTransport {
         match &self.outcome {
             Outcome::Fails(err) => Err(err.clone()),
             Outcome::Streams(frames) => {
-                for frame in frames {
-                    if on_chunk(frame.as_bytes()) == ChunkFlow::Stop {
-                        break;
+                // THE SINK IS CALLED FROM INSIDE A RUNTIME, exactly as production calls it.
+                //
+                // This is not decoration and it is not "more realistic": it is the whole reason the
+                // streaming relay could panic on every single request while every test here was
+                // green. `ReqwestTransport::post_stream` runs the response read inside
+                // `on_a_dedicated_runtime`, i.e. inside a current-thread `Runtime::block_on`, and
+                // invokes `on_chunk` from within it. This fixture called it on a bare thread, where
+                // tokio's "you may not block from within a runtime" guard does not exist — so the
+                // sink's `blocking_send` was never once exercised in the context it actually runs
+                // in, and the first real streaming request answered
+                // `502 … a2a task stream relay: the worker thread panicked`.
+                //
+                // A fixture that is easier to satisfy than production is a fixture that certifies
+                // code nobody can run.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a runtime");
+                rt.block_on(async {
+                    for frame in frames {
+                        if on_chunk(frame.as_bytes()) == ChunkFlow::Stop {
+                            break;
+                        }
                     }
-                }
+                });
                 Ok(StreamHead {
                     status: 200,
                     content_type: "text/event-stream".to_string(),
@@ -176,13 +214,40 @@ impl RelayTransport for RecordingTransport {
                 content_type: "application/json".to_string(),
                 body: body.clone().into_bytes(),
             }),
-            Outcome::Answers(status, body) => Ok(StreamHead {
+            Outcome::Answers(status, doc) => Ok(StreamHead {
                 status: *status,
                 content_type: "application/json".to_string(),
-                body: body.clone().into_bytes(),
+                body: doc.clone().into_bytes(),
+            }),
+            Outcome::AnswersCorrelated(status, doc) => Ok(StreamHead {
+                status: *status,
+                content_type: "application/json".to_string(),
+                body: correlated(doc, body).into_bytes(),
             }),
         }
     }
+}
+
+/// THE CANNED ANSWER, MADE INTO AN ANSWER TO *THIS* REQUEST: the reply's JSON-RPC `id` is replaced
+/// with the one on the request that just arrived.
+///
+/// A request that is not JSON, or that has no `id`, leaves the reply exactly as written — a fixture
+/// that deliberately serves a malformed hop keeps serving it.
+fn correlated(reply: &str, request: &[u8]) -> String {
+    let Some(id) = serde_json::from_slice::<serde_json::Value>(request)
+        .ok()
+        .and_then(|r| r.get("id").cloned())
+    else {
+        return reply.to_string();
+    };
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(reply) else {
+        return reply.to_string();
+    };
+    let Some(obj) = doc.as_object_mut() else {
+        return reply.to_string();
+    };
+    obj.insert("id".to_string(), id);
+    doc.to_string()
 }
 
 pub(super) struct RecordingSeam {

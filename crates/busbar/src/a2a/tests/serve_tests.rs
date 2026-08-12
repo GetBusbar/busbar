@@ -267,3 +267,45 @@ fn a_string_that_merely_mentions_a_different_host_is_left_alone() {
     assert_eq!(served["provider"]["url"], "https://acme.example");
     assert_eq!(served["description"], "decomposes goals");
 }
+
+#[test]
+fn busbars_own_endpoint_is_not_a_leak_when_it_shares_a_host_with_the_backend() {
+    // THE CASE THE LEAK GUARD USED TO REFUSE OUTRIGHT, and it is not exotic: a sidecar, a
+    // single-node development deployment and a hermetic conformance rig all put busbar and the
+    // agent it fronts on ONE host. The rewrite then replaces every backend URL with busbar's own —
+    // which, sharing that host, still CONTAINS the backend authority — and the post-rewrite scan
+    // reported busbar's own published endpoint as a leak of the backend. The result was a hard
+    // refusal to serve any card at all, so a busbar co-located with its agent could not front it.
+    //
+    // The string the rewrite itself just wrote is by definition not a way around busbar; it IS
+    // busbar. Nothing else is softened: the free-text case below still refuses.
+    let backend = "http://127.0.0.1:9110";
+    let public = "http://127.0.0.1:9100";
+    let mut card = backend_card();
+    let obj = card.as_object_mut().expect("object");
+    obj.insert("url".to_string(), json!(format!("{backend}/a2a")));
+    obj.insert(
+        "supportedInterfaces".to_string(),
+        json!([{ "url": format!("{backend}/a2a"), "protocolBinding": "JSONRPC" }]),
+    );
+    obj.remove("x-vendor-extensions");
+    obj.insert("description".to_string(), json!("decomposes goals"));
+
+    let served = rewrite_card(&card, backend, public, "planner", None)
+        .expect("a co-located backend must still be servable");
+    assert_eq!(served["url"], format!("{public}/a2a/agents/planner"));
+
+    // AND THE GUARD IS STILL LIVE ON THE SAME HOST. A free-text mention of the backend's authority
+    // is not the endpoint the rewrite wrote, and must still refuse.
+    let mut leaky = card.clone();
+    leaky.as_object_mut().expect("object").insert(
+        "description".to_string(),
+        json!("the real one is at 127.0.0.1:9110/internal"),
+    );
+    let err = rewrite_card(&leaky, backend, public, "planner", None)
+        .expect_err("a free-text mention must still refuse");
+    assert!(
+        matches!(err, ServeError::BackendLeak { ref at, .. } if at == &vec!["$.description".to_string()]),
+        "got {err:?}"
+    );
+}

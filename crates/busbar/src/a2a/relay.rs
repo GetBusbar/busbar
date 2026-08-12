@@ -208,6 +208,18 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) lease: Option<&'a Lease>,
     /// THE LIVE TRUST DECISION, re-asked after the guard and before the socket. See the module note.
     pub(crate) gate: &'a dyn DelegationGate,
+    /// THE GUARD POLICY FOR THIS REGISTRATION — `A2aPlane::fetch_policy_for(agent_id)`, never the
+    /// plane-wide default.
+    ///
+    /// It is carried on the CALL rather than read off the seam, and that is the whole of a defect
+    /// this field exists to close. `RelaySeam::policy()` answers with the plane's default, which is
+    /// fail-closed and knows nothing about any registration; the card fetch, `connect`, `approve`
+    /// and the re-verification sweep all narrow it by the registration's `allow_private:` first.
+    /// The relay did not, so a registration an operator had marked `allow_private: true` was
+    /// fetched, verified and approved over its plaintext loopback endpoint — and then every task
+    /// submitted to it was refused by the relay's guard, quoting the very knob that was already set.
+    /// One operator line, two answers, decided by which code path asked.
+    pub(crate) policy: &'a FetchPolicy,
     /// The caller's request, VERBATIM. busbar is content-blind on this plane.
     pub(crate) body: &'a [u8],
     /// THE `id` THIS HOP IS ANSWERING, established by [`crate::ingress::jsonrpc::read`] at the
@@ -288,7 +300,17 @@ pub(crate) enum RelayRefusal {
     NotJson { url: String, err: String },
     /// The backend answered with a JSON-RPC `error` member. The backend's own words are carried so
     /// an operator reading the log sees what it said, and they are NOT returned to the caller.
-    BackendError { code: String, message: String },
+    ///
+    /// `jsonrpc_code` is the SAME error as an integer, where the backend sent one A2A defines. It
+    /// is carried separately from `code` because the two are different kinds of thing: `code` is for
+    /// the log and may be any JSON value a backend chose to put there, and this is a protocol fact
+    /// the ingress re-emits so a caller learns what actually happened. See
+    /// `rpcerror::A2aError::from_code` for why the semantics travel and the prose does not.
+    BackendError {
+        code: String,
+        message: String,
+        jsonrpc_code: Option<i64>,
+    },
     /// THE BACKEND'S ANSWER DOES NOT NAME THE REQUEST BUSBAR SENT: a mismatched `id`, `"id": null`,
     /// or no `id` member at all.
     ///
@@ -335,7 +357,7 @@ impl std::fmt::Display for RelayRefusal {
                 f,
                 "the backend agent at `{url}` replied with something that is not JSON: {err}"
             ),
-            RelayRefusal::BackendError { code, message } => {
+            RelayRefusal::BackendError { code, message, .. } => {
                 write!(f, "the backend agent refused the task: [{code}] {message}")
             }
             RelayRefusal::Uncorrelated { url, reason } => write!(
@@ -353,6 +375,8 @@ pub(crate) struct RelayReply {
     /// The backend's JSON-RPC `result`, VERBATIM. [`rewrite_identity`] substitutes the two identity
     /// fields and everything else passes through; see the module note on content-blindness.
     pub(crate) result: serde_json::Value,
+    /// THE BACKEND'S OWN TASK ID, before the substitution. See [`backend_task_id`].
+    pub(crate) backend_task_id: Option<String>,
     /// The state the backend says the task is in, as this plane's own canonical type reads it.
     ///
     /// `Working` when the backend named none, which is the honest default: the submission was
@@ -421,7 +445,10 @@ fn prepare<'a>(
     now_ms: u64,
 ) -> Result<(super::fetch::PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. ──
-    let target = super::fetch::resolve_and_pin(call.backend_url, seam.resolver(), seam.policy())
+    // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
+    // knows nothing about any registration; the call carries the one the operator's `allow_private:`
+    // narrowed, which is what every other reader of that line already uses.
+    let target = super::fetch::resolve_and_pin(call.backend_url, seam.resolver(), call.policy)
         .map_err(RelayRefusal::Guard)?;
 
     // ── THE LIVE TRUST DECISION, after the guard and before the socket. See the module note. ──
@@ -470,7 +497,7 @@ pub(crate) fn relay(
             status: resp.status,
         });
     }
-    if resp.body.len() > seam.policy().max_body_bytes {
+    if resp.body.len() > call.policy.max_body_bytes {
         return Err(RelayRefusal::BodyTooLarge {
             url: target.url.to_string(),
             bytes: resp.body.len(),
@@ -517,6 +544,7 @@ fn read_reply(
     let result = match reply {
         Reply::Error { code, message } => {
             return Err(RelayRefusal::BackendError {
+                jsonrpc_code: code.as_ref().and_then(serde_json::Value::as_i64),
                 code: code.map_or_else(|| "unknown".to_string(), |c| c.to_string()),
                 message,
             })
@@ -524,19 +552,101 @@ fn read_reply(
         Reply::Result(result) => result,
     };
     let reported_state = reported_task_state(&result);
+    let backend_task_id = backend_task_id(&result);
     Ok(RelayReply {
         result,
+        backend_task_id,
         reported_state,
     })
 }
 
+/// THE PAYLOAD INSIDE A JSON-RPC `result`, in either of the shapes A2A has used.
+///
+/// A2A v0.3 makes the `result` the Task (or Message) itself. v1.0 WRAPS it — `{"task": {…}}`,
+/// `{"message": {…}}` — which is the shape the pinned control agent and the official TCK speak.
+/// busbar is content-blind on this plane and does not translate between them; it only has to know
+/// WHERE the payload is, because the two things it does to a backend answer (substitute its own
+/// task identity, read the state the backend reported) are both about the payload and neither is
+/// about the wrapper.
+///
+/// A wrapper is recognised by carrying `task` or `message` AS AN OBJECT. Nothing else is treated as
+/// one: a v0.3 Task has neither member at its top level, so the two shapes cannot be confused.
+/// THE FOUR WRAPPER MEMBERS A2A v1.0 DEFINES, and what each one names its task by.
+///
+/// The identity member is NOT the same across them and that is not an inconsistency in A2A: a
+/// `Task` IS the task, so its identifier is `id`; a `Message` and the two update events are ABOUT a
+/// task, so they name it with `taskId` and carry their own identifier separately. Writing `id` into
+/// an update event invents a member its schema forbids and leaves the real one — the member a
+/// caller correlates a stream by — still naming the backend's task.
+const WRAPPERS: [(&str, &str); 4] = [
+    ("task", "id"),
+    ("message", "taskId"),
+    ("statusUpdate", "taskId"),
+    ("artifactUpdate", "taskId"),
+];
+
+fn wrapper_of(result: &serde_json::Value) -> Option<(&'static str, &'static str)> {
+    WRAPPERS
+        .into_iter()
+        .find(|(member, _)| result.get(member).is_some_and(serde_json::Value::is_object))
+}
+
+/// THE BACKEND'S OWN TASK ID, read off a payload BEFORE [`rewrite_identity`] replaces it.
+///
+/// busbar issues its own task identity and substitutes it into every answer, for the reason the
+/// module note gives: a caller's later reads resolve against busbar's store. That substitution has
+/// an INVERSE, and without it the identity busbar issues is one busbar cannot resolve - a caller
+/// handed `a2a-planner-…` and asking `GetTask` for it reaches a backend that has never heard of it.
+/// This is the half that makes the inverse possible: the id to translate BACK to.
+pub(crate) fn backend_task_id(result: &serde_json::Value) -> Option<String> {
+    let id_member = wrapper_of(result).map_or("id", |(_, m)| m);
+    payload_of(result)
+        .get(id_member)
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
+    match wrapper_of(result) {
+        Some((member, _)) => result.get(member).expect("just found"),
+        None => result,
+    }
+}
+
 /// The task state a `result` (or a streamed event) reports, defaulting to `Working`.
-fn reported_task_state(result: &serde_json::Value) -> TaskState {
-    result
+///
+/// THE WIRE TOKEN, NOT THE STORE TOKEN. `TaskState::parse` reads what busbar WROTE and is strict on
+/// purpose — an unknown token there is a row a downgrade must not guess about. This reads what a
+/// BACKEND said, and A2A has two spellings for every state: v0.3's `input-required` and v1.0's
+/// `TASK_STATE_INPUT_REQUIRED`. Reading only the first recorded every task a v1.0 backend completed
+/// as `working`, so busbar's own rows disagreed with the answer it had just handed the caller.
+/// Anything unreadable stays `Working`: a relay that guessed `completed` from a token it could not
+/// read would close a task that is still running.
+pub(crate) fn reported_task_state(result: &serde_json::Value) -> TaskState {
+    payload_of(result)
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-        .and_then(|s| TaskState::parse(s).ok())
+        .and_then(wire_state)
         .unwrap_or(TaskState::Working)
+}
+
+/// ONE READING OF A BACKEND'S STATE TOKEN, in either A2A vocabulary. `None` for a token this build
+/// does not know, which the two callers answer differently and correctly: the unary path falls back
+/// to `Working` because it must record something, and the streaming path records nothing at all
+/// because an event that reported no state it could read did not report a transition.
+fn wire_state(token: &str) -> Option<TaskState> {
+    if let Ok(state) = TaskState::parse(token) {
+        return Some(state);
+    }
+    // v1.0's enum spelling: `TASK_STATE_` + the state in SCREAMING_SNAKE_CASE.
+    TaskState::parse(
+        &token
+            .strip_prefix("TASK_STATE_")?
+            .to_ascii_lowercase()
+            .replace('_', "-"),
+    )
+    .ok()
 }
 
 /// SUBSTITUTE BUSBAR'S TASK IDENTITY onto a backend answer, leaving everything else alone.
@@ -553,13 +663,30 @@ pub(crate) fn rewrite_identity(
     if !result.is_object() {
         *result = serde_json::json!({ "kind": "task" });
     }
-    let Some(obj) = result.as_object_mut() else {
+    // THE PAYLOAD, not the wrapper, and BY ITS OWN IDENTITY MEMBER. See `WRAPPERS`: writing
+    // `id`/`contextId` beside a `task` member rather than inside it left the backend's own ids in
+    // the document a caller reads — which is the failure this function's whole purpose is to
+    // prevent — and added two members the schema forbids.
+    let (wrapper, id_member) = match wrapper_of(result) {
+        Some((member, id_member)) => (Some(member), id_member),
+        // A bare `result` is the v0.3 shape: the Task itself, identified by `id`.
+        None => (None, "id"),
+    };
+    let payload = match wrapper {
+        Some(member) => result.get_mut(member).expect("just found"),
+        None => result,
+    };
+    let Some(obj) = payload.as_object_mut() else {
         return;
     };
-    obj.insert(
-        "id".to_string(),
-        serde_json::Value::String(task_id.to_string()),
-    );
+    // A `Message` names a task only when it belongs to one. Adding `taskId` to a standalone
+    // message would assert a relationship the backend did not.
+    if id_member != "taskId" || wrapper != Some("message") || obj.contains_key("taskId") {
+        obj.insert(
+            id_member.to_string(),
+            serde_json::Value::String(task_id.to_string()),
+        );
+    }
     obj.insert(
         "contextId".to_string(),
         serde_json::Value::String(context_id.to_string()),
@@ -583,11 +710,24 @@ pub(crate) fn rewrite_identity(
             }
         }
     }
+    // THE MATCHED SKILL IS METADATA. It used to be inserted as a top-level `skill` member, which
+    // A2A's `Task` does not define — so a conformant client validating the envelope rejects it, and
+    // busbar has invented a field in somebody else's schema. `metadata` is the member the
+    // specification provides for exactly this, and the key is namespaced so it cannot collide with
+    // whatever the backend put there.
     if let Some(skill) = matched_skill {
-        obj.insert(
-            "skill".to_string(),
-            serde_json::Value::String(skill.to_string()),
-        );
+        let metadata = obj
+            .entry("metadata")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !metadata.is_object() {
+            *metadata = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(metadata) = metadata.as_object_mut() {
+            metadata.insert(
+                "busbar/skill".to_string(),
+                serde_json::Value::String(skill.to_string()),
+            );
+        }
     }
 }
 
@@ -602,6 +742,8 @@ pub(crate) struct RelayEvent {
     pub(crate) state: Option<TaskState>,
     /// Whether this event carried an artifact chunk, which is what advances the resume cursor.
     pub(crate) artifact: bool,
+    /// THE BACKEND'S OWN TASK ID, before the substitution. See [`backend_task_id`].
+    pub(crate) backend_task_id: Option<String>,
 }
 
 /// THE SSE FRAME READER: bytes in, whole events out.
@@ -698,6 +840,7 @@ pub(crate) fn read_event(
             sse: frame.as_bytes().to_vec(),
             state: None,
             artifact: false,
+            backend_task_id: None,
         })
     };
     let Some(data) = sse_data(frame) else {
@@ -730,19 +873,31 @@ pub(crate) fn read_event(
             sse: frame_sse(&envelope),
             state: None,
             artifact: false,
+            backend_task_id: None,
         });
     };
     let Some(result) = envelope.get_mut("result") else {
         return verbatim();
     };
-    let artifact = result.get("artifact").is_some() || result.get("artifacts").is_some();
-    let state = result
+    // THROUGH THE PAYLOAD, in both shapes. v1.0 wraps the event - `{"artifactUpdate": {…}}`,
+    // `{"statusUpdate": {…}}` - so reading `result.artifact` and `result.status.state` directly saw
+    // neither: every streamed artifact left the resume cursor where it was, and every state
+    // transition on a stream went unrecorded and undelivered to any registered push callback.
+    let payload = payload_of(result);
+    let artifact = payload.get("artifact").is_some()
+        || payload.get("artifacts").is_some()
+        || result.get("artifactUpdate").is_some();
+    // `Working` is the fallback for "reported nothing", and this asks a narrower question - DID it
+    // report one - so the fallback is not usable here and the pointer is read directly.
+    let state = payload
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-        .and_then(|s| TaskState::parse(s).ok());
+        .and_then(wire_state);
+    let backend = backend_task_id(result);
     rewrite_identity(result, task_id, context_id, matched_skill);
     Ok(RelayEvent {
         sse: frame_sse(&envelope),
+        backend_task_id: backend,
         state,
         artifact,
     })
@@ -776,7 +931,7 @@ pub(crate) fn relay_stream(
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
     let (target, request) = prepare(call, seam, true, now_ms)?;
-    let cap = seam.policy().max_body_bytes;
+    let cap = call.policy.max_body_bytes;
 
     let mut reader = SseReader::default();
     let mut streamed_any = false;
