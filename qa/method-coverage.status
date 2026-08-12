@@ -1,0 +1,53 @@
+# METHOD COVERAGE STATUS -- the only place a cell of qa/method-inventory.json may be declared
+# anything other than MISSING.
+#
+# Owner's ruling, 2026-08-12: "i want a customer to be able to do anything mcp says it can do and
+# anything a2a says it can do. so if thats calling 20 methods we need to support it. how internally
+# though doesnt matter. i want full alphabet coverage not just A-J. I want A-Z"
+#
+# THREE STATES PER CELL, and there is no fourth:
+#
+#   implemented                          the cell works, and an instrument was watched saying so
+#   waived <YYYY-MM-DD> <reason>         deliberately absent, with a reason a customer could read
+#   (absent from this file)              MISSING -- and MISSING FAILS THE BUILD
+#
+# FORMAT, following crates/busbar/src/config/config-schema.waivers, which is the house waiver
+# format and is this file's precedent:
+#
+#   - One entry per line:  <exact-cell-id> = implemented
+#                          <exact-cell-id> = waived <YYYY-MM-DD> <reason>
+#   - EXACT cell ids only. No globs. `*` or `?` is a hard error -- a wildcard waiver is how a
+#     whole transport disappears in one line.
+#   - A reason is MANDATORY on a waiver. `= waived 2026-08-12` with no text is a hard error.
+#   - A STALE entry (a cell id that is not in qa/method-inventory.json) is a hard error, so a
+#     method that the SDKs renamed cannot keep an entry that no longer excuses anything.
+#   - Blank lines and `#` comments are ignored.
+#
+# WHY A FILE AND NOT A CONSTANT IN THE TEST: a waiver here is a line in the PR diff, sitting next
+# to the obligation it excuses, dated, with the reasoning attached. That is the whole point.
+#
+# WHAT COUNTS AS A LEGITIMATE WAIVER. The PUSH-DELIVER precedent (goal D16): PUSH-DELIVER-001/002/
+# 003 stay red on purpose because the TCK's webhook receiver defaults to localhost and busbar's
+# SSRF guard correctly refuses it. A security control winning over a conformance score is a
+# legitimate waiver. "We ran out of time" is ALSO a legitimate waiver -- but only if it is written
+# down here, dated, with the customer-visible consequence spelled out.
+#
+# WHY THIS FILE IS EMPTY OF `implemented` LINES TODAY, and that is not an oversight.
+# `crates/busbar/src/mcp/` and `crates/busbar/src/a2a/` are being deleted whole (goal D10) and
+# rebuilt cell by cell on the Protocol x Operation x Transport axes. Claiming a cell here on the
+# strength of code that is scheduled for deletion would be claiming coverage the release does not
+# have. Every cell is therefore MISSING, the full list is pinned in qa/method-coverage.missing,
+# and THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has
+# been watched green on an instrument -- read the output, not the tick.
+
+# ---------------------------------------------------------------------------
+# implemented
+# ---------------------------------------------------------------------------
+
+# (none yet -- see the paragraph above)
+
+# ---------------------------------------------------------------------------
+# waived
+# ---------------------------------------------------------------------------
+
+# (none yet)

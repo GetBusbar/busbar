@@ -295,6 +295,11 @@ axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+# `tests/method_coverage.rs` reads the GENERATED `qa/method-inventory.json` (the MCP/A2A method x
+# direction x transport matrix derived from rmcp's own model and a2a-pb's vendored proto). It is
+# already a normal dependency above, so this edge adds nothing to the build graph or the lock; it
+# exists because an integration test links the dev-dependency set, not the crate's own.
+serde_json = { workspace = true }
 # Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = { workspace = true }
