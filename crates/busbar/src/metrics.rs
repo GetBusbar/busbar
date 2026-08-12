@@ -34,6 +34,8 @@
 //! * `lane` — the lane's configured MODEL string (bounded by the count of configured lanes, a
 //!   startup constant). Identical on the LANE_STATE gauge and every counter that carries `lane`, so
 //!   they can be PromQL-joined on the label.
+//! * `plane` — the governance plane the request arrived on (`crate::plane::Plane::key`): `llm`,
+//!   `mcp` or `a2a`. Three values, and a fourth only if the codebase grows a fourth plane.
 //! * Fixed enumerations (`outcome`, `disposition`, `reason`, `from`, `to`, `ingress_protocol`).
 //!
 //! Client-supplied values (raw model strings from request bodies, user-facing key secrets, etc.)
@@ -142,12 +144,12 @@ pub(crate) fn retaining_from(
 /// webhook field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
 /// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
 /// from free-form client input.
-pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
+pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
 pub(crate) const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total"; // labels: pool (bounded), lane
 pub(crate) const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total"; // labels: pool (bounded), lane, disposition
 pub(crate) const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub(crate) const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
-pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
+pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 pub(crate) const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labels: from, to
 
 // Routing-policy selections: incremented once per request whose pool resolved a non-default routing
@@ -552,7 +554,7 @@ fn describe() {
 //
 // `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
 // the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
-// re-runs, per request: two owned-`String` label allocations (`ingress_protocol` + `pool`), a `Key`
+// re-runs, per request: three owned-`String` label allocations (`plane` + `ingress_protocol` + `pool`), a `Key`
 // build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
 // space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
 // clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
@@ -591,11 +593,16 @@ pub(crate) fn recorder_installed() -> bool {
     matches!(HANDLE.get(), Some(Some(_)))
 }
 
-/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// Increment `REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` via a CACHED counter handle —
 /// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
 /// back to the plain macro until the recorder is installed (see the cache-module note above).
 /// Byte-for-byte the same series and value the macro produced.
-pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+pub(crate) fn incr_requests_total(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+) {
     // This `!recorder_installed()` branch is real (it exists so pre-install traffic never caches a
     // handle bound to the no-op recorder), but it is NOT practically unit-testable in this crate
     // as it stands. `ENABLED`/`HANDLE` are process-global `OnceLock`s that install (via `init()`)
@@ -615,6 +622,7 @@ pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &
         // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
         metrics::counter!(
             REQUESTS_TOTAL,
+            "plane" => plane.to_string(),
             "ingress_protocol" => ingress_protocol.to_string(),
             "pool" => pool.to_string(),
             "outcome" => outcome
@@ -623,7 +631,9 @@ pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &
         return;
     }
     let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
+    let key = format!(
+        "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
+    );
     // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
     if let Some(h) = cache
         .read()
@@ -636,6 +646,7 @@ pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &
     // Cold path (first time this label set is seen): register the handle once, then cache it.
     let handle = metrics::counter!(
         REQUESTS_TOTAL,
+        "plane" => plane.to_string(),
         "ingress_protocol" => ingress_protocol.to_string(),
         "pool" => pool.to_string(),
         "outcome" => outcome
@@ -648,12 +659,18 @@ pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &
         .or_insert(handle);
 }
 
-/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` via a CACHED
 /// histogram handle. Same caching contract as [`incr_requests_total`].
-pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
+pub(crate) fn record_request_duration(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    seconds: f64,
+) {
     if !recorder_installed() {
         metrics::histogram!(
             REQUEST_DURATION_SECONDS,
+            "plane" => plane.to_string(),
             "ingress_protocol" => ingress_protocol.to_string(),
             "pool" => pool.to_string()
         )
@@ -661,7 +678,7 @@ pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, second
         return;
     }
     let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    let key = format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
     if let Some(h) = cache
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -672,6 +689,7 @@ pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, second
     }
     let handle = metrics::histogram!(
         REQUEST_DURATION_SECONDS,
+        "plane" => plane.to_string(),
         "ingress_protocol" => ingress_protocol.to_string(),
         "pool" => pool.to_string()
     );

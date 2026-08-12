@@ -68,7 +68,39 @@ All notable changes to Busbar are documented here. The format is based on
   server and every approved tool, and there would be no inbound grant to bind Busbar's outbound
   credentials to. Close the data-plane chain, or drop the `mcp:` block.
 
+### Changed
+
+- **BREAKING (metrics): `busbar_requests_total` and `busbar_request_duration_seconds` gained a
+  `plane` label, and the model plane's existing series carry it too.** The values are `llm`, `mcp`
+  and `a2a`. If you group or join on the full label set of either family — a recording rule, a
+  `group_left`, a panel legend built from `{{...}}` — those series are NEW series after this
+  upgrade, so counters restart from zero at the changeover and a `rate()` window spanning the
+  restart will read low once. Queries that only aggregate (`sum(rate(busbar_requests_total[5m]))`)
+  are unaffected. To keep an existing panel exactly as it was, add `plane="llm"` to its selector;
+  that matches precisely the traffic the panel used to describe, because before this release those
+  two families described nothing else.
+
+  We added the label to the model plane rather than only to the new planes on purpose. A label
+  present on some series of a family and absent from others cannot be grouped by: `sum by (plane)`
+  would bucket every model-plane series under the empty string, and an operator would have to know
+  that the blank bucket means "LLM" — which is a footnote, not a dashboard. One breaking change,
+  once, buys `sum by (plane) (rate(busbar_requests_total[5m]))` meaning what it says.
+
 ### Fixed
+
+- **MCP and A2A traffic was invisible on `/metrics`. It is now on the same series as model
+  traffic.** `busbar_requests_total` and `busbar_request_duration_seconds` were emitted from the
+  model plane's ingress and nowhere else, so a tool call and an agent task produced no sample at
+  all — not an under-labelled one, none. An operator watching a dashboard saw model traffic and had
+  no signal that the tool or agent plane was refusing or timing out every request. Both planes now
+  emit the same two families, with the same `outcome` vocabulary (`ok` / `client_error` /
+  `exhausted` / `error`) and the same label keys, distinguished by the new `plane` label. A refusal
+  issued before the handler runs — a `401` on an audience-bound MCP endpoint, for instance — is
+  counted too, because the emission happens at the plane's door rather than inside its handler.
+
+  The `pool` label reads `unresolved` on both new planes for now: it names the routing target a
+  request resolved to, and neither plane's door resolves one. Narrowing it to the configured tool
+  server / agent is a follow-up and will not change the series shape.
 
 - **`busbar --validate` now checks every secret reference in the config, including the ones it used
   to walk straight past.** 1.5.3 made `--validate` resolve `env:` and `file:` references and exit 1

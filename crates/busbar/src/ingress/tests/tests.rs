@@ -38,6 +38,7 @@ fn minimal_app() -> Arc<App> {
             &[],
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            crate::plane::Plane::Llm,
         )),
         lanes: vec![],
         store: Arc::new(crate::store::HealthState::new(vec![])),

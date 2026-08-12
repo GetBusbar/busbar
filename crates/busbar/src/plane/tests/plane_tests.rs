@@ -194,3 +194,70 @@ fn a_mount_is_readable_back() {
     assert_eq!(d.mount_of(Plane::Mcp), Some("/mcp"));
     assert_eq!(d.mount_of(Plane::A2a), None);
 }
+
+/// THE BOUNDARY RULE, stated over every plane rather than over the two that happen to satisfy it
+/// today: a plane can be labelled at its door exactly when it speaks ONE wire format, and the two
+/// halves of that sentence come from one list.
+#[test]
+fn a_plane_is_labellable_at_its_door_exactly_when_it_speaks_one_wire_format() {
+    for p in Plane::ALL {
+        assert_eq!(
+            p.sole_wire_format().is_some(),
+            p.wire_formats() == 1,
+            "{p:?} disagrees with the rule: {} wire format(s) but sole_wire_format() == {:?}",
+            p.wire_formats(),
+            p.sole_wire_format()
+        );
+        assert_eq!(
+            p.wire_formats(),
+            p.wire_format_names().len(),
+            "{p:?}'s count must be DERIVED from its name list, never a second literal"
+        );
+        assert!(
+            !p.wire_format_names().is_empty(),
+            "{p:?} claims no wire format at all, which is not a plane"
+        );
+    }
+    // The consequence, spelled out because it is the reason `observe` needs no plane comparison:
+    // the residual is the plane that cannot be labelled at a door, and it is also the only plane
+    // that has no door.
+    assert_eq!(Plane::Llm.sole_wire_format(), None);
+    assert_eq!(Plane::Mcp.sole_wire_format(), Some("jsonrpc"));
+    assert_eq!(Plane::A2a.sole_wire_format(), Some("jsonrpc"));
+}
+
+/// `mounted_plane_of` distinguishes the residual from a mounted plane, and agrees with `plane_of`
+/// everywhere else — the two must never be able to name different planes for one path.
+#[test]
+fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
+    let d = PlaneDispatch::default()
+        .mount(Plane::Mcp, "/mcp")
+        .mount(Plane::A2a, "/a2a");
+    for path in [
+        "/mcp",
+        "/mcp/x",
+        "/a2a",
+        "/a2a/agents/planner",
+        "/mcpx",
+        "/v1/chat/completions",
+        "/metrics",
+        "/",
+    ] {
+        assert_eq!(
+            d.mounted_plane_of(path).unwrap_or(Plane::Llm),
+            d.plane_of(path),
+            "the two readings disagree about {path}"
+        );
+    }
+    // The residual is `None`, which is what keeps the ingress boundary off the model plane without
+    // a plane comparison. `/mcpx` is residual too: a sibling path inherits neither the plane's
+    // grants nor its metrics.
+    assert_eq!(d.mounted_plane_of("/v1/chat/completions"), None);
+    assert_eq!(d.mounted_plane_of("/mcpx"), None);
+    assert_eq!(d.mounted_plane_of("/metrics"), None);
+    assert_eq!(d.mounted_plane_of("/mcp/tools"), Some(Plane::Mcp));
+    assert_eq!(d.mounted_plane_of("/a2a/agents/planner"), Some(Plane::A2a));
+    // Nothing mounted ⇒ nothing claimed, so a deployment that never enabled a plane cannot have a
+    // request attributed to it.
+    assert_eq!(PlaneDispatch::default().mounted_plane_of("/mcp"), None);
+}

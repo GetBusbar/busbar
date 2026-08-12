@@ -870,3 +870,41 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_not_a_result() {
         "the backend's own error text must not be reflected to the caller: {body}"
     );
 }
+
+/// AN ADMITTED, RELAYED AGENT TASK IS VISIBLE ON `/metrics`.
+///
+/// The plane ingress boundary is proved end-to-end over a real `/metrics` scrape in
+/// `plane::metrics_tests`, but the A2A traffic it can drive there is a refusal: this plane requires
+/// governance, and standing a signed, audience-bound, agent-scoped key up is what this harness
+/// exists for. So the SUCCESS case is claimed here, where a fully admitted `message/send` is
+/// actually relayed to a backend and answered `200` — the request an operator most needs a latency
+/// series for, and the one a test that only ever drove refusals would leave unproven.
+#[tokio::test]
+async fn an_admitted_agent_task_lands_in_the_shared_request_series() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    // `outcome="ok"` on this plane is only reachable through the whole admit → meter → egress-gate
+    // → relay path, so no refusal in any concurrently-running test can produce it by accident.
+    let labels = [
+        ("plane", "a2a"),
+        ("ingress_protocol", "jsonrpc"),
+        ("outcome", "ok"),
+    ];
+    let before = crate::test_support::metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let (status, body) = call(&h).await;
+    assert_eq!(status, 200, "the admitted call must be served: {body}");
+    let after = crate::test_support::metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+
+    assert!(
+        after > before,
+        "a relayed agent task produced no `{}` sample on the a2a plane (before {before}, after \
+         {after}) — the plane is invisible to an operator again",
+        crate::metrics::REQUESTS_TOTAL,
+    );
+    assert!(
+        crate::test_support::metric_sum(
+            "busbar_request_duration_seconds_count",
+            &[("plane", "a2a"), ("ingress_protocol", "jsonrpc")],
+        ) > 0.0,
+        "the agent plane must carry a latency series, not just a count"
+    );
+}

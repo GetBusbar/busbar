@@ -530,19 +530,28 @@ fn finish_inner(
 ) -> Response {
     // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
     let _fin = crate::profile::start(crate::profile::Stage::Finish);
-    let outcome = match resp.status().as_u16() {
-        200..=299 => "ok",
-        503 => "exhausted",
-        400..=499 => "client_error",
-        _ => "error",
-    };
+    // Classified by the ONE function every plane's finish classifies with
+    // (`telemetry::outcome_of`), so a 503 means the same thing on every `sum by (outcome)`.
+    let outcome = crate::telemetry::outcome_of(resp.status().as_u16());
     // Per-request emits via the TELEMETRY BANK (telemetry.rs): a plain add into THIS thread's
     // pre-registered cells — no shared-atomic contention, no per-request `Label`/`Key` allocation,
     // no registry probe. The scrape-time aggregator folds the cells into the recorder, so the
     // rendered series/values are identical to the macro emission. Unregistered label values (e.g.
     // a bare test `App`) fall back to the cached-handle helpers in `metrics.rs` inside the helper.
+    // The MODEL plane labels its own requests from in here rather than at the plane ingress
+    // boundary (`plane::observe`), and that is a consequence of the spine's rule rather than a
+    // carve-out: this plane speaks six dialects, so `ingress_protocol` is a fact only its reader
+    // knows (`Plane::sole_wire_format` is `None` for it). Same two families, same helper, same
+    // `outcome` vocabulary as every other plane — one `plane` label apart.
     let elapsed = started.elapsed();
-    crate::telemetry::request_finished(app, ingress_protocol, pool, outcome, elapsed.as_secs_f64());
+    crate::telemetry::request_finished(
+        app,
+        crate::plane::Plane::Llm.key(),
+        ingress_protocol,
+        pool,
+        outcome,
+        elapsed.as_secs_f64(),
+    );
 
     // Best-effort request log. THE COMPUTE GATE: the `logs` records are produced only if some
     // configured `export:` instance's projection subscribes to that stream — the union is resolved
