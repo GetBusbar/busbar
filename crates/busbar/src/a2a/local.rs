@@ -52,15 +52,20 @@
 //! other way was held by a backend that would call the caller directly, around busbar's guard and
 //! outside busbar's provenance. Two answers to one question, chosen by spelling.
 //!
-//! Three limits are REFUSED OUT LOUD rather than accepted and quietly not honoured:
+//! Two limits are REFUSED OUT LOUD rather than accepted and quietly not honoured:
 //!
 //! * **One config per task.** busbar's durable task row carries ONE `push_callback` and delivery is
 //!   one POST. Accepting a second config would be promising a delivery busbar does not make.
-//! * **No `authentication` and no `token`.** `super::pushdeliver::DELIVERY_HEADERS` sends no
-//!   credential of any kind, by decision. Storing a credential busbar will not send would tell the
-//!   caller its receiver will see an `Authorization` header that never arrives.
 //! * **The same SSRF guard as the inline path**, at registration, refusing as the CALLER's fault.
 //!   The delivery-time re-validation in `super::pushdeliver` still runs on top of it.
+//!
+//! And one that USED to be refused and is now honoured, because the refusal was a real capability
+//! gap wearing an honesty argument. `authentication` was rejected on the grounds that the delivery
+//! sent no credential, which was true of the delivery and false as a position: a receiver that
+//! cannot authenticate its caller has to treat the webhook URL itself as the secret. The member is
+//! now stored (`super::pushdeliver::remember_auth`) and presented on delivery. It is deliberately
+//! NOT echoed back on `get`/`list` — see [`config_json`] — because a read verb that returns a
+//! secret turns any read grant into a way to exfiltrate it.
 //!
 //! ## 3. `SubscribeToTask` on a task busbar does not hold, or holds as terminal
 //!
@@ -299,6 +304,11 @@ pub(crate) fn list_tasks(
 // ══ PUSH-NOTIFICATION CONFIG CRUD ════════════════════════════════════════════════════════════════
 
 /// ONE registered push-notification config.
+///
+/// The CREDENTIAL IS NOT A MEMBER OF THIS STRUCT, and that is not an oversight. It is held by
+/// [`super::pushdeliver`], which is the only code that needs it, in a map that
+/// [`super::pushdeliver::forget`] clears — so nothing on the read path is even holding the secret
+/// to echo by accident. What lives here is exactly what a read verb may answer with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PushConfig {
     /// The caller's id for it. Echoed back verbatim and used as the key of every later read.
@@ -333,6 +343,12 @@ fn prune() {
 }
 
 /// The config as this dialect spells it on the wire.
+///
+/// NO `authentication` MEMBER IN EITHER DIALECT, and that is the security decision rather than an
+/// unfinished projection. A `get` or a `list` needs only a task id and a config id, so echoing the
+/// credential back would turn every read grant into a way to exfiltrate the secret the caller
+/// registered — and a caller that already holds its own secret learns nothing from being handed it
+/// again. `PushConfig` does not carry it either, so there is nothing here to echo by accident.
 fn config_json(dialect: Dialect, task_id: &str, cfg: &PushConfig) -> serde_json::Value {
     match dialect {
         Dialect::V10 => serde_json::json!({
@@ -355,6 +371,83 @@ fn config_json(dialect: Dialect, task_id: &str, cfg: &PushConfig) -> serde_json:
 /// config.
 fn config_params(params: &serde_json::Value) -> &serde_json::Value {
     params.get("pushNotificationConfig").unwrap_or(params)
+}
+
+/// THE CREDENTIAL A CONFIG ASKS BUSBAR TO PRESENT AT ITS WEBHOOK, out of whichever spelling it
+/// arrived in.
+///
+/// `Ok(None)` is "this config names no credential", which is the ordinary case. `Err` is a config
+/// that names one busbar cannot present, and it is an error rather than a silent drop for the
+/// reason the whole member exists: a caller told its receiver would be authenticated, whose
+/// deliveries then arrive bare, has a receiver that rejects every one of them and no way to see
+/// why.
+///
+/// ONE READER FOR BOTH SPELLINGS. A2A's `AuthenticationInfo` is `{scheme, credentials}`; the 0.3-era
+/// documents and several SDKs still emit `{schemes: [...], credentials}` with the scheme list
+/// pluralised. Reading only one means a caller using the other is silently unauthenticated, which is
+/// exactly the class of bug `super::ingress::callback_of` was written to close one member up.
+pub(crate) fn delivery_auth(
+    cfg: &serde_json::Value,
+) -> Result<Option<super::pushdeliver::DeliveryAuth>, String> {
+    let Some(auth) = cfg.get("authentication").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let scheme = auth
+        .get("scheme")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            auth.get("schemes")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let scheme = scheme.trim().to_string();
+    if scheme.is_empty() {
+        return Err(
+            "a push notification config's `authentication` must name a `scheme` (an HTTP \
+             authentication scheme such as `Bearer`), because the scheme is what busbar puts in \
+             front of the credential on the `Authorization` header it sends to your receiver"
+                .to_string(),
+        );
+    }
+    // A SCHEME NAME IS A `token` PER RFC 9110, and busbar is about to write it into a header. A
+    // value carrying whitespace, a control character or a non-ASCII byte would either split the
+    // field or be refused by the HTTP client with a message about busbar rather than about the
+    // caller's config, so it is refused here where the refusal can name the member.
+    if !scheme
+        .bytes()
+        .all(|b| b.is_ascii_graphic() && b != b'"' && b != b',')
+    {
+        return Err(format!(
+            "the push notification config's authentication scheme `{scheme}` is not an HTTP \
+             authentication scheme name: it must be a single token of printable ASCII"
+        ));
+    }
+    let credentials = auth
+        .get("credentials")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if credentials
+        .bytes()
+        .any(|b| !b.is_ascii_graphic() && b != b' ')
+    {
+        // The VALUE is refused without being quoted back. A refusal that echoes the secret puts it
+        // in the caller's logs, the proxy's logs and busbar's own error path.
+        return Err(
+            "the push notification config's authentication `credentials` contain a byte that \
+             cannot appear in an HTTP header field value"
+                .to_string(),
+        );
+    }
+    Ok(Some(super::pushdeliver::DeliveryAuth {
+        scheme,
+        credentials,
+    }))
 }
 
 /// THE TASK A PUSH-CONFIG REQUEST NAMES, resolved through the SAME scoped lookup every other read on
@@ -391,18 +484,29 @@ pub(crate) async fn create_push_config(
     };
     let cfg = config_params(&params);
 
-    // THE TWO MEMBERS BUSBAR WILL NOT HONOUR, refused rather than stored. See the module header:
-    // the delivery carries no credential, so accepting one would promise a header that never
-    // arrives at the caller's receiver.
-    if cfg.get("authentication").is_some() || cfg.get("token").is_some() {
+    // THE MEMBER BUSBAR STILL WILL NOT HONOUR, refused rather than stored. `token` is A2A v0.3's
+    // opaque per-config value, which the specification defines the RECEIVER as validating against
+    // its own record; busbar has no place to put it on the wire that a receiver is defined to read.
+    // Accepting it would promise a check that never happens. `authentication` is a different thing
+    // and IS honoured — see the module header.
+    if cfg.get("token").is_some() {
         return err(
             rpc_id,
             A2aError::UnsupportedOperation,
-            "busbar delivers a push notification with no credential of any kind, so a config \
-             carrying `authentication` or `token` would name a header the delivery does not send. \
-             Register the secret in the callback URL your receiver checks instead.",
+            "busbar does not carry a push notification config `token`: there is no header or body \
+             member the delivery puts it in, so storing it would promise the receiver a value it \
+             never sees. Use `authentication`, which busbar presents on the `Authorization` header, \
+             or register the secret in the callback URL your receiver checks.",
         );
     }
+
+    // THE CALLER'S OWN WEBHOOK CREDENTIAL. Read before the URL is judged so a config that names a
+    // credential in a shape busbar cannot present is refused as the caller's fault rather than
+    // accepted and silently not sent — which is the failure this whole member is replacing.
+    let auth = match delivery_auth(cfg) {
+        Ok(a) => a,
+        Err(message) => return err(rpc_id, A2aError::InvalidParams, message),
+    };
 
     let Some(url) = cfg.get("url").and_then(serde_json::Value::as_str) else {
         return err(
@@ -456,6 +560,9 @@ pub(crate) async fn create_push_config(
     // The addresses the guard just judged, so the FIRST delivery is a `revalidate` and not a bare
     // `validate` — the same pairing the inline path makes.
     super::pushdeliver::remember(&task.task_id, &pinned);
+    // AND THE CREDENTIAL, which `remember_auth` CLEARS when this config names none — a caller
+    // replacing an authenticated config with an unauthenticated one has withdrawn the secret.
+    super::pushdeliver::remember_auth(&task.task_id, auth.as_ref());
 
     let stored = PushConfig {
         id,

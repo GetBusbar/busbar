@@ -385,18 +385,23 @@ fn pinned_missing_set_is_exact() {
 /// GATE IS GREEN — every cell of method × direction × transport."*
 ///
 /// `#[ignore]`d rather than deleted, and rather than softened. It is RED today because the MCP and
-/// A2A modules are being deleted and rebuilt, so 220 of 230 cells are owed and none is built. That
-/// is the correct initial state: the failure message below IS the release's work queue, and it is
-/// printed in full rather than truncated, because a `tail` of a work queue is how the last item
-/// gets lost.
+/// A2A modules are being deleted and rebuilt, so the great majority of the 230 cells are owed and
+/// not yet built. That is the correct initial state: the failure message below IS the release's
+/// work queue, and it is printed in full rather than truncated, because a `tail` of a work queue is
+/// how the last item gets lost.
+///
+/// THE COUNT IS NOT REPEATED IN THE `#[ignore]` REASON, deliberately. It moves on every landed
+/// cell, and a number in a string that nothing computes is a number that goes stale on the first
+/// commit that changes it — `qa/method-coverage.missing` is the count, and it is a file a diff
+/// shows shrinking.
 ///
 /// Run it: `cargo test -p busbar --test method_coverage -- --ignored`
 /// Remove the `#[ignore]` when it passes. Do not remove it any other way.
 #[test]
-#[ignore = "RED BY DESIGN until 1.6.0: as of 2026-08-12, 220 of 230 cells are MISSING because \
-            crates/busbar/src/{mcp,a2a}/ are being deleted and rebuilt cell by cell. The current \
-            list is pinned in qa/method-coverage.missing and is the release's work queue. Run with \
-            --ignored; do not weaken this test to make it green."]
+#[ignore = "RED BY DESIGN until 1.6.0: cells are still MISSING because crates/busbar/src/{mcp,a2a}/ \
+            are being deleted and rebuilt cell by cell. The current list is pinned in \
+            qa/method-coverage.missing and is the release's work queue. Run with --ignored; do not \
+            weaken this test to make it green."]
 fn every_cell_is_implemented_or_waived() {
     let (_, cells) = inventory();
     let claims = status();

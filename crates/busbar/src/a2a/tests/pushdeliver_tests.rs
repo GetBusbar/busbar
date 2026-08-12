@@ -175,21 +175,25 @@ fn a_completed_task_with_a_callback_is_delivered() {
     // would reinstate the rebind this whole path exists to close.
     assert_eq!(sent[0].addr, AT_REGISTRATION);
 
-    // THE BODY IS THE TASK UNDER BUSBAR'S IDENTITY. The receiver's later reads resolve against
-    // busbar's store, so a backend agent's own id here would be a handle that resolves to nothing.
+    // THE BODY IS THE TASK UNDER BUSBAR'S IDENTITY, inside the `StreamResponse` envelope the
+    // protocol defines for a delivered event. The receiver's later reads resolve against busbar's
+    // store, so a backend agent's own id here would be a handle that resolves to nothing.
     let doc: serde_json::Value = serde_json::from_slice(&sent[0].body).expect("a JSON body");
-    assert_eq!(doc["id"], id);
-    assert_eq!(doc["contextId"], "ctx-1");
-    assert_eq!(doc["status"]["state"], "completed");
+    assert_eq!(doc["task"]["id"], id);
+    assert_eq!(doc["task"]["contextId"], "ctx-1");
+    assert_eq!(doc["task"]["status"]["state"], "completed");
     pushdeliver::forget(id);
 }
 
-/// NO CREDENTIAL LEAVES ON THIS HOP. The receiver is a host the CALLER nominated; presenting
-/// busbar's outbound credential there would spend it on a destination the caller chose, which is
-/// the confused-deputy shape `creds::authorise_egress` closes on the relay path. Asserted over
-/// every header rather than over a named one, because the hazard is the header nobody thought of.
+/// NO CREDENTIAL OF BUSBAR'S LEAVES ON THIS HOP, AND NONE APPEARS UNASKED.
+///
+/// The receiver is a host the CALLER nominated; presenting busbar's outbound credential there would
+/// spend it on a destination the caller chose, which is the confused-deputy shape
+/// `creds::authorise_egress` closes on the relay path. So a task whose config named NO
+/// authentication gets exactly the content type and nothing else — asserted over every header
+/// rather than over a named one, because the hazard is the header nobody thought of.
 #[test]
-fn a_delivery_carries_no_credential_of_any_kind() {
+fn a_delivery_for_a_config_with_no_authentication_carries_no_header_but_the_content_type() {
     let id = "t-deliver-nocred";
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 202);
@@ -208,6 +212,114 @@ fn a_delivery_carries_no_credential_of_any_kind() {
         sent[0].headers
     );
     pushdeliver::forget(id);
+}
+
+/// THE CALLER'S OWN CREDENTIAL IS PRESENTED, and it is the caller's — not busbar's.
+///
+/// This is the capability `PUSH-DELIVER-001` describes and busbar did not have: the config's
+/// `authentication` was dropped at registration, so a customer whose webhook authenticates could
+/// not use push notifications at all. The header value is `<scheme> <credentials>` exactly as RFC
+/// 9110 spells it, which is what a receiver checks.
+#[test]
+fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
+    let id = "t-deliver-auth";
+    register(id);
+    pushdeliver::remember_auth(
+        id,
+        Some(&pushdeliver::DeliveryAuth {
+            scheme: "Bearer".to_string(),
+            credentials: "receiver-issued-token".to_string(),
+        }),
+    );
+    let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
+    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
+
+    let sent = log.lock().unwrap();
+    let auth = sent[0]
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+        .map(|(_, v)| v.clone());
+    assert_eq!(
+        auth.as_deref(),
+        Some("Bearer receiver-issued-token"),
+        "the delivery did not present the credential the caller registered: {:?}",
+        sent[0].headers
+    );
+    drop(sent);
+    pushdeliver::forget(id);
+}
+
+/// WITHDRAWING THE CREDENTIAL WITHDRAWS IT. A caller re-registering a config that names no
+/// `authentication` has retired the secret, and a delivery that kept sending the old one would be
+/// busbar spending a credential its owner has revoked — the failure a map that only ever inserts
+/// produces.
+#[test]
+fn re_registering_without_authentication_stops_the_credential_being_sent() {
+    let id = "t-deliver-auth-withdrawn";
+    register(id);
+    pushdeliver::remember_auth(
+        id,
+        Some(&pushdeliver::DeliveryAuth {
+            scheme: "Bearer".to_string(),
+            credentials: "old-token".to_string(),
+        }),
+    );
+    pushdeliver::remember_auth(id, None);
+
+    let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
+    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
+
+    let sent = log.lock().unwrap();
+    assert!(
+        !sent[0]
+            .headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("authorization")),
+        "a withdrawn credential was still presented: {:?}",
+        sent[0].headers
+    );
+    drop(sent);
+    pushdeliver::forget(id);
+}
+
+/// THE SECRET DOES NOT OUTLIVE THE TASK. `forget` runs on the terminal delivery, and a credential
+/// still sitting in memory for a task that will never receive another delivery is a secret with no
+/// remaining use — the same bound `pin_for_test` exists to assert for the address pin.
+#[test]
+fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
+    let id = "t-deliver-auth-forgotten";
+    register(id);
+    pushdeliver::remember_auth(
+        id,
+        Some(&pushdeliver::DeliveryAuth {
+            scheme: "Bearer".to_string(),
+            credentials: "short-lived".to_string(),
+        }),
+    );
+    let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
+    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
+
+    assert_eq!(pushdeliver::pin_for_test(id), None);
+    assert_eq!(pushdeliver::auth_for_test(id), None);
+}
+
+/// THE CREDENTIAL IS NOT PRINTABLE BY ACCIDENT. `Debug` is written rather than derived precisely so
+/// that the first `tracing` field, `assert_eq!` message or panic payload to touch this struct does
+/// not carry a caller's secret — and a derive added later would silently undo that, which is what
+/// this asserts.
+#[test]
+fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
+    let auth = pushdeliver::DeliveryAuth {
+        scheme: "Bearer".to_string(),
+        credentials: "a-secret-nobody-should-log".to_string(),
+    };
+    let rendered = format!("{auth:?}");
+    assert!(
+        !rendered.contains("a-secret-nobody-should-log"),
+        "the credential is in its own Debug rendering: {rendered}"
+    );
+    assert!(rendered.contains("Bearer"), "{rendered}");
 }
 
 /// A task with no callback is the overwhelmingly common case and must cost a socket to nobody.
@@ -413,23 +525,30 @@ fn the_terminal_delivery_drops_its_pin() {
     );
 }
 
-// ══ THE BODY IS A BARE TASK, AND THAT IS THE PROTOCOL ════════════════════════════════════════════
+// ══ THE BODY IS A `StreamResponse` CARRYING A TASK, AND THAT IS THE PROTOCOL ═════════════════════
 
-/// A REGRESSION LOCK ON AN ABSENCE, which is the only kind of claim that needs one.
+/// A REGRESSION LOCK ON AN ABSENCE AND ON A PRESENCE, and both halves have been wrong here.
 ///
-/// Every other place busbar puts JSON on this plane's wire is a JSON-RPC message read or written
-/// through `crate::ingress::jsonrpc`. A reviewer who has just been through the three response sites
-/// that really did lack a `jsonrpc` member and an `id` will read the same absence HERE as a fourth
-/// instance and add them — and that would be a protocol violation, because a push notification is a
-/// bare `Task` document POSTed to a webhook, not a request (busbar invokes no method on the
+/// **The absence.** Every other place busbar puts JSON on this plane's wire is a JSON-RPC message
+/// read or written through `crate::ingress::jsonrpc`. A reviewer who has just been through the
+/// three response sites that really did lack a `jsonrpc` member and an `id` will read the same
+/// absence HERE as a fourth instance and add them — and that would be a protocol violation, because
+/// a push notification is POSTed to a webhook: it is not a request (busbar invokes no method on the
 /// receiver) and not a response (the receiver asked busbar nothing).
+///
+/// **The presence.** The envelope A2A DOES define for a delivered event is `StreamResponse`, a
+/// `oneof` over `{task, message, statusUpdate, artifactUpdate}`, and busbar sent the task
+/// un-nested. That is not a shading of the schema: `StreamResponse` is `additionalProperties:
+/// false` over those four names, so the specification's own validator rejected every busbar
+/// delivery, and a receiver built on the specification's generated types could not deserialise one.
 ///
 /// A2A puts the correlation duty on the RECEIVER and keys it on the TASK id in this document, not
 /// on an envelope id — SPEC 4.3.3, "Clients MUST validate the task ID matches an expected task".
-/// So this asserts both halves: no envelope, and the correlator the spec names is present and is
-/// BUSBAR'S id, because busbar's is the only one the receiver has ever been told about.
+/// So this asserts three things: no JSON-RPC envelope, the `StreamResponse` arm, and the correlator
+/// the spec names — which is BUSBAR'S id, because busbar's is the only one the receiver has ever
+/// been told about.
 #[test]
-fn the_push_notification_body_is_a_bare_task_document_and_not_a_json_rpc_envelope() {
+fn the_push_notification_body_is_a_stream_response_carrying_the_task_and_not_a_json_rpc_envelope() {
     let task = task_with_callback("a2a-planner-PUSHED", TaskState::Completed);
     let body = pushdeliver::notification_body(&task);
     let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
@@ -441,15 +560,23 @@ fn the_push_notification_body_is_a_bare_task_document_and_not_a_json_rpc_envelop
              {doc}"
         );
     }
+    // EXACTLY ONE MEMBER, AND IT IS ONE OF THE FOUR. `StreamResponse` is a `oneof` rendered with
+    // `additionalProperties: false`, so a fifth member at the top level is as invalid as none.
+    let top: Vec<&String> = doc.as_object().expect("an object").keys().collect();
     assert_eq!(
-        doc["kind"], "task",
-        "the payload is the Task document itself: {doc}"
+        top,
+        vec!["task"],
+        "the delivered document is a StreamResponse whose payload arm is `task`: {doc}"
+    );
+    assert_eq!(
+        doc["task"]["kind"], "task",
+        "the arm carries the Task document itself: {doc}"
     );
     // The `id` here is the TASK id — the correlator SPEC 4.3.3 makes the receiver check — and it is
     // busbar's, never a backend agent's.
-    assert_eq!(doc["id"], "a2a-planner-PUSHED", "{doc}");
+    assert_eq!(doc["task"]["id"], "a2a-planner-PUSHED", "{doc}");
     assert!(
-        doc.get("contextId").is_some() && doc.pointer("/status/state").is_some(),
+        doc.pointer("/task/contextId").is_some() && doc.pointer("/task/status/state").is_some(),
         "{doc}"
     );
 }

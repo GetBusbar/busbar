@@ -36,6 +36,16 @@
 //! gone and the check degrades to `validate`, which is the honest floor: the row is durable and the
 //! pin is not, so claiming otherwise would be claiming a guarantee the deployment does not have.
 //!
+//! ## The caller's own credential IS presented, and busbar's never is
+//!
+//! A2A lets the registering caller name an `authentication` for its receiver, so the receiver can
+//! tell a real delivery from anything else that finds the URL. busbar dropped that member at
+//! registration and refused configs that carried one, which left every customer whose webhook
+//! authenticates unable to use push notifications at all. It is now stored and presented — see
+//! [`DeliveryAuth`] for whose secret it is and why sending it is not the confused-deputy shape the
+//! relay path guards against, and [`auths`] for why it lives in memory rather than on the durable
+//! row.
+//!
 //! ## Delivery is best-effort, and a failure never touches the task
 //!
 //! The task's outcome is already recorded and the caller's poll will find it. A webhook that is
@@ -50,16 +60,70 @@ use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
 
-/// THE ONLY HEADER A DELIVERY CARRIES. No credential of any kind: the receiver is the CALLER's
-/// infrastructure, busbar has no relationship with it, and a webhook that wants authentication
-/// carries its own secret in the URL the caller chose. Sending busbar's outbound credential here
-/// would spend it on a host the caller nominated, which is the confused-deputy shape
-/// `creds::authorise_egress` exists to prevent on the relay path.
+/// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
 ///
 /// The request's TIME ceiling is the transport's (`transport::RELAY_TIMEOUT`), for the same reason
 /// the relay's is: an unbounded one is a way for a caller to pin a busbar thread by pointing at a
 /// host that accepts and never answers.
 const DELIVERY_HEADERS: &[(&str, &str)] = &[("content-type", "application/json")];
+
+/// The header a webhook credential is presented on. RFC 9110's own, because the value this carries
+/// is `<scheme> <credentials>` and that is exactly what the field is for.
+const AUTHORIZATION_HEADER: &str = "authorization";
+
+/// THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT ITS WEBHOOK.
+///
+/// ## Whose credential this is, because that is the whole reason it may be sent
+///
+/// It is not busbar's. It is a secret the CALLER supplied, for the CALLER's own receiver, so that
+/// the receiver can tell a real delivery from anything else that finds the URL. Presenting it is
+/// therefore not the confused-deputy shape `super::creds::authorise_egress` exists to prevent on
+/// the relay path — that is busbar's OWN credential being spent on a host a caller nominated, and
+/// none of busbar's credentials come anywhere near this path. This one goes back to the party that
+/// issued it, at the address that party named, and nowhere else.
+///
+/// Registration used to REFUSE the member out loud on the argument that busbar sends no credential,
+/// which was an honest statement of what the delivery did and an unbuildable position for a
+/// customer: a webhook receiver that cannot authenticate its caller has to treat the URL itself as
+/// the secret, and A2A gives it a field precisely so that it does not have to.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct DeliveryAuth {
+    /// The HTTP authentication scheme, from the IANA registry: `Bearer`, `Basic`, … Case is the
+    /// caller's; RFC 9110 section 11.1 makes scheme names case-insensitive, so it is echoed rather
+    /// than normalised.
+    pub(crate) scheme: String,
+    /// The credential itself. **Never logged, never echoed on a read verb, never persisted.** See
+    /// [`auths`] for where it lives and why that is not a durable store.
+    pub(crate) credentials: String,
+}
+
+impl DeliveryAuth {
+    /// The `Authorization` field value: `<scheme> <credentials>`, or the bare scheme where the
+    /// caller supplied none (the proto marks `credentials` optional, and a scheme with an empty
+    /// value trailing a space is a header a strict receiver rejects).
+    fn header_value(&self) -> String {
+        if self.credentials.is_empty() {
+            self.scheme.clone()
+        } else {
+            format!("{} {}", self.scheme, self.credentials)
+        }
+    }
+}
+
+/// `Debug` IS WRITTEN RATHER THAN DERIVED, and that is the point of writing it. A derived one puts
+/// the credential into the first `tracing` field, `assert_eq!` message or panic payload that ever
+/// touches this struct, and none of those are places a caller's secret may appear. There is no
+/// accessor that returns the credential either — [`DeliveryAuth::header_value`] is the only way out
+/// of this type, and its one caller is the line that writes the request header.
+impl std::fmt::Debug for DeliveryAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DeliveryAuth {{ scheme: {:?}, credentials: <redacted> }}",
+            self.scheme
+        )
+    }
+}
 
 /// Why a delivery did not happen. Each arm names the thing that failed, because "push failed" alone
 /// tells an operator nothing about whether to fix DNS, fix the receiver, or look at an attack.
@@ -110,6 +174,26 @@ fn pins() -> &'static Mutex<HashMap<String, PinnedCallback>> {
     PINS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// THE CALLERS' WEBHOOK CREDENTIALS, keyed by task id.
+///
+/// PROCESS-LOCAL, AND THAT IS A DECISION RATHER THAN A LIMITATION. The alternative — a column on
+/// the durable task row — would write a caller's plaintext secret into whichever store an operator
+/// configured, where it would be readable by everything with database access, replicated to every
+/// standby and captured by every backup, for a value whose only use is one outbound header. The
+/// store seam (`busbar_api::TaskRow`) has no notion of a secret and no encryption, so there is no
+/// spelling of "persist it" that is not "persist it in the clear".
+///
+/// The consequence is stated rather than discovered: **a credential does not survive a restart.**
+/// The callback URL does (it is on the durable row), so after a restart busbar still delivers, and
+/// delivers WITHOUT the header. That is the same honesty [`pins`] and `super::local`'s config map
+/// are documented with, and it is the safe direction to degrade in — a receiver that requires the
+/// header rejects the delivery, which is a visible failure, where the other direction would be a
+/// secret sitting in a backup nobody remembers writing.
+fn auths() -> &'static Mutex<HashMap<String, DeliveryAuth>> {
+    static AUTHS: OnceLock<Mutex<HashMap<String, DeliveryAuth>>> = OnceLock::new();
+    AUTHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Remember the addresses a callback was pinned to, so the NEXT delivery can require an overlap.
 pub(crate) fn remember(task_id: &str, pinned: &PinnedCallback) {
     if let Ok(mut map) = pins().lock() {
@@ -117,9 +201,28 @@ pub(crate) fn remember(task_id: &str, pinned: &PinnedCallback) {
     }
 }
 
-/// Drop a task's pin. Called on the terminal delivery, because a terminal task gets no more.
+/// Hold the credential this task's receiver wants presented, or drop the one held when the caller
+/// registered a config that names none.
+///
+/// `None` CLEARS rather than leaves the previous value in place. A caller replacing a config that
+/// had authentication with one that does not has withdrawn the credential, and continuing to send
+/// it would be busbar spending a secret its owner has retired.
+pub(crate) fn remember_auth(task_id: &str, auth: Option<&DeliveryAuth>) {
+    if let Ok(mut map) = auths().lock() {
+        match auth {
+            Some(a) => map.insert(task_id.to_string(), a.clone()),
+            None => map.remove(task_id),
+        };
+    }
+}
+
+/// Drop a task's pin AND its credential. Called on the terminal delivery, because a terminal task
+/// gets no more — and a secret with no remaining use is a secret that should not still be in memory.
 pub(crate) fn forget(task_id: &str) {
     if let Ok(mut map) = pins().lock() {
+        map.remove(task_id);
+    }
+    if let Ok(mut map) = auths().lock() {
         map.remove(task_id);
     }
 }
@@ -130,6 +233,14 @@ pub(crate) fn forget(task_id: &str) {
 #[cfg(test)]
 pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
     pins().lock().ok().and_then(|m| m.get(task_id).cloned())
+}
+
+/// The credential currently held for a task, for the test that asserts [`forget`] clears it. A
+/// secret that outlives the task it was supplied for is the bound worth a test, for the same reason
+/// [`pin_for_test`] exists.
+#[cfg(test)]
+pub(crate) fn auth_for_test(task_id: &str) -> Option<DeliveryAuth> {
+    auths().lock().ok().and_then(|m| m.get(task_id).cloned())
 }
 
 /// THE A2A PUSH NOTIFICATION BODY: the Task, as the protocol defines it, under BUSBAR's identity.
@@ -146,26 +257,44 @@ pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
 /// through those will read the missing `jsonrpc`, `method` and `id` members here as a fourth
 /// instance and add them. It would be a protocol violation.
 ///
-/// A push notification is a **bare `Task` document POSTed to a webhook the CALLER nominated**. It is
-/// not a request (busbar is not invoking a method on the receiver), it is not a response (the
-/// receiver asked busbar nothing), and there is no request for an `id` to correlate to — the
-/// receiver is not a JSON-RPC peer at all. A2A puts the correlation duty on the RECEIVER and keys it
-/// on the TASK id in this document, not on an envelope id: SPEC 4.3.3, *"Clients MUST validate the
-/// task ID matches an expected task"*. That clause only makes sense because the task id is the only
-/// correlator there is, and it is the `"id"` field below.
+/// A push notification is not a request (busbar is not invoking a method on the receiver), it is
+/// not a response (the receiver asked busbar nothing), and there is no request for an `id` to
+/// correlate to — the receiver is not a JSON-RPC peer at all. A2A puts the correlation duty on the
+/// RECEIVER and keys it on the TASK id in this document, not on an envelope id: SPEC 4.3.3,
+/// *"Clients MUST validate the task ID matches an expected task"*. That clause only makes sense
+/// because the task id is the only correlator there is, and it is the `"id"` field below.
 ///
-/// So there is exactly one correctness duty on this function, and it is discharged: the ids in this
-/// document are BUSBAR'S, never the backend agent's, because busbar's are the only ones the
-/// receiver has ever been told about and the only ones that will resolve if it calls back.
+/// # IT IS A `StreamResponse`, AND IT WAS A BARE `Task`, WHICH IS THE ONE MEMBER THAT WAS WRONG
+///
+/// The envelope A2A defines for a delivered event is `StreamResponse`, a `oneof` over `{task,
+/// message, statusUpdate, artifactUpdate}` — so the payload is the task NESTED UNDER `"task"`,
+/// never the task itself. It was the task itself, and the difference is not stylistic: the official
+/// suite runs the delivered body through the specification's own schema, where `StreamResponse` is
+/// `additionalProperties: false` over those four names. Its verdict on the un-nested document,
+/// verbatim:
+///
+/// ```text
+/// $: 'contextId', 'id', 'kind', 'status' do not match any of the regexes:
+///    '^(artifact_update)$', '^(status_update)$'
+/// ```
+///
+/// and on the same document nested under `"task"`, `valid: True`. So a receiver written against the
+/// specification's own generated types could not deserialise a busbar delivery at all.
+///
+/// The other correctness duty is unchanged and still discharged: the ids in this document are
+/// BUSBAR'S, never the backend agent's, because busbar's are the only ones the receiver has ever
+/// been told about and the only ones that will resolve if it calls back.
 pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
     let doc = serde_json::json!({
-        "id": task.task_id,
-        "contextId": task.context_id,
-        "kind": "task",
-        "status": {
-            "state": task.state.as_str(),
-            "timestamp": task.updated_at,
-        },
+        "task": {
+            "id": task.task_id,
+            "contextId": task.context_id,
+            "kind": "task",
+            "status": {
+                "state": task.state.as_str(),
+                "timestamp": task.updated_at,
+            },
+        }
     });
     serde_json::to_vec(&doc).unwrap_or_default()
 }
@@ -217,10 +346,21 @@ pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefus
     let Some(addr) = pinned.addrs.first().copied() else {
         return Err(PushRefusal::Unresolved(pinned.host));
     };
-    let headers: Vec<(String, String)> = DELIVERY_HEADERS
+    let mut headers: Vec<(String, String)> = DELIVERY_HEADERS
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
+    // THE CALLER'S OWN CREDENTIAL, ATTACHED ONLY AFTER THE GUARD HAS PASSED. Reading it here rather
+    // than before step 1 is deliberate: the credential must be presented to the address the caller
+    // registered and to nothing else, so nothing may put it in a header list that a refused
+    // destination could ever see.
+    if let Some(auth) = auths()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&task.task_id).cloned())
+    {
+        headers.push((AUTHORIZATION_HEADER.to_string(), auth.header_value()));
+    }
     let body = notification_body(task);
     let resp = seam
         .transport()

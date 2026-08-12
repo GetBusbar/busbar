@@ -360,13 +360,43 @@ async fn the_well_known_card_is_served_without_a_credential() {
         iface.starts_with("https://busbar.example/a2a"),
         "the card points a caller somewhere other than this busbar: {iface:?}"
     );
-    // A capability busbar does not implement must not be claimed. `getAuthenticatedExtendedCard`
-    // does not exist yet, and a card that says otherwise is the false-green this release keeps
-    // producing.
+    // EVERY INTERFACE DECLARES ITS PROTOCOL VERSION. It is a REQUIRED member of the 1.0
+    // `AgentInterface`, and a card that omits it leaves a client guessing which semantics the
+    // endpoint speaks — which, for an endpoint that speaks two, is a guess it gets wrong half the
+    // time. The FIRST entry is the preferred one, and `supportedInterfaces` is ordered, so the
+    // newest version busbar admits is the one a client taking entry zero is steered at.
+    let ifaces = doc["supportedInterfaces"].as_array().expect("an array");
+    assert!(
+        ifaces
+            .iter()
+            .all(|i| i.get("protocolVersion").and_then(|v| v.as_str()).is_some()),
+        "an interface declares no protocolVersion: {ifaces:?}"
+    );
+    assert_eq!(ifaces[0]["protocolVersion"], "1.0", "{ifaces:?}");
+    // AND NO EMPTY `tenant`. The member is optional and busbar partitions by virtual-key scope
+    // rather than by a path segment, so publishing an empty one would have a conformant client
+    // address `/{tenant}/…` with nothing in it — a path busbar does not serve.
+    assert!(
+        ifaces.iter().all(|i| i.get("tenant").is_none()),
+        "the card publishes a tenant this deployment does not have: {ifaces:?}"
+    );
+    // AND NO TOP-LEVEL `protocolVersion` AT ALL. It read `0.3.0` — a patch number, which SPEC 3.6
+    // says a card must not carry, naming one version for an endpoint that admits two. The 1.0
+    // `AgentCard` has no such member; the version belongs to the interface, and every interface
+    // above declares one.
+    assert!(
+        doc.get("protocolVersion").is_none(),
+        "the card carries a top-level protocolVersion the 1.0 AgentCard does not define: {doc}"
+    );
+
+    // THE EXTENDED-CARD CAPABILITY IS CLAIMED, AND THE CLAIM IS TRUE. It read `false` for as long
+    // as the verb did not exist, which was the honest position then; the verb exists now, and
+    // `the_extended_card_names_only_the_agents_this_caller_may_reach` is what makes this member a
+    // fact rather than an assertion.
     assert_eq!(
         doc["capabilities"]["extendedAgentCard"],
-        serde_json::Value::Bool(false),
-        "the card claims an extended-card verb busbar does not implement"
+        serde_json::Value::Bool(true),
+        "the card denies an extended-card verb busbar implements"
     );
     handle.abort();
 }

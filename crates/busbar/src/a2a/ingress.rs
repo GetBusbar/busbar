@@ -346,10 +346,13 @@ pub(crate) async fn plane_rpc(
 /// AND the v1.0 renames (`SendStreamingMessage`, `SubscribeToTask`); [`super::relay`] reads a bare
 /// v0.3 `result` and a v1.0 `{"task": …}` wrapper; [`super::idmap`] rewrites `id`, `taskId` and
 /// v1.0's `task_id`. Everything else on this plane is relayed verbatim and is version-agnostic by
-/// construction. A version this list claims that no code reads would be exactly the defect
-/// `serve::self_card` refuses to commit with `extendedAgentCard: false` — a document asserting a
-/// property nothing implements.
-const SUPPORTED_A2A_VERSIONS: &[&str] = &["0.3", "1.0"];
+/// construction. A version this list claims that no code reads would be a document asserting a
+/// property nothing implements, which is the defect this plane keeps finding.
+///
+/// ORDERED OLDEST-FIRST, and the order is READ rather than incidental: `serve::published_interfaces`
+/// reverses it so the card's ordered `supportedInterfaces` — whose first entry the specification
+/// makes the preferred one — steers a client at the newest version this endpoint admits.
+pub(crate) const SUPPORTED_A2A_VERSIONS: &[&str] = &["0.3", "1.0"];
 
 /// The media type A2A's JSON-RPC binding names. Compared as a MEDIA TYPE, never as a header string:
 /// `application/json; charset=utf-8` is the same media type and a great many clients send it.
@@ -731,6 +734,23 @@ async fn invoke(
         }
     };
 
+    // ── THE ONE VERB THAT NAMES NO AGENT. ───────────────────────────────────────────────────────
+    //
+    // `GetExtendedAgentCard` asks busbar about ITSELF, so it is answered before the catalogue
+    // selects an agent, before admission judges one, and before the meter opens a hold against one
+    // — none of which has a subject on this call. Every other local verb is answered after all
+    // three, because every other one names a task, and a task names an agent.
+    //
+    // It is not free of authorisation for being early: the route is `RouteAuth::Key`, `gov.key` was
+    // required above, and the ANSWER is computed from this caller's own catalogue. A caller with no
+    // grants gets a card with nothing in it.
+    if matches!(
+        super::local::method_of(&envelope),
+        "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
+    ) {
+        return extended_agent_card(&app, key, &rpc_id);
+    }
+
     let shape = shape_of(&envelope);
     let agent_id = match &target {
         Named(id) => id.clone(),
@@ -876,6 +896,25 @@ async fn invoke(
     // it is validated against the addresses it resolves to RIGHT NOW and refused as the CALLER's
     // fault (400) rather than the backend's. Stored only after it passes; `taskstore` deliberately
     // does not validate, so this is the one place the decision is made.
+    //
+    // AND THE CREDENTIAL BESIDE IT, out of the SAME config object the URL came from. A config
+    // naming a credential busbar cannot put on a header is refused as the CALLER's fault too,
+    // rather than accepted and quietly delivered bare — a receiver told it would be authenticated,
+    // whose deliveries then arrive without the header, rejects every one of them and cannot see
+    // why.
+    let callback_auth = match callback_config(&envelope)
+        .map(super::local::delivery_auth)
+        .transpose()
+    {
+        Ok(a) => a.flatten(),
+        Err(message) => {
+            return super::rpcerror::respond(
+                &rpc_id,
+                super::rpcerror::A2aError::InvalidParams,
+                message,
+            );
+        }
+    };
     let callback = match callback_of(&envelope) {
         None => None,
         Some(url) => {
@@ -1044,6 +1083,12 @@ async fn invoke(
         // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
         // read as, a durable pin.
         super::pushdeliver::remember(&task_id, pinned);
+        // AND THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT THAT URL. Registered here as
+        // well as on the CRUD verb for the reason the guard is: a config supplied INLINE on a
+        // submission and one registered by `CreateTaskPushNotificationConfig` are the same fact
+        // reached by two spellings, and honouring the credential on only one of them would make
+        // whether a receiver is authenticated depend on which method the caller happened to use.
+        super::pushdeliver::remember_auth(&task_id, callback_auth.as_ref());
     }
 
     gov_state.record_metering(
@@ -1163,6 +1208,95 @@ struct HopContext {
 /// The plane, if this deployment has one.
 fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
     app.a2a.as_ref().map(Arc::clone)
+}
+
+/// `GetExtendedAgentCard` / `agent/getAuthenticatedExtendedCard` — BUSBAR'S OWN CARD, for a caller
+/// that has authenticated.
+///
+/// [`super::serve::extended_card`] carries the argument for what this publishes and why it is the
+/// caller's catalogue rather than a merge across upstreams. What is decided HERE is the one thing
+/// that needs the request: WHICH agents are this caller's, and it is answered by
+/// [`super::catalogue::inbound_catalogue`] — the same judgement that decides dispatch, so the card
+/// cannot name an agent a submission would refuse.
+///
+/// THE EMPTY TASK SHAPE, deliberately. The catalogue's structural filter narrows a set to the
+/// agents that can accept a PARTICULAR task, and this request is not a task: it asks what this
+/// caller may reach at all. Passing a shape here would silently drop every agent that cannot serve
+/// whatever shape was invented.
+fn extended_agent_card(
+    app: &App,
+    key: &busbar_api::VirtualKey,
+    rpc_id: &serde_json::Value,
+) -> Response {
+    let Some(plane) = app.a2a.as_ref() else {
+        return not_found();
+    };
+    let Some(public_url) = plane.public_url() else {
+        return no_receiving_side();
+    };
+    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
+
+    // NOTHING FRONTED AT ALL is the one shape A2A has a specific error for: the card declares the
+    // capability (it is a property of the binary, and busbar always has this verb) and the
+    // deployment has no extended content for anybody. SPEC 3.1.11 binds that to
+    // `ExtendedAgentCardNotConfiguredError`, so it is answered rather than dressed up as an empty
+    // card — an empty card would say "you may reach nothing", which is a statement about the CALLER
+    // and is a different and misleading answer.
+    //
+    // A caller entitled to none of several configured agents DOES get the empty card, and the
+    // distinction is deliberate: that is a statement about that caller's grants, which is exactly
+    // what the caller is entitled to be told.
+    let card = plane.with_registrations(|regs| {
+        if regs.is_empty() {
+            return None;
+        }
+        let shape = super::catalogue::TaskShape::default();
+        let entitled: Vec<super::serve::EntitledAgent<'_>> =
+            super::catalogue::inbound_catalogue(key, regs, &shape)
+                .into_iter()
+                .map(|c| super::serve::EntitledAgent {
+                    agent_id: &c.registration.agent_id,
+                    backend_url: &c.registration.backend_url,
+                    card: c.registration.cached_card.as_ref(),
+                })
+                .collect();
+        Some(super::serve::extended_card(
+            public_url,
+            &entitled,
+            signer.as_ref(),
+        ))
+    });
+
+    match card {
+        None => super::rpcerror::respond(
+            rpc_id,
+            super::rpcerror::A2aError::ExtendedAgentCardNotConfigured,
+            "this deployment fronts no agents, so there is no extended agent card to serve",
+        ),
+        Some(Ok(doc)) => {
+            use axum::response::IntoResponse as _;
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "result": doc,
+                })),
+            )
+                .into_response()
+        }
+        // A card busbar cannot build is a refusal, not a hollow document. The failures that reach
+        // here are a `public_url` that will not parse and a signing key that will not sign, and
+        // both would otherwise publish a card asserting something busbar cannot stand behind.
+        Some(Err(e)) => {
+            tracing::error!(error = %e, "a2a: could not build the extended agent card");
+            super::rpcerror::respond(
+                rpc_id,
+                super::rpcerror::A2aError::Internal,
+                "the extended agent card could not be built",
+            )
+        }
+    }
 }
 
 /// THE UNARY HOP: one submission, one answer.
@@ -1678,6 +1812,15 @@ const CALLBACK_POINTERS: [&str; 3] = [
     "/params/configuration/taskPushNotificationConfig/pushNotificationConfig/url",
 ];
 
+/// The CONFIG OBJECTS those three URLs sit in, in the same order, so the URL and the credential
+/// beside it are read out of ONE object rather than by two independent pointer lists that could
+/// pick the URL from one spelling and the credential from another.
+const CALLBACK_CONFIG_POINTERS: [&str; 3] = [
+    "/params/configuration/pushNotificationConfig",
+    "/params/configuration/taskPushNotificationConfig",
+    "/params/configuration/taskPushNotificationConfig/pushNotificationConfig",
+];
+
 /// THE CALLER'S PUSH-NOTIFICATION CALLBACK URL, if it registered one.
 ///
 /// ONE SPELLING WAS READ AND THERE ARE THREE, and the two that were not read were a hole rather
@@ -1706,6 +1849,22 @@ fn callback_of(envelope: &serde_json::Value) -> Option<String> {
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
+    })
+}
+
+/// THE INLINE PUSH-NOTIFICATION CONFIG OBJECT, in whichever of the three spellings it arrived in.
+///
+/// The one whose `url` [`callback_of`] would pick: the selection walks the same list in the same
+/// order and takes the first entry that actually carries a non-empty `url`, so the credential this
+/// returns is the credential registered ALONGSIDE the URL busbar is about to guard, never one from
+/// a sibling spelling a client also happened to serialise.
+fn callback_config(envelope: &serde_json::Value) -> Option<&serde_json::Value> {
+    CALLBACK_CONFIG_POINTERS.into_iter().find_map(|p| {
+        envelope.pointer(p).filter(|cfg| {
+            cfg.get("url")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|u| !u.is_empty())
+        })
     })
 }
 
@@ -1776,6 +1935,31 @@ fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<s
     candidates.pop()
 }
 
+/// DOES THIS METHOD NAME ASK FOR A STREAM? Both eras of the name, and neither is preferred.
+///
+/// A2A v0.3 names the streaming methods `message/stream` and `tasks/resubscribe`; v1.0 renames them
+/// `SendStreamingMessage` and `SubscribeToTask` — the vocabulary the official TCK and `a2a-go` v2.4
+/// speak. busbar is content-blind on this plane and relays the envelope verbatim, so this is the
+/// ONLY place the method name decides anything about the transport, and reading one vocabulary
+/// means a caller in the other era has its stream dispatched down the unary path with its
+/// `capabilities.streaming` filter never applying.
+///
+/// Listed rather than pattern-matched loosely, so a third spelling is a deliberate edit. Named
+/// rather than inlined so `local_tests::every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names`
+/// can drive it: an asymmetry between the two eras is the failure worth locking out, and it cannot
+/// be locked out against an expression buried in a struct literal.
+fn reads_as_streaming(method: &str) -> bool {
+    method.ends_with("/stream")
+        || method == "tasks/resubscribe"
+        || method == "SendStreamingMessage"
+        || method == "SubscribeToTask"
+}
+
+#[cfg(test)]
+pub(crate) fn reads_as_streaming_for_test(method: &str) -> bool {
+    reads_as_streaming(method)
+}
+
 /// The SHAPE of work an inbound envelope is asking for, as the catalogue's filter reads it.
 ///
 /// Read from the request rather than assumed, because the catalogue's whole job is to refuse an
@@ -1790,23 +1974,11 @@ fn shape_of(envelope: &serde_json::Value) -> super::catalogue::TaskShape {
             .and_then(|m| m.get("skill"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        // BOTH SPELLINGS OF "THIS IS A STREAM". A2A v0.3 names the streaming methods
-        // `message/stream` and `tasks/resubscribe`; v1.0 renames them `SendStreamingMessage` and
-        // `SubscribeToTask` — the vocabulary the official TCK and `a2a-go` v2.4 speak. busbar is
-        // content-blind on this plane and relays the envelope verbatim, so the ONLY place the
-        // method name is read is here, and reading only one vocabulary means a v1.0 caller's
-        // stream is dispatched down the unary path and its `capabilities.streaming` filter never
-        // applies. Both are listed rather than pattern-matched loosely, so a third spelling is a
-        // deliberate edit.
+        // BOTH SPELLINGS OF "THIS IS A STREAM": see [`reads_as_streaming`].
         requires_streaming: envelope
             .get("method")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|m| {
-                m.ends_with("/stream")
-                    || m == "tasks/resubscribe"
-                    || m == "SendStreamingMessage"
-                    || m == "SubscribeToTask"
-            }),
+            .is_some_and(reads_as_streaming),
         requires_push_notifications: cfg.and_then(|c| c.get("pushNotificationConfig")).is_some(),
         input_modes: Vec::new(),
         output_modes: cfg

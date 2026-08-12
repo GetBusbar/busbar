@@ -82,6 +82,10 @@ pub(crate) enum A2aError {
     ContentTypeNotSupported,
     /// The backend agent did not answer something busbar could relay.
     InvalidAgentResponse,
+    /// The card declares `capabilities.extendedAgentCard` and this deployment has no extended card
+    /// to give. See [`super::serve::extended_card`]: busbar always HAS one when it fronts anything
+    /// at all, so the one deployment shape that reaches this is one that fronts nothing.
+    ExtendedAgentCardNotConfigured,
     /// The caller's `A2A-Version` names a protocol version this endpoint does not speak. See
     /// [`super::ingress`] for which versions busbar claims and what makes each claim true.
     VersionNotSupported,
@@ -107,6 +111,7 @@ impl A2aError {
             A2aError::UnsupportedOperation => -32004,
             A2aError::ContentTypeNotSupported => -32005,
             A2aError::InvalidAgentResponse => -32006,
+            A2aError::ExtendedAgentCardNotConfigured => -32007,
             A2aError::VersionNotSupported => -32009,
             A2aError::InvalidRequest => -32600,
             A2aError::MethodNotFound => -32601,
@@ -126,6 +131,7 @@ impl A2aError {
             A2aError::UnsupportedOperation => Some("UNSUPPORTED_OPERATION"),
             A2aError::ContentTypeNotSupported => Some("CONTENT_TYPE_NOT_SUPPORTED"),
             A2aError::InvalidAgentResponse => Some("INVALID_AGENT_RESPONSE"),
+            A2aError::ExtendedAgentCardNotConfigured => Some("EXTENDED_AGENT_CARD_NOT_CONFIGURED"),
             A2aError::VersionNotSupported => Some("VERSION_NOT_SUPPORTED"),
             A2aError::Parse
             | A2aError::InvalidRequest
@@ -151,6 +157,7 @@ impl A2aError {
             -32004 => A2aError::UnsupportedOperation,
             -32005 => A2aError::ContentTypeNotSupported,
             -32006 => A2aError::InvalidAgentResponse,
+            -32007 => A2aError::ExtendedAgentCardNotConfigured,
             -32009 => A2aError::VersionNotSupported,
             -32600 => A2aError::InvalidRequest,
             -32601 => A2aError::MethodNotFound,
@@ -171,6 +178,9 @@ impl A2aError {
             | A2aError::Parse
             | A2aError::InvalidRequest
             | A2aError::InvalidParams
+            // section 5.4's own row for this one is also 400: the request is well formed and the
+            // agent's configuration is what cannot satisfy it.
+            | A2aError::ExtendedAgentCardNotConfigured
             // A2A section 5.4's own row: a version this server does not speak is a CLIENT fault and
             // answers 400, not 505 — the HTTP version and the A2A version are different facts.
             | A2aError::VersionNotSupported => 400,
