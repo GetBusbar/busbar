@@ -806,10 +806,17 @@ async fn invoke(
             .unwrap_or(serde_json::Value::Null),
     };
 
+    // THE INVERSE OF THE IDENTITY SUBSTITUTION. busbar issues its own task ids and puts them in
+    // every answer; a caller reading one and asking `GetTask` for it had that id forwarded, unchanged,
+    // to a backend that has never heard of it. See `super::idmap`: this is the only direction that
+    // was missing, and `None` - a request naming no task busbar issued - forwards the caller's OWN
+    // BYTES rather than a re-serialization, so nothing else in the envelope is normalised.
+    let relayed_body = super::idmap::translate_request(&envelope).unwrap_or_else(|| body.to_vec());
+
     if shape.requires_streaming {
-        stream_hop(hop_ctx, seam, gate, lease, body.to_vec()).await
+        stream_hop(hop_ctx, seam, gate, lease, relayed_body).await
     } else {
-        unary_hop(hop_ctx, seam, gate, lease, body.to_vec()).await
+        unary_hop(hop_ctx, seam, gate, lease, relayed_body).await
     }
 }
 
@@ -891,6 +898,11 @@ async fn unary_hop(
     };
 
     record_state(&ctx, reply.reported_state);
+    // WHAT THE BACKEND CALLS THIS TASK, remembered BEFORE the substitution erases it, so the
+    // caller's later reads of the id busbar is about to hand them can be translated back.
+    if let Some(backend_id) = reply.backend_task_id.as_deref() {
+        super::idmap::remember(&ctx.task_id, backend_id);
+    }
 
     // THE REPLY, UNDER BUSBAR'S IDENTITY. The backend's `id`/`contextId` are ITS names for this
     // work; the caller's later reads resolve against busbar's store. Everything else is passed
@@ -954,6 +966,12 @@ async fn stream_hop(
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
+            // THE PAIRING, off the stream too. A streaming submission is the one case where the
+            // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
+            // recorded only on the unary path would leave exactly that case broken.
+            if let Some(backend_id) = ev.backend_task_id.as_deref() {
+                super::idmap::remember(&task_id, backend_id);
+            }
             // THE TASK'S STATE MOVES AS THE STREAM MOVES, not once at the end. A stream that ends
             // by the process dying must leave the last state it actually reported, not `submitted`.
             if let Some(state) = ev.state {
@@ -1028,6 +1046,9 @@ async fn stream_hop(
                 // a task it finished immediately. The caller gets the unary shape rather than a
                 // one-event stream busbar invented.
                 record_state(&ctx, reply.reported_state);
+                if let Some(backend_id) = reply.backend_task_id.as_deref() {
+                    super::idmap::remember(&ctx.task_id, backend_id);
+                }
                 let mut result = reply.result;
                 super::relay::rewrite_identity(
                     &mut result,

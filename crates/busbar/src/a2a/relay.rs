@@ -337,6 +337,8 @@ pub(crate) struct RelayReply {
     /// The backend's JSON-RPC `result`, VERBATIM. [`rewrite_identity`] substitutes the two identity
     /// fields and everything else passes through; see the module note on content-blindness.
     pub(crate) result: serde_json::Value,
+    /// THE BACKEND'S OWN TASK ID, before the substitution. See [`backend_task_id`].
+    pub(crate) backend_task_id: Option<String>,
     /// The state the backend says the task is in, as this plane's own canonical type reads it.
     ///
     /// `Working` when the backend named none, which is the honest default: the submission was
@@ -495,8 +497,10 @@ fn read_reply(body: &[u8], url: &str) -> Result<RelayReply, RelayRefusal> {
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let reported_state = reported_task_state(&result);
+    let backend_task_id = backend_task_id(&result);
     Ok(RelayReply {
         result,
+        backend_task_id,
         reported_state,
     })
 }
@@ -532,6 +536,22 @@ fn wrapper_of(result: &serde_json::Value) -> Option<(&'static str, &'static str)
         .find(|(member, _)| result.get(member).is_some_and(serde_json::Value::is_object))
 }
 
+/// THE BACKEND'S OWN TASK ID, read off a payload BEFORE [`rewrite_identity`] replaces it.
+///
+/// busbar issues its own task identity and substitutes it into every answer, for the reason the
+/// module note gives: a caller's later reads resolve against busbar's store. That substitution has
+/// an INVERSE, and without it the identity busbar issues is one busbar cannot resolve - a caller
+/// handed `a2a-planner-…` and asking `GetTask` for it reaches a backend that has never heard of it.
+/// This is the half that makes the inverse possible: the id to translate BACK to.
+pub(crate) fn backend_task_id(result: &serde_json::Value) -> Option<String> {
+    let id_member = wrapper_of(result).map_or("id", |(_, m)| m);
+    payload_of(result)
+        .get(id_member)
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
     match wrapper_of(result) {
         Some((member, _)) => result.get(member).expect("just found"),
@@ -549,21 +569,29 @@ fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
 /// Anything unreadable stays `Working`: a relay that guessed `completed` from a token it could not
 /// read would close a task that is still running.
 pub(crate) fn reported_task_state(result: &serde_json::Value) -> TaskState {
-    let Some(token) = payload_of(result)
+    payload_of(result)
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-    else {
-        return TaskState::Working;
-    };
+        .and_then(wire_state)
+        .unwrap_or(TaskState::Working)
+}
+
+/// ONE READING OF A BACKEND'S STATE TOKEN, in either A2A vocabulary. `None` for a token this build
+/// does not know, which the two callers answer differently and correctly: the unary path falls back
+/// to `Working` because it must record something, and the streaming path records nothing at all
+/// because an event that reported no state it could read did not report a transition.
+fn wire_state(token: &str) -> Option<TaskState> {
     if let Ok(state) = TaskState::parse(token) {
-        return state;
+        return Some(state);
     }
     // v1.0's enum spelling: `TASK_STATE_` + the state in SCREAMING_SNAKE_CASE.
-    match token.strip_prefix("TASK_STATE_") {
-        Some(rest) => TaskState::parse(&rest.to_ascii_lowercase().replace('_', "-"))
-            .unwrap_or(TaskState::Working),
-        None => TaskState::Working,
-    }
+    TaskState::parse(
+        &token
+            .strip_prefix("TASK_STATE_")?
+            .to_ascii_lowercase()
+            .replace('_', "-"),
+    )
+    .ok()
 }
 
 /// SUBSTITUTE BUSBAR'S TASK IDENTITY onto a backend answer, leaving everything else alone.
@@ -659,6 +687,8 @@ pub(crate) struct RelayEvent {
     pub(crate) state: Option<TaskState>,
     /// Whether this event carried an artifact chunk, which is what advances the resume cursor.
     pub(crate) artifact: bool,
+    /// THE BACKEND'S OWN TASK ID, before the substitution. See [`backend_task_id`].
+    pub(crate) backend_task_id: Option<String>,
 }
 
 /// THE SSE FRAME READER: bytes in, whole events out.
@@ -736,6 +766,7 @@ pub(crate) fn read_event(
             sse: frame.as_bytes().to_vec(),
             state: None,
             artifact: false,
+            backend_task_id: None,
         };
     };
     let Ok(mut envelope) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -743,6 +774,7 @@ pub(crate) fn read_event(
             sse: frame.as_bytes().to_vec(),
             state: None,
             artifact: false,
+            backend_task_id: None,
         };
     };
     let Some(result) = envelope.get_mut("result") else {
@@ -750,16 +782,28 @@ pub(crate) fn read_event(
             sse: frame.as_bytes().to_vec(),
             state: None,
             artifact: false,
+            backend_task_id: None,
         };
     };
-    let artifact = result.get("artifact").is_some() || result.get("artifacts").is_some();
-    let state = result
+    // THROUGH THE PAYLOAD, in both shapes. v1.0 wraps the event - `{"artifactUpdate": {…}}`,
+    // `{"statusUpdate": {…}}` - so reading `result.artifact` and `result.status.state` directly saw
+    // neither: every streamed artifact left the resume cursor where it was, and every state
+    // transition on a stream went unrecorded and undelivered to any registered push callback.
+    let payload = payload_of(result);
+    let artifact = payload.get("artifact").is_some()
+        || payload.get("artifacts").is_some()
+        || result.get("artifactUpdate").is_some();
+    // `Working` is the fallback for "reported nothing", and this asks a narrower question - DID it
+    // report one - so the fallback is not usable here and the pointer is read directly.
+    let state = payload
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-        .and_then(|s| TaskState::parse(s).ok());
+        .and_then(|s| wire_state(s));
+    let backend = backend_task_id(result);
     rewrite_identity(result, task_id, context_id, matched_skill);
     RelayEvent {
         sse: frame_sse(&envelope),
+        backend_task_id: backend,
         state,
         artifact,
     }

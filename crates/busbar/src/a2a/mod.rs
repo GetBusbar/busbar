@@ -60,6 +60,7 @@
 // module is a warning again, and the file that still has one has to say why.
 
 pub(crate) mod adminverbs;
+pub(crate) mod idmap;
 pub(crate) mod rpcerror;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;

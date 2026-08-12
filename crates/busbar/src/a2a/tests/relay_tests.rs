@@ -1220,3 +1220,70 @@ fn a_message_payload_keeps_its_own_identifier_and_is_never_given_a_task_id_membe
     assert_eq!(result["message"]["contextId"], "busbar-context");
     assert!(result["message"].get("id").is_none(), "{result}");
 }
+
+/// THE IDENTITY BUSBAR ISSUES IS ONE BUSBAR CAN RESOLVE — end to end, through the mounted route.
+///
+/// busbar substitutes its own task id into every answer, so the id a caller holds is busbar's. It
+/// then relayed the caller's follow-up VERBATIM, so that id was forwarded to a backend that has
+/// never heard of it: every `GetTask`, `CancelTask` and `SubscribeToTask` a caller made with the id
+/// busbar itself gave them failed. In the official TCK that is `CORE-GET-001` ("GetTask failed"),
+/// `CORE-CANCEL-002` and `CORE-SEND-002` — the last cluster of MUST failures that is busbar's own
+/// and not the fronted agent's.
+///
+/// Driven through the real route rather than over `idmap` directly, because the defect was never in
+/// the mapping — it was that nothing recorded one and nothing consulted it.
+#[tokio::test]
+async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_backends_own_id() {
+    let reply = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": { "task": {
+            "id": "BACKEND-OWN-TASK-ID",
+            "contextId": "backend-context",
+            "status": { "state": "TASK_STATE_COMPLETED" }
+        }}
+    })
+    .to_string();
+    let h = harness(Outcome::Answers(200, reply), false).await;
+
+    // 1. A submission. The caller is handed BUSBAR's id, and the backend's must not appear.
+    let (status, body) = call(&h).await;
+    assert_eq!(status, 200, "{body}");
+    let issued = body
+        .pointer("/result/task/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(issued.starts_with("a2a-planner-"), "{body}");
+    assert!(
+        !body.to_string().contains("BACKEND-OWN-TASK-ID"),
+        "the backend's id must not be published: {body}"
+    );
+
+    // 2. The follow-up, naming the id the caller was actually given.
+    let before = h.sent().len();
+    let (status, body) = call_agent(
+        &h,
+        "planner",
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 8, "method": "GetTask",
+            "params": { "id": issued, "historyLength": 2 }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // 3. WHAT ACTUALLY WENT ON THE WIRE. This is the assertion the defect was invisible to: the
+    //    caller's answer looked fine either way, and the wrong id only shows in the hop.
+    let sent = h.sent();
+    let forwarded = String::from_utf8_lossy(&sent[before..][0].body).to_string();
+    let forwarded: serde_json::Value = serde_json::from_str(&forwarded).expect("json on the wire");
+    assert_eq!(
+        forwarded["params"]["id"], "BACKEND-OWN-TASK-ID",
+        "the follow-up must reach the backend by the id the BACKEND knows: {forwarded}"
+    );
+    assert_eq!(
+        forwarded["params"]["historyLength"], 2,
+        "nothing but the identity may be rewritten: {forwarded}"
+    );
+}
