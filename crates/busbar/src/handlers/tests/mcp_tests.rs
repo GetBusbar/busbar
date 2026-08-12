@@ -186,3 +186,34 @@ fn the_operation_is_resolved_from_the_body_method() {
         "an unparseable body names no operation"
     );
 }
+
+// ── THE ATTRIBUTED OUTCOME NOW SPANS OPERATIONS ──────────────────────────────────────────────────
+
+/// A NON-CHAT OPERATION GETS AN ATTRIBUTED FAILURE, which was structurally impossible before.
+///
+/// `extract_error` used to live only on `proto::ProtocolReader` — a trait whose `read_request`
+/// returns `IrRequest` and whose `read_response` returns `IrResponse`, i.e. the CHAT subclass
+/// types. It is the chat codec, so anything hung off it was available to chat protocols alone.
+/// That, and not an oversight, is why the breaker never spanned the tool and agent paths: a
+/// non-chat protocol could not implement the trait that carried the capability.
+///
+/// Now it is on the operation codec, so a failing tool server produces something the breaker can
+/// classify instead of the silence that made a non-2xx invisible on a plane built outside the
+/// matrix.
+#[test]
+fn a_failing_tool_server_produces_a_classifiable_outcome() {
+    let raw = ToolCallOperation.extract_error(503, br#"{"error":"upstream is down"}"#);
+    assert_eq!(
+        raw.http_status, 503,
+        "the status is what the breaker classifies, and it must survive"
+    );
+    assert!(
+        raw.provider_code.is_none() && raw.structured_type.is_none(),
+        "and a cell that cannot read its upstream's error vocabulary must claim none, rather than \
+         invent one it could not have parsed"
+    );
+    assert!(
+        raw.retry_after_secs.is_none(),
+        "this sees only the body; the forwarding layer holds the headers and fills this in after"
+    );
+}
