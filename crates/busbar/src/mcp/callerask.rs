@@ -238,11 +238,31 @@ pub(crate) struct Bind<'a> {
     pub(crate) now: u64,
 }
 
-/// THE DECISION. Pure: config, caller input, and a clock. It is not in scope of any upstream
-/// response and cannot be — see the module header.
+/// THE APPROVAL MACHINERY: what mints continuation state, and what remembers it was spent.
+///
+/// One parameter rather than two because they are one thing viewed from either end — a `Sealer` with
+/// no ledger issues approvals nothing retires, which is precisely the defect
+/// [`askstate::SpentAskStates`] exists to close, and a call site that could pass the first without
+/// the second is a call site that can reintroduce it.
+#[derive(Clone, Copy)]
+pub(crate) struct Approvals<'a> {
+    /// Mints and opens the sealed `requestState`. `None` is a deployment with no signing key, which
+    /// refuses to ask at all rather than issue state it could not verify.
+    pub(crate) sealer: Option<&'a Sealer>,
+    /// The approvals already redeemed. See [`askstate::SpentAskStates`].
+    pub(crate) spent: &'a askstate::SpentAskStates,
+}
+
+/// THE DECISION. Config, caller input, a clock — and the ledger of approvals already spent. It is
+/// not in scope of any upstream response and cannot be — see the module header.
 ///
 /// `rounds` is the operator's ordered list of rounds for THIS capability; an empty list means the
 /// capability declares no ask, which is the default and is today's behaviour.
+///
+/// NOT PURE, and only in one place: the arm that COMPLETES an exchange marks the approval it
+/// consumed as spent. That effect lives here rather than at the call site on purpose — a caller that
+/// had to remember to record the spend is a caller that can forget, and the check and the record
+/// have to be one atomic act or two concurrent redemptions both pass it.
 pub(crate) fn decide(
     rounds: &[AskRoundCfg],
     cap: u32,
@@ -250,8 +270,9 @@ pub(crate) fn decide(
     retry: Retry<'_>,
     bind: Bind<'_>,
     args_digest: &str,
-    sealer: Option<&Sealer>,
+    approvals: Approvals<'_>,
 ) -> AskDecision {
+    let Approvals { sealer, spent } = approvals;
     // (1) A capability that declares NO ask never asks, and never accepts state either. Accepting
     // state here would mean busbar verifying a blob it had no reason to have minted.
     if rounds.is_empty() {
@@ -265,6 +286,10 @@ pub(crate) fn decide(
 
     // (2) WHICH ROUND IS THIS? Read from the sealed state, never from a counter busbar holds between
     // requests and never from anything the caller can write. A caller with no state has not started one.
+    // The approval this request is presenting, if it is presenting one: the nonce that identifies it
+    // and the instant past which it could not be opened anyway. Carried down to the completion arm,
+    // which is the only place it is spent.
+    let mut presented: Option<(String, u64)> = None;
     let next_round = match retry.state {
         None => {
             // `mrtr.mdx` client requirements: a client MUST NOT invent state. Responses without one
@@ -290,6 +315,10 @@ pub(crate) fn decide(
             ) {
                 return AskDecision::Refuse(Refusal::StateRejected(e));
             }
+            presented = Some((
+                opened.nonce.clone(),
+                opened.issued_at.saturating_add(opened.ttl_secs),
+            ));
             opened.round.saturating_add(1)
         }
     };
@@ -307,6 +336,20 @@ pub(crate) fn decide(
     // (4) EVERY ROUND ANSWERED ⇒ the exchange is complete and the call proceeds. This is the ONLY
     // arm that dispatches, and reaching it requires a verified state for the last configured round.
     let Some(this_round) = rounds.get(next_round as usize) else {
+        // AND THE APPROVAL IS NOW SPENT. Everything above proves the state was busbar's, was this
+        // caller's, was for this exact request and has not lapsed — all of which is equally true of
+        // the SECOND presentation of a state already redeemed. Without this, an operator who gated a
+        // tool because it moves money got confirm-once, execute-many.
+        //
+        // `rounds` is non-empty here (the empty case returned at step 1), so an exchange can only
+        // complete by presenting state, and `presented` is therefore always `Some`. The `else` is
+        // the fail-closed reading of a shape that cannot occur rather than a case with a meaning.
+        let Some((nonce, expires_at)) = presented else {
+            return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::AlreadySpent));
+        };
+        if !spent.spend(&nonce, expires_at, bind.now) {
+            return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::AlreadySpent));
+        }
         return AskDecision::Proceed;
     };
 
@@ -428,3 +471,10 @@ fn declared(capabilities: &serde_json::Value, key: &str) -> bool {
 #[cfg(test)]
 #[path = "tests/callerask_tests.rs"]
 mod callerask_tests;
+
+// THE GATE JUDGED FROM OUTSIDE IT: one approval, presented twice, against a real upstream that
+// records what it was told to do. Separate from the file above because nothing in it may reach into
+// the decision — the claim is about what a caller can make happen, not about which arm answered.
+#[cfg(test)]
+#[path = "tests/confirm_once_tests.rs"]
+mod confirm_once_tests;

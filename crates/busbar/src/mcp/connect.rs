@@ -630,6 +630,37 @@ impl crate::trust::sweep::Sweeper for RefreshSweeper {
     }
 }
 
+/// START THE UNATTENDED DRIFT SWEEP for this deployment. `None` when there is nothing to sweep.
+///
+/// Lifted out of `run()` so that the decision — *is the defence running?* — is reachable by a test
+/// at all. `run()` binds real listeners and joins them, so while this lived inline the only proof
+/// that the sweep is ever started was the prose beside it: every case in `timer_dispatch_tests.rs`
+/// calls `refresh_sweep` by hand, so the boot block could have been deleted and the whole battery
+/// would still have passed. That is the same shape as the hole this job exists to close, one level
+/// up — `refresh` had exactly one production caller and it was a human pressing an admin button.
+///
+/// Started only when there is a registration to sweep, and started ONCE at boot rather than on
+/// apply: a second job against the same registry would double every fetch and race every ledger
+/// stamp. It takes the HANDLE rather than the app, so a config apply is picked up on the next tick
+/// instead of the job sweeping a generation the operator has already replaced.
+pub(crate) fn spawn_refresh_job(
+    handle: &std::sync::Arc<crate::state::AppHandle>,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if handle.load().mcp_catalogue.is_empty() {
+        return None;
+    }
+    tracing::info!(
+        tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
+        "mcp: tool-list refresh job started; registered servers are re-hashed on their own \
+         `refresh_ttl:` and quarantined on drift with no operator present"
+    );
+    Some(crate::trust::sweep::spawn(
+        RefreshSweeper(handle.clone()),
+        shutdown,
+    ))
+}
+
 // Shared fixtures for the connect batteries: a REAL fake MCP peer whose tool list can CHANGE under
 // a live cache, which is the one thing a rug-pull proof cannot do without.
 #[cfg(test)]

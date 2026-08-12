@@ -43,6 +43,12 @@ pub(crate) struct PeerState {
     pub(super) tools: Vec<serde_json::Value>,
     /// Methods received, in order. Read to prove a refused dispatch never reached the wire.
     pub(super) methods: Vec<String>,
+    /// The `params.arguments` of every `tools/call` that reached this peer, in order.
+    ///
+    /// Recorded because "the call carried out after an approval is the call the question was about"
+    /// is a claim about WHAT THE UPSTREAM WAS TOLD TO DO, and no assertion about busbar's own return
+    /// value can make it. The peer's own bookkeeping is the only witness that is not the accused.
+    pub(super) call_arguments: Vec<serde_json::Value>,
     /// When set, `tools/list` answers with this JSON-RPC error code instead of a result.
     pub(super) list_error: Option<i64>,
 }
@@ -112,6 +118,11 @@ impl Peer {
         self.methods().iter().filter(|m| *m == "tools/call").count()
     }
 
+    /// The arguments of every `tools/call` this peer was actually told to run, in order.
+    pub(crate) fn call_arguments(&self) -> Vec<serde_json::Value> {
+        self.state.lock().unwrap().call_arguments.clone()
+    }
+
     /// How many `tools/list` requests reached the wire — i.e. how many times this peer was actually
     /// REFRESHED. The load-bearing number for "the refresh timer honours the operator's cadence":
     /// a sweep that ignored `refresh_ttl:` would contact every registered upstream on every tick,
@@ -136,6 +147,14 @@ async fn endpoint(
     let (tools, list_error) = {
         let mut st = shared.0.lock().unwrap();
         st.methods.push(method.clone());
+        if method == "tools/call" {
+            st.call_arguments.push(
+                parsed
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            );
+        }
         (st.tools.clone(), st.list_error)
     };
     let value = match method.as_str() {

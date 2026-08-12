@@ -159,6 +159,10 @@ pub(crate) mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison.
 pub(crate) mod connect;
+/// The one thing the boot path needs from this plane's drift defence: START IT. Re-exported here so
+/// `main.rs` names a plane rather than a plane's internals, and so the call site a test ratchets on
+/// is one stable string.
+pub(crate) use connect::spawn_refresh_job;
 
 pub(crate) mod ingress;
 pub(crate) mod inputreq;
@@ -436,3 +440,11 @@ fn normalise_path(path: &str) -> String {
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
+
+// WHAT SURVIVES THE MOMENT THE DEFENCE FIRES: a quarantine across a restart, the sweep that has to
+// be STARTED for one to be taken at all, and the demoted upstream that must stop being ADVERTISED
+// and not merely stop being dispatchable. Hung here rather than under `connect` or `method` because
+// it spans both and the boot path besides.
+#[cfg(test)]
+#[path = "tests/quarantine_boot_tests.rs"]
+mod quarantine_boot_tests;

@@ -502,14 +502,32 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// `tools/list` — the GOVERNANCE-SCOPED catalogue.
+/// `tools/list` — the GOVERNANCE-SCOPED catalogue, MINUS anything currently quarantined.
+///
+/// ## Why the listing consults the drift sightings and not only the grants
+///
+/// Refusing to DISPATCH to a demoted upstream was the safety property and it was already proven. It
+/// is not the whole of it. A listing is not a neutral fact: it publishes the operator's APPROVED
+/// schema and APPROVED hash, and for a quarantined server that is a description of a tool the
+/// upstream has stopped serving that way. A planning client reads it, builds a call against a shape
+/// that no longer exists, and spends a turn and a budget being refused — while busbar's own stated
+/// position for every other field is that publishing something means the operator vouched for THIS
+/// tool at THIS digest. It cannot vouch for one it has just demoted.
+///
+/// The filter answers on exactly the arm the dispatch gate refuses on, and deliberately not on the
+/// other two. `Unsighted` — nobody has ever looked — still advertises, because that is the
+/// declarative deployment every existing operator runs, and treating "never looked" as "it moved"
+/// would empty the catalogue of all of them. Both halves are pinned by test beside each other.
 fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let grant = ctx.grant();
+    let sightings = ctx.app.mcp_sightings.load();
+    let live = LiveSightings::of(&sightings);
     let tools: Vec<serde_json::Value> = ctx
         .app
         .mcp_catalogue
         .tools_for(&grant)
         .into_iter()
+        .filter(|t| !ctx.app.mcp_catalogue.is_quarantined(live, t))
         .map(render_tool)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
@@ -1274,12 +1292,49 @@ async fn tools_call(
     // state is sealed over a digest of the arguments AS THE CALLER SENT THEM, so merging first
     // would make a retry's digest disagree with the seal minted on the previous round and every
     // multi-round exchange would fail verification on round two.
+    //
+    // AND THE MERGE IS BOUNDED BY WHAT THE OPERATOR ASKED FOR. This used to insert every key the
+    // caller put in `inputResponses`, overwriting whatever was there — which meant the one thing the
+    // seal covers, the arguments the confirmation was DISPLAYED about, could be rewritten on the way
+    // past it. A caller shown "approve moving 10 to alice?" answered `{"amount": 1000000}` and the
+    // upstream was told to move a million, with the digest check passing the whole way, because the
+    // digest is taken over `arguments` and the rewrite arrived in a sibling field. An approval that
+    // carries out a different call than the one it described is the same defect as an approval that
+    // is not required at all.
+    //
+    // So: an answer may bind ONLY a key this capability's own `ask_caller:` rounds declared, and may
+    // never name an argument the caller already sent. Anything else refuses the call rather than
+    // being dropped — a caller whose answer is being ignored has to be told, or the next attacker to
+    // try it learns nothing and the next honest client debugs a value that vanished.
     if let Some(responses) = params
         .and_then(|p| p.get("inputResponses"))
         .and_then(|v| v.as_object())
     {
-        let merged = arguments.as_object_mut();
-        if let Some(merged) = merged {
+        let declared: std::collections::BTreeSet<&str> = selected
+            .ask_caller
+            .iter()
+            .flat_map(|round| round.keys().map(String::as_str))
+            .collect();
+        let sealed: std::collections::BTreeSet<String> = arguments
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(offending) = responses
+            .keys()
+            .find(|k| !declared.contains(k.as_str()) || sealed.contains(*k))
+        {
+            let refusal = DispatchRefusal::NotGranted(format!(
+                "the answer named `{offending}`, which is not one of the inputs \
+                 `{}` requested — an answer may only supply what was asked for, and may never \
+                 rewrite an argument the confirmation was shown for.",
+                selected.namespaced
+            ));
+            return log.refused(
+                "caller_ask_answer_undeclared",
+                refuse(ctx, name, &refusal, id),
+            );
+        }
+        if let Some(merged) = arguments.as_object_mut() {
             for (key, value) in responses {
                 merged.insert(key.clone(), value.clone());
             }
@@ -2164,7 +2219,10 @@ fn caller_ask_decision(
             now: crate::store::now(),
         },
         &super::askstate::digest_arguments(arguments),
-        sealer.as_ref(),
+        callerask::Approvals {
+            sealer: sealer.as_ref(),
+            spent: &ctx.app.mcp_spent_approvals,
+        },
     )
 }
 

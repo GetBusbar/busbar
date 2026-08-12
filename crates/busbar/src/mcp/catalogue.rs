@@ -719,6 +719,32 @@ impl Catalogue {
         Ok(entry)
     }
 
+    /// IS THIS TOOL CURRENTLY DEMOTED? The question the ADVERTISEMENT path asks, answered off the
+    /// same arm [`Self::resolve`] refuses on.
+    ///
+    /// One expression rather than a second opinion about what "quarantined" means, and that is the
+    /// point of it living here beside `resolve` instead of in `method.rs`: the two paths disagreeing
+    /// is the failure mode — busbar publishing a tool it will refuse, or hiding one it would have
+    /// served. `LiveDigest` has exactly three answers and this names the one, so a fourth cannot be
+    /// added without this call site being made to say what it does about it.
+    ///
+    /// Note what it deliberately does NOT do: it takes no grant. Whether a caller may SEE a tool and
+    /// whether the tool is currently trustworthy are different questions with different answers, and
+    /// the listing applies them in that order — scope first, then trust — so this never becomes a
+    /// second place a grant is interpreted.
+    pub(crate) fn is_quarantined(&self, live: LiveSightings<'_>, entry: &ToolEntry) -> bool {
+        let Some(server) = self.servers.get(&entry.server) else {
+            // A tool whose server is missing from the registry cannot be dispatched either
+            // (`resolve` answers `UnknownTool`), so hiding it is the consistent answer rather than a
+            // new judgement.
+            return true;
+        };
+        matches!(
+            live.digest_for(&entry.server, &entry.tool, &server.approval),
+            LiveDigest::Quarantined(_)
+        )
+    }
+
     /// DISPATCH-TIME RE-VALIDATION — the check that makes a revocation bite within one request.
     ///
     /// `self` is the LIVE snapshot, re-read immediately before the call goes out; `selected` is what
