@@ -58,7 +58,6 @@ const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 /// [`super::taskstore`] is the change that would give these three a caller; it is not made here.
 /// The rows are kept because they are the specification's, and a table that omitted the codes we
 /// do not yet emit would be a table somebody re-derives wrongly later.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum A2aError {
     /// The named task is not one this deployment holds for this caller.
@@ -113,6 +112,30 @@ impl A2aError {
             | A2aError::InvalidParams
             | A2aError::Internal => None,
         }
+    }
+
+    /// THE ERROR TYPE A BACKEND'S JSON-RPC CODE NAMES, or `None` for a code A2A does not define.
+    ///
+    /// Used to carry a relayed backend's error SEMANTICS through busbar without carrying its words.
+    /// A gateway that collapsed every backend error to "the upstream failed" would report a task
+    /// that does not exist as a gateway fault — the caller cannot tell a typo from an outage, and
+    /// the specification's whole §5.4 mapping is lost at the hop. The code is a protocol fact and is
+    /// carried; the backend's `message` is its own prose and is not. The REASON is re-derived from
+    /// the code through the table below rather than echoed, so nothing a backend writes reaches a
+    /// caller even inside `data`.
+    pub(crate) fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            -32001 => A2aError::TaskNotFound,
+            -32002 => A2aError::TaskNotCancelable,
+            -32004 => A2aError::UnsupportedOperation,
+            -32006 => A2aError::InvalidAgentResponse,
+            -32600 => A2aError::InvalidRequest,
+            -32601 => A2aError::MethodNotFound,
+            -32602 => A2aError::InvalidParams,
+            -32603 => A2aError::Internal,
+            -32700 => A2aError::Parse,
+            _ => return None,
+        })
     }
 
     /// The HTTP status §5.4 binds this error to. `Parse` has none in the table — a body that is not

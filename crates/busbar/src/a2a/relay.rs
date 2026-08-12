@@ -276,7 +276,17 @@ pub(crate) enum RelayRefusal {
     NotJson { url: String, err: String },
     /// The backend answered with a JSON-RPC `error` member. The backend's own words are carried so
     /// an operator reading the log sees what it said, and they are NOT returned to the caller.
-    BackendError { code: String, message: String },
+    ///
+    /// `jsonrpc_code` is the SAME error as an integer, where the backend sent one A2A defines. It
+    /// is carried separately from `code` because the two are different kinds of thing: `code` is for
+    /// the log and may be any JSON value a backend chose to put there, and this is a protocol fact
+    /// the ingress re-emits so a caller learns what actually happened. See
+    /// `rpcerror::A2aError::from_code` for why the semantics travel and the prose does not.
+    BackendError {
+        code: String,
+        message: String,
+        jsonrpc_code: Option<i64>,
+    },
 }
 
 impl RelayRefusal {
@@ -314,7 +324,7 @@ impl std::fmt::Display for RelayRefusal {
                 f,
                 "the backend agent at `{url}` replied with something that is not JSON: {err}"
             ),
-            RelayRefusal::BackendError { code, message } => {
+            RelayRefusal::BackendError { code, message, .. } => {
                 write!(f, "the backend agent refused the task: [{code}] {message}")
             }
         }
@@ -476,6 +486,7 @@ fn read_reply(body: &[u8], url: &str) -> Result<RelayReply, RelayRefusal> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            jsonrpc_code: err.get("code").and_then(serde_json::Value::as_i64),
         });
     }
 
@@ -490,13 +501,65 @@ fn read_reply(body: &[u8], url: &str) -> Result<RelayReply, RelayRefusal> {
     })
 }
 
-/// The task state a `result` (or a streamed event) reports, defaulting to `Working`.
-fn reported_task_state(result: &serde_json::Value) -> TaskState {
+/// THE PAYLOAD INSIDE A JSON-RPC `result`, in either of the shapes A2A has used.
+///
+/// A2A v0.3 makes the `result` the Task (or Message) itself. v1.0 WRAPS it — `{"task": {…}}`,
+/// `{"message": {…}}` — which is the shape the pinned control agent and the official TCK speak.
+/// busbar is content-blind on this plane and does not translate between them; it only has to know
+/// WHERE the payload is, because the two things it does to a backend answer (substitute its own
+/// task identity, read the state the backend reported) are both about the payload and neither is
+/// about the wrapper.
+///
+/// A wrapper is recognised by carrying `task` or `message` AS AN OBJECT. Nothing else is treated as
+/// one: a v0.3 Task has neither member at its top level, so the two shapes cannot be confused.
+fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
+    for member in ["task", "message"] {
+        if let Some(inner) = result.get(member) {
+            if inner.is_object() {
+                return inner;
+            }
+        }
+    }
     result
+}
+
+/// The mutable half of [`payload_of`]. Written out rather than shared, because the borrow checker
+/// cannot express "the same lookup, mutably" without one of the two being unsafe or a lookup key.
+fn payload_of_mut(result: &mut serde_json::Value) -> &mut serde_json::Value {
+    let wrapper = ["task", "message"]
+        .into_iter()
+        .find(|m| result.get(m).is_some_and(serde_json::Value::is_object));
+    match wrapper {
+        Some(member) => result.get_mut(member).expect("just found"),
+        None => result,
+    }
+}
+
+/// The task state a `result` (or a streamed event) reports, defaulting to `Working`.
+///
+/// THE WIRE TOKEN, NOT THE STORE TOKEN. `TaskState::parse` reads what busbar WROTE and is strict on
+/// purpose — an unknown token there is a row a downgrade must not guess about. This reads what a
+/// BACKEND said, and A2A has two spellings for every state: v0.3's `input-required` and v1.0's
+/// `TASK_STATE_INPUT_REQUIRED`. Reading only the first recorded every task a v1.0 backend completed
+/// as `working`, so busbar's own rows disagreed with the answer it had just handed the caller.
+/// Anything unreadable stays `Working`: a relay that guessed `completed` from a token it could not
+/// read would close a task that is still running.
+pub(crate) fn reported_task_state(result: &serde_json::Value) -> TaskState {
+    let Some(token) = payload_of(result)
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-        .and_then(|s| TaskState::parse(s).ok())
-        .unwrap_or(TaskState::Working)
+    else {
+        return TaskState::Working;
+    };
+    if let Ok(state) = TaskState::parse(token) {
+        return state;
+    }
+    // v1.0's enum spelling: `TASK_STATE_` + the state in SCREAMING_SNAKE_CASE.
+    match token.strip_prefix("TASK_STATE_") {
+        Some(rest) => TaskState::parse(&rest.to_ascii_lowercase().replace('_', "-"))
+            .unwrap_or(TaskState::Working),
+        None => TaskState::Working,
+    }
 }
 
 /// SUBSTITUTE BUSBAR'S TASK IDENTITY onto a backend answer, leaving everything else alone.
@@ -513,7 +576,12 @@ pub(crate) fn rewrite_identity(
     if !result.is_object() {
         *result = serde_json::json!({ "kind": "task" });
     }
-    let Some(obj) = result.as_object_mut() else {
+    // THE PAYLOAD, not the wrapper. See `payload_of`: writing `id`/`contextId` beside a `task`
+    // member rather than inside it left the backend's own ids in the document a caller reads, which
+    // is the failure this function's whole purpose is to prevent, and added two members the Task
+    // schema forbids.
+    let payload = payload_of_mut(result);
+    let Some(obj) = payload.as_object_mut() else {
         return;
     };
     obj.insert(
@@ -543,11 +611,24 @@ pub(crate) fn rewrite_identity(
             }
         }
     }
+    // THE MATCHED SKILL IS METADATA. It used to be inserted as a top-level `skill` member, which
+    // A2A's `Task` does not define — so a conformant client validating the envelope rejects it, and
+    // busbar has invented a field in somebody else's schema. `metadata` is the member the
+    // specification provides for exactly this, and the key is namespaced so it cannot collide with
+    // whatever the backend put there.
     if let Some(skill) = matched_skill {
-        obj.insert(
-            "skill".to_string(),
-            serde_json::Value::String(skill.to_string()),
-        );
+        let metadata = obj
+            .entry("metadata")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !metadata.is_object() {
+            *metadata = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(metadata) = metadata.as_object_mut() {
+            metadata.insert(
+                "busbar/skill".to_string(),
+                serde_json::Value::String(skill.to_string()),
+            );
+        }
     }
 }
 

@@ -1179,6 +1179,41 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             )),
         )
             .into_response(),
+        // THE BACKEND'S OWN ERROR SEMANTICS, CARRIED. A backend that answered a well-formed A2A
+        // error said something specific — "no such task", "not cancelable" — and collapsing every
+        // one of them into `InvalidAgentResponseError` reports a caller's typo as a gateway fault.
+        // The CODE travels because it is a protocol fact; the backend's prose does not, and the
+        // `ErrorInfo` reason is re-derived from the code through busbar's own table rather than
+        // echoed, so nothing the backend wrote reaches the caller.
+        super::relay::RelayRefusal::BackendError {
+            jsonrpc_code: Some(code),
+            ..
+        } => match super::rpcerror::A2aError::from_code(*code) {
+            Some(err) => {
+                end_task(&ctx.seam, &ctx.task_id, &ctx.request_id, ctx.now);
+                (
+                    axum::http::StatusCode::from_u16(err.http_status())
+                        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                    axum::Json(super::rpcerror::about_task(
+                        &ctx.rpc_id,
+                        err,
+                        "the backend agent refused this task",
+                        &ctx.task_id,
+                    )),
+                )
+                    .into_response()
+            }
+            // A code A2A does not define is not a code busbar may re-emit: to a client it is
+            // indistinguishable from one the specification will define later.
+            None => fail_task(
+                &ctx.seam,
+                &ctx.rpc_id,
+                &ctx.task_id,
+                &ctx.request_id,
+                ctx.now,
+                refusal.status(),
+            ),
+        },
         _ => fail_task(
             &ctx.seam,
             &ctx.rpc_id,
@@ -1197,14 +1232,15 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// error hands the caller a Task envelope for work that never started. The refusal names the TASK
 /// so the caller can correlate it with the record busbar kept, and never the backend, because
 /// publishing the backend is publishing the way around every control busbar applies.
-fn fail_task(
+/// END THE TASK AS `failed`, AND TELL ANY REGISTERED CALLBACK. The half of [`fail_task`] that is
+/// about the RECORD rather than about the answer, split out because a refusal that carries the
+/// backend's own error code renders its answer differently and must still end the task identically.
+fn end_task(
     seam: &Arc<dyn super::relay::RelaySeam>,
-    rpc_id: &serde_json::Value,
     task_id: &str,
     request_id: &str,
     now: u64,
-    status: u16,
-) -> Response {
+) {
     match super::taskstore::TASKS.transition(
         task_id,
         super::task::TaskState::Failed,
@@ -1219,6 +1255,17 @@ fn fail_task(
             tracing::error!(task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
         }
     }
+}
+
+fn fail_task(
+    seam: &Arc<dyn super::relay::RelaySeam>,
+    rpc_id: &serde_json::Value,
+    task_id: &str,
+    request_id: &str,
+    now: u64,
+    status: u16,
+) -> Response {
+    end_task(seam, task_id, request_id, now);
     (
         axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
         axum::Json(super::rpcerror::about_task(
