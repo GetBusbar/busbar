@@ -18,6 +18,10 @@ use serde_json::Value;
 // operations live in submodules and are assembled into `enum IrReq`/`enum IrResp`.
 pub(crate) mod audio;
 pub(crate) mod embeddings;
+/// THE ONE PROJECTION — what the shared pipeline (hooks, governance, taps) is allowed to know about
+/// a request, read from the IR and from nothing else. Beside the IR rather than beside the hooks so
+/// that "a hook sees the IR" is a compile-time fact; see the module header.
+pub(crate) mod facts;
 pub(crate) mod image;
 pub(crate) mod invoke;
 pub(crate) mod moderation;

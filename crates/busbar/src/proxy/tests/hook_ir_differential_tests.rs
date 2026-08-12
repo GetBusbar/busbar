@@ -14,7 +14,8 @@
 //!     `block_text`, `conversation_turns`, `turn_count`, `max_tokens_for`, `system_text_chars`,
 //!     `total_text_chars`, `body_end_user`, `build_prompt_projection` and `apply_rewrite_to_body`).
 //!   * **RHS — the IR.** `proto/*/reader.rs::read_request`, which normalizes the same body into
-//!     `IrRequest`, and a MECHANICAL walk over the blocks it produced.
+//!     `IrRequest`, and `ir::facts::project` — the successor projection — walking the blocks it
+//!     produced.
 //!
 //! They disagree, and the disagreement is security-shaped rather than untidy: a PII/DLP gate wired
 //! as a `prompt: ro` hook screens LHS while the request that goes upstream is built from RHS — **so
@@ -35,10 +36,11 @@
 //!     `cargo test -p busbar hook_ir_differential -- --ignored --nocapture`.
 //!   * [`differential_diff_list_is_exactly_the_pinned_divergences`] is **THE RATCHET**, and it is
 //!     green. It pins the diff list as a snapshot, field by field, so that between now and the
-//!     cutover **no divergence can appear and none can vanish unnoticed.** When `ir::facts` lands
-//!     and the projection is re-pointed at it, this list must shrink to exactly the intended
-//!     semantic changes; anything else in it is a bug in the new projection, and this test is where
-//!     that shows up.
+//!     cutover **no divergence can appear and none can vanish unnoticed.** It has moved once: when
+//!     `ir::facts` became the RHS the list went from twelve rows to nine — three closed, **none
+//!     opened** — and that "none opened" was the landing criterion for the unit, not a pleasant
+//!     side effect. A tenth row would have been a bug in the new projection, and this test is where
+//!     it would have shown up.
 //!
 //! # `normalize`
 //!
@@ -47,13 +49,27 @@
 //! test is for, so the normalization must not paper over it** — it does not sort, does not drop
 //! empty turns, and does not merge the system slot into the turn list.
 //!
-//! The RHS walk is deliberately **mechanical and protocol-blind**: text-carrying blocks in request
-//! order, no `PROTO_*` in sight. That is the shape a single implementation has to have, so its
-//! disagreements with the LHS are exactly the decisions the cutover must take deliberately. In
-//! particular it is the NAIVE port — it reads `Thinking.text` without asking whether the block is
-//! opaque, and it projects `ToolUse.input` — because both of those are the ports a reasonable
-//! person writes if they do not read the warnings, and the differential is where the warning has to
-//! come from.
+//! # The RHS is now REAL CODE — the successor projection, not a sketch
+//!
+//! This file originally carried its own hand-written walk over `IrBlock`, deliberately NAIVE: it
+//! read `Thinking.text` without asking whether the block was opaque, because that is the port a
+//! reasonable person writes if they do not read the warnings, and the differential is where the
+//! warning had to come from. **That sketch is gone.** The RHS is now
+//! [`crate::ir::facts::project`] plus [`crate::ir::facts::IrFacts`], so both sides of this
+//! comparison are code that ships, and every remaining row below is a real disagreement between two
+//! implementations rather than between one implementation and a test helper.
+//!
+//! Reading the two sketch-era decisions in the pinned list is worth doing, because the successor
+//! took a different one on each:
+//!
+//!   * **opacity** — the sketch showed provider ciphertext; `project` asks
+//!     [`crate::ir::IrBlock::is_opaque`] first and substitutes the marker. Three rows closed.
+//!   * **tool-call arguments** — the sketch projected them and so does `project`, because a gate
+//!     that cannot see the arguments of a tool call cannot screen them. That row stays open on
+//!     purpose: it is a widening, and a widening is a CHANGELOG entry, not a bug.
+//!
+//! The RHS is still **protocol-blind** — no `PROTO_*` in sight on either side of the walk, and none
+//! in `ir/facts.rs` at all. That is the shape a single implementation has to have.
 //!
 //! # It supersedes two tripwires this project already invented
 //!
@@ -69,7 +85,8 @@
 //! is. This file is the SWEEP — the corpus walk that finds the ones nobody thought to characterise.
 
 use super::*;
-use crate::ir::{IrBlock, IrRequest, IrRole};
+use crate::ir::facts::IrFacts;
+use crate::ir::{IrRequest, IrRole};
 use crate::proto::{ProtocolRegistry, KNOWN_PROTOCOLS};
 use std::collections::BTreeMap;
 
@@ -115,7 +132,7 @@ fn projection_view(f: &Fixture) -> View {
     }
 }
 
-/// RHS — the IR's view: the protocol's real reader, then a protocol-BLIND walk over the blocks.
+/// RHS — the IR's view: the protocol's real reader, then the successor projection.
 ///
 /// `Err` is a first-class outcome, not a test failure: five readers hard-reject bodies the
 /// projection screens happily, and that asymmetry is itself one of the divergences (on the
@@ -132,29 +149,6 @@ fn ir_view(f: &Fixture) -> Result<View, String> {
     Ok(project_ir(&ir))
 }
 
-/// The MECHANICAL projection of one IR block's text — no protocol names, no wire shapes, no
-/// opacity check. Deliberately naive; see this file's header.
-fn block_text_pieces(b: &IrBlock, out: &mut Vec<String>) {
-    match b {
-        IrBlock::Text { text, .. } => out.push(text.clone()),
-        // NOT opacity-aware on purpose: for a redacted block `text` holds provider CIPHERTEXT, and
-        // a projection that shows it is a new disclosure to the operator's sidecar. The
-        // differential is where that has to be caught.
-        IrBlock::Thinking { text, .. } => out.push(text.clone()),
-        // Tool-call ARGUMENTS: retained by the IR, projected by nothing today.
-        IrBlock::ToolUse { input, .. } => out.push(input.to_string()),
-        IrBlock::ToolResult { content, .. } => {
-            for c in content {
-                block_text_pieces(c, out);
-            }
-        }
-        // Structurally text-less. No catch-all arm: a new IR block variant must be decided here,
-        // in a diff, rather than defaulting to invisible.
-        IrBlock::Image { .. } => {}
-        IrBlock::Json(_) => {}
-    }
-}
-
 fn role_name(r: IrRole) -> &'static str {
     match r {
         IrRole::System => "system",
@@ -164,35 +158,44 @@ fn role_name(r: IrRole) -> &'static str {
     }
 }
 
+/// Reduce the successor projection to the same [`View`] the LHS reduces to.
+///
+/// This is the ONLY place the differential still does any flattening of its own, and it is
+/// deliberately the grouping `ir::facts::project` documents rather than a private one: group the
+/// item stream on `Slot::turn_index`, take the role from the items, join with a newline. The
+/// system slot is its own bucket and is never merged into the turn list — structural difference is
+/// what this file is for.
+///
+/// `text_chars` and `max_tokens` come from `IrFacts::shape()` and the end-user id from
+/// `IrFacts::end_user()`, so the SIZE-signal half of the comparison exercises the production
+/// accessors too and not just the content walk.
 fn project_ir(ir: &IrRequest) -> View {
-    let mut chars = 0usize;
-    let mut system_pieces = Vec::new();
-    for b in &ir.system {
-        block_text_pieces(b, &mut system_pieces);
-    }
-    chars += system_pieces
-        .iter()
-        .map(|s| s.chars().count())
-        .sum::<usize>();
-    let system = Some(system_pieces.join("\n")).filter(|s| !s.is_empty());
-
-    let mut turns = Vec::new();
-    for m in &ir.messages {
-        let mut pieces = Vec::new();
-        for b in &m.content {
-            block_text_pieces(b, &mut pieces);
+    let mut system_pieces: Vec<String> = Vec::new();
+    let mut turns: Vec<(String, Vec<String>)> = Vec::new();
+    for item in crate::ir::facts::project(ir) {
+        let piece = item.screenable_text().into_owned();
+        match item.slot().turn_index() {
+            None => system_pieces.push(piece),
+            Some(i) => {
+                while turns.len() <= i {
+                    turns.push((String::new(), Vec::new()));
+                }
+                turns[i].0 = role_name(item.role()).to_string();
+                turns[i].1.push(piece);
+            }
         }
-        chars += pieces.iter().map(|s| s.chars().count()).sum::<usize>();
-        turns.push((role_name(m.role).to_string(), pieces.join("\n")));
     }
-
+    let shape = ir.shape();
     View {
-        system,
-        turns,
+        system: Some(system_pieces.join("\n")).filter(|s| !s.is_empty()),
+        turns: turns
+            .into_iter()
+            .map(|(role, pieces)| (role, pieces.join("\n")))
+            .collect(),
         // Counted like the SIZE signal counts: text, never the join separators.
-        text_chars: chars,
-        max_tokens: ir.max_tokens,
-        end_user: ir.user.clone(),
+        text_chars: shape.text_chars,
+        max_tokens: shape.max_tokens,
+        end_user: ir.end_user().map(str::to_string),
     }
 }
 
@@ -655,21 +658,39 @@ fn differential_projection_and_ir_agree_on_every_fixture() {
 /// direction reproduced as well, and one — `bedrock_inference_config_max_tokens` — was named by
 /// nothing and found only by running the sweep. Six fixtures that were expected to diverge did NOT
 /// (see [`AGREEING_SHAPES_WORTH_NAMING`]); their agreement is evidence, not silence.
+///
+/// # MOVED ONCE: 12 rows → 9, when `ir::facts` became the RHS
+///
+/// The RHS used to be a hand-written sketch in this file. It is now [`crate::ir::facts::project`],
+/// and **three rows closed and none opened.** Both halves of that sentence are the unit's
+/// acceptance criterion, and the second half is the load-bearing one: an unexpected tenth row would
+/// have been a bug in the successor projection rather than a test to update.
+///
+/// The three that closed were all the SAME defect — content busbar cannot read, decided in the
+/// wrong place — and they are now named in [`AGREEING_SHAPES_WORTH_NAMING`] instead:
+///
+///   * `anthropic_redacted_thinking`, `bedrock_redacted_content` (D3): the successor asks
+///     `IrBlock::is_opaque()` BEFORE it touches `Thinking.text`, so the provider ciphertext parked
+///     there never reaches the operator's sidecar; the marker does, byte-identically to today's.
+///   * `responses_encrypted_content_only` (D2): closed from the IR side one unit earlier, by the
+///     predicate learning the third opaque shape. The projection reads the answer rather than
+///     re-deriving it from the wire, which is the entire point.
+///
+/// **What deliberately did NOT close: `openai_tool_call_and_result`.** The successor projects
+/// `ToolUse.input` on purpose — a gate that cannot see a tool call's arguments cannot screen the
+/// most attacker-influenceable field in an agent request. That row is a WIDENING and it stays open
+/// until the cutover ships it with a CHANGELOG entry and a byte cap.
 const PINNED_DIVERGENCES: &[(&str, &[&str])] = &[
-    // ── D3: the IR parks provider CIPHERTEXT in `Thinking.text`; the projection substitutes the
-    // marker. The IR is right and a naive `text` passthrough is a NEW DISCLOSURE of provider
-    // ciphertext to the operator's hook sidecar. Two dialects carry the shape.
-    (
-        "anthropic_redacted_thinking",
-        &["text_chars", "turn[0].text"],
-    ),
-    ("bedrock_redacted_content", &["text_chars", "turn[0].text"]),
     // ── FOUND BY THE SWEEP, NAMED BY NOBODY. `max_tokens_for` is dialect-aware for exactly one
     // dialect (`max_output_tokens` on Responses) and reads `max_tokens` everywhere else — but
     // Bedrock Converse spells the cap `inferenceConfig.maxTokens`, which the reader reads and the
     // projection does not. So on Bedrock ingress a routing policy or tap keying on the `max_tokens`
     // SIZE signal is BLIND to the caller's cap, in the same way every Responses request was blind
     // before that arm was added. Same defect, same function, one dialect further along.
+    //
+    // The successor reads the reader's normalized `IrRequest.max_tokens` and therefore gets it
+    // RIGHT, so this row is now a divergence in which the LHS is the wrong half: it survives as
+    // evidence of a defect the cutover FIXES, not of one it must be careful about.
     ("bedrock_inference_config_max_tokens", &["max_tokens"]),
     // ── D1: the in-band system turn. The divergence that already shipped a bug (Headroom shredding
     // the operator's system prompt on the dialects that carry it inside the turns array). The
@@ -698,9 +719,12 @@ const PINNED_DIVERGENCES: &[(&str, &[&str])] = &[
     // prose. A guardrail cannot currently screen a replayed refusal.
     ("openai_refusal_part", &["text_chars", "turn[0].text"]),
     // ── D5, the half of it that is real: TOOL-CALL ARGUMENTS. `ToolUse.input` — attacker-
-    // influenceable, sent upstream verbatim — is retained by the IR and projected by nothing. (The
-    // tool RESULT is projected and counted correctly on both sides; see
-    // `tool_role_bare_string_content_is_counted_and_projected_alike`.)
+    // influenceable, sent upstream verbatim — is retained by the IR and projected by nothing on the
+    // LHS. (The tool RESULT is projected and counted correctly on both sides; see
+    // `tool_role_bare_string_content_is_counted_and_projected_alike`.) The successor projects the
+    // arguments, in their own `Slot::ToolArgs` so the turn that made the call keeps the
+    // attribution. It is a WIDENING and stays open on purpose — a widening is a CHANGELOG entry
+    // and a byte cap, not a row to make disappear.
     (
         "openai_tool_call_and_result",
         &["text_chars", "turn[0].text"],
@@ -711,25 +735,25 @@ const PINNED_DIVERGENCES: &[(&str, &[&str])] = &[
     // change, in the safe direction, and one that must NOT end up keyed on whether a content hook
     // happens to be configured.
     ("openai_unknown_role", &["REJECTED"]),
-    // ── D2: a Responses `reasoning` item admitted on its opaque `encrypted_content` blob ALONE.
-    // Here the PROJECTION is right and the IR is the wrong half: it reads `redacted: false` with
-    // EMPTY text and the blob parked in `signature`, so the naive IR port shows a hook an empty
-    // turn for a request the provider receives in full — the original bypass, restored.
-    (
-        "responses_encrypted_content_only",
-        &["text_chars", "turn[0].text"],
-    ),
 ];
 
-/// The fixtures that were expected to diverge and did NOT, kept as a named list because an
-/// agreement measured is worth as much as a disagreement measured — and because each of these was a
+/// The fixtures on which the two implementations AGREE, kept as a named list because an agreement
+/// measured is worth as much as a disagreement measured — and because each of these was a
 /// hypothesis somebody would otherwise re-derive by reading.
 ///
-/// A media-only turn keeps its entry on both sides. Anthropic `thinking`, Bedrock
-/// `reasoningContent.reasoningText`, Responses summary-only `reasoning` and a Gemini `thought: true`
-/// part all project their text identically through both implementations. And a tool-role
-/// bare-string turn agrees in both content and char count — the divergence recorded against it does
-/// not exist (see [`tool_role_bare_string_content_is_counted_and_projected_alike`]).
+/// **The first six were expected to diverge and did not.** A media-only turn keeps its entry on both
+/// sides. Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, Responses summary-only
+/// `reasoning` and a Gemini `thought: true` part all project their text identically through both
+/// implementations. And a tool-role bare-string turn agrees in both content and char count — the
+/// divergence recorded against it does not exist (see
+/// [`tool_role_bare_string_content_is_counted_and_projected_alike`]).
+///
+/// **The last three diverged and were CLOSED**, when `ir::facts` replaced this file's hand-written
+/// RHS. All three are the same defect: content busbar cannot read, decided from the wire shape in
+/// one implementation and from `IrBlock::is_opaque()` in the other. They are promoted from the
+/// pinned diff list to here rather than deleted, because "these two shapes agree" is a claim that
+/// must keep being checked — an opacity decision that silently regresses is a provider-ciphertext
+/// disclosure on two dialects and a policy bypass on the third.
 const AGREEING_SHAPES_WORTH_NAMING: &[&str] = &[
     "anthropic_thinking_block",
     "bedrock_reasoning_content",
@@ -737,6 +761,13 @@ const AGREEING_SHAPES_WORTH_NAMING: &[&str] = &[
     "openai_media_only_turn",
     "openai_tool_role_bare_string_only",
     "responses_reasoning_summary_only",
+    // ── CLOSED by `ir::facts`, and each one is an OPERATOR-VISIBLE behaviour change on the day the
+    // cutover lands: a hook that today sees a redacted turn's ciphertext-bearing text keeps seeing
+    // the marker (no change), and a hook that today sees an EMPTY turn for an encrypted-only
+    // Responses reasoning item starts seeing the marker instead (a change, in the safe direction).
+    "anthropic_redacted_thinking",
+    "bedrock_redacted_content",
+    "responses_encrypted_content_only",
 ];
 
 /// The named agreements are asserted, not assumed: if one of them starts to diverge, the pinned
