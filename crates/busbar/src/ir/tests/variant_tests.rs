@@ -73,3 +73,72 @@ fn operation_tag_matches_variant_both_directions() {
         Operation::Transcription
     );
 }
+
+/// THE EIGHTH OPERATION ANSWERS THE PARENT'S WHOLE INTERFACE, and this test is what makes that
+/// claim checkable rather than asserted.
+///
+/// A tool call is the first operation that did not come from the LLM surface, so it is the first
+/// real evidence that `IrReq`/`IrResp` is a parent interface and not just a chat enum with extra
+/// arms. Each assertion below is a DECISION the compiler forced when the variant landed — the
+/// exhaustive matches in `variant.rs` could not be satisfied without answering it — so this test
+/// pins the answers rather than re-deriving them.
+///
+/// It also keeps the variant honestly reachable while its codec cell is still being built. The
+/// alternative was an `allow(dead_code)`, which would have silenced the question instead of
+/// answering it.
+#[test]
+fn a_tool_call_answers_the_operation_blind_surface() {
+    use crate::ir::toolcall::{ToolCallReq, ToolCallResp};
+
+    let req = IrReq::ToolCall(ToolCallReq {
+        tool: "fs_read".to_string(),
+        arguments: serde_json::json!({ "path": "/etc/hosts" }),
+        extra: Default::default(),
+    });
+    assert_eq!(req.operation(), Operation::ToolCall);
+    assert!(
+        !req.wants_stream(),
+        "a tool call is one exchange: the tool runs and answers. Progress notifications are a \
+         separate channel, not an incremental rendering of THIS result."
+    );
+
+    let resp = IrResp::ToolCall(ToolCallResp {
+        content: serde_json::json!([{ "type": "text", "text": "127.0.0.1 localhost" }]),
+        is_error: false,
+        structured: None,
+        extra: Default::default(),
+    });
+    assert_eq!(resp.operation(), Operation::ToolCall);
+    assert!(
+        matches!(resp.usage(), Some(crate::billing::Billing::Flat)),
+        "a tool server reports no tokens, so a tool call is FLAT-metered — one call, one unit. \
+         Flat rather than None is what puts it on the same budget tree as a chat completion \
+         instead of leaving it invisible to governance."
+    );
+    assert!(
+        resp.token_usage().is_none(),
+        "and flat-metered means no token usage to report, exactly as moderation does"
+    );
+
+    // AND THE PAYLOAD SURVIVES THE PARENT. Carrying a subclass is only useful if the subclass's
+    // own fields come back out intact, so the round trip is asserted rather than assumed — the
+    // codec cell that will read a real `tools/call` off the wire depends on exactly this.
+    let IrReq::ToolCall(inner) = &req else {
+        panic!("the variant is what it was constructed as")
+    };
+    assert_eq!(inner.tool, "fs_read");
+    assert_eq!(inner.arguments["path"], "/etc/hosts");
+
+    let IrResp::ToolCall(inner) = &resp else {
+        panic!("the variant is what it was constructed as")
+    };
+    assert!(
+        !inner.is_error,
+        "A TOOL THAT RAN AND FAILED IS NOT A FAILED CALL. `is_error` is the tool's own verdict on          a successful protocol exchange; a call that could never be made is a refusal and never          reaches this type. Collapsing the two tells a caller their request was malformed when          their tool merely returned an error."
+    );
+    assert!(
+        inner.structured.is_none(),
+        "busbar models no output schema, so structured output is carried, never validated"
+    );
+    assert_eq!(inner.content[0]["text"], "127.0.0.1 localhost");
+}

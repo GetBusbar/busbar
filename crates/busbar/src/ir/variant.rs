@@ -44,6 +44,14 @@ pub(crate) enum IrReq {
     Transcription(TranscriptionReq),
     Speech(SpeechReq),
     Rerank(crate::ir::rerank::RerankReq),
+    /// The EIGHTH, and the first that did not come from the LLM surface. See
+    /// [`crate::ir::toolcall`] for why a tool call is an operation rather than a plane.
+    ///
+    /// No constructor yet: the codec cell that reads a `tools/call` off the wire is the next unit.
+    /// The variant lands FIRST and deliberately, because its arrival is what makes every exhaustive
+    /// match in this file a compile error until it has an answer — which is the whole mechanism.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ToolCall(crate::ir::toolcall::ToolCallReq),
 }
 
 impl IrReq {
@@ -60,6 +68,7 @@ impl IrReq {
             IrReq::Transcription(_) => Operation::Transcription,
             IrReq::Speech(_) => Operation::Speech,
             IrReq::Rerank(_) => Operation::Rerank,
+            IrReq::ToolCall(_) => Operation::ToolCall,
         }
     }
 
@@ -72,6 +81,9 @@ impl IrReq {
             IrReq::Transcription(r) => r.stream,
             IrReq::Speech(r) => r.stream,
             IrReq::Rerank(_) => false,
+            // A tool call is a request/response exchange: the tool runs and answers. Progress
+            // notifications are a separate channel, not an incremental rendering of THIS result.
+            IrReq::ToolCall(_) => false,
             IrReq::Embeddings(_) | IrReq::Moderation(_) | IrReq::Image(_) => false,
         }
     }
@@ -299,7 +311,14 @@ impl IrReq {
             | IrReq::Image(_)
             | IrReq::Transcription(_)
             | IrReq::Speech(_)
-            | IrReq::Rerank(_) => {}
+            | IrReq::Rerank(_)
+            // A tool call carries no sampling controls, no `max_tokens` and no tool-id echo, so
+            // none of chat's cross-protocol preparation has a subject here. Its `extra` is
+            // source-scoped by construction like its siblings', so there is nothing to clear
+            // either. Enumerated rather than swept into a `_` so that if this operation ever grows
+            // a control that must be prepared before a foreign egress, this is a compile error
+            // rather than a silent omission.
+            | IrReq::ToolCall(_) => {}
         }
     }
 
@@ -317,6 +336,11 @@ impl IrReq {
             IrReq::Transcription(r) => r.model = model.to_string(),
             IrReq::Speech(r) => r.model = model.to_string(),
             IrReq::Rerank(r) => r.model = model.to_string(),
+            // THE TARGET IDENTIFIER ON THIS OPERATION IS THE TOOL, and routing does not choose it:
+            // the caller named it and the catalogue bound it. The published-to-upstream rename is
+            // the WRITER's business (`rewrite_model`), which is where a lane's spelling belongs on
+            // every operation. So routing's injection point is a no-op here, as it is for chat.
+            IrReq::ToolCall(_) => {}
         }
     }
 }
@@ -331,6 +355,9 @@ pub(crate) enum IrResp {
     Transcription(TranscriptionResp),
     Speech(SpeechResp),
     Rerank(crate::ir::rerank::RerankResp),
+    /// The EIGHTH. See [`crate::ir::toolcall`]. No constructor yet — see [`IrReq::ToolCall`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    ToolCall(crate::ir::toolcall::ToolCallResp),
 }
 
 /// Resolved primitives for [`IrReq::prepare_for_egress`] — never a `Lane` or config handle.
@@ -393,7 +420,10 @@ impl IrResp {
             | IrResp::Image(_)
             | IrResp::Transcription(_)
             | IrResp::Speech(_)
-            | IrResp::Rerank(_) => {}
+            | IrResp::Rerank(_)
+            // Nothing to re-encode on the way back to a tool caller: the ids a tool call carries
+            // are the caller's own, not backend-issued ones busbar had to translate.
+            | IrResp::ToolCall(_) => {}
         }
     }
 
@@ -412,7 +442,11 @@ impl IrResp {
             | IrResp::Image(_)
             | IrResp::Transcription(_)
             | IrResp::Speech(_)
-            | IrResp::Rerank(_) => None,
+            | IrResp::Rerank(_)
+            // A tool call has one answer; there is no buffered stream to re-frame as an
+            // incremental one, and pretending otherwise would invent frames the caller never
+            // asked for.
+            | IrResp::ToolCall(_) => None,
         }
     }
 
@@ -427,6 +461,7 @@ impl IrResp {
             IrResp::Transcription(_) => Operation::Transcription,
             IrResp::Speech(_) => Operation::Speech,
             IrResp::Rerank(_) => Operation::Rerank,
+            IrResp::ToolCall(_) => Operation::ToolCall,
         }
     }
 
@@ -448,6 +483,12 @@ impl IrResp {
             IrResp::Transcription(r) => r.billing(),
             IrResp::Speech(r) => r.billing(),
             IrResp::Rerank(r) => r.billing(),
+            // A TOOL CALL IS NOT TOKEN-METERED. The upstream is a tool server, not a model: it
+            // reports no token counts and there are none to infer. `Flat` is the honest meter —
+            // one call, one unit — and it is what lets a tool call be CHARGED against the same
+            // budget tree as a chat completion rather than being invisible to it, which is the
+            // whole reason this arm exists rather than returning `None`.
+            IrResp::ToolCall(_) => Some(Billing::Flat),
         }
     }
 

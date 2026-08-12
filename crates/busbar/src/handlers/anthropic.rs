@@ -32,7 +32,8 @@ impl RequestHandler for AnthropicRequestHandler {
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
-            | Operation::Rerank => None,
+            | Operation::Rerank
+            | Operation::ToolCall => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {

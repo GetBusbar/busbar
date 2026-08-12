@@ -25,6 +25,7 @@ pub(crate) mod bedrock;
 pub(crate) mod chat;
 pub(crate) mod cohere;
 pub(crate) mod gemini;
+pub(crate) mod mcp;
 pub(crate) mod openai;
 pub(crate) mod responses;
 
@@ -34,6 +35,7 @@ static COHERE: cohere::CohereRequestHandler = cohere::CohereRequestHandler;
 static GEMINI: gemini::GeminiRequestHandler = gemini::GeminiRequestHandler;
 static ANTHROPIC: anthropic::AnthropicRequestHandler = anthropic::AnthropicRequestHandler;
 static RESPONSES: responses::ResponsesRequestHandler = responses::ResponsesRequestHandler;
+static MCP: mcp::McpRequestHandler = mcp::McpRequestHandler;
 
 /// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). All six
 /// protocols are registered (every one speaks chat); a registered handler may still return `None`
@@ -46,6 +48,7 @@ pub(crate) fn request_handler(protocol: &str) -> Option<&'static dyn RequestHand
         "gemini" => Some(&GEMINI),
         "anthropic" => Some(&ANTHROPIC),
         "responses" => Some(&RESPONSES),
+        "mcp" => Some(&MCP),
         _ => None,
     }
 }
@@ -131,6 +134,44 @@ pub(crate) trait OperationHandler: Send + Sync {
     // operation identity). Every default is the MOST RESTRICTIVE behavior — no streaming, no stream
     // intent, no affinity, no usage tap. Chat overrides them; the JSON ops keep the defaults. This is
     // exactly the old `OpSpec` surface, now living on the OperationHandler so there is ONE operation mechanism.
+
+    /// WHAT THIS UPSTREAM'S FAILURE MEANT — the attributed outcome of one outbound attempt, which
+    /// is what the breaker classifies and what failover needs in order to distinguish "this target
+    /// is sick" from "this caller may not do that".
+    ///
+    /// IT LIVES HERE, ON THE OPERATION CODEC, AND THAT PLACEMENT IS THE POINT. It was previously
+    /// only on `proto::ProtocolReader`, which reads as a general protocol trait but is not one: its
+    /// `read_request` returns `IrRequest` and its `read_response` returns `IrResponse` — the CHAT
+    /// subclass types, not the parent enums. So it is the chat codec, and anything hung off it is
+    /// available to chat protocols alone. That is the real reason the breaker never spanned MCP and
+    /// A2A: not an oversight, but a capability attached to a trait a non-chat protocol cannot
+    /// implement.
+    ///
+    /// The default is deliberately the most restrictive USEFUL answer rather than the most
+    /// restrictive possible one: the status alone, with no provider vocabulary claimed. A cell that
+    /// can read its upstream's error shape overrides this and says more; a cell that cannot still
+    /// gives the breaker a status to classify, which is strictly better than the silence that made
+    /// a non-2xx invisible on the planes built outside the matrix.
+    ///
+    /// `retry_after_secs` stays `None` here for the same reason it always has: this sees only the
+    /// body, and the forwarding layer — which holds the response headers — fills it in afterwards.
+    ///
+    /// NO PRODUCTION CALLER YET, and that is deliberate rather than unfinished. The breaker still
+    /// reaches the chat vtable directly (`health.rs`: `lane.protocol.reader().extract_error(…)`),
+    /// because its call site holds a `Lane` — an LLM-upstream concept — and re-pointing it is the
+    /// unit that follows this one. Landing the capability first is what makes that re-point a
+    /// change of ONE call site rather than a redesign, and the chat override below proves the
+    /// delegation is behaviour-preserving before anything depends on it. The same posture
+    /// `plane/mod.rs` took, for the same reason.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn extract_error(&self, status: u16, _body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::breaker::RawUpstreamError {
+            http_status: status,
+            provider_code: None,
+            structured_type: None,
+            retry_after_secs: None,
+        }
+    }
 
     /// Can this operation produce a client-facing incremental stream?
     fn streaming(&self) -> bool {

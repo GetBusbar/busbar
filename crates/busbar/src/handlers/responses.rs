@@ -31,7 +31,8 @@ impl RequestHandler for ResponsesRequestHandler {
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
-            | Operation::Rerank => None,
+            | Operation::Rerank
+            | Operation::ToolCall => None,
         }
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {

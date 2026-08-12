@@ -32,7 +32,10 @@ impl RequestHandler for BedrockRequestHandler {
             Operation::Chat => Some(&CHAT),
             // Enumerated (not `_`) so adding an operation is a compile error here — the documented
             // removability/symmetry gate. These are genuine gaps → no-handler 404.
-            Operation::Moderation | Operation::Transcription | Operation::Speech => None,
+            Operation::Moderation
+            | Operation::Transcription
+            | Operation::Speech
+            | Operation::ToolCall => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {

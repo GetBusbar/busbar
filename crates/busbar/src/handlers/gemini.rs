@@ -36,7 +36,7 @@ impl RequestHandler for GeminiRequestHandler {
             Operation::Chat => Some(&CHAT),
             // Enumerated (not `_`) so adding an operation is a compile error here — the documented
             // removability/symmetry gate. Gemini has no moderation/rerank surface.
-            Operation::Moderation | Operation::Rerank => None,
+            Operation::Moderation | Operation::Rerank | Operation::ToolCall => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -60,7 +60,7 @@ impl RequestHandler for GeminiRequestHandler {
             // Unreachable in practice: gemini has no moderation/rerank handler (operation_handler
             // returns None), so these never reach egress path resolution.
             Operation::Moderation => format!("{base}/{m}:generateContent"),
-            Operation::Rerank => format!("{base}/{m}:generateContent"),
+            Operation::Rerank | Operation::ToolCall => format!("{base}/{m}:generateContent"),
         }
     }
     fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
