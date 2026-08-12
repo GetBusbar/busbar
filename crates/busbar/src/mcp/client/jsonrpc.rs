@@ -9,9 +9,13 @@
 //! `crate::mcp::ingress` enforces this revision's transport MUSTs on requests busbar RECEIVES:
 //! `_meta` at `params._meta`, `Mcp-Method` mirroring the body's method, `Mcp-Name` mirroring the
 //! target, `MCP-Protocol-Version` mirroring `_meta`. This module produces requests that SATISFY the
-//! same MUSTs, and the constants are imported from the ingress rather than restated. A second copy
-//! of `"io.modelcontextprotocol/protocolVersion"` is a second thing to get wrong, and the failure
-//! mode is silent: busbar would accept requests it could not itself send.
+//! same MUSTs, and every one of the five shared wire words — the two `_meta` keys and the three
+//! header names — is `use`d from the ingress rather than restated. A second copy of
+//! `"io.modelcontextprotocol/protocolVersion"` is a second thing to get wrong, and the failure mode
+//! is silent: busbar would accept requests it could not itself send. That sentence was true as a
+//! claim and false as code until 2026-08-12: this module carried its own copy of all five, and a
+//! source-scanning test in `tests/wire_tests.rs` compared the two copies. There is now one copy, so
+//! there is nothing left to compare.
 //!
 //! There is no `initialize` and there is no session. Every request is self-describing, so there is
 //! nothing to establish and nothing to invalidate — which is why nothing in this module caches a
@@ -46,19 +50,19 @@
 //! behalf, an ask busbar itself declined.
 
 use super::identity::ToolKey;
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::ingress::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
+pub(crate) use crate::mcp::ingress::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
 
 /// The `_meta` key a progress token travels under, both directions. Serialised as `null` when
 /// absent, which `serde_json` omits from the object rather than sending — so a caller that asked for
 /// no progress produces an outbound `_meta` byte-identical to the one busbar sent before this.
 const META_PROGRESS_TOKEN: &str = "progressToken";
 
-/// The `_meta` key carrying a request's protocol version. Imported semantics, restated as a private
-/// constant only because the ingress keeps its own private; the ingress test suite and this module's
-/// pin the same literal, and `tests/wire_tests.rs` asserts they agree.
-pub(crate) const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
-/// The `_meta` key carrying the client's capabilities for THIS request.
-pub(crate) const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+// The `_meta` keys and the header names are NOT declared here. They are `use`d from
+// `crate::mcp::ingress`, which owns the single spelling of each — see the wire-words block there.
+// A re-export keeps this module's existing callers (`super::*` users, the test suite) working
+// against one definition rather than two, and the re-export is deliberately not a second `const`:
+// there is nothing here for a divergence to live in.
 
 /// A request busbar is about to send: everything, serialized, in one value.
 ///
@@ -191,14 +195,11 @@ fn envelope(
             "accept".to_string(),
             "application/json, text/event-stream".to_string(),
         ),
-        (
-            "mcp-protocol-version".to_string(),
-            PROTOCOL_VERSION.to_string(),
-        ),
-        ("mcp-method".to_string(), method.to_string()),
+        (H_PROTOCOL_VERSION.to_string(), PROTOCOL_VERSION.to_string()),
+        (H_MCP_METHOD.to_string(), method.to_string()),
     ];
     if let Some(name) = name {
-        headers.push(("mcp-name".to_string(), encode_sentinel(name)));
+        headers.push((H_MCP_NAME.to_string(), encode_sentinel(name)));
     }
     if let Some(auth) = authorization {
         headers.push(("authorization".to_string(), format!("Bearer {auth}")));

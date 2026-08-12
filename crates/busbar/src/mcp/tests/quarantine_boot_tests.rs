@@ -286,31 +286,23 @@ async fn no_refresh_job_is_started_for_a_deployment_with_no_registrations() {
     );
 }
 
-/// THE BOOT PATH ACTUALLY CALLS IT. The half no test can reach: `run()` binds real listeners and
-/// joins them, so the only way to pin the call site is to read it.
-///
-/// A ratchet rather than a behaviour, and it is here because the alternative is that the two cases
-/// above pass forever against a function `run()` stopped calling. The floor assertion is what stops
-/// an empty or moved `main.rs` from satisfying it vacuously.
-#[test]
-fn the_boot_path_starts_the_refresh_job() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
-    let scanned = src
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .count();
-    assert!(
-        scanned > 1_000,
-        "the boot module is meant to be read here; {scanned} lines is not it"
-    );
-    assert!(
-        src.contains("crate::mcp::spawn_refresh_job("),
-        "`run()` no longer starts the MCP refresh job. The sweep is the only thing that quarantines \
-         a drifted upstream with no operator present, and a sweep nothing spawns is a defence that \
-         does not run — which is the exact hole `mcp::connect::refresh` had when its only caller \
-         was a human pressing an admin button."
-    );
-}
+// ── THE SOURCE SCAN THAT USED TO LIVE HERE ──────────────────────────────────────────────────────
+//
+// `the_boot_path_starts_the_refresh_job` `include_str!`-ed `src/main.rs` and looked for
+// `crate::mcp::spawn_refresh_job(`. It was a ratchet rather than a behaviour, and it was here
+// because `run()` binds real listeners and joins them, so no test can reach the call site — the
+// only way to pin it is to read it. Without it, the two cases above pass forever against a function
+// `run()` stopped calling, and a sweep nothing spawns is a defence that does not run. That is the
+// exact hole `mcp::connect::refresh` had when its only caller was a human pressing an admin button.
+//
+// The read has moved to `scripts/structure-lint.sh`'s declaration census, row
+// `boot-starts-the-quarantine-sweep`: `spawn_refresh_job(` must occur EXACTLY ONCE in production
+// code under `crates/busbar/src/main.rs`. Zero is the whole point of putting it in a census rather
+// than a ban, and it was proven red — commenting out the one call site reported SUBJECT-MISSING.
+//
+// NOTE FOR THE REBUILD: this file post-dates the 1.6.0 MCP test classification (which covered 44
+// test files; there are 49 today) and therefore has NO ROW in it. Its three cases are behavioural
+// and are owed to the rebuilt tree; the census row above is the only part of it that is not.
 
 // ── (3) A DEMOTED UPSTREAM IS NOT ADVERTISED ───────────────────────────────────────────────────
 

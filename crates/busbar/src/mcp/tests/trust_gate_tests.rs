@@ -273,88 +273,24 @@ fn approval_is_per_capability_on_one_pinned_server() {
     );
 }
 
-/// THE SOURCE SCAN. `catalogue.rs` may not contain a SECOND "may this serve?" comparison.
-///
-/// The banned patterns are the raw-registration reads the deleted decision was made of: a boolean
-/// "is this registration pinned" field, and an "is an approved hash present" test. Either one back
-/// in this file is a second answer to a question that has one owner, and the failure mode of a
-/// second answer is silent divergence in the fail-OPEN direction.
-///
-/// Prose is exempt — the module explains the rule by naming what it refuses to do, the same
-/// exemption `crate::trust`'s genericity scan and the client plane's bound-identity scan make.
-#[test]
-fn the_catalogue_holds_no_second_may_this_serve_comparison() {
-    let src = include_str!("../catalogue.rs");
-    let mut offenders = Vec::new();
-    let mut scanned = 0usize;
-    let mut serves_calls = 0usize;
-    for (n, line) in src.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        scanned += 1;
-        if line.contains("serves(") {
-            serves_calls += 1;
-        }
-        for banned in BANNED {
-            if line.contains(banned) {
-                offenders.push(format!("{}: {} [{banned}]", n + 1, line.trim()));
-            }
-        }
-    }
-    // A FLOOR on the lines inspected: if `include_str!` ever resolved to something empty, or the
-    // comment filter ate the whole file, this test would pass without executing its assertion. It
-    // must not be able to.
-    assert!(
-        scanned > 50,
-        "the scan covered only {scanned} code lines; it is not reading catalogue.rs"
-    );
-    assert!(
-        offenders.is_empty(),
-        "catalogue.rs must not re-derive `may this serve?` from the raw registration fields — that \
-         is `crate::trust::Approval::serves`, and a second copy of it is the divergence this test \
-         exists to prevent. Offending code lines:\n{}",
-        offenders.join("\n")
-    );
-    // The POSITIVE half. Zero calls would mean the gate had been routed somewhere else again, and
-    // the ban above would then be passing over a file that decides nothing.
-    assert_eq!(
-        serves_calls, 1,
-        "the dispatch gate is exactly one `Approval::serves` call in catalogue.rs, got \
-         {serves_calls}"
-    );
-}
-
-/// The patterns the scan bans, named once so the scan and its companion cannot drift apart.
-const BANNED: &[&str] = &[".pinned", "schema_hash.is_none", "schema_hash.is_some"];
-
-/// The same scan, proven to BITE. Each banned pattern is checked against a line that WOULD be a
-/// violation — the deleted code itself, and the nearest convenience rewrite of it — so the scan
-/// cannot be passing because its predicate never matches anything.
-#[test]
-fn the_may_this_serve_scan_would_catch_a_violation() {
-    let planted = [
-        "        if !server.pinned {",
-        "        if entry.schema_hash.is_none() {",
-        "        if server.pinned && entry.schema_hash.is_some() { return Ok(entry); }",
-    ];
-    for line in planted {
-        assert!(
-            !line.trim_start().starts_with("//"),
-            "a planted violation must be CODE, or the scan's comment exemption would skip it"
-        );
-        assert!(
-            BANNED.iter().any(|b| line.contains(b)),
-            "the scan's predicate must match a real violation: {line}"
-        );
-    }
-    // And every banned pattern must be exercised by at least one planted line, so a pattern cannot
-    // rot into one that matches nothing while the companion still passes on the others.
-    for banned in BANNED {
-        assert!(
-            planted.iter().any(|l| l.contains(banned)),
-            "no planted violation exercises the banned pattern `{banned}`"
-        );
-    }
-}
+// ── THE SOURCE SCAN THAT USED TO LIVE HERE ──────────────────────────────────────────────────────
+//
+// `the_catalogue_holds_no_second_may_this_serve_comparison` and its companion
+// `the_may_this_serve_scan_would_catch_a_violation` `include_str!`-ed `../catalogue.rs` and failed
+// on `.pinned` / `schema_hash.is_some()` / `schema_hash.is_none()`, plus a positive half asserting
+// exactly one `Approval::serves` call in that file.
+//
+// They defended a live invariant — THERE IS EXACTLY ONE TRUST COMPARISON — through a dead medium:
+// their subject was a path, and `mcp/` is being rebuilt. Both halves now live in
+// `scripts/structure-lint.sh`, which is file-agnostic and goes RED rather than quiet when its
+// subject moves:
+//
+//   * the NEGATIVE half is choke point `I-trust-serve-derivation`, which bans those same raw-field
+//     re-derivations TREE-WIDE (not in one named file) outside `crates/busbar/src/trust/`;
+//   * the POSITIVE half is declaration-census row `trust-serve-decision`, which requires exactly
+//     ONE `fn serves(` in production code. Two is the divergence; ZERO is the false green the old
+//     `assert_eq!(serves_calls, 1)` was watching for, and the census reports it as SUBJECT-MISSING
+//     rather than as a pass.
+//
+// Both were proven red before this deletion: a planted `entry.schema_hash.is_none()` in
+// `catalogue.rs` and a planted second `fn serves` in the same file each failed the lint.

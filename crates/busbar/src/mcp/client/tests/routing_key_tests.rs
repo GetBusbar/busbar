@@ -115,53 +115,20 @@ fn identically_named_tools_on_two_servers_are_two_distinct_identities() {
     );
 }
 
-/// THE SOURCE SCAN. No line of the dispatch module's CODE may read a tool description.
-///
-/// Prose is exempt, because the module header explains the rule by naming the thing it refuses to
-/// read — the same exemption `crate::trust`'s genericity test makes, and for the same reason.
-///
-/// This is the check that keeps the property true against a future convenience ("just fall back to
-/// fuzzy-matching the description when the name misses"), which is exactly how a bound-identity
-/// router turns back into a description router.
-#[test]
-fn dispatch_never_reads_a_tool_description() {
-    let src = include_str!("../dispatch.rs");
-    let mut offenders = Vec::new();
-    let mut scanned = 0usize;
-    for (n, line) in src.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        scanned += 1;
-        if line.contains("description") {
-            offenders.push(format!("{}: {}", n + 1, line.trim()));
-        }
-    }
-    // A FLOOR on the discovered set: if `include_str!` ever resolved to something empty, or the
-    // comment filter ate the whole file, this test would pass without executing its assertion. It
-    // must not be able to.
-    assert!(
-        scanned > 50,
-        "the scan covered only {scanned} code lines; it is not reading dispatch.rs"
-    );
-    assert!(
-        offenders.is_empty(),
-        "dispatch.rs must never read a tool description: a route is decided on bound identity \
-         alone, so a hostile description has nothing to influence. Offending code lines:\n{}",
-        offenders.join("\n")
-    );
-}
-
-/// The same scan, proven to BITE. A string that WOULD be a violation is checked against the same
-/// predicate the scan uses, so the scan cannot be passing because its predicate never matches
-/// anything.
-#[test]
-fn the_description_scan_would_catch_a_violation() {
-    let planted = "        if def.description.contains(\"urgent\") { return Ok(other); }";
-    assert!(!planted.trim_start().starts_with("//"));
-    assert!(
-        planted.contains("description"),
-        "the scan's predicate must match a real violation"
-    );
-}
+// ── THE SOURCE SCAN THAT USED TO LIVE HERE ──────────────────────────────────────────────────────
+//
+// `dispatch_never_reads_a_tool_description` `include_str!`-ed `../dispatch.rs` and failed on the
+// word `description` in any code line; `the_description_scan_would_catch_a_violation` proved the
+// predicate bit. The invariant is live and is not going anywhere — A ROUTE IS DECIDED ON BOUND
+// IDENTITY AND NEVER ON TEXT AN UPSTREAM AUTHORS — but its SUBJECT was a file path, and a test
+// whose subject stops existing does not fail; it stops being compiled.
+//
+// It is now `scripts/structure-lint.sh`'s decision-input purity invariant, three rows over
+// `resolve`, `revalidate` and `visible_catalogue`. The rule stays function-scoped because
+// `description` is legitimate almost everywhere — the catalogue stores one, the listing publishes
+// the OPERATOR's one — and illegitimate in exactly the code that decides where a call goes.
+//
+// Proven red three ways before this deletion: a planted `def.description.contains("urgent")` inside
+// `resolve` was flagged; renaming `revalidate` away reported SUBJECT-MISSING instead of passing;
+// and MOVING `dispatch.rs` out of the tree entirely — which is precisely what the rebuild does —
+// turned all three rows RED rather than silent.

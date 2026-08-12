@@ -117,60 +117,26 @@ fn the_authorization_header_is_present_exactly_when_a_credential_was_planned() {
     assert!(header(&without, "authorization").is_none());
 }
 
-/// SYMMETRY, machine-checked against the INGRESS's own source.
-///
-/// The two directions must agree on four literals: the two `_meta` keys and the three header names.
-/// A disagreement is silent and mutual — busbar would refuse a request busbar sent — and no
-/// single-direction test can see it, because each side is internally consistent with its own copy.
-///
-/// The version constant needs no check here: it is IMPORTED from the ingress rather than restated,
-/// so a divergence is impossible by construction. The rest are string literals on both sides, and
-/// literals are what this scan is for.
-///
-/// A live round trip through `crate::mcp::ingress::rpc` is the stronger test and is deliberately not
-/// attempted: that handler needs a mounted `App`, and the method surface it dispatches into does not
-/// exist yet — the ingress answers `-32601` to every method. Stated rather than skipped quietly.
-#[test]
-fn the_client_and_the_ingress_agree_on_every_wire_literal() {
-    let ingress_src = include_str!("../../ingress.rs");
-    // A FLOOR: if `include_str!` resolved to something empty, every `contains` below would fail
-    // rather than pass — but the floor makes the reason legible instead of mysterious.
-    assert!(
-        ingress_src.len() > 5_000,
-        "the ingress source did not load ({} bytes)",
-        ingress_src.len()
-    );
-
-    let req = tools_call(
-        "https://u.example/mcp",
-        &tkey("fs", "read"),
-        &serde_json::json!({}),
-        1,
-        None,
-    );
-    let mut checked = 0usize;
-    // Header names the client emits that the ingress REQUIRES. Read off the built request rather
-    // than retyped, so a client-side rename is caught here instead of in production.
-    for name in ["mcp-protocol-version", "mcp-method", "mcp-name"] {
-        assert!(
-            header(&req, name).is_some(),
-            "the client must emit `{name}`"
-        );
-        assert!(
-            ingress_src.contains(&format!("\"{name}\"")),
-            "the ingress must require `{name}` by the same literal the client emits"
-        );
-        checked += 1;
-    }
-    for meta_key in [META_PROTOCOL_VERSION, META_CLIENT_CAPABILITIES] {
-        assert!(
-            ingress_src.contains(meta_key),
-            "the ingress must read `{meta_key}` by the same literal the client writes"
-        );
-        checked += 1;
-    }
-    assert_eq!(checked, 5, "all five shared literals must be checked");
-}
+// ── THE SOURCE SCAN THAT USED TO LIVE HERE ──────────────────────────────────────────────────────
+//
+// `the_client_and_the_ingress_agree_on_every_wire_literal` `include_str!`-ed `../../ingress.rs` and
+// checked that the five shared wire words — the two `_meta` keys and the three header names —
+// appeared on BOTH sides. It was comparing two copies, and a disagreement between them was silent
+// and mutual: busbar would have refused a request busbar sent, and no single-direction test could
+// see it, because each side was internally consistent with its own copy.
+//
+// There is now ONE copy. `mcp::ingress` owns all five constants and `mcp::client::jsonrpc` `use`s
+// them, so the two directions cannot disagree — the module header there already claimed this was
+// true, and until 2026-08-12 it was true as a claim and false as code. Nothing is left to compare,
+// so the comparison is gone rather than ported.
+//
+// What replaces it is not a symmetry check but a SINGULARITY check: `scripts/structure-lint.sh`'s
+// declaration census requires each of the five literals to occur EXACTLY ONCE in production code.
+// A second spelling anywhere in the tree is RED — that is the drift this test existed to catch, now
+// caught without naming a file — and ZERO occurrences is RED too, reported as SUBJECT-MISSING
+// rather than as a pass. Both arms were proven: re-typing `"mcp-method"` in `client/jsonrpc.rs`
+// reported WIRE-WORD-RESPELT with both sites, and renaming `"mcp-name"` to `"mcp-target-name"`
+// reported SUBJECT-MISSING.
 
 #[test]
 fn a_jsonrpc_error_is_not_reported_as_a_result() {

@@ -7,14 +7,17 @@ true by construction. Size reduction is a side effect of getting that right, not
 Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
 the tree cannot drift back into giant, inconsistent files.
 
-The same script enforces four further invariants that are about *behavior* rather than layout:
+The same script enforces six further invariants that are about *behavior* rather than layout:
 
 - the **choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass).
   It belongs to the remediation contract and is documented in
   [testing.md](testing.md#the-remediation-contract);
 - **request-path purity** (§ 5 below): the store is a durability sink, never on the request path;
 - **plane coherence** (§ 6 below): no plane grows a local reimplementation of a shared concern;
-- **axis purity** (§ 7 below): nothing branches on an axis of the matrix outside that axis's own arms.
+- **axis purity** (§ 7 below): nothing branches on an axis of the matrix outside that axis's own arms;
+- **decision-input purity** (§ 8 below): a routing decision never reads attacker-authored text;
+- the **declaration census** (§ 9 below): a shared decision, and each shared wire word, exists
+  exactly once — and *zero* is a failure, not a pass.
 
 § "Running the lint" below covers all of them.
 
@@ -192,6 +195,47 @@ Only the **transport** axis is armed today. `if protocol ==` and `match plane` a
 (the dialect branches in `proxy/hooks.rs`, and `plane/mod.rs`'s dispatch); they arm in the units that
 remove them, and each is one row here when that lands.
 
+## 8. Decision-input purity: a route is decided on identity, never on free text
+
+A route is decided on **bound identity** — registered upstream, namespaced capability, approved
+digest — and never on text an upstream authors. An upstream rewrites its own description at will, so
+a router that reads one is a router the upstream steers; that is the confused-deputy half of every
+tool-poisoning writeup.
+
+The `DECISION_INPUT` table in `scripts/structure-lint.sh` names each function that turns a request
+into a destination (or decides what a caller may see) and the text it may not read. It shares the
+`REQUEST_PATH` runner, so it is function-scoped for the same reason and reports `SUBJECT-MISSING` the
+same way. Function-scoped rather than tree-wide because `description` is a legitimate word almost
+everywhere — the catalogue stores one, the listing publishes the *operator's* one — and illegitimate
+in exactly the code that decides where a call goes.
+
+This replaced a test that `include_str!`-ed the routing module and grepped it. That test defended the
+same live invariant through a dead medium: its subject was a **file path**, and a test whose subject
+stops existing does not fail, it stops being compiled. Moving the same read into a declared row does
+not make the path irrelevant — it makes it a fact that goes **red** when it is wrong.
+
+## 9. The declaration census: exactly one, and zero is a failure
+
+Every other rule here is a **ban**: "this pattern appears nowhere". A ban has one blind spot, and it
+is always the same one — a ban over a subject that was renamed away scans the whole tree, matches
+nothing, prints nothing, and reads exactly like a clean bill of health. Zero is both the passing
+answer and the answer you get when the subject is gone.
+
+A census removes that by making the expected answer **a number that is not zero**. The
+`DECLARATION_CENSUS` table names a pattern and how many production code lines must carry it:
+
+- **too many** is a duplicate — a second spelling of a wire word, a second implementation of a
+  decision that must have one owner (`WIRE-WORD-RESPELT`, `TRUST-DECISION-RESPELT`);
+- **too few** is the false green, reported as `SUBJECT-MISSING` with a different remedy: re-point the
+  row, do not hunt a duplicate that is not there;
+- a row declaring a count of **0** is rejected outright as a malformed row. That is a ban, and bans
+  belong in the choke-point registry.
+
+It counts **code** lines, so the block comment documenting a wire word is not a second spelling of
+it. A census that read raw text would report its own documentation as a duplicate — the same trap the
+request-path scanner avoids by reading the code portion of each line.
+
+
 ## Naming vocabulary
 
 Module names use the product/API vocabulary (ingress, egress, pool, lane, hook, operation):
@@ -216,8 +260,12 @@ hand-rolls a durable write, a plugin export, or a config swap outside its choke 
 (`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), deletes a choke point's class-level
 test (`MISSING-CLASS-TEST`), puts a store call or an `await` on the admission path
 (`STORE-ON-REQUEST-PATH`), renames a guarded function out from under its rule (`SUBJECT-MISSING`),
-grows a second plane-local implementation of a shared concern (`PLANE-DUPLICATE`), or branches on an
-axis of the matrix outside that axis's own arms (`TRANSPORT-BRANCH`). See [testing.md](testing.md#the-remediation-contract).
+grows a second plane-local implementation of a shared concern (`PLANE-DUPLICATE`), branches on an
+axis of the matrix outside that axis's own arms (`TRANSPORT-BRANCH`), reads an upstream's free text
+while deciding a route (`DESCRIPTION-ON-ROUTING-PATH`), or grows a second spelling of a shared wire
+word or a second copy of a shared decision (`WIRE-WORD-RESPELT` / `TRUST-DECISION-RESPELT` /
+`TRUST-COMPARISON-BYPASS` / `ASK-NOT-OPERATOR-AUTHORED` / `SWEEP-NOT-SPAWNED`).
+See [testing.md](testing.md#the-remediation-contract).
 
 The scanner that decides "is this line test code?" is itself guarded:
 

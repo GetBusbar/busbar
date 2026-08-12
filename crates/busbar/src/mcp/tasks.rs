@@ -268,11 +268,11 @@ impl McpTask {
         let mut state = self.lock();
         state.input_requests = asks
             .into_iter()
-            .filter(|a| !state.answers.contains_key(&a.key))
+            .filter(|a| !state.answers.contains_key(a.key()))
             .map(|a| {
                 (
-                    a.key,
-                    serde_json::json!({ "method": a.method, "params": a.params }),
+                    a.key().to_string(),
+                    serde_json::json!({ "method": a.method(), "params": a.params() }),
                 )
             })
             .collect();

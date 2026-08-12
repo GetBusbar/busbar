@@ -65,6 +65,19 @@ pub(crate) const PROTOCOL_VERSION: &str = "2026-07-28";
 /// second revision is added this constant is the only thing that has to know.
 pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 
+// ══ THE WIRE WORDS, DEFINED EXACTLY ONCE ════════════════════════════════════════════════════════
+//
+// Five string literals — two `_meta` keys and three header names — are the vocabulary busbar both
+// REQUIRES on the way in (here) and EMITS on the way out (`mcp::client::jsonrpc`). They were once
+// written down twice, once per direction, and each copy was internally consistent with its own
+// side: busbar would have refused a request busbar itself sent, and no single-direction test could
+// see it. `client/jsonrpc.rs` now IMPORTS these rather than restating them, so the two directions
+// cannot disagree by construction.
+//
+// `structure-lint.sh`'s declaration census keeps it that way: each of these literals must occur
+// EXACTLY ONCE in production code. A second spelling anywhere in the tree is RED, and so is zero
+// occurrences — a wire word that vanished took its census row's subject with it.
+
 /// The `_meta` key carrying the protocol version of an individual request. Under this revision
 /// negotiation is ON DEMAND — there is no handshake, so every request states its own version, and
 /// this key is where it states it.
@@ -75,7 +88,7 @@ pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 /// schema is unambiguous — `JSONRPCRequest.params` requires `_meta`, and that `RequestMetaObject`
 /// requires this key — and the mistake is worth a comment because both placements read naturally
 /// and only one of them is a request any client will send.
-const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub(crate) const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 
 /// The `_meta` key carrying the client's capabilities for THIS request.
 ///
@@ -88,14 +101,14 @@ const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 /// server that fills the gap in has decided on the client's behalf what the client can do. The
 /// schema makes it required for exactly that reason, and both this repository's own battery
 /// (`SRV.META.MISSING-CAPABILITIES`) and the official suite read the omission as `-32602`.
-const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub(crate) const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 
 /// The header mirroring the body's `method`. REQUIRED on every request.
-const H_MCP_METHOD: &str = "mcp-method";
+pub(crate) const H_MCP_METHOD: &str = "mcp-method";
 /// The header mirroring the target name. REQUIRED on `tools/call`, `resources/read`, `prompts/get`.
-const H_MCP_NAME: &str = "mcp-name";
+pub(crate) const H_MCP_NAME: &str = "mcp-name";
 /// The header mirroring the `_meta` protocol version.
-const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 
 /// JSON-RPC error codes this module emits. Named rather than inlined because three of the four are
 /// MCP extensions rather than JSON-RPC standard codes, and a bare `-32022` in a match arm is a
