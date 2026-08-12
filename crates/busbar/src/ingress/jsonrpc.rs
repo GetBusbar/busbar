@@ -68,6 +68,44 @@
 //!
 //! If a real A2A peer is ever found that sends `"id": null` and cannot be changed, the right answer
 //! is a named, tracked variance here — not a second reader.
+//!
+//! # THE OTHER HALF: reading a RESPONSE, and why it is in this file
+//!
+//! [`read`] above reads a request busbar RECEIVES. [`read_response`] below reads a response busbar
+//! GETS BACK from a party it called — the MCP client direction (`mcp/client/jsonrpc.rs`) and the
+//! A2A delegating direction (`a2a/relay.rs`). Same envelope, same version member, same `id`
+//! member, opposite direction of travel, and the identical failure mode when it is not read: three
+//! separate implementations that agree on nothing.
+//!
+//! And it WAS three, all of them missing the same member. Before this:
+//!
+//! | | `mcp/client/jsonrpc.rs` | `a2a/relay.rs` (unary) | `a2a/relay.rs` (streamed) |
+//! |---|---|---|---|
+//! | `jsonrpc` member checked | yes | **no** | **no** |
+//! | response `id` correlated | **no** | **no** | **no** |
+//! | id the caller finally sees | n/a | busbar's own | **the backend's, verbatim** |
+//!
+//! An uncorrelated response is not a cosmetic gap. Section 5 exists so a client can tell WHICH
+//! request an answer belongs to; a reader that never looks at `id` will accept a mismatched one, a
+//! `null` one, or one with no `id` member at all as the answer to whatever it happened to be
+//! waiting on. Under adversarial timing that is how caller A is served upstream B's reply.
+//!
+//! **The correlation is WITHIN ONE DISPATCH and introduces no state.** `sent_id` is passed in by
+//! the code that built the outbound request, in the same function, and is gone when that function
+//! returns. `mcp/client/jsonrpc.rs`'s header states the rule this respects — "there is no
+//! `initialize` and there is no session … a counter that outlived a dispatch would be a session by
+//! another name" — and a per-dispatch argument is the shape that honours it: nothing is remembered
+//! between two calls, so there is nothing to invalidate.
+//!
+//! ## The direction-in-the-path question, answered rather than left to look like an oversight
+//!
+//! `ingress/` names the receiving direction and [`read_response`] serves the sending one, so the
+//! path reads oddly. It is still one module, deliberately: the CONCERN is the JSON-RPC 2.0
+//! envelope, not a direction, and the two halves share the version literal, the `id` legibility
+//! rule and the argument for what `null` means. Splitting them across two directories to make two
+//! path names read nicely would recreate, in the small, precisely the two-implementations defect
+//! the top of this file is a record of. One envelope, one file; the module's own name (`jsonrpc`)
+//! is what is true about it.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -190,6 +228,183 @@ pub(crate) fn read(value: &Value) -> Result<Envelope, Invalid> {
 /// the NULL that section 5 has already spent on another meaning.
 fn is_legible_id(id: &Value) -> bool {
     id.is_string() || id.is_number()
+}
+
+// ══ THE RESPONSE HALF ════════════════════════════════════════════════════════════════════════════
+
+/// What a RESPONSE envelope carries, once it has been read AND correlated to the request that was
+/// sent. Section 5: *"Either the `result` member or `error` member MUST be included, but both members
+/// MUST NOT be included."*
+///
+/// There is deliberately no `Uncorrelated` variant: a message that does not name the request busbar
+/// sent is not that request's answer, so it never becomes one of these. Holding one of these IS the
+/// proof that correlation succeeded.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Reply {
+    /// The `result` member, verbatim. Present-but-`null` is a legal result and stays one; it is the
+    /// MEMBER's presence that decides, never its truthiness.
+    Result(Value),
+    /// The `error` member. `code` is carried as the raw `Value` because the two planes render it
+    /// differently on their own wires (one as an `i64`, one as a string) and normalising it here
+    /// would change what an operator reads in a log.
+    Error {
+        code: Option<Value>,
+        message: String,
+    },
+}
+
+/// WHICH KIND of non-answer a body is. Two, and they are two because an operator acts on them
+/// differently: one says the peer is broken, the other says the peer answered a question busbar did
+/// not ask — which is either a broken multiplexer or an attempt to have busbar serve one caller
+/// another caller's answer.
+///
+/// It is an enum rather than something a caller re-derives from the prose, because a caller that
+/// had to grep the message for the word "id" would be parsing a sentence to recover a decision this
+/// module already made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotAnAnswerKind {
+    /// The body is not a JSON-RPC 2.0 response at all, or carries both / neither of `result` and
+    /// `error`.
+    NotAResponse,
+    /// The body IS a JSON-RPC response and it does not name the request that was sent: a mismatched
+    /// `id`, `"id": null`, or no `id` member.
+    Uncorrelated,
+}
+
+/// Why a body is not the answer to the request that was sent. Carries prose as well as the kind,
+/// because every caller does the same thing with the prose — puts it in front of an operator — and
+/// the specific reason is the whole value of the log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotAnAnswer {
+    pub(crate) kind: NotAnAnswerKind,
+    pub(crate) reason: String,
+}
+
+impl std::fmt::Display for NotAnAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+/// Read a parsed JSON body as the JSON-RPC 2.0 RESPONSE to a request whose id was `sent_id`.
+///
+/// ## The ORDER is load-bearing here too, and for a sharper reason than on the request side
+///
+/// `jsonrpc` and `id` are checked BEFORE `result` or `error` is looked at, so that the payload of a
+/// message that does not belong to this dispatch is never read at all. A reader that pulled
+/// `result` out first and correlated afterwards would already have handed the value to a `match`
+/// arm, and every such arm is a place the payload can escape.
+///
+/// ## What each refusal is
+///
+/// - **not an object / `jsonrpc` not `"2.0"`** — not a JSON-RPC message, so section 5 does not
+///   describe it and nothing in it can be trusted to mean what it looks like.
+/// - **no `id` member** — section 5 makes it REQUIRED on a Response. A response with no `id` is
+///   uncorrelatable by construction; it is also the exact shape a NOTIFICATION has, and a
+///   notification is a thing nobody may send in answer to a request.
+/// - **`"id": null`** — section 5 spends `null` on "I could not tell which request this was". It is
+///   a legible statement, and what it states is that this is not an answer to any request. Accepting
+///   it as one is accepting the sender's own admission that it does not know.
+/// - **a mismatched `id`** — the answer to a DIFFERENT request. This is the arm that matters: it is
+///   the difference between serving a caller their own answer and serving them somebody else's.
+/// - **both / neither of `result` and `error`** — section 5 forbids both and requires one.
+pub(crate) fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswer> {
+    let refuse = |reason: String| {
+        Err(NotAnAnswer {
+            kind: NotAnAnswerKind::NotAResponse,
+            reason,
+        })
+    };
+    let uncorrelated = |reason: String| {
+        Err(NotAnAnswer {
+            kind: NotAnAnswerKind::Uncorrelated,
+            reason,
+        })
+    };
+
+    let Some(obj) = value.as_object() else {
+        return refuse("the response is not a single JSON-RPC message object".to_string());
+    };
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return refuse(
+            "the response has no `jsonrpc` member equal to \"2.0\", so it is not a JSON-RPC 2.0 \
+             response"
+                .to_string(),
+        );
+    }
+    match obj.get("id") {
+        None => return uncorrelated(
+            "the response carries no `id` member; JSON-RPC 2.0 section 5 makes it REQUIRED, and \
+                 a response that names no request cannot be attributed to one"
+                .to_string(),
+        ),
+        Some(Value::Null) => {
+            return uncorrelated(
+                "the response carries `\"id\": null`, which JSON-RPC 2.0 section 5 reserves for a \
+                 request whose id the sender could not establish; it is not an answer to any \
+                 request"
+                    .to_string(),
+            )
+        }
+        Some(got) if !same_id(got, sent_id) => {
+            return uncorrelated(format!(
+                "the response is correlated to `id` {got}, but this dispatch sent `id` {sent_id}; \
+                 it is the answer to a different request and is refused rather than served"
+            ))
+        }
+        Some(_) => {}
+    }
+
+    // `"error": null` is treated as ABSENT rather than as an error, because peers do emit it
+    // alongside a `result`. That is why the both-present check below is written against the same
+    // non-null filter: otherwise every such peer would trip it.
+    let error = obj.get("error").filter(|e| !e.is_null());
+    let result = obj.get("result");
+    match (result, error) {
+        (Some(_), Some(_)) => refuse(
+            "the response carries BOTH `result` and `error`; JSON-RPC 2.0 section 5 says both MUST \
+             NOT be included, and guessing which one the sender meant is how a failure gets served \
+             as a success"
+                .to_string(),
+        ),
+        (None, None) => refuse(
+            "the response carries neither `result` nor `error`; JSON-RPC 2.0 section 5 requires \
+             exactly one"
+                .to_string(),
+        ),
+        (_, Some(err)) => Ok(Reply::Error {
+            code: err.get("code").cloned(),
+            message: err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        (Some(result), None) => Ok(Reply::Result(result.clone())),
+    }
+}
+
+/// Whether a response's `id` names the request that was sent.
+///
+/// A String matches a String and a Number matches a Number; nothing else matches anything, so a
+/// bool, array or object `id` can never correlate. The one deliberate looseness is INSIDE the
+/// number case: JSON has a single number type, so `1` and `1.0` are the same value, and
+/// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
+/// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
+/// accepting a wrong one, so the comparison is on the numeric value. It is still exact: no
+/// cross-type coercion, and `"1"` never matches `1`.
+fn same_id(got: &Value, sent: &Value) -> bool {
+    match (got, sent) {
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Number(a), Value::Number(b)) => {
+            a == b
+                || match (a.as_f64(), b.as_f64()) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
 }
 
 /// The JSON-RPC error envelope, as a value.

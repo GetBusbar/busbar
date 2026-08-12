@@ -271,7 +271,11 @@ pub(crate) async fn call(
     let response = HttpTransport::send(pool, &outbound, auth.policy, UPSTREAM_TIMEOUT)
         .await
         .map_err(|e| e.to_string())?;
-    match jsonrpc::parse_response(&response.body) {
+    // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
+    // answer must name. Both uses are on the screen together so a reader can see that they are the
+    // same value, and neither of them outlives this function — see `jsonrpc::parse_response` on why
+    // the correlation is a per-dispatch argument rather than a table of pending ids.
+    match jsonrpc::parse_response(&response.body, request_id) {
         RpcOutcome::Result(value) => Ok(Round::Done(value)),
         RpcOutcome::Error { code, message } => Err(format!(
             "MCP upstream answered JSON-RPC error {code}: {message}"
@@ -288,6 +292,14 @@ pub(crate) async fn call(
         })),
         RpcOutcome::Malformed(reason) => Err(format!(
             "MCP upstream returned HTTP {} and a body that is not a JSON-RPC response: {reason}",
+            response.status
+        )),
+        // A RESPONSE TO SOMETHING ELSE. The dispatch fails rather than adopting it: serving it
+        // would answer this caller with whatever the upstream was actually replying to, and the
+        // result is NOT logged into the error, because it is another conversation's payload.
+        RpcOutcome::Uncorrelated(reason) => Err(format!(
+            "MCP upstream returned HTTP {} and a JSON-RPC response busbar cannot correlate to this \
+             call: {reason}",
             response.status
         )),
     }

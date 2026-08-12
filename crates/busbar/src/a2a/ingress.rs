@@ -747,6 +747,9 @@ async fn unary_hop(
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
     let now_ms = ctx.now_ms;
+    // The id the hop's answer must name. `body` goes out verbatim, so the id busbar sends to the
+    // backend IS this one — see `RelayCall::rpc_id`.
+    let rpc_id = ctx.rpc_id.clone();
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
             &super::relay::RelayCall {
@@ -755,6 +758,7 @@ async fn unary_hop(
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
                 body: &body,
+                rpc_id: &rpc_id,
             },
             seam.as_ref(),
             now_ms,
@@ -826,6 +830,10 @@ async fn stream_hop(
     let backend_url = ctx.backend_url.clone();
     let now = ctx.now;
     let now_ms = ctx.now_ms;
+    // The same id the unary path answers under, and now the same id every STREAMED event is
+    // correlated against and answered under. That the two paths use one value is the fix: the
+    // streamed path used to let the backend supply it.
+    let rpc_id = ctx.rpc_id.clone();
     // A SECOND HANDLE ON THE SEAM for the sink below. The stream's state changes are the caller's
     // push notifications, and a sink that could not reach the seam would deliver on the unary path
     // and silently not on the streaming one — a difference no test that stops at the transport can
@@ -877,6 +885,7 @@ async fn stream_hop(
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
                 body: &body,
+                rpc_id: &rpc_id,
             },
             seam.as_ref(),
             &task_id,

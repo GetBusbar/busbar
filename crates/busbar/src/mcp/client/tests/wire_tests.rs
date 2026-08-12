@@ -176,6 +176,7 @@ fn the_client_and_the_ingress_agree_on_every_wire_literal() {
 fn a_jsonrpc_error_is_not_reported_as_a_result() {
     let out = parse_response(
         br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no such method"}}"#,
+        1,
     );
     assert_eq!(
         out,
@@ -188,7 +189,7 @@ fn a_jsonrpc_error_is_not_reported_as_a_result() {
 
 #[test]
 fn a_result_is_returned_verbatim() {
-    let out = parse_response(br#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#);
+    let out = parse_response(br#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#, 1);
     assert_eq!(out, RpcOutcome::Result(serde_json::json!({"content": []})));
 }
 
@@ -204,7 +205,7 @@ fn every_malformed_shape_is_refused_rather_than_guessed_at() {
     assert_eq!(bad.len(), 5, "the malformed set must not shrink");
     for body in bad {
         assert!(
-            matches!(parse_response(body), RpcOutcome::Malformed(_)),
+            matches!(parse_response(body, 1), RpcOutcome::Malformed(_)),
             "{:?} must be malformed",
             String::from_utf8_lossy(body)
         );

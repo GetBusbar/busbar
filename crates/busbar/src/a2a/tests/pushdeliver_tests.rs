@@ -411,3 +411,44 @@ fn the_terminal_delivery_drops_its_pin() {
         "a terminal task's pin outlived the task"
     );
 }
+
+// ══ THE BODY IS A BARE TASK, AND THAT IS THE PROTOCOL ════════════════════════════════════════════
+
+/// A REGRESSION LOCK ON AN ABSENCE, which is the only kind of claim that needs one.
+///
+/// Every other place busbar puts JSON on this plane's wire is a JSON-RPC message read or written
+/// through `crate::ingress::jsonrpc`. A reviewer who has just been through the three response sites
+/// that really did lack a `jsonrpc` member and an `id` will read the same absence HERE as a fourth
+/// instance and add them — and that would be a protocol violation, because a push notification is a
+/// bare `Task` document POSTed to a webhook, not a request (busbar invokes no method on the
+/// receiver) and not a response (the receiver asked busbar nothing).
+///
+/// A2A puts the correlation duty on the RECEIVER and keys it on the TASK id in this document, not
+/// on an envelope id — SPEC 4.3.3, "Clients MUST validate the task ID matches an expected task".
+/// So this asserts both halves: no envelope, and the correlator the spec names is present and is
+/// BUSBAR'S id, because busbar's is the only one the receiver has ever been told about.
+#[test]
+fn the_push_notification_body_is_a_bare_task_document_and_not_a_json_rpc_envelope() {
+    let task = task_with_callback("a2a-planner-PUSHED", TaskState::Completed);
+    let body = pushdeliver::notification_body(&task);
+    let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
+
+    for member in ["jsonrpc", "method", "params", "result", "error"] {
+        assert!(
+            doc.get(member).is_none(),
+            "a push notification is not a JSON-RPC message and must carry no `{member}` member: \
+             {doc}"
+        );
+    }
+    assert_eq!(
+        doc["kind"], "task",
+        "the payload is the Task document itself: {doc}"
+    );
+    // The `id` here is the TASK id — the correlator SPEC 4.3.3 makes the receiver check — and it is
+    // busbar's, never a backend agent's.
+    assert_eq!(doc["id"], "a2a-planner-PUSHED", "{doc}");
+    assert!(
+        doc.get("contextId").is_some() && doc.pointer("/status/state").is_some(),
+        "{doc}"
+    );
+}

@@ -836,6 +836,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             lease: None,
             gate: &AlwaysDelegable,
             body: b"{}",
+            rpc_id: &serde_json::json!(1),
         },
         &Seam(FetchPolicy::default()),
         1_000,

@@ -165,3 +165,177 @@ fn a_refusal_is_a_400_and_a_notification_ack_is_a_202_with_no_body() {
     assert_eq!(parse_error().status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(accepted().status(), axum::http::StatusCode::ACCEPTED);
 }
+
+// ══ THE RESPONSE READER ══════════════════════════════════════════════════════════════════════════
+//
+// The other direction of travel. These prove what `read_response` DECIDES; the socket-level proof
+// that each plane really routes through it is in `mcp/client/tests/transport_tests.rs` and
+// `a2a/tests/response_id_tests.rs`, both of which read the bytes off a wire rather than call this.
+
+fn sent(id: serde_json::Value) -> serde_json::Value {
+    id
+}
+
+fn reply_ok(body: serde_json::Value, sent_id: serde_json::Value) -> Reply {
+    read_response(&body, &sent_id)
+        .unwrap_or_else(|e| panic!("expected a reply, got {e:?} for {body}"))
+}
+
+fn reply_err(body: serde_json::Value, sent_id: serde_json::Value) -> NotAnAnswer {
+    read_response(&body, &sent_id).expect_err("expected a refusal")
+}
+
+/// THE DEFECT, AT THE UNIT. Every one of these was accepted as the answer to request `1` before the
+/// correlation existed: the reader never looked at `id`, so "which request is this?" had no answer
+/// and every body that parsed was treated as the answer to the one in flight.
+#[test]
+fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_answer() {
+    for body in [
+        // A DIFFERENT request's answer. The case that serves caller A with upstream B's reply.
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "result": { "leaked": true } }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
+        // section 5 spends `null` on "I could not tell which request this was".
+        serde_json::json!({ "jsonrpc": "2.0", "id": null, "result": {} }),
+        // No `id` member at all — REQUIRED on a Response, and the shape a notification has.
+        serde_json::json!({ "jsonrpc": "2.0", "result": {} }),
+        // Not an id at all.
+        serde_json::json!({ "jsonrpc": "2.0", "id": true, "result": {} }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": [1], "result": {} }),
+        // An ERROR for another request is equally not this request's answer.
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -1, "message": "no" } }),
+    ] {
+        let e = reply_err(body.clone(), sent(serde_json::json!(1)));
+        assert_eq!(
+            e.kind,
+            NotAnAnswerKind::Uncorrelated,
+            "{body} was accepted as the answer to `id` 1 (or refused for the wrong reason): {e:?}"
+        );
+    }
+}
+
+/// The control the case above is worthless without: a response that DOES name the request is served,
+/// and its payload comes back verbatim.
+#[test]
+fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives() {
+    assert_eq!(
+        reply_ok(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } }),
+            sent(serde_json::json!(1)),
+        ),
+        Reply::Result(serde_json::json!({ "content": [] }))
+    );
+    assert_eq!(
+        reply_ok(
+            serde_json::json!({ "jsonrpc": "2.0", "id": "req-a", "result": null }),
+            sent(serde_json::json!("req-a")),
+        ),
+        // `"result": null` is a LEGAL result. It is the MEMBER's presence that decides, and a reader
+        // that tested truthiness would report this as "neither result nor error".
+        Reply::Result(serde_json::Value::Null)
+    );
+}
+
+/// A string id and the number that stringifies to it are DIFFERENT ids, in this direction too — the
+/// request reader asserts the same thing, and a correlation that coerced them would let a peer
+/// answer request `1` with the answer to request `"1"`.
+#[test]
+fn correlation_never_coerces_across_types() {
+    assert_eq!(
+        reply_err(
+            serde_json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
+            sent(serde_json::json!(1)),
+        )
+        .kind,
+        NotAnAnswerKind::Uncorrelated
+    );
+    assert_eq!(
+        reply_err(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} }),
+            sent(serde_json::json!("1")),
+        )
+        .kind,
+        NotAnAnswerKind::Uncorrelated
+    );
+}
+
+/// The ONE deliberate looseness, and its bound. JSON has a single number type, so `1` and `1.0` are
+/// the same value and a peer that echoes one for the other has correlated correctly. Refusing a
+/// correct answer is as much a correlation failure as accepting a wrong one — but the looseness is
+/// numeric only, and `2.0` is still not `1`.
+#[test]
+fn the_same_number_written_two_ways_correlates_and_a_different_number_still_does_not() {
+    assert!(read_response(
+        &serde_json::json!({ "jsonrpc": "2.0", "id": 1.0, "result": {} }),
+        &serde_json::json!(1),
+    )
+    .is_ok());
+    assert_eq!(
+        reply_err(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2.0, "result": {} }),
+            sent(serde_json::json!(1)),
+        )
+        .kind,
+        NotAnAnswerKind::Uncorrelated
+    );
+}
+
+/// A correlated body still has to BE a response. These are the arms that say "the peer is broken"
+/// rather than "the peer answered somebody else", and the two are kept apart because an operator
+/// acts on them differently.
+#[test]
+fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_correlation() {
+    for body in [
+        serde_json::json!({ "id": 1, "result": {} }),
+        serde_json::json!({ "jsonrpc": "1.0", "id": 1, "result": {} }),
+        serde_json::json!({ "jsonrpc": 2.0, "id": 1, "result": {} }),
+        // Neither member: section 5 requires exactly one.
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1 }),
+        // BOTH members: section 5 says both MUST NOT be included, and guessing which the sender
+        // meant is how a failure is served as a success.
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "ok": true },
+            "error": { "code": -1, "message": "actually it failed" }
+        }),
+        // A batch, and a scalar.
+        serde_json::json!([{ "jsonrpc": "2.0", "id": 1, "result": {} }]),
+        serde_json::json!("a string"),
+    ] {
+        assert_eq!(
+            reply_err(body.clone(), sent(serde_json::json!(1))).kind,
+            NotAnAnswerKind::NotAResponse,
+            "{body}"
+        );
+    }
+}
+
+/// `"error": null` beside a `result` is a shape real peers emit, and it means "no error". Reading it
+/// as an error would turn every such peer's success into a failed hop — which is why the
+/// both-present check above is written against the same non-null filter.
+#[test]
+fn an_explicitly_null_error_member_is_absent_rather_than_an_error() {
+    assert_eq!(
+        reply_ok(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true }, "error": null }),
+            sent(serde_json::json!(1)),
+        ),
+        Reply::Result(serde_json::json!({ "ok": true }))
+    );
+}
+
+#[test]
+fn an_error_member_is_read_with_its_code_and_message() {
+    assert_eq!(
+        reply_ok(
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "error": { "code": -32601, "message": "no such method" }
+            }),
+            sent(serde_json::json!(1)),
+        ),
+        Reply::Error {
+            code: Some(serde_json::json!(-32601)),
+            message: "no such method".to_string()
+        }
+    );
+}

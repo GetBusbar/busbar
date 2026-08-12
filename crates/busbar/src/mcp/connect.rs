@@ -241,7 +241,10 @@ pub(crate) async fn refresh(
         Ok(r) => r,
         Err(e) => return Ok(record_failure(cache, server, &server_id, &e.to_string())),
     };
-    let tools = match jsonrpc::parse_response(&response.body) {
+    // Correlated against the id this refresh actually sent, three lines up. A refresh that adopted
+    // an uncorrelated answer would publish somebody else's tool list as this server's catalogue,
+    // which is the one observation every later dispatch is authorised against.
+    let tools = match jsonrpc::parse_response(&response.body, REFRESH_REQUEST_ID) {
         RpcOutcome::Result(value) => match parse_tool_list(&value) {
             Ok(tools) => tools,
             Err(reason) => return Ok(record_failure(cache, server, &server_id, &reason)),
@@ -278,6 +281,21 @@ pub(crate) async fn refresh(
                 &format!(
                     "the upstream returned HTTP {} and a body that is not a JSON-RPC response: \
                      {reason}",
+                    response.status
+                ),
+            ))
+        }
+        // A tool list busbar cannot attribute to the request it made is not this server's tool
+        // list. Recorded as a FAILURE — which demotes the server — rather than adopted, because
+        // adopting it would let whatever answered decide what tools busbar believes this server has.
+        RpcOutcome::Uncorrelated(reason) => {
+            return Ok(record_failure(
+                cache,
+                server,
+                &server_id,
+                &format!(
+                    "the upstream returned HTTP {} and a JSON-RPC response busbar cannot correlate \
+                     to this refresh: {reason}",
                     response.status
                 ),
             ))

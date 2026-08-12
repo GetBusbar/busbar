@@ -137,6 +137,26 @@ pub(crate) fn pin_for_test(task_id: &str) -> Option<PinnedCallback> {
 /// The receiver is the caller's own infrastructure and the ids it knows are the ones busbar issued,
 /// so the backend agent's names for this work must not appear here — the same reason
 /// [`super::relay::rewrite_identity`] exists on the reply path.
+///
+/// # THIS IS NOT A JSON-RPC ENVELOPE, AND THAT IS CORRECT. DO NOT "FIX" IT INTO ONE.
+///
+/// Stated here because the absence looks exactly like the defect this plane's other three response
+/// sites really did have. Every other place busbar puts JSON on this plane's wire is a JSON-RPC
+/// message and is read or written through [`crate::ingress::jsonrpc`]; a reviewer who has just been
+/// through those will read the missing `jsonrpc`, `method` and `id` members here as a fourth
+/// instance and add them. It would be a protocol violation.
+///
+/// A push notification is a **bare `Task` document POSTed to a webhook the CALLER nominated**. It is
+/// not a request (busbar is not invoking a method on the receiver), it is not a response (the
+/// receiver asked busbar nothing), and there is no request for an `id` to correlate to — the
+/// receiver is not a JSON-RPC peer at all. A2A puts the correlation duty on the RECEIVER and keys it
+/// on the TASK id in this document, not on an envelope id: SPEC 4.3.3, *"Clients MUST validate the
+/// task ID matches an expected task"*. That clause only makes sense because the task id is the only
+/// correlator there is, and it is the `"id"` field below.
+///
+/// So there is exactly one correctness duty on this function, and it is discharged: the ids in this
+/// document are BUSBAR'S, never the backend agent's, because busbar's are the only ones the
+/// receiver has ever been told about and the only ones that will resolve if it calls back.
 pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
     let doc = serde_json::json!({
         "id": task.task_id,

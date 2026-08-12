@@ -70,6 +70,21 @@
 //! backend's answer verbatim and [`rewrite_identity`] substitutes the two identity fields;
 //! everything else — status, artifacts, history, parts — is passed through untouched, because busbar
 //! is CONTENT-BLIND on this plane and rewriting a caller's payload is not a gateway's job.
+//!
+//! ## 6. THE REPLY IS CORRELATED TO THE REQUEST BUSBAR SENT, ON BOTH PATHS
+//!
+//! Content-blind is not the same as envelope-blind. Until this was written the hop read `error` and
+//! `result` straight off whatever came back: no `jsonrpc` member check, and the response `id` never
+//! read at all. A backend — or anything sharing that socket with it — could answer this hop with
+//! the reply to a different one and busbar would record it as this task's result and serve it.
+//!
+//! And the two paths did not even agree on what to do with the id they never checked: the unary
+//! path answered the caller under busbar's own `ctx.rpc_id`, while the streamed path passed the
+//! BACKEND's id through verbatim, so on a stream the backend chose the value busbar's caller
+//! correlated on. The unary path was right. Both now read the envelope through
+//! [`crate::ingress::jsonrpc::read_response`] — the same reader the MCP client direction uses, and
+//! the response-side sibling of the request reader both ingresses share — and an answer that names
+//! a different request is [`RelayRefusal::Uncorrelated`], never a result.
 
 use std::net::IpAddr;
 
@@ -195,6 +210,15 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) gate: &'a dyn DelegationGate,
     /// The caller's request, VERBATIM. busbar is content-blind on this plane.
     pub(crate) body: &'a [u8],
+    /// THE `id` THIS HOP IS ANSWERING, established by [`crate::ingress::jsonrpc::read`] at the
+    /// ingress: a string or a number, never `null` and never absent.
+    ///
+    /// It is the id the BACKEND's answer must carry, and it is that only because `body` above goes
+    /// out verbatim — so the id busbar sends to the backend IS the id busbar's own caller sent. If
+    /// this relay ever rewrites the outbound envelope, these become two different facts and this
+    /// field becomes two fields; the property is stated here because it is the assumption the
+    /// correlation rests on, and an unstated assumption is one a later edit breaks silently.
+    pub(crate) rpc_id: &'a serde_json::Value,
 }
 
 /// THE REQUEST THE RELAY IS ABOUT TO SEND: everything, in one value.
@@ -265,6 +289,15 @@ pub(crate) enum RelayRefusal {
     /// The backend answered with a JSON-RPC `error` member. The backend's own words are carried so
     /// an operator reading the log sees what it said, and they are NOT returned to the caller.
     BackendError { code: String, message: String },
+    /// THE BACKEND'S ANSWER DOES NOT NAME THE REQUEST BUSBAR SENT: a mismatched `id`, `"id": null`,
+    /// or no `id` member at all.
+    ///
+    /// A refusal and not a pass-through, on BOTH the unary and the streamed path. See the module
+    /// note "THE REPLY IS CORRELATED": an answer busbar cannot attribute is an answer to somebody
+    /// else's question, and relaying it is how caller A is served backend-conversation B's result.
+    /// The backend's payload is deliberately not carried into the refusal — it is another
+    /// conversation's content and this string reaches an operator's log.
+    Uncorrelated { url: String, reason: String },
 }
 
 impl RelayRefusal {
@@ -305,6 +338,11 @@ impl std::fmt::Display for RelayRefusal {
             RelayRefusal::BackendError { code, message } => {
                 write!(f, "the backend agent refused the task: [{code}] {message}")
             }
+            RelayRefusal::Uncorrelated { url, reason } => write!(
+                f,
+                "the backend agent at `{url}` answered something busbar cannot correlate to the \
+                 request it sent, so it is refused rather than relayed: {reason}"
+            ),
         }
     }
 }
@@ -438,36 +476,53 @@ pub(crate) fn relay(
             bytes: resp.body.len(),
         });
     }
-    read_reply(&resp.body, target.url.as_str())
+    read_reply(&resp.body, target.url.as_str(), call.rpc_id)
 }
 
-/// Read one JSON-RPC answer off a completed body.
-fn read_reply(body: &[u8], url: &str) -> Result<RelayReply, RelayRefusal> {
+/// Read one JSON-RPC answer off a completed body, AS THE ANSWER TO `rpc_id`.
+///
+/// The envelope rules are [`crate::ingress::jsonrpc::read_response`]'s — the same reader the MCP
+/// client direction uses, and the response-side sibling of the request reader both ingresses share.
+/// Before it this function read `error` and `result` straight off the value: no `jsonrpc` member
+/// check, and the `id` member never read at all, so a backend could answer this hop with the reply
+/// to a different one and busbar would hand it to the caller as their task's result.
+fn read_reply(
+    body: &[u8],
+    url: &str,
+    rpc_id: &serde_json::Value,
+) -> Result<RelayReply, RelayRefusal> {
+    use crate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+
     let envelope: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| RelayRefusal::NotJson {
             url: url.to_string(),
             err: e.to_string(),
         })?;
 
+    let reply = read_response(&envelope, rpc_id).map_err(|e| match e.kind {
+        NotAnAnswerKind::Uncorrelated => RelayRefusal::Uncorrelated {
+            url: url.to_string(),
+            reason: e.reason,
+        },
+        // "It is JSON, and it is not a JSON-RPC response" is what `NotJson` already means to every
+        // operator reading it, and its `err` field is where the reason belongs.
+        NotAnAnswerKind::NotAResponse => RelayRefusal::NotJson {
+            url: url.to_string(),
+            err: e.reason,
+        },
+    })?;
+
     // A JSON-RPC `error` is a FAILED HOP, not a result to hand back. A 200 carrying an error member
     // is the shape in which a backend refusal would otherwise arrive looking like success.
-    if let Some(err) = envelope.get("error").filter(|e| !e.is_null()) {
-        return Err(RelayRefusal::BackendError {
-            code: err
-                .get("code")
-                .map_or_else(|| "unknown".to_string(), ToString::to_string),
-            message: err
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
-    }
-
-    let result = envelope
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let result = match reply {
+        Reply::Error { code, message } => {
+            return Err(RelayRefusal::BackendError {
+                code: code.map_or_else(|| "unknown".to_string(), |c| c.to_string()),
+                message,
+            })
+        }
+        Reply::Result(result) => result,
+    };
     let reported_state = reported_task_state(&result);
     Ok(RelayReply {
         result,
@@ -609,36 +664,76 @@ fn sse_data(frame: &str) -> Option<String> {
 
 /// READ ONE BACKEND EVENT and re-frame it for the caller under busbar's identity.
 ///
-/// A frame that is not JSON, or carries no `result`, is passed through UNCHANGED rather than
-/// dropped: busbar is content-blind, an SSE stream legitimately carries comments and keep-alives,
-/// and a relay that silently swallowed what it could not parse would turn a backend's own protocol
-/// extension into an unexplained gap in the caller's stream.
+/// A frame that is not JSON, or that carries neither `result` nor `error`, is passed through
+/// UNCHANGED rather than dropped: busbar is content-blind, an SSE stream legitimately carries
+/// comments and keep-alives, and a relay that silently swallowed what it could not parse would turn
+/// a backend's own protocol extension into an unexplained gap in the caller's stream.
+///
+/// ## A FRAME THAT *IS* A JSON-RPC RESPONSE IS CORRELATED, and that closes the one real asymmetry
+///
+/// The unary path answers the caller under `ctx.rpc_id` — busbar's own reading of the caller's
+/// envelope. This path used to pass the backend's `id` through VERBATIM, and the two are only
+/// equal by the accident that the relay forwards the caller's body unchanged. So on a stream the
+/// BACKEND chose the `id` busbar's caller correlated on, which is the same defect
+/// [`rewrite_identity`] exists to close one field over: the module note says the backend's ids are
+/// ITS names for this work and must not reach the caller, and the `id` member was the one it
+/// missed. The unary path was right; this one was wrong, and it is fixed here rather than by making
+/// the unary path pass the backend's id through.
+///
+/// A frame that names a different request is an `Err`. Not dropped, and not passed on: dropping it
+/// would hide from the caller that something answered their stream that was not their backend's
+/// answer, and passing it on is the defect. The hop is refused, which on the first event is still a
+/// status the ingress can choose and after it ends the task as `failed` — see `relay_stream`.
 pub(crate) fn read_event(
     frame: &str,
+    rpc_id: &serde_json::Value,
     task_id: &str,
     context_id: &str,
     matched_skill: Option<&str>,
-) -> RelayEvent {
-    let Some(data) = sse_data(frame) else {
-        return RelayEvent {
+) -> Result<RelayEvent, String> {
+    use crate::ingress::jsonrpc::{read_response, Reply};
+
+    let verbatim = || {
+        Ok(RelayEvent {
             sse: frame.as_bytes().to_vec(),
             state: None,
             artifact: false,
-        };
+        })
+    };
+    let Some(data) = sse_data(frame) else {
+        return verbatim();
     };
     let Ok(mut envelope) = serde_json::from_str::<serde_json::Value>(&data) else {
-        return RelayEvent {
-            sse: frame.as_bytes().to_vec(),
+        return verbatim();
+    };
+    // WHAT MAKES A FRAME A RESPONSE, and therefore what makes it correlatable: it carries a
+    // `result` or a non-null `error`. Anything else is a keep-alive or a backend's own extension —
+    // content busbar does not read and does not gate.
+    let is_response = envelope.get("result").is_some()
+        || envelope.get("error").filter(|e| !e.is_null()).is_some();
+    if !is_response {
+        return verbatim();
+    }
+    let reply = read_response(&envelope, rpc_id).map_err(|e| e.reason)?;
+    // The correlation just proved the backend's id equals `rpc_id`; setting it explicitly makes the
+    // streamed answer byte-identical to the unary one rather than equal-by-argument, so the caller
+    // cannot tell the two paths apart by the shape of the id they get back.
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("id".to_string(), rpc_id.clone());
+    }
+    // An `error` frame is relayed as it stands, with only the identity substituted: mid-stream, the
+    // status is already spent and a backend's own error is content the caller is owed. The unary
+    // path's `BackendError` refusal has no equivalent here for that reason, and that difference is
+    // about WHEN the answer is committed, not about what the two paths believe an envelope is.
+    let Reply::Result(_) = reply else {
+        return Ok(RelayEvent {
+            sse: frame_sse(&envelope),
             state: None,
             artifact: false,
-        };
+        });
     };
     let Some(result) = envelope.get_mut("result") else {
-        return RelayEvent {
-            sse: frame.as_bytes().to_vec(),
-            state: None,
-            artifact: false,
-        };
+        return verbatim();
     };
     let artifact = result.get("artifact").is_some() || result.get("artifacts").is_some();
     let state = result
@@ -646,11 +741,11 @@ pub(crate) fn read_event(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| TaskState::parse(s).ok());
     rewrite_identity(result, task_id, context_id, matched_skill);
-    RelayEvent {
+    Ok(RelayEvent {
         sse: frame_sse(&envelope),
         state,
         artifact,
-    }
+    })
 }
 
 /// Render one JSON value as a complete SSE event.
@@ -686,11 +781,23 @@ pub(crate) fn relay_stream(
     let mut reader = SseReader::default();
     let mut streamed_any = false;
     let mut overflow = false;
+    // AN UNCORRELATED FRAME STOPS THE HOP. Recorded rather than returned from the closure because
+    // the closure's only vocabulary is `ChunkFlow`, and the refusal has to survive to the decision
+    // below — where it outranks "the stream ended normally", exactly as `overflow` does.
+    let mut uncorrelated: Option<String> = None;
     let head = {
         let mut on_chunk = |chunk: &[u8]| -> ChunkFlow {
             for frame in reader.feed(chunk) {
                 streamed_any = true;
-                if sink(read_event(&frame, task_id, context_id, matched_skill)) == ChunkFlow::Stop {
+                let event =
+                    match read_event(&frame, call.rpc_id, task_id, context_id, matched_skill) {
+                        Ok(event) => event,
+                        Err(reason) => {
+                            uncorrelated = Some(reason);
+                            return ChunkFlow::Stop;
+                        }
+                    };
+                if sink(event) == ChunkFlow::Stop {
                     return ChunkFlow::Stop;
                 }
             }
@@ -729,12 +836,22 @@ pub(crate) fn relay_stream(
             bytes: cap.saturating_add(1),
         });
     }
+    // BEFORE the "did it stream?" question, because a stream that put an answer to another request
+    // on the wire is a refused hop whatever else it did — and `Streamed` is an `Ok`, so asking in
+    // the other order would report the hop as successful.
+    if let Some(reason) = uncorrelated {
+        return Err(RelayRefusal::Uncorrelated {
+            url: target.url.to_string(),
+            reason,
+        });
+    }
     if streamed_any || head.content_type.starts_with(SSE_CONTENT_TYPE) {
         return Ok(RelayStream::Streamed);
     }
     // NOT A STREAM. The backend answered a single document; hand back the unary shape rather than
     // re-framing a non-stream as one.
-    read_reply(&head.body, target.url.as_str()).map(|r| RelayStream::Unary(Box::new(r)))
+    read_reply(&head.body, target.url.as_str(), call.rpc_id)
+        .map(|r| RelayStream::Unary(Box::new(r)))
 }
 
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop
@@ -759,3 +876,12 @@ mod relay_stream_tests;
 #[cfg(test)]
 #[path = "tests/envelope_id_tests.rs"]
 mod envelope_id_tests;
+
+// THE `id` MEMBER ON THE WAY BACK — the delegating direction's half of the file above, and mounted
+// here for the same reason: it needs `relay_harness`, and a second harness is a second thing that
+// can stop matching what the production router does. Its sibling on the MCP client direction is the
+// correlation block at the end of `mcp/client/tests/transport_tests.rs`, which reads the same two
+// facts off a real loopback socket.
+#[cfg(test)]
+#[path = "tests/response_id_tests.rs"]
+mod response_id_tests;
