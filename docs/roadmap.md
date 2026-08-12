@@ -85,9 +85,9 @@ the next **auth adapters** on a seam that already exists.
   cost unit). Nothing dollar-shaped is stored, so correcting a rate is a config edit and reload,
   not a re-billing. The old flat per-1k-token price is gone; `rate_card` is the only token-pricing
   mechanism, with `per_request_fee` as a separate flat per-call fee.
-- **The `groups:` limit tree.** Nestable enforcement buckets — the ONE place limits live (keys are
+- **The `groups:` limit tree.** Nestable enforcement buckets, the ONE place limits live (keys are
   pure auth and carry none). A key binds one with the mint field `group`; admission walks the whole
-  parent chain (any depth — the arbitrary 8-level ceiling is gone; the cycle check bounds the walk),
+  parent chain (any depth: the arbitrary 8-level ceiling is gone, and the cycle check bounds the walk),
   ANDs every limit, and the 429 names the exhausted bucket. Mint-time key `labels` ride onto the
   Prometheus series so external dashboards break spend down by any operator dimension. A group may
   carry a `child_default` limit template: the first auto-provisioned child under a group inherits
@@ -96,7 +96,7 @@ the next **auth adapters** on a seam that already exists.
 - **Pool-qualified limits and `on_exhaust: downgrade`.** A windowed limit may carry `pool: <name>`
   to account per `(group, pool)` instead of group-wide: one team's expensive-tier budget is
   independent from their cheap-tier budget. A pool-scoped `budget` limit may also declare
-  `on_exhaust: downgrade, downgrade_to: <pool>` — when it runs dry, the request is re-admitted
+  `on_exhaust: downgrade, downgrade_to: <pool>`. When it runs dry, the request is re-admitted
   through the cheaper pool instead of refused (the caller's expensive calls get cheaper, not
   blocked).
 - **Runtime-mutable groups on the Admin API.** `GET/POST/PUT/PATCH/DELETE /api/v1/admin/groups`
@@ -107,8 +107,8 @@ the next **auth adapters** on a seam that already exists.
 - **Self-service mint: auto-provision.** `POST /keys` accepts an optional `parent`: when `group`
   names a leaf that does not yet exist, it is auto-provisioned under `parent` (limits from
   `child_default`). `limits.max_keys_per_principal` caps keys per group (per-user anti-sprawl).
-  (The delegated `mint` admin scope described here at 1.5 ship time — sibling of `hooks-register`,
-  NOT a ladder rung above it — was RETIRED in the 1.5.2 admin-scope collapse: the four-variant
+  (The delegated `mint` admin scope described here at 1.5 ship time, sibling of `hooks-register`
+  and NOT a ladder rung above it, was RETIRED in the 1.5.2 admin-scope collapse: the four-variant
   diamond collapsed to `{read-only, full}`, so self-service minting today requires `full`. An
   upgrading config that still names `mint`/`hooks-register` is mechanically rewritten to `full` by
   the config migrator, with a loud warning. See `crates/busbar/src/config/migrate.rs`

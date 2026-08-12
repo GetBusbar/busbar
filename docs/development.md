@@ -61,7 +61,7 @@ projections, each with a doc comment asserting the bag was safe.
 
 Its **scan root is the whole `crates/busbar/src` tree** (minus test trees), not
 just `admin/**`. An admin handler serializes whatever type it is handed, and that
-type may be declared anywhere in the engine — `hooks/wire.rs`'s `StatusReply`,
+type may be declared anywhere in the engine. `hooks/wire.rs`'s `StatusReply`,
 the hook's echo of the *resolved* bag, is exactly such a type and was the third
 of the four leaks. The **boundary is the engine crate**: an admin projection is
 built here. The sibling wire/ABI crates (`busbar-api`, `plugin-abi`,
@@ -70,13 +70,13 @@ and cannot serve an HTTP read, so they are out of scope by construction.
 
 If you are adding a `settings`-shaped field or JSON member, either project
 `admin::v1::service::settings_keys(&…)` / redact with
-`service::redact_settings_bags(&mut value)`, or — only for an inbound request
-body, a response envelope whose nested bags are already redacted, or a
-non-projection engine type (an operator config struct, an inbound wire reply) —
-mark the line:
+`service::redact_settings_bags(&mut value)`, or mark the line. Marking is
+reserved for an inbound request body, a response envelope whose nested bags are
+already redacted, or a non-projection engine type (an operator config struct, an
+inbound wire reply):
 
 ```rust
-// settings-leak-lint: allow — <reason>
+// settings-leak-lint: allow [...]
 ```
 
 Run `scripts/settings-leak-lint.sh --selftest` before trusting its verdict; CI
@@ -86,28 +86,29 @@ runs both.
 
 `scripts/blocking-ffi-lint.sh` enforces one rule: **a synchronous call into a
 dlopened plugin never runs on a Tokio worker.** Every plugin call is a C-ABI hop
-into out-of-tree code with real network I/O behind it — an LDAP/AD bind, a Vault
-fetch, a JWKS round trip — so one inline call in an `async fn` parks a worker for
+into out-of-tree code with real network I/O behind it (an LDAP/AD bind, a Vault
+fetch, a JWKS round trip), so one inline call in an `async fn` parks a worker for
 the plugin's full timeout, and N concurrent callers stop the runtime polling
 anything at all, `/healthz` included. The same defect has now been found in five
 independently written places, the last of them on `/auth/token`, which is mounted
-on the data router and bypassed by the auth middleware — so an *unauthenticated*
+on the data router and bypassed by the auth middleware, so an *unauthenticated*
 caller chose the concurrency.
 
 The scanner tracks brace depth (to know when it is inside an `async fn`) and
-paren depth (so an offload opener — `spawn_blocking`, `Txn::read_store` /
-`store_write`, `hooks::offload_bounded`, `auth::token::offload_login_call` —
+paren depth (so an offload opener, whether `spawn_blocking`, `Txn::read_store` /
+`store_write`, `hooks::offload_bounded`, or `auth::token::offload_login_call`,
 covers its whole argument list, braced block or not). In-file `#[cfg(test)]`
 modules are exempt: test code serves no traffic.
 
 If you are adding a plugin call, route it through the offload seam that already
-exists for its kind, and **bound it** — `spawn_blocking` alone just moves the
+exists for its kind, and **bound it**. `spawn_blocking` alone just moves the
 exhaustion to the shared 512-thread blocking pool, so take a semaphore permit and
 **fail closed** when you cannot get one. Only a boot-time call, or one in an
-`async fn` that is provably driven off the worker pool, may be marked:
+`async fn` that is provably driven off the worker pool, may be marked, and the
+marker must carry a reason naming which call and where:
 
 ```rust
-// blocking-ffi-lint: allow — <reason, naming which and where>
+// blocking-ffi-lint: allow [...]
 ```
 
 Run `scripts/blocking-ffi-lint.sh --selftest` before trusting its verdict; CI

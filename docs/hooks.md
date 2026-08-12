@@ -2,11 +2,11 @@
 
 Busbar owns the request path. Hooks are the sanctioned attachment points on it: the places where your own code sees what Busbar sees and steers what Busbar does. Every hook follows one design rule, enforced structurally rather than by convention: **a hook can steer, observe, or rewrite, but a hook can never break the request path.** A slow, crashed, or wrong hook degrades to a safe default; it never blocks, hangs, or fails a request on its own.
 
-In 1.5.0, a hook is a **`kind: hook` dlopen plugin** — the same signed-tarball, hybrid-ABI, in-process model that store, secret, and auth plugins use. The 1.5.0 release **retired the built-in out-of-process `socket` and `webhook` transports**: a hook is now always a signed plugin. Out-of-process isolation is still available through the first-party **`busbar-webrequest-hook`** plugin, which forwards the decision to an HTTPS sidecar. Write a hook once and it runs against all six protocols and every provider, with failover and circuit breaking underneath it, in one hop.
+In 1.5.0, a hook is a **`kind: hook` dlopen plugin**: the same signed-tarball, hybrid-ABI, in-process model that store, secret, and auth plugins use. The 1.5.0 release **retired the built-in out-of-process `socket` and `webhook` transports**: a hook is now always a signed plugin. Out-of-process isolation is still available through the first-party **`busbar-webrequest-hook`** plugin, which forwards the decision to an HTTPS sidecar. Write a hook once and it runs against all six protocols and every provider, with failover and circuit breaking underneath it, in one hop.
 
 ## How a hook attaches
 
-A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` plugin (by its signed-manifest name/alias); `settings:` is the plugin's opaque config. Loading any hook plugin requires `plugins.enabled: true` and the signed tarball in the plugins directory — a `module:` that does not resolve to an installed plugin is a fail-closed boot error.
+A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` plugin (by its signed-manifest name/alias); `settings:` is the plugin's opaque config. Loading any hook plugin requires `plugins.enabled: true` and the signed tarball in the plugins directory. A `module:` that does not resolve to an installed plugin is a fail-closed boot error.
 
 | Posture | How it runs | Trust anchor |
 |---|---|---|
@@ -32,10 +32,10 @@ A **tap** watches: logging, audit, metering, shipping records to a SIEM. It can 
 
 ## Named definitions, referenced by name (1.5.3)
 
-A hook is **DEFINED once** in the top-level `hooks:` map — `<instance-name>: { module, settings, … }`
-— and **REFERENCED by bare name** wherever it should fire. There are no inline hook instances
+A hook is **DEFINED once** in the top-level `hooks:` map (`<instance-name>: { module, settings, … }`)
+and **REFERENCED by bare name** wherever it should fire. There are no inline hook instances
 anywhere in 1.5.3, and the old top-level `global_hooks:` list is gone: its job is now the reserved
-all-pools `pools.hooks:` attach key. The same `module:` may back **several named hooks** — a
+all-pools `pools.hooks:` attach key. The same `module:` may back **several named hooks**. A
 different scope or different settings is simply a new name, and *the name is the instance*.
 
 ```yaml
@@ -63,7 +63,7 @@ hooks:                                     # THE definition map
     prompt: rw
 
 pools:
-  hooks: [audit]                           # RESERVED all-pools attach — fires for EVERY pool
+  hooks: [audit]                           # RESERVED all-pools attach: fires for EVERY pool
   my-pool:
     hooks: [cheapest, pii-eng, rtr, headroom]   # bare NAMES only
     members:
@@ -74,14 +74,14 @@ pools:
 
 The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (e.g. the
 first-party `busbar-headroom-hook` and `busbar-webrequest-hook`, or your own). `settings:` is the
-plugin's opaque config — for `busbar-webrequest-hook` that includes the SSRF-guarded sidecar
+plugin's opaque config. For `busbar-webrequest-hook` that includes the SSRF-guarded sidecar
 `url`. Loading any of these requires `plugins.enabled: true` and the tarball installed in
 `plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
 refuses to boot.
 
 **Attach a hook** two ways, both bare-name lists: the reserved `pools.hooks:` key (fires for every
 pool) or a pool's own `hooks:` list (fires for that pool). The two **combine additively**, deduped by
-name — a hook named in both fires exactly ONCE, at its first position. A pool's `hooks:` list also
+name. A hook named in both fires exactly ONCE, at its first position. A pool's `hooks:` list also
 carries its ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, a bare name, at
 most one) alongside any number of gates. A definition with no `kind:` defaults to `kind: gate`.
 
@@ -93,7 +93,7 @@ with a magic flag.
 
 **Gates fire concurrently.** All of a request's decision gates (the pool's own and every all-pools attach) fire at once against the same candidate set, then reconcile deterministically: any **reject** wins (the lowest-`priority` gate's status/message surfaces), **restrict**s intersect, and with several **order**s the last in the priority chain wins, re-validated against the post-restrict set. Added latency is the slowest gate, not the sum.
 
-**A hook picks its observation stages** with `phase:` — a **LIST** (1.5.3 generalized the old
+**A hook picks its observation stages** with `phase:`, a **LIST** (1.5.3 generalized the old
 single-valued tap `at:` into it). Omitting `phase:` means exactly these four core stages:
 
 | `phase:` member | Observes | Extra payload |
@@ -130,7 +130,7 @@ By default a hook sees **shapes, not content**: sizes, counts, flags, live lane 
 
 | Grant | Levels | Adds |
 |---|---|---|
-| `prompt:` | `no` (default) · `ro` · `rw` | `ro` sends the flattened system + messages text (for PII screening, guardrails, audit) — this **includes reasoning/thinking text** (Anthropic `thinking`, Bedrock `reasoningText`, Responses `reasoning`) when a client replays it into a multi-turn body, since a screening hook must see everything the provider receives (see "What a gate receives" below for the redacted-reasoning exception). `rw` additionally lets a **gate** return the `rewrite` arm. |
+| `prompt:` | `no` (default) · `ro` · `rw` | `ro` sends the flattened system + messages text (for PII screening, guardrails, audit). This **includes reasoning/thinking text** (Anthropic `thinking`, Bedrock `reasoningText`, Responses `reasoning`) when a client replays it into a multi-turn body, since a screening hook must see everything the provider receives (see "What a gate receives" below for the redacted-reasoning exception). `rw` additionally lets a **gate** return the `rewrite` arm. |
 | `user:` | `no` (default) · `ro` | `ro` sends caller identity: the governance key's `id`/`name` and the body's end-user field. Never the secret/token, under any configuration. |
 
 Grants are a monotonic trust ladder (`no ⊂ ro ⊂ rw`) and are **immutable after registration**: you cannot register a hook with `prompt: no`, wire it in, then quietly raise it to `rw`. `rw` on a `tap` is a boot error (a tap never replies, so it can never rewrite).
@@ -152,7 +152,7 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 >   instructions on some dialects and not others unless it guards for a system turn explicitly.
 >   This shipped as a real bug in Headroom (fixed there, in that hook, on 2026-08-05).
 > - **`messages` is index-aligned with the wire body**, including empty entries for media-only
->   turns — not with the IR's turn list.
+>   turns. It is not aligned with the IR's turn list.
 > - **An OpenAI `refusal` content part is not projected**, and does not count toward `total_chars`.
 >   A gate cannot currently screen a replayed refusal.
 > - **Tool-call arguments are not projected.** Tool *results* are (a `{role: "tool"}` message's
@@ -160,14 +160,14 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 > - **Malformed input is tolerated, never rejected**: a turn with an unknown or missing role
 >   projects with the role verbatim or as `""`, and the request is still forwarded.
 >
-> None of these are grant questions — they apply at `prompt: ro` and `prompt: rw` alike. Unifying
+> None of these are grant questions. They apply at `prompt: ro` and `prompt: rw` alike. Unifying
 > the hook path onto the normalized IR, so the projection is identical on every dialect, is planned
 > work; the divergences above are pinned by characterisation tests
 > (`proxy/tests/hook_ir_divergence_characterisation_tests.rs`) so they cannot change silently.
 
 - **The request projection**: `pool`, `ingress_protocol`, `message_count`, `has_tools`, `total_chars` (a size signal; token counts do not exist pre-dispatch), `max_tokens`, `stream`. With `prompt: ro`/`rw`, also the flattened `system` + `messages` text. With `user: ro`, also caller identity.
-  - **Reasoning/thinking text is included.** No content block that reaches the provider is silently omitted: Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses `reasoning` text project like any other text block. This is a widened scope for the `prompt` grant as of this release — an operator who wired `prompt: ro` for PII screening before now also sees replayed chain-of-thought, which is the correct behavior for a screening gate (content the provider sees that the gate does not is a bypass, not a feature) but is worth knowing if your hook logs or forwards the projection verbatim.
-  - **Redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only an opaque `encrypted_content` blob with no `content[]`/`summary[]` text) projects as a fixed marker, `[busbar:redacted_reasoning]`, never the ciphertext.** Busbar cannot decrypt it, so there is nothing to screen and handing a hook the raw bytes would be a new disclosure (they would reach your `prompt`-forwarder sidecar, which never received provider ciphertext before). Treat the marker as a **presence signal only, not a trust signal**: a client can also send ordinary text that happens to equal this string, so do not gate a decision on the marker's presence/absence alone. Also note `rewrite` (`prompt: rw`) is not index-aligned (see the `rewrite` arm below) — a hook that echoes the marker back writes it into a real, visible content block on the outgoing request.
+  - **Reasoning/thinking text is included.** No content block that reaches the provider is silently omitted: Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses `reasoning` text project like any other text block. This is a widened scope for the `prompt` grant as of this release. An operator who wired `prompt: ro` for PII screening before now also sees replayed chain-of-thought, which is the correct behavior for a screening gate (content the provider sees that the gate does not is a bypass, not a feature) but is worth knowing if your hook logs or forwards the projection verbatim.
+  - **Redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only an opaque `encrypted_content` blob with no `content[]`/`summary[]` text) projects as a fixed marker, `[busbar:redacted_reasoning]`, never the ciphertext.** Busbar cannot decrypt it, so there is nothing to screen and handing a hook the raw bytes would be a new disclosure (they would reach your `prompt`-forwarder sidecar, which never received provider ciphertext before). Treat the marker as a **presence signal only, not a trust signal**: a client can also send ordinary text that happens to equal this string, so do not gate a decision on the marker's presence/absence alone. Also note `rewrite` (`prompt: rw`) is not index-aligned (see the `rewrite` arm below). A hook that echoes the marker back writes it into a real, visible content block on the outgoing request.
 - **The candidate projection**: one entry per healthy member: `cost_per_mtok` (derived from the model's `rate_card` entry), `latency_ms` (rolling EWMA), `available_concurrency` (free slots now), `budget_remaining`, `rate_headroom` (fraction: the tightest requests/tokens limit headroom across the key's group chain), and your `tier`/`tags` labels. The full task/latency/cost/quality picture, every signal a built-in strategy ranks on is on the wire, so an external hook can implement any of them identically.
 - **The budget-chain state** (when the request carries a virtual key): the whole enforcement chain the request must clear, one entry per bucket from the key's own attribution bucket out through every ancestor group's budget-window buckets (`bucket_id` = `group:<name>@<window>`), each `{bucket_id, budget_group?, spend_micros_at_current_rate, remaining_micros, window_start, budget_period}`. `spend_micros_at_current_rate` is derived at hook-call time from the token ledger times the current top-level `rate_card` (micro-units, 10,000 per cent). This is the read surface for budget-aware routing: a gate can see how close the key or its team is to a cap and downshift to a cheaper `tier`. Busbar exposes the state only; the routing policy lives entirely in your hook.
 
@@ -176,10 +176,10 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 A gate answers with exactly one of:
 
 - **nothing / abstain**: no opinion; Busbar proceeds as it normally would.
-- **reject** (`{"reject": {"status": 451, "message": "..."}}`): no upstream is dispatched; the caller gets a dialect-native error. Status clamped to 400–499 (default 403) so the caller's SDK catches the right typed class (429 → rate-limit, 401 → auth, …); message sanitized. Fail-closed: a malformed reject degrades to the defaults, never to silently routing the request. With `prompt: ro`, this is the PII-screen primitive: see content, say no, before it leaves your network.
+- **reject** (`{"reject": {"status": 451, "message": "..."}}`): no upstream is dispatched; the caller gets a dialect-native error. Status clamped to 400 to 499 (default 403) so the caller's SDK catches the right typed class (429 → rate-limit, 401 → auth, …); message sanitized. Fail-closed: a malformed reject degrades to the defaults, never to silently routing the request. With `prompt: ro`, this is the PII-screen primitive: see content, say no, before it leaves your network.
 - **restrict** (`{"restrict": {"tags_any": ["baa"]}}`): only members carrying one of those `tags` may serve. The restriction **persists across failover** (every hop stays inside the surviving set); an empty intersection follows the gate's `on_empty` (default `reject`, fail-closed).
 - **order** (`{"order": [idx, ...]}`): rank the surviving candidates, most-preferred first (omitted members are demoted, not excluded). That order becomes the failover walk: Busbar tries your first choice, and on a pre-first-byte failure walks to your second. You choose the order; the breaker, concurrency caps, and failover budget still apply.
-- **rewrite** (`{"rewrite": {"messages": [...], "tools": [...]}}`): replace the request body (compression, redaction). Requires `prompt: rw`. Note the asymmetry: a hook *receives* messages as `{role, text}` (the flattened projection) but *replies* in body form (`{role, content}`); the system prompt is not rewritable; and a socket reply is capped at 64 KiB, which bounds very large rewrites. Body-only: a rewrite never changes routing, the principal, or the target dialect. It fires **before dispatch and before the routing decision**, so both the decision and every upstream see the rewritten body, and it persists across failover. Token accounting (budgets, metrics) is on the provider-reported usage of the rewritten body: the savings are real and measured. A malformed/oversized rewrite follows `on_error` (default: proceed with the body **unmodified**; a broken compressor never corrupts a request). Pre-existing hazard, not introduced by reasoning-text projection but now more visible because of it: the write-back is **not index-aligned** — a hook that echoes what it was projected as literal `{role, content}` text loses every image/`tool_use`/`tool_result`/`signature`/cache-control block in that turn (only its text survives), and now also promotes any projected reasoning text (or the redacted-reasoning marker) into a real, visible content block shipped upstream. If your `rw` hook only inspects and passes through, prefer returning no `rewrite` (abstain) over echoing the projection verbatim.
+- **rewrite** (`{"rewrite": {"messages": [...], "tools": [...]}}`): replace the request body (compression, redaction). Requires `prompt: rw`. Note the asymmetry: a hook *receives* messages as `{role, text}` (the flattened projection) but *replies* in body form (`{role, content}`); the system prompt is not rewritable; and a socket reply is capped at 64 KiB, which bounds very large rewrites. Body-only: a rewrite never changes routing, the principal, or the target dialect. It fires **before dispatch and before the routing decision**, so both the decision and every upstream see the rewritten body, and it persists across failover. Token accounting (budgets, metrics) is on the provider-reported usage of the rewritten body: the savings are real and measured. A malformed/oversized rewrite follows `on_error` (default: proceed with the body **unmodified**; a broken compressor never corrupts a request). Pre-existing hazard, not introduced by reasoning-text projection but now more visible because of it: the write-back is **not index-aligned**. A hook that echoes what it was projected as literal `{role, content}` text loses every image/`tool_use`/`tool_result`/`signature`/cache-control block in that turn (only its text survives), and now also promotes any projected reasoning text (or the redacted-reasoning marker) into a real, visible content block shipped upstream. If your `rw` hook only inspects and passes through, prefer returning no `rewrite` (abstain) over echoing the projection verbatim.
 
 ## Ordering
 
@@ -206,7 +206,7 @@ A `tap`, being fire-and-forget, has no `on_error` to speak of: its reply is disc
 
 When a hook forwards out-of-process through `busbar-webrequest-hook`, Busbar exchanges the same
 op-discriminated JSON with your HTTPS sidecar: one POST body per message. (The in-process
-`kind: hook` plugin ABI carries the identical payload over `busbar_call` — see [`kind: hook`
+`kind: hook` plugin ABI carries the identical payload over `busbar_call`. See [`kind: hook`
 plugin ABI](#kind-hook-plugin-abi) below.) The projection is **byte-identical** whichever path
 carries it, so sidecar logic and plugin logic are the same. The rules a sidecar author must know:
 
@@ -233,13 +233,13 @@ carries it, so sidecar logic and plugin logic are the same. The rules a sidecar 
 
 ### `kind: hook` plugin ABI
 
-For in-process plugins, the transport is `busbar_call` over the frozen **hybrid ABI** — six
+For in-process plugins, the transport is `busbar_call` over the frozen **hybrid ABI**, six
 kind-neutral C symbols: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`,
 `busbar_free`, `busbar_close`. (`TRANSPORT_VERSION = 1` is the low-level C signature contract,
-frozen; `abi_version` in the manifest is the per-kind payload version — `HOOK_ABI_VERSION = 1` for
+frozen; `abi_version` in the manifest is the per-kind payload version: `HOOK_ABI_VERSION = 1` for
 the hook kind.) Operations are the same op-discriminated JSON payload as socket/webhook: `decide`,
 `transform`, `notify`, `configure`, `describe`, `status`. The serialization is JSON over the C ABI
-rather than NDJSON over a socket, but the payload contract is identical — a hook's decision logic
+rather than NDJSON over a socket, but the payload contract is identical. A hook's decision logic
 is transport-agnostic.
 
 ## Management messages: `configure`, `describe`, `status`
@@ -263,7 +263,7 @@ HTTP POSTs; on `kind: hook` plugins they ride `busbar_call` with the same JSON p
 - **`status`** (`{"status": true}`): the control-plane read: reply your **observed** state,
   `{"status": {"settings_version": N, "settings": {...}, "metrics": [ ... ]}}`, and Busbar surfaces
   it at `GET /api/v1/admin/hooks/{name}/status` with a desired-vs-reported **drift** verdict. Busbar
-  serves only the settings **key names** there (`settings_keys`) — never the values, on either side:
+  serves only the settings **key names** there (`settings_keys`), never the values, on either side:
   the bag you echo is the SECRET-RESOLVED one Busbar pushed you, and that read is reachable at
   read-only admin scope. The drifting key names are reported in `drift_keys`. The
   `metrics` ARRAY is how your hook feeds its own operational data to the control plane (a Headroom
@@ -314,9 +314,9 @@ reply-expected connections; Busbar will never send a reply-expected op on a tap 
 
 Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the embedded key:
 
-**Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the projection of the raw ingress body (see [What a gate receives](#what-a-gate-receives) — this is dialect-shaped, and Headroom carries a guard for it), token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
+**Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the projection of the raw ingress body (see [What a gate receives](#what-a-gate-receives): this is dialect-shaped, and Headroom carries a guard for it), token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
 
-**Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin — the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
+**Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin, the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
 
 Both plugins are installed from the release tarball and enabled under `plugins:` in the normal way. See [plugins.md](./plugins.md) for the artifact and trust model.
 
@@ -326,4 +326,4 @@ Hooks are also lifecycle-managed over the frozen admin API: register, inspect, h
 
 ---
 
-*Hooks fire before dispatch, on every protocol Busbar speaks, which is what makes Busbar the place your middleware runs. They fire on a projection built from the **raw ingress body**, not from the normalized IR — so the projection is dialect-shaped in the ways documented under [What a gate receives](#what-a-gate-receives), and one hook is not yet identical across every protocol. Unifying the hook path onto the normalized IR is planned, not done.*
+*Hooks fire before dispatch, on every protocol Busbar speaks, which is what makes Busbar the place your middleware runs. They fire on a projection built from the **raw ingress body**, not from the normalized IR, so the projection is dialect-shaped in the ways documented under [What a gate receives](#what-a-gate-receives), and one hook is not yet identical across every protocol. Unifying the hook path onto the normalized IR is planned, not done.*

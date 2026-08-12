@@ -2,7 +2,7 @@
 
 Busbar attributes every upstream failure to a cause, benches only the target at fault, and recovers it automatically with a single-flight probe. This page covers the breaker's scope, how failures are classified, the state machine, trip conditions, cooldown, and configuration.
 
-The breaker runs on **all three planes**: a pool member on the LLM plane, an MCP tool server, an A2A agent. Most of this page is written in the LLM plane's vocabulary — pools, lanes and cells — because that is where member selection lives; [the breaker on the MCP and A2A planes](#the-breaker-on-the-mcp-and-a2a-planes) covers what is the same (everything about health) and what is deliberately different (there is no failover).
+The breaker runs on **all three planes**: a pool member on the LLM plane, an MCP tool server, an A2A agent. Most of this page is written in the LLM plane's vocabulary (pools, lanes and cells) because that is where member selection lives; [the breaker on the MCP and A2A planes](#the-breaker-on-the-mcp-and-a2a-planes) covers what is the same (everything about health) and what is deliberately different (there is no failover).
 
 Cross-references: [Pools](/docs/pools/) (structure) · [In-flight failover](/docs/failover/) (what happens when a lane trips) · [Configuration](/docs/configuration/) (field reference).
 
@@ -164,9 +164,9 @@ The breaker is configured per pool with a `breaker:` block: a trip condition (`t
 `error_rate` or `consecutive`, with its threshold/window/streak knobs) and the cooldown bounds
 (`base_cooldown_secs`, `max_cooldown_secs`) that shape the exponential backoff described above.
 Every field is optional; omitting the block is equivalent to accepting all defaults, and there is
-no inheritance between pools — each pool's breaker is independent.
+no inheritance between pools. Each pool's breaker is independent.
 
-The field-by-field reference — every `breaker` key with its type, default, and validation rule —
+The field-by-field reference (every `breaker` key with its type, default, and validation rule)
 lives in one place: **[Configuration → `breaker`](/docs/configuration/#breaker)**. This guide stays
 conceptual so the two never drift.
 
@@ -174,7 +174,7 @@ conceptual so the two never drift.
 
 ## The breaker on the MCP and A2A planes
 
-An upstream that is hard down does not only fail — it fails **slowly**. Without a breaker, every call to a tool server whose auth was revoked or whose billing lapsed pays the full request timeout before it can fail: latency burned on a known-dead upstream, a concurrency slot held while it burns, retries piling onto a server that is already struggling, and no operator signal that anything is wrong. The operator finds out from a user complaint.
+An upstream that is hard down does not only fail. It fails **slowly**. Without a breaker, every call to a tool server whose auth was revoked or whose billing lapsed pays the full request timeout before it can fail: latency burned on a known-dead upstream, a concurrency slot held while it burns, retries piling onto a server that is already struggling, and no operator signal that anything is wrong. The operator finds out from a user complaint.
 
 So the breaker is not an LLM-plane feature that MCP and A2A borrow. It is keyed on the **target** a request is about to reach, and a target is whatever the plane addresses:
 
@@ -186,7 +186,7 @@ So the breaker is not an LLM-plane feature that MCP and A2A borrow. It is keyed 
 
 ### What is identical
 
-Everything above this section. The Closed → Open → HalfOpen state machine, the two-stage disposition pipeline that decides whether an outcome was the upstream's fault or the caller's, the `error_rate` and `consecutive` trip modes, exponential cooldown with jitter, `Retry-After` honoured as a floor, hard-down's sticky cooldown, and single-flight half-open recovery — all of it is the same code reading the same state, whether the target is a model lane, a tool server or an agent.
+Everything above this section. The Closed → Open → HalfOpen state machine, the two-stage disposition pipeline that decides whether an outcome was the upstream's fault or the caller's, the `error_rate` and `consecutive` trip modes, exponential cooldown with jitter, `Retry-After` honoured as a floor, hard-down's sticky cooldown, and single-flight half-open recovery: all of it is the same code reading the same state, whether the target is a model lane, a tool server or an agent.
 
 **The config is the same struct, in three places.** `breaker:` under `tools:` or `agents:` takes exactly the fields it takes under `pools:`, with the same defaults and the same validation. There is no second grammar:
 
@@ -212,7 +212,7 @@ agents:
         min_requests: 5
 ```
 
-Omit the block and you get the defaults, exactly as with a pool. There is no inheritance between servers or between agents: each target's breaker is independent, which is the point — one dead tool server must not bench a healthy one.
+Omit the block and you get the defaults, exactly as with a pool. There is no inheritance between servers or between agents: each target's breaker is independent, which is the point. One dead tool server must not bench a healthy one.
 
 ### What is deliberately different: there is no failover
 
@@ -225,25 +225,25 @@ The breaker's state machine needs a target identity and a failure history. **Mem
 
 What the breaker buys on these planes is not a reroute. It is **failing fast instead of failing slowly**, and an operator-visible reason why.
 
-### What a tripped target returns — MCP
+### What a tripped target returns: MCP
 
-A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the breaker's own cooldown expiry — an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** in Busbar's implementation-defined `-320xx` band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), with structured `data`:
+A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the breaker's own cooldown expiry: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** in Busbar's implementation-defined `-320xx` band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), with structured `data`:
 
 ```json
 { "reason": "upstream_unavailable", "server": "acme", "retry_after_ms": 12000 }
 ```
 
-**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure — the model then reasons from a lie, and may report that false result onward as fact. The reserved JSON-RPC codes are each wrong for a specific reason: `-32603` internal error blames Busbar, `-32601` method-not-found says the tool does not exist when it does, and `-32602` invalid-params blames the caller.
+**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure. The model then reasons from a lie, and may report that false result onward as fact. The reserved JSON-RPC codes are each wrong for a specific reason: `-32603` internal error blames Busbar, `-32601` method-not-found says the tool does not exist when it does, and `-32602` invalid-params blames the caller.
 
-### What a tripped target returns — A2A
+### What a tripped target returns: A2A
 
 A2A has what MCP lacks: task state is first class. A submission to a tripped agent yields the task state **`rejected`**, not `failed`, and it is returned **with a task id**.
 
-The two states are different claims and the spec gives us both. `failed` means we tried and it broke. `rejected` means **we did not accept this work** — which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate, so it loses nothing, and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
+The two states are different claims and the spec gives us both. `failed` means we tried and it broke. `rejected` means **we did not accept this work**, which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate, so it loses nothing, and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
 
 ### What the operator sees
 
-A trip on any plane is an operator-facing signal that names the target: which tool server, which agent, and the cause the disposition pipeline attributed. This is the part that does not exist without a breaker at all — before it, a hard-down tool server produced nothing but slow calls, and the first report came from a user.
+A trip on any plane is an operator-facing signal that names the target: which tool server, which agent, and the cause the disposition pipeline attributed. This is the part that does not exist without a breaker at all. Before it, a hard-down tool server produced nothing but slow calls, and the first report came from a user.
 
 ---
 
@@ -251,9 +251,9 @@ A trip on any plane is an operator-facing signal that names the target: which to
 
 By default, Busbar learns a lane is healthy or sick entirely from real traffic outcomes (passive health). Active probing adds a background task, configured per provider under `health:`, that sends periodic probe requests to check lanes independently of organic traffic. There are three modes:
 
-- **`none`** (default) — no probing; pure passive health from organic traffic.
-- **`dead`** — re-probe only tripped or hard-down lanes, to recover a lane promptly once a backend restores without paying to probe healthy ones.
-- **`active`** — probe every lane, including healthy ones, so a silently-dark backend is tripped out before organic traffic hits it. Sends a tiny billable one-token request per interval.
+- **`none`** (default): no probing; pure passive health from organic traffic.
+- **`dead`**: re-probe only tripped or hard-down lanes, to recover a lane promptly once a backend restores without paying to probe healthy ones.
+- **`active`**: probe every lane, including healthy ones, so a silently-dark backend is tripped out before organic traffic hits it. Sends a tiny billable one-token request per interval.
 
 The field reference (`mode`, `interval_secs`, `timeout_secs`, their defaults and the 1-second floors) lives in **[Configuration → Health probing](/docs/configuration/#health-probing)**.
 

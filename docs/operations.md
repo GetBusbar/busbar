@@ -11,7 +11,7 @@ variables.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var** — it locates config.yaml itself. |
+| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var**: it locates config.yaml itself. |
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
@@ -34,8 +34,8 @@ path, not the home:
 
 The top-level `config:` block governs whether the admin API may change config at runtime and where those
 changes persist. **Durable by default:** with nothing specified, config is *mutable* and admin-API
-mutations persist to `busbar-overlay.json` next to config.yaml — so a group or hook provisioned over the
-admin API **survives a restart** out of the box.
+mutations persist to `busbar-overlay.json` next to config.yaml. A group or hook provisioned over the
+admin API therefore **survives a restart** out of the box.
 
 ```yaml
 config:
@@ -44,9 +44,9 @@ config:
     file: busbar-overlay.json    # where mutations persist; default = next to config.yaml
 ```
 
-- **`locked: true`** — an immutable/GitOps deployment: admin-API config mutations are *refused* at
+- **`locked: true`** is an immutable/GitOps deployment: admin-API config mutations are *refused* at
   runtime (edit config.yaml and `POST /config/reload` instead). The overlay is ignored.
-- **Boot invariant — `locked` XOR a writable overlay.** A *mutable* config with **no writable overlay**
+- **Boot invariant: `locked` XOR a writable overlay.** A *mutable* config with **no writable overlay**
   (you set `overlay: false`, or the config directory is read-only) **refuses to boot**, with a message
   telling you to either point `config.overlay.file` at a writable path or set `config.locked: true`.
   This makes "applied but silently lost on restart" impossible to reach.
@@ -85,8 +85,8 @@ name, because since 1.5.3 it resolves those references rather than only checking
 
 ```sh
 BUSBAR_CONFIG=./config.yaml BUSBAR_PROVIDERS=./providers.yaml busbar --validate
-# ok: config valid — 2 provider(s), 2 model(s), 1 pool(s)
-#   note: 1 env var(s) referenced but unset here — required at runtime: BUSBAR_CLIENT_TOKEN
+# ok: config valid [...] 2 provider(s), 2 model(s), 1 pool(s)
+#   note: 1 env var(s) referenced but unset here [...] required at runtime: BUSBAR_CLIENT_TOKEN
 ```
 
 Two different mechanisms read the environment, and `--validate` treats them differently. Read both of
@@ -176,7 +176,7 @@ clients.
 
 ### Certificate rotation
 
-Certs are loaded once at startup, so rotation always needs a restart — but it does not need a
+Certs are loaded once at startup, so rotation always needs a restart. It does not, however, need a
 shell. Push the new cert/key/CA through the admin API, then restart in-product:
 
 ```bash
@@ -190,10 +190,11 @@ curl -X POST http://localhost:8081/api/v1/admin/restart \
 ```
 
 The `PUT` stores the new material durably (overlay-persisted) and reports `tls` under
-`reload_to_apply` — restart-scoped, per the [`PUT /config/settings`](/docs/admin-api/#the-config-plane)
+`reload_to_apply`, which is restart-scoped, per the [`PUT /config/settings`](/docs/admin-api/#the-config-plane)
 table. `POST /restart` then applies it: it drains through the same graceful-shutdown path a signal
 takes (in-flight requests finish first), which is exactly why a restart on rotation is safe under
-live traffic — the same guarantee this section always relied on, now reachable without shelling in.
+live traffic. That is the same guarantee this section always relied on, now reachable without
+shelling in.
 If no process supervisor is detected, the endpoint refuses with `409 conflict` unless the request
 sets `confirm: true` (an unsupervised exit would leave Busbar down).
 
@@ -234,14 +235,14 @@ limit and is therefore shedding/spilling rather than queueing), `availability`,
 `cooldown_remaining_s`, `streak`, and `budget`. It is the first place to look when a pool
 is degraded.
 
-`availability` renders the shared `classify` taxonomy — the same one routing dispatches on,
+`availability` renders the shared `classify` taxonomy, the same one routing dispatches on,
 so `/stats` cannot drift from behaviour. It is `"available"` when the lane would admit a
 request, or the reason it can't: `"breaker_open"`, `"at_capacity"`, `"dead"`,
 `"budget_exhausted"`, `"probe_in_flight"`, or `"shedding"`. `recovery_hint_ms` is the honest
 lower bound (ms) on when that lane could next serve (`null` when available or the reason has
 no self-recovery, e.g. dead/budget). The breaker (`breaker_state`: `"closed"`/`"open"`/
 `"half_open"`) and capacity (`at_capacity`) axes are exposed INDEPENDENTLY: a saturated Open
-lane shows `breaker_state: "open"` AND `at_capacity: true` — so you can see why such a lane's
+lane shows `breaker_state: "open"` AND `at_capacity: true`, so you can see why such a lane's
 breaker never recovers (its recovery probe needs a dispatch it can never win), rather than the
 signal being collapsed into one string.
 
@@ -257,7 +258,7 @@ Service/Ingress + a PodDisruptionBudget; on VMs it is N hosts behind an external
 Three things are worth understanding before you scale out:
 
 - **Circuit-breaker and target health are per-instance.** Each instance learns
-  upstream health independently from its own traffic, on every plane — lanes, tool
+  upstream health independently from its own traffic, on every plane: lanes, tool
   servers and agents alike. This is correct (a target that's dead for one instance is
   usually dead for all) and a new instance re-learns within seconds. Nothing is
   shared or needs sharing.
@@ -294,11 +295,11 @@ one instance and scale the box, not the count.
 
 ## Metrics to watch
 
-All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `module: prometheus` instance under `export:` busbar records nothing and does not mount the endpoint. Its `settings.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained — quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
+All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `module: prometheus` instance under `export:` busbar records nothing and does not mount the endpoint. Its `settings.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained. Quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane` is `llm` / `mcp` / `a2a` — every plane's traffic is on this one family, so `sum by (plane) (rate(busbar_requests_total[5m]))` splits the whole gateway. `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
+| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane` is `llm` / `mcp` / `a2a`. Every plane's traffic is on this one family, so `sum by (plane) (rate(busbar_requests_total[5m]))` splits the whole gateway. `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls (re-counted per failover hop). |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. Concentration on one lane points at a sick backend. |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
@@ -313,13 +314,13 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health per lane (the independent breaker axis): `0` = Closed, `1` = HalfOpen, `2` = Open (tripped). Side-effect-free at scrape. |
 | `busbar_lane_available` | gauge | `pool`, `lane` | Unified availability from the shared `classify` taxonomy (the same one routing dispatches on): `1` = the lane would admit a request right now, `0` = unavailable for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). Pair with `busbar_lane_state` (breaker) and `busbar_lane_available_permits` (capacity) to see which axis is the cause. Replaces the former `busbar_lane_at_capacity`. Side-effect-free. |
 | `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | Honest lower bound (ms) on when an unavailable lane could next serve, from the same `recovery_hint_ms` that feeds `Retry-After`: breaker `until` for an Open lane, the at-capacity floor (2000ms) for a saturated one. `0` when available or the reason has no self-recovery (dead/budget). Side-effect-free. |
-| `busbar_lane_inflight` | gauge | `pool`, `lane` | In-flight requests (held concurrency permits) per lane — the depth companion to `busbar_lane_available`. Side-effect-free. |
-| `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated) — the independent capacity axis. Unbounded lanes emit no sample. Side-effect-free. |
+| `busbar_lane_inflight` | gauge | `pool`, `lane` | In-flight requests (held concurrency permits) per lane, the depth companion to `busbar_lane_available`. Side-effect-free. |
+| `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated), the independent capacity axis. Unbounded lanes emit no sample. Side-effect-free. |
 | `busbar_pool_queued` | gauge | `pool` | Requests currently parked in the `on_exhausted: queue` bounded wait, per pool. Reads `0` until the queue policy is wired. Side-effect-free. |
 | `busbar_route_policy_selections_total` | counter | `pool`, `policy` | Requests where a selection strategy (a native strategy or a gate hook) produced a usable ranked order. Only incremented on a successful `Order` outcome; abstains and on-error fallbacks are not counted. |
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
 | `busbar_webhook_logs_dropped_total` | counter | n/a | Request-log webhook deliveries shed because the in-flight delivery pool was saturated (a slow/unreachable webhook endpoint). A non-zero rate means request logs are being silently dropped, scale the endpoint or alert. |
-| `busbar_file_logs_dropped_total` | counter | n/a | Request-log file appends shed because that sink's in-flight append pool was saturated (a slow/stalled filesystem — full disk, hung NFS/EBS mount). A non-zero rate means request-log lines are being dropped, check the mount or alert. |
+| `busbar_file_logs_dropped_total` | counter | n/a | Request-log file appends shed because that sink's in-flight append pool was saturated (a slow/stalled filesystem: full disk, hung NFS/EBS mount). A non-zero rate means request-log lines are being dropped, check the mount or alert. |
 | `busbar_billing_truncated_total` | counter | n/a | Same-protocol non-stream responses whose body exceeded the translate-body cap, so the terminal `usage` frame was missed and the request billed zero tokens (the client still got a full response). A non-zero rate signals an over-cap billing gap. |
 
 `/metrics` requires a valid key with a non-empty `auth.chain`, it is treated as an
@@ -432,13 +433,13 @@ exceeds `max_cooldown_secs`. Defaults (no `breaker:` block): base 15s, max 120s.
 
 ### The breaker across the planes
 
-Configure it in the same three-key shape, with the same struct in each place —
+Configure it in the same three-key shape, with the same struct in each place:
 `pools.<pool>.breaker:`, `tools.<server>.breaker:`, `agents.<agent>.breaker:`. Omit
 the block and you get the defaults. Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 
 **Why an operator cares.** With no breaker on a plane, an upstream that is hard down
-— revoked auth, lapsed billing — does not fail fast: every call pays the full request
+(revoked auth, lapsed billing) does not fail fast: every call pays the full request
 timeout, holds a concurrency slot while it does, and retries pile onto a server that
 is already in trouble. Worse, nothing says so. The first report comes from a user.
 With the breaker, the target trips, subsequent calls are refused immediately, and the
@@ -452,12 +453,12 @@ instead of *slowly*, plus the signal.
 
 **What a caller sees when a target is Open:**
 
-- **MCP** — `503` with `Retry-After` set from the breaker's cooldown expiry, and a
+- **MCP**: `503` with `Retry-After` set from the breaker's cooldown expiry, and a
   JSON-RPC error carrying `reason`, `server` and `retry_after_ms`. It is an error,
   **not** a tool result with `isError: true`: the call never happened, and telling a
   model otherwise makes it reason from a false premise.
-- **A2A** — the task is **`rejected`** (not `failed`) and comes back with a task id,
-  so the calling agent — not Busbar — decides whether to retry.
+- **A2A**: the task is **`rejected`** (not `failed`) and comes back with a task id,
+  so the calling agent, not Busbar, decides whether to retry.
 
 ## Active health probing
 
@@ -489,8 +490,8 @@ and the client must retry.
 
 When all members are unusable, the pool's `on_exhausted` action decides:
 
-- `reject` / `status_503` (default): `503` with `Retry-After` — the soonest genuine
-  member cooldown, or a small saturation floor when exhaustion is pure at-capacity
+- `reject` / `status_503` (default): `503` with a `Retry-After` set to the soonest genuine
+  member cooldown, or to a small saturation floor when exhaustion is pure at-capacity
   (not the misleading `1`).
 - `least_bad`, serve the soonest-cooldown member that still has a free permit
   (skipping a saturated one), degraded and logged loudly.
@@ -508,13 +509,13 @@ guarded by `auth.admin_auth` (the built-in `admin-tokens` operator credential, s
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
-Minting, listing, rotating, and revoking keys — the routes, request/response shapes, the mint-body
-field reference, and the scope lattice — are owned by the **[Admin API reference](/docs/admin-api/)**.
+Minting, listing, rotating, and revoking keys (the routes, request/response shapes, the mint-body
+field reference, and the scope lattice) are owned by the **[Admin API reference](/docs/admin-api/)**.
 The limit/group model those keys charge through is owned by
 **[Configuration → Virtual keys and enforcement](/docs/configuration/#virtual-keys-and-enforcement)**.
 This guide stays on the operational picture. In brief: `POST /api/v1/admin/keys` mints a key and
 returns the signed token **once**; a key is pure auth (every limit lives on the bound `group`), it
-EXPIRES (default 90 days — re-mint or rotate before then), and `DELETE` puts its subject on the
+EXPIRES (default 90 days, so re-mint or rotate before then), and `DELETE` puts its subject on the
 durable revocation denylist immediately.
 
 ### Enforcement model

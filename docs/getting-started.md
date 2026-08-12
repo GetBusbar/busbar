@@ -341,7 +341,7 @@ curl -s http://localhost:8080/stats \
 
 `/stats` goes through the auth middleware, so with a non-empty `auth.chain` it requires a valid key; under `chain: []` it is open. It returns a per-lane snapshot: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `ok`/`err`/`client_fault` counts, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`, `streak`, and `budget`. A key restricted to specific `allowed_pools` only sees the pools and lanes it can reach.
 
-**Prometheus metrics** (`/metrics`) — opt-in; add an `export:` instance with `module: prometheus` and a required `settings.buffer_seconds` retention window first, otherwise the route is not mounted:
+**Prometheus metrics** (`/metrics`) are opt-in. Add an `export:` instance with `module: prometheus` and a required `settings.buffer_seconds` retention window first, otherwise the route is not mounted:
 
 ```bash
 curl -s http://localhost:8080/metrics \
@@ -431,7 +431,7 @@ Before taking Busbar out of dev mode:
 
 ## What's next
 
-- **Deploy it**: running Busbar for real — process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
+- **Deploy it**: running Busbar for real. Process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
 - **Full config reference**: every field, default, and validation rule ([`docs/configuration.md`](configuration.md))
 - **Pools, breakers, and failover**: weighting, breaker tuning, session affinity, context-length failover, and exhaustion policies ([`docs/configuration.md#pools`](configuration.md#pools))
 - **Running in production**: TLS termination, systemd, Docker, `/stats` monitoring, and breaker diagnosis ([`docs/operations.md`](operations.md))

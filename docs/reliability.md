@@ -9,7 +9,7 @@ Busbar keeps serving through provider failures. That reliability is not one feat
 
 **Resilience**: what happens when a backend misbehaves (the guides in this section):
 
-- **[Circuit breaker](/docs/circuit-breaker/)** - fault-attributed breaking that classifies each failure and benches only the target at fault. It runs on all three planes: pool members, MCP tool servers and A2A agents, one state machine and [one config struct in three places](/docs/circuit-breaker/#the-breaker-on-the-mcp-and-a2a-planes). On MCP and A2A there is deliberately no failover — nothing is substitutable there — so what it buys is failing fast rather than paying a timeout per call, and an operator signal naming the dead server or agent.
+- **[Circuit breaker](/docs/circuit-breaker/)** - fault-attributed breaking that classifies each failure and benches only the target at fault. It runs on all three planes: pool members, MCP tool servers and A2A agents, one state machine and [one config struct in three places](/docs/circuit-breaker/#the-breaker-on-the-mcp-and-a2a-planes). On MCP and A2A there is deliberately no failover (nothing is substitutable there), so what it buys is failing fast rather than paying a timeout per call, and an operator signal naming the dead server or agent.
 - **[In-flight failover](/docs/failover/)** - reroute a failing request before your client sees a byte, even mid-stream, across protocols.
 - **[Health and observability](/docs/observability/)** - `/healthz`, `/stats`, `/metrics`, and the signals to watch.
 

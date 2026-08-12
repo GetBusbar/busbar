@@ -51,19 +51,19 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even mid-stream. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
-Want a different order than weighted? Name a **selection strategy** — `cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook — as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
+Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
 
 ## Config reference
 
-The field-by-field reference — every pool and member field with its type, default, and validation rule — lives in one place: **[Configuration → `pools`](/docs/configuration/#pools)**. This guide stays conceptual so the two never drift.
+The field-by-field reference, every pool and member field with its type, default, and validation rule, lives in one place: **[Configuration → `pools`](/docs/configuration/#pools)**. This guide stays conceptual so the two never drift.
 
-In short: a pool takes a list of `members` (each a `model` lane with an optional `weight`, `context_max`, `tier`, and `tags`), an optional `hooks` list (one ordering strategy — `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` — plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
+In short: a pool takes a list of `members` (each a `model` lane with an optional `weight`, `context_max`, `tier`, and `tags`), an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
 ## Multi-protocol pools
 
-**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact on the wire (the client sees the upstream's bytes verbatim, with the request side byte-for-byte only when it already names the lane's exact wire model), but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol there is no field loss and no re-encoding — but responses still pay a per-frame IR decode as a usage side-channel; that cost is not translation overhead in the field-loss sense, but it is not zero either.
+**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact on the wire (the client sees the upstream's bytes verbatim, with the request side byte-for-byte only when it already names the lane's exact wire model), but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol there is no field loss and no re-encoding. Responses still pay a per-frame IR decode as a usage side-channel; that cost is not translation overhead in the field-loss sense, but it is not zero either.
 
 ## Recipes
 

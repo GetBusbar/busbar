@@ -11,11 +11,11 @@ Busbar carries three kinds of traffic, and the point of the architecture is that
 they are three *ingresses onto one core* rather than three products sharing a
 process.
 
-| plane | inbound — Busbar is the server | outbound — Busbar is the client |
+| plane | inbound: Busbar is the server | outbound: Busbar is the client |
 |---|---|---|
 | **LLM** | six wire protocols on `/v1/*` and friends | every provider or pool you configure |
-| **MCP** | `/mcp` — an MCP server your agents log in to | the MCP tool servers you register |
-| **A2A** | `/a2a/agents/{id}` — the agents you front | the backend agent a task is relayed to |
+| **MCP** | `/mcp`, an MCP server your agents log in to | the MCP tool servers you register |
+| **A2A** | `/a2a/agents/{id}`, the agents you front | the backend agent a task is relayed to |
 
 Each plane is bidirectional, and that is the whole claim: a caller speaks to
 Busbar, and Busbar speaks onward under its own identity.
@@ -45,7 +45,7 @@ Busbar, and Busbar speaks onward under its own identity.
 
 **What is specific to each, because the threat is specific.** On MCP, a tool's
 schema is hash-pinned at approval and a drifted tool is quarantined rather than
-called — a tool description is an instruction to a model, so a server that
+called. A tool description is an instruction to a model, so a server that
 rewrites its own description tomorrow is a live attack, not a version bump. On
 A2A, an agent card is fetched through the same guard, verified Ed25519-only, and
 pinned so the same card six hours later is checked against the one you approved.
@@ -54,12 +54,12 @@ because that is where a conformant client looks first, and it deliberately names
 **no** fronted agent: an endpoint that cannot ask who is calling must not hand an
 anonymous caller the inventory.
 
-## Request lifecycle — an LLM call, traced
+## Request lifecycle: an LLM call, traced
 
 The trace below follows a **model** request, because it is the path that exercises
 every seam: protocol translation, pool selection and failover are LLM-plane
 mechanics. The MCP and A2A planes enter at their own ingress and rejoin at the
-shared steps — authentication, admission, breaker availability, audit and metering
+shared steps. Authentication, admission, breaker availability, audit and metering
 are the same code on all three.
 
 <svg viewBox="0 0 700 1140" role="img" aria-label="A request enters over any of six wire protocols and hits the axum HTTP router, whose route fixes the ingress protocol. Auth middleware applies token, passthrough or none, or a virtual-key lookup for governance. If governance is enabled it runs allowed-pools, budget and rate-limit checks, returning 403 or 429 on failure. Pool and lane selection uses affinity preference then smooth weighted round-robin over the healthy candidate subset. Each attempt, up to the failover cap, translates the request to the lane protocol via the intermediate representation, rewrites the model and injects credentials, POSTs upstream, and classifies the outcome into relay, failover or dead-lane. The response is passed through when the protocol matches or translated frame-by-frame when it differs, usage is tapped to charge the virtual key, and the reply returns to the client." style="width:100%;height:auto;max-width:700px;font-family:ui-sans-serif,system-ui,sans-serif;">
@@ -213,8 +213,8 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   (1.5.3 inverted the retired `admin_insecure:` flag into this one, so the safe posture is the default.)
 - On the data plane, the caller's bearer token is threaded through the request. Whether
   Busbar signs the upstream call with its own lane key or forwards the caller's credential
-  is a separate config knob, `pools.upstream_credentials:` (`own`, the default, vs `passthrough`) —
-  the all-pools default, overridable per pool —
+  is a separate config knob, `pools.upstream_credentials:` (`own`, the default, vs `passthrough`).
+  It sets the all-pools default, is overridable per pool, and is
   independent of which identity provider ran at the front door. Under governance the resolved
   virtual key is attached for downstream ACL and budget checks.
 - **Bedrock ingress** takes one of two paths. When the data-plane chain does not verify a
@@ -279,7 +279,7 @@ system blocks, messages with text / thinking (+signature) / tool-use / tool-resu
 `temperature` (held as `f64` so a caller's value never silently mutates), a `stream`
 flag, and an `extra` passthrough map for fields outside the modeled subset
 (provider-specific sampling knobs with no first-class IR field, etc.). Same-protocol REQUESTS skip the IR entirely and pass through
-byte-for-byte, but only when the client named the lane's exact wire model — a pool-alias route
+byte-for-byte, but only when the client named the lane's exact wire model. A pool-alias route
 (e.g. `model: "fast"` resolving to a specific lane) rewrites the model and re-serializes instead.
 Same-protocol RESPONSES pass through byte-for-byte on the wire but still decode each frame through
 the IR as a usage side-channel (see `docs/protocols.md`'s "Same-protocol passthrough"); only the
@@ -369,7 +369,7 @@ recovery behavior.
 
 The breaker is keyed on the **target** a request is about to reach. A target is a
 pool member on the LLM plane, a registered tool server on MCP, or a registered agent
-on A2A — three identities, one state machine:
+on A2A. Three identities, one state machine:
 
 | plane | breaker target | configured at |
 |---|---|---|
@@ -377,8 +377,8 @@ on A2A — three identities, one state machine:
 | MCP | one registered tool server | `tools.<server>.breaker:` |
 | A2A | one registered agent | `agents.<agent>.breaker:` |
 
-**One struct, three places.** `BreakerCfg` — the cooldown bounds and the `trip:`
-condition — is the same struct in all three, with the same defaults and the same
+**One struct, three places.** `BreakerCfg` (the cooldown bounds and the `trip:`
+condition) is the same struct in all three, with the same defaults and the same
 validation. There is no MCP breaker grammar and no A2A breaker grammar to learn;
 what you already know from `pools:` is the whole of it.
 
@@ -388,9 +388,9 @@ LLM-shaped. *Member selection* is different: it needs substitutable members, and
 MCP and A2A there are none. A tool is namespaced to the server that exports it, so
 `acme_read_file` exists on exactly one server; an A2A task addressed to one agent
 cannot be served by a different agent. **There is therefore no failover on the MCP or
-A2A planes, and `failover:` does not appear under `tools:` or `agents:` — its absence
+A2A planes, and `failover:` does not appear under `tools:` or `agents:`. Its absence
 is the statement.** These planes are the case §4 already describes on the LLM side:
-*the degenerate case, a single-member candidate set of weight 1.* Not new machinery —
+*the degenerate case, a single-member candidate set of weight 1.* Not new machinery:
 a case the engine already models, now reached from two more ingresses.
 
 **What the caller gets when a target is Open** is protocol-native on each plane, and
@@ -398,7 +398,7 @@ the difference matters more than it looks:
 
 | plane | refusal |
 |---|---|
-| LLM | the pool's `on_exhausted` policy — failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` |
+| LLM | the pool's `on_exhausted` policy: failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` |
 | MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` |
 | A2A | a task in state **`rejected`** (not `failed`), returned with its task id |
 
@@ -406,17 +406,17 @@ On MCP this is an error, **never a tool result with `isError: true`**. `isError`
 the tool ran and failed; a tripped breaker means the call never happened. Reporting
 the second as the first hands the model a false premise about the world, and the model
 then reasons from it. On A2A, `rejected` says *we did not accept this work*, where
-`failed` would say *we tried and it broke* — and the caller keeps the task id, so the
+`failed` would say *we tried and it broke*. The caller keeps the task id, so the
 calling agent owns the retry decision rather than inheriting a schedule Busbar
 invented for it.
 
 ## Observability hooks
 
 Metrics are emitted at the ingress boundary (`busbar_requests_total`, the duration
-histogram) on EVERY plane — the model plane from `ingress::finish_inner`, the MCP and A2A planes
-from the plane ingress boundary layer (`crates/busbar/src/plane/observe.rs`), distinguished by a
-`plane` label — and at each upstream attempt/failure/trip/failover/translation
-(`crates/busbar/src/metrics.rs`, `crates/busbar/src/proxy/engine/mod.rs`). Optional OTLP spans and a request-log webhook
+histogram) on EVERY plane, and at each upstream attempt/failure/trip/failover/translation
+(`crates/busbar/src/metrics.rs`, `crates/busbar/src/proxy/engine/mod.rs`). The model plane emits from
+`ingress::finish_inner`, the MCP and A2A planes from the plane ingress boundary layer
+(`crates/busbar/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 
 ## How it deploys, simplest first
@@ -430,7 +430,7 @@ All three planes are in the one binary. Serving MCP or fronting agents is a
 `tools:` or `agents:` block in the config, not another process to run.
 
 **1. One process, no store.** A binary and a config file. Virtual keys, budgets
-and breaker state live in memory. This is a complete, working deployment — it
+and breaker state live in memory. This is a complete, working deployment. It
 forgets accrued usage on restart, and nothing else. Suitable for a single node, a
 development environment, or an air-gapped box where a database is a liability
 rather than an asset.
@@ -438,15 +438,15 @@ rather than an asset.
 **2. One process, durable.** Add a `store:` and the same process persists what it
 would otherwise forget: keys, credentials, usage ledgers, the audit chain, the
 revocation denylist, agent tasks and the MCP call log. Backends ship as signed
-plugins — SQLite, PostgreSQL, MySQL and Valkey — so the storage decision is a
+plugins (SQLite, PostgreSQL, MySQL and Valkey), so the storage decision is a
 config line rather than a rebuild.
 
 **3. A fleet behind a load balancer.** Several processes sharing one store. Each
 member is independent on the request path and converges through the store: a key
 revoked on one member reaches the others through the denylist, and usage
 accrues into shared ledgers. A *deployment* is the cluster; a *member* is one
-process, and the distinction is load-bearing because per-process state — config
-version, boot epoch, in-memory audit ring — is real and observable per member.
+process, and the distinction is load-bearing because per-process state (config
+version, boot epoch, in-memory audit ring) is real and observable per member.
 
 The **admin plane is a separate listener** in every topology. It binds to
 loopback by default, and exposing it further requires mutual TLS. Reaching the
@@ -456,13 +456,13 @@ different authentication. See [Security](https://getbusbar.com/security/).
 ## What is in the store, and what is deliberately not
 
 The store is a **durability sink, never a lookup on the request path.** Admission
-— `try_admit`, which decides whether a request is allowed — makes **zero** store
+(`try_admit`, which decides whether a request is allowed) makes **zero** store
 calls. Budgets and the revocation denylist are hydrated into memory at boot and
 written through afterwards, off the request path. This is why storage choice does
 not appear in the latency numbers on the [performance page](https://getbusbar.com/performance/):
 a slow database makes writes slow, not requests slow.
 
-**Persisted:** virtual keys (secret **hashed** — the store holds a verifier, not
+**Persisted:** virtual keys (secret **hashed**: the store holds a verifier, not
 the key), outbound credentials, usage ledgers as accumulated per-model token
 counts, the hash-chained audit record, the revocation denylist, A2A tasks and
 their events, and the MCP tool-call log.
@@ -484,7 +484,7 @@ their events, and the MCP tool-call log.
 ## Credentials, in both directions
 
 The two directions are separate mechanisms on purpose, because the interesting
-failure is not leaking a key outright — it is using the right key on the wrong
+failure is not leaking a key outright. It is using the right key on the wrong
 hop.
 
 **Inbound**, a caller presents a virtual key carrying its own scopes, budget and

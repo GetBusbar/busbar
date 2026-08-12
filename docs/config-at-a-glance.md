@@ -7,13 +7,13 @@ straight through to the detail for any part. For the per-field tables with defau
 rules use [configuration.md](configuration.md); for a bootable file use
 [`examples/clean-config-1.5.0.yaml`](../examples/clean-config-1.5.0.yaml).
 
-> A fully hyperlinked version of this page — where every key, value, module name and enum links to
-> its own spec section — lives at **<https://getbusbar.com/docs/config-at-a-glance/>**. This file is
+> A fully hyperlinked version of this page (where every key, value, module name and enum links to
+> its own spec section) lives at **<https://getbusbar.com/docs/config-at-a-glance/>**. This file is
 > the plain-markdown equivalent kept in the repo; the website page is the canonical rendering.
 
 The whole surface follows a few rules, all locked by the 1.5.3 grammar freeze: **every
 plugin-instance kind is a top-level NAMED-DEFINITION map (`name -> {module, settings, …}`) referenced
-BY BARE NAME everywhere else** — `hooks:`, `identity-providers:`, `export:` (and singular `store:`);
+BY BARE NAME everywhere else**: `hooks:`, `identity-providers:`, `export:` (and singular `store:`);
 built-ins (`keys`, `admin-tokens`, `cheapest`) are referenced bare. Beyond that: the object that OWNS
 a concept is the only place it is defined; every secret is a reference (`{ env: VAR }` /
 `{ file: /path }` / `{ module: <secret-plugin> }`); an omitted list means "all", an explicit `[]`
@@ -21,7 +21,7 @@ means "none"; a setting shared by every entity in a section is a RESERVED key at
 (`pools.hooks`, `pools.upstream_credentials`), where LISTS combine ADDITIVELY and SCALARS OVERRIDE;
 windows are nouns (`minute|hour|day|month|total`); unknown keys fail boot.
 
-## Transport — [`listen` / `tls`](configuration.md#listen)
+## Transport: [`listen` / `tls`](configuration.md#listen)
 
 ```yaml
 listen: "0.0.0.0:8080"          # data-plane bind
@@ -37,10 +37,10 @@ tls:                            # absent = plain HTTP. Each field is a SECRET RE
 # admin_tls: { cert: {...}, key: {...}, client_ca: {...} }   # same shape; client_ca = admin mTLS
 ```
 
-## Plugins — [`plugins`](configuration.md#plugins)
+## Plugins: [`plugins`](configuration.md#plugins)
 
-One signed artifact format, trust model, and loader for all four plugin kinds — **store**,
-**secret**, **auth**, and **hook** — every one loaded **in-process** over the hybrid ABI (see
+One signed artifact format, trust model, and loader for all four plugin kinds (**store**,
+**secret**, **auth**, and **hook**), every one loaded **in-process** over the hybrid ABI (see
 [plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-webrequest-hook`
 plugin forwards to an HTTPS sidecar.
 
@@ -55,10 +55,10 @@ plugins:
   # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
 ```
 
-Referenced below wherever a section names a `module:` outside the built-in default — `auth.chain`
+Referenced below wherever a section names a `module:` outside the built-in default: `auth.chain`
 (an IdP), `store.module` (a durable backend), a `secret` reference, or a hook.
 
-## Identity — [`auth`](configuration.md#auth)
+## Identity: [`auth`](configuration.md#auth)
 
 ```yaml
 identity-providers:             # DEFINE each IdP ONCE; every chain references it BY BARE NAME
@@ -83,12 +83,12 @@ auth:
 `upstream_credentials` is NOT here: whose key hits the provider is a ROUTING property, so it lives at
 `pools.upstream_credentials` (all-pools default) with a per-pool override.
 
-Keys themselves are **minted over the admin API** (`POST /api/v1/admin/keys`), not configured — a
+Keys themselves are **minted over the admin API** (`POST /api/v1/admin/keys`), not configured. A
 minted key is a signed, expiring token bound to at most one group. See
 [Virtual keys and enforcement](configuration.md#virtual-keys-and-enforcement) and
 [admin-api.md](admin-api.md).
 
-## Limits — [`groups`](configuration.md#groups)
+## Limits: [`groups`](configuration.md#groups)
 
 The ONE limit tree; keys carry no limits, every cap lives here. Admission walks the `parent` chain
 and ANDs every limit (atomic, all-or-nothing); a rejection names the exact blocking bucket.
@@ -107,7 +107,7 @@ groups:
     child_default: { limits: [ { budget: 500, per: month } ] }   # template for auto-provisioned children
 ```
 
-## Pricing — [`rate_card` + `per_request_fee`](configuration.md#rate_card-and-per_request_fee)
+## Pricing: [`rate_card` + `per_request_fee`](configuration.md#rate_card-and-per_request_fee)
 
 ```yaml
 rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
@@ -116,7 +116,7 @@ rate_card:                      # the ONLY cost source: per-model token rates in
 per_request_fee: 0              # flat abstract charge added per request at admission
 ```
 
-## Durability — [`store`](configuration.md#store)
+## Durability: [`store`](configuration.md#store)
 
 ```yaml
 store:
@@ -125,7 +125,7 @@ store:
   # settings: { url: "postgres://user:pass@host/busbar" }
 ```
 
-## Hooks — [`hooks`](hooks.md)
+## Hooks: [`hooks`](hooks.md)
 
 Hooks are DEFINED once here and REFERENCED by bare name from the reserved `pools.hooks:` all-pools
 list or a pool's own `hooks:` list. No inline instances anywhere (1.5.3 removed them, along with the
@@ -142,12 +142,12 @@ hooks:
     module: busbar-phi
     groups: [engineering]       # SCOPE: which callers. Omit/[] = all. A user is a leaf group.
     kind: gate
-    prompt: ro                  # no|ro|rw   — prompt-content grant
-    user: no                    # no|ro      — caller-identity grant
+    prompt: ro                  # no|ro|rw   (prompt-content grant)
+    user: no                    # no|ro      (caller-identity grant)
     on_error: reject            # nothing|weighted|first|reject|{ hook: <name> }
 ```
 
-## Routing surface — [`providers`](configuration.md#providers) · [`models`](configuration.md#models) · [`pools`](configuration.md#pools)
+## Routing surface: [`providers`](configuration.md#providers) · [`models`](configuration.md#models) · [`pools`](configuration.md#pools)
 
 ```yaml
 providers:
@@ -164,7 +164,7 @@ pools:                                      # a pool is weighted lanes with shar
   upstream_credentials: own                 # RESERVED all-pools default (SCALAR → OVERRIDE);
                                             #   own | passthrough, overridable per pool
   chat:
-    members:                                # no cost fields — pricing lives on rate_card
+    members:                                # no cost fields: pricing lives on rate_card
       - { model: gpt-4o,      weight: 3, tier: primary }
       - { model: gpt-4o-mini, weight: 1, tier: overflow }
     hooks: [cheapest, pii]                  # one ordering strategy + gate NAMES defined above
@@ -176,12 +176,12 @@ pools:                                      # a pool is weighted lanes with shar
     affinity: { mode: session }                   # session pinning  → #affinity
 ```
 
-## Operational — [`security`](configuration.md#security) · [`export`](configuration.md#export) · [`limits`](configuration.md#limits) · [`health`](configuration.md#health-probing)
+## Operational: [`security`](configuration.md#security) · [`export`](configuration.md#export) · [`limits`](configuration.md#limits) · [`health`](configuration.md#health-probing)
 
 ```yaml
 security:                       # SSRF metadata denylist tuning  → #security
   { allow_metadata_hosts: [], allow_all_metadata: false }
-export:                         # THE telemetry-egress surface — a NAMED map, so SEVERAL instances
+export:                         # THE telemetry-egress surface, a NAMED map, so SEVERAL instances
                                 #   of one module are legal. 1.5.3 DELETED `observability:` and the
                                 #   top-level `metrics:` block into it.  → #export
   metrics:  { module: prometheus,          settings: { buffer_seconds: 60 } }   # OPT-IN; at most one
@@ -204,9 +204,9 @@ providers_file: providers.yaml  # provider catalog pointer (1.5.3 ← BUSBAR_PRO
 
 ## Not config, but adjacent
 
-- **[Minting keys](admin-api.md)**: `POST /api/v1/admin/keys` — the signed token is shown once and
+- **[Minting keys](admin-api.md)**: `POST /api/v1/admin/keys`. The signed token is shown once and
   expires (default 90 days). Requires `full` scope.
 - **[Migrating from 1.4.x](migration-1.5.md)**: `busbar --migrate-config old.yaml` prints the
   converted config with TODO/WARNING comments; a 1.x config refuses to boot with a named error.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact
-  boot pipeline (config + plugins) with zero side effects — a clean validate means a clean boot.
+  boot pipeline (config + plugins) with zero side effects. A clean validate means a clean boot.

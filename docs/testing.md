@@ -212,14 +212,14 @@ review discipline alone.
 
 ## The three rules
 
-1. **A finding with a sibling is not a bug — it is a missing choke point.**
+1. **A finding with a sibling is not a bug. It is a missing choke point.**
    If the same mistake is possible at a second call site, the defect is not the
    instance you found; it is that there are N places where the class can be got
    wrong. The unit of remediation is the choke point, not the instance.
 2. **The fix is the choke point + ONE class-level test.** You introduce (or
    confirm) the single point every sibling passes through, route all of them
    through it, and attach exactly one test *there*. You do **not** patch N
-   instances with N tests — that is N new places for the same mistake to recur.
+   instances with N tests. That is N new places for the same mistake to recur.
 3. **A repeat sibling means the class was never fixed.** If a later review finds
    another member of an already-remediated family, the previous remediation
    patched an instance instead of the class. Build the choke point that should
@@ -227,18 +227,18 @@ review discipline alone.
 
 ## The choke-point registry
 
-`scripts/structure-lint.sh` carries a declarative `CHOKE_POINTS` table — one row
+`scripts/structure-lint.sh` carries a declarative `CHOKE_POINTS` table: one row
 per choke point, with the owner, the class-level test, the patterns that bypass
 it, and the allowed exceptions. **The table is the complete map**: if a hazard
 class has a single point of truth in this tree, it is a row. Adding the next one
-is a one-row addition — no new scanner, no new loop.
+is a one-row addition: no new scanner, no new loop.
 
 | Choke point | Owner (the correct implementation) | Enforced by | The ONE class-level test |
 |---|---|---|---|
-| **A — persistence** | `crates/busbar/src/durable.rs` (`durable::write` / `write_with`; `AppHandle::commit_and_swap` for persist-then-swap) | registry row `A-persistence`: a hand-rolled `std::fs::rename(` or `.sync_all(` outside `durable.rs` is `DURABLE-BYPASS` | `durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak` — every fallible step × injected errno, asserting the target is untouched and no temp leaks |
-| **B — plugin FFI/ABI** | `crates/plugin-sdk/src/boundary.rs`, reached only via `export_*_plugin!` | registry row `B-plugin-export`: a hand-written `#[no_mangle]` outside the SDK macro is `EXPORT-BYPASS` (plus the duplicate-symbol link error a second `busbar_*` export triggers) | `plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks` (with the panic / unsupported / drop cases beside it) |
-| **C — admin config mutation** | `crates/busbar/src/admin/v1/json/txn.rs` (`config_transaction`) | registry row `C-config-mutation`: naming `CONFIG_MUTATION_LOCK`, or calling `handle.swap(` / `.commit_and_swap(` outside `txn.rs` (`state.rs` defines them), is `MUTATION-BYPASS`. Backed by `scripts/txn-fence.sh` (compile fence) and `scripts/loom.sh` | `admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap` |
-| **D — OpenAPI error taxonomy** | `crates/busbar/src/admin/v1/contract/taxonomy.rs` (`declared_errors` — `openapi.json` is a *projection* of it) | **differently enforced**: there is no pattern to ban. The v1 router's recording layer **panics** on an under-claim at the moment of emission; the class test fails on the over-claim. The registry row still lists it (`rules = -`) so the table stays a complete map | `admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit` — registry == declaration, so under- **and** over-claim both fail |
+| **A: persistence** | `crates/busbar/src/durable.rs` (`durable::write` / `write_with`; `AppHandle::commit_and_swap` for persist-then-swap) | registry row `A-persistence`: a hand-rolled `std::fs::rename(` or `.sync_all(` outside `durable.rs` is `DURABLE-BYPASS` | `durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak`: every fallible step × injected errno, asserting the target is untouched and no temp leaks |
+| **B: plugin FFI/ABI** | `crates/plugin-sdk/src/boundary.rs`, reached only via `export_*_plugin!` | registry row `B-plugin-export`: a hand-written `#[no_mangle]` outside the SDK macro is `EXPORT-BYPASS` (plus the duplicate-symbol link error a second `busbar_*` export triggers) | `plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks` (with the panic / unsupported / drop cases beside it) |
+| **C: admin config mutation** | `crates/busbar/src/admin/v1/json/txn.rs` (`config_transaction`) | registry row `C-config-mutation`: naming `CONFIG_MUTATION_LOCK`, or calling `handle.swap(` / `.commit_and_swap(` outside `txn.rs` (`state.rs` defines them), is `MUTATION-BYPASS`. Backed by `scripts/txn-fence.sh` (compile fence) and `scripts/loom.sh` | `admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap` |
+| **D: OpenAPI error taxonomy** | `crates/busbar/src/admin/v1/contract/taxonomy.rs` (`declared_errors`, of which `openapi.json` is a *projection*) | **differently enforced**: there is no pattern to ban. The v1 router's recording layer **panics** on an under-claim at the moment of emission; the class test fails on the over-claim. The registry row still lists it (`rules = -`) so the table stays a complete map | `admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit`: registry == declaration, so under- **and** over-claim both fail |
 
 The lint asserts the class test still exists for **every** row, including D. A
 choke point whose one test was deleted or renamed is a choke point nothing
@@ -254,15 +254,15 @@ Append one row to `CHOKE_POINTS` in `scripts/structure-lint.sh`:
 
 Use `-` for the rules field when the choke point is enforced by the compiler or
 at runtime rather than by grep (row D). Then plant a violation, confirm the lint
-fails with your `TAG`, and remove it — a rule nobody has seen fire is a rule
+fails with your `TAG`, and remove it. A rule nobody has seen fire is a rule
 that may not work.
 
-## Checker rigor — R1 / R2 / R3
+## Checker rigor: R1 / R2 / R3
 
 A self-check that cannot fail is worse than no check: it reports green while
 asserting nothing. Three rules govern how tests and checkers are built.
 
-### R1 — Independent re-derivation (the RAW-source oracle)
+### R1: Independent re-derivation (the RAW-source oracle)
 
 The **expected** side of any cross-surface assertion must be re-derived from the
 **raw source of record**, through a code path **disjoint** from the code under
@@ -287,33 +287,33 @@ the oracle with the surface's own formatter. Derivation must be disjoint;
 formatting must be shared. Comparing a differently-formatted oracle tests the
 formatter, not the value.
 
-### R2 — Coverage assertion: inert branches are banned
+### R2: Coverage assertion (inert branches are banned)
 
 Every check-branch must be exercised by at least one fixture in the same run. A
 branch reached by zero fixtures asserts nothing while reporting green, and is
 itself a hard failure. In Rust the analogue is per-branch coverage over the
-choke-point modules plus an "every enum variant has a behavioral test" census —
-an exhaustive `match` (e.g. the `StatusClass → Disposition` taxonomy of
+choke-point modules plus an "every enum variant has a behavioral test" census.
+An exhaustive `match` (e.g. the `StatusClass → Disposition` taxonomy of
 [ADR-0002](adr/0002-circuit-breaker.md)) makes the compiler the existence guard,
 so only the behavioral arm needs asserting.
 
-### R3 — A defect test must not encode the defect
+### R3: A defect test must not encode the defect
 
 A code-vs-test comparison cannot catch a test that agrees with a broken
-implementation — the test *is* the spec in that framing. (The archetype: the
+implementation: the test *is* the spec in that framing. (The archetype: the
 `secrets:` tests once asserted that a `vault` module was **rejected**, locking
 in a regression that broke a shipped feature. Green test, broken product.)
 
 **A defect-fixing test is not accepted unless it satisfies at least one of:**
 
-1. **Contract-derived** — expected values read out of the committed contract
+1. **Contract-derived**: expected values read out of the committed contract
    artifact (the frozen wire table, `openapi.json`, `declared_errors`), not
    restated inline. Encoding a wrong behavior would then also have to corrupt
    the contract, which is one reviewable diff instead of a silent per-test lie.
-2. **RED-demonstrated** — shown failing on the pre-fix commit and passing after,
+2. **RED-demonstrated**: shown failing on the pre-fix commit and passing after,
    recorded in the changeset as `RED at <sha>: <failure line>`. A test that was
    never RED against the bug it claims to guard may be encoding it.
-3. **Independent-oracle cross-checked** — asserted against a second,
+3. **Independent-oracle cross-checked**: asserted against a second,
    independently-authored surface computing the same fact (the `openapi-schema`
    feature's emitted doc versus the served error responses), so neither side can
    silently encode the bug without the other disagreeing.

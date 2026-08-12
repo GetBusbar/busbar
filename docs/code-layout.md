@@ -12,8 +12,8 @@ The same script enforces three further invariants that are about *behavior* rath
 - the **choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass).
   It belongs to the remediation contract and is documented in
   [testing.md](testing.md#the-remediation-contract);
-- **request-path purity** (§ 5 below) — the store is a durability sink, never on the request path;
-- **plane coherence** (§ 6 below) — no plane grows a local reimplementation of a shared concern.
+- **request-path purity** (§ 5 below): the store is a durability sink, never on the request path;
+- **plane coherence** (§ 6 below): no plane grows a local reimplementation of a shared concern.
 
 § "Running the lint" below covers all of them.
 
@@ -25,7 +25,7 @@ Rust, so "code vs not-code" is obvious at a glance:
 ```
 crates/
   busbar/            the engine + binary (src/main.rs, the request path, admin plane, protocols)
-  api/               the plugin CONTRACT crate — traits/types both the engine and every plugin build against
+  api/               the plugin CONTRACT crate: traits/types both the engine and every plugin build against
   auth-admin-tokens/ built-in `admin-tokens` admin plugin (default-on, removable feature)
   hooks-ranking/     built-in cheapest/fastest/… policies (default-on, removable feature)
 ```
@@ -68,13 +68,13 @@ compared, and the reader has no way to tell which is which. So: the declaration 
 moves.
 
 Because the declaration keeps the module a direct child, **moving a test never costs it private
-access** — `use super::*` behaves identically before and after. That is why the tree has no test
+access**. `use super::*` behaves identically before and after. That is why the tree has no test
 that "has to" stay inline.
 
 Two shapes are deliberately *not* violations, because neither is a test:
 
 - the `#[path]` declaration above (it is brace-less, and gates only its own line);
-- a `#[cfg(test)]` **support** item that declares no test — a log tap, a serialising mutex, a probe
+- a `#[cfg(test)]` **support** item that declares no test: a log tap, a serialising mutex, a probe
   method on a production type. Those are production-side hooks with no own-file to move to.
 
 If a test genuinely cannot move, the marker that permits it must **name its reason**:
@@ -114,7 +114,7 @@ Every protocol dialect has the identical shape (`proto/<name>/{mod,reader,writer
 `GovState::try_admit` resolves a key's whole enforcement chain, checks every cap and charges every
 bucket **without one store call and without one `await`**. That is not an accident of the current
 implementation; it is the property every published latency number rests on. Durability happens
-*behind* the request — the ledger flushes to the store on its own cadence — never in front of it.
+*behind* the request (the ledger flushes to the store on its own cadence), never in front of it.
 
 The `REQUEST_PATH` table in `scripts/structure-lint.sh` names the function and the calls it may not
 contain, and the check is **function-scoped**, not tree-wide: the same store call is entirely
@@ -137,15 +137,15 @@ one copy gets fixed, the other does not, and the divergence surfaces as a hole.
 The lint reads **declarations**, never prose, and asks two mechanical questions of the `mcp/` and
 `a2a/` trees:
 
-- **symbol** — is the same *top-level* name (a free `fn`, or a `struct`/`enum`/`trait`) declared in
+- **symbol**: is the same *top-level* name (a free `fn`, or a `struct`/`enum`/`trait`) declared in
   both planes? Top-level is what makes this usable: methods inside `impl` blocks are scoped by their
   type, so `new`, `fmt`, `len` and `default` never reach the comparison.
-- **module** — does the same file name exist in both planes? A concern can be duplicated without one
+- **module**: does the same file name exist in both planes? A concern can be duplicated without one
   symbol colliding; `mcp/catalogue.rs` beside `a2a/catalogue.rs` is the author's own statement of
   which concern each file is. `mod.rs` is exempt: it names a directory, not an idea.
 
-Reading declarations rather than words is load-bearing. The circuit breaker is **not** duplicated —
-there is exactly one `try_admit_breaker` and the `breaker` mentions under `mcp/` and `a2a/` are
+Reading declarations rather than words is load-bearing. The circuit breaker is **not** duplicated.
+There is exactly one `try_admit_breaker` and the `breaker` mentions under `mcp/` and `a2a/` are
 comments. A grep-for-the-word lint would have reported a duplicate breaker and been wrong.
 
 `PLANE_LEDGER` records the duplication that exists **today**, each row classified `DEBT` (owed a
@@ -155,7 +155,7 @@ a name, with the reason). The ledger is not an amnesty:
 - a row whose duplication is gone fails as `STALE-LEDGER`, so the moment a unification lands the
   lint tells you to delete the row;
 - **shrinking is the only permitted edit.** Adding a `DEBT` row for new code is not a fix, it is
-  evading the check — exactly as for `GRANDFATHERED_OVERSIZED`.
+  evading the check, exactly as for `GRANDFATHERED_OVERSIZED`.
 
 Every run prints the outstanding debt grouped by concern, with each concern's shared owner and the
 remedy, so the § A6 unification list is generated from the tree rather than transcribed from it.
@@ -178,7 +178,7 @@ scripts/structure-lint.sh
 ```
 
 Non-zero exit on any violation, with the offending path and the fix. It runs in CI (the `check` job),
-so a PR that reintroduces a giant file or a hybrid module fails before merge — and likewise a PR that
+so a PR that reintroduces a giant file or a hybrid module fails before merge, and likewise a PR that
 leaves a test body inline (`INLINE-TEST`), silences one without saying why (`ALLOW-WITHOUT-REASON`),
 hand-rolls a durable write, a plugin export, or a config swap outside its choke point
 (`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), deletes a choke point's class-level
@@ -193,7 +193,7 @@ scripts/structure-lint.sh --selftest
 ```
 
 It runs the real scanners over a fixture corpus whose every shape is a known way to lie about being
-test code, with each fixture declaring the verdict it must get — including fixtures that must **miss**
+test code, with each fixture declaring the verdict it must get, including fixtures that must **miss**
 (a legitimately test-only file, the correct `#[path]` shape, a support module with no tests). It
 fails if zero cases execute and it fails if a fixture does not reach disk, because a self-test that
 skipped to green would report exactly what a passing one reports.
