@@ -91,6 +91,12 @@ pub(crate) struct SightedCard {
     /// TLS. `None` on plaintext, and `None` is a refusal for a transport-pinned registration rather
     /// than a pass.
     pub(crate) peer_spki: Option<String>,
+    /// THE OTHER END OF THE SAME HANDSHAKE: whether the hop that served this card carried busbar's
+    /// client certificate for the registration it was fetched for. Carried for the same reason the
+    /// peer's pin is — an `mtls` registration's mutual half is a fact about the connection, so a
+    /// seam that dropped it would make the verb layer answer "not presented" about a card the sweep
+    /// verified, which is one plane with two answers decided by which path asked.
+    pub(crate) client_identity_offered: bool,
 }
 
 /// WHERE A CARD COMES FROM. Implemented by the delegating side's fetcher; implemented by a stub in

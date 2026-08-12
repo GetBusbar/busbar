@@ -47,7 +47,7 @@ type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 /// Built with `WebPkiClientVerifier`, which is the same construction `crate::tls::build_server_config`
 /// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
 /// handshake and never reaches the HTTP layer at all.
-fn spawn_mtls(
+pub(super) fn spawn_mtls(
     server_cert_pem: &str,
     server_key_pem: &str,
     client_ca_pem: &str,
@@ -113,7 +113,7 @@ fn spawn_mtls(
 
 /// The server thread records after its own handshake attempt returns; poll rather than sleep a fixed
 /// amount, so the assertion is neither flaky nor slow. Mirrors `transport_tests::wait_for_sni`.
-fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
+pub(super) fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
     wait_for_conns_len(seen, 1)
 }
 
@@ -139,7 +139,7 @@ const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
 /// A test that handed `ReqwestTransport` a `reqwest::Identity` it built itself would prove the
 /// transport presents a certificate and say nothing about whether the GRAMMAR can name one — which
 /// is the half of this defect that lived in `config.rs`.
-fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Identity {
+pub(super) fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Identity {
     // A monotonic counter, not a clock read: two tests can read the same nanosecond, and a
     // colliding path means one test reads a file another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
