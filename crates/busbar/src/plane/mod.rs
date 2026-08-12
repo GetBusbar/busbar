@@ -53,13 +53,17 @@
 //! the catalogue cache and the audit records instead of staying contained to the reader and writer
 //! at the edge.
 
-// NO PRODUCTION CALLER YET. This is the spine the next two items are built on: the candidate
+// THE FIRST PRODUCTION CALLER is [`observe`], the plane ingress boundary: it asks
+// `PlaneDispatch::mounted_plane_of` which plane a request arrived on and labels that request's
+// metrics with `Plane::key`. The rest of the spine is still ahead of its callers: the candidate
 // projection keys its per-plane payload by `Plane`, and the shared pools/tools/agents container
 // keys its sections by `Plane::config_section` and refuses a cross-plane reference using
-// `Plane::scope_kinds`. Landing the spine first is what stops those two inventing a second, subtly
+// `Plane::scope_kinds`. Landing the spine first is what stops those inventing a second, subtly
 // different notion of what a plane is. Same posture as the trust lifecycle and the entry merge
 // patch on this branch.
 #![cfg_attr(not(test), allow(dead_code))]
+
+pub(crate) mod observe;
 
 /// One governance plane. The variant set is the only thing a new plane adds here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -109,16 +113,47 @@ impl Plane {
         }
     }
 
-    /// How many distinct WIRE FORMATS this plane translates between. Not transports.
-    pub(crate) fn wire_formats(self) -> usize {
+    /// The distinct WIRE FORMATS this plane translates between, named. Not transports.
+    ///
+    /// These strings are the `ingress_protocol` metric-label vocabulary, which is why they are
+    /// stated here beside [`Plane::key`] rather than per plane: a label that means "which dialect
+    /// spoke to us" has to be spelled the same way on every plane or a dashboard cannot compare
+    /// them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some other
+    /// plane's `openai` end up in one series meaning two things.
+    pub(crate) fn wire_format_names(self) -> &'static [&'static str] {
         match self {
             // Read off the real registry: the dialects busbar actually speaks are what earn this
             // plane its IR, so adding one cannot silently leave the rule behind.
-            Plane::Llm => crate::proto::KNOWN_PROTOCOLS.len(),
+            Plane::Llm => crate::proto::KNOWN_PROTOCOLS,
             // JSON-RPC 2.0, over any of three transports.
-            Plane::Mcp => 1,
-            // One wire format today.
-            Plane::A2a => 1,
+            Plane::Mcp => &["jsonrpc"],
+            // JSON-RPC 2.0. One wire format today.
+            Plane::A2a => &["jsonrpc"],
+        }
+    }
+
+    /// How many distinct WIRE FORMATS this plane translates between. DERIVED from
+    /// [`Plane::wire_format_names`] rather than written as a second literal, so a plane cannot gain
+    /// a dialect in one place and keep its old count in the other — which would silently keep
+    /// [`Plane::has_superset_ir`] answering the pre-change question.
+    pub(crate) fn wire_formats(self) -> usize {
+        self.wire_format_names().len()
+    }
+
+    /// The plane's ONE wire format, when it has exactly one — otherwise `None`.
+    ///
+    /// COMPUTED, like [`Plane::has_superset_ir`], and for the same reason. A plane with a single
+    /// dialect can be labelled with it at the ingress BOUNDARY, before any handler has read a byte
+    /// of the body, because there is nothing to decide. A plane with several cannot: which dialect
+    /// spoke is a fact only its reader knows, so that plane labels its own requests from inside
+    /// (the LLM plane does exactly this, in `ingress::finish_inner`). Writing this as
+    /// `matches!(self, Plane::Mcp | Plane::A2a)` would make it a fact about today's planes; derived
+    /// from the format list it is a RULE, and the day MCP speaks a second dialect the boundary
+    /// stops labelling it and the rule says so rather than a stale literal quietly lying.
+    pub(crate) fn sole_wire_format(self) -> Option<&'static str> {
+        match self.wire_format_names() {
+            [only] => Some(only),
+            _ => None,
         }
     }
 
@@ -241,14 +276,28 @@ impl PlaneDispatch {
     /// getting it wrong here would hand a sibling path to a plane whose grants are meant to be
     /// inadmissible everywhere else.
     pub(crate) fn plane_of(&self, path: &str) -> Plane {
-        for plane in [Plane::Mcp, Plane::A2a] {
-            if let Some(mount) = self.mount_of(plane) {
-                if path_is_under(path, mount) {
-                    return plane;
-                }
-            }
-        }
-        Plane::Llm
+        self.mounted_plane_of(path).unwrap_or(Plane::Llm)
+    }
+
+    /// The plane that CLAIMS `path` BY MOUNT, or `None` when `path` falls through to the residual.
+    ///
+    /// The same walk [`Self::plane_of`] does — it is written once, here, and `plane_of` is merely
+    /// the arm that names the residual — but it keeps the residual DISTINGUISHABLE, which
+    /// `plane_of` deliberately does not. [`super::observe`] needs that distinction and does not
+    /// want a plane comparison to get it: the plane ingress boundary emits a request's metrics only
+    /// for a plane that has a DOOR of its own, because the residual labels its own requests from
+    /// inside its handler, where the dialect it spoke is known. Written as `if plane == Plane::Llm`
+    /// that would be a plane branch standing in for a property the mount table already knows — and
+    /// it would be wrong the day a fourth plane is added as a residual sibling.
+    ///
+    /// The walk covers `Plane::ALL` rather than a hand-listed `[Mcp, A2a]`: the residual has no
+    /// mount, so it is skipped by construction rather than by being left off a list a new plane
+    /// would have to remember to join.
+    pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<Plane> {
+        Plane::ALL.iter().copied().find(|plane| {
+            self.mount_of(*plane)
+                .is_some_and(|mount| path_is_under(path, mount))
+        })
     }
 }
 
@@ -422,3 +471,7 @@ mod plane_tests;
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]
 mod sections_tests;
+
+#[cfg(test)]
+#[path = "tests/metrics_tests.rs"]
+mod metrics_tests;

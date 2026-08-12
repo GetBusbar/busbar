@@ -413,7 +413,9 @@ invented for it.
 ## Observability hooks
 
 Metrics are emitted at the ingress boundary (`busbar_requests_total`, the duration
-histogram) and at each upstream attempt/failure/trip/failover/translation
+histogram) on EVERY plane — the model plane from `ingress::finish_inner`, the MCP and A2A planes
+from the plane ingress boundary layer (`crates/busbar/src/plane/observe.rs`), distinguished by a
+`plane` label — and at each upstream attempt/failure/trip/failover/translation
 (`crates/busbar/src/metrics.rs`, `crates/busbar/src/proxy/engine/mod.rs`). Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 

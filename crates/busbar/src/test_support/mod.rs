@@ -1183,6 +1183,7 @@ impl TestApp {
             &lanes,
             &self.pools,
             &by_model,
+            crate::plane::Plane::Llm,
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);

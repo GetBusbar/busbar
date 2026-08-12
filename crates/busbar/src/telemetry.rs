@@ -85,8 +85,29 @@ const KEY_SEP: char = '\u{1f}';
 
 // ── Fixed label vocabularies (indices into the per-family slot arrays) ──────────────────────────
 
-/// `outcome` values on `busbar_requests_total`, exactly as `ingress::finish_inner` classifies them.
+/// `outcome` values on `busbar_requests_total`. The classification itself is [`outcome_of`], which
+/// is the ONLY thing that produces one of these — see there for why it is a function.
 pub(crate) const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
+
+/// CLASSIFY one finished request's HTTP status into the `outcome` label.
+///
+/// One function, called from every plane's finish, because `outcome` is the label an operator
+/// alerts on and two planes classifying a 503 differently would make `sum by (outcome)` mean
+/// nothing. It used to be an inline `match` inside `ingress::finish_inner`, which was fine while
+/// exactly one plane emitted; it stopped being fine the moment a second one did.
+///
+/// `503` is pulled out AHEAD of the `400..=499` and catch-all arms deliberately: exhaustion is the
+/// router saying "no lane could take this", which is an operator's capacity signal and not a
+/// generic upstream error.
+pub(crate) fn outcome_of(status: u16) -> &'static str {
+    match status {
+        200..=299 => "ok",
+        503 => "exhausted",
+        400..=499 => "client_error",
+        _ => "error",
+    }
+}
+
 /// `disposition` values on `busbar_upstream_failures_total` (see `proxy::DISPOSITION_*`).
 pub(crate) const DISPOSITIONS: [&str; 4] = [
     crate::proxy::DISPOSITION_TRANSIENT,
@@ -552,7 +573,8 @@ pub(crate) fn flush_to_recorder() {
 // ── Per-App slot tables (registered once per config generation) ─────────────────────────────────
 
 /// The banked slots for one request family: `busbar_requests_total` (per outcome) and
-/// `busbar_request_duration_seconds`, for a fixed `(ingress_protocol, pool)` pair.
+/// `busbar_request_duration_seconds`, for a fixed `(ingress_protocol, pool)` pair ON THE PLANE THIS
+/// BANK REGISTERS (see [`AppSlots::build`]).
 #[derive(Clone, Copy)]
 struct RequestFamily {
     requests: [CounterSlot; OUTCOMES.len()],
@@ -576,6 +598,11 @@ struct LaneFamily {
 /// miss (custom protocol, label from a different generation, bare test `App`) falls back to the
 /// exact macro emission the site used before the bank, so `/metrics` output is preserved always.
 pub(crate) struct AppSlots {
+    /// The `plane` label every banked request family was registered under. The bank's inputs
+    /// (`lanes`, `pools`, `by_model`) are the MODEL plane's routing tables, so this is the plane
+    /// those tables belong to — carried as a field rather than assumed at the lookup, so a request
+    /// from another plane misses cleanly instead of landing in the wrong plane's series.
+    banked_plane: &'static str,
     /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-protocol request
     /// families, indexed by position in `proto::KNOWN_PROTOCOLS`.
     request: HashMap<Box<str>, Box<[RequestFamily]>>,
@@ -593,11 +620,18 @@ impl AppSlots {
         lanes: &[Lane],
         pools: &HashMap<String, Vec<WeightedLane>>,
         by_model: &HashMap<String, usize>,
+        plane: crate::plane::Plane,
     ) -> AppSlots {
         use crate::metrics::{
             BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
         };
+
+        // STATED by the caller, not assumed here: `lanes`/`pools`/`by_model` are one plane's
+        // routing tables, and the caller is the only place that knows whose. Assuming it would make
+        // this function silently wrong the day a second plane grows a bounded routing table worth
+        // banking, which is exactly the direction the plane spine is going.
+        let banked_plane = plane.key();
 
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.keys().map(String::as_str).collect();
@@ -615,6 +649,7 @@ impl AppSlots {
                         counter_slot(
                             REQUESTS_TOTAL,
                             &[
+                                ("plane", banked_plane),
                                 ("ingress_protocol", proto),
                                 ("pool", pool),
                                 ("outcome", OUTCOMES[oi]),
@@ -623,7 +658,11 @@ impl AppSlots {
                     }),
                     duration: histogram_slot(
                         REQUEST_DURATION_SECONDS,
-                        &[("ingress_protocol", proto), ("pool", pool)],
+                        &[
+                            ("plane", banked_plane),
+                            ("ingress_protocol", proto),
+                            ("pool", pool),
+                        ],
                     ),
                 })
                 .collect();
@@ -683,13 +722,22 @@ impl AppSlots {
         }
 
         AppSlots {
+            banked_plane,
             request,
             lane: lane_map,
             failover,
         }
     }
 
-    fn request_family(&self, ingress_protocol: &str, pool: &str) -> Option<&RequestFamily> {
+    fn request_family(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+    ) -> Option<&RequestFamily> {
+        if plane != self.banked_plane {
+            return None;
+        }
         let proto_idx = crate::proto::KNOWN_PROTOCOLS
             .iter()
             .position(|p| *p == ingress_protocol)?;
@@ -703,25 +751,37 @@ impl AppSlots {
 
 // ── Hot-path emit helpers (bank fast path, macro fallback) ──────────────────────────────────────
 
-/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request. Bank fast
-/// path when `(ingress_protocol, pool)` is in this generation's registered set; otherwise the
-/// pre-existing cached-handle helpers in `metrics.rs` (byte-identical series either way).
+/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
+/// plane. THE single emission site for these two families: the model plane calls it from
+/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`, so a `plane`
+/// label is the whole of the difference between them rather than a second vocabulary.
+///
+/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set;
+/// otherwise the pre-existing cached-handle helpers in `metrics.rs` (byte-identical series either
+/// way).
 pub(crate) fn request_finished(
     app: &App,
+    plane: &str,
     ingress_protocol: &str,
     pool: &str,
     outcome: &'static str,
     seconds: f64,
 ) {
-    let fam = app.tslots.request_family(ingress_protocol, pool);
+    // The bank holds ONE plane's registered label space (`banked_plane` in `AppSlots::build`).
+    // A request from any other plane misses on `ingress_protocol` — its dialect is not in
+    // `KNOWN_PROTOCOLS` — and takes the cached-handle path below, which is the same path an
+    // unregistered pool has always taken and renders a byte-identical series. That is not a
+    // special case for the newer planes: it is the pre-existing "a miss falls back to the exact
+    // macro emission" contract, doing its job for a label value it was never told about.
+    let fam = app.tslots.request_family(plane, ingress_protocol, pool);
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
-        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
+        _ => crate::metrics::incr_requests_total(plane, ingress_protocol, pool, outcome),
     }
     match fam {
         Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
-        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
+        _ => crate::metrics::record_request_duration(plane, ingress_protocol, pool, seconds),
     }
 }
 

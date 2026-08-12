@@ -90,15 +90,26 @@ Scraping is not required for correctness. A gateway with metrics enabled and not
 
 ## Metrics to watch
 
+**Every plane is on the same two request families.** `busbar_requests_total` and
+`busbar_request_duration_seconds` carry a `plane` label (`llm`, `mcp`, `a2a`), so model traffic,
+tool calls and agent tasks are compared with one query rather than three vocabularies. On the `mcp`
+and `a2a` planes `pool` currently reads `unresolved` — the plane's door counts the request before
+its routing target is resolved — and `ingress_protocol` reads `jsonrpc`, which is the one wire
+format each of those planes speaks.
+
+A refusal issued before a plane's handler runs is counted too: a `401` on an audience-bound MCP
+endpoint appears as `busbar_requests_total{plane="mcp",outcome="client_error"}`. That is deliberate,
+and it is the signal an operator most often has nothing else to see.
+
 | Metric | Type | Labels | What to watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
+| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane` is `llm` / `mcp` / `a2a`. `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls, re-counted per failover hop. Ratio to `busbar_requests_total` > 1 indicates failovers are happening. |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. `hard_down` requires intervention (auth/billing problem). |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | One per Closed→Open trip (reopens don't count). A spike means a backend just went down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout`, `connect`, `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. A high rate on one pool indicates a flapping member. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. Useful for auditing unexpected protocol conversion. |
-| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | End-to-end latency including failover hops. |
+| `busbar_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | End-to-end latency including failover hops. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the token ledger x the current `rate_card` plus the flat fee (reprice-on-read). |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting. |

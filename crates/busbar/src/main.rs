@@ -3828,7 +3828,12 @@ pub(crate) fn build_app_from_config(
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
-        tslots: Arc::new(telemetry::AppSlots::build(&lanes, &pools, &by_model)),
+        tslots: Arc::new(telemetry::AppSlots::build(
+            &lanes,
+            &pools,
+            &by_model,
+            crate::plane::Plane::Llm,
+        )),
         probe_schedule,
         lanes,
         store,
@@ -4266,7 +4271,17 @@ fn apply_common_layers(
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON
         // envelope. Must wrap the `DefaultBodyLimit` layer above, so it is applied LAST (the last
         // `.layer()` is the outermost on the response path) and therefore sees that layer's 413.
-        .layer(axum::middleware::from_fn(reshape_body_limit_413));
+        .layer(axum::middleware::from_fn(reshape_body_limit_413))
+        // THE PLANE INGRESS BOUNDARY. Outside the auth layer, which in axum means it observes the
+        // FINAL response — including a 401 the auth chain issued before any handler ran, which on
+        // a mounted plane is exactly the failure an operator has no other signal for. It emits for
+        // a path a plane CLAIMS BY MOUNT and passes everything else straight through, so the
+        // residual plane (every protocol endpoint, `/healthz`, `/metrics`, the admin surface) is
+        // untouched and cannot be double-counted against `ingress::finish_inner`.
+        .layer(axum::middleware::from_fn_with_state(
+            handle.clone(),
+            crate::plane::observe::observe,
+        ));
     // Always installed (cheap: one relaxed atomic add, no allocation) — the jemalloc idle-purge
     // activity ticker must keep incrementing whether or not `server_timing` below is installed.
     let router = router.layer(axum::middleware::from_fn(request_activity_tick));
