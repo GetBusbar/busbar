@@ -220,6 +220,21 @@ pub(crate) struct HttpResponse {
     /// about the connection THIS response arrived on, and a second look at "the certificate that
     /// host serves" would be a second connection an attacker gets to answer differently.
     pub(crate) peer_spki: Option<String>,
+    /// BUSBAR'S OWN END OF THE HANDSHAKE: whether this hop was made carrying the registration's
+    /// client certificate, so it went into the handshake if the peer asked for one.
+    ///
+    /// The OTHER direction from [`HttpResponse::peer_spki`], and it travels on the response for the
+    /// same reason: it is a fact about the connection this document arrived over, and
+    /// [`super::verify`] refuses an `mtls` registration whose card did NOT arrive over one. Reading
+    /// it off the configuration instead would answer "the operator named a certificate" to the
+    /// question "was one presented", and a registration does not have to have come from a config
+    /// file to reach the verifier.
+    ///
+    /// `false` means there was nothing to present at all. It cannot mean "the peer did not ask":
+    /// TLS gives a client no way to tell, after the fact, a handshake in which the peer sent no
+    /// `CertificateRequest` from one in which it did — and a peer that asks for no certificate is a
+    /// peer that is not doing mutual TLS, which is the case `pin.mechanism: cert_spki` is for.
+    pub(crate) client_identity_offered: bool,
 }
 
 /// The HTTP round trip, as a seam.
@@ -374,6 +389,11 @@ pub(crate) struct FetchedCard {
     /// server that merely pointed at the card would authenticate the signpost rather than the
     /// document.
     pub(crate) peer_spki: Option<String>,
+    /// Whether the hop that actually served the card carried busbar's client certificate for this
+    /// registration ([`HttpResponse::client_identity_offered`]). The LAST hop's, for the same
+    /// reason the peer pin is the last hop's: the mutual half is about the connection the document
+    /// came over, not about the one that pointed at it.
+    pub(crate) client_identity_offered: bool,
 }
 
 /// The two well-known discovery paths, canonical first.
@@ -483,6 +503,7 @@ pub(crate) fn fetch_card(
             chain,
             addr: target.addr,
             peer_spki: resp.peer_spki,
+            client_identity_offered: resp.client_identity_offered,
         });
     }
 }

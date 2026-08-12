@@ -47,7 +47,7 @@ type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 /// Built with `WebPkiClientVerifier`, which is the same construction `crate::tls::build_server_config`
 /// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
 /// handshake and never reaches the HTTP layer at all.
-fn spawn_mtls(
+pub(super) fn spawn_mtls(
     server_cert_pem: &str,
     server_key_pem: &str,
     client_ca_pem: &str,
@@ -113,7 +113,7 @@ fn spawn_mtls(
 
 /// The server thread records after its own handshake attempt returns; poll rather than sleep a fixed
 /// amount, so the assertion is neither flaky nor slow. Mirrors `transport_tests::wait_for_sni`.
-fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
+pub(super) fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
     wait_for_conns_len(seen, 1)
 }
 
@@ -139,7 +139,7 @@ const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
 /// A test that handed `ReqwestTransport` a `reqwest::Identity` it built itself would prove the
 /// transport presents a certificate and say nothing about whether the GRAMMAR can name one — which
 /// is the half of this defect that lived in `config.rs`.
-fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Identity {
+pub(super) fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Identity {
     // A monotonic counter, not a clock read: two tests can read the same nanosecond, and a
     // colliding path means one test reads a file another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -242,6 +242,73 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
         "the peer must have completed the handshake against busbar's own certificate"
     );
     let _ = (client_leaf, client_key);
+}
+
+/// THE VERB LAYER REACHES AN mTLS VENDOR TOO, and with THAT registration's certificate.
+///
+/// `connect` and `approve` go through [`LiveCardFetch::probe`], which used to hard-wire the
+/// plane-wide, identity-free transport. So an operator running `connect` against an mTLS vendor got
+/// the peer's `CertificateRequired` alert for a registration the sweep re-verifies every tick — one
+/// plane with two answers about the same agent, decided by which path asked. The probe now asks
+/// `for_agent` exactly as the sweep does.
+#[test]
+fn the_verb_layers_probe_fetches_an_mtls_vendors_card_with_that_registrations_certificate() {
+    use crate::a2a::verbs::CardSource;
+
+    // AN IP-LITERAL ENDPOINT, because the probe carries the PRODUCTION resolver: `LiveCardFetch`
+    // holds the real `TokioResolver` and there is deliberately no seam to hand it a fixture, so a
+    // `.test` hostname would fail at the lookup and prove nothing about the transport. A literal is
+    // judged by the same guard and skips the resolver entirely, which leaves the client certificate
+    // as the only thing this test varies.
+    let (server_ca, server_leaf, server_key) = ca_and_leaf(vec!["127.0.0.1".to_string()]);
+    let (client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (addr, seen) = spawn_mtls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+
+    let mut identities = crate::a2a::transport::ClientIdentities::new();
+    identities.insert(
+        "planner".to_string(),
+        identity_from_config(&client_leaf, &client_key),
+    );
+    // `allow_private` on the POLICY, because the probe fetches under the bundle's policy and the
+    // vendor here is on loopback. The guard is the real one either way.
+    let live = LiveCardFetch::presenting(
+        FetchPolicy {
+            allow_private: true,
+            ..FetchPolicy::default()
+        },
+        &identities,
+    )
+    .trusting_root(server_ca.as_bytes());
+
+    let registration = crate::a2a::registry::AgentRegistration::registered(
+        "planner",
+        format!("https://127.0.0.1:{}/agent", addr.port()),
+    );
+    let pin_cfg = crate::a2a::config::AgentPinCfg {
+        mechanism: crate::a2a::config::PinMechanism::Mtls,
+        key: Some("sha256/whatever-the-verify-tests-pin".to_string()),
+        fingerprint: None,
+    };
+
+    let sighted = live
+        .probe(&registration, &pin_cfg)
+        .fetch_card("planner")
+        .expect("the probe must present this registration's client certificate to its own vendor");
+    assert!(
+        sighted.document.get("name").is_some(),
+        "the card came back whole: {:?}",
+        sighted.document
+    );
+    assert!(
+        sighted.client_identity_offered,
+        "and the seam carries the mutual half onward, so the verb layer verifies the same card the \
+         sweep does"
+    );
+    assert_eq!(
+        wait_for_conns(&seen),
+        vec![Ok(1)],
+        "the peer completed the handshake against exactly one certificate of busbar's"
+    );
 }
 
 /// THE STRUCTURAL FIX, PROVEN AT THE SOCKET: two registrations, two client certificates, and

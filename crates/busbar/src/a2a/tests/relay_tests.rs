@@ -982,6 +982,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
                 location: None,
                 body: br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"}}}"#.to_vec(),
                 peer_spki: None,
+                client_identity_offered: false,
             })
         }
         fn post_stream(

@@ -85,6 +85,7 @@ impl RelayTransport for RecordingTransport {
             location: None,
             body: Vec::new(),
             peer_spki: None,
+            client_identity_offered: false,
         })
     }
 

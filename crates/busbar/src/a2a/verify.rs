@@ -79,15 +79,19 @@ pub(crate) enum VerifyRefusal {
         expected: String,
         observed: String,
     },
-    /// `pin.mechanism: mtls` — busbar has no client certificate to present, so the connection the
-    /// card arrived over was authenticated in ONE direction.
+    /// `pin.mechanism: mtls` — the hop that carried this card presented NO client certificate of
+    /// busbar's, so the connection was authenticated in ONE direction.
     ///
     /// The peer half of an `mtls` pin is checked exactly as `cert_spki`'s is; what is missing is
     /// the MUTUAL half. Recording `mtls` as satisfied over a one-way handshake would put "busbar
     /// proved who it was to this endpoint" into the store about a connection where it did not, and
-    /// an operator who chose `mtls` over `cert_spki` chose it for precisely that half. There is no
-    /// grammar under `agents:` naming busbar's client certificate, so the refusal names the missing
-    /// thing rather than the mechanism.
+    /// an operator who chose `mtls` over `cert_spki` chose it for precisely that half.
+    ///
+    /// The `agents:` grammar DOES name busbar's client certificate — `client_identity: {cert, key}`
+    /// — so this is no longer a refusal for every `mtls` registration. It is a refusal for a
+    /// registration whose card arrived over a hop that carried none, which the config grammar
+    /// already refuses to write and which a registration reaching this code by another route can
+    /// still be.
     MutualTlsNotPresented,
 }
 
@@ -132,11 +136,12 @@ impl std::fmt::Display for VerifyRefusal {
             ),
             VerifyRefusal::MutualTlsNotPresented => write!(
                 f,
-                "`pin.mechanism: mtls` requires busbar to present a client certificate, and the \
-                 `agents:` grammar names none, so the card arrived over a connection authenticated \
+                "`pin.mechanism: mtls` requires busbar to present a client certificate, and the hop \
+                 that served this card carried none, so it arrived over a connection authenticated \
                  in one direction only. The peer half is checked exactly as `cert_spki`'s is; \
                  refused because an operator who chose `mtls` over `cert_spki` chose it for the \
-                 mutual half. Use `cert_spki` for a one-way binding."
+                 mutual half. Name the certificate with this registration's `client_identity.cert:` \
+                 and `client_identity.key:`, or use `cert_spki` for a one-way binding."
             ),
         }
     }
@@ -151,22 +156,36 @@ pub(crate) struct VerifiedCard {
     pub(crate) document: Value,
 }
 
+/// WHAT THE CONNECTION THAT DELIVERED A CARD ESTABLISHED, in BOTH directions.
+///
+/// One struct rather than two arguments because the two facts are one connection's, and a caller
+/// that could supply the peer's half while forgetting its own would silently ask for the one-way
+/// answer. Every field is a fact about the hop that served the document — never something read out
+/// of the document, because a card that named its own certificate would be naming its own trust
+/// root.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Handshake<'a> {
+    /// The transport-layer identity of the hop that SERVED this document — the certificate the
+    /// endpoint proved it held the key for, read off a handshake that had already verified
+    /// ([`super::transport`]). The root for the mechanisms whose root the network is.
+    pub(crate) peer_spki: Option<&'a str>,
+    /// THE OTHER DIRECTION: whether that hop carried busbar's client certificate for this
+    /// registration ([`super::fetch::HttpResponse::client_identity_offered`]). The mutual half of
+    /// `pin.mechanism: mtls`, and the reason it is a connection fact rather than a config read.
+    pub(crate) client_identity_offered: bool,
+}
+
 /// VERIFY ONE FETCHED DOCUMENT against the registration's declared mechanism.
 ///
 /// This is where the out-of-band trust root stops being prose. The operator's key is the root; the
 /// card's own claims about
 /// who signed it are not consulted for anything except agreement.
-///
-/// `observed_spki` is the transport-layer identity of the hop that SERVED this document — the
-/// certificate the endpoint proved it held the key for, read off a handshake that had already
-/// verified ([`super::transport`]). It is the root for the mechanisms whose root the network is,
-/// and it is deliberately a separate argument rather than something read out of the document: a
-/// card that named its own certificate would be naming its own trust root.
 pub(crate) fn verify_document(
     pin_cfg: &AgentPinCfg,
     document: &Value,
-    observed_spki: Option<&str>,
+    handshake: Handshake<'_>,
 ) -> Result<VerifiedCard, VerifyRefusal> {
+    let observed_spki = handshake.peer_spki;
     let key = pin_cfg
         .key
         .as_deref()
@@ -195,15 +214,26 @@ pub(crate) fn verify_document(
                 card_fingerprint: card::fingerprint(document).map_err(VerifyRefusal::Card)?,
             }
         }
-        // The PEER half of `mtls` is the same check, and it is performed FIRST so that a mismatched
-        // endpoint is reported as a mismatched endpoint rather than as busbar's missing client
-        // certificate. Only once the peer is the pinned one does the missing mutual half become the
-        // reason. Ordering the two the other way round would tell an operator staring at a
-        // look-alike endpoint to go and configure a certificate.
+        // BOTH HALVES OF `mtls`, IN THIS ORDER. The PEER half is `cert_spki`'s check exactly, and it
+        // is performed FIRST so that a mismatched endpoint is reported as a mismatched endpoint
+        // rather than as busbar's missing client certificate. Only once the peer is the pinned one
+        // does the mutual half become the reason. Ordering the two the other way round would tell an
+        // operator staring at a look-alike endpoint to go and configure a certificate.
+        //
+        // The MUTUAL half is read off the hop that delivered this card, never off the registration's
+        // config: `client_identity:` names what busbar WOULD present, and this asks what the
+        // connection DID carry. A pass here is the same distinction the peer half draws — "we could
+        // not look" and "it matched" are different answers — applied to busbar's own end.
         PinMechanism::Mtls => {
             let expected = key.ok_or(VerifyRefusal::NoTransportPin("mtls"))?;
-            transport_pin("mtls", expected, observed_spki)?;
-            return Err(VerifyRefusal::MutualTlsNotPresented);
+            let spki = transport_pin("mtls", expected, observed_spki)?;
+            if !handshake.client_identity_offered {
+                return Err(VerifyRefusal::MutualTlsNotPresented);
+            }
+            CardPin::Mtls {
+                spki,
+                card_fingerprint: card::fingerprint(document).map_err(VerifyRefusal::Card)?,
+            }
         }
         PinMechanism::Unpinned => {
             // ON THE WIRE, not only at parse. A registration does not have to have come from a
@@ -362,7 +392,14 @@ fn fetch_and_verify(
             // separately would ask the host a second question an attacker gets to answer
             // differently, which is the same hazard the single name resolution exists to remove.
             Ok(fetched) => {
-                return verify_document(pin_cfg, &fetched.document, fetched.peer_spki.as_deref())
+                return verify_document(
+                    pin_cfg,
+                    &fetched.document,
+                    Handshake {
+                        peer_spki: fetched.peer_spki.as_deref(),
+                        client_identity_offered: fetched.client_identity_offered,
+                    },
+                )
             }
             Err(e) => last = Some(e),
         }
@@ -412,6 +449,7 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
                     return Ok(super::verbs::SightedCard {
                         document: fetched.document,
                         peer_spki: fetched.peer_spki,
+                        client_identity_offered: fetched.client_identity_offered,
                     })
                 }
                 Err(e) => last = e.to_string(),
@@ -423,9 +461,16 @@ impl super::verbs::CardSource for RegistrationProbe<'_> {
 
 impl super::verbs::CardObserver for RegistrationProbe<'_> {
     fn observe(&self, card: &super::verbs::SightedCard) -> Result<Observation<CardPin>, String> {
-        verify_document(self.pin_cfg, &card.document, card.peer_spki.as_deref())
-            .map(|v| v.observation)
-            .map_err(|e| e.to_string())
+        verify_document(
+            self.pin_cfg,
+            &card.document,
+            Handshake {
+                peer_spki: card.peer_spki.as_deref(),
+                client_identity_offered: card.client_identity_offered,
+            },
+        )
+        .map(|v| v.observation)
+        .map_err(|e| e.to_string())
     }
 }
 

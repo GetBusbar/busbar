@@ -36,7 +36,7 @@ use super::*;
 use crate::a2a::config::{AgentPinCfg, PinMechanism};
 use crate::a2a::fetch::FetchPolicy;
 use crate::a2a::pin::{approve_registration, ApproveError, CardPin};
-use crate::a2a::verify::{verify_document, VerifyRefusal};
+use crate::a2a::verify::{verify_document, Handshake, VerifyRefusal};
 use crate::trust::{Approval, Observation, Sighting};
 
 /// A CA, a leaf it signed, and — computed independently of the certificate — the pin that leaf's
@@ -112,6 +112,18 @@ fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<St
     (document, resp.peer_spki)
 }
 
+/// A ONE-WAY HANDSHAKE: what the peer proved, and nothing of busbar's.
+///
+/// The shape every `cert_spki` and `unpinned` case here is about — those mechanisms are defined as
+/// one-way bindings, so naming the mutual half `false` at each call site is the honest spelling
+/// rather than a default that hides which question was asked.
+fn one_way(peer_spki: Option<&str>) -> Handshake<'_> {
+    Handshake {
+        peer_spki,
+        client_identity_offered: false,
+    }
+}
+
 fn transport_pin_cfg(mechanism: PinMechanism, pin: &str) -> AgentPinCfg {
     AgentPinCfg {
         mechanism,
@@ -150,7 +162,7 @@ fn a_card_served_under_a_certificate_whose_spki_does_not_match_the_pin_is_refuse
     let refusal = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &elsewhere.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect_err("a certificate that is not the pinned one must be refused");
 
@@ -180,7 +192,7 @@ fn a_card_served_under_the_pinned_certificate_is_accepted_and_pins_what_was_obse
     let verified = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("the pinned certificate must be accepted");
 
@@ -204,7 +216,7 @@ fn a_transport_pinned_registration_whose_hop_produced_no_certificate_is_refused(
     let refusal = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, "sha256/AAAA"),
         &an_unsigned_card(),
-        None,
+        one_way(None),
     )
     .expect_err("no observed certificate must refuse");
     assert_eq!(refusal, VerifyRefusal::TransportPinNotObserved("cert_spki"));
@@ -219,7 +231,7 @@ fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_d
             fingerprint: None,
         },
         &an_unsigned_card(),
-        Some("sha256/anything"),
+        one_way(Some("sha256/anything")),
     )
     .expect_err("a mechanism with nothing to compare against has no root");
     assert_eq!(refusal, VerifyRefusal::NoTransportPin("cert_spki"));
@@ -243,7 +255,7 @@ fn an_unsigned_card_with_a_matching_cert_spki_pin_is_a_root_an_operator_can_appr
     let verified = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("an unsigned card bound at the transport layer must verify");
 
@@ -285,7 +297,7 @@ fn an_unsigned_card_with_no_pin_at_all_is_still_refused() {
             fingerprint: None,
         },
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("an unpinned registration is capturable");
     assert_eq!(verified.pin, CardPin::Unpinned);
@@ -302,40 +314,189 @@ fn an_unsigned_card_with_no_pin_at_all_is_still_refused() {
     );
 }
 
-// ══ MTLS: THE PEER HALF IS CHECKED, THE MUTUAL HALF IS NOT PRESENT ═══════════════════════════════
+// ══ MTLS: BOTH HALVES, EACH DECIDED BY THE HANDSHAKE THAT ACTUALLY HAPPENED ══════════════════════
+//
+// `mtls` is TWO claims about one connection: the endpoint that served the card is the one the
+// operator pinned, and busbar proved who IT was to that endpoint. The first is `cert_spki`'s check,
+// unchanged. The second is answered by the hop — did this registration's client certificate go into
+// this handshake — and never by config alone, because a registration does not have to have come
+// from a config file to reach the verifier.
 
+/// A resolver that answers [`HOST`] with loopback, so a real server on 127.0.0.1 can stand in for
+/// the vendor endpoint while the URL, the SNI and the certificate's name check stay the hostname's.
+struct HostOnLoopback;
+impl crate::a2a::fetch::Resolver for HostOnLoopback {
+    fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        Ok(vec![LOOPBACK])
+    }
+}
+
+/// The registration an operator writes for an mTLS vendor, pointed at a server on loopback.
+///
+/// `allow_private` is set on the record as well as on the policy below because that is what the
+/// sweep lowers into the policy per registration; the two agreeing is the state a real deployment
+/// is in.
+fn an_mtls_registration(port: u16) -> crate::a2a::registry::AgentRegistration {
+    let mut reg = crate::a2a::registry::AgentRegistration::registered(
+        "planner",
+        format!("https://{HOST}:{port}/agent"),
+    );
+    reg.allow_private = true;
+    reg
+}
+
+/// The operator's own `allow_private:`, and nothing else moved. The vendor under test is on
+/// loopback, which the guard refuses by default — teaching the guard that "test addresses are fine"
+/// would be a hole in production opened to make a test pass.
+fn loopback_policy() -> FetchPolicy {
+    FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    }
+}
+
+/// THE PROPERTY THE BUILD DID NOT HAVE: an `mtls` registration that DOES present its client
+/// certificate verifies.
+///
+/// The whole pass is driven — guard, hop, verification, ledger — against a peer built with
+/// `WebPkiClientVerifier`, so the mutual half is a fact the peer enforced rather than a flag a
+/// fixture set. Until this test existed, `verify_document` returned `MutualTlsNotPresented` for
+/// EVERY `mtls` registration, justified by a comment claiming the `agents:` grammar named no client
+/// certificate — which stopped being true when `client_identity:` landed.
 #[test]
-fn mtls_refuses_for_the_missing_client_certificate_and_not_for_the_missing_peer_read() {
-    // The reason moved and that is the whole assertion. `mtls` used to refuse because busbar read
-    // no peer certificate; it now reads one, and refuses because busbar PRESENTS none. An operator
-    // who chose `mtls` over `cert_spki` chose it for the mutual half, and being told the mechanism
-    // is unimplemented when the peer is also the wrong one would send them to configure a
-    // certificate for a look-alike endpoint.
+fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
-    let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
-
-    assert_eq!(
-        verify_document(
-            &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
-            &document,
-            observed.as_deref(),
-        )
-        .expect_err("mtls is not satisfied by a one-way handshake"),
-        VerifyRefusal::MutualTlsNotPresented
+    let (client_ca, client_leaf, client_key) =
+        super::transport_tests::ca_and_leaf(vec!["busbar.example".to_string()]);
+    let card = an_unsigned_card();
+    let (addr, seen) = super::transport_mtls_tests::spawn_mtls(
+        &endpoint.leaf_pem,
+        &endpoint.leaf_key_pem,
+        &client_ca,
+        serde_json::to_string(&card).expect("serialize"),
     );
 
-    // AND THE PEER HALF IS CHECKED FIRST. A mismatched endpoint is reported as a mismatched
-    // endpoint, never collapsed into "mtls is unavailable".
+    // THE IDENTITY THE OPERATOR NAMED, resolved the way boot resolves it, and carried by the
+    // transport the sweep's `CardTransports` bundle hands out for THIS agent.
+    let identity = super::transport_mtls_tests::identity_from_config(&client_leaf, &client_key);
+    let policy = loopback_policy();
+    let transport = ReqwestTransport::new(&policy)
+        .trusting_root(endpoint.ca_pem.as_bytes())
+        .presenting(identity);
+
+    let mut registration = an_mtls_registration(addr.port());
+    let pass = crate::a2a::verify::reverify_once(
+        &mut registration,
+        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &HostOnLoopback,
+        &transport,
+        &policy,
+        1_000,
+        true,
+    );
+
+    assert_eq!(
+        pass.refusal, None,
+        "the peer is the pinned one and busbar presented the certificate this registration names; \
+         there is nothing left for `mtls` to refuse"
+    );
+    let Sighting::Seen(observation) = &registration.sighting else {
+        panic!(
+            "a verified card is a SEEN contact: {:?}",
+            registration.sighting
+        );
+    };
+    assert_eq!(
+        observation.pin,
+        Some(CardPin::Mtls {
+            spki: endpoint.expected_pin.clone(),
+            card_fingerprint: crate::a2a::card::fingerprint(&card).expect("fingerprint"),
+        }),
+        "the recorded pin is the mutual mechanism, carrying the identity the network established \
+         and the card that identity served"
+    );
+    assert_eq!(
+        super::transport_mtls_tests::wait_for_conns(&seen),
+        vec![Ok(1)],
+        "and the mutual half is the PEER's finding: it completed the handshake against exactly one \
+         certificate of busbar's"
+    );
+}
+
+/// THE OTHER HALF, AND IT MUST NOT MOVE: a hop that presented nothing is still refused.
+///
+/// The endpoint here is an ordinary TLS server that never asks for a client certificate, so the
+/// handshake succeeds and the card arrives — which is precisely the case that must NOT be recorded
+/// as `mtls` satisfied. An operator who chose `mtls` over `cert_spki` chose it for the mutual half,
+/// and a one-way connection did not supply one.
+#[test]
+fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refused() {
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let card = an_unsigned_card();
+    let (addr, _sni) = spawn_tls(
+        &endpoint.leaf_pem,
+        &endpoint.leaf_key_pem,
+        serde_json::to_string(&card).expect("serialize"),
+    );
+
+    let policy = loopback_policy();
+    // NO `.presenting(..)`: this is the registration that has nothing to offer.
+    let transport = ReqwestTransport::new(&policy).trusting_root(endpoint.ca_pem.as_bytes());
+
+    let mut registration = an_mtls_registration(addr.port());
+    let pass = crate::a2a::verify::reverify_once(
+        &mut registration,
+        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &HostOnLoopback,
+        &transport,
+        &policy,
+        1_000,
+        true,
+    );
+
+    assert_eq!(
+        pass.refusal,
+        Some(VerifyRefusal::MutualTlsNotPresented),
+        "the card arrived and the peer key matched; the MUTUAL half did not happen, and a fetch \
+         that succeeded is not a mutual handshake that was made"
+    );
+    assert!(
+        matches!(registration.sighting, Sighting::Failed(_)),
+        "a refusal is a FAILED CONTACT, not an absence of one: {:?}",
+        registration.sighting
+    );
+}
+
+/// THE PEER HALF IS DECIDED FIRST, and it stays that way now that the mutual half can pass.
+///
+/// A look-alike endpoint is reported as a look-alike endpoint whatever busbar presented, because an
+/// operator told "you have no client certificate" about an endpoint serving somebody else's key
+/// would go and configure a certificate FOR THE IMPOSTOR. The mutual half is only ever the reason
+/// once the peer is the one the operator pinned.
+#[test]
+fn an_mtls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate() {
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
     let elsewhere = endpoint_for(vec![HOST.to_string()]);
-    assert!(matches!(
-        verify_document(
-            &transport_pin_cfg(PinMechanism::Mtls, &elsewhere.expected_pin),
-            &document,
-            observed.as_deref(),
-        )
-        .expect_err("a look-alike endpoint must be named as one"),
-        VerifyRefusal::TransportPinMismatch { .. }
-    ));
+    let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
+
+    for offered in [true, false] {
+        assert!(
+            matches!(
+                verify_document(
+                    &transport_pin_cfg(PinMechanism::Mtls, &elsewhere.expected_pin),
+                    &document,
+                    Handshake {
+                        peer_spki: observed.as_deref(),
+                        client_identity_offered: offered,
+                    },
+                )
+                .expect_err("a look-alike endpoint must be named as one"),
+                VerifyRefusal::TransportPinMismatch { .. }
+            ),
+            "with client_identity_offered = {offered}, the endpoint that answered is still not the \
+             one the operator supplied a root for"
+        );
+    }
 }
 
 // ══ THE ORDERING THAT MAKES ALL OF THIS SAFE ═════════════════════════════════════════════════════

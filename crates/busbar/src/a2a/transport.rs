@@ -441,6 +441,11 @@ impl ReqwestTransport {
             body,
         } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
+        // BUSBAR'S END OF THE HANDSHAKE, recorded on the response beside the peer's. This transport
+        // was built for ONE registration and carries that registration's identity or none, so the
+        // answer is a fact about the hop rather than a lookup: `client_for` below hands the
+        // identity to the TLS stack, which offers it when the peer's `CertificateRequest` asks.
+        let client_identity_offered = self.identity.is_some();
         let wire = Self::wire_for(url, addr)?;
         let headers = headers.to_vec();
         let url = wire.url.clone();
@@ -486,6 +491,7 @@ impl ReqwestTransport {
                         location,
                         body: bytes.to_vec(),
                         peer_spki,
+                        client_identity_offered,
                     }),
                 }
             })
@@ -721,6 +727,11 @@ impl LiveCardFetch {
     }
 
     /// The verb layer's two seams, over the real network.
+    ///
+    /// THE TRANSPORT IS THE REGISTRATION'S OWN, asked for by agent id exactly as the sweep asks —
+    /// a probe built on the identity-free transport would fetch an mTLS vendor's card over a hop
+    /// carrying no certificate, and an operator running `connect` would be told the mutual half did
+    /// not happen for a registration whose timer verifies it every tick.
     pub(crate) fn probe<'a>(
         &'a self,
         registration: &'a super::registry::AgentRegistration,
@@ -730,7 +741,7 @@ impl LiveCardFetch {
             registration,
             pin_cfg,
             resolver: self.resolver(),
-            transport: self.transport(),
+            transport: self.for_agent(&registration.agent_id),
             policy: self.policy(),
         }
     }
