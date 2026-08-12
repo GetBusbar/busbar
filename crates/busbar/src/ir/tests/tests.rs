@@ -199,3 +199,117 @@ fn test_ir_tool_choice_variant_equality() {
     let tc = IrToolChoice::Tool { name: "x".into() };
     assert_eq!(tc.clone(), tc);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// OPACITY — the IR must tell the truth about reasoning content busbar cannot read.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// THE THREE OPAQUE SHAPES, read through the REAL readers, asserted from the IR ALONE.
+///
+/// Three wire shapes carry assistant reasoning that busbar cannot decrypt and must never disclose:
+/// Anthropic `redacted_thinking`, Bedrock `reasoningContent.redactedContent`, and a Responses
+/// `reasoning` input item admitted on its `encrypted_content` blob alone. All three are opaque for
+/// exactly the same reason, so all three must READ as opaque from the IR — otherwise a consumer
+/// that keys a redaction decision off the IR is correct on two protocols and silently wrong on the
+/// third, which is the dialect-conditional bug class the IR exists to make impossible.
+///
+/// The assertion is deliberately made through `read_request` rather than by hand-building blocks:
+/// a hand-built `IrBlock` proves the predicate, not the reader that has to produce it.
+///
+/// This is the U2 red. It fails on the Responses row today.
+#[test]
+fn all_three_opaque_reasoning_shapes_read_as_opaque_from_the_ir() {
+    let cases: [(&str, crate::proto::Protocol, Value); 3] = [
+        (
+            "anthropic redacted_thinking",
+            crate::proto::Protocol::anthropic(),
+            serde_json::json!({
+                "model": "claude", "max_tokens": 16,
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "redacted_thinking", "data": "OPAQUE_BLOB"}
+                ]}]
+            }),
+        ),
+        (
+            "bedrock redactedContent",
+            crate::proto::Protocol::bedrock(),
+            serde_json::json!({
+                "messages": [{"role": "assistant", "content": [
+                    {"reasoningContent": {"redactedContent": "OPAQUE_BLOB"}}
+                ]}]
+            }),
+        ),
+        (
+            "responses encrypted_content-only",
+            crate::proto::Protocol::responses(),
+            serde_json::json!({
+                "model": "gpt-5",
+                "input": [{
+                    "type": "reasoning", "content": [], "encrypted_content": "OPAQUE_BLOB"
+                }]
+            }),
+        ),
+    ];
+
+    for (name, proto, body) in cases {
+        let ir = proto
+            .reader()
+            .read_request(&body)
+            .unwrap_or_else(|e| panic!("{name}: the reader rejected the fixture: {e:?}"));
+        let block = ir
+            .messages
+            .first()
+            .and_then(|m| m.content.first())
+            .unwrap_or_else(|| panic!("{name}: expected one content block in the IR"));
+        assert!(
+            block.is_opaque(),
+            "{name}: the IR must report this block as OPAQUE. A consumer that reads opacity off \
+             the IR and gets `false` here shows an EMPTY turn for a request the provider receives \
+             in full — the policy-enforcement-point bypass this predicate exists to close. Got: \
+             {block:?}"
+        );
+    }
+}
+
+/// The negative half, so `is_opaque` cannot pass the test above by answering `true` to everything.
+/// Plain text, a plaintext thinking block, and a plaintext thinking block that ALSO carries a
+/// round-trip signature (Gemini's `thoughtSignature`, Responses' `encrypted_content` alongside real
+/// reasoning text) are all readable by busbar and must NOT be marked opaque — marking them opaque
+/// would replace real content with a marker and blind a screening consumer to text it can see.
+#[test]
+fn readable_blocks_are_not_opaque() {
+    let cases = [
+        IrBlock::Text {
+            text: "hello".into(),
+            cache_control: None,
+            citations: Vec::new(),
+        },
+        IrBlock::Thinking {
+            text: "step one".into(),
+            signature: None,
+            redacted: false,
+            cache_control: None,
+        },
+        IrBlock::Thinking {
+            text: "step one".into(),
+            signature: Some("SIG".into()),
+            redacted: false,
+            cache_control: None,
+        },
+        // A wholly-EMPTY thinking block carries nothing at all — there is no hidden content to
+        // warn a consumer about, so it is not opaque either. (Every writer already emits no item
+        // for it.) Pinned so the "empty plaintext" arm cannot be widened into "empty means opaque".
+        IrBlock::Thinking {
+            text: String::new(),
+            signature: None,
+            redacted: false,
+            cache_control: None,
+        },
+    ];
+    for block in cases {
+        assert!(
+            !block.is_opaque(),
+            "a block busbar CAN read must not be reported opaque: {block:?}"
+        );
+    }
+}
