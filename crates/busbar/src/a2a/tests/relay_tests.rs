@@ -1312,8 +1312,12 @@ async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_back
 
     // 5. AND IT OPENED NO SECOND ROW. The other half of the same mistake: a caller polling a
     //    long-running task once a second minted a durable task row per poll.
-    let rows = crate::a2a::taskstore::TASKS.len();
-    let (_, _) = call_agent(
+    //
+    //    Asserted through the ANSWER rather than by counting rows in `TASKS`, and deliberately: the
+    //    registry is process-wide and these tests run in parallel, so a count is a race. The
+    //    property is exact either way — a read that opened a fresh row would stamp THAT row's id
+    //    onto the answer, which is precisely how this defect presented.
+    let (_, again) = call_agent(
         &h,
         "planner",
         &serde_json::json!({
@@ -1322,8 +1326,8 @@ async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_back
     )
     .await;
     assert_eq!(
-        crate::a2a::taskstore::TASKS.len(),
-        rows,
-        "a read of an existing task must not open a new one"
+        again.pointer("/result/task/id").and_then(|v| v.as_str()),
+        Some(issued.as_str()),
+        "repeated reads must keep naming the one task, not a new row per poll: {again}"
     );
 }
