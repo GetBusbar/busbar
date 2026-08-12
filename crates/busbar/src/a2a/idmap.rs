@@ -91,7 +91,7 @@ pub(crate) fn backend_id_for(busbar_id: &str) -> Option<String> {
 /// The members of a request's `params` that name a task. `id` is `GetTask`/`CancelTask`'s spelling;
 /// `taskId` is the one every verb that is ABOUT a task uses, including the push-config verbs and
 /// A2A v1.0's `task_id`.
-const TASK_ID_MEMBERS: [&str; 3] = ["id", "taskId", "task_id"];
+pub(crate) const TASK_ID_MEMBERS: [&str; 3] = ["id", "taskId", "task_id"];
 
 /// TRANSLATE every busbar task id in a request's `params` back to the backend's.
 ///

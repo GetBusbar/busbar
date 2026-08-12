@@ -1286,4 +1286,32 @@ async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_back
         forwarded["params"]["historyLength"], 2,
         "nothing but the identity may be rewritten: {forwarded}"
     );
+
+    // 4. AND THE ANSWER IS ABOUT THE TASK THE CALLER ASKED ABOUT. busbar opened a FRESH task row
+    //    for every read and stamped that new row's id onto the answer, so a caller asking about
+    //    task A was told about task B — both busbar ids, for the same work:
+    //      CORE-GET-001: GetTask returned task ID 'a2a-conformance-61d1929…',
+    //                    expected 'a2a-conformance-522818d…'
+    assert_eq!(
+        body.pointer("/result/task/id").and_then(|v| v.as_str()),
+        Some(issued.as_str()),
+        "a read must answer about the task it named: {body}"
+    );
+
+    // 5. AND IT OPENED NO SECOND ROW. The other half of the same mistake: a caller polling a
+    //    long-running task once a second minted a durable task row per poll.
+    let rows = crate::a2a::taskstore::TASKS.len();
+    let (_, _) = call_agent(
+        &h,
+        "planner",
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "GetTask", "params": { "id": issued }
+        }),
+    )
+    .await;
+    assert_eq!(
+        crate::a2a::taskstore::TASKS.len(),
+        rows,
+        "a read of an existing task must not open a new one"
+    );
 }

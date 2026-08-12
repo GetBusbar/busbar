@@ -615,7 +615,25 @@ async fn invoke(
     // this agent RESUMES that task rather than opening a second one. Opening a second would give
     // the caller a new handle for work that is already half done, orphan the first row forever, and
     // bill the same piece of work twice.
-    let resumed = if context_id.is_empty() {
+    // ── A REQUEST THAT NAMES A TASK IS ABOUT THAT TASK. ───────────────────────────────────────
+    //
+    // `GetTask`, `CancelTask`, `SubscribeToTask` and the push-config verbs name a task in their
+    // params, and that task ALREADY EXISTS. busbar opened a fresh durable row for every one of them
+    // and then stamped the NEW row's id onto the answer, so a caller asking about task A was told
+    // about task B - both busbar ids, for the same underlying work:
+    //
+    //   CORE-GET-001: GetTask returned task ID 'a2a-conformance-61d1929…',
+    //                 expected 'a2a-conformance-522818d…'
+    //
+    // The row growth is the other half of the same mistake: a caller polling a long-running task
+    // once a second minted a durable task row per poll.
+    //
+    // ONLY WHEN THE CALLER OWNS IT. `addressed_task` resolves through `taskstore::get_scoped`, so
+    // naming somebody else's task id is not a way to read or cancel their work: it resolves to
+    // nothing, the ordinary path runs, and the backend answers about an id it does not hold.
+    let addressed = addressed_task(&envelope, &admitted.dispatch.billed_key_id);
+
+    let resumed = if addressed.is_some() || context_id.is_empty() {
         None
     } else {
         resumable_task(
@@ -625,9 +643,13 @@ async fn invoke(
         )
     };
 
-    let (task_id, context_id, is_resume) = match &resumed {
-        Some(t) => (t.task_id.clone(), t.context_id.clone(), true),
-        None => {
+    let (task_id, context_id, is_resume) = match (&addressed, &resumed) {
+        // Named, owned, and already open. Neither a resume nor a new row: a read is not a state
+        // change, and the resume path's move to `working` would turn a poll of a completed task
+        // into an attempt to resurrect it.
+        (Some(t), _) => (t.task_id.clone(), t.context_id.clone(), false),
+        (None, Some(t)) => (t.task_id.clone(), t.context_id.clone(), true),
+        (None, None) => {
             let id = format!(
                 "a2a-{}-{}",
                 admitted.dispatch.agent_id,
@@ -688,7 +710,7 @@ async fn invoke(
             )
                 .into_response();
         }
-    } else {
+    } else if addressed.is_none() {
         // 4. DISPATCH, recorded durably. The task and its provenance chain are opened BEFORE the
         //    outcome is known, which is the point: a task that ends by the process dying still has a
         //    row saying it was submitted and to whom it was dispatched.
@@ -789,6 +811,7 @@ async fn invoke(
     let hop_ctx = HopContext {
         seam: Arc::clone(&seam),
         agent_id: admitted.dispatch.agent_id.clone(),
+        addressed: addressed.is_some(),
         backend_url: admitted.dispatch.backend_url.clone(),
         // THE ONE READING OF THE OPERATOR'S `allow_private:` LINE, obtained where every other
         // caller obtains it. Reaching for `seam.policy()` inside the relay instead is the defect
@@ -838,6 +861,10 @@ struct HopContext {
     context_id: String,
     matched_skill: Option<String>,
     request_id: String,
+    /// THE TASK ALREADY EXISTED AND THE CALLER NAMED IT. A failing hop must not then END it: a
+    /// `GetTask` that the backend refuses is a failed READ, and burning the caller's live task row
+    /// for it would destroy work that is still running.
+    addressed: bool,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1206,6 +1233,31 @@ fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::task::Task)
 /// once the agent is restored.
 fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
     tracing::warn!(agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
+    if ctx.addressed {
+        // A FAILED READ IS NOT A FAILED TASK. The caller named a task that already exists and asked
+        // about it; the hop failing says something about this request, not about that work. Ending
+        // it here would let a transient backend blip destroy a live task the caller is waiting on -
+        // the same reasoning that keeps a `Demoted` refusal from burning one.
+        let err = match refusal {
+            super::relay::RelayRefusal::BackendError {
+                jsonrpc_code: Some(code),
+                ..
+            } => super::rpcerror::A2aError::from_code(*code)
+                .unwrap_or(super::rpcerror::A2aError::InvalidAgentResponse),
+            _ => super::rpcerror::A2aError::InvalidAgentResponse,
+        };
+        return (
+            axum::http::StatusCode::from_u16(err.http_status())
+                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+            axum::Json(super::rpcerror::about_task(
+                &ctx.rpc_id,
+                err,
+                "the backend agent refused this request",
+                &ctx.task_id,
+            )),
+        )
+            .into_response();
+    }
     match refusal {
         super::relay::RelayRefusal::Demoted(_) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1350,6 +1402,28 @@ async fn validate_callback(
     })
     .await
     .unwrap_or_else(|_| Err("the push callback could not be validated".to_string()))
+}
+
+/// THE TASK A REQUEST NAMES, if this caller owns one by that id.
+///
+/// SCOPED, through [`super::taskstore::TaskRegistry::get_scoped`], so a caller naming somebody
+/// else's task id resolves to nothing and takes the ordinary path — it is not a way to read, cancel
+/// or subscribe to another principal's work, and the answer it gets is the backend's opinion of an
+/// id the backend does not hold, which is the same answer a made-up id gets.
+///
+/// The member names are [`super::idmap`]'s, because they are the same fact: the ids this reads are
+/// exactly the ids that translation rewrites.
+fn addressed_task(envelope: &serde_json::Value, principal: &str) -> Option<super::task::Task> {
+    let params = envelope.get("params")?.as_object()?;
+    for member in super::idmap::TASK_ID_MEMBERS {
+        let Some(named) = params.get(member).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if let Ok(task) = super::taskstore::TASKS.get_scoped(principal, named) {
+            return Some(task);
+        }
+    }
+    None
 }
 
 /// AN INTERRUPTED TASK OF THIS CALLER'S, ON THIS AGENT, UNDER THIS `contextId` — the resume target.
