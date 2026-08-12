@@ -190,6 +190,13 @@ jobs:
       # rows unchanged. Its eight cases each construct one malformation and require it be refused.
       - name: Artifact-contract wholeness self-test
         run: python3 scripts/verify-artifact.py --selftest
+      # RELEASE-CHECK VERDICT ACCOUNTING. release-check.sh used to end with an unconditional
+      # "RELEASE GATE PASSED" banner even when phases had not run at all, so a green gate did not
+      # prove those phases executed. This selftest proves the two are now distinguishable: a
+      # coverage gap changes the banner, names the phase, and is fatal under --require-siblings,
+      # while a by-design segment skip stays a clean pass. Offline, no gate run, seconds.
+      - name: Release-check verdict self-test
+        run: scripts/release-check.sh --selftest
       # RESPONSE-HEADER lint: every busbar-INJECTED response header
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the

@@ -2431,16 +2431,23 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
                 UserAccess::Ro => "ro",
             },
             priority: cfg.priority,
-            at: cfg.at.map(|s| match s {
-                HookStage::Request => "request",
-                HookStage::Candidate => "candidate",
-                HookStage::Routing => "routing",
-                HookStage::Response => "response",
-            }),
+            // STAGE SCOPING, projected honestly: the legacy single `at:` (null for every hook
+            // written in the current `hooks:` grammar), the `phase:` list as configured, and the
+            // RESOLVED set the two of them actually mean. `resolved_stages` runs the same
+            // `fires_at_stage` predicate the firing path does, so this read cannot claim a stage
+            // busbar does not fire at.
+            at: cfg.at.map(HookStage::as_str),
+            phase: cfg.phase.iter().copied().map(HookStage::as_str).collect(),
+            fires_at: cfg
+                .resolved_stages()
+                .into_iter()
+                .map(HookStage::as_str)
+                .collect(),
             on_error: cfg.on_error.clone(),
             timeout_ms: cfg.timeout_ms,
             settings_keys: settings_keys(&cfg.settings),
             global: cfg.global || global_hooks.iter().any(|n| n == name),
+            groups: cfg.groups.clone(),
         }
     }
 }

@@ -1176,18 +1176,32 @@
         "type": "object"
       },
       "HookView": {
-        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection\naxes (which callers, which pipeline stages). On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.",
+        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.\n\n`groups:` and `phase:` are the config-file SELECTION axes (which callers, which pipeline stages),\nand this view used to omit both. That was not a decision to keep them file-only: both are\nWRITABLE over this API (`POST`/`PUT /hooks` deserialize `config::HookCfg` verbatim, which is the\ndocumented \"paste a `hooks:` entry\" contract), so omitting them made a field an operator can set\nthrough the API one they could not read back through it. `groups` and the stage pair\n(`phase` + `fires_at`) close that.",
         "properties": {
           "at": {
-            "description": "TAP observation stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or `None` for a gate.",
+            "description": "The LEGACY single-valued tap stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or\n`null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean \"a gate\"\nand does not mean \"unscoped\". Every hook written in the current top-level `hooks:` grammar\nhas `at: null` by construction (`config::hook_cfg_from_def` never sets it, and\n`--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for\nessentially every hook a running deployment has. Read `fires_at`.",
             "type": [
               "string",
               "null"
             ]
           },
+          "fires_at": {
+            "description": "The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never\nempty. This is the field that answers \"when does this hook run\", and it is computed by\n`config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing\npath uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence\n(a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without\nasking the reader to re-derive it from the two spellings above.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "global": {
             "description": "Whether this hook fires on every request (globally wired).",
             "type": "boolean"
+          },
+          "groups": {
+            "description": "The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook fires for,\nempty meaning ALL callers (unscoped). The other half of \"when does this hook run\", and the\nsame writable-but-unreadable gap `phase` had.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "kind": {
             "description": "`\"tap\"` (fire-and-forget) or `\"gate\"` (fire-and-wait).",
@@ -1199,6 +1213,13 @@
           "on_error": {
             "description": "Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the\nreserved terminals (`\"weighted\"` | `\"reject\"` | `\"first\"` | `\"nothing\"`) or the NAME of the\nfallback hook the chain continues through. Unambiguous by construction: the terminal words\nare ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in\nthe terminal set is always a terminal and anything else is always a hook reference.",
             "type": "string"
+          },
+          "phase": {
+            "description": "The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,\nfor an operator diffing what they wrote against what busbar parsed. It is NOT the effective\nanswer on its own: empty means \"fall back\", and what it falls back TO is `at:` if set and the\nfour core stages otherwise. For the effective answer read `fires_at`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "priority": {
             "description": "Rewrite/reject ordering key (transform-chain order + reject tie-break).",
@@ -1240,10 +1261,13 @@
           "user",
           "priority",
           "at",
+          "phase",
+          "fires_at",
           "on_error",
           "timeout_ms",
           "settings_keys",
-          "global"
+          "global",
+          "groups"
         ],
         "type": "object"
       },
