@@ -381,14 +381,37 @@ pub(crate) async fn rpc(
     let now = crate::store::now();
 
     let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": { "code": "invalid_request", "message": "the request body is not JSON" }
-            })),
-        )
-            .into_response();
+        return crate::ingress::jsonrpc::parse_error();
     };
+
+    // ── THE JSON-RPC ENVELOPE, READ BY THE READER THE MCP PLANE USES. ───────────────────────────
+    //
+    // This plane had NO envelope validation before: no `jsonrpc` version check, no `method` check,
+    // and `rpc_id` was `envelope.get("id").cloned().unwrap_or(Value::Null)` — a single
+    // `unwrap_or` that destroyed the difference between a request whose id is `null` (which no
+    // caller can correlate) and a NOTIFICATION, which has no id member and which JSON-RPC 2.0 section 4.1
+    // says a server MUST NOT answer at all. Both were served `200` and a success result, and a
+    // notification's answer came back under an id the caller never sent.
+    //
+    // The defect was REPORTED against the MCP plane. It was here too, in a second implementation of
+    // the same concern, which is exactly the failure mode `structure-lint`'s plane-coherence check
+    // exists to name. Hence one reader, not two fixes. See `crate::ingress::jsonrpc` for the
+    // clauses, and for the argument for refusing `"id": null` on a plane whose own specification
+    // only discourages it.
+    //
+    // BEFORE ADMISSION, THE CATALOGUE, THE METER AND THE EGRESS GATE, on purpose: an envelope this
+    // plane will not honour must not open a task, spend a caller's budget or cause busbar's own
+    // credential to be leased for a backend hop.
+    let rpc_id = match crate::ingress::jsonrpc::read(&envelope) {
+        Ok(crate::ingress::jsonrpc::Envelope::Request { id, .. }) => id,
+        // section 4.1: "The Server MUST NOT reply to a Notification." A2A defines no notification method,
+        // so there is nothing to do with one either — but "nothing to do" is still not "answer it".
+        Ok(crate::ingress::jsonrpc::Envelope::Notification { .. }) => {
+            return crate::ingress::jsonrpc::accepted()
+        }
+        Err(invalid) => return crate::ingress::jsonrpc::refused(&invalid),
+    };
+
     let shape = shape_of(&envelope);
     let context_id = envelope
         .get("params")
@@ -671,10 +694,9 @@ pub(crate) async fn rpc(
         request_id,
         now,
         now_ms,
-        rpc_id: envelope
-            .get("id")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
+        // Established by the envelope reader at the top of this handler, where `null` and absent
+        // were still distinguishable. It is a string or a number, never `null`.
+        rpc_id,
     };
 
     if shape.requires_streaming {

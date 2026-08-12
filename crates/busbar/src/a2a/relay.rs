@@ -751,3 +751,11 @@ mod relay_tests;
 #[cfg(test)]
 #[path = "tests/relay_stream_tests.rs"]
 mod relay_stream_tests;
+
+// THE `id` MEMBER on the receiving plane. Mounted HERE rather than from `ingress.rs`, where it
+// belongs by subject, for the one reason that outweighs tidiness: it needs `relay_harness`, and the
+// harness comment two blocks up is the whole argument against standing up a second one. Its sibling
+// is `mcp/tests/envelope_id_tests.rs`; the two assert the same list against the same reader.
+#[cfg(test)]
+#[path = "tests/envelope_id_tests.rs"]
+mod envelope_id_tests;

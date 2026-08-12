@@ -48,6 +48,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 
 use super::sse;
+use crate::ingress::jsonrpc::Envelope;
 
 /// The single MCP protocol revision busbar implements.
 ///
@@ -100,10 +101,11 @@ const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 /// MCP extensions rather than JSON-RPC standard codes, and a bare `-32022` in a match arm is a
 /// magic number nobody can check against the schema.
 pub(super) mod code {
-    /// JSON-RPC standard: the body was not valid JSON.
-    pub(super) const PARSE_ERROR: i64 = -32700;
-    /// JSON-RPC standard: valid JSON, but not a valid request object.
-    pub(super) const INVALID_REQUEST: i64 = -32600;
+    // `-32700` (parse error) and `-32600` (invalid request) ARE NOT HERE ANY MORE. They are the base
+    // protocol's own codes, they are emitted by two planes, and both are now owned and emitted by
+    // `crate::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
+    // them back here would recreate the second opinion this module was just moved off.
+
     /// JSON-RPC standard: the method is not implemented. MCP pairs it with `404`, not `200`.
     pub(super) const METHOD_NOT_FOUND: i64 = -32601;
     /// JSON-RPC standard: the params were structurally wrong. What a missing or incomplete
@@ -196,56 +198,44 @@ pub(crate) async fn rpc(
 
     // (2) PARSE.
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            None,
-            code::PARSE_ERROR,
-            "Request body is not valid JSON.",
-            None,
-        );
+        return crate::ingress::jsonrpc::parse_error();
     };
 
-    // (3) ENVELOPE SHAPE. A JSON-RPC batch (a top-level array) is not part of this revision's
-    // transport: the body carries a SINGLE message. Refusing it explicitly beats treating the array
-    // as an object and reading `method` as absent, which would answer the wrong question.
-    let Some(obj) = value.as_object() else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            None,
-            code::INVALID_REQUEST,
-            "The request body must be a single JSON-RPC message object; batches are not supported.",
-            None,
-        );
+    // (3) ENVELOPE SHAPE — `jsonrpc`, `method`, and above all `id`, read by the ONE reader both
+    // JSON-RPC planes share (`crate::ingress::jsonrpc`). This plane used to decide the envelope's
+    // three cases itself, and so did the A2A receiving plane, and they disagreed: both served a
+    // `200` and a SUCCESS result for `"id": null`, which MCP `basic#requests` forbids outright
+    // ("Unlike base JSON-RPC, the ID MUST NOT be `null`"), and both answered a NOTIFICATION, which
+    // section 4.1 forbids outright. See that module's header for the full clause list and for why the two
+    // readers became one rather than being fixed twice.
+    let envelope = match crate::ingress::jsonrpc::read(&value) {
+        Ok(e) => e,
+        Err(invalid) => return crate::ingress::jsonrpc::refused(&invalid),
     };
-    // `id` is echoed on every error from here on, because a client correlating responses needs it
-    // more on a failure than on a success. Absent `id` means a notification; it is simply not
-    // echoed, which is what the schema requires (`id` is not a required member of an error
-    // response).
-    let id = obj.get("id").cloned();
-    if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            id,
-            code::INVALID_REQUEST,
-            "`jsonrpc` must be exactly \"2.0\".",
-            None,
-        );
-    }
-    let Some(method) = obj.get("method").and_then(|v| v.as_str()) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            id,
-            code::INVALID_REQUEST,
-            "`method` is required and must be a string.",
-            None,
-        );
+    // section 4.1 and MCP `basic#notifications`: "The receiver MUST NOT send a response." FIRST, ahead of
+    // every check below, because the rule has no exception for a notification that is ALSO wrong
+    // about something else — a `-32602` for a missing `params._meta` is still a response, and one
+    // arriving against no outstanding id is exactly what corrupts a client's bookkeeping.
+    let Envelope::Request {
+        id,
+        method: method_name,
+    } = envelope
+    else {
+        return crate::ingress::jsonrpc::accepted();
     };
+    // From here `id` is a string or a number. It is carried as `Option` only because the method
+    // table's constructors take one; it is never `None` on this path, and never `Null` at all.
+    let id = Some(id);
+    let method = method_name.as_str();
+    // The envelope's members are read off the `Value` directly from here. There is no `as_object()`
+    // rebinding: `read` has already refused everything that is not a message object, so a second
+    // check would be a second opinion on a question that is already settled.
 
     // (4) `params._meta` AND ITS REQUIRED MEMBERS. A body defect, answered in the body's own
     // vocabulary: `-32602`, `400`. See the module header for why this precedes the header checks.
     //
     // `params._meta`, per the schema. See META_PROTOCOL_VERSION for why this is not the top level.
-    let Some(meta) = obj.get("params").and_then(|p| p.get("_meta")) else {
+    let Some(meta) = value.get("params").and_then(|p| p.get("_meta")) else {
         return invalid_params(
             id,
             "`params._meta` is required on every request. This revision has no handshake, so each \
@@ -315,7 +305,7 @@ pub(crate) async fn rpc(
     // `Mcp-Name` mirrors `params.name` (`tools/call`, `prompts/get`) or `params.uri`
     // (`resources/read`). It is REQUIRED on exactly those three and meaningless elsewhere.
     if let Some(source) = name_source_of(method) {
-        let body_name = obj
+        let body_name = value
             .get("params")
             .and_then(|p| p.get(source))
             .and_then(|v| v.as_str());
@@ -371,7 +361,7 @@ pub(crate) async fn rpc(
         capabilities: &capabilities,
         headers: &headers,
     };
-    let params = obj.get("params");
+    let params = value.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
     // Created unconditionally and usually left empty — the cost is one Arc per request, against
     // threading an optional channel through four layers that each model a single answer.
@@ -423,7 +413,7 @@ pub(crate) async fn rpc(
         return response;
     }
     let level = sse::requested_level(Some(meta));
-    let logs: Vec<sse::LogRecord> = request_log(method, obj, &response)
+    let logs: Vec<sse::LogRecord> = request_log(method, &value, &response)
         .into_iter()
         .filter(|r| sse::level_allows(level, r.level))
         .collect();
@@ -463,11 +453,11 @@ pub(crate) async fn rpc(
 /// visible in a client's log even when nobody is thinking about it.
 fn request_log(
     method: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
+    envelope: &serde_json::Value,
     response: &Response,
 ) -> Vec<crate::mcp::sse::LogRecord> {
     let target = name_source_of(method)
-        .and_then(|source| obj.get("params").and_then(|p| p.get(source)).cloned());
+        .and_then(|source| envelope.get("params").and_then(|p| p.get(source)).cloned());
     let status = response.status().as_u16();
     // The STATUS, not the body: the body has already been consumed into the response and re-reading
     // it here would mean buffering the answer twice. The status/code pair is one contract
@@ -619,21 +609,27 @@ pub(super) fn error_response(
     message: &str,
     data: Option<serde_json::Value>,
 ) -> Response {
-    let mut error = serde_json::Map::new();
-    error.insert("code".into(), serde_json::Value::from(code));
-    error.insert("message".into(), serde_json::Value::from(message));
-    if let Some(d) = data {
-        error.insert("data".into(), d);
-    }
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("jsonrpc".into(), serde_json::Value::from("2.0"));
-    // Echoed only when the request carried one. A JSON-RPC error response has no required `id`
-    // member, and inventing `null` for a notification would claim a correlation that does not exist.
-    if let Some(id) = id {
-        envelope.insert("id".into(), id);
-    }
-    envelope.insert("error".into(), serde_json::Value::Object(error));
-    (status, axum::Json(serde_json::Value::Object(envelope))).into_response()
+    // THE BODY IS BUILT BY THE SHARED READER, not here. Both JSON-RPC planes emit error envelopes
+    // and the `id`/`error` pairing is the contract; one builder is what stops two planes disagreeing
+    // about it, which is the same lesson this module's `code` re-export records.
+    //
+    // `None` BECOMES `null`, and that is a correction rather than a translation. This function used
+    // to OMIT the member for a request with no readable id, on the reasoning that inventing `null`
+    // would claim a correlation that does not exist. JSON-RPC 2.0 section 5 says the opposite twice: the
+    // member is "REQUIRED" on a Response, and "if there was an error in detecting the id in the
+    // Request object (e.g. Parse error/Invalid Request), it MUST be Null" — `null` IS the spelling
+    // for "no correlation", not a claim of one. The omission also made the envelope unrecognisable
+    // to a conformant peer: the in-house battery's own `isResponse()` predicate is `'id' in msg`, so
+    // a client would have classified these refusals as neither response nor notification.
+    //
+    // The case that motivated the omission — a NOTIFICATION — can no longer reach here at all: section 4.1
+    // forbids answering one, and the envelope reader now returns `202` with no body before dispatch.
+    let id = id.unwrap_or(serde_json::Value::Null);
+    (
+        status,
+        axum::Json(crate::ingress::jsonrpc::error_body(id, code, message, data)),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -643,6 +639,14 @@ mod ingress_tests;
 #[cfg(test)]
 #[path = "tests/request_meta_tests.rs"]
 mod request_meta_tests;
+
+// THE `id` MEMBER, all three cases. Mounted here rather than folded into `ingress_tests` because
+// the claim spans BOTH planes — the sibling file is `a2a/tests/envelope_id_tests.rs`, asserting the
+// same three properties against the same shared reader, and two files with one name is what makes
+// "does this hold on the other plane too?" a question with an obvious answer.
+#[cfg(test)]
+#[path = "tests/envelope_id_tests.rs"]
+mod envelope_id_tests;
 
 // The RESPONSE FRAMING battery. Mounted from the INGRESS rather than from [`super::sse`] on purpose:
 // every test in it drives a real socket and asserts on what a CLIENT received, which is a statement
