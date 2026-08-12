@@ -3087,12 +3087,31 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
     // regression to per-frame front-draining.
     const MAX_GROWTH: f64 = 3.0;
 
+    // THE RATIO IS TAKEN PER REP, AND THE BEST RATIO WINS. Not `min(t_2n) / min(t_n)`, which is
+    // what this did and what made it flake red on a loaded host.
+    //
+    // Two independent minima are each the least-contended observation OF THEIR OWN SIZE, and that
+    // is not the same as two observations taken under the SAME conditions. The 2N drain runs twice
+    // as long as the N drain, so on a busy machine it is exposed to descheduling for twice as long
+    // and its inflation is systematically larger. That is a BIAS IN THE NUMERATOR, not jitter, and
+    // minimum-of-N absorbs jitter only: noise can only add time, but here it adds more time to one
+    // side than the other, so the ratio drifts upward with load even though both minima are honest.
+    //
+    // Observed: 3.23x on a host at load ~20 (N took 367ms against ~63ms unloaded), and 1.89s for
+    // the whole test when re-run alone. Nothing on the translate path had changed.
+    //
+    // Pairing the two measurements inside one rep and ratioing THERE means each candidate ratio
+    // comes from one contiguous window, where contention is far more likely to apply to both
+    // halves. Taking the minimum of those ratios then picks the least-disturbed WINDOW rather than
+    // the least-disturbed half of two different windows. Same threshold, same property, same
+    // failure on a real regression: a quadratic translator is ~4x in every window, so no window
+    // rescues it.
+    let mut best_ratio = f64::MAX;
     let mut best_n = std::time::Duration::MAX;
     let mut best_2n = std::time::Duration::MAX;
     for _ in 0..REPS {
         let (count_n, t_n) = drain_frames_once(N);
         assert_eq!(count_n, N, "all {N} frames must translate exactly once");
-        best_n = best_n.min(t_n);
 
         let (count_2n, t_2n) = drain_frames_once(2 * N);
         assert_eq!(
@@ -3101,7 +3120,15 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
             "all {} frames must translate exactly once",
             2 * N
         );
-        best_2n = best_2n.min(t_2n);
+
+        let ratio = t_2n.as_secs_f64() / t_n.as_secs_f64();
+        if ratio < best_ratio {
+            best_ratio = ratio;
+            // Kept so the failure message can quote the pair the verdict was actually taken from,
+            // rather than two timings from different reps that were never compared to each other.
+            best_n = t_n;
+            best_2n = t_2n;
+        }
     }
 
     // A ratio taken against an unmeasurably small denominator is noise wearing a number's clothes,
@@ -3113,12 +3140,12 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
          below would be measuring clock noise rather than the translator. Raise N."
     );
 
-    let growth = best_2n.as_secs_f64() / best_n.as_secs_f64();
     assert!(
-        growth <= MAX_GROWTH,
-        "doubling the frame count multiplied the drain time by {growth:.2}x (N={N} took {best_n:?}, \
-         2N took {best_2n:?}). Linear reassembly doubles (about 2x); quadratic quadruples (about \
-         4x). Above {MAX_GROWTH:.1}x means the per-frame front-draining regression is back."
+        best_ratio <= MAX_GROWTH,
+        "doubling the frame count multiplied the drain time by {best_ratio:.2}x in the best of \
+         {REPS} paired runs (N={N} took {best_n:?}, 2N took {best_2n:?} in that same run). Linear \
+         reassembly doubles (about 2x); quadratic quadruples (about 4x). Above {MAX_GROWTH:.1}x \
+         means the per-frame front-draining regression is back."
     );
 }
 
