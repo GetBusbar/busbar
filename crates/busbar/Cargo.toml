@@ -183,6 +183,25 @@ crc32fast = { workspace = true }
 # is only ever entered for NON-default pools — a `route: weighted` (default) pool never constructs a
 # `RoutingPolicy` and never touches this boxing, preserving the zero-cost default.
 async-trait = { workspace = true }
+# ── THE PROTOCOL VOCABULARY FOR MCP AND A2A ────────────────────────────────────────────────────
+# Landed AHEAD OF THEIR CALLERS, deliberately, and the same posture `plane/mod.rs` and
+# `OperationHandler::extract_error` already took: pin the capability first, on its own, so the
+# dependency review and the eleven-configuration gate run against a change that does nothing —
+# and the commit that first USES one of these is then a change of call sites rather than a
+# simultaneous argument about supply chain and design.
+#
+# Why these and not the frameworks beside them is stated once, in the workspace table. The short
+# version: these are the wire TYPES. The router stays `core_routes::CoreRouter`, the transport stays
+# busbar's resolve-then-pin, and the task store stays the one the plugin ABI and the per-principal
+# audit chain are built on. What the SDKs supply is PROTOCOL compliance; governance is busbar's and
+# always will be.
+#
+# Measured with `cargo tree -e normal` rather than by counting lock lines, because a build
+# dependency never enters the binary: +42 crate names in the lock, **+13 in the shipped artifact**.
+a2a-lf = { workspace = true }
+a2a-pb = { workspace = true }
+rmcp = { workspace = true }
+tonic = { workspace = true }
 # Native inbound TLS termination (+ optional mTLS). `tokio-rustls` wraps the accepted TcpStream in a
 # rustls server handshake; it pins the `ring` crypto provider (already the only provider in the graph
 # via reqwest/hyper-rustls), so the process holds exactly one CryptoProvider — no aws-lc-rs.
