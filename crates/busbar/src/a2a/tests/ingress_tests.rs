@@ -416,3 +416,68 @@ async fn the_well_known_card_does_not_name_the_agents_busbar_fronts() {
     );
     handle.abort();
 }
+
+// ══ THE SSRF GUARD SEES EVERY SPELLING OF A CALLBACK, OR IT GUARDS NOTHING ═══════════════════════
+
+/// A2A HAS THREE PLACES TO PUT "call me here when this task moves", AND ONE WAS READ.
+///
+/// v0.3 puts a `PushNotificationConfig` at `configuration.pushNotificationConfig`; v1.0 puts a
+/// `TaskPushNotificationConfig` at `configuration.taskPushNotificationConfig`, whose callback sits
+/// either directly on it or under a nested `pushNotificationConfig`. Only the first was found.
+///
+/// A callback busbar did not FIND was not merely unguarded. This plane is content-blind and
+/// forwards the caller's envelope VERBATIM, so an unrecognised callback went to the backend agent,
+/// which registered it and CALLED it — which is precisely the arrangement `local.rs` refuses to
+/// allow for the push-config verbs, for exactly this reason: a callback busbar holds is one
+/// busbar's guard judges, and one the backend holds is called around it.
+///
+/// So a v1.0 caller could hand busbar `http://localhost:PORT/webhook` and have it called. Observed,
+/// against the official TCK with a fronted agent that implements push, in that agent's own log:
+///
+/// ```text
+/// Push-notification sent for task_id=… to URL: http://localhost:63936/webhook
+/// ```
+///
+/// while busbar's own guard had refused nothing, having seen nothing.
+#[test]
+fn every_spelling_of_the_callback_is_found_so_every_spelling_is_guarded() {
+    let cases = [
+        (
+            "v0.3",
+            serde_json::json!({"params":{"configuration":{
+                "pushNotificationConfig":{"url":"https://hook.example/a"}}}}),
+        ),
+        (
+            "v1.0, flat",
+            serde_json::json!({"params":{"configuration":{
+                "taskPushNotificationConfig":{"id":"c","url":"https://hook.example/a"}}}}),
+        ),
+        (
+            "v1.0, nested",
+            serde_json::json!({"params":{"configuration":{"taskPushNotificationConfig":{
+                "name":"tasks/1","pushNotificationConfig":{"url":"https://hook.example/a"}}}}}),
+        ),
+    ];
+    for (label, envelope) in cases {
+        assert_eq!(
+            super::callback_of(&envelope).as_deref(),
+            Some("https://hook.example/a"),
+            "the {label} spelling must be FOUND, because what is not found is not guarded"
+        );
+    }
+}
+
+/// AND NOTHING IS INVENTED. A request that registers no callback must not acquire one, or every
+/// task would be guarded against a URL its caller never sent.
+#[test]
+fn a_request_with_no_callback_has_none() {
+    for envelope in [
+        serde_json::json!({"params":{}}),
+        serde_json::json!({"params":{"configuration":{}}}),
+        serde_json::json!({"params":{"configuration":{"taskPushNotificationConfig":{"id":"c"}}}}),
+        serde_json::json!({"params":{"configuration":{
+            "taskPushNotificationConfig":{"id":"c","url":""}}}}),
+    ] {
+        assert_eq!(super::callback_of(&envelope), None, "{envelope}");
+    }
+}

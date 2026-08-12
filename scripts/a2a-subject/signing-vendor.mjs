@@ -80,7 +80,18 @@ http
         },
         (ur) => {
           if (!CARD_PATHS.has(url.pathname)) {
-            res.writeHead(ur.statusCode, ur.headers);
+            // HOP-BY-HOP HEADERS DO NOT CROSS A PROXY (RFC 9110 section 7.6.1). Copying them is not
+            // untidiness, it is a corrupt response: this process DECODES the upstream's chunked
+            // body and re-encodes its own, so re-announcing `transfer-encoding: chunked` tells the
+            // client to parse an already-decoded body as chunk framing. A lenient client tolerates
+            // it; a strict one reads zero frames from a stream that plainly has some — which is
+            // exactly how an SSE relay downstream reports "the backend's stream carried no event"
+            // about a backend that sent four.
+            const forwarded = { ...ur.headers };
+            for (const h of ["transfer-encoding", "connection", "keep-alive", "content-length"]) {
+              delete forwarded[h];
+            }
+            res.writeHead(ur.statusCode, forwarded);
             ur.pipe(res);
             return;
           }

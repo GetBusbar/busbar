@@ -87,3 +87,62 @@ fn a_degenerate_pair_is_not_recorded() {
     assert!(backend_id_for("y").is_none());
     assert!(backend_id_for("same").is_none());
 }
+
+/// THE SECOND TURN'S TASK ID IS NOT AT THE TOP OF `params`, AND IT IS STILL TRANSLATED.
+///
+/// `SendMessage` names an already-open task at `params.message.taskId`. Only the top-level members
+/// were translated, so busbar's own id went to a backend that had never issued it and every
+/// multi-turn exchange died on its second message. The official TCK reported that, in the backend's
+/// own words on the wire, as:
+///
+/// ```text
+/// {"error":{"code":-32001,"message":"Task a2a-conformance-e3856b026ee67352 not found"}}
+/// ```
+///
+/// against `CORE-HIST-002`, `CORE-MULTI-005` and `PUSH-DELIVER-001/002/003`. It could not be seen
+/// until the conformance rig's fronted agent could leave a task open across turns.
+#[test]
+fn the_task_id_inside_a_message_is_translated() {
+    remember("busbar-turn-1", "backend-turn-1");
+    let envelope = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "ROLE_USER",
+                "messageId": "m-2",
+                "taskId": "busbar-turn-1",
+                "parts": [{"text": "the second turn"}]
+            }
+        }
+    });
+    let out = translate_request(&envelope).expect("a message-nested task id is a translation");
+    let out: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(
+        out.pointer("/params/message/taskId")
+            .and_then(|v| v.as_str()),
+        Some("backend-turn-1"),
+        "the backend must be asked about the id IT issued"
+    );
+    assert_eq!(
+        out.pointer("/params/message/messageId")
+            .and_then(|v| v.as_str()),
+        Some("m-2"),
+        "nothing else in the message may be touched"
+    );
+}
+
+/// A MESSAGE'S OWN `id` IS NOT A TASK ID and must never be rewritten as one — a translation that
+/// reached for every member called `id` would corrupt an identity this map knows nothing about.
+#[test]
+fn a_messages_own_id_member_is_left_alone() {
+    remember("busbar-not-a-message-id", "backend-x");
+    let envelope = serde_json::json!({
+        "params": { "message": { "id": "busbar-not-a-message-id" } }
+    });
+    assert!(
+        translate_request(&envelope).is_none(),
+        "a message's `id` is not a task id and nothing may be translated from it"
+    );
+}

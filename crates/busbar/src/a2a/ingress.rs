@@ -418,6 +418,43 @@ impl Wire {
     /// `Null` as the JSON-RPC `id` throughout, and that is the specification's instruction rather
     /// than laziness: the body has not been read at this point, so the id has not been determined,
     /// and JSON-RPC 2.0 section 5 says an answer sent before the id is known MUST carry `null`.
+    /// THE VERSION THIS REQUEST NEGOTIATED, at the `Major.Minor` granularity the specification
+    /// negotiates at, and `0.3` when the caller named none — A2A's own default for an absent or
+    /// empty header.
+    ///
+    /// It exists because busbar is a CLIENT on the next hop, and A2A section 3.3 says a client
+    /// MUST send `A2A-Version` with each request. busbar reads the header at its own edge and
+    /// answers for it there ([`Wire::refuse`]), which is right: busbar is the server the caller
+    /// connected to. But terminating it is not the same as forgetting it. The relay forwards the
+    /// caller's `method` VERBATIM, and the two dialects spell every method differently — a v1.0
+    /// caller's `SendMessage` arrives at the backend as `SendMessage`. A hop that carries a v1.0
+    /// method while sending no version at all is telling the backend "0.3" by omission and then
+    /// speaking 1.0, and a backend that believes the omission refuses the request it was sent.
+    ///
+    /// That is not hypothetical. It is what the official TCK saw the moment the conformance rig's
+    /// fronted agent was changed from one that ignores the header to one that reads it: 62 of 114
+    /// MUSTs met became 24, with the backend answering `VERSION_NOT_SUPPORTED` to methods busbar
+    /// had itself just accepted as valid 1.0.
+    fn negotiated_version(&self) -> &'static str {
+        let asked = self.version.as_deref().unwrap_or_default().trim();
+        if asked.is_empty() {
+            return "0.3";
+        }
+        let mut parts = asked.split('.');
+        let major_minor = match (parts.next(), parts.next()) {
+            (Some(major), Some(minor)) => format!("{major}.{minor}"),
+            _ => asked.to_string(),
+        };
+        // `refuse` runs first and rejects anything not in this set, so a value that reaches here is
+        // always one of them. The fallback is `0.3` rather than a panic because a version busbar
+        // does not speak must never be repeated onto a hop as though it did.
+        SUPPORTED_A2A_VERSIONS
+            .iter()
+            .copied()
+            .find(|v| *v == major_minor)
+            .unwrap_or("0.3")
+    }
+
     fn refuse(&self) -> Option<Response> {
         if let Some(ct) = self.content_type.as_deref() {
             // The media type is everything before the first `;`, case-insensitively. A caller that
@@ -641,6 +678,10 @@ async fn invoke(
     if let Some(refusal) = wire.refuse() {
         return refusal;
     }
+    // ADMITTED, AND THEREFORE RESTATED ON THE NEXT HOP. busbar answers for this header at its own
+    // edge and then speaks it downstream; see `Wire::negotiated_version` for why terminating it is
+    // not the same as forgetting it.
+    let a2a_version = wire.negotiated_version();
 
     let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return super::rpcerror::respond(
@@ -1067,6 +1108,7 @@ async fn invoke(
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
         request_id,
+        a2a_version,
         now,
         now_ms,
         // Established by the envelope reader at the top of this handler, where `null` and absent
@@ -1106,6 +1148,9 @@ struct HopContext {
     context_id: String,
     matched_skill: Option<String>,
     request_id: String,
+    /// THE `A2A-Version` THIS HOP DECLARES, negotiated at busbar's own edge from the caller's
+    /// header. See `Wire::negotiated_version`.
+    a2a_version: &'static str,
     /// THE TASK ALREADY EXISTED AND THE CALLER NAMED IT. A failing hop must not then END it: a
     /// `GetTask` that the backend refuses is a failed READ, and burning the caller's live task row
     /// for it would destroy work that is still running.
@@ -1140,6 +1185,7 @@ async fn unary_hop(
     // The id the hop's answer must name. `body` goes out verbatim, so the id busbar sends to the
     // backend IS this one — see `RelayCall::rpc_id`.
     let rpc_id = ctx.rpc_id.clone();
+    let a2a_version = ctx.a2a_version;
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
             &super::relay::RelayCall {
@@ -1150,6 +1196,7 @@ async fn unary_hop(
                 body: &body,
                 rpc_id: &rpc_id,
                 policy: &relay_policy,
+                a2a_version,
             },
             seam.as_ref(),
             now_ms,
@@ -1236,6 +1283,7 @@ async fn stream_hop(
     // and silently not on the streaming one — a difference no test that stops at the transport can
     // see.
     let notify_seam = Arc::clone(&seam);
+    let a2a_version = ctx.a2a_version;
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -1307,6 +1355,7 @@ async fn stream_hop(
                 body: &body,
                 rpc_id: &rpc_id,
                 policy: &relay_policy,
+                a2a_version,
             },
             seam.as_ref(),
             &task_id,
@@ -1617,12 +1666,47 @@ fn fail_task(
         .into_response()
 }
 
+/// EVERY PLACE A2A SPELLS "the callback to call when this task moves", in both revisions.
+///
+/// v0.3 puts a `PushNotificationConfig` at `configuration.pushNotificationConfig`. v1.0 puts a
+/// `TaskPushNotificationConfig` at `configuration.taskPushNotificationConfig`, whose own callback
+/// sits either directly on it or under a nested `pushNotificationConfig`, depending on which shape
+/// the client serialises.
+const CALLBACK_POINTERS: [&str; 3] = [
+    "/params/configuration/pushNotificationConfig/url",
+    "/params/configuration/taskPushNotificationConfig/url",
+    "/params/configuration/taskPushNotificationConfig/pushNotificationConfig/url",
+];
+
 /// THE CALLER'S PUSH-NOTIFICATION CALLBACK URL, if it registered one.
+///
+/// ONE SPELLING WAS READ AND THERE ARE THREE, and the two that were not read were a hole rather
+/// than an omission. This plane is content-blind and forwards the caller's envelope VERBATIM, so a
+/// callback busbar did not RECOGNISE was not merely unguarded — it was handed to the backend agent,
+/// which registered it and called it. The whole point of guarding here rather than leaving it to
+/// the backend is stated in `local.rs`: a callback busbar holds is a callback busbar's SSRF guard
+/// judges, and one the backend holds is called around it.
+///
+/// So a v1.0 caller could hand busbar `http://localhost:PORT/webhook` — precisely the loopback
+/// target `pushnotify::is_internal_addr` exists to refuse — and have it called, because the guard
+/// was reading a JSON pointer that request does not contain. Observed against the official TCK
+/// with a fronted agent that implements push, in that agent's own log:
+///
+/// ```text
+/// a2a.server.tasks.base_push_notification_sender:
+///   Push-notification sent for task_id=… to URL: http://localhost:63936/webhook
+/// ```
+///
+/// while busbar's own guard had refused nothing, having seen nothing. Reading every spelling closes
+/// it: the URL is now found, guarded, and refused where it must be.
 fn callback_of(envelope: &serde_json::Value) -> Option<String> {
-    envelope
-        .pointer("/params/configuration/pushNotificationConfig/url")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+    CALLBACK_POINTERS.into_iter().find_map(|p| {
+        envelope
+            .pointer(p)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// SSRF-VALIDATE ONE CALLBACK against the addresses it resolves to right now.

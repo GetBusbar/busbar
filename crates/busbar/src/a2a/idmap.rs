@@ -119,6 +119,51 @@ pub(crate) fn translate_request(envelope: &serde_json::Value) -> Option<Vec<u8>>
         rewritten.insert(member.to_string(), serde_json::Value::String(backend_id));
         any = true;
     }
+
+    // THE SECOND TURN'S TASK ID, WHICH IS NOT AT THE TOP OF `params`.
+    //
+    // The members above are where `GetTask`, `CancelTask`, `SubscribeToTask` and the push-config
+    // verbs name a task. `SendMessage` names one somewhere else: at `params.message.taskId`, which
+    // is how a caller says "this is the next turn of a conversation that is already open". Missing
+    // it meant busbar's own task id was forwarded verbatim to a backend that had never issued it,
+    // and every multi-turn exchange died on its second message with `TaskNotFound` — for the id
+    // busbar itself handed the caller.
+    //
+    // It was invisible until the conformance rig's fronted agent could leave a task open. An agent
+    // that completes every task on the first turn is never sent a second one, so no test in the
+    // tree and no requirement in the official TCK ever exercised this line. Measured against that
+    // suite the gap read, in the backend's own words on the wire:
+    //
+    //   {"error":{"code":-32001,"message":"Task a2a-conformance-e3856b026ee67352 not found"}}
+    //
+    // reported to the caller as CORE-HIST-002, CORE-MULTI-005 and PUSH-DELIVER-001/002/003.
+    if let Some(message) = rewritten
+        .get("message")
+        .and_then(serde_json::Value::as_object)
+    {
+        let mut msg = message.clone();
+        let mut touched = false;
+        for member in TASK_ID_MEMBERS {
+            // `id` is deliberately NOT translated inside a message: a Message's `id` is not a task
+            // id, and rewriting it would corrupt an identity that has nothing to do with this map.
+            if member == "id" {
+                continue;
+            }
+            let Some(busbar_id) = msg.get(member).and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(backend_id) = backend_id_for(busbar_id) else {
+                continue;
+            };
+            msg.insert(member.to_string(), serde_json::Value::String(backend_id));
+            touched = true;
+        }
+        if touched {
+            rewritten.insert("message".to_string(), serde_json::Value::Object(msg));
+            any = true;
+        }
+    }
+
     if !any {
         return None;
     }
