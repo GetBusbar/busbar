@@ -13,8 +13,15 @@
 //!
 //! Foundation type; `dead_code` allowed until the Router/IR wiring lands.
 
-/// The seven semantic operations busbar 1.2 speaks. Closed set — adding one is a compile error at
+/// The semantic operations busbar speaks. Closed set — adding one is a compile error at
 /// every exhaustive match (the removability/symmetry gate).
+///
+/// `ToolCall` is the EIGHTH, and it is the first that did not come from the LLM surface. It is the
+/// MCP `tools/call`: a caller names a tool and hands it arguments, and gets content or an error
+/// back. It is listed here rather than modelled as a plane of its own because the gate above is
+/// exactly the mechanism this needs — every site that must decide something about it now refuses to
+/// compile until it does, which is the opposite of how the MCP plane was built the first time
+/// (beside the pipeline, where no compiler could ask it anything).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Operation {
     Chat,
@@ -24,6 +31,7 @@ pub(crate) enum Operation {
     Transcription,
     Speech,
     Rerank,
+    ToolCall,
 }
 
 impl Operation {
@@ -37,6 +45,7 @@ impl Operation {
             Operation::Transcription => "transcription",
             Operation::Speech => "speech",
             Operation::Rerank => "rerank",
+            Operation::ToolCall => "tool_call",
         }
     }
 }
