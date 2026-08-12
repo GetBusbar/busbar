@@ -1,6 +1,6 @@
 [package]
 name = "busbar"
-version = "1.5.3"
+version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # `governance.rs` uses `u32::is_multiple_of` (stabilized in Rust 1.87), and clippy's
@@ -59,7 +59,7 @@ tower = { workspace = true }
 # flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
 # src/ — so it is NOT used; the slice below is hand-picked instead.
 #
-# `process` + `io-util` are the MCP stdio transport (1.5.5, `mcp/client/stdio.rs`): stdio is one of
+# `process` + `io-util` are the MCP stdio transport (1.6.0, `mcp/client/stdio.rs`): stdio is one of
 # the two transports the MCP specification itself defines, so supervising a child MCP server is a
 # baseline obligation rather than a busbar extension, and there is no way to own a child process's
 # lifecycle without them. This is a FEATURE on a crate already in the graph, not a new

@@ -6,7 +6,7 @@
 //! Before this, an overlay entry was a whole document that replaced the base entry outright, so
 //! recording one derived fact about an entry meant restating every operator-authored field beside
 //! it, and a partial document did not survive its own typed parse at all: it was dropped at boot
-//! with a log line. That is the limitation the 1.5.5 ruling calls out as a thing to FIX in the
+//! with a log line. That is the limitation the 1.6.0 ruling calls out as a thing to FIX in the
 //! overlay rather than route around by putting the state somewhere else.
 
 use crate::config::overlay::{apply_named_maps_to_deploy, OverlayDoc};

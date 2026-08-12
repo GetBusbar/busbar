@@ -407,7 +407,7 @@ pub(crate) struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
-    /// The validated MCP resource (`mcp:`, 1.5.5), or `None` when this deployment is not an MCP
+    /// The validated MCP resource (`mcp:`, 1.6.0), or `None` when this deployment is not an MCP
     /// server. Read by the MCP ingress and the RFC 9728 metadata handler; both take the audience and
     /// the mount path from this ONE object, so the value advertised to clients and the value the
     /// verifier compares against cannot be two different strings.

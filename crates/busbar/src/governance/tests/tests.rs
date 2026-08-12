@@ -2559,7 +2559,7 @@ mod signed_token {
         }
     }
 
-    /// THE PLANE BOUNDARY end-to-end through `GovState` (1.5.5 P1): an audience-bound token whose
+    /// THE PLANE BOUNDARY end-to-end through `GovState` (1.6.0 P1): an audience-bound token whose
     /// `sub` is a fully valid, enabled binding is STILL rejected by the data-plane
     /// `verify_token(.., None)` - the boundary is a claims property enforced in the verifier, not
     /// a binding property - while the SAME binding admits on the audience-checked plane, and the

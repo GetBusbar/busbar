@@ -1548,7 +1548,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
 /// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
 /// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
 /// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
-/// governs the parallel `tools:`/`agents:` sections when they ship (1.5.5/1.5.6): reserve the same two
+/// governs the parallel `tools:`/`agents:` sections when they ship (1.6.0): reserve the same two
 /// words in every plane section, even where a plane chooses not to implement one, so the word space is
 /// identical across planes.
 ///
@@ -1816,7 +1816,7 @@ pub(crate) const ALL_HOOK_STAGES: &[HookStage] = &[
 ///
 /// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
 /// exist".** The distinction is the whole finding: if omission meant "all stages", then adding an
-/// MCP tool-invocation stage in 1.5.5 or an A2A delegation stage in 1.5.6 would retroactively make
+/// MCP tool-invocation stage in 1.6.0 or an A2A delegation stage in 1.6.0 would retroactively make
 /// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
 /// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
 /// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
@@ -2683,13 +2683,13 @@ pub(crate) struct DeployCfg {
     /// shippable catalog that config.yaml's `providers:` map references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
-    /// The top-level `mcp:` block (1.5.5): busbar's own MCP endpoint, as an OAuth 2.1 resource
+    /// The top-level `mcp:` block (1.6.0): busbar's own MCP endpoint, as an OAuth 2.1 resource
     /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
     /// ingress and no `.well-known` document, and nothing joins the route table. See
     /// [`crate::mcp::McpCfg`].
     #[serde(default)]
     pub(crate) mcp: Option<crate::mcp::McpCfg>,
-    /// The top-level `tools:` NAMED-DEFINITION map (1.5.5) — THE MCP PLANE's registry: server name →
+    /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
     /// section an entry is written in IS which plane it is on: a `tools:` entry is an MCP server
@@ -2771,7 +2771,7 @@ pub(crate) struct DeployCfg {
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
     pub(crate) export: ExportDefs,
-    /// The top-level `agents:` NAMED-DEFINITION map (1.5.6): agent NAME →
+    /// The top-level `agents:` NAMED-DEFINITION map (1.6.0): agent NAME →
     /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
     /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
     /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
