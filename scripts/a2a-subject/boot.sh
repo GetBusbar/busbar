@@ -107,6 +107,12 @@
 #   * THE gRPC AND HTTP+JSON BINDINGS. busbar's card advertises `JSONRPC` and only `JSONRPC`, so the
 #     TCK skips both and their requirements report as untested rather than as failures busbar has
 #     been given a chance to pass.
+#   * PUSH DELIVERY. `PUSH-DELIVER-001/002/003` are RED and are WAIVED with the reason recorded in
+#     `testing/a2a-tck/WAIVERS.md`. Read that before "fixing the rig's topology": the suite's
+#     receiver URL is `http://` by literal and busbar refuses a plaintext webhook before it looks at
+#     the address at all, so a non-loopback receiver does not reach the refusal that fires. Two of
+#     the three are implementation gaps behind it. Nothing here is silenced — all three still run,
+#     still fail, and are still counted in the MUST row below.
 #
 # MODES
 #   --battery    the independent battery (testing/a2a-harness) against the booted subject
