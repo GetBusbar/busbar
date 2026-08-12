@@ -88,27 +88,27 @@ fn operation_tag_matches_variant_both_directions() {
 /// answering it.
 #[test]
 fn a_tool_call_answers_the_operation_blind_surface() {
-    use crate::ir::toolcall::{ToolCallReq, ToolCallResp};
+    use crate::ir::invoke::{InvokeReq, InvokeResp};
 
-    let req = IrReq::ToolCall(ToolCallReq {
+    let req = IrReq::Invoke(InvokeReq {
         tool: "fs_read".to_string(),
         arguments: serde_json::json!({ "path": "/etc/hosts" }),
         extra: Default::default(),
     });
-    assert_eq!(req.operation(), Operation::ToolCall);
+    assert_eq!(req.operation(), Operation::Invoke);
     assert!(
         !req.wants_stream(),
         "a tool call is one exchange: the tool runs and answers. Progress notifications are a \
          separate channel, not an incremental rendering of THIS result."
     );
 
-    let resp = IrResp::ToolCall(ToolCallResp {
+    let resp = IrResp::Invoke(InvokeResp {
         content: serde_json::json!([{ "type": "text", "text": "127.0.0.1 localhost" }]),
         is_error: false,
         structured: None,
         extra: Default::default(),
     });
-    assert_eq!(resp.operation(), Operation::ToolCall);
+    assert_eq!(resp.operation(), Operation::Invoke);
     assert!(
         matches!(resp.usage(), Some(crate::billing::Billing::Flat)),
         "a tool server reports no tokens, so a tool call is FLAT-metered — one call, one unit. \
@@ -123,13 +123,13 @@ fn a_tool_call_answers_the_operation_blind_surface() {
     // AND THE PAYLOAD SURVIVES THE PARENT. Carrying a subclass is only useful if the subclass's
     // own fields come back out intact, so the round trip is asserted rather than assumed — the
     // codec cell that will read a real `tools/call` off the wire depends on exactly this.
-    let IrReq::ToolCall(inner) = &req else {
+    let IrReq::Invoke(inner) = &req else {
         panic!("the variant is what it was constructed as")
     };
     assert_eq!(inner.tool, "fs_read");
     assert_eq!(inner.arguments["path"], "/etc/hosts");
 
-    let IrResp::ToolCall(inner) = &resp else {
+    let IrResp::Invoke(inner) = &resp else {
         panic!("the variant is what it was constructed as")
     };
     assert!(

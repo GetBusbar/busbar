@@ -48,8 +48,17 @@ impl RequestHandler for OpenAiRequestHandler {
             Operation::Transcription => Some(&TRANSCRIPTION),
             Operation::Speech => Some(&SPEECH),
             Operation::Chat => Some(&CHAT),
-            // OpenAI ships no rerank surface — the standard no-handler 404.
-            Operation::Rerank | Operation::ToolCall => None,
+            // OpenAI ships no rerank surface — the standard no-handler 404. Nor does it serve the
+            // protocol-surface operations (`Invoke`..`Control`): those are MCP's and A2A's, and a
+            // protocol that does not speak an operation returns `None` here so the pair is
+            // unrepresentable rather than refused at runtime.
+            Operation::Rerank
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -60,8 +69,14 @@ impl RequestHandler for OpenAiRequestHandler {
             Operation::Image => PATH_IMAGES_GENERATIONS.into(),
             Operation::Transcription => PATH_AUDIO_TRANSCRIPTIONS.into(),
             Operation::Speech => PATH_AUDIO_SPEECH.into(),
-            // Unreachable in practice: no handler above means Rerank never reaches egress here.
-            Operation::Rerank | Operation::ToolCall => PATH_RERANK.into(),
+            // Unreachable in practice: no handler above means these never reach egress here.
+            Operation::Rerank
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => PATH_RERANK.into(),
         }
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {

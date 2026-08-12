@@ -27,13 +27,23 @@ impl RequestHandler for AnthropicRequestHandler {
             Operation::Chat => Some(&CHAT),
             // Enumerated (not `_`) so adding an operation is a compile error here — the documented
             // removability/symmetry gate. Anthropic serves only chat → no-handler 404 for the rest.
+            //
+            // The protocol-surface six (Invoke..Control) are `None` for the same reason as the
+            // LLM operations Anthropic lacks, and it is the SAME answer rather than a special case:
+            // a protocol that does not speak an operation has no cell, so the pair is
+            // unrepresentable rather than refused at runtime.
             Operation::Embeddings
             | Operation::Moderation
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
             | Operation::Rerank
-            | Operation::ToolCall => None,
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {

@@ -35,7 +35,12 @@ impl RequestHandler for BedrockRequestHandler {
             Operation::Moderation
             | Operation::Transcription
             | Operation::Speech
-            | Operation::ToolCall => None,
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -49,7 +54,26 @@ impl RequestHandler for BedrockRequestHandler {
                 };
                 format!("/model/{}/{verb}", ctx.model)
             }
-            _ => format!("/model/{}/invoke", ctx.model),
+            // Enumerated (not `_`) so adding an operation is a compile error here too — the same
+            // removability/symmetry gate `operation_handler` enforces. This site was the ONE place
+            // on the axis that a pre-existing wildcard had exempted from that gate, so the five new
+            // operations would have silently acquired an InvokeModel URL rather than being decided;
+            // enumerating it is what makes "every exhaustive match decided" true rather than
+            // approximately true. Embeddings/image/rerank genuinely ride InvokeModel; the rest are
+            // unreachable (no handler above), and they answer the same thing for want of a truer
+            // answer at a site that must return a `String`.
+            Operation::Embeddings
+            | Operation::Image
+            | Operation::Rerank
+            | Operation::Moderation
+            | Operation::Transcription
+            | Operation::Speech
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => format!("/model/{}/invoke", ctx.model),
         }
     }
     fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {

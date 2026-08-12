@@ -12,9 +12,9 @@ use serde_json::Value;
 pub(crate) mod audio;
 pub(crate) mod embeddings;
 pub(crate) mod image;
+pub(crate) mod invoke;
 pub(crate) mod moderation;
 pub(crate) mod rerank;
-pub(crate) mod toolcall;
 pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface
 
 #[derive(Debug, Clone, PartialEq, Default)]
