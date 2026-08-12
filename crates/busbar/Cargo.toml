@@ -252,7 +252,20 @@ loom-model = ["dep:loom"]
 txn-fence-red = []
 
 [dev-dependencies]
-# THE REAL `kind: store` PLUGIN CDYLIB, DEPENDED ON SO IT CANNOT BE STALE.
+# THE REAL `kind: store` PLUGIN CRATE, IN THIS PACKAGE'S BUILD GRAPH.
+#
+# CORRECTION, 2026-08-11: this edge was added believing it made the cdylib impossible to stale, on
+# the reasoning that the lib target declares `crate-type = ["cdylib", "rlib"]` so the one rustc
+# invocation would emit both. THAT IS FALSE. Cargo satisfies a dev-dependency with the RLIB and
+# never emits the cdylib, because nothing in the build graph consumes it — the test loads it by path
+# at runtime, which cargo cannot see. Verified: delete the cdylib, run `cargo test -p busbar
+# --no-run`, and the build completes with the cdylib still absent.
+#
+# The edge is KEPT — it makes the plugin compile against the current SDK and ABI on every run of
+# this package's tests, which is worth having. It simply is not the staleness guarantee. That guard
+# now lives in `mcp/tests/calllog_dispatch_tests.rs::example_store_cdylib`, which refuses to judge
+# an artifact older than the plugin, SDK or ABI sources, with a message that says STALE rather than
+# letting it read as a durability failure.
 #
 # `mcp/tests/calllog_dispatch_tests.rs` `dlopen`s this crate's built cdylib to prove that a real
 # `tools/call` lands a durable record ACROSS THE PLUGIN C ABI — the seam that once carried four store
@@ -260,13 +273,14 @@ txn-fence-red = []
 # The test therefore has to load a cdylib built from the CURRENT tree.
 #
 # It is a dev-dependency purely to put the crate in this package's build graph: nothing in busbar's
-# `src/` names it. Without the edge, `cargo test -p busbar` finds whatever cdylib happens to be
-# sitting in the target directory — and a stale one answers every write `Ok(())` and every read
-# empty, which is byte-for-byte the signature of the unrelayed ABI. That is not hypothetical: the
-# sibling `store-sqlite` repo's own over-the-ABI durability test failed exactly that way against an
-# artifact `cargo test` had not rebuilt, and the failure is indistinguishable from the real defect.
-# The lib target declares `crate-type = ["cdylib", "rlib"]`, so the one rustc invocation this edge
-# forces emits both, and the cdylib the test loads is always current.
+# `src/` names it.
+#
+# WHY STALENESS IS THE DANGEROUS CASE, and it is not hypothetical: a stale cdylib answers every write
+# `Ok(())` and every read empty, which is byte-for-byte the signature of the unrelayed ABI. The
+# sibling `store-sqlite` repo's over-the-ABI durability test failed exactly that way against an
+# artifact `cargo test` had not rebuilt, and the failure was indistinguishable from the real defect.
+# The mirror case is worse and is what the guard is really for: an artifact built BEFORE a
+# regression lands reports a PASS while the shipped ABI is broken.
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The durable-audit tests exercise busbar-store-memory's append_audit/list_audit over a
 # simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"

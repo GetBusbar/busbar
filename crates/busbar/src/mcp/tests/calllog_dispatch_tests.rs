@@ -70,6 +70,23 @@ static CALLS_GLOBAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// ITS ABSENCE IS A HARD FAILURE, never a skip. A "skip: cdylib not built" line is how the coverage
 /// that would have caught the four-method ABI silently stops running — the run stays green and
 /// nobody reads the line. The panic names the exact command that fixes it.
+///
+/// AND ITS STALENESS IS A HARD FAILURE TOO, with a DIFFERENT message, because a stale cdylib is the
+/// more dangerous of the two and it was very nearly missed here. An out-of-date artifact answers
+/// every write `Ok(())` and every read empty — which is byte-for-byte the signature of the very ABI
+/// defect this battery exists to catch. So a stale artifact produces a failure indistinguishable
+/// from a real regression, and, in the other direction, an artifact built BEFORE a regression was
+/// introduced produces a PASS while the shipped ABI is broken. Neither reading is survivable, so
+/// staleness must not reach the assertions at all.
+///
+/// A `[dev-dependencies]` edge on the plugin crate does NOT solve this, and believing it did is how
+/// this hole stayed open: cargo satisfies that edge with the crate's RLIB and never emits the
+/// cdylib, because nothing in the build graph consumes it — the test loads it by path at runtime,
+/// which cargo cannot see. Verified by deleting the cdylib and running `cargo test -p busbar
+/// --no-run`: the build completes and the cdylib is still absent.
+///
+/// This check does not BUILD the artifact, deliberately. Shelling out to cargo from inside a test
+/// would contend for the target-directory lock the running `cargo test` already holds.
 fn example_store_cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let profile_dir = exe
@@ -84,11 +101,66 @@ fn example_store_cdylib() -> PathBuf {
         "the busbar-store-example-plugin cdylib is not built at {}. This battery crosses the REAL \
          plugin C ABI on purpose — the defect it exists to catch (an ABI that carried four store \
          methods and discarded every call-log write) is invisible to any in-process double — so it \
-         refuses to skip. Build it: `cargo build -p busbar-store-example-plugin` (or run the suite \
-         with `--workspace`, which builds it).",
+         refuses to skip. Build it: `cargo build -p busbar-store-example-plugin`.",
         path.display()
     );
+
+    // The crates whose sources decide what the cdylib DOES across the ABI. The plugin itself, the
+    // SDK it is written against, and the ABI header both sides compile to: a change to any of the
+    // three can move the artifact's behaviour, and the four-method defect lived in the last one.
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|c| c.parent())
+        .expect("<workspace>/crates/busbar")
+        .to_path_buf();
+    let built = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .expect("the cdylib's build time");
+    for crate_dir in ["store-example-plugin", "plugin-sdk", "plugin-abi"] {
+        let root = workspace.join("crates").join(crate_dir);
+        if let Some(newer) = newest_source_under(&root, built) {
+            panic!(
+                "the busbar-store-example-plugin cdylib at {} is STALE — {} is newer than the \
+                 artifact. THIS IS NOT A DURABILITY FAILURE, and it must not be read as one: a \
+                 stale cdylib keeps nothing and reports success, which is exactly what the ABI \
+                 defect this battery hunts looks like, so judging it would mean judging the wrong \
+                 tree. Rebuild first: `cargo build -p busbar-store-example-plugin`.",
+                path.display(),
+                newer.display()
+            );
+        }
+    }
     path
+}
+
+/// The first `.rs` or `Cargo.toml` under `root` modified after `built`, if any. Returns the file so
+/// the panic can name it — "something is stale" sends a reader hunting; naming the file does not.
+fn newest_source_under(root: &std::path::Path, built: std::time::SystemTime) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // `target/` under a crate dir is build output, not source; it is always newer.
+                if p.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                stack.push(p);
+                continue;
+            }
+            let is_source = p.extension().is_some_and(|e| e == "rs")
+                || p.file_name().is_some_and(|n| n == "Cargo.toml");
+            if is_source
+                && entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|m| m > built)
+            {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// A private durable file for one test, and the plugin config that selects the fixture's on-disk
