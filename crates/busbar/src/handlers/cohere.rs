@@ -40,7 +40,12 @@ impl RequestHandler for CohereRequestHandler {
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
-            | Operation::ToolCall => None,
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -55,7 +60,12 @@ impl RequestHandler for CohereRequestHandler {
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
-            | Operation::ToolCall => PATH_EMBED.into(),
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => PATH_EMBED.into(),
         }
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {

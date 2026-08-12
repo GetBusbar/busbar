@@ -41,7 +41,7 @@ use bytes::Bytes;
 
 use crate::handlers::IngressReject;
 use crate::handlers::{CodecError, EgressCtx, OperationHandler, RequestHandler, WireBody};
-use crate::ir::toolcall::{ToolCallReq, ToolCallResp};
+use crate::ir::invoke::{InvokeReq, InvokeResp};
 use crate::ir::variant::{IrReq, IrResp};
 use crate::operation::Operation;
 
@@ -54,8 +54,8 @@ const METHOD_TOOLS_CALL: &str = "tools/call";
 
 pub(crate) struct McpRequestHandler;
 
-/// The `(mcp, ToolCall)` cell. One protocol, one operation, one codec.
-static TOOL_CALL: ToolCallOperation = ToolCallOperation;
+/// The `(mcp, Invoke)` cell. One protocol, one operation, one codec.
+static INVOKE: InvokeOperation = InvokeOperation;
 
 impl RequestHandler for McpRequestHandler {
     fn protocol_name(&self) -> &'static str {
@@ -64,21 +64,36 @@ impl RequestHandler for McpRequestHandler {
 
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
         match op {
-            Operation::ToolCall => Some(&TOOL_CALL),
+            Operation::Invoke => Some(&INVOKE),
             // Enumerated (not `_`) so adding an operation is a compile error here — the documented
             // removability/symmetry gate.
             //
             // AND THIS IS THE "NO MCP TO CHAT" RULE, in the only place it needs to exist. MCP does
-            // not serve chat, so there is no cell to translate a tool call into a chat completion
+            // not serve chat, so there is no cell to translate an invocation into a chat completion
             // through; the pair is UNREPRESENTABLE rather than refused at runtime. The six chat
-            // protocols say the mirror image about `ToolCall`.
+            // protocols say the mirror image about `Invoke`.
             Operation::Chat
             | Operation::Embeddings
             | Operation::Moderation
             | Operation::Image
             | Operation::Transcription
             | Operation::Speech
-            | Operation::Rerank => None,
+            | Operation::Rerank
+            // THESE FIVE ARE NOT A "NO": THEY ARE A "NOT YET", AND THE DIFFERENCE IS DELIBERATE.
+            // MCP genuinely speaks all five — `tools/list` is `Catalogue`, `resources/read` is
+            // `Fetch`, `tasks/get` is `Task`, `resources/subscribe` is `Subscribe`, `initialize`
+            // is `Control` — and each will get a cell in its own unit, proven against the
+            // conformance suite. Until that cell exists, `None` is the honest answer and it is
+            // the SAME answer the chat protocols give: no cell, so no conversion is
+            // representable. Inventing a cell here to make the row look complete would be the
+            // original `mcp/` mistake (a plane beside the pipeline) in a smaller box, and
+            // `resolve_operation` below still returns `None` for those methods, so nothing can
+            // reach a handler that is not there.
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
 
@@ -98,14 +113,14 @@ impl RequestHandler for McpRequestHandler {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-        (v.get("method")?.as_str()? == METHOD_TOOLS_CALL).then_some(Operation::ToolCall)
+        (v.get("method")?.as_str()? == METHOD_TOOLS_CALL).then_some(Operation::Invoke)
     }
 }
 
 /// The `tools/call` codec. Feed it wire, assert the IR; feed it IR, assert the wire.
-pub(crate) struct ToolCallOperation;
+pub(crate) struct InvokeOperation;
 
-impl OperationHandler for ToolCallOperation {
+impl OperationHandler for InvokeOperation {
     /// A tool call is one exchange, so every capability default (no streaming, no stream intent, no
     /// affinity, no usage tap) is already correct and none is overridden. That is the matrix
     /// working: the restrictive defaults mean a new cell cannot accidentally claim a behaviour.
@@ -129,7 +144,7 @@ impl OperationHandler for ToolCallOperation {
                 )
             })?
             .to_string();
-        Ok(IrReq::ToolCall(ToolCallReq {
+        Ok(IrReq::Invoke(InvokeReq {
             tool,
             // ABSENT ARGUMENTS ARE AN EMPTY OBJECT, not an error: a tool that takes none is called
             // with none, and rejecting that would refuse a legal call.
@@ -142,7 +157,7 @@ impl OperationHandler for ToolCallOperation {
     }
 
     fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::ToolCall(r) = ir else {
+        let IrReq::Invoke(r) = ir else {
             // A cell is only ever handed its own operation's IR — the matrix lookup is what
             // guarantees it. Reaching this arm means the matrix was bypassed, which is a bug in the
             // engine and not something to paper over with a plausible default.
@@ -168,7 +183,7 @@ impl OperationHandler for ToolCallOperation {
         let result = v
             .get("result")
             .ok_or_else(|| CodecError::Malformed("no `result` member".to_string()))?;
-        Ok(IrResp::ToolCall(ToolCallResp {
+        Ok(IrResp::Invoke(InvokeResp {
             content: result
                 .get("content")
                 .cloned()
@@ -187,7 +202,7 @@ impl OperationHandler for ToolCallOperation {
     }
 
     fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::ToolCall(r) = ir else {
+        let IrResp::Invoke(r) = ir else {
             return WireBody::json(Bytes::new());
         };
         let mut result = serde_json::json!({ "content": r.content, "isError": r.is_error });

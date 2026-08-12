@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `(mcp, ToolCall)` cell's tests. The contract a codec cell is held to is the one its own
+//! The `(mcp, Invoke)` cell's tests. The contract a codec cell is held to is the one its own
 //! trait doc states — "feed it wire, assert the IR; feed it IR, assert the wire" — so these are
 //! round-trip and refusal tests, and nothing else.
 
@@ -15,15 +15,15 @@ fn call_wire(params: serde_json::Value) -> Vec<u8> {
 }
 
 #[test]
-fn a_tools_call_reads_into_the_tool_call_ir() {
+fn a_tools_call_reads_into_the_invoke_ir() {
     let wire = call_wire(serde_json::json!({
         "name": "fs_read", "arguments": { "path": "/etc/hosts" }
     }));
-    let ir = ToolCallOperation
+    let ir = InvokeOperation
         .read_request(&wire, crate::proxy::APPLICATION_JSON)
         .expect("a well-formed tools/call reads");
-    let IrReq::ToolCall(r) = ir else {
-        panic!("a tools/call is a ToolCall")
+    let IrReq::Invoke(r) = ir else {
+        panic!("a tools/call is an Invoke")
     };
     assert_eq!(r.tool, "fs_read");
     assert_eq!(r.arguments["path"], "/etc/hosts");
@@ -34,11 +34,11 @@ fn a_tools_call_reads_into_the_tool_call_ir() {
 #[test]
 fn absent_arguments_are_an_empty_object_not_a_refusal() {
     let wire = call_wire(serde_json::json!({ "name": "ping" }));
-    let ir = ToolCallOperation
+    let ir = InvokeOperation
         .read_request(&wire, crate::proxy::APPLICATION_JSON)
         .expect("a tool with no arguments is a legal call");
-    let IrReq::ToolCall(r) = ir else {
-        panic!("a tools/call is a ToolCall")
+    let IrReq::Invoke(r) = ir else {
+        panic!("a tools/call is an Invoke")
     };
     assert_eq!(r.arguments, serde_json::json!({}));
 }
@@ -47,7 +47,7 @@ fn absent_arguments_are_an_empty_object_not_a_refusal() {
 fn a_call_that_names_no_tool_is_refused() {
     let wire = call_wire(serde_json::json!({ "arguments": {} }));
     assert!(
-        ToolCallOperation
+        InvokeOperation
             .read_request(&wire, crate::proxy::APPLICATION_JSON)
             .is_err(),
         "a tools/call with no `params.name` names no tool, so there is nothing to dispatch"
@@ -67,11 +67,11 @@ fn a_failed_tool_is_a_result_not_a_protocol_error() {
         "result": { "content": [{ "type": "text", "text": "no such file" }], "isError": true }
     }))
     .expect("fixture");
-    let ir = ToolCallOperation
+    let ir = InvokeOperation
         .read_response(&wire)
         .expect("a tool error is a well-formed response");
-    let IrResp::ToolCall(r) = ir else {
-        panic!("a tools/call answer is a ToolCall")
+    let IrResp::Invoke(r) = ir else {
+        panic!("a tools/call answer is an Invoke")
     };
     assert!(r.is_error, "the tool's own verdict survives");
     assert_eq!(r.content[0]["text"], "no such file");
@@ -82,11 +82,11 @@ fn the_request_round_trips_through_the_codec() {
     let wire = call_wire(serde_json::json!({
         "name": "search", "arguments": { "q": "busbar" }
     }));
-    let ir = ToolCallOperation
+    let ir = InvokeOperation
         .read_request(&wire, crate::proxy::APPLICATION_JSON)
         .expect("reads");
     let out: serde_json::Value =
-        serde_json::from_slice(&ToolCallOperation.write_request(&ir)).expect("writes JSON");
+        serde_json::from_slice(&InvokeOperation.write_request(&ir)).expect("writes JSON");
     assert_eq!(out["jsonrpc"], "2.0");
     assert_eq!(out["method"], "tools/call");
     assert_eq!(out["params"]["name"], "search");
@@ -101,14 +101,14 @@ fn the_request_round_trips_through_the_codec() {
 
 #[test]
 fn the_response_round_trips_through_the_codec() {
-    let ir = IrResp::ToolCall(ToolCallResp {
+    let ir = IrResp::Invoke(InvokeResp {
         content: serde_json::json!([{ "type": "text", "text": "ok" }]),
         is_error: false,
         structured: Some(serde_json::json!({ "rows": 2 })),
         extra: Default::default(),
     });
     let out: serde_json::Value =
-        serde_json::from_slice(&ToolCallOperation.write_response(&ir).bytes).expect("writes JSON");
+        serde_json::from_slice(&InvokeOperation.write_response(&ir).bytes).expect("writes JSON");
     assert_eq!(out["result"]["content"][0]["text"], "ok");
     assert_eq!(out["result"]["isError"], false);
     assert_eq!(out["result"]["structuredContent"]["rows"], 2);
@@ -118,26 +118,31 @@ fn the_response_round_trips_through_the_codec() {
 /// returned none must not be given one.
 #[test]
 fn structured_content_is_omitted_when_the_tool_produced_none() {
-    let ir = IrResp::ToolCall(ToolCallResp {
+    let ir = IrResp::Invoke(InvokeResp {
         content: serde_json::json!([]),
         is_error: false,
         structured: None,
         extra: Default::default(),
     });
     let out: serde_json::Value =
-        serde_json::from_slice(&ToolCallOperation.write_response(&ir).bytes).expect("writes JSON");
+        serde_json::from_slice(&InvokeOperation.write_response(&ir).bytes).expect("writes JSON");
     assert!(out["result"].get("structuredContent").is_none());
 }
 
 // ── THE MATRIX DECLARATIONS ──────────────────────────────────────────────────────────────────────
 
-/// MCP SERVES `ToolCall` AND NOTHING ELSE — which is the "no MCP to Chat" rule, enforced by the
-/// absence of a cell rather than by a runtime check. There is no handler to translate a tool call
+/// MCP SERVES `Invoke` AND NOTHING ELSE TODAY — which is the "no MCP to Chat" rule, enforced by the
+/// absence of a cell rather than by a runtime check. There is no handler to translate an invocation
 /// into a chat completion through, so the pair is unrepresentable.
+///
+/// The seven LLM operations are a permanent NO. `Catalogue`/`Fetch`/`Task`/`Subscribe`/`Control` are
+/// a NOT-YET — MCP does speak all five — and they are asserted here for the same reason: until the
+/// cell exists, the handler must not report one, and this test is what would catch a cell appearing
+/// without its own conformance evidence.
 #[test]
-fn mcp_serves_tool_call_and_refuses_every_other_operation() {
+fn mcp_serves_invoke_and_refuses_every_other_operation() {
     let h = McpRequestHandler;
-    assert!(h.operation_handler(Operation::ToolCall).is_some());
+    assert!(h.operation_handler(Operation::Invoke).is_some());
     for op in [
         Operation::Chat,
         Operation::Embeddings,
@@ -146,10 +151,15 @@ fn mcp_serves_tool_call_and_refuses_every_other_operation() {
         Operation::Transcription,
         Operation::Speech,
         Operation::Rerank,
+        Operation::Catalogue,
+        Operation::Fetch,
+        Operation::Task,
+        Operation::Subscribe,
+        Operation::Control,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
-            "MCP must serve no operation but ToolCall; {} has no cell and must not acquire one by \
+            "MCP must serve no operation but Invoke; {} has no cell and must not acquire one by \
              accident",
             op.name()
         );
@@ -162,10 +172,7 @@ fn mcp_serves_tool_call_and_refuses_every_other_operation() {
 fn the_operation_is_resolved_from_the_body_method() {
     let h = McpRequestHandler;
     let body = call_wire(serde_json::json!({ "name": "t" }));
-    assert_eq!(
-        h.resolve_operation("/mcp", &body),
-        Some(Operation::ToolCall)
-    );
+    assert_eq!(h.resolve_operation("/mcp", &body), Some(Operation::Invoke));
     assert_eq!(
         h.resolve_operation("/v1/chat/completions", &body),
         None,
@@ -202,7 +209,7 @@ fn the_operation_is_resolved_from_the_body_method() {
 /// matrix.
 #[test]
 fn a_failing_tool_server_produces_a_classifiable_outcome() {
-    let raw = ToolCallOperation.extract_error(503, br#"{"error":"upstream is down"}"#);
+    let raw = InvokeOperation.extract_error(503, br#"{"error":"upstream is down"}"#);
     assert_eq!(
         raw.http_status, 503,
         "the status is what the breaker classifies, and it must survive"

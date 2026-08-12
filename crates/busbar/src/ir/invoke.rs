@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TOOL-CALL IR — the `Operation::ToolCall` subclass of the parent [`crate::ir::variant::IrReq`]
+//! THE INVOKE IR — the `Operation::Invoke` subclass of the parent [`crate::ir::variant::IrReq`]
 //! / [`crate::ir::variant::IrResp`] enums.
+//!
+//! Named `ToolCall` through 1.5. `Invoke` is the same shape — a caller names a target, hands it
+//! arguments, and gets content or an error back — under a name that does not belong to one protocol:
+//! it carries A2A `message/send` and MCP `completion/complete` alongside MCP `tools/call`, and an
+//! MCP-flavoured name would be a protocol branch waiting to happen at every site that reads it.
 //!
 //! ## WHY THIS IS AN OPERATION AND NOT A PLANE
 //!
@@ -30,16 +35,16 @@
 //!
 //! This is the distinction the first implementation got wrong, and it is worth stating in the type
 //! rather than in prose. A tool that RAN and FAILED is a successful call whose result carries
-//! [`ToolCallResp::is_error`] — the transport succeeded, the protocol succeeded, the tool did not.
+//! [`InvokeResp::is_error`] — the transport succeeded, the protocol succeeded, the tool did not.
 //! A call that could not be made at all is a refusal and never reaches this type. Collapsing the
 //! two tells a caller their request was malformed when their tool merely returned an error, and it
 //! is also what makes an upstream failure indistinguishable from a policy refusal to the breaker.
 
 use serde_json::Value;
 
-/// A CALL TO ONE TOOL. The request half of the `ToolCall` operation.
+/// A CALL TO ONE NAMED TARGET. The request half of the `Invoke` operation.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ToolCallReq {
+pub(crate) struct InvokeReq {
     /// THE TOOL BEING CALLED, in the caller's vocabulary — the name as PUBLISHED, which is not
     /// necessarily the name the upstream knows it by. The rename on the way out is
     /// `ProtocolWriter::rewrite_model`'s job on this operation, exactly as it is the model rename's
@@ -57,7 +62,7 @@ pub(crate) struct ToolCallReq {
 
 /// WHAT ONE TOOL CALL PRODUCED. The response half.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ToolCallResp {
+pub(crate) struct InvokeResp {
     /// The content the tool returned, verbatim. busbar is content-blind on this operation: it
     /// decides WHETHER a call may happen and records THAT it happened, and rewriting a payload is
     /// not a gateway's job.

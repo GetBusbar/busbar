@@ -91,6 +91,13 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Changed
 
+- **The `operation` label reads `invoke`, not `tool_call`.** The operation that carries "a caller
+  names a target, hands it arguments, and gets content or an error back" now also carries A2A
+  `message/send`, so it is no longer named after one protocol's method. The same string is the
+  `paths:` configuration key for that operation, so a `paths:` entry keyed `tool_call` must be
+  re-keyed to `invoke`. The five operations that arrive alongside it — `catalogue`, `fetch`, `task`,
+  `subscribe` and `control` — publish those names as their label and their key.
+
 - **BREAKING (metrics): `busbar_requests_total` and `busbar_request_duration_seconds` gained a
   `plane` label, and the model plane's existing series carry it too.** The values are `llm`, `mcp`
   and `a2a`. If you group or join on the full label set of either family — a recording rule, a

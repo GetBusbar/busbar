@@ -32,7 +32,12 @@ impl RequestHandler for ResponsesRequestHandler {
             | Operation::Transcription
             | Operation::Speech
             | Operation::Rerank
-            | Operation::ToolCall => None,
+            | Operation::Invoke
+            | Operation::Catalogue
+            | Operation::Fetch
+            | Operation::Task
+            | Operation::Subscribe
+            | Operation::Control => None,
         }
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
