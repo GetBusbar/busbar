@@ -604,8 +604,8 @@ async fn a_registered_callback_is_delivered_to_when_the_task_reaches_a_state() {
     // work and resolve to nothing in the receiver's later reads.
     let doc: serde_json::Value =
         serde_json::from_slice(&delivered.body).expect("the notification is JSON");
-    assert_eq!(doc["id"], task_id);
-    assert_eq!(doc["status"]["state"], "completed");
+    assert_eq!(doc["task"]["id"], task_id);
+    assert_eq!(doc["task"]["status"]["state"], "completed");
     let rendered = String::from_utf8_lossy(&delivered.body);
     assert!(
         !rendered.contains("BACKEND-OWN-TASK-ID") && !rendered.contains("BACKEND-OWN-CONTEXT"),

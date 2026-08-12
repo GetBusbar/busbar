@@ -297,6 +297,61 @@ reporting about a busbar nobody runs, and that is worse than leaving it unarmed 
 is minting the wrong thing. Either way no verdict from this leg means anything until it is fixed."
 }
 
+# THE EXTENDED AGENT CARD, over the real wire, with the real credential — because the official
+# suite cannot report on it.
+#
+# The TCK declares `CARD-EXT-001` and `CARD-EXT-002` and has no test that exercises a WORKING
+# extended card: `CORE-CAP-003` only runs when the capability is absent, and `CARD-EXT-002` skips
+# itself the moment the card is configured. So a busbar that answers this verb perfectly and a
+# busbar that answers it with garbage produce the same TCK output, and the number cannot be the
+# instrument for this cell. This is.
+#
+# Both spellings are driven, because both are live: SPEC 9.1 makes the JSON-RPC name the PascalCase
+# rpc name, and SPEC 3.6.2 makes a version-less request 0.3 — whose name is the slash form. An
+# implementation that serves one is broken for every client that speaks the other.
+#
+# AND THE LEAK CHECK IS HERE TOO. The extended card is the ONE busbar document built from several
+# vendors' text at once, so the property `serve_tests.rs` walks over a single served card is
+# re-asserted here over the merged one, against the real backend authority this rig runs.
+report_the_extended_agent_card() {
+  local plane_url="$1" bearer="$2" vendor_port="$3"
+  local method body
+
+  say "   the extended agent card, asked for in both live spellings of its name:"
+  for method in GetExtendedAgentCard agent/getAuthenticatedExtendedCard; do
+    body=$(curl -s --max-time 15 \
+      -H "authorization: Bearer $bearer" \
+      -H 'content-type: application/json' \
+      -H 'a2a-version: 1.0' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":\"xcard\",\"method\":\"$method\"}" \
+      "$plane_url") || die "the extended agent card request failed outright ($method)"
+
+    # The response travels in the ENVIRONMENT rather than on stdin, because stdin is the script.
+    A2A_XCARD_BODY="$body" python3 - "$method" "$vendor_port" <<'PY' || die "the extended agent card is not what busbar declares it serves"
+import json, os, sys
+method, vendor_port = sys.argv[1], sys.argv[2]
+doc = json.loads(os.environ["A2A_XCARD_BODY"])
+if "error" in doc:
+    print(f"     BAD: {method} -> error {doc['error'].get('code')}: {doc['error'].get('message')}")
+    raise SystemExit(1)
+card = doc.get("result") or {}
+skills = card.get("skills") or []
+ids = [s.get("id") for s in skills]
+if not card.get("capabilities", {}).get("extendedAgentCard"):
+    print(f"     BAD: {method} -> the extended card denies the capability that served it")
+    raise SystemExit(1)
+if not ids:
+    print(f"     BAD: {method} -> the caller is entitled to an agent and the card names none")
+    raise SystemExit(1)
+# THE BACKEND AUTHORITY, NOWHERE, AT ANY DEPTH. The whole document, as a string.
+if f"127.0.0.1:{vendor_port}" in json.dumps(card):
+    print(f"     BAD: {method} -> the extended card names the backend authority")
+    raise SystemExit(1)
+print(f"     ok:  {method} -> entitled agents {ids}, backend authority absent")
+PY
+  done
+}
+
 
 # Wait for one URL to answer 200, or die naming what did not come up and showing its log.
 subject_await() {
@@ -531,6 +586,7 @@ same helper the MCP leg does, because busbar's token format is one format across
   subject_await_serving "$direct" "$bound"
 
   prove_the_boundary_is_intact "$direct" "$plain" "$bound" "$wrong"
+  report_the_extended_agent_card "http://127.0.0.1:$data_port/a2a" "$bound" "$vendor_port"
 
   # THE SHIM, and the reason it is here rather than a `--auth` flag. The independent battery CAN be
   # handed a header; the official TCK CANNOT — `run_tck.py` takes `--sut-host` and nothing else. One

@@ -432,3 +432,210 @@ fn busbars_own_endpoint_is_not_a_leak_when_it_shares_a_host_with_the_backend() {
         "got {err:?}"
     );
 }
+
+// ══ THE EXTENDED AGENT CARD ══════════════════════════════════════════════════════════════════════
+
+fn entitled<'a>(agent_id: &'a str, backend_url: &'a str, card: &'a Value) -> EntitledAgent<'a> {
+    EntitledAgent {
+        agent_id,
+        backend_url,
+        card: Some(card),
+    }
+}
+
+/// THE PUBLIC CARD AND THE EXTENDED CARD DIFFER IN EXACTLY ONE MEMBER, and that is the whole design.
+///
+/// SPEC 3.1.11 tells a client to REPLACE its cached public card with the extended one for the
+/// duration of its session, so any other difference between the two is a claim about this endpoint
+/// that silently changes when a client authenticates — a different interface list, a different
+/// scheme to present, a different capability set. One builder is what makes that impossible; this
+/// is what makes the one builder observable.
+#[test]
+fn the_extended_card_differs_from_the_public_card_in_skills_and_in_nothing_else() {
+    let card = backend_card();
+    let public = self_card(PUBLIC, None).expect("the public card builds");
+    let extended =
+        extended_card(PUBLIC, &[entitled("planner", BACKEND, &card)], None).expect("it builds");
+
+    let (mut a, mut b) = (
+        public.as_object().expect("object").clone(),
+        extended.as_object().expect("object").clone(),
+    );
+    let public_skills = a.remove("skills").expect("a skills member");
+    let extended_skills = b.remove("skills").expect("a skills member");
+    assert_eq!(
+        a, b,
+        "the two cards disagree about something other than skills"
+    );
+    assert_eq!(public_skills, json!([]), "the public card names an agent");
+    assert_ne!(
+        extended_skills,
+        json!([]),
+        "the extended card names nothing"
+    );
+}
+
+/// ONE SKILL PER AGENT, IDENTIFIED BY BUSBAR'S OWN AGENT ID — and the reason is mechanical.
+///
+/// The obvious implementation unions the backends' own `skills[]`. Skill ids are upstream-authored
+/// and namespaced by nothing, so two fronted vendors both declaring `plan` produce one id twice —
+/// and `card::skill_digests` REFUSES a card with a duplicate skill id, so a peer applying to busbar
+/// the rule busbar applies to everyone else would reject busbar's own card outright. This asserts
+/// the property that makes that impossible: the published ids are the AGENT ids, which are unique
+/// by construction, and they are the ids the caller addresses.
+#[test]
+fn the_extended_card_publishes_one_skill_per_agent_and_never_a_duplicate_id() {
+    // Two agents whose backends declare THE SAME skill id, which is the collision.
+    let mut second = backend_card();
+    second
+        .as_object_mut()
+        .expect("object")
+        .insert("name".to_string(), json!("scheduler"));
+    let first = backend_card();
+    let extended = extended_card(
+        PUBLIC,
+        &[
+            entitled("planner", BACKEND, &first),
+            entitled(
+                "scheduler",
+                "https://internal-scheduler.corp.example",
+                &second,
+            ),
+        ],
+        None,
+    )
+    .expect("it builds");
+
+    let ids: Vec<&str> = extended["skills"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|s| s["id"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(ids, vec!["planner", "scheduler"], "{extended}");
+    // AND THE PUBLISHED DOCUMENT PASSES BUSBAR'S OWN CARD RULES, which is the claim that matters:
+    // whatever busbar demands of a card it verifies, its own must satisfy.
+    let digests = super::super::card::skill_digests(&extended).expect("busbar's own card is legal");
+    assert_eq!(digests.len(), 2, "{digests:?}");
+}
+
+/// AN AGENT THIS CALLER IS NOT ENTITLED TO IS NOT IN THE DOCUMENT AT ALL.
+///
+/// This is the data-exposure half, and for a gateway it is the whole design question: the naive
+/// extended card is a merge of everything busbar fronts, which hands every authenticated caller the
+/// full inventory — every agent id, every vendor, every capability — including the agents it may not
+/// invoke. Asserted over the SERIALISED document rather than over `skills`, because the hazard is a
+/// member nobody thought to check.
+#[test]
+fn an_agent_outside_this_callers_catalogue_appears_nowhere_in_the_extended_card() {
+    let card = backend_card();
+    let extended =
+        extended_card(PUBLIC, &[entitled("planner", BACKEND, &card)], None).expect("it builds");
+    let rendered = extended.to_string();
+    assert!(rendered.contains("planner"), "{rendered}");
+    assert!(
+        !rendered.contains("scheduler"),
+        "an agent this caller was not handed is named in its extended card: {rendered}"
+    );
+}
+
+/// THE BACKEND AUTHORITY APPEARS NOWHERE, AT ANY DEPTH — the same property the served fronted card
+/// has, re-asserted here because this is the ONE busbar document built from several vendors' text
+/// at once, so `rewrite_card`'s per-card sweep cannot cover it.
+///
+/// And the failure is CONTAINED. One vendor whose description names its own backend must not be able
+/// to deny every other agent's entry to every caller, so that agent is dropped and the rest are
+/// served — which is what the second half asserts.
+#[test]
+fn the_backend_authority_appears_nowhere_in_the_extended_card_and_one_leak_drops_one_agent() {
+    let mut leaky = backend_card();
+    leaky.as_object_mut().expect("object").insert(
+        "description".to_string(),
+        json!("reach it directly at internal-planner.corp.example:8443/a2a"),
+    );
+    let clean = backend_card();
+    let extended = extended_card(
+        PUBLIC,
+        &[
+            entitled("planner", BACKEND, &leaky),
+            entitled(
+                "scheduler",
+                "https://internal-scheduler.corp.example",
+                &clean,
+            ),
+        ],
+        None,
+    )
+    .expect("one careless upstream must not deny every other agent");
+
+    let mut strings = Vec::new();
+    every_string(&extended, &mut strings);
+    for s in &strings {
+        assert!(
+            !s.to_lowercase().contains("internal-planner.corp.example"),
+            "the extended card names the backend authority: {s}"
+        );
+    }
+    let ids: Vec<&str> = extended["skills"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|s| s["id"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["scheduler"],
+        "the leaking agent was published, or the clean one was dropped with it: {extended}"
+    );
+}
+
+/// A CALLER ENTITLED TO NOTHING GETS A CARD WITH NOTHING IN IT, rather than a refusal.
+///
+/// "You may reach no agent here" is a true and useful answer, and it is a statement about the
+/// CALLER. `ExtendedAgentCardNotConfiguredError` is a statement about the DEPLOYMENT, and the
+/// ingress reserves it for the one shape that means it: a busbar fronting nothing at all.
+#[test]
+fn a_caller_entitled_to_no_agent_gets_an_empty_extended_card_rather_than_a_refusal() {
+    let extended = extended_card(PUBLIC, &[], None).expect("an empty catalogue is still a card");
+    assert_eq!(extended["skills"], json!([]), "{extended}");
+    assert_eq!(extended["capabilities"]["extendedAgentCard"], json!(true));
+}
+
+// ══ THE CARD'S PROTOCOL VERSIONS ═════════════════════════════════════════════════════════════════
+
+/// EVERY INTERFACE DECLARES A PROTOCOL VERSION, AND THE VERSIONS ARE THE ONES THE INGRESS ADMITS.
+///
+/// `AgentInterface.protocol_version` is REQUIRED in the 1.0 card and busbar published none, so a
+/// client reading the card had to fall back to the top-level member — which said `0.3.0`: the wrong
+/// spelling (SPEC 3.6: patch numbers "SHOULD NOT be used in … Agent Cards") of a version busbar was
+/// no longer alone in speaking. The list is read off `ingress::SUPPORTED_A2A_VERSIONS` rather than
+/// written here, so this test compares the card against the thing that actually admits requests.
+#[test]
+fn every_published_interface_declares_a_version_the_ingress_actually_admits() {
+    let card = self_card(PUBLIC, None).expect("the card builds");
+    let ifaces = card["supportedInterfaces"].as_array().expect("an array");
+    assert!(!ifaces.is_empty());
+    for iface in ifaces {
+        let v = iface["protocolVersion"].as_str().unwrap_or_default();
+        assert!(
+            crate::a2a::ingress::SUPPORTED_A2A_VERSIONS.contains(&v),
+            "the card advertises `{v}`, which this endpoint does not admit: {iface}"
+        );
+        assert!(
+            !v.contains("0.3.0"),
+            "a card version carries a patch number, which SPEC 3.6 says it must not: {v}"
+        );
+    }
+    // ORDERED, NEWEST FIRST. `supportedInterfaces` is an ordered list whose first entry the
+    // specification makes preferred, so a client taking entry zero must be steered at the current
+    // protocol rather than at the compatibility one.
+    assert_eq!(ifaces[0]["protocolVersion"], "1.0", "{ifaces:?}");
+    // AND EVERY VERSION THE INGRESS ADMITS IS PUBLISHED. A version admitted and not advertised is a
+    // capability no client can discover.
+    for want in crate::a2a::ingress::SUPPORTED_A2A_VERSIONS {
+        assert!(
+            ifaces.iter().any(|i| i["protocolVersion"] == *want),
+            "the ingress admits `{want}` and the card does not advertise it: {ifaces:?}"
+        );
+    }
+}

@@ -68,7 +68,6 @@ a2a|http+json|server|client|ListTasks
 a2a|http+json|server|client|SendMessage
 a2a|http+json|server|client|SendStreamingMessage
 a2a|http+json|server|client|SubscribeToTask
-a2a|http+json|server|server|PushNotificationDelivery
 a2a|jsonrpc|client|client|CancelTask
 a2a|jsonrpc|client|client|CreateTaskPushNotificationConfig
 a2a|jsonrpc|client|client|DeleteTaskPushNotificationConfig
@@ -85,7 +84,6 @@ a2a|jsonrpc|server|client|CancelTask
 a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig
 a2a|jsonrpc|server|client|DeleteTaskPushNotificationConfig
 a2a|jsonrpc|server|client|GET /.well-known/agent-card.json
-a2a|jsonrpc|server|client|GetExtendedAgentCard
 a2a|jsonrpc|server|client|GetTask
 a2a|jsonrpc|server|client|GetTaskPushNotificationConfig
 a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs

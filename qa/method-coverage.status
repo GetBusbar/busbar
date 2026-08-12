@@ -44,7 +44,54 @@
 # implemented
 # ---------------------------------------------------------------------------
 
-# (none yet -- see the paragraph above)
+# GetExtendedAgentCard / agent/getAuthenticatedExtendedCard, busbar as SERVER, over JSON-RPC.
+#
+# WHAT BUSBAR PUBLISHES, because for a gateway this is a design decision before it is a method.
+# The extended card is the AUTHENTICATED half of a two-tier split: the public card at the
+# well-known path is unauthenticated, so it enumerates no fronted agent at all, and this one names
+# exactly the agents THIS CALLER may invoke -- selected by `catalogue::inbound_catalogue`, which is
+# the same judgement that decides dispatch. So the card can never name an agent a submission would
+# refuse, and can never show one tenant another tenant's inventory. The naive implementation --
+# union every fronted agent's skills -- is a data-exposure bug rather than a conformance one, and
+# it is the reason this cell was called out as a decision rather than as unbuilt work.
+#
+# One skill per AGENT, identified by busbar's own agent id, and not the backends' own skills
+# merged: skill ids are upstream-authored and namespaced by nothing, so two vendors both declaring
+# `summarise` produce one id twice -- and `card::skill_digests` REFUSES a card with a duplicate
+# skill id, so a peer applying to busbar the rule busbar applies to everyone else would reject
+# busbar's own card outright.
+#
+# INSTRUMENT. `scripts/a2a-subject/boot.sh` drives the verb over the real wire with a real
+# audience-bound credential, in BOTH live spellings of the name, and asserts the entitled agent is
+# named and the backend authority is not. That is the instrument because the official suite cannot
+# be one here: CORE-CAP-003 only runs when the capability is ABSENT, and CARD-EXT-002 skips itself
+# the moment the card is configured, so a busbar that answers this perfectly and one that answers
+# it with garbage produce identical TCK output.
+a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
+
+# PushNotificationDelivery, busbar as SERVER, over HTTP+JSON -- the outbound POST to a caller's
+# webhook. (The JSON-RPC and gRPC columns are N/A with a reason: there is no delivery rpc.)
+#
+# Two things were owed and missing, and both are built. The config's `authentication` was DROPPED
+# at registration -- the durable row held one URL string, the verbs echoed `{id, url}`, and the
+# delivery sent `content-type` and nothing else -- so a customer whose webhook authenticates could
+# not use push notifications at all. It is now stored and presented as `<scheme> <credentials>` on
+# the `Authorization` header. And the delivered body was a BARE Task where the protocol defines a
+# `StreamResponse`; the specification's own validator rejected every busbar delivery, and the same
+# document nested under `"task"` validates.
+#
+# INSTRUMENT: `a2a/tests/pushdeliver_tests.rs` (the header, the envelope, the withdrawal, and the
+# secret not outliving the task) and `a2a/tests/relay_stream_tests.rs`, which drives a real task to
+# completion and reads what went on the wire.
+#
+# THE THREE TCK MUSTs STAY RED, and that is recorded rather than laundered.
+# PUSH-DELIVER-001/002/003 fail because the suite's own webhook receiver is plaintext `http://` by
+# literal and busbar refuses a plaintext callback before it looks at the address -- the owner's
+# ruling, recorded in testing/a2a-tck/WAIVERS.md. This cell is claimed on the capability, which is
+# owed to every customer whose webhook is https, and NOT on those three going green. Conformance
+# being unobservable here is not permission to leave the capability unbuilt, and it is not
+# permission to claim the three either.
+a2a|http+json|server|server|PushNotificationDelivery = implemented
 
 # ---------------------------------------------------------------------------
 # waived

@@ -171,6 +171,22 @@ fn can_serve_binding(binding: &str) -> bool {
         .any(|f| f.eq_ignore_ascii_case(binding))
 }
 
+/// THE PROTOCOL VERSIONS BUSBAR SERVES, read off the ingress that actually admits them.
+///
+/// `AgentInterface.protocol_version` is a REQUIRED member of the 1.0 card, and busbar's own card
+/// carried no interface version at all — so a client reading the card had to guess which semantics
+/// the endpoint speaks, and the top-level `protocolVersion` it would have fallen back to said
+/// `0.3.0`, which is BOTH the wrong version (busbar admits `1.0` as well) and the wrong spelling
+/// (SPEC 3.6: patch numbers "SHOULD NOT be used in requests, responses and Agent Cards").
+///
+/// Read from [`super::ingress::SUPPORTED_A2A_VERSIONS`] rather than written down here, for the same
+/// reason [`servable_bindings`] is read off the plane: the card is a claim about what the endpoint
+/// admits, and a second list is a second answer to one question. The day the ingress stops speaking
+/// a version, the card stops advertising it without anyone remembering this function exists.
+fn served_protocol_versions() -> &'static [&'static str] {
+    super::ingress::SUPPORTED_A2A_VERSIONS
+}
+
 /// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a
 /// caller's endpoint is stable and says which agent it reaches.
 pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String, ServeError> {
@@ -403,11 +419,15 @@ fn inbound_security_requirement() -> Value {
 ///     belong to the agents behind it. Publishing them here would hand an unauthenticated caller
 ///     the internal agent inventory — every agent id, every capability, every vendor — from a path
 ///     that by design cannot ask who is asking. The per-agent cards stay behind `RouteAuth::Key`
-///     where they already are, and a caller who is entitled to one gets it there.
-///   * **`extendedAgentCard: false`.** busbar does not implement `getAuthenticatedExtendedCard`.
-///     Claiming a capability the binary does not have is the exact defect this release keeps
-///     finding: a document asserting a property nothing tested. When that verb lands, this flips,
-///     and not before.
+///     where they already are, and a caller who is entitled to one gets it there. The agents a
+///     caller MAY reach are named on the EXTENDED card ([`extended_card`]), which is the
+///     authenticated half of exactly this two-tier split — and which is why the omission here costs
+///     a legitimate caller nothing.
+///
+/// `extendedAgentCard` is `true`, and it is true: [`extended_card`] is the verb behind it. It read
+/// `false` for as long as busbar had no such verb, which was the honest position at the time — a
+/// document asserting a property nothing tested is the defect this release keeps finding — and it
+/// flips here because the verb landed, not because the member looked untidy.
 ///
 /// The card IS signed when this deployment holds a signing key, for the same reason a fronted card
 /// is: it gives an external caller something to pin busbar by.
@@ -415,42 +435,192 @@ pub(crate) fn self_card(
     public_url: &str,
     signer: Option<&super::sign::CardSigner>,
 ) -> Result<Value, ServeError> {
-    // ONE SOURCE FOR WHAT BUSBAR SPEAKS, shared with the fronted-agent rewrite. busbar's own card
-    // and the cards busbar serves for others advertise the same address family and therefore the
-    // same bindings; two lists would let one of them start claiming a protocol the other knows
-    // busbar does not answer.
-    let interfaces: Vec<Value> = servable_bindings()
-        .into_iter()
-        .map(|binding| -> Result<Value, ServeError> {
-            Ok(json!({ "url": canonical_uri(public_url)?, "protocolBinding": binding }))
-        })
-        .collect::<Result<_, _>>()?;
-    let card = json!({
-        "protocolVersion": super::registry::DEFAULT_PROTOCOL_VERSION,
+    let card = self_card_document(public_url, Vec::new())?;
+    match signer {
+        Some(signer) => Ok(signer.sign_card(&card).map_err(ServeError::Sign)?),
+        None => Ok(card),
+    }
+}
+
+/// THE INTERFACES BUSBAR PUBLISHES: every binding it serves, at every protocol version it admits.
+///
+/// The cross product, and it is a cross product because both axes are real. SPEC 3.6.2: *"Agents
+/// CAN expose multiple interfaces for the same transport with different versions under the same or
+/// different URLs"* — which is precisely busbar's shape, since one endpoint reads the `A2A-Version`
+/// header and answers with the semantics it names.
+///
+/// ORDERED NEWEST-FIRST, because `supportedInterfaces` is an ordered list whose first entry the
+/// specification makes the PREFERRED one. A client that takes the first entry should be steered at
+/// the current protocol version rather than at the compatibility one.
+fn published_interfaces(public_url: &str) -> Result<Vec<Value>, ServeError> {
+    let url = canonical_uri(public_url)?;
+    let mut versions: Vec<&str> = served_protocol_versions().to_vec();
+    versions.reverse();
+    let mut out = Vec::new();
+    for binding in servable_bindings() {
+        for version in &versions {
+            // NO `tenant` MEMBER, and that is a statement rather than an omission. The proto marks
+            // it optional and defines it as the value a client puts in the request when calling the
+            // agent — for a deployment that partitions its surface by tenant. busbar does not: its
+            // routes carry no tenant segment, and every caller's partitioning is its virtual key's
+            // scopes, which is a different mechanism entirely. Publishing an EMPTY tenant would be
+            // worse than publishing none: a conformant client would echo it and address
+            // `/{tenant}/…` with an empty segment, at a path busbar does not serve.
+            out.push(json!({
+                "url": url,
+                "protocolBinding": binding,
+                "protocolVersion": version,
+            }));
+        }
+    }
+    Ok(out)
+}
+
+/// BUSBAR'S OWN CARD AS A DOCUMENT, before signing, with `skills` supplied by the caller.
+///
+/// One builder for the public card and the extended card, because the ONLY difference between them
+/// is that member. Two builders would let the two documents drift on the interfaces they publish,
+/// the schemes they demand or the capabilities they claim — and a client that replaced its cached
+/// public card with the extended one (which SPEC 3.1.11 tells it to do) would then be holding a
+/// different set of claims about the same endpoint.
+fn self_card_document(public_url: &str, skills: Vec<Value>) -> Result<Value, ServeError> {
+    Ok(json!({
+        // NO TOP-LEVEL `protocolVersion`, and its removal is the fix rather than an omission. It
+        // said `0.3.0`: a patch number, which SPEC 3.6 says a card must not carry, naming a version
+        // busbar was no longer alone in speaking. The 1.0 `AgentCard` has no such member at all —
+        // the version moved ONTO each interface, which is where `published_interfaces` now puts it,
+        // and the specification's own sample card (SPEC 8.5) carries none either. Publishing one
+        // version for an endpoint that admits two was the defect; publishing it per interface says
+        // the true thing, including to the 0.3 client, which finds a `0.3` interface waiting.
         "name": "busbar",
         "description":
             "An AI gateway. Agents reach the agents busbar fronts through this endpoint; busbar \
-             authorises, meters and records every task. The agents themselves are not listed here \
-             — ask for the one you are entitled to at the per-agent card path.",
+             authorises, meters and records every task. The agents themselves are not listed on \
+             the public card — an authenticated caller is shown the ones it may reach.",
         "version": env!("CARGO_PKG_VERSION"),
         "provider": { "organization": "busbar" },
-        "supportedInterfaces": interfaces,
+        "supportedInterfaces": published_interfaces(public_url)?,
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["text/plain", "application/json"],
         "capabilities": {
             "streaming": true,
             "pushNotifications": true,
             "stateTransitionHistory": true,
-            "extendedAgentCard": false,
+            "extendedAgentCard": true,
         },
-        "skills": [],
+        "skills": skills,
         "securitySchemes": Value::Object(inbound_security_schemes()),
         "security": inbound_security_requirement(),
-    });
+    }))
+}
 
+/// ONE FRONTED AGENT THIS CALLER IS ENTITLED TO, as the extended card needs it.
+pub(crate) struct EntitledAgent<'a> {
+    /// The OPERATOR's id for the agent. This is the id the caller addresses
+    /// (`/a2a/agents/{agent_id}`) and the id `scope_allowed("agent", …)` is asked about, so it is
+    /// the only identifier the extended card publishes for it.
+    pub(crate) agent_id: &'a str,
+    /// The REAL backend endpoint. Never published; taken so the leak sweep has a host to scan for,
+    /// exactly as [`rewrite_card`] takes it.
+    pub(crate) backend_url: &'a str,
+    /// The backend's card AS CACHED, for the human-readable name and description.
+    pub(crate) card: Option<&'a Value>,
+}
+
+/// BUSBAR'S EXTENDED AGENT CARD — `GetExtendedAgentCard` / `agent/getAuthenticatedExtendedCard`.
+///
+/// # WHAT BUSBAR PUBLISHES HERE, AND WHY IT IS NOT THE BACKENDS' CARDS MERGED
+///
+/// For an ordinary agent the extended card is "the same card with more detail". For a GATEWAY it is
+/// a MERGE across upstreams, and a merge is a data-exposure decision before it is a conformance
+/// one: the naive implementation unions every fronted agent's `skills[]` and hands every
+/// authenticated caller the whole inventory — every agent id, every capability, every vendor —
+/// including the agents that caller may not invoke. That is not a conformance miss, it is one
+/// tenant reading another's.
+///
+/// So the answer is built from the CALLER'S OWN CATALOGUE and nothing else. The entries are exactly
+/// the registrations `scope_allowed("agent", …)` admits for this key — the same judgement that
+/// decides dispatch — so the card cannot promise what a submission would refuse, and cannot show a
+/// caller an agent it could not have reached anyway.
+///
+/// # ONE SKILL PER AGENT, IDENTIFIED BY BUSBAR'S OWN AGENT ID
+///
+/// The backends' own `skills[]` are deliberately NOT republished, and the reason is mechanical
+/// rather than aesthetic. Skill ids are upstream-authored and namespaced by nothing, so two fronted
+/// vendors both declaring `summarise` produce two entries with one id. That is not merely confusing:
+/// [`super::card::skill_digests`] REFUSES a card with a duplicate skill id, so a peer verifying
+/// busbar's card by the same rule busbar applies to everyone else's would reject it outright.
+/// Namespacing them (`planner/summarise`) would fix the collision and break the thing they are for,
+/// because `metadata.skill` is matched against the backend's own id by
+/// [`super::catalogue::match_shape`].
+///
+/// One skill per AGENT has neither problem: agent ids are unique by construction (they are the
+/// operator's own keys), and the id published is the one the caller actually addresses. A caller
+/// that wants the agent's declared skills fetches that agent's card at the per-agent path, which it
+/// is already entitled to do.
+///
+/// # THE BACKEND AUTHORITY IS SCANNED FOR HERE TOO
+///
+/// The name and description come from a vendor-authored document, so the same hazard
+/// [`rewrite_card`] exists for applies: a description naming the backend host publishes the way
+/// around busbar. Each agent's contribution is scanned against ITS OWN backend host and DROPPED if
+/// it mentions it — dropped rather than refusing the whole card, because one upstream's careless
+/// prose must not be able to deny every other agent's entry to every caller.
+pub(crate) fn extended_card(
+    public_url: &str,
+    entitled: &[EntitledAgent<'_>],
+    signer: Option<&super::sign::CardSigner>,
+) -> Result<Value, ServeError> {
+    let mut skills = Vec::new();
+    for agent in entitled {
+        let Some(skill) = agent_skill(agent) else {
+            continue;
+        };
+        skills.push(skill);
+    }
+    let card = self_card_document(public_url, skills)?;
     match signer {
         Some(signer) => Ok(signer.sign_card(&card).map_err(ServeError::Sign)?),
         None => Ok(card),
+    }
+}
+
+/// One entitled agent as a skill, or `None` where publishing it would name the backend.
+fn agent_skill(agent: &EntitledAgent<'_>) -> Option<Value> {
+    let parsed = agent
+        .card
+        .and_then(|c| super::card::parse(c).ok())
+        .unwrap_or_default();
+    let skill = json!({
+        "id": agent.agent_id,
+        // The vendor's own words where it has them, and busbar's id where it does not. An empty
+        // name is a required member with nothing in it, which is a card a strict client rejects.
+        "name": if parsed.name.is_empty() { agent.agent_id } else { parsed.name.as_str() },
+        "description": parsed.description,
+        // TAGS GROUP; IDENTITY IDENTIFIES. Every entry here is one fronted agent, which is the
+        // group, and the id above is the identity.
+        "tags": ["agent"],
+        "inputModes": parsed.default_input_modes,
+        "outputModes": parsed.default_output_modes,
+    });
+    // THE SAME LEAK CHECK THE SERVED CARD GETS, per agent, over the strings this entry contributes.
+    // `rewrite_card`'s sweep cannot cover this: it runs over one backend's document against one
+    // backend's host, and this document is many backends' text in one place.
+    let host = reqwest::Url::parse(agent.backend_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase))?;
+    let mut mentions = Vec::new();
+    collect_mentions(&skill, &host, "", &mut mentions);
+    if mentions.is_empty() {
+        Some(skill)
+    } else {
+        tracing::warn!(
+            agent = %agent.agent_id,
+            at = ?mentions,
+            "a2a: an agent is omitted from the extended card because its card names the backend \
+             authority in text busbar cannot rewrite"
+        );
+        None
     }
 }
 
