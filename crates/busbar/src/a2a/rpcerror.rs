@@ -74,8 +74,17 @@ pub(crate) enum A2aError {
     /// The caller asked for something this deployment does not do, or may not do for them. The
     /// nearest binding for busbar's own admission refusals; the message names the real reason.
     UnsupportedOperation,
+    /// The request's media type is not one this endpoint reads. A2A's JSON-RPC binding carries
+    /// `application/json` and nothing else; this is the answer owed to a caller that sent something
+    /// else, and it is DISTINCT from [`A2aError::Parse`] — "I will not read this" is a different
+    /// fact from "I read it and it was not JSON", and only the first tells the caller to fix a
+    /// header rather than a body.
+    ContentTypeNotSupported,
     /// The backend agent did not answer something busbar could relay.
     InvalidAgentResponse,
+    /// The caller's `A2A-Version` names a protocol version this endpoint does not speak. See
+    /// [`super::ingress`] for which versions busbar claims and what makes each claim true.
+    VersionNotSupported,
     /// JSON-RPC section 5.1: the body was not JSON.
     Parse,
     /// JSON-RPC section 5.1: the body was JSON but not a JSON-RPC request object.
@@ -96,7 +105,9 @@ impl A2aError {
             A2aError::TaskNotFound => -32001,
             A2aError::TaskNotCancelable => -32002,
             A2aError::UnsupportedOperation => -32004,
+            A2aError::ContentTypeNotSupported => -32005,
             A2aError::InvalidAgentResponse => -32006,
+            A2aError::VersionNotSupported => -32009,
             A2aError::InvalidRequest => -32600,
             A2aError::MethodNotFound => -32601,
             A2aError::InvalidParams => -32602,
@@ -113,7 +124,9 @@ impl A2aError {
             A2aError::TaskNotFound => Some("TASK_NOT_FOUND"),
             A2aError::TaskNotCancelable => Some("TASK_NOT_CANCELABLE"),
             A2aError::UnsupportedOperation => Some("UNSUPPORTED_OPERATION"),
+            A2aError::ContentTypeNotSupported => Some("CONTENT_TYPE_NOT_SUPPORTED"),
             A2aError::InvalidAgentResponse => Some("INVALID_AGENT_RESPONSE"),
+            A2aError::VersionNotSupported => Some("VERSION_NOT_SUPPORTED"),
             A2aError::Parse
             | A2aError::InvalidRequest
             | A2aError::MethodNotFound
@@ -136,7 +149,9 @@ impl A2aError {
             -32001 => A2aError::TaskNotFound,
             -32002 => A2aError::TaskNotCancelable,
             -32004 => A2aError::UnsupportedOperation,
+            -32005 => A2aError::ContentTypeNotSupported,
             -32006 => A2aError::InvalidAgentResponse,
+            -32009 => A2aError::VersionNotSupported,
             -32600 => A2aError::InvalidRequest,
             -32601 => A2aError::MethodNotFound,
             -32602 => A2aError::InvalidParams,
@@ -155,7 +170,14 @@ impl A2aError {
             A2aError::UnsupportedOperation
             | A2aError::Parse
             | A2aError::InvalidRequest
-            | A2aError::InvalidParams => 400,
+            | A2aError::InvalidParams
+            // A2A section 5.4's own row: a version this server does not speak is a CLIENT fault and
+            // answers 400, not 505 — the HTTP version and the A2A version are different facts.
+            | A2aError::VersionNotSupported => 400,
+            // section 5.4 binds this one to 415, the status whose entire meaning is "the media type
+            // is the problem". Answering 400 would put a media-type refusal in the same bucket as a
+            // malformed body, which is the confusion this code exists to end.
+            A2aError::ContentTypeNotSupported => 415,
             A2aError::InvalidAgentResponse => 502,
             A2aError::MethodNotFound => 404,
             A2aError::Internal => 500,

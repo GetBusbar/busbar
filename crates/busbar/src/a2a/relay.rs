@@ -1040,3 +1040,11 @@ mod envelope_id_tests;
 #[cfg(test)]
 #[path = "tests/response_id_tests.rs"]
 mod response_id_tests;
+
+// THE REQUEST'S MEDIA TYPE AND ITS `A2A-Version` — the two facts busbar reads off the HTTP request
+// line rather than out of the caller's envelope, and therefore the two this content-blind plane
+// answers for ITSELF. Mounted here for the same reason as the two blocks above: the claim is that a
+// refusal happens BEFORE any hop, and only the shared harness can see whether a hop happened.
+#[cfg(test)]
+#[path = "tests/wire_headers_tests.rs"]
+mod wire_headers_tests;
