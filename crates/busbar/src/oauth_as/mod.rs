@@ -23,8 +23,14 @@
 //! is that [`crate::state::App::oauth_as`] is `None`: no [`oauth_as::server::AuthorizationServer`]
 //! is constructed, no store is allocated, no signing key is generated or read, no sweeper task is
 //! spawned, and no route is mounted — so the auth middleware has nothing to consult and the route
-//! table has nothing to describe. That is the same posture `mcp:` takes, and it is measured rather
-//! than asserted: see `tests/zero_cost_tests.rs` and the idle-RSS figures in the release notes.
+//! table has nothing to describe. That is the same posture `mcp:` takes.
+//!
+//! It is CHECKED rather than asserted, and the check is `tests/mount_tests.rs`: it subtracts the
+//! unconfigured route table from the configured one, requires the difference to be exactly the
+//! plane's path inventory, and then requires the unconfigured table to contain none of it. The
+//! second half is the claim; the first half is what stops the second half from passing because the
+//! mount was deleted. What that leaves outside the type system is the linked bytes, which is a
+//! measurement rather than a test — see the release notes.
 //!
 //! ## The three registration mechanisms, and why busbar serves two of them
 //!
@@ -52,3 +58,10 @@ pub(crate) mod plane;
 pub(crate) mod policy;
 pub(crate) mod routes;
 pub(crate) mod signer;
+
+// THE GATING PROOF, attached to the module root rather than to `routes`, because what it checks is
+// not a property of the mount alone: it spans the config lowering, `App::oauth_as` and the route
+// table, and it is only a proof if it holds across all three at once.
+#[cfg(test)]
+#[path = "tests/mount_tests.rs"]
+mod mount_tests;
