@@ -139,6 +139,32 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 
 ### What a gate receives
 
+> **The projection is built from the raw ingress body, not from the normalized IR.** Earlier
+> revisions of this page said the opposite; that was wrong, and the difference is operator-visible.
+> Busbar flattens the request the client actually sent, in the dialect it sent it, so **the same
+> hook can see the same logical request differently depending on which dialect the client speaks.**
+> The concrete consequences today:
+>
+> - **The system prompt moves.** On Anthropic and Bedrock ingress it arrives in `system`. On OpenAI,
+>   Cohere, Gemini and Responses ingress a client may put it inside the turns array, where it
+>   reaches your hook as an ordinary `{role: "system"}` message and is counted in `message_count`.
+>   A hook that compresses or rewrites "the messages" will therefore process the operator's own
+>   instructions on some dialects and not others unless it guards for a system turn explicitly.
+>   This shipped as a real bug in Headroom (fixed there, in that hook, on 2026-08-05).
+> - **`messages` is index-aligned with the wire body**, including empty entries for media-only
+>   turns — not with the IR's turn list.
+> - **An OpenAI `refusal` content part is not projected**, and does not count toward `total_chars`.
+>   A gate cannot currently screen a replayed refusal.
+> - **Tool-call arguments are not projected.** Tool *results* are (a `{role: "tool"}` message's
+>   content is projected and counted like any other text).
+> - **Malformed input is tolerated, never rejected**: a turn with an unknown or missing role
+>   projects with the role verbatim or as `""`, and the request is still forwarded.
+>
+> None of these are grant questions — they apply at `prompt: ro` and `prompt: rw` alike. Unifying
+> the hook path onto the normalized IR, so the projection is identical on every dialect, is planned
+> work; the divergences above are pinned by characterisation tests
+> (`proxy/tests/hook_ir_divergence_characterisation_tests.rs`) so they cannot change silently.
+
 - **The request projection**: `pool`, `ingress_protocol`, `message_count`, `has_tools`, `total_chars` (a size signal; token counts do not exist pre-dispatch), `max_tokens`, `stream`. With `prompt: ro`/`rw`, also the flattened `system` + `messages` text. With `user: ro`, also caller identity.
   - **Reasoning/thinking text is included.** No content block that reaches the provider is silently omitted: Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses `reasoning` text project like any other text block. This is a widened scope for the `prompt` grant as of this release — an operator who wired `prompt: ro` for PII screening before now also sees replayed chain-of-thought, which is the correct behavior for a screening gate (content the provider sees that the gate does not is a bypass, not a feature) but is worth knowing if your hook logs or forwards the projection verbatim.
   - **Redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only an opaque `encrypted_content` blob with no `content[]`/`summary[]` text) projects as a fixed marker, `[busbar:redacted_reasoning]`, never the ciphertext.** Busbar cannot decrypt it, so there is nothing to screen and handing a hook the raw bytes would be a new disclosure (they would reach your `prompt`-forwarder sidecar, which never received provider ciphertext before). Treat the marker as a **presence signal only, not a trust signal**: a client can also send ordinary text that happens to equal this string, so do not gate a decision on the marker's presence/absence alone. Also note `rewrite` (`prompt: rw`) is not index-aligned (see the `rewrite` arm below) — a hook that echoes the marker back writes it into a real, visible content block on the outgoing request.
@@ -288,7 +314,7 @@ reply-expected connections; Busbar will never send a reply-expected op on a tap 
 
 Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the embedded key:
 
-**Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR, token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
+**Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the projection of the raw ingress body (see [What a gate receives](#what-a-gate-receives) — this is dialect-shaped, and Headroom carries a guard for it), token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
 
 **Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin — the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
 
@@ -300,4 +326,4 @@ Hooks are also lifecycle-managed over the frozen admin API: register, inspect, h
 
 ---
 
-*Hooks fire on the normalized IR, after the request is understood and before dispatch. That is what makes one hook work across every protocol and provider at once, and what makes Busbar the place your middleware runs.*
+*Hooks fire before dispatch, on every protocol Busbar speaks, which is what makes Busbar the place your middleware runs. They fire on a projection built from the **raw ingress body**, not from the normalized IR — so the projection is dialect-shaped in the ways documented under [What a gate receives](#what-a-gate-receives), and one hook is not yet identical across every protocol. Unifying the hook path onto the normalized IR is planned, not done.*

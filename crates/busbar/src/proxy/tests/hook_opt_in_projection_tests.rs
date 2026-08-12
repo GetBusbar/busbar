@@ -619,6 +619,77 @@ fn size_signal_and_projection_agree_on_reasoning() {
     assert_eq!(projected_chars, total + 1);
 }
 
+/// The THIRD divergence tripwire, and the one the other two do not reach: a **tool-role message
+/// whose `content` is a bare string**.
+///
+/// It has been asserted, in planning the move onto the IR, that this shape is *counted* by
+/// `total_text_chars` but *never projected* by `build_prompt_projection` — a live disagreement
+/// between the SIZE signal and the CONTENT projection, slipping past both existing tripwires
+/// (`system_text_chars_counts_block_arrays`, `size_signal_and_projection_agree_on_reasoning`).
+/// **That assertion is FALSE on this tree, and this test is the witness that pins it false.**
+/// `flatten_content`'s `Some(Value::String(s)) => Cow::Borrowed(s)` arm is role-blind, exactly as
+/// `total_text_chars`'s `Some(Value::String(s)) => s.chars().count()` arm is: a tool-role turn is
+/// projected verbatim, with the same char count the size signal reports.
+///
+/// WHY THIS IS THE CORRECT BEHAVIOUR, and therefore why this test asserts agreement-by-projecting
+/// rather than agreement-by-not-counting. A tool result is the largest UNTRUSTED blob in a modern
+/// agent request — it is attacker-influenced content (a web page, a file, a database row) that
+/// goes upstream verbatim. Both consumers need it:
+///   * a **PII redactor** must be handed the same payload that goes upstream, or it is a gate that
+///     passes what it never saw. Silencing the counter to reach agreement would make the two views
+///     agree on a LIE — "there is no text here" — which is the fail-open shape;
+///   * a **hook author** sizing or compressing context needs the tool result in both views, since
+///     it routinely dominates the token budget.
+///
+/// So the fix direction, had a divergence existed, would have been PROJECT-IT, never STOP-COUNTING.
+///
+/// This test is a ratchet for the IR cutover (the planned hook-path unification): on the IR a
+/// tool-role bare string reads as `IrRole::Tool` + `IrBlock::ToolResult { content: [Text] }`
+/// (`openai_chat/reader.rs`), which the projection must keep visible. If a future `ir::facts`
+/// projection drops `ToolResult` content, this test goes red, and that redness is the point.
+#[test]
+fn size_signal_and_projection_agree_on_tool_role_content() {
+    // Bare-string tool content (the OpenAI Chat tool-result wire shape).
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "user", "content": "run it"},
+            {"role": "assistant", "content": null,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "f", "arguments": "{\"q\":\"x\"}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "TOOL RESULT PAYLOAD"}
+        ]
+    });
+    let p = build_prompt_projection(&v, "openai");
+    assert_eq!(p.messages.len(), 3, "no turn is dropped");
+    assert_eq!(p.messages[2].0, "tool");
+    assert_eq!(
+        p.messages[2].1, "TOOL RESULT PAYLOAD",
+        "a tool result is attacker-influenced content that goes upstream verbatim; a screening \
+         hook that cannot see it is a gate that passes what it never saw"
+    );
+    // The assistant tool_calls turn contributes no text on EITHER side (arguments are not
+    // projected today — D5's real, still-open half) so the two views agree there too.
+    assert_eq!(p.messages[1].1, "");
+
+    let total = total_text_chars(&v, "openai", 0);
+    let projected: usize = p.messages.iter().map(|(_, t)| t.chars().count()).sum();
+    assert_eq!(
+        projected, total,
+        "SIZE signal and CONTENT projection must agree on a tool-role turn (no block-boundary \
+         newlines here: every turn is a bare string or empty)"
+    );
+    assert_eq!(total, 6 + 19);
+
+    // Block-array tool content agrees too, so the agreement is not an artifact of the string arm.
+    let arr: Value = serde_json::json!({
+        "messages": [{"role": "tool", "tool_call_id": "c1",
+                      "content": [{"type": "text", "text": "TOOL RESULT PAYLOAD"}]}]
+    });
+    let pa = build_prompt_projection(&arr, "openai");
+    assert_eq!(pa.messages[0].1, "TOOL RESULT PAYLOAD");
+    assert_eq!(total_text_chars(&arr, "openai", 0), 19);
+}
+
 /// Exhaustiveness guard for `block_text`'s dispatch, modeled on `ProtocolRegistry::with_builtins`
 /// (`proto/mod.rs`) rather than on an `IrBlock`-variant witness table (`all_block_metas()`,
 /// `proto/tests/stream_translate_tests.rs`): unlike `IrBlock`, `ingress_protocol` is a `&str`, so
