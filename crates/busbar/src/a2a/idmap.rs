@@ -71,10 +71,16 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
         return;
     }
     let mut t = table();
-    if t.by_busbar_id.get(busbar_id).is_some_and(|v| v == backend_id) {
+    if t.by_busbar_id
+        .get(busbar_id)
+        .is_some_and(|v| v == backend_id)
+    {
         return;
     }
-    if t.by_busbar_id.insert(busbar_id.to_string(), backend_id.to_string()).is_none() {
+    if t.by_busbar_id
+        .insert(busbar_id.to_string(), backend_id.to_string())
+        .is_none()
+    {
         t.order.push(busbar_id.to_string());
     }
     while t.order.len() > CAPACITY {

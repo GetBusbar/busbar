@@ -200,7 +200,8 @@ async fn a_backend_failure_is_a_busbar_attributed_error_and_not_a_silent_empty_t
     // `InvalidAgentResponseError` (-32006), and the plane answers in the JSON-RPC error envelope a
     // JSON-RPC endpoint owes: an INTEGER code, never a busbar-internal name.
     assert_eq!(
-        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
         Some(-32006),
         "the error must be attributed to the upstream hop: {body}"
     );
@@ -229,7 +230,8 @@ async fn a_non_success_status_from_the_backend_is_a_busbar_attributed_error_too(
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
     assert_eq!(
-        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
         Some(-32006),
         "{body}"
     );
@@ -876,7 +878,8 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
     // A2A §5.4 binds TaskNotFoundError to -32001 and to HTTP 404, from one row.
     assert_eq!(status, 404, "{body}");
     assert_eq!(
-        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
         Some(-32001),
         "the backend's error SEMANTICS must survive the hop: {body}"
     );
@@ -888,14 +891,18 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
         );
     }
     assert_eq!(
-        body.pointer("/error/data/0/reason").and_then(|v| v.as_str()),
+        body.pointer("/error/data/0/reason")
+            .and_then(|v| v.as_str()),
         Some("TASK_NOT_FOUND"),
         "the reason must be re-derived from the code, not echoed: {body}"
     );
     // AND THE TASK IS STILL ENDED. A refusal that rendered differently must not also record
     // differently, or a caller's task row would be left in flight for work nothing will finish.
     let id = task_named_by(&body);
-    assert!(!id.is_empty(), "the refusal must still name the task: {body}");
+    assert!(
+        !id.is_empty(),
+        "the refusal must still name the task: {body}"
+    );
     assert_eq!(
         crate::a2a::taskstore::TASKS
             .get_unscoped(&id)
@@ -920,7 +927,8 @@ async fn a_backend_code_the_specification_does_not_define_is_not_passed_through(
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
     assert_eq!(
-        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
         Some(-32006),
         "{body}"
     );
@@ -1120,7 +1128,8 @@ fn the_identity_substitution_finds_the_task_inside_a_v1_result_wrapper() {
 /// and the key is namespaced so it cannot collide with the backend's own.
 #[test]
 fn the_matched_skill_travels_in_metadata_rather_than_as_an_invented_member() {
-    let mut result = serde_json::json!({ "task": { "id": "x", "status": { "state": "completed" } } });
+    let mut result =
+        serde_json::json!({ "task": { "id": "x", "status": { "state": "completed" } } });
     crate::a2a::relay::rewrite_identity(&mut result, "t", "c", Some("plan"));
     assert_eq!(result["task"]["metadata"]["busbar/skill"], "plan");
     assert!(
@@ -1157,7 +1166,10 @@ fn the_reported_state_is_read_from_either_vocabulary_and_either_shape() {
         ),
         // Anything unreadable stays `working`: a relay that guessed `completed` from a state it
         // could not read would close a task that is still running.
-        (serde_json::json!({ "task": {} }), crate::a2a::task::TaskState::Working),
+        (
+            serde_json::json!({ "task": {} }),
+            crate::a2a::task::TaskState::Working,
+        ),
     ] {
         assert_eq!(
             crate::a2a::relay::reported_task_state(&payload),

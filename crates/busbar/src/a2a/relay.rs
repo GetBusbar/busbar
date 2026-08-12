@@ -798,7 +798,7 @@ pub(crate) fn read_event(
     let state = payload
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
-        .and_then(|s| wire_state(s));
+        .and_then(wire_state);
     let backend = backend_task_id(result);
     rewrite_identity(result, task_id, context_id, matched_skill);
     RelayEvent {

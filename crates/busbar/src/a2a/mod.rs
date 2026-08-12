@@ -60,8 +60,6 @@
 // module is a warning again, and the file that still has one has to say why.
 
 pub(crate) mod adminverbs;
-pub(crate) mod idmap;
-pub(crate) mod rpcerror;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
@@ -69,6 +67,7 @@ pub(crate) mod catalogue;
 pub(crate) mod config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
+pub(crate) mod idmap;
 pub(crate) mod inbound;
 pub(crate) mod ingress;
 pub(crate) mod jws;
@@ -80,6 +79,7 @@ pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
 pub(crate) mod relay;
+pub(crate) mod rpcerror;
 // THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no
 // call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate

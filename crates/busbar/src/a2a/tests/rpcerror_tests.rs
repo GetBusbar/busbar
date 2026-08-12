@@ -25,7 +25,11 @@ fn every_error_is_a_json_rpc_2_0_envelope_with_an_integer_code() {
     ] {
         let doc = body(&json!(7), err, "because");
         assert_eq!(doc["jsonrpc"], "2.0", "{err:?}");
-        assert_eq!(doc["id"], json!(7), "the caller's id must be echoed: {err:?}");
+        assert_eq!(
+            doc["id"],
+            json!(7),
+            "the caller's id must be echoed: {err:?}"
+        );
         assert!(
             doc["error"]["code"].is_i64(),
             "the code must be an INTEGER, not a name: {doc}"

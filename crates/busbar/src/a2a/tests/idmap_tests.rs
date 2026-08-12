@@ -66,7 +66,14 @@ fn re_recording_the_same_pair_does_not_churn_the_map() {
         backend_id_for("stable-busbar").as_deref(),
         Some("stable-backend")
     );
-    assert_eq!(table().order.iter().filter(|k| *k == "stable-busbar").count(), 1);
+    assert_eq!(
+        table()
+            .order
+            .iter()
+            .filter(|k| *k == "stable-busbar")
+            .count(),
+        1
+    );
 }
 
 /// Nothing degenerate is recorded: an empty half is not an identity, and a backend that issued the

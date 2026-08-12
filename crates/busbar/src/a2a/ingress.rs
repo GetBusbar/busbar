@@ -1325,12 +1325,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// END THE TASK AS `failed`, AND TELL ANY REGISTERED CALLBACK. The half of [`fail_task`] that is
 /// about the RECORD rather than about the answer, split out because a refusal that carries the
 /// backend's own error code renders its answer differently and must still end the task identically.
-fn end_task(
-    seam: &Arc<dyn super::relay::RelaySeam>,
-    task_id: &str,
-    request_id: &str,
-    now: u64,
-) {
+fn end_task(seam: &Arc<dyn super::relay::RelaySeam>, task_id: &str, request_id: &str, now: u64) {
     match super::taskstore::TASKS.transition(
         task_id,
         super::task::TaskState::Failed,
