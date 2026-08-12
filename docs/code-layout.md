@@ -7,13 +7,14 @@ true by construction. Size reduction is a side effect of getting that right, not
 Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
 the tree cannot drift back into giant, inconsistent files.
 
-The same script enforces three further invariants that are about *behavior* rather than layout:
+The same script enforces four further invariants that are about *behavior* rather than layout:
 
 - the **choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass).
   It belongs to the remediation contract and is documented in
   [testing.md](testing.md#the-remediation-contract);
 - **request-path purity** (§ 5 below): the store is a durability sink, never on the request path;
-- **plane coherence** (§ 6 below): no plane grows a local reimplementation of a shared concern.
+- **plane coherence** (§ 6 below): no plane grows a local reimplementation of a shared concern;
+- **axis purity** (§ 7 below): nothing branches on an axis of the matrix outside that axis's own arms.
 
 § "Running the lint" below covers all of them.
 
@@ -160,6 +161,37 @@ a name, with the reason). The ledger is not an amnesty:
 Every run prints the outstanding debt grouped by concern, with each concern's shared owner and the
 remedy, so the § A6 unification list is generated from the tree rather than transcribed from it.
 
+## 7. Axis purity: a cell is selected by lookup, never by a branch
+
+busbar's request path is a matrix — **protocol × operation × transport** — and a cell of it is
+reached by looking it up, never by asking one of the axes what it is. An `if transport ==` outside a
+`proto/` arm, its handler and its codec means the design failed at that point: the fix is the model,
+not another arm. The same reasoning already retired every `if ingress_protocol == "bedrock"` in the
+core in favour of writer-vtable facts (`ingress_is_eventstream()`, `has_model_in_url()`), and this
+invariant is that habit made mechanical.
+
+Where the axes live, and why each is a top-level module rather than a property of a cell:
+
+| axis | module | selected by |
+|---|---|---|
+| protocol | `proto/` (+ `handlers/` for its codecs) | the Router, from path + headers |
+| operation | `operation.rs` | the protocol's `RequestHandler`, from path + body |
+| transport | `transport.rs` | the ARRIVAL — the entry point knows which channel it is |
+
+**Value use is fine; comparison is not.** Naming `Transport::Http` at an axum handler is a statement
+of fact, and labelling or threading the value costs nothing when a second transport arms. Comparing
+it is what forks the agnostic core three ways.
+
+The check is scoped to the root the axis governs (`crates/busbar/src/`), because "transport" is not
+a word busbar owns — `plugin-loader` compares a plugin-ABI transport *version*, an unrelated noun a
+type-blind grep cannot distinguish. `AXIS_EXCEPTIONS` carries the branches that exist today with the
+reason and the unit that deletes each one; like `PLANE_LEDGER` it is a ledger and not an amnesty —
+a row whose branch is gone fails as `STALE-LEDGER`, and shrinking is the only permitted edit.
+
+Only the **transport** axis is armed today. `if protocol ==` and `match plane` are red on `dev`
+(the dialect branches in `proxy/hooks.rs`, and `plane/mod.rs`'s dispatch); they arm in the units that
+remove them, and each is one row here when that lands.
+
 ## Naming vocabulary
 
 Module names use the product/API vocabulary (ingress, egress, pool, lane, hook, operation):
@@ -184,7 +216,8 @@ hand-rolls a durable write, a plugin export, or a config swap outside its choke 
 (`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), deletes a choke point's class-level
 test (`MISSING-CLASS-TEST`), puts a store call or an `await` on the admission path
 (`STORE-ON-REQUEST-PATH`), renames a guarded function out from under its rule (`SUBJECT-MISSING`),
-or grows a second plane-local implementation of a shared concern (`PLANE-DUPLICATE`). See [testing.md](testing.md#the-remediation-contract).
+grows a second plane-local implementation of a shared concern (`PLANE-DUPLICATE`), or branches on an
+axis of the matrix outside that axis's own arms (`TRANSPORT-BRANCH`). See [testing.md](testing.md#the-remediation-contract).
 
 The scanner that decides "is this line test code?" is itself guarded:
 

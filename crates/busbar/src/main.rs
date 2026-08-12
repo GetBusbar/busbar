@@ -98,6 +98,7 @@ mod telemetry;
 #[cfg(test)]
 mod test_support;
 mod tls;
+mod transport;
 mod trust;
 
 use std::collections::HashMap;

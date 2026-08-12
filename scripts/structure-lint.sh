@@ -2,8 +2,8 @@
 # Structure lint — enforces the code-layout invariants in docs/code-layout.md so the tree stays
 # navigable ("I'm looking for X, I know where it is") instead of drifting back to giant, inconsistent
 # files, plus the behavioural invariants that only a structural read of the tree can catch: the
-# choke-point registry, request-path purity (§A7) and plane coherence (§A6).
-# Six checks, all greppable, no external deps. Exit non-zero on any violation.
+# choke-point registry, request-path purity (§A7), plane coherence (§A6) and axis purity (§8.1).
+# Seven checks, all greppable, no external deps. Exit non-zero on any violation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -1288,6 +1288,147 @@ if [ -s "$PLANE_DEBT" ]; then
 fi
 rm -rf "$PLANE_TMP"
 if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
+
+# ══ Invariant 7: NOTHING BRANCHES ON AN AXIS OUTSIDE THAT AXIS'S OWN ARMS ════════════════════════
+#
+# THE RULE, owner's ruling: an `if transport ==` outside a `proto/` arm, its handler and its codec
+# means THE DESIGN FAILED AT THAT POINT — fix the model, not the protocol. The matrix is
+# `protocol × operation × transport`; a cell of it is selected by lookup, never by a branch in the
+# agnostic core. Every core-side decision a transport influences is a VTABLE fact, exactly as
+# `ingress_is_eventstream()` and `has_model_in_url()` replaced `if ingress_protocol == "bedrock"`.
+#
+# WHY THIS EXISTS THE DAY THE AXIS DOES, and not later. `Transport` has ONE variant today, so a
+# branch on it is trivially constant and a reviewer would wave it through — which is precisely when
+# the first one gets written, and it is then load-bearing by the time a second variant makes it
+# wrong. The lint costs nothing now and is the only thing that will be watching when `Stdio` and
+# `Grpc` arm. `mcp/config.rs` is the exhibit: it already carries a `Some(Transport::Stdio)` branch
+# guarding a supervisor that no dispatch arm can reach, which is what a transport question looks
+# like when there is no axis to ask it on.
+#
+# WHY VALUE USE IS FINE AND ONLY COMPARISON IS BANNED: naming `Transport::Http` at an arrival is a
+# STATEMENT OF FACT — an axum handler does know it is HTTP — and threading or labelling the value
+# costs nothing later. Comparing it is what forks the core.
+#
+# THE OTHER TWO AXES ARE NOT ARMED HERE, deliberately and with the reason recorded rather than
+# silently: `if protocol ==` and `match plane` are RED on `dev` today (the dialect branches in
+# `proxy/hooks.rs` that U5 deletes, and `plane/mod.rs`'s dispatch). Arming them in this commit would
+# either fail the gate or need an exemption list long enough to be an amnesty. They arm in their own
+# units — U5/U6 — against a tree that can pass them. A row here is one line when that day comes.
+#
+# ── Row format (fields separated by `|`) ─────────────────────────────────────────────────────────
+#   1. axis     — the axis's name (also the exception ledger's key).
+#   2. tag      — the violation label.
+#   3. scope    — the path prefix the axis GOVERNS. The matrix is busbar's, and the word "transport"
+#                 is not: `plugin-loader` compares a plugin-ABI `transport` VERSION number, an
+#                 unrelated noun that a type-blind grep cannot tell apart from the axis. Scoping by
+#                 root is how PLANE_ROOTS answers the same question, and it is honest about the
+#                 blind spot — narrowing the PATTERN instead would have quietly stopped catching
+#                 `if transport ==`, which is the exact line this invariant exists to catch.
+#   4. rules    — `;`-separated `<awk-ERE>>><what it is>`. NO `|` alternation: `|` is the row
+#                 separator, so write alternatives as separate `;` rules.
+#   5. allowed  — comma-separated path PREFIXES where a branch on this axis is legitimate: the
+#                 axis's own module, the `proto/` arms, and the handlers that hold the codecs.
+#   6. remedy   — the one-line instruction printed with every violation.
+#   7. why      — one line: why the core may not ask this question.
+AXIS_BRANCH=(
+  'transport|TRANSPORT-BRANCH|crates/busbar/src/|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|crates/busbar/src/transport.rs,crates/busbar/src/proto/,crates/busbar/src/handlers/|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
+)
+
+# THE EXCEPTION LEDGER. Same two rules as PLANE_LEDGER, for the same reason: a row that no longer
+# matches is a HARD ERROR (a ledger nobody prunes becomes a permanent exemption), and ADDING a row
+# for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
+# Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
+AXIS_EXCEPTIONS="
+transport|crates/busbar/src/mcp/config.rs|2026-08-12: the pre-axis stdio branch. It guards a crash-loop supervisor that has no dispatch arm to reach it — the dead code the transport axis exists to give a home. It is not ported, it is DELETED with mcp/ (§10.4 step 15), and this row goes with it.
+"
+
+hdr "axis purity (nothing branches on an axis outside that axis's own arms)"
+ax=0
+AX_TMP=$(mktemp -d); AX_HIT="$AX_TMP/exception_hit"; : > "$AX_HIT"
+for row in "${AXIS_BRANCH[@]}"; do
+  IFS='|' read -r ax_axis ax_tag ax_scope ax_rules ax_allow ax_remedy ax_why extra <<<"$row"
+  if [ -n "$extra" ] || [ -z "$ax_why" ] || [ -z "$ax_rules" ] || [ -z "$ax_allow" ] || [ -z "$ax_scope" ]; then
+    note "MALFORMED-ROW: ${ax_axis} — a field contains a literal '|' (the row separator). Rewrite the"
+    note "  pattern without alternation, or split it into another ';'-separated rule."
+    fail=1; ax=1
+    continue
+  fi
+  # The allowed set must EXIST. A prefix pointing at a moved module silently widens the ban to a
+  # legitimate arm — a lint that reports a violation where the design is correct teaches people to
+  # add exceptions, which is worse than not having the lint.
+  IFS=',' read -r -a ax_allowlist <<<"$ax_allow"
+  if [ ! -e "$ax_scope" ]; then
+    note "SCOPE-MISSING: ${ax_axis} — \`${ax_scope}\` does not exist; point the row at the axis's new root"
+    fail=1; ax=1
+    continue
+  fi
+  for p in "${ax_allowlist[@]}"; do
+    if [ ! -e "$p" ]; then
+      note "ALLOWED-PATH-MISSING: ${ax_axis} — \`${p}\` does not exist; point the row at the arm's new home"
+      fail=1; ax=1
+    fi
+  done
+  # The files in scope: every production .rs except the axis's own arms. Exception rows stay IN
+  # scope on purpose — their hits are counted (so a stale row is detectable) and then suppressed.
+  ax_files=()
+  for f in "${CANDIDATES[@]}"; do
+    case "$f" in "$ax_scope"*) ;; *) continue ;; esac
+    skip=0
+    for p in "${ax_allowlist[@]}"; do
+      case "$f" in "$p"*) skip=1; break ;; esac
+    done
+    [ "$skip" -eq 0 ] && ax_files+=("$f")
+  done
+  if [ ${#ax_files[@]} -eq 0 ]; then
+    note "NO-SUBJECT: ${ax_axis} — the allowed prefixes cover the whole tree, so this invariant scanned"
+    note "  NOTHING and would have reported a pass. That is the false green, not a clean bill."
+    fail=1; ax=1
+    continue
+  fi
+  IFS=';' read -r -a ax_rulelist <<<"$ax_rules"
+  for rule in "${ax_rulelist[@]}"; do
+    IFS='>' read -r LINT_PAT LINT_WHAT LINT_UNLESS <<<"${rule//>>/>}"
+    export LINT_PAT LINT_WHAT LINT_UNLESS
+    hits=$(scan_rule "${ax_files[@]}" || true)
+    [ -z "$hits" ] && continue
+    while IFS= read -r h; do
+      [ -z "$h" ] && continue
+      hit_file="${h%%:*}"
+      exc=$(printf '%s\n' "$AXIS_EXCEPTIONS" | grep "^${ax_axis}|${hit_file}|" || true)
+      if [ -n "$exc" ]; then
+        printf '%s|%s\n' "$ax_axis" "$hit_file" >> "$AX_HIT"
+        continue
+      fi
+      note "${ax_tag}: $h — ${ax_remedy}"
+      note "  (${ax_why})"
+      fail=1; ax=1
+    done <<<"$hits"
+  done
+done
+unset LINT_PAT LINT_WHAT LINT_UNLESS
+
+# The ledger may not rot, and it is REPORTED every run: a debt nobody prints is a debt nobody pays.
+while IFS='|' read -r e_axis e_file e_why extra; do
+  [ -z "$e_axis" ] && continue
+  if [ -n "$extra" ] || [ -z "$e_why" ] || [ -z "$e_file" ]; then
+    note "MALFORMED-LEDGER: \`${e_axis}|${e_file}\` — a row is \`axis|file|why\`, three fields, and the"
+    note "  WHY may not be empty. (A literal '|' in the note shifts every field.)"
+    fail=1; ax=1
+    continue
+  fi
+  if ! grep -q "^${e_axis}|${e_file}$" "$AX_HIT" 2>/dev/null; then
+    note "STALE-LEDGER: \`${e_file}\` is on AXIS_EXCEPTIONS for the ${e_axis} axis but no longer"
+    note "  branches on it. If you removed the branch — thank you — DELETE its row from"
+    note "  AXIS_EXCEPTIONS in scripts/structure-lint.sh."
+    fail=1; ax=1
+  else
+    note "ledgered ${e_axis}-axis branch: ${e_file} — ${e_why}"
+  fi
+done <<<"$AXIS_EXCEPTIONS"
+rm -rf "$AX_TMP"
+if [ "$ax" -eq 0 ]; then
+  note "ok (${#AXIS_BRANCH[@]} axis/axes enforced over ${#ax_files[@]} production file(s))"
+fi
 
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi

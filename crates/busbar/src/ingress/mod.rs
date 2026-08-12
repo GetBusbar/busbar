@@ -1236,7 +1236,7 @@ pub(crate) async fn named(
             &name,
             affinity_key,
             PROTO_ANTHROPIC,
-            crate::handlers::chat(PROTO_ANTHROPIC),
+            crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
             usage_sink(&app, &gov, &name, charged_at, admit),
         )
         .await;
@@ -1268,7 +1268,7 @@ pub(crate) async fn named(
             "",
             None,
             PROTO_ANTHROPIC,
-            crate::handlers::chat(PROTO_ANTHROPIC),
+            crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
             usage_sink(&app, &gov, "", charged_at, admit),
         )
         .await;
@@ -1365,7 +1365,7 @@ pub(crate) async fn adhoc(
                 "",
                 None,
                 PROTO_ANTHROPIC,
-                crate::handlers::chat(PROTO_ANTHROPIC),
+                crate::handlers::chat(PROTO_ANTHROPIC, crate::transport::Transport::Http),
                 usage_sink(&app, &gov, "", charged_at, admit),
             )
             .await;

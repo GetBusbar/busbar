@@ -134,7 +134,7 @@ fn head_pristine_matches_translate_output() {
             &app,
             0,
             name,
-            crate::handlers::chat(name),
+            crate::handlers::chat(name, crate::transport::Transport::Http),
             Some(body.clone()),
             APPLICATION_JSON,
             true,
