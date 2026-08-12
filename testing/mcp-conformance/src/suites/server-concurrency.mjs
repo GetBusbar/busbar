@@ -6,7 +6,7 @@
 // once and no id is invented.
 
 import { test } from '../core/runner.mjs';
-import { request, notification } from '../core/jsonrpc.mjs';
+import { request, notification, ERR } from '../core/jsonrpc.mjs';
 
 async function withServer(ctx, fn) {
   const peer = ctx.target.spawnServer();
@@ -153,17 +153,78 @@ test({
   }),
 });
 
+// SUBSCRIPTIONS ARE OPTIONAL, SO THIS CLAUSE IS CONDITIONAL — AND A CONDITIONAL CLAUSE STILL HAS A
+// CONTRAPOSITIVE TO ASSERT.
+//
+// The clause used to answer "this server offers no subscriptions" with a SKIP, and under
+// MCP_NO_SKIPS=1 that is a FAILURE naming a surface nobody touched. That report was wrong about the
+// subject and wrong about itself. `2026-07-28` makes subscriptions optional and the pinned suite's
+// required scenario set contains no subscription scenario, so a server that declares no
+// `listChanged` on any capability is VACUOUSLY SATISFYING SUB.ACK-FIRST — there is no subscription
+// for an acknowledgement to be late for.
+//
+// But "vacuously satisfied" is a CLAIM, and it is falsifiable. A server that declares no
+// subscriptions must actually not have any:
+//
+//   1. `subscriptions/listen` MUST be answered, and answered as a method this server does not
+//      implement: a well-formed `-32601` naming the request's own id. A server that hangs, or that
+//      answers a RESULT, has a subscription surface it did not declare — which is worse than
+//      declaring one, because no client will ever look for it.
+//   2. NOTHING may arrive on the notification channel afterwards. A `notifications/…` frame from a
+//      server that just said it has no subscriptions is the exact defect SUB.ACK-FIRST exists to
+//      catch, arriving with no acknowledgement at all rather than merely before one.
+//
+// So the test now has TWO branches and no skip, and both are real assertions. The control takes the
+// declaring branch (it declares `tools.listChanged`) and busbar takes the contrapositive branch, so
+// one run of the two legs exercises both halves. Nothing was weakened: every assertion below the
+// declaring branch is byte-identical to what it was.
 test({
   id: 'CONC.SUBSCRIPTION-ACK-FIRST',
-  title: 'subscriptions/listen acknowledges before any notification and tags every message',
+  title: 'subscriptions/listen acknowledges before any notification, or the server has no subscriptions at all',
   role: 'server', area: 'concurrency', tier: 'pr', peer: 'real', timing: true,
-  catches: 'A subscription stream that emits events before the acknowledgement, so clients cannot correlate the first events.',
+  catches: 'A subscription stream that emits events before the acknowledgement, so clients cannot correlate the first events — or an UNDECLARED subscription surface, which no client will ever look for.',
   run: (ctx) => withServer(ctx, async (peer) => {
     peer.send(request(1, 'server/discover'));
     const disc = await peer.waitForId(1);
     const caps = (disc.result && disc.result.capabilities) || {};
     const supportsListChanged = Object.values(caps).some((c) => c && c.listChanged);
-    if (!supportsListChanged) ctx.skip('server declares no listChanged capability');
+    ctx.variance('subscriptions.declaresListChanged', supportsListChanged);
+    if (!supportsListChanged) {
+      // THE CONTRAPOSITIVE. Not a skip: an assertion that the declaration was true.
+      peer.send(request(50, 'subscriptions/listen', {
+        notifications: { toolsListChanged: true },
+      }));
+      let res = null;
+      try { res = await peer.waitForId(50, 8000); } catch { /* asserted below */ }
+      ctx.assert('BASE.ERR.SHAPE', res !== null,
+        'the server declares no listChanged capability and then did not answer '
+        + 'subscriptions/listen at all: an undeclared surface that also hangs');
+      if (res) {
+        ctx.assert('BASE.ERR.SHAPE', Boolean(res.error),
+          `the server declares no listChanged capability but answered subscriptions/listen with a `
+          + `RESULT: ${JSON.stringify(res.result)}`);
+        if (res.error) {
+          ctx.assert('BASE.ERR.SHAPE', res.error.code === ERR.METHOD_NOT_FOUND,
+            `code=${res.error.code} expected ${ERR.METHOD_NOT_FOUND} (Method not found)`);
+          ctx.assert('BASE.ERR.CODE-INTEGER', Number.isInteger(res.error.code));
+          ctx.assert('BASE.ERR.SHAPE', typeof res.error.message === 'string',
+            `message=${JSON.stringify(res.error.message)}`);
+          ctx.assert('BASE.ERR.ID-MATCHES', res.id === 50, `id=${JSON.stringify(res.id)}`);
+        }
+      }
+      // AND NO SUBSCRIPTION EVER OPENED. `quiesce` first, because a notification that arrives after
+      // the error response is exactly the frame this half is looking for.
+      await peer.quiesce(500);
+      const stray = peer.messages.filter(
+        (m) => m && typeof m.method === 'string' && m.method.startsWith('notifications/'),
+      );
+      ctx.assert('SUB.ACK-FIRST', stray.length === 0,
+        `a server declaring no listChanged capability sent subscription-channel notifications with `
+        + `no acknowledgement to correlate them to: ${JSON.stringify(stray)}`);
+      ctx.variance('subscriptions.listenMethodNotFound', Boolean(res && res.error
+        && res.error.code === ERR.METHOD_NOT_FOUND));
+      return;
+    }
 
     peer.send(request(50, 'subscriptions/listen', {
       notifications: { toolsListChanged: true },

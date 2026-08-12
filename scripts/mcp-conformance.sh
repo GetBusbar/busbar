@@ -366,6 +366,15 @@ battery_subject() {
     trap "kill $SUBJECT_PIDS 2>/dev/null || true" EXIT
     MCP_SUBJECT_SERVER_CMD="node $(pwd)/$MCP_BATTERY_DIR/scripts/stdio-http-bridge.mjs $SUBJECT_URL"
     export MCP_SUBJECT_SERVER_CMD
+
+    # THE ALWAYS-FAILING TOOL, named here for the same reason `run-control.sh` names
+    # `always_fails` for the python control: the harness contains no knowledge of any subject, so the
+    # ARMING script is the one place a subject's own tool name may be written. Without it
+    # `SRV.TOOLS.EXECUTION-ERROR-IS-RESULT` skips — and under MCP_NO_SKIPS it goes RED — over a
+    # surface busbar implements and the official suite's `tools-call-error` scenario already passes.
+    # `test_error_handling` is `subject_write_config`'s `test` server plus `error_handling`, the tool
+    # `diagnostic-upstream.mjs` answers with `isError: true`.
+    export MCP_SUBJECT_FAILING_TOOL="${MCP_SUBJECT_FAILING_TOOL:-test_error_handling}"
   fi
 
   require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD

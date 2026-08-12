@@ -290,15 +290,44 @@ test({
     const list = await peer.waitForId(1);
     if (list.error) ctx.skip('tools/list not supported');
     const withSchema = (list.result.tools || []).filter((t) => t.outputSchema);
-    if (withSchema.length === 0) ctx.skip('no tool declares an outputSchema');
+    ctx.variance('outputSchema.declaringTools', withSchema.map((t) => t.name).sort());
+    if (withSchema.length === 0) {
+      ctx.skip('no tool declares an outputSchema, so this MUST is vacuous for this server. That is '
+        + 'not neutral: a server that drops the output schema blinds every validating client, which '
+        + 'can then no longer tell a conforming structured result from a violating one.');
+    }
     const call = ctx.target.sampleCallFor;
     let checked = 0;
     for (const t of withSchema) {
-      const args = call && call[t.name];
-      if (!args) continue;
+      // ARGUMENTS ARE DERIVED FROM THE TOOL'S OWN `inputSchema`, and the optional `sampleCallFor`
+      // hint only OVERRIDES that derivation.
+      //
+      // It used to be the other way round: `sampleCallFor` was the ONLY source, so a run that did
+      // not supply it checked nothing and skipped. Nothing supplies it — not `run-control.sh`, not
+      // the subject leg, not the negative control — so this test had never executed anywhere against
+      // anything, control included, for its whole life. A conformance test that has never run is not
+      // a weaker test than one that has; it is not a test.
+      //
+      // The derivation is honest about what it can do: `sampleArgsFromSchema` builds the smallest
+      // instance the declared schema accepts, and returns `null` when it cannot (an unsupported
+      // keyword, a `$ref` it must not dereference — BASE.SCHEMA.NO-NETWORK-REF). A `null` skips THAT
+      // TOOL and is recorded, so a server whose every output-schema tool is underivable still
+      // reports honestly rather than silently.
+      const args = (call && call[t.name]) || sampleArgsFromSchema(t.inputSchema);
+      if (!args) {
+        ctx.variance(`outputSchema.${t.name}.argumentsDerivable`, false);
+        continue;
+      }
       peer.send(request(`os-${t.name}`, 'tools/call', { name: t.name, arguments: args }));
       const res = await peer.waitForId(`os-${t.name}`);
-      if (res.error || !res.result) continue;
+      if (res.error || !res.result) {
+        // The derived arguments were legal against the DECLARED schema, so a protocol error here is
+        // a statement about the server rather than about this test — recorded, because a run where
+        // every call errored must not read like a run where every result conformed.
+        ctx.variance(`outputSchema.${t.name}.callAnswered`,
+          res.error ? `error:${res.error.code}` : 'no-result');
+        continue;
+      }
       checked += 1;
       if ('structuredContent' in res.result) {
         const ok = validateAgainstSchema(res.result.structuredContent, t.outputSchema);
@@ -310,9 +339,86 @@ test({
         ctx.variance(`outputSchema.${t.name}.structuredContentPresent`, false);
       }
     }
-    if (checked === 0) ctx.skip('no sample arguments configured for output-schema tools');
+    if (checked === 0) {
+      ctx.skip(`${withSchema.length} tool(s) declare an outputSchema and not one could be called: `
+        + 'every one either had arguments this validator cannot derive from its own inputSchema, or '
+        + 'refused the smallest instance its own schema declares legal.');
+    }
+    ctx.variance('outputSchema.toolsChecked', checked);
   }),
 });
+
+/**
+ * The SMALLEST instance a declared `inputSchema` accepts, or `null` when one cannot be derived.
+ *
+ * This exists because a server's own `inputSchema` is the only description of a tool's arguments
+ * that MCP standardises — so it is the only source a harness containing no per-subject knowledge is
+ * allowed to read. Deriving from it is what turns TOOLS.OUTPUTSCHEMA-CONFORMANCE from a clause
+ * nobody supplies a hint for into a clause that runs against every server.
+ *
+ * DELIBERATELY CONSERVATIVE. It returns `null` rather than guessing whenever the schema says
+ * something this function does not model, because a guessed argument that the server rejects
+ * produces a red that is about this function. In particular:
+ *
+ *   * `$ref` is NEVER dereferenced, local or remote. BASE.SCHEMA.NO-NETWORK-REF forbids the remote
+ *     case outright, and resolving only the local case would make the behaviour depend on where the
+ *     author happened to put the definition.
+ *   * `const` and the first `enum` member are used verbatim, because a synthesised value of the
+ *     right TYPE would still be the wrong VALUE and would be rejected.
+ *   * only REQUIRED properties are populated. An optional property is optional; supplying one can
+ *     only add ways for a call to be refused, and `additionalProperties: false` makes that concrete.
+ *   * `if`/`then`/`else`, `allOf`, `anyOf`, `oneOf`, `not` and `dependentRequired` are NOT modelled,
+ *     and a schema carrying any of them at the top level yields `null`. Those keywords can make an
+ *     instance that satisfies `properties` and `required` illegal anyway, so producing one would be
+ *     asserting something false about the schema.
+ */
+export function sampleArgsFromSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null;
+  const UNMODELLED = ['allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else', 'dependentRequired',
+    'dependentSchemas', '$ref'];
+  if (UNMODELLED.some((k) => k in schema)) return null;
+  if (schema.type !== undefined && schema.type !== 'object') return null;
+  const props = schema.properties || {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const out = {};
+  for (const name of required) {
+    const v = sampleValue(props[name]);
+    if (v === undefined) return null;      // a required property this function cannot instantiate
+    out[name] = v;
+  }
+  return out;
+}
+
+/** One value for one property schema, or `undefined` when it cannot be derived. */
+function sampleValue(s, depth = 0) {
+  if (depth > 6) return undefined;                       // a cycle, or a schema too deep to be a fixture
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return undefined;
+  if ('$ref' in s) return undefined;                     // never dereferenced: see above
+  if ('const' in s) return s.const;
+  if (Array.isArray(s.enum)) return s.enum.length ? s.enum[0] : undefined;
+  const type = Array.isArray(s.type) ? s.type.find((t) => t !== 'null') : s.type;
+  switch (type) {
+    case 'string': return typeof s.minLength === 'number' && s.minLength > 0
+      ? 'x'.repeat(s.minLength) : 'conformance-probe';
+    case 'integer': return Number.isFinite(s.minimum) ? Math.ceil(s.minimum) : 1;
+    case 'number': return Number.isFinite(s.minimum) ? s.minimum : 1;
+    case 'boolean': return true;
+    case 'null': return null;
+    case 'array': {
+      const min = Number.isInteger(s.minItems) ? s.minItems : 0;
+      if (min === 0) return [];
+      const item = sampleValue(s.items, depth + 1);
+      return item === undefined ? undefined : Array.from({ length: min }, () => item);
+    }
+    case 'object': {
+      const nested = sampleArgsFromSchema({ ...s, type: 'object' });
+      return nested === null ? undefined : nested;
+    }
+    // No `type` at all: any instance is legal, so the cheapest one is.
+    case undefined: return 'conformance-probe';
+    default: return undefined;
+  }
+}
 
 // A deliberately small JSON Schema subset validator. The battery must not
 // dereference network $refs (BASE.SCHEMA.NO-NETWORK-REF), so this validator
