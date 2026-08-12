@@ -313,4 +313,19 @@ proptest = { workspace = true }
 # half of busbar produced — which is the only thing that can tell a verifier that is RIGHT from one
 # that merely agrees with our own signer.
 oauth-as = { workspace = true, features = ["test-util"] }
+# THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`). Before it there was NO microbenchmark
+# harness in this repository at all — no criterion anywhere, no `benches/`, no `[[bench]]` — so the
+# sub-100µs added-latency positioning had no instrument behind it in-tree. Dev-only: the shipped
+# binary's graph is untouched.
+criterion = { workspace = true }
+
+# ── THE HOOK-PATH BENCH ─────────────────────────────────────────────────────────────────────────
+# `harness = false` because criterion supplies its own `main`. Cells C1 (same-protocol, no hook —
+# the REGRESSION GATE) and C2 (same-protocol, one `prompt: ro` tap — the accepted cost). It is a
+# BLACK-BOX instrument that boots the shipped binary, and that is forced rather than chosen: this
+# package has no `[lib]`, so a bench target cannot reach `pub(crate)` internals. The reasoning, and
+# what it costs, is stated in full in the bench's own header.
+[[bench]]
+name = "hook_path"
+harness = false
 

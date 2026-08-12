@@ -844,10 +844,19 @@ crates/busbar/src/main.rs
 is_grandfathered() { printf '%s\n' "$2" | grep -qx "$1"; }
 
 # Candidate set, computed once and shared by invariants 3 and 4: every crate .rs outside a tests/
-# dir. (Built with a read loop rather than `mapfile` so the script still runs on the bash 3.2 that
-# ships with macOS.)
+# or benches/ dir. (Built with a read loop rather than `mapfile` so the script still runs on the
+# bash 3.2 that ships with macOS.)
+#
+# `benches/` is excluded for the SAME reason `tests/` is, not as a convenience: a criterion bench is
+# harness code that drives the primitives directly — it writes its own fixture directories, spawns
+# the binary, and is never compiled into the shipped artifact (`cargo build --release` does not
+# resolve a dev-dependency). Holding it to the choke-point registry would report a bench's
+# `create_dir_all` of a temp fixture as a durability bypass, which is the lint being right about a
+# pattern and wrong about the file — the exact failure mode the `tests/` carve-out already exists to
+# avoid. If a bench ever needs to be held to a production rule, the answer is that the logic does
+# not belong in a bench.
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' | sort)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' -not -path '*/benches/*' | sort)
 
 # ── Invariant 2: no monster impl files — split by area. Test files (under a tests/ dir) are exempt. ─
 hdr "no impl .rs file over ${MAX_LINES_IMPL} lines (test files exempt)"

@@ -53,6 +53,11 @@ axum = "0.8"
 base64 = "0.23"
 bytes = "1"
 crc32fast = "1"
+# THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
+# criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
+# `cargo_bench_support` — the part `cargo bench` actually needs to run a `harness = false` target.
+# The shipped binary's dependency graph is unchanged; `cargo build --release` never resolves it.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures = "0.3"
