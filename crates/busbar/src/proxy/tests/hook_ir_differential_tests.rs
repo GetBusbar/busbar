@@ -669,12 +669,11 @@ fn differential_projection_and_ir_agree_on_every_fixture() {
 /// The three that closed were all the SAME defect — content busbar cannot read, decided in the
 /// wrong place — and they are now named in [`AGREEING_SHAPES_WORTH_NAMING`] instead:
 ///
-///   * `anthropic_redacted_thinking`, `bedrock_redacted_content` (D3): the successor asks
-///     `IrBlock::is_opaque()` BEFORE it touches `Thinking.text`, so the provider ciphertext parked
-///     there never reaches the operator's sidecar; the marker does, byte-identically to today's.
-///   * `responses_encrypted_content_only` (D2): closed from the IR side one unit earlier, by the
-///     predicate learning the third opaque shape. The projection reads the answer rather than
-///     re-deriving it from the wire, which is the entire point.
+///   * `anthropic_redacted_thinking`, `bedrock_redacted_content`: `IrBlock::is_opaque()` is
+///     asked BEFORE `Thinking.text` is touched, so provider ciphertext parked there never reaches
+///     an operator's sidecar; the marker does, byte-identically.
+///   * `responses_encrypted_content_only`: the opacity predicate recognises the third opaque
+///     shape, so the projection reads that answer rather than re-deriving it from the wire.
 ///
 /// **What deliberately did NOT close: `openai_tool_call_and_result`.** The successor projects
 /// `ToolUse.input` on purpose — a gate that cannot see a tool call's arguments cannot screen the

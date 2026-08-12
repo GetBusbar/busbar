@@ -84,10 +84,10 @@
 // and `has_superset_ir`. The candidate projection and the shared pools/tools/agents container are
 // the dependants those are waiting on, so the attribute stays until they land.
 //
-// `wire_formats` LEFT THAT LIST TWICE OVER, in two changes that did not know about each other:
-// `sole_wire_format` put its length on the request path, and `servable_bindings` put its contents on
-// the card. Both are recorded here rather than in one of them, because the next person to ask "is
-// this still dead?" reads this header, not the callers.
+// `wire_formats` is NOT in that list, and has two callers rather than one: `sole_wire_format` reads
+// its length on the request path, and `servable_bindings` reads its contents to decide which
+// bindings a served card may advertise. Both are named here because this header, not the call
+// sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod observe;

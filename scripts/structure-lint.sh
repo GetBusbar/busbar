@@ -2,7 +2,7 @@
 # Structure lint — enforces the code-layout invariants in docs/code-layout.md so the tree stays
 # navigable ("I'm looking for X, I know where it is") instead of drifting back to giant, inconsistent
 # files, plus the behavioural invariants that only a structural read of the tree can catch: the
-# choke-point registry, request-path purity (§A7), plane coherence (§A6) and axis purity (§8.1).
+# choke-point registry, request-path purity, plane coherence and axis purity.
 # Seven checks, all greppable, no external deps. Exit non-zero on any violation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -1339,7 +1339,7 @@ AXIS_BRANCH=(
 # for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
 # Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
 AXIS_EXCEPTIONS="
-transport|crates/busbar/src/mcp/config.rs|2026-08-12: the pre-axis stdio branch. It guards a crash-loop supervisor that has no dispatch arm to reach it — the dead code the transport axis exists to give a home. It is not ported, it is DELETED with mcp/ (§10.4 step 15), and this row goes with it.
+transport|crates/busbar/src/mcp/config.rs|2026-08-12: the pre-axis stdio branch. It guards a crash-loop supervisor that has no dispatch arm to reach it: the dead code the transport axis exists to give a home. It is not ported, it is DELETED with mcp/, and this row goes with it.
 "
 
 hdr "axis purity (nothing branches on an axis outside that axis's own arms)"
