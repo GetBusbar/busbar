@@ -35,6 +35,20 @@
 #
 # FLOORS. A discovery step that finds nothing passes everything. This one refuses to run if it finds
 # fewer than MIN_GATES, and refuses if `ci.yml` is unreadable. Unknown is not green.
+#
+# THE CARGO INVOCATIONS ARE DISCOVERED AND CLASSIFIED THE SAME WAY, and that is a repair, not a
+# feature. This script used to hard-code three cargo lines -- fmt, clippy, test, all on the DEFAULT
+# feature set, on this host. CI runs eleven, across FOUR build configurations, and the three that
+# were missing are the three that have now taken the 1.6.0 build down in a row: a stale committed
+# `openapi.json` (`--features openapi-schema`), a hook-resolution defect that only surfaced under
+# `--no-default-features`, and an mTLS test reading a client-side error string that Windows words
+# differently. Every one of them was reported 33/33 green here on the exact commit CI rejected.
+#
+# A local green that does not cover the configuration CI runs is not the same claim as a CI green,
+# and it was being read as one. So the cargo lines are now read out of `ci.yml` like everything
+# else, each is classified LOCAL or CI-only WITH A REASON, and an unclassified one is a hard
+# failure -- the same fails-closed shape the script's rule already had. Windows genuinely cannot run
+# here; that is named as such, and the final line says so rather than letting "all pass" imply it.
 set -uo pipefail
 
 CI_YML=".github/workflows/ci.yml"
@@ -58,6 +72,47 @@ RELEASE_ORDER=1
 
 MIN_GATES=8
 
+# ── THE CARGO GATES ───────────────────────────────────────────────────────────────────────────────
+# CI's cargo invocations, normalised (spaces collapsed, `--verbose` dropped -- it changes output, not
+# what is proven). LOCAL ones run here, in this order. CI-only ones carry their reason.
+#
+# Normalisation is what makes the two `--workspace` pairs distinguishable: the Linux job passes
+# `--locked` and the Windows job does not, so "same command, different platform" does not collapse
+# into one entry.
+declare -a CARGO_LOCAL=(
+  "cargo fmt --all -- --check"
+  "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  "cargo build --workspace --locked"
+  "cargo test --workspace --locked"
+  "cargo clippy --no-default-features --locked -- -D warnings"
+  "cargo build --no-default-features --locked"
+  "cargo test --no-default-features --locked"
+  "cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings"
+  "cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture"
+  "cargo build --locked --bin busbar"
+  "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
+)
+
+declare -a CARGO_CI_ONLY=(
+  "cargo build --workspace|the WINDOWS job's build. There is no Windows host here, and the failures it catches are precisely the ones that do not reproduce on this one -- path separators, socket error wording, line endings. Nothing local substitutes for it."
+  "cargo test --workspace|the WINDOWS job's test run; same reason. This is the one gap a local run genuinely cannot close: read a green here as 'green on this platform'."
+  "cargo test --release --locked timing_gate -- --ignored|a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."
+)
+
+# Normalise a cargo invocation for comparison: drop the shell plumbing CI wraps it in (`2>&1`),
+# drop `--verbose` (it changes output, not what is proven), collapse whitespace.
+cargo_norm() {
+  printf '%s\n' "$1" | sed -e 's/2>&1//g' -e 's/--verbose//g' -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//'
+}
+
+cargo_ci_only_reason() {
+  local cmd="$1" entry
+  for entry in "${CARGO_CI_ONLY[@]}"; do
+    [ "${entry%%|*}" = "$cmd" ] && { printf '%s' "${entry#*|}"; return 0; }
+  done
+  return 1
+}
+
 die() { printf 'full-gate: %s\n' "$*" >&2; exit 2; }
 
 [ -f "$CI_YML" ] || die "no $CI_YML -- run this from the repository root. A gate runner that cannot find CI is not a gate runner."
@@ -70,6 +125,33 @@ mapfile -t DISCOVERED < <(
 )
 
 [ "${#DISCOVERED[@]}" -ge "$MIN_GATES" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $MIN_GATES). The parser is broken, and a broken discovery reports a clean tree."
+
+# Every cargo invocation CI makes, normalised. COMMENT LINES ARE STRIPPED FIRST: `ci.yml` documents
+# the openapi refresh command in a comment, and a documented command is not a gate.
+mapfile -t CARGO_DISCOVERED < <(
+  sed -e 's/^[[:space:]]*#.*$//' "$CI_YML" \
+    | grep -v "^[[:space:]]*echo " \
+    | grep -oE 'cargo (fmt|clippy|build|test|run)[^"|)]*' \
+    | while IFS= read -r c; do cargo_norm "$c"; done \
+    | grep -v '^$' | sort -u
+)
+
+# FAILS CLOSED, exactly as the script's rule does: a cargo invocation in `ci.yml` that is in NEITHER
+# list breaks this script until somebody decides which it is. Silence here is how the openapi and
+# no-default-features configurations went unrun for three releases.
+CARGO_UNCLASSIFIED=()
+for cmd in "${CARGO_DISCOVERED[@]}"; do
+  known=0
+  for l in "${CARGO_LOCAL[@]}"; do [ "$l" = "$cmd" ] && { known=1; break; }; done
+  [ "$known" = 1 ] && continue
+  cargo_ci_only_reason "$cmd" >/dev/null && continue
+  CARGO_UNCLASSIFIED+=("$cmd")
+done
+if [ "${#CARGO_UNCLASSIFIED[@]}" -gt 0 ] && [ "${1:-}" != "--selftest" ]; then
+  printf 'full-gate: %s\n' "$CI_YML runs cargo invocation(s) this script neither runs nor names as CI-only:" >&2
+  printf '  %s\n' "${CARGO_UNCLASSIFIED[@]}" >&2
+  die "add each to CARGO_LOCAL (it runs here) or CARGO_CI_ONLY with a reason (it cannot). An unrun configuration is how a local green stops meaning a CI green."
+fi
 
 skip_reason_for() {
   local script="$1" entry
@@ -96,7 +178,11 @@ done
 
 # ── --list ────────────────────────────────────────────────────────────────────────────────────────
 if [ "${1:-}" = "--list" ]; then
-  printf '== WILL RUN (%d) ==\n' "${#RUN[@]}"
+  printf '== CARGO GATES, WILL RUN (%d) ==\n' "${#CARGO_LOCAL[@]}"
+  printf '  %s\n' "${CARGO_LOCAL[@]}"
+  printf '\n== CARGO GATES, CI-ONLY WITH REASON (%d) ==\n' "${#CARGO_CI_ONLY[@]}"
+  for entry in "${CARGO_CI_ONLY[@]}"; do printf '  %-46s %s\n' "${entry%%|*}" "${entry#*|}"; done
+  printf '\n== WILL RUN (%d) ==\n' "${#RUN[@]}"
   printf '  %s\n' "${RUN[@]}"
   printf '\n== SKIPPED, WITH REASON (%d) ==\n' "${#SKIP[@]}"
   for inv in "${SKIP[@]}"; do
@@ -136,13 +222,39 @@ if [ "${1:-}" = "--selftest" ]; then
     [ -n "${entry#*|}" ] && [ "${entry#*|}" != "$entry" ] || { printf '  [FAILED] a skip entry carries no reason: %s\n' "$entry"; bad=1; }
   done
   printf '  [ok]     all %d skip entries carry a written reason\n' "${#SKIP_REASON[@]}"
+  for entry in "${CARGO_CI_ONLY[@]}"; do
+    [ -n "${entry#*|}" ] && [ "${entry#*|}" != "$entry" ] || { printf '  [FAILED] a CI-only cargo entry carries no reason: %s\n' "$entry"; bad=1; }
+  done
+  printf '  [ok]     all %d CI-only cargo entries carry a written reason\n' "${#CARGO_CI_ONLY[@]}"
+
+  # THE CARGO HALF: discovery finds them, every one is classified, and the configurations that have
+  # actually broken CI are among the ones that RUN here.
+  n=${#CARGO_DISCOVERED[@]}
+  [ "$n" -ge 10 ] && printf '  [ok]     cargo discovery found %d invocations (floor 10)\n' "$n" \
+    || { printf '  [FAILED] cargo discovery found only %d -- the parser missed CI build configurations\n' "$n"; bad=1; }
+
+  if [ "${#CARGO_UNCLASSIFIED[@]}" -eq 0 ]; then
+    printf '  [ok]     every cargo invocation in ci.yml is classified LOCAL or CI-only\n'
+  else
+    printf '  [FAILED] unclassified cargo invocation(s) -- the script must refuse to run:\n'
+    printf '           %s\n' "${CARGO_UNCLASSIFIED[@]}"; bad=1
+  fi
+
+  for must in "--no-default-features" "--features openapi-schema"; do
+    if printf '%s\n' "${CARGO_LOCAL[@]}" | grep -q -- "$must"; then
+      printf '  [ok]     the %s configuration is RUN locally\n' "$must"
+    else
+      printf '  [FAILED] %s is a CI build configuration that this script does not run -- a local green would not mean a CI green\n' "$must"; bad=1
+    fi
+  done
 
   [ "$bad" = 0 ] && { printf '\nfull-gate selftest: discovery, floors and skip-reasons all hold\n'; exit 0; }
   printf '\nSELFTEST FAILED\n'; exit 1
 fi
 
 # ── RUN ───────────────────────────────────────────────────────────────────────────────────────────
-printf '== full gate: %d locally-runnable invocation(s), %d skipped with reason ==\n\n' "${#RUN[@]}" "${#SKIP[@]}"
+printf '== full gate: %d cargo gate(s) + %d script gate(s), %d + %d skipped with reason ==\n\n' \
+  "${#CARGO_LOCAL[@]}" "${#RUN[@]}" "${#CARGO_CI_ONLY[@]}" "${#SKIP[@]}"
 
 FAILED=(); PASSED=0
 run_one() {
@@ -154,9 +266,11 @@ run_one() {
 }
 
 # The Rust gates first: they are the slowest and the most likely to fail, so failing early is kinder.
-run_one "cargo fmt --all --check"            cargo fmt --all -- --check
-run_one "cargo clippy -D warnings"           cargo clippy --workspace --all-targets --locked -- -D warnings
-run_one "cargo test --workspace --locked"    cargo test --workspace --locked
+# ALL FOUR locally-runnable build configurations, not just the default one -- see the header.
+for cmd in "${CARGO_LOCAL[@]}"; do
+  # shellcheck disable=SC2086
+  run_one "$cmd" ${cmd}
+done
 
 for inv in "${RUN[@]}"; do
   # shellcheck disable=SC2086
@@ -165,8 +279,11 @@ done
 
 printf '\n== result ==\n'
 if [ "${#FAILED[@]}" -eq 0 ]; then
-  printf '  %d gates ran, all pass. This is what CI runs, minus the %d that need a release or the fleet.\n' \
-    "$PASSED" "${#SKIP[@]}"
+  printf '  %d gates ran, all pass -- across %d build configurations, not just the default one.\n' \
+    "$PASSED" "${#CARGO_LOCAL[@]}"
+  printf '  NOT covered by this green (%d script gate(s) needing a release or the fleet, and):\n' "${#SKIP[@]}"
+  for entry in "${CARGO_CI_ONLY[@]}"; do printf '    %s\n' "${entry%%|*}"; done
+  printf '  Windows is the real gap: it runs the same tests on a platform this host cannot be.\n'
   exit 0
 fi
 printf '  %d passed, %d FAILED:\n' "$PASSED" "${#FAILED[@]}"

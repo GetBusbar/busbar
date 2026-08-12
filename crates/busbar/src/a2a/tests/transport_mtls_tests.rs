@@ -27,11 +27,20 @@ use super::transport_tests::{ca_and_leaf, http_response, read_request, url, HOST
 use super::*;
 use crate::a2a::fetch::{FetchPolicy, Transport};
 
-/// What each connection to the mTLS server did about its client certificate: `Some(n)` when the
-/// handshake completed and the peer presented `n` certificates, `None` when the handshake failed.
-/// Recorded so a refusal can be read as "the peer never authenticated" rather than inferred from a
-/// client-side error string alone.
-type ClientCerts = Arc<Mutex<Vec<Option<usize>>>>;
+/// What each connection to the mTLS server did about its client certificate: `Ok(n)` when the
+/// handshake completed and the peer presented `n` certificates, `Err(reason)` — the SERVER's own
+/// rustls error — when it failed. Recorded so a refusal can be read as "the peer never
+/// authenticated, and here is what the peer objected to" rather than inferred from a client-side
+/// error string alone.
+///
+/// The reason is kept, not just the failure, because two refusals that both look like "handshake
+/// failed" are different defects: "peer sent no certificates" means the client offered nothing, and
+/// an "invalid peer certificate" means it offered SOMETHING the peer would not take — which is the
+/// difference between a registration presenting no certificate and one borrowing another
+/// registration's. Reading it off the server keeps it portable: the client-side text for the same
+/// refusal is the OS socket's on Windows (`os error 10053`, the reset that discards the peer's
+/// alert), not TLS's.
+type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 
 /// A real rustls server that REQUIRES a client certificate chaining to `client_ca_pem`.
 ///
@@ -78,14 +87,19 @@ fn spawn_mtls(
             let Ok(mut conn) = rustls::ServerConnection::new(Arc::clone(&config)) else {
                 continue;
             };
-            if conn.complete_io(&mut stream).is_err() {
-                recorder.lock().expect("record").push(None);
+            if let Err(e) = conn.complete_io(&mut stream) {
+                // The server's OWN reason for refusing, as rustls words it.
+                let reason = conn
+                    .process_new_packets()
+                    .err()
+                    .map_or_else(|| e.to_string(), |te| te.to_string());
+                recorder.lock().expect("record").push(Err(reason));
                 continue;
             }
             recorder
                 .lock()
                 .expect("record")
-                .push(Some(conn.peer_certificates().map_or(0, <[_]>::len)));
+                .push(Ok(conn.peer_certificates().map_or(0, <[_]>::len)));
             let mut tls = rustls::Stream::new(&mut conn, &mut stream);
             let mut reader = std::io::BufReader::new(&mut tls);
             let _ = read_request(&mut reader);
@@ -99,15 +113,21 @@ fn spawn_mtls(
 
 /// The server thread records after its own handshake attempt returns; poll rather than sleep a fixed
 /// amount, so the assertion is neither flaky nor slow. Mirrors `transport_tests::wait_for_sni`.
-fn wait_for_conns(seen: &ClientCerts) -> Vec<Option<usize>> {
+fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
+    wait_for_conns_len(seen, 1)
+}
+
+/// [`wait_for_conns`] for a peer that takes SEVERAL connections in a test: wait until `n` handshake
+/// attempts have been recorded, so the assertion reads a settled sequence rather than a prefix.
+fn wait_for_conns_len(seen: &ClientCerts, n: usize) -> Vec<Result<usize, String>> {
     for _ in 0..200 {
         let got = seen.lock().expect("conns").clone();
-        if !got.is_empty() {
+        if got.len() >= n {
             return got;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    Vec::new()
+    seen.lock().expect("conns").clone()
 }
 
 const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
@@ -179,10 +199,13 @@ fn an_mtls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() {
                      that has none",
         );
 
-    assert_eq!(
-        wait_for_conns(&seen),
-        vec![None],
-        "the refusal must be the PEER's, at the handshake: {err}"
+    let seen = wait_for_conns(&seen);
+    let [Err(reason)] = seen.as_slice() else {
+        panic!("the refusal must be the PEER's, at the handshake: {seen:?} (client saw: {err})");
+    };
+    assert!(
+        reason.contains("no certificates"),
+        "and the peer's objection must be that nothing was presented: {reason}"
     );
 }
 
@@ -215,7 +238,7 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
         .contains("planner"));
     assert_eq!(
         wait_for_conns(&seen),
-        vec![Some(1)],
+        vec![Ok(1)],
         "the peer must have completed the handshake against busbar's own certificate"
     );
     let _ = (client_leaf, client_key);
@@ -239,8 +262,10 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     let (planner_ca, planner_leaf, planner_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
     let (payments_ca, payments_leaf, payments_key) =
         ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (planner_peer, _p) = spawn_mtls(&server_leaf, &server_key, &planner_ca, CARD.to_string());
-    let (payments_peer, _q) = spawn_mtls(&server_leaf, &server_key, &payments_ca, CARD.to_string());
+    let (planner_peer, planner_seen) =
+        spawn_mtls(&server_leaf, &server_key, &planner_ca, CARD.to_string());
+    let (payments_peer, payments_seen) =
+        spawn_mtls(&server_leaf, &server_key, &payments_ca, CARD.to_string());
     let planner_url = url("https", planner_peer.port(), "/.well-known/agent-card.json");
     let payments_url = url(
         "https",
@@ -273,24 +298,59 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
 
     // EACH AGENT AT THE OTHER'S PEER: refused, by the peer, on the certificate.
     for (agent, at) in [("planner", &payments_url), ("payments", &planner_url)] {
-        let err = live
+        let _err = live
             .for_agent(agent)
             .get(at, LOOPBACK)
             .expect_err("a registration's certificate must not authenticate at another's peer");
-        assert!(
-            err.contains("alert") || err.contains("certificate"),
-            "the refusal must come from the peer's client-certificate check: {err}"
-        );
     }
 
     // AND A REGISTRATION THAT NAMED NO IDENTITY presents none — not another agent's. Against an
     // mTLS peer that is a refusal, which is the honest outcome the first test in this file pins.
-    let err = live
+    let _err = live
         .for_agent("an-agent-that-named-no-identity")
         .get(&planner_url, LOOPBACK)
         .expect_err("no identity means no certificate to present, and an mTLS peer refuses that");
+
+    // THE REFUSALS, READ AT THE PEER RATHER THAN OFF A CLIENT-SIDE ERROR STRING — which is what
+    // `ClientCerts` exists for, and what the first test in this file already does.
+    //
+    // The three cross hops used to be checked by matching "alert"/"certificate"/"CertificateRequired"
+    // in the client's error. That text is the OS socket's as often as it is TLS's: on Windows the
+    // peer's fatal alert is discarded by the reset that follows it, and the client reports
+    // "An established connection was aborted by the software in your host machine. (os error 10053)"
+    // for a refusal that did happen exactly as intended (CI, `windows build · test`). The peer's own
+    // record is both portable and a STRONGER claim, because it carries the peer's own reason: a
+    // foreign certificate is refused as an invalid one, and the registration that named no identity
+    // is refused for presenting NOTHING — which is what rules out its having borrowed a certificate
+    // from a registration that had one. (Presenting planner's own cert to planner's peer would have
+    // succeeded outright; presenting payments' would have been refused too, but as an invalid
+    // certificate, not as an absent one. Only the reason separates those.)
+    let planner_conns = wait_for_conns_len(&planner_seen, 3);
+    let [Ok(1), Err(foreign), Err(none_at_all)] = planner_conns.as_slice() else {
+        panic!(
+            "planner's peer: its own registration authenticates and the other two do not: \
+             {planner_conns:?}"
+        );
+    };
     assert!(
-        err.contains("CertificateRequired"),
-        "the peer must have asked for a certificate and got none: {err}"
+        foreign.contains("invalid peer certificate"),
+        "payments' certificate reaches planner's peer and is rejected as a certificate: {foreign}"
+    );
+    assert!(
+        none_at_all.contains("no certificates"),
+        "the registration that named no identity presented NOTHING — it did not borrow another \
+         registration's certificate: {none_at_all}"
+    );
+
+    let payments_conns = wait_for_conns_len(&payments_seen, 2);
+    let [Ok(1), Err(foreign)] = payments_conns.as_slice() else {
+        panic!(
+            "payments' peer: its own registration authenticates and planner's does not: \
+             {payments_conns:?}"
+        );
+    };
+    assert!(
+        foreign.contains("invalid peer certificate"),
+        "planner's certificate reaches payments' peer and is rejected as a certificate: {foreign}"
     );
 }
