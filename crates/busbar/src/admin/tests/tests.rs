@@ -737,6 +737,9 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     };
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // Kept for the readiness wait below — `HookEnv` clones share one `Arc<PluginRegistry>`, which is
+    // what the resolution is keyed on, so this really is the env the handler will resolve against.
+    let env_for_warm = env.clone();
     let app = TestApp::new().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -761,6 +764,20 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
         .await
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
+    // The PATCH below is a CONTROL-PLANE request under a real 5 s deadline, and what this test is
+    // about is the ack, not whether a `dlopen` finished in time on a busy CI box. Wait on the
+    // loader's readiness signal for exactly the resolution the handler will perform — same registry,
+    // same hook name, same post-PATCH settings — so the assertion stops racing the dynamic linker.
+    // See `hooks::resolution` for why that race was real (a 5.9 s median load under a full test run)
+    // and why widening the deadline was the wrong answer.
+    let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate", "plugin": "test-hook", "settings": {"ratio": 0.4}
+    }))
+    .expect("hook cfg");
+    assert!(
+        crate::hooks::await_transport_published("cfg-hook", &warm, &env_for_warm).await,
+        "the loader must publish a transport for the hook the PATCH is about to configure"
+    );
     let patched = admin(client.patch(format!(
         "http://{addr}/api/v1/admin/hooks/cfg-hook/settings"
     )))
@@ -833,6 +850,8 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     };
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // See the sibling test: kept so the readiness wait below resolves against the SAME registry.
+    let env_for_warm = env.clone();
     let app = TestApp::new().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -858,6 +877,17 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
         .await
         .unwrap();
     assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
+    // Readiness signal, not a wider deadline — see the sibling test above. The same published
+    // resolution serves both the PATCH's `configure` and the `/schema` read that follows it, since
+    // the committed settings are the ones warmed here.
+    let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate", "plugin": "test-hook-fallback", "settings": {"empty_management": true}
+    }))
+    .expect("hook cfg");
+    assert!(
+        crate::hooks::await_transport_published("fallback-hook", &warm, &env_for_warm).await,
+        "the loader must publish a transport for the hook the PATCH is about to configure"
+    );
     let patched = admin(client.patch(format!(
         "http://{addr}/api/v1/admin/hooks/fallback-hook/settings"
     )))
