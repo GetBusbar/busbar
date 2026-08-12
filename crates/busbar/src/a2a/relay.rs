@@ -231,6 +231,16 @@ pub(crate) struct RelayCall<'a> {
     /// field becomes two fields; the property is stated here because it is the assumption the
     /// correlation rests on, and an unstated assumption is one a later edit breaks silently.
     pub(crate) rpc_id: &'a serde_json::Value,
+    /// THE `A2A-Version` THIS HOP DECLARES, at `Major.Minor`.
+    ///
+    /// busbar is a CLIENT here, and A2A section 3.3 says a client MUST send this header with each
+    /// request; an absent or empty one means `0.3`. The value is the one busbar's own edge already
+    /// negotiated from the caller — see `super::ingress::Wire::negotiated_version` — because the
+    /// body below goes out VERBATIM and the two dialects spell every method differently. Sending a
+    /// v1.0 caller's `SendMessage` with no version declares `0.3` by omission and then speaks
+    /// `1.0`, and a backend that believes the omission refuses a request busbar had just accepted
+    /// as valid.
+    pub(crate) a2a_version: &'a str,
 }
 
 /// THE REQUEST THE RELAY IS ABOUT TO SEND: everything, in one value.
@@ -398,15 +408,17 @@ pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 /// BUILD THE OUTBOUND REQUEST. Separated from [`relay`] so the scan can read the request as a value
 /// rather than having to intercept a socket.
 ///
-/// Every header on the result is one of exactly three things: a constant, the operator's leased
-/// credential, or nothing. There is no fourth source, because there is no argument that could be
-/// one.
+/// Every header on the result is one of exactly three things: a constant, the protocol version
+/// busbar's own edge negotiated, or the operator's leased credential. There is no fourth source,
+/// and in particular nothing of the CALLER's request travels here — the defect that rule exists to
+/// prevent is the caller's own credential going out on the backend hop.
 pub(crate) fn build_request(
     url: &reqwest::Url,
     agent_id: &str,
     lease: Option<&Lease>,
     body: &[u8],
     streaming: bool,
+    a2a_version: &str,
     now_ms: u64,
 ) -> Result<OutboundRelayRequest, LeaseError> {
     let mut headers = vec![
@@ -419,6 +431,11 @@ pub(crate) fn build_request(
                 CONTENT_TYPE.to_string()
             },
         ),
+        // A CONSTANT IN SHAPE, THE CALLER'S IN VALUE. It is not a fourth source of header material
+        // in the sense the note above refuses: nothing of the caller's REQUEST travels here, only
+        // the protocol version busbar's own edge already negotiated and admitted, restated so the
+        // backend is told which dialect the relayed method is written in.
+        ("a2a-version".to_string(), a2a_version.to_string()),
     ];
     if let Some(lease) = lease {
         // `header_for` checks BOTH that the lease was minted for this agent and that it is still
@@ -462,6 +479,7 @@ fn prepare<'a>(
         call.lease,
         call.body,
         streaming,
+        call.a2a_version,
         now_ms,
     )
     .map_err(RelayRefusal::Lease)?;
@@ -763,10 +781,8 @@ impl SseReader {
     pub(crate) fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
-        // Normalised on `\n\n`; a CRLF stream is handled by stripping the `\r` off each line when
-        // the fields are read, which is what the specification's own parser does.
-        while let Some(pos) = find(&self.buf, b"\n\n") {
-            let frame = self.buf.drain(..pos + 2).collect::<Vec<u8>>();
+        while let Some((pos, len)) = frame_end(&self.buf) {
+            let frame = self.buf.drain(..pos + len).collect::<Vec<u8>>();
             if let Ok(s) = String::from_utf8(frame) {
                 out.push(s);
             }
@@ -783,6 +799,38 @@ impl SseReader {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// WHERE THE FIRST COMPLETE SSE EVENT ENDS, and how many bytes its terminator takes: the offset of
+/// the blank line that ends it, plus that blank line's length.
+///
+/// THREE TERMINATORS, NOT ONE. An SSE line ends with CRLF, LF **or** a bare CR — that is the event
+/// stream format's own rule, not a tolerance — so the blank line that ends an event is `\r\n\r\n`,
+/// `\n\n` or `\r\r`. This reader accepted only `\n\n`, on the stated reasoning that a CRLF stream
+/// would be handled by stripping the `\r` off each line when the fields are read. That is true of
+/// the FIELDS and false of the FRAMING: the bytes `…}\r\n\r\n` contain no `\n\n` at all, so an
+/// event terminated the CRLF way was never recognised as an event, the frame never left the buffer,
+/// and the whole stream accumulated until the connection closed.
+///
+/// What that looked like from outside was a backend streaming perfectly well and busbar answering
+/// `502 the backend agent did not complete this task`, having logged `the backend's stream carried
+/// no event` about a stream that carried four. It was invisible for as long as the only streaming
+/// peer this tree ever relayed used bare LF. The A2A Python SDK does not; measured against the
+/// official TCK it read as `CORE-STREAM-001/002/003`, `STREAM-ORDER-001`, `JSONRPC-SSE-001` and
+/// every requirement whose setup opens a stream.
+///
+/// The EARLIEST terminator wins, so a stream that mixes forms — which the format permits, line by
+/// line — still frames at the right place, and a partial terminator (`\r\n\r` with the final `\n`
+/// still in flight) matches nothing and correctly waits for the rest.
+fn frame_end(buf: &[u8]) -> Option<(usize, usize)> {
+    [
+        b"\r\n\r\n".as_slice(),
+        b"\n\n".as_slice(),
+        b"\r\r".as_slice(),
+    ]
+    .into_iter()
+    .filter_map(|t| find(buf, t).map(|pos| (pos, t.len())))
+    .min_by_key(|(pos, len)| (*pos, std::cmp::Reverse(*len)))
 }
 
 /// The `data:` payload of one SSE frame, concatenated across continuation lines as the specification

@@ -69,15 +69,31 @@
 #      and it is set here — out loud, in the config this script writes — because the backend really
 #      is on loopback and claiming otherwise would be a lie about the deployment.
 #
-# WHAT THE BACKEND IS, AND WHY IT IS THE PINNED CONTROL.
+# WHAT THE BACKEND IS, AND WHY IT IS NO LONGER THE PINNED CONTROL.
 #
-# `a2a-go` at the version `testing/a2a-tck/run-tck.sh` already pins as the CONTROL, in `--echo` mode.
-# That is deliberate: the same peer the control legs judge is the peer busbar fronts here, so a
-# difference between the control number and the subject number is a difference BUSBAR made. A
-# hand-written stub would have been a second implementation of A2A whose own defects would land in
-# busbar's column.
+# It was `a2a-go` in `--echo` mode, chosen so that the peer busbar fronts is the same peer the
+# control legs judge and any gap between the two numbers is a gap busbar opened. That bought
+# comparability at a price nobody had priced: echo finishes every task on the first turn, so the
+# suite could never park a task in a non-terminal state, and every requirement whose setup begins
+# by parking one — cancel, resubscribe, history, second turn — was reported in busbar's column
+# without a single byte of it reaching busbar. ELEVEN MUSTs were in that state. A fixture's silence
+# printed as a subject's failure is the same false verdict as a green that judged nothing, and it
+# points the other way.
 #
-# It is fronted through `signing-vendor.mjs`, which signs the control's card with an Ed25519 issuer
+# The backend is now `testing/a2a-tck/scenario-agent`, which implements the behaviour contract the
+# TCK PUBLISHES for the system it tests — `docs/SUT_REQUIREMENTS.md` and the Gherkin feature files
+# that document names as the source of truth — on the A2A project's own Python SDK, at the version
+# this repository already pins as its a2a-python control. The behaviour is the suite authors', the
+# protocol is the publisher's, and nothing in it mentions, detects or accommodates busbar. It gives
+# busbar MORE to get wrong, not less: file, URL and structured-data artifacts, chunked appends, a
+# bare Message where no task exists, tasks that stay open across turns.
+#
+# AND THE COMPARISON IS REBUILT RATHER THAN ABANDONED. The subject number is no longer measured
+# against the peer `run-tck.sh control-jsonrpc` judges, so it may not be read against that number.
+# `run-tck.sh control-scenario` judges THIS agent directly, with no busbar in the path; that is the
+# ceiling this leg can reach and the only control the subject number may be read against.
+#
+# It is fronted through `signing-vendor.mjs`, which signs the agent's card with an Ed25519 issuer
 # key it generates and proxies everything else untouched. That is not a way around any check — see
 # that file's header: busbar refuses to approve a registration with no authenticity root, the two
 # TLS-rooted mechanisms need a certificate the platform trusts, and a JWS-signed card is the root a
@@ -276,28 +292,6 @@ is minting the wrong thing. Either way no verdict from this leg means anything u
 }
 
 
-# THE PINNED CONTROL BINARY, installed the same way and at the same version `run-tck.sh` pins it.
-# Sets SUBJECT_CONTROL_BIN.
-subject_install_control() {
-  local work="${A2A_TCK_WORK:-${TMPDIR:-/tmp}/a2a-tck-work}"
-  local bin_dir="${A2AHT_CONTROL_BIN:-$work/bin}"
-  mkdir -p "$bin_dir"
-  SUBJECT_CONTROL_BIN="$bin_dir/a2a"
-  if [ ! -x "$SUBJECT_CONTROL_BIN" ]; then
-    # THE VERSION IS READ OUT OF `run-tck.sh`, never spelled a second time. Two spellings of "the
-    # control" is exactly how a subject leg and a control leg end up judging different peers while
-    # both look pinned.
-    local version
-    version="$(sed -n 's/^CONTROL_GO_VERSION="\([^"]*\)".*/\1/p' testing/a2a-tck/run-tck.sh)"
-    [ -n "$version" ] || die "could not read CONTROL_GO_VERSION out of testing/a2a-tck/run-tck.sh; \
-the subject leg must front the SAME peer the control legs judge, and a second spelling of the \
-version here would let the two drift."
-    say "   installing the pinned control agent, a2a-go $version"
-    GOBIN="$bin_dir" go install "github.com/a2aproject/a2a-go/v2/cmd/a2a@$version" \
-      || die "could not install the pinned control agent."
-  fi
-}
-
 # Wait for one URL to answer 200, or die naming what did not come up and showing its log.
 subject_await() {
   local url="$1" what="$2" log="$3" waited=0
@@ -392,25 +386,47 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   rm -rf "$dir"; mkdir -p "$dir"
   dir="$(cd "$dir" && pwd)"
 
-  local suite_port data_port admin_port control_port vendor_port
-  read -r suite_port data_port admin_port control_port vendor_port <<<"$(subject_free_ports)"
+  local suite_port data_port admin_port agent_port vendor_port
+  read -r suite_port data_port admin_port agent_port vendor_port <<<"$(subject_free_ports)"
   [ -n "${vendor_port:-}" ] || die "could not obtain five free loopback ports."
   say "   busbar $data_port · admin $admin_port · suite-facing $suite_port"
-  say "   control agent $control_port · signing vendor $vendor_port"
+  say "   scenario agent $agent_port · signing vendor $vendor_port"
 
-  # ── THE AGENT BUSBAR FRONTS. The PINNED CONTROL, in echo mode, behind the signing vendor. ──
+  # ── THE AGENT BUSBAR FRONTS: the TCK SCENARIO AGENT, behind the signing vendor. ──
   #
-  # The same peer `run-tck.sh` judges directly on its control legs, so a gap between the control
-  # number and the subject number is a gap BUSBAR opened. A hand-written stub would have been a
-  # second A2A implementation whose own defects would land in busbar's column.
-  subject_install_control
-  "$SUBJECT_CONTROL_BIN" serve --echo --port "$control_port" --quiet --transport jsonrpc \
-    >"$dir/control-agent.log" 2>&1 &
+  # WHAT IT REPLACED, AND WHY. This used to be the pinned `a2a-go` control in `--echo` mode, on the
+  # reasoning that fronting the same peer the control legs judge makes the gap between the two
+  # numbers a gap BUSBAR opened. That reasoning was right about comparability and wrong about
+  # coverage. Echo completes every task in a single step, so the suite could never get a task into
+  # a non-terminal state, and every requirement that begins by parking a task — cancelling it,
+  # resubscribing to it, reading its history, taking a second turn on it — reported against busbar
+  # without ever reaching busbar. Eleven MUSTs were in that state. They were not busbar's answers;
+  # they were the fixture's silence, printed in busbar's column.
+  #
+  # WHAT IT IS NOW. `testing/a2a-tck/scenario-agent` implements the behaviour contract the TCK
+  # PUBLISHES for the system it tests — `docs/SUT_REQUIREMENTS.md` and the Gherkin feature files it
+  # names as the source of truth — on top of the A2A project's own Python SDK at the version this
+  # repository already pins as its a2a-python control. Every behaviour in it was specified by the
+  # suite's authors, none of it mentions or detects busbar, and the protocol on the wire is the
+  # publisher's implementation rather than ours. See that file's header.
+  #
+  # AND IT MAKES THE SUBJECT HARDER, NOT EASIER. It answers with file, URL and structured-data
+  # artifacts, chunked artifact appends, a bare Message where no task was created, and tasks that
+  # stay open across turns — every one of them a fresh opportunity for the gateway in front of it
+  # to mistranslate, and the suite says so when it does.
+  #
+  # WHAT THIS COSTS, STATED HERE RATHER THAN DISCOVERED LATER: the subject number is no longer
+  # measured against the same peer as `run-tck.sh control-jsonrpc`. `run-tck.sh control-scenario`
+  # is the leg that restores the comparison — it judges THIS agent, directly, with no busbar in
+  # the path — and it is that number, not the a2a-go one, that the subject number may be read
+  # against.
+  testing/a2a-tck/scenario-agent/serve.sh "$agent_port" \
+    >"$dir/scenario-agent.log" 2>&1 &
   SUBJECT_PIDS="${SUBJECT_PIDS:-}$!"
-  subject_await "http://127.0.0.1:$control_port/.well-known/agent-card.json" \
-    "the pinned control agent" "$dir/control-agent.log"
+  subject_await "http://127.0.0.1:$agent_port/.well-known/agent-card.json" \
+    "the TCK scenario agent" "$dir/scenario-agent.log"
 
-  node scripts/a2a-subject/signing-vendor.mjs "$vendor_port" "$control_port" "$dir/issuer.spki" \
+  node scripts/a2a-subject/signing-vendor.mjs "$vendor_port" "$agent_port" "$dir/issuer.spki" \
     >"$dir/signing-vendor.log" 2>&1 &
   SUBJECT_PIDS="$SUBJECT_PIDS $!"
   subject_await "http://127.0.0.1:$vendor_port/.well-known/agent-card.json" \

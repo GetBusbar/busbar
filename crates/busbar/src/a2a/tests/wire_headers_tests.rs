@@ -237,3 +237,71 @@ async fn the_media_type_is_judged_before_the_body_is_parsed() {
     assert_eq!(status, 415);
     assert_eq!(hops(&h), 0);
 }
+
+// ══ THE VERSION IS ANSWERED FOR AT THIS EDGE **AND** RESTATED ON THE NEXT HOP ════════════════════
+
+/// The header this hop carried, if it carried one.
+fn hop_version(h: &Harness) -> Option<String> {
+    h.sent().first().and_then(|r| {
+        r.headers
+            .iter()
+            .find(|(n, _)| n == "a2a-version")
+            .map(|(_, v)| v.clone())
+    })
+}
+
+/// BUSBAR IS A CLIENT ON THE NEXT HOP, and A2A section 3.3 says a client MUST send `A2A-Version`
+/// with each request. Terminating the header at this edge — which is right, busbar is the server
+/// the caller connected to — is not the same as forgetting it: the relay forwards the caller's
+/// `method` VERBATIM, and the two revisions spell every method differently. A hop carrying a v1.0
+/// caller's `SendMessage` with no version declares `0.3` by omission and then speaks `1.0`.
+///
+/// A backend that BELIEVES the omission refuses the request busbar just accepted, and that is not
+/// hypothetical: it is what the official TCK saw the moment the conformance rig's fronted agent was
+/// one that reads the header. 62 of 114 MUSTs met became 24, the backend answering
+/// `VERSION_NOT_SUPPORTED` to methods busbar had itself validated as v1.0.
+#[tokio::test]
+async fn the_hop_declares_the_version_the_caller_negotiated() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let (status, _) = post_with(&h, Some("application/json"), Some("1.0")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        hop_version(&h).as_deref(),
+        Some("1.0"),
+        "a v1.0 caller's hop must say 1.0, or the backend reads the v1.0 method as a 0.3 one"
+    );
+}
+
+/// A CALLER THAT NAMED NO VERSION IS A `0.3` CALLER — A2A's own default for an absent header — and
+/// the hop says so out loud rather than saying nothing. Sending nothing would leave the backend to
+/// re-derive the same default, which is only correct until one backend defaults differently.
+#[tokio::test]
+async fn a_caller_that_named_no_version_produces_an_explicit_0_3_hop() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let (status, _) = post_with(&h, Some("application/json"), None).await;
+    assert_eq!(status, 200);
+    assert_eq!(hop_version(&h).as_deref(), Some("0.3"));
+}
+
+/// PATCH LEVELS ARE NOT NEGOTIATED. A caller asking for `1.0.7` is asking for `1.0`, and the hop
+/// declares the granularity the specification negotiates at rather than echoing the caller's string
+/// — an echo would put a version busbar never checked onto a hop.
+#[tokio::test]
+async fn the_hop_declares_major_minor_and_never_the_callers_patch_level() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let (status, _) = post_with(&h, Some("application/json"), Some("1.0.7")).await;
+    assert_eq!(status, 200);
+    assert_eq!(hop_version(&h).as_deref(), Some("1.0"));
+}
+
+/// AND A REFUSED VERSION NEVER REACHES A HOP AT ALL. The gate above is what makes the restatement
+/// safe: nothing busbar has not checked can be repeated to a backend as though it had been.
+#[tokio::test]
+async fn a_version_this_endpoint_refuses_is_never_restated_to_a_backend() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let (status, body) = post_with(&h, Some("application/json"), Some("99.0")).await;
+    assert_eq!(error_code(&body), Some(-32009), "{body}");
+    assert_eq!(status, 400);
+    assert_eq!(hops(&h), 0);
+    assert_eq!(hop_version(&h), None);
+}

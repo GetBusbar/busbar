@@ -32,6 +32,10 @@
 # USAGE
 #   run-tck.sh control-http-json     pinned control, HTTP+JSON binding; checked against a baseline
 #   run-tck.sh control-jsonrpc       pinned control, JSON-RPC binding;  checked against a baseline
+#   run-tck.sh control-scenario      the agent the SUBJECT leg fronts, judged directly with no
+#                                    busbar in the path. The CEILING for the subject number, and
+#                                    the only control it may be read against. Reported, never
+#                                    pinned.
 #   run-tck.sh subject               the endpoint in BUSBAR_A2A_ENDPOINT; reported, never pinned
 #   run-tck.sh record-baselines      re-record both control baselines (deliberate act, read the diff)
 set -euo pipefail
@@ -124,6 +128,29 @@ serve_control () {
 
 stop_control () { [ -n "${CONTROL_PID:-}" ] && kill "$CONTROL_PID" 2>/dev/null || true; }
 
+# serve_scenario_agent <port>  -> exports CONTROL_PID
+#
+# The agent the SUBJECT leg fronts, served here with NO busbar in the path. That is the whole point
+# of this leg: `scripts/a2a-subject/boot.sh` measures busbar-fronting-this-agent, and a number has
+# no meaning without the number the same suite gives the same agent alone. The difference between
+# the two is busbar's contribution, in both directions, and nothing else.
+serve_scenario_agent () {
+  local port="$1"
+  "$HERE/scenario-agent/serve.sh" "$port" > "$OUT/control-scenario.log" 2>&1 &
+  CONTROL_PID=$!
+  # A first run installs a virtualenv, so this waits longer than the binary controls do.
+  for _ in $(seq 1 300); do
+    if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$port/.well-known/agent-card.json"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "the scenario agent did not come up on port $port" >&2
+  cat "$OUT/control-scenario.log" >&2 || true
+  kill "$CONTROL_PID" 2>/dev/null || true
+  exit 2
+}
+
 control_leg () {          # control_leg <transport> <port> <name>
   local transport="$1" port="$2" name="$3"
   fetch_tck; install_tck; install_control
@@ -141,6 +168,20 @@ control_leg () {          # control_leg <transport> <port> <name>
 case "${1:-}" in
   control-http-json) control_leg http_json 9701 control-a2a-go-http-json ;;
   control-jsonrpc)   control_leg jsonrpc   9702 control-a2a-go-jsonrpc ;;
+
+  # THE CEILING LEG. The same suite, the same transport, the same agent the subject leg fronts —
+  # judged directly. It is REPORTED and never baseline-compared, for the same reason the subject
+  # leg is not: a recorded expectation for a peer we assemble ourselves would pin our own choices
+  # as the standard. Read it as the highest score the subject leg could possibly reach, not as a
+  # pass/fail of its own.
+  control-scenario)
+    fetch_tck; install_tck
+    say "control: TCK scenario agent / jsonrpc, direct (TZ=$TZ)"
+    serve_scenario_agent 9703
+    trap stop_control EXIT
+    run_tck "http://127.0.0.1:9703" control-scenario-agent
+    stop_control; trap - EXIT
+    ;;
 
   subject)
     : "${BUSBAR_A2A_ENDPOINT:?run-tck.sh subject needs BUSBAR_A2A_ENDPOINT}"

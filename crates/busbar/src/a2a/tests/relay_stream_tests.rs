@@ -90,6 +90,43 @@ fn the_sse_reader_reassembles_events_across_arbitrary_chunk_boundaries() {
     );
 }
 
+/// A LINE ENDS WITH CRLF, LF **OR** A BARE CR — the event stream format's own rule, not a tolerance
+/// — so the blank line that ends an event has three spellings and all three must frame.
+///
+/// Only `\n\n` was recognised. The bytes `…}\r\n\r\n` contain no `\n\n` at all, so an event
+/// terminated the CRLF way never left the buffer: the reader accumulated the whole stream, the
+/// relay reported that the stream had carried no event, and busbar answered `502 the backend agent
+/// did not complete this task` about a backend that had streamed perfectly. It survived because the
+/// only streaming peer this tree had ever relayed used bare LF. Against the official TCK, with a
+/// backend that uses CRLF, it read as `CORE-STREAM-001/002/003`, `STREAM-ORDER-001`,
+/// `JSONRPC-SSE-001` and every requirement whose setup opens a stream.
+#[test]
+fn the_sse_reader_frames_every_line_ending_the_format_allows() {
+    let mut r = SseReader::default();
+    let out = r.feed(b"data: {\"a\":1}\r\n\r\ndata: {\"a\":2}\r\n\r\n");
+    assert_eq!(out.len(), 2, "CRLF-terminated events must frame: {out:?}");
+    assert!(out[0].contains("\"a\":1"));
+    assert!(out[1].contains("\"a\":2"));
+
+    let mut r = SseReader::default();
+    assert!(
+        r.feed(b"data: {\"a\":1}\r\n\r").is_empty(),
+        "a HALF terminator is not one, and the frame must wait for the rest"
+    );
+    assert_eq!(
+        r.feed(b"\n").len(),
+        1,
+        "the arriving final byte completes exactly one event"
+    );
+
+    let mut r = SseReader::default();
+    assert_eq!(
+        r.feed(b"data: {\"a\":1}\r\rdata: {\"a\":2}\n\n").len(),
+        2,
+        "a bare-CR stream frames, and a stream that MIXES forms frames at the right places"
+    );
+}
+
 /// AN EVENT IS REWRITTEN UNDER BUSBAR'S IDENTITY, and a frame that is not a JSON-RPC result passes
 /// through UNCHANGED. busbar is content-blind: a comment, a keep-alive or a backend's own protocol
 /// extension must arrive at the caller as it left, not as an unexplained gap.

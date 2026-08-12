@@ -46,4 +46,18 @@ the two instruments are describing different peers.
 ## `a2aproject/a2a-python` — used as a second control, at a pinned version
 
 `a2a-sdk` `1.1.2` from PyPI, Apache-2.0 (unambiguous). Installed at run time by
-`../a2a-harness/scripts/install-control.sh`; not vendored.
+`../a2a-harness/scripts/install-control.sh` and, at the SAME pin, by `scenario-agent/serve.sh`;
+not vendored in either case.
+
+The second use is a LIBRARY use rather than a control: `scenario-agent/scenario_agent.py` is our own
+file, under our own copyright, and it imports this SDK for the A2A protocol machinery so that the
+only thing the file itself contributes is scenario routing. Apache-2.0 permits that without
+condition. The pin is read out of `install-control.sh` at run time rather than spelled twice, so the
+tree cannot end up holding two opinions about which a2a-python it is talking about.
+
+**Nothing from `a2a-tck`'s own `sut/` directory is copied or adapted.** That SUT is generated from
+the Gherkin scenario files, is written against an unreleased checkout of a2a-python (a path
+dependency in its `pyproject.toml`) and does not import against any published release. What
+`scenario_agent.py` implements is the BEHAVIOUR CONTRACT those scenario files and
+`docs/SUT_REQUIREMENTS.md` state — a specification, read and implemented, which is the same posture
+this file takes towards the suite as a whole.

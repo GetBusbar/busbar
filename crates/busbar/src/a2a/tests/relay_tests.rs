@@ -691,6 +691,7 @@ fn every_field_of_the_outbound_request_is_scanned() {
         Some(&a_lease("planner", 1_000)),
         b"{\"params\":{\"text\":\"BODYMARK\"}}",
         false,
+        "0.3",
         1_000,
     )
     .expect("the request builds");
@@ -724,13 +725,13 @@ fn every_field_of_the_outbound_request_is_scanned() {
 fn the_relayed_request_carries_only_constants_and_the_lease() {
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
 
-    let bare = crate::a2a::relay::build_request(&url, "planner", None, b"{}", false, 1_000)
+    let bare = crate::a2a::relay::build_request(&url, "planner", None, b"{}", false, "0.3", 1_000)
         .expect("the request builds");
     let names: Vec<&str> = bare.headers.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        vec!["content-type", "accept"],
-        "with no lease the hop carries the two constants and NOTHING else"
+        vec!["content-type", "accept", "a2a-version"],
+        "with no lease the hop carries the constants and NOTHING else"
     );
 
     let leased = crate::a2a::relay::build_request(
@@ -739,13 +740,14 @@ fn the_relayed_request_carries_only_constants_and_the_lease() {
         Some(&a_lease("planner", 1_000)),
         b"{}",
         false,
+        "0.3",
         1_000,
     )
     .expect("the request builds");
     let names: Vec<&str> = leased.headers.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        vec!["content-type", "accept", "authorization"],
+        vec!["content-type", "accept", "a2a-version", "authorization"],
         "the lease adds exactly one header"
     );
 }
@@ -758,15 +760,22 @@ fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
     let lease = a_lease("researcher", 1_000);
     let wrong =
-        crate::a2a::relay::build_request(&url, "planner", Some(&lease), b"{}", false, 1_000);
+        crate::a2a::relay::build_request(&url, "planner", Some(&lease), b"{}", false, "0.3", 1_000);
     assert!(
         matches!(wrong, Err(crate::a2a::creds::LeaseError::WrongAgent { .. })),
         "a credential leased for one agent must not be presented to another: {wrong:?}"
     );
 
     let lease = a_lease("planner", 1_000);
-    let expired =
-        crate::a2a::relay::build_request(&url, "planner", Some(&lease), b"{}", false, 10_000_000);
+    let expired = crate::a2a::relay::build_request(
+        &url,
+        "planner",
+        Some(&lease),
+        b"{}",
+        false,
+        "0.3",
+        10_000_000,
+    );
     assert!(
         matches!(expired, Err(crate::a2a::creds::LeaseError::Expired { .. })),
         "an expired lease must not be presented: {expired:?}"
@@ -836,6 +845,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             body: b"{}",
             rpc_id: &serde_json::json!(1),
             policy: &FetchPolicy::default(),
+            a2a_version: "0.3",
         },
         &Seam(FetchPolicy::default()),
         1_000,
@@ -1019,6 +1029,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             body: b"{}",
             rpc_id: &serde_json::json!(1),
             policy: &registration_policy,
+            a2a_version: "0.3",
         },
         &Seam(plane_default.clone()),
         1_000,
@@ -1040,6 +1051,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             body: b"{}",
             rpc_id: &serde_json::json!(1),
             policy: &plane_default,
+            a2a_version: "0.3",
         },
         &Seam(registration_policy.clone()),
         1_000,
