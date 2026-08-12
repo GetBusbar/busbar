@@ -29,12 +29,17 @@ def _binding(ctx):
 
 
 def _post_raw(ctx, raw_body, path=None, headers=None):
-    """POST arbitrary bytes to the agent's send endpoint."""
+    """POST arbitrary bytes to the agent's send endpoint.
+
+    Carrying the harness's own credential, like every other request it makes:
+    see `Target.request_headers`. Malformed bytes only reach a parser if the
+    request gets past the door.
+    """
     url = _endpoint(ctx).rstrip("/")
     if _binding(ctx) == "HTTP+JSON":
         url += path or "/message:send"
-    hdrs = {"Content-Type": spec.MEDIA_TYPE_A2A_JSON,
-            spec.VERSION_HEADER: spec.PROTOCOL_VERSION}
+    hdrs = ctx.target.request_headers(
+        {"Content-Type": spec.MEDIA_TYPE_A2A_JSON})
     hdrs.update(headers or {})
     return transport.request("POST", url, body=raw_body, headers=hdrs,
                              insecure=ctx.target.insecure)
@@ -463,7 +468,7 @@ def test_jsonrpc_envelope(ctx):
     good = {"jsonrpc": "2.0", "id": marker, "method": "SendMessage",
             "params": send_params("envelope check")}
     resp = transport.request("POST", url, body=good,
-                             headers={spec.VERSION_HEADER: spec.PROTOCOL_VERSION},
+                             headers=ctx.target.request_headers(),
                              insecure=ctx.target.insecure)
     payload = resp.json_or_none() or {}
     ctx.assert_must(
@@ -483,7 +488,11 @@ def test_jsonrpc_envelope(ctx):
 
     missing_version = {"id": 1, "method": "SendMessage",
                        "params": send_params("no jsonrpc field")}
+    # No `A2A-Version` header here on purpose -- the probe is the missing
+    # `jsonrpc` member, and the version header's own absence is
+    # `core.absent_version_header_defaults_to_0_3`. The credential still goes.
     resp2 = transport.request("POST", url, body=missing_version,
+                              headers=ctx.target.request_headers(version=None),
                               insecure=ctx.target.insecure)
     _survived(ctx, resp2, "a request with no jsonrpc member")
     ctx.observe("missing_jsonrpc_member_status", resp2.status)
@@ -491,6 +500,7 @@ def test_jsonrpc_envelope(ctx):
     unknown = {"jsonrpc": "2.0", "id": 2,
                "method": "ThisMethodDoesNotExist", "params": {}}
     resp3 = transport.request("POST", url, body=unknown,
+                              headers=ctx.target.request_headers(),
                               insecure=ctx.target.insecure)
     body3 = resp3.json_or_none() or {}
     code = (body3.get("error") or {}).get("code")
@@ -522,7 +532,7 @@ def test_method_case(ctx):
             "POST", url,
             body={"jsonrpc": "2.0", "id": 1, "method": name,
                   "params": send_params("case probe")},
-            headers={spec.VERSION_HEADER: spec.PROTOCOL_VERSION},
+            headers=ctx.target.request_headers(),
             insecure=ctx.target.insecure)
         body = resp.json_or_none() or {}
         seen[name] = "ok" if "result" in body else (body.get("error") or {}).get("code")

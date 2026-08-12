@@ -32,12 +32,19 @@
 # GENERATED THE SIGNING KEY, with `busbar --generate-signing-key`, and handed busbar the same bytes
 # through `auth.signing_key`. Signing one token with a key you own is not a bypass; it is the
 # documented fleet-shared-secret relationship. Every check inside busbar runs untouched, and the
-# token is attached on the CLIENT side of the connection by the same credential shim the MCP leg
-# uses — reused rather than copied, because two spellings of "hold a bearer and attach it" is
-# exactly the duplication that has already produced three security defects in this release.
+# token is attached on the CLIENT side of the connection.
+#
+# WHERE THAT TOKEN LIVES DEPENDS ON THE INSTRUMENT, and it is not a detail. The TCK's lives in the
+# credential shim the MCP leg uses — reused rather than copied, because two spellings of "hold a
+# bearer and attach it" is exactly the duplication that has already produced three security defects
+# in this release. The BATTERY holds its own (`--auth`) and gets NO shim, because a forwarder whose
+# job is to attach a credential to any request that carries none makes an ANONYMOUS request
+# unrepresentable — and "an anonymous caller is refused with a usable challenge" (SPEC 3.3.2) is one
+# of the server-role MUSTs the battery asserts. With the shim in front, that test was reporting on
+# the shim. See `boot_busbar_a2a_subject`.
 #
 # AND THAT CLAIM IS PROVEN, NOT ASSERTED. `prove_the_boundary_is_intact` presents four credentials
-# to the SAME booted process, directly, past the shim:
+# to the SAME booted process, on its own listener, past any shim:
 #     no credential      -> must be 401
 #     no audience        -> must be 401
 #     a different audience-> must be 401
@@ -117,7 +124,9 @@
 # MODES
 #   --battery    the independent battery (testing/a2a-harness) against the booted subject
 #   --tck        the official TCK (testing/a2a-tck) against the booted subject
-#   --probe      boot and prove the boundary only; print the endpoint and stop
+#   --probe [who] boot and prove the boundary only; print the endpoint and stop. `who` is who holds
+#                the client credential — `shim` (default, the TCK's topology) or `instrument` (the
+#                battery's, with no shim in front of busbar at all).
 #   --selftest   prove the arming rule and the boundary proof BITE, before any verdict is trusted
 #
 # ARMING
@@ -193,11 +202,12 @@ PY
 #
 # `public_url:` IS THE WHOLE MOUNT. `A2aPlane::admission()` answers `None` without it and
 # `a2a::ingress::mount` then adds NO ROUTE AT ALL, so a subject missing this line is not an A2A
-# server that fails the suite -- it is a busbar the suite cannot see. It names the SUITE-FACING port
-# (the shim), not busbar's own listener, because it is simultaneously the RFC 8707 resource
-# indicator every token must be minted for and the base of every URL the served card publishes: one
-# reading means the address the suite posts to, the audience busbar demands, and the endpoint the
-# card advertises cannot drift apart.
+# server that fails the suite -- it is a busbar the suite cannot see. It names WHATEVER ADDRESS THE
+# INSTRUMENT ACTUALLY POSTS TO -- the shim's port when a shim holds the credential, busbar's own
+# listener when the instrument holds it (`boot_busbar_a2a_subject`'s parameter) -- because it is
+# simultaneously the RFC 8707 resource indicator every token must be minted for and the base of every
+# URL the served card publishes: one reading means the address the suite posts to, the audience
+# busbar demands, and the endpoint the card advertises cannot drift apart.
 #
 # `auth.chain: [keys]` IS LOAD-BEARING AND IS THE OPPOSITE OF A SHORTCUT. An empty chain would let
 # the mount answer anonymously and every scenario below would run with no credential at all -- the
@@ -208,7 +218,7 @@ PY
 # than defaulted: see the header for why `allow_private:` is honest here and why the trust root is
 # `jws_issuer_key` rather than one of the two TLS-rooted mechanisms.
 subject_write_config() {
-  local dir="$1" suite_port="$2" data_port="$3" admin_port="$4" vendor_port="$5" issuer="$6"
+  local dir="$1" public_port="$2" data_port="$3" admin_port="$4" vendor_port="$5" issuer="$6"
   cat > "$dir/providers.yaml" <<'YAML'
 # No providers. The A2A plane needs none, and an empty catalog cannot fail for a reason that is
 # about a provider.
@@ -217,7 +227,7 @@ YAML
   cat > "$dir/config.yaml" <<YAML
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
-public_url: "http://127.0.0.1:$suite_port"
+public_url: "http://127.0.0.1:$public_port"
 providers: {}
 models: {}
 pools: {}
@@ -365,9 +375,45 @@ registration is approved, so this is the re-verification sweep not having cached
   say "   busbar serves the fronted agent's card after ${waited}s of sweep"
 }
 
-# Boot busbar, obtain a credential for it, and put a credential-holding client shim in front.
+# Boot busbar, obtain a credential for it, and decide WHO HOLDS THAT CREDENTIAL.
 # Sets SUBJECT_URL (what the instruments are pointed at), SUBJECT_TOKEN and SUBJECT_PIDS.
+#
+# ── WHO HOLDS THE CREDENTIAL, AND WHY IT IS NOW A PARAMETER ──
+#
+#   shim        a credential-holding forwarder sits in front of busbar and attaches the token to any
+#               request that arrives without one. The official TCK CANNOT be handed a header —
+#               `run_tck.py` takes `--sut-host` and nothing else — so for that instrument this is the
+#               only place a client credential can live.
+#   instrument  no shim at all: the instrument holds the token itself and busbar's own listener is
+#               the endpoint. The independent battery takes `--auth`, so it can.
+#
+# THIS IS NOT A TOPOLOGY PREFERENCE. It is what `auth.server_challenges_unauthenticated_callers`
+# measures. That test asserts SPEC 3.3.2 — "Servers MUST reject requests with invalid or missing
+# authentication credentials" — by deliberately STRIPPING its credential and calling `SendMessage`
+# anonymously. Behind a shim whose entire job is to attach a credential to any request that carries
+# none, that stripped request is re-credentialed one hop later and reaches busbar authenticated: the
+# call succeeds, and the battery reports "an unauthenticated SendMessage succeeded" against busbar
+# for a request busbar never saw unauthenticated. The rig was answering the question, and answering
+# it wrong. busbar's real answer to that request is `401` with an RFC 6750 challenge naming its
+# RFC 9728 metadata document, which `prove_the_boundary_is_intact` has been printing in the same run
+# all along — the two lines contradicted each other and the rig was the one lying.
+#
+# So the battery, which can hold its own credential, is pointed straight at busbar and can therefore
+# make a genuinely anonymous request. NOTHING about busbar is relaxed either way: the token is the
+# same real audience-bound credential, the same five boundary probes run against the same booted
+# process, and the same `auth.chain: [keys]` refuses everything else.
+#
+# `public_url:` FOLLOWS THE ENDPOINT, because it must. It is simultaneously the address the
+# instrument posts to, the RFC 8707 audience every token is minted for, and the base of every URL the
+# served card publishes — and the instruments CALL THE URL THE CARD ADVERTISES, not the one they were
+# handed. Pointing the battery at busbar while the card still advertised the shim would send every
+# call back through the shim and change nothing.
 boot_busbar_a2a_subject() {
+  local credential_held_by="${1:-shim}"
+  case "$credential_held_by" in
+    shim|instrument) ;;
+    *) die "boot_busbar_a2a_subject: unknown credential holder \`$credential_held_by\` (shim|instrument)" ;;
+  esac
   local bin="${A2A_SUBJECT_BUSBAR_BIN:?boot_busbar_a2a_subject needs A2A_SUBJECT_BUSBAR_BIN}"
   [ -x "$bin" ] || die "A2A_SUBJECT_BUSBAR_BIN=$bin is not an executable. The subject leg judges a \
 busbar built FROM THIS COMMIT; if the build step did not produce one, that is the finding."
@@ -395,8 +441,14 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   local suite_port data_port admin_port agent_port vendor_port
   read -r suite_port data_port admin_port agent_port vendor_port <<<"$(subject_free_ports)"
   [ -n "${vendor_port:-}" ] || die "could not obtain five free loopback ports."
-  say "   busbar $data_port · admin $admin_port · suite-facing $suite_port"
+  # THE PUBLISHED PORT: the shim's when a shim holds the credential, busbar's own when the
+  # instrument does. One value, so the address the suite posts to, the audience busbar demands and
+  # the endpoint the card advertises cannot drift apart in either topology.
+  local public_port="$suite_port"
+  [ "$credential_held_by" = "instrument" ] && public_port="$data_port"
+  say "   busbar $data_port · admin $admin_port · suite-facing $public_port"
   say "   scenario agent $agent_port · signing vendor $vendor_port"
+  say "   the client credential is held by the $credential_held_by"
 
   # ── THE AGENT BUSBAR FRONTS: the TCK SCENARIO AGENT, behind the signing vendor. ──
   #
@@ -448,7 +500,7 @@ for this registration and busbar would correctly refuse to approve it."
   ( umask 077; "$bin" --generate-signing-key > "$dir/signing.key" 2>"$dir/generate-key.log" ) \
     || { cat "$dir/generate-key.log" >&2; die "busbar --generate-signing-key failed."; }
 
-  subject_write_config "$dir" "$suite_port" "$data_port" "$admin_port" "$vendor_port" "$issuer"
+  subject_write_config "$dir" "$public_port" "$data_port" "$admin_port" "$vendor_port" "$issuer"
 
   # An admin credential for THIS boot only, from the OS CSPRNG. Never a fixed string: the admin
   # plane is loopback-only here, and a fixed token in a public repository is a habit that
@@ -488,8 +540,8 @@ failing one — or busbar never came up."; }
   canonical="$(curl -s --max-time 15 "$metadata" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["resource"])')"
   say "   canonical resource, read from busbar's own metadata: $canonical"
-  [ "$canonical" = "http://127.0.0.1:$suite_port/a2a" ] || die "busbar publishes the audience \
-\`$canonical\`, but this rig points the suite at 127.0.0.1:$suite_port. A token minted for one and \
+  [ "$canonical" = "http://127.0.0.1:$public_port/a2a" ] || die "busbar publishes the audience \
+\`$canonical\`, but this rig points the suite at 127.0.0.1:$public_port. A token minted for one and \
 spent at the other is refused, and the leg would read as fourteen auth failures instead of as the \
 configuration mistake it is."
 
@@ -532,31 +584,44 @@ same helper the MCP leg does, because busbar's token format is one format across
 
   prove_the_boundary_is_intact "$direct" "$plain" "$bound" "$wrong"
 
-  # THE SHIM, and the reason it is here rather than a `--auth` flag. The independent battery CAN be
-  # handed a header; the official TCK CANNOT — `run_tck.py` takes `--sut-host` and nothing else. One
-  # rig serving both instruments therefore has to hold the credential where a CLIENT holds it, and
-  # that is exactly what `scripts/mcp-subject/credential-shim.mjs` already is: a transparent
-  # forwarder that adds `Authorization` only when the request carries none. Reused, not copied.
-  node scripts/mcp-subject/credential-shim.mjs "$suite_port" "$data_port" "$bound" \
-    >"$dir/credential-shim.log" 2>&1 &
-  SUBJECT_PIDS="$SUBJECT_PIDS $!"
+  # THE SHIM, for the instrument that cannot be handed a header. `run_tck.py` takes `--sut-host` and
+  # nothing else, so for the TCK the credential has to live where a CLIENT holds it, and that is
+  # exactly what `scripts/mcp-subject/credential-shim.mjs` already is: a transparent forwarder that
+  # adds `Authorization` only when the request carries none. Reused, not copied.
+  #
+  # AND IT IS NOT STARTED FOR AN INSTRUMENT THAT HOLDS ITS OWN CREDENTIAL. "Adds a credential to any
+  # request that has none" is precisely what makes an ANONYMOUS request unrepresentable, and one of
+  # the battery's server-role MUSTs is that an anonymous request is refused. See this function's
+  # header: with the shim in front, that test was reporting on the shim.
+  local through="http://127.0.0.1:$public_port/a2a/agents/$SUBJECT_AGENT_ID"
+  if [ "$credential_held_by" = "shim" ]; then
+    node scripts/mcp-subject/credential-shim.mjs "$suite_port" "$data_port" "$bound" \
+      >"$dir/credential-shim.log" 2>&1 &
+    SUBJECT_PIDS="$SUBJECT_PIDS $!"
 
-  local through="http://127.0.0.1:$suite_port/a2a/agents/$SUBJECT_AGENT_ID"
-  waited=0
-  until [ "$(subject_probe_status "$through")" = "$SUBJECT_ADMITTED_STATUS" ]; do
-    waited=$((waited+1))
-    [ "$waited" -lt 30 ] || {
-      cat "$dir/credential-shim.log" >&2
-      die "the credential shim never reproduced the status busbar gave the same token directly \
+    waited=0
+    until [ "$(subject_probe_status "$through")" = "$SUBJECT_ADMITTED_STATUS" ]; do
+      waited=$((waited+1))
+      [ "$waited" -lt 30 ] || {
+        cat "$dir/credential-shim.log" >&2
+        die "the credential shim never reproduced the status busbar gave the same token directly \
 ($SUBJECT_ADMITTED_STATUS). That is a finding about the shim, not about busbar."
-    }
-    sleep 1
-  done
-  say "   the suite-facing endpoint reaches busbar through a real, verified credential"
+      }
+      sleep 1
+    done
+    say "   the suite-facing endpoint reaches busbar through a real, verified credential"
+  else
+    # No hop to verify: the endpoint the instrument is pointed at IS the endpoint the five boundary
+    # probes just ran against, and it is the one the card advertises.
+    [ "$through" = "$direct" ] || die "the instrument would be pointed at \`$through\` while the \
+boundary was proven at \`$direct\`. Two endpoints, one verdict, is how a leg comes to report about a \
+busbar nobody probed."
+    say "   the instrument holds the credential and reaches busbar with no hop in between"
+  fi
 
   # SET FOR THE CALLER. Deliberately not `local`.
   # shellcheck disable=SC2034
-  SUBJECT_URL="http://127.0.0.1:$suite_port"
+  SUBJECT_URL="http://127.0.0.1:$public_port"
   # shellcheck disable=SC2034
   SUBJECT_AGENT_URL="$through"
   # shellcheck disable=SC2034
@@ -574,10 +639,15 @@ reap_subject() { [ -n "${SUBJECT_PIDS:-}" ] && kill $SUBJECT_PIDS 2>/dev/null ||
 # The instruments are pointed at whichever subject is armed. The BINARY is the primary arm; the URL
 # is the optional extra, and when it is the only arm the log says out loud that the verdict is about
 # somebody's deployment rather than about this commit.
+#
+# The argument is WHO HOLDS THE CLIENT CREDENTIAL for this leg (`shim` or `instrument`), passed
+# straight through to `boot_busbar_a2a_subject`; see its header for why that is a property of the
+# instrument rather than of the rig.
 arm_subject() {
+  local credential_held_by="${1:-shim}"
   require_armed "A2A subject" A2A_SUBJECT_BUSBAR_BIN BUSBAR_A2A_ENDPOINT
   if [ -n "${A2A_SUBJECT_BUSBAR_BIN:-}" ]; then
-    boot_busbar_a2a_subject
+    boot_busbar_a2a_subject "$credential_held_by"
     trap reap_subject EXIT
   else
     SUBJECT_URL="$BUSBAR_A2A_ENDPOINT"
@@ -590,7 +660,10 @@ arm_subject() {
 
 leg_battery() {
   say "== A2A INDEPENDENT BATTERY · SUBJECT leg (busbar) =="
-  arm_subject
+  # THE BATTERY HOLDS ITS OWN CREDENTIAL (`--auth`, below), so no shim stands in front of busbar and
+  # the battery can make a request with NO credential at all — which is the only way to observe
+  # SPEC 3.3.2, one of the server-role MUSTs it asserts.
+  arm_subject instrument
   mkdir -p testing/a2a-harness/reports
   # `--card-url` NAMES THE FRONTED AGENT'S ENDPOINT, and it is not a convenience. busbar mounts the
   # card at `/a2a/agents/{id}` and serves NOTHING at the well-known path on this commit, so without
@@ -637,7 +710,8 @@ the counts line above; it is the number this leg exists to produce." ;;
 
 leg_tck() {
   say "== A2A OFFICIAL TCK · SUBJECT leg (busbar) =="
-  arm_subject
+  # The TCK takes `--sut-host` and nothing else, so its credential lives in the shim.
+  arm_subject shim
   local out="${A2A_SUBJECT_TCK_LOG:-.a2a-conformance/tck-subject.txt}"
   mkdir -p "$(dirname "$out")"
   # `run-tck.sh subject` DELIBERATELY EXITS 0 whatever the TCK found — it swallows pytest's status
@@ -692,7 +766,7 @@ PY
 
 leg_probe() {
   say "== A2A SUBJECT · boundary probe only =="
-  arm_subject
+  arm_subject "${1:-shim}"
   say "   subject endpoint: $SUBJECT_URL"
   say "   fronted agent:    $SUBJECT_AGENT_URL"
 }
@@ -806,7 +880,7 @@ this script means anything until they do."
 case "${1:-}" in
   --battery)  leg_battery ;;
   --tck)      leg_tck ;;
-  --probe)    leg_probe ;;
+  --probe)    leg_probe "${2:-shim}" ;;
   --selftest) selftest ;;
   *) sed -n '/^# MODES/,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

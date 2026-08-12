@@ -298,7 +298,8 @@ def test_card_caching(ctx):
     if "etag" in resp.headers:
         again = transport.request(
             "GET", resp.card_url,
-            headers={"If-None-Match": resp.headers["etag"]},
+            headers=ctx.target.request_headers(
+                {"If-None-Match": resp.headers["etag"]}),
             insecure=ctx.target.insecure)
         ctx.observe("conditional_get_status", again.status,
                     "SPEC 8.6.2 expects clients to use If-None-Match; a "
