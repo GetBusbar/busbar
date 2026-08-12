@@ -254,27 +254,144 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - name: A deliberately broken peer must fail the battery
+      # A NEGATIVE CONTROL PROVES DISCRIMINATION, NOT MERELY DISPLEASURE.
+      #
+      # This leg used to boot the broken peer, `sleep 2`, and assert the battery exited 1. Both
+      # halves of that were wrong, and each was wrong in a way that had already fired.
+      #
+      # 1. `sleep 2` IS NOT READINESS, IT IS A GUESS, and on 2026-08-12 the guess lost: run
+      #    31565573446 booted the peer, found nothing listening two seconds later, and exited 3 —
+      #    "never reached the peer, proved nothing" — while the run 51 minutes after it, on the
+      #    same code, exited 1 and went green. A control leg whose verdict depends on how busy the
+      #    runner is teaches people to re-run it, which is how a real red gets clicked past. The
+      #    peer's readiness is now OBSERVED, on its own card, and the peer's own log is printed
+      #    whatever happens — the old step redirected it to a file it never read back, so the one
+      #    run that failed left no evidence of WHY the peer was absent.
+      #
+      # 2. `rc == 1` DOES NOT SAY THE INJECTED DEFECTS WERE CAUGHT. It says something failed. The
+      #    harness's HONEST fake peer also exits 1 against this tier — it fails 7 tests that have
+      #    nothing to do with the negative control — so the old assertion would have held with
+      #    every one of the five deliberate MUST violations undetected. That is this battery's
+      #    version of the sibling MCP suite's `isResponse()` blind spot: an instrument reporting a
+      #    number that is true and does not mean what the check reads it to mean.
+      #
+      # So the peers are run in PAIR, and the claim is made per test, by name: for each violation
+      # deliberately injected into the broken peer there is a test that must FAIL against the
+      # broken peer and PASS against the honest one. A battery that always passes and a battery
+      # that always fails are equally useless, and only the pair can tell them apart.
+      - name: A broken peer MUST be red, an honest one MUST NOT be red for the same reasons
         working-directory: testing/a2a-harness
         run: |
           set -euo pipefail
           mkdir -p reports
+
+          # READINESS BY OBSERVATION. Bounded well above the ~1s a local boot takes, so a slow
+          # runner is not a red, and a peer that never binds is a red that says so IN ITS OWN
+          # WORDS rather than as "nothing is listening" from the other side of the wire.
+          await_peer() {
+            local port="$1" log="$2" what="$3" waited=0
+            until curl -fsS -m 2 -o /dev/null \
+                  "http://127.0.0.1:$port/.well-known/agent-card.json"; do
+              waited=$((waited + 1))
+              if [ "$waited" -ge 30 ]; then
+                echo "::error::the $what peer never served a card on 127.0.0.1:$port within ${waited}s. Its own output follows; this leg proved NOTHING about the battery."
+                cat "$log"
+                return 1
+              fi
+              sleep 1
+            done
+            echo "  the $what peer answered on 127.0.0.1:$port after ${waited}s"
+          }
+
           python3 -m a2aht fake-peer --port 9402 --broken > /tmp/broken.log 2>&1 &
-          BP=$!
-          sleep 2
-          rc=0
-          python3 -m a2aht run --endpoint http://127.0.0.1:9402 \
-            --label negative-control --tier pull-request --role server \
-            --json reports/negative.json > /tmp/negative.txt 2>&1 || rc=$?
-          kill $BP 2>/dev/null || true
+          BROKEN=$!
+          python3 -m a2aht fake-peer --port 9403          > /tmp/honest.log 2>&1 &
+          HONEST=$!
+          trap 'kill $BROKEN $HONEST 2>/dev/null || true' EXIT
+          await_peer 9402 /tmp/broken.log broken
+          await_peer 9403 /tmp/honest.log honest
+          echo "--- the broken peer's own account of what it violates:"
+          cat /tmp/broken.log
+
+          run_battery() {
+            local port="$1" label="$2" out="$3" rc=0
+            python3 -m a2aht run --endpoint "http://127.0.0.1:$port" \
+              --label "$label" --tier pull-request --role server \
+              --json "reports/$label.json" > "$out" 2>&1 || rc=$?
+            echo "$rc"
+          }
+          broken_rc=$(run_battery 9402 negative-control /tmp/negative.txt)
+          honest_rc=$(run_battery 9403 honest-control   /tmp/honest-run.txt)
+
+          echo "=== the battery against the BROKEN peer (exit $broken_rc)"
           cat /tmp/negative.txt
-          # The ONLY acceptable outcome is 1 (tests ran and failed). 0 means the battery blessed a
-          # peer it was built to reject; 3 means it never reached the peer and proved nothing.
-          if [ "$rc" -ne 1 ]; then
-            echo "::error::the broken peer produced exit $rc, expected 1. A battery that cannot fail cannot pass."
+          echo "=== the battery against the HONEST peer (exit $honest_rc)"
+          cat /tmp/honest-run.txt
+
+          # THE EXIT CODES, WHICH ARE THREE DIFFERENT STATEMENTS AND NOT A PASS/FAIL.
+          # 1 means tests ran and failed. 0 means the battery BLESSED a peer it was built to
+          # reject, which would invalidate every conformance number this workflow has ever
+          # produced. 3 means it never reached the peer, so the leg is a false green in waiting.
+          # They are reported apart because the remedy for each is a different one.
+          case "$broken_rc" in
+            1) echo "  the broken peer was rejected (exit 1: tests ran, tests failed)" ;;
+            0) echo "::error::CATASTROPHIC: the battery exited 0 against the deliberately broken peer. It cannot tell a broken peer from a working one, and every A2A conformance number in this workflow is in question."
+               exit 1 ;;
+            3) echo "::error::the battery exited 3 against the broken peer: it never reached it, so NOTHING WAS TESTED. This leg proved nothing; it did not prove the battery works."
+               exit 1 ;;
+            *) echo "::error::the broken peer produced exit $broken_rc, expected 1. A battery that cannot fail cannot pass."
+               exit 1 ;;
+          esac
+          if [ "$honest_rc" = "3" ]; then
+            echo "::error::the battery never reached the HONEST peer either, so the discrimination check below would be comparing two absences."
             exit 1
           fi
-          echo "negative control behaved: the broken peer was rejected."
+
+          # THE DISCRIMINATION ITSELF. Each id here is the test that exists to catch ONE violation
+          # `cli.py::cmd_fake_peer` deliberately injects, and the pairing is asserted in both
+          # directions: a test that fails against everything catches nothing, and a test that
+          # passes against everything catches nothing either.
+          python3 - <<'PY'
+          import json, sys
+
+          # test id                            -> the injected violation it exists to catch
+          PAIRS = {
+              "card.required_fields":             "PROTO AgentCard: the REQUIRED `version` is absent",
+              "card.protocol_version_no_patch":   "SPEC 3.6: the card advertises protocolVersion 1.0.3",
+              "core.task_state_is_defined_enum":  "PROTO enum TaskState: emits TASK_STATE_MADE_UP",
+              "adv.concurrent_interleaved_tasks": "SPEC 3.4.2: one task id reused for every task",
+              "core.stream_opens_with_task_or_message":
+                                                  "SPEC 3.1.2: streams an event for a task never created",
+          }
+
+          def outcomes(path):
+              with open(path) as fh:
+                  return {r["id"]: r["outcome"] for r in json.load(fh)["results"]}
+
+          broken = outcomes("reports/negative-control.json")
+          honest = outcomes("reports/honest-control.json")
+
+          print("\nDISCRIMINATION: every injected violation, caught on the broken peer and NOT "
+                "reported against the honest one.\n")
+          bad = 0
+          for test_id, violation in sorted(PAIRS.items()):
+              b = broken.get(test_id, "ABSENT")
+              h = honest.get(test_id, "ABSENT")
+              ok = (b == "FAIL" and h == "PASS")
+              print("  %-6s %-42s broken=%-6s honest=%-6s  %s"
+                    % ("ok:" if ok else "BAD:", test_id, b, h, violation))
+              if not ok:
+                  bad += 1
+          if bad:
+              sys.stdout.write(
+                  "\n::error::%d of %d injected violations were not DISCRIMINATED. A test that "
+                  "is red against both peers is not detecting the violation, and one that is "
+                  "green against the broken peer is blind to it. Either way the battery's "
+                  "verdict about busbar means less than it appears to.\n" % (bad, len(PAIRS)))
+              sys.exit(1)
+          print("\nnegative control behaved: %d injected violations, each caught on the broken "
+                "peer and each absent from the honest one." % len(PAIRS))
+          PY
 
   swap-proof:
     name: swap proof (six states the gate must tell apart)
