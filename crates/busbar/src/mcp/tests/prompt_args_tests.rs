@@ -63,6 +63,7 @@ fn server_with_prompt() -> McpServerDefCfg {
     );
     McpServerDefCfg {
         refresh_ttl: None,
+        timeout: None,
         url: "https://upstream.example.com/mcp".to_string(),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::Unpinned,

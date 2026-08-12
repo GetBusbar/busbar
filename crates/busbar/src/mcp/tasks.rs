@@ -594,9 +594,24 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
 
     // (4) SETTLE. A tool that ran is `completed` whatever it said about itself; a refusal is a
     // PROTOCOL error and is `failed`.
+    //
+    // AN UPSTREAM FAILURE SETTLES `failed` TOO, AND THAT IS NOT THE SAME DECISION THE SYNCHRONOUS
+    // PATH MAKES. `mcp::method` renders an upstream failure as a tool execution error — an
+    // `isError` RESULT — because a synchronous caller has no other channel on which to be told the
+    // tool did not work, and a JSON-RPC error hides the message from the model. A task HAS that
+    // other channel: `status: "failed"` with an inlined `error` is the extension's own way of
+    // saying "this work did not produce a result", and it is what SEP-2663 requires of the
+    // `protocol_error_job` fixture. So the two paths agree about the FACT and differ about the
+    // SHAPE, because the shapes are what the two surfaces provide.
     match outcome {
         Ok_(value) => task.complete(super::sanitize::normalise_json(&value)),
         Err_(refusal) => task.fail(TASK_PROTOCOL_ERROR_CODE, refusal.to_string()),
+        // The message keeps its exact former wording, because the split is about ATTRIBUTION and a
+        // task's inlined error text is already on the wire for a scenario that reads it.
+        Upstream_(reason) => task.fail(
+            TASK_PROTOCOL_ERROR_CODE,
+            format!("the MCP upstream call failed: {reason}"),
+        ),
     }
 }
 
@@ -605,9 +620,10 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
 /// server's own failure, and the caller has no parameter to correct.
 const TASK_PROTOCOL_ERROR_CODE: i64 = -32603;
 
-// Two aliases so the `match` above reads as the two outcomes rather than as the enum's spelling.
+// Three aliases so the `match` above reads as the three outcomes rather than as the enum's spelling.
 use super::inputreq::Outcome::Completed as Ok_;
 use super::inputreq::Outcome::Refused as Err_;
+use super::inputreq::Outcome::UpstreamFailed as Upstream_;
 
 /// Merge the caller's gathered ask answers into the tool arguments, under the operator's own keys.
 ///

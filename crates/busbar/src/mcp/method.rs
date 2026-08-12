@@ -536,6 +536,19 @@ fn render_tool(t: &ToolEntry) -> serde_json::Value {
             // declared" rather than a fabricated one.
             .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
     );
+    // THE OUTPUT SCHEMA, when the operator approved one — and ONLY then. Unlike `inputSchema` there
+    // is no schema-shaped stand-in for its absence: an absent `outputSchema` means "this tool makes
+    // no promise about structured output", and `{}` would mean "it promises, and the promise is
+    // vacuous". The spec reads the presence of this key, not its contents, to decide whether
+    // conforming structured results are a MUST, so inventing one would invent an obligation.
+    //
+    // Dropping it, which is what busbar did until this commit, is the mirror-image defect: a client
+    // that would have validated the structured result has nothing to validate against and cannot
+    // tell a conforming result from a violating one. `mcp::method::tools_call` therefore also
+    // CHECKS what comes back — see `structured_output_violation`.
+    if let Some(s) = &t.output_schema {
+        obj.insert("outputSchema".into(), s.clone());
+    }
     // The approved schema hash is published because it is the operator's approval, not a secret, and
     // a client that pins what it saw is a client that notices a rug-pull too.
     if let Some(h) = &t.schema_hash {
@@ -1051,6 +1064,18 @@ impl<'a> CallLog<'a> {
         self.write(super::calllog::OUTCOME_DISPATCHED, "");
         response
     }
+
+    /// Record a call that WENT OUT and came back BADLY.
+    ///
+    /// Still `dispatched`, because the store contract's `dispatched` means exactly "the call went
+    /// out" and this one did — it was `refused` until this commit, which said the opposite of what
+    /// happened. The `reason` field carries the token, and the store contract already documents it
+    /// as free on a dispatch rather than forbidden: what it forbids is a DESCRIPTION, and
+    /// `upstream_failed` is a stable, greppable token exactly like the refusal ones beside it.
+    fn dispatched_with_reason(&self, reason: &'static str, response: Response) -> Response {
+        self.write(super::calllog::OUTCOME_DISPATCHED, reason);
+        response
+    }
 }
 
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
@@ -1370,6 +1395,53 @@ async fn tools_call(
                     ),
                 );
             }
+            // (5b) THE OUTPUT SCHEMA busbar PUBLISHED, checked against what came back.
+            //
+            // Publishing an `outputSchema` makes conforming structured results a MUST for the
+            // server that published it, and the caller only ever speaks to busbar — so a lying
+            // upstream would put BUSBAR in violation, under busbar's name, with the caller unable
+            // to attribute it. Relaying a structured result unchecked beneath a schema busbar
+            // vouched for is the same mistake as republishing an upstream's description: it lets
+            // the upstream edit what it was approved for.
+            //
+            // A VIOLATION IS A TOOL FAILURE, not a busbar refusal: the tool ran and did not do what
+            // the operator approved it to do, and that is a fact about the run which the model has
+            // to see. The check is one-sided by construction (`mcp::outputschema` ignores every
+            // keyword it does not model), so this can only fire on a violation of the part of the
+            // schema it does read.
+            if let Some(schema) = &selected.output_schema {
+                if let Some(structured) = value.get("structuredContent") {
+                    if let Err(why) = super::outputschema::check(structured, schema) {
+                        tracing::warn!(
+                            tool = %selected.namespaced,
+                            why = %why,
+                            "mcp upstream returned structuredContent violating the published outputSchema"
+                        );
+                        crate::admin::audit::AUDIT.record_by(
+                            "mcp_tool.call",
+                            &resource,
+                            crate::admin::audit::OUTCOME_REJECTED,
+                            ctx.actor,
+                        );
+                        return log.dispatched_with_reason(
+                            super::calllog::REASON_UPSTREAM_FAILED,
+                            result(
+                                id,
+                                upstream_failure_result(
+                                    &selected.server,
+                                    &format!(
+                                        "it returned structured output that violates the \
+                                         `outputSchema` this tool is published with ({why}). The \
+                                         structured result was NOT served: a result that does not \
+                                         conform to the schema busbar published for it would make \
+                                         busbar's own answer unverifiable."
+                                    ),
+                                ),
+                            ),
+                        );
+                    }
+                }
+            }
             crate::admin::audit::AUDIT.record_by(
                 "mcp_tool.call",
                 &resource,
@@ -1411,7 +1483,64 @@ async fn tools_call(
                 ),
             )
         }
+        // THE UPSTREAM FAILED, AND THAT IS A TOOL EXECUTION ERROR RATHER THAN BUSBAR'S REFUSAL.
+        //
+        // This arm used to be part of `Refused` above, and every one of its three consequences was
+        // wrong about a different reader:
+        //
+        //   * THE MODEL was handed `-32000` / `403 FORBIDDEN` — busbar's refusal code — for a tool
+        //     that had merely failed. The spec's own division is that protocol errors describe the
+        //     REQUEST and tool execution errors describe the RUN, and that the latter are reported
+        //     `in tool results with isError: true` precisely so the model can see the message and
+        //     self-correct. A `403` says "you are not allowed to call this", which is false, and
+        //     carries the failure text where nothing in the model's context will read it.
+        //   * THE CALL LOG recorded `refused`, whose documented meaning is that THE CALL DID NOT GO
+        //     OUT. It did go out. The record now says `dispatched` with the reason token
+        //     `upstream_failed`, so the chain distinguishes a call busbar blocked from a call that
+        //     was made and came back badly.
+        //   * ANYTHING READING DISPOSITIONS could not tell a policy refusal from an upstream
+        //     outage, so "we are being throttled" and "the far end is down" were one signal.
+        //
+        // The AUDIT row is still `OUTCOME_REJECTED`: the admin audit records whether the ACTION
+        // succeeded, and this one did not.
+        Outcome::UpstreamFailed(reason) => {
+            crate::admin::audit::AUDIT.record_by(
+                "mcp_tool.call",
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                ctx.actor,
+            );
+            tracing::warn!(
+                tool = %selected.namespaced,
+                reason = %reason,
+                "mcp tools/call upstream failed"
+            );
+            log.dispatched_with_reason(
+                super::calllog::REASON_UPSTREAM_FAILED,
+                result(id, upstream_failure_result(&selected.server, &reason)),
+            )
+        }
     }
+}
+
+/// The tool-execution-error RESULT busbar answers with when the upstream leg failed.
+///
+/// `isError: true` with the failure in a text content block, which is the shape the specification
+/// names for a tool that ran and did not work, and the only shape a model ever reads. The text is
+/// BUSBAR-ATTRIBUTED and names the server, because the caller needs to know which of busbar's
+/// upstreams failed; it is not the upstream's own prose relayed as though it were busbar's, and it
+/// is markup-normalised on the way out by the same rule every other upstream-influenced string is.
+fn upstream_failure_result(server: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "resultType": "complete",
+        "isError": true,
+        "content": [{
+            "type": "text",
+            "text": sanitize::normalise(&format!(
+                "The MCP server `{server}` did not complete this tool call: {reason}"
+            )),
+        }],
+    })
 }
 
 /// CREATE a task for a `tools/call` that will be answered asynchronously.

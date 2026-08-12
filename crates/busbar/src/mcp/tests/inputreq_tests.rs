@@ -303,6 +303,7 @@ async fn an_upstream_ask_terminates_at_busbar_and_is_never_proxied_outward() {
     let rendered = match &outcome {
         Outcome::Completed(v) => v.to_string(),
         Outcome::Refused(r) => r.to_string(),
+        Outcome::UpstreamFailed(e) => e.clone(),
     };
     assert!(
         !rendered.contains(CANARY),
@@ -318,6 +319,7 @@ async fn an_upstream_ask_terminates_at_busbar_and_is_never_proxied_outward() {
     match outcome {
         Outcome::Completed(_) => {}
         Outcome::Refused(_) => {}
+        Outcome::UpstreamFailed(_) => {}
     }
 }
 

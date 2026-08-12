@@ -180,6 +180,8 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             pin: _,
             // A duration string driving the refresh timer's cadence. Not a credential.
             refresh_ttl: _,
+            // A duration string bounding one outbound leg to this server. Not a credential.
+            timeout: _,
             transport: _,
             aud: _,
             grants: _,

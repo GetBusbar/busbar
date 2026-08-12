@@ -114,8 +114,24 @@ pub(crate) enum Round {
 pub(crate) enum Outcome {
     /// The upstream finished. The value is the caller's result.
     Completed(serde_json::Value),
-    /// busbar refused, with a busbar-attributed reason.
+    /// BUSBAR refused, with a busbar-attributed reason. A POLICY decision, always.
     Refused(Refusal),
+    /// THE UPSTREAM failed. NOT a refusal, and the separation is the whole point of this arm.
+    ///
+    /// These are two different facts about two different parties. `Refused` says busbar declined to
+    /// carry the call — the operator granted nothing, the round cap bit, the caller's budget said
+    /// no — and the remedy is always a configuration or quota change. This arm says busbar carried
+    /// the call, the call WENT OUT, and the far end did not produce an answer busbar could serve:
+    /// it returned a JSON-RPC error, or it stalled past the deadline, or it answered something that
+    /// is not a response to this request.
+    ///
+    /// They were one arm (`Refusal::UpstreamFailed`) until this commit, and the conflation was
+    /// visible in three places at once. The caller was told `-32000` / `403 FORBIDDEN` — busbar's
+    /// "I refuse" — for a tool that had merely failed, so a model could neither see the failure nor
+    /// retry it. The call log recorded `refused`, whose documented meaning is THE CALL DID NOT GO
+    /// OUT, for a call that did. And anything reading dispositions to tell "we are being throttled
+    /// by policy" from "our upstream is down" could tell neither, because both wore the same word.
+    UpstreamFailed(String),
 }
 
 /// Why busbar refused to carry a logical dispatch to completion. Every arm is busbar-attributed:
@@ -142,8 +158,6 @@ pub(crate) enum Refusal {
         round: u32,
         reason: String,
     },
-    /// The upstream leg itself failed.
-    UpstreamFailed(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -183,9 +197,6 @@ impl std::fmt::Display for Refusal {
                  budget: {reason}. A tool call is charged on the same budget plane as an LLM \
                  request, so a runaway loop stops when the budget stops it."
             ),
-            Refusal::UpstreamFailed(reason) => {
-                write!(f, "the MCP upstream call failed: {reason}")
-            }
         }
     }
 }
@@ -198,7 +209,6 @@ impl Refusal {
             Refusal::RoundCapExceeded { .. } => "ask_round_cap",
             Refusal::Unsatisfiable { .. } => "ask_unsatisfiable",
             Refusal::BudgetExhausted { .. } => "budget_exhausted",
-            Refusal::UpstreamFailed(_) => "upstream_failed",
         }
     }
 }
@@ -270,7 +280,7 @@ where
         }
         let result = match call(round, satisfaction.take()).await {
             Ok(r) => r,
-            Err(e) => return Outcome::Refused(Refusal::UpstreamFailed(e)),
+            Err(e) => return Outcome::UpstreamFailed(e),
         };
         let ask = match result {
             Round::Done(value) => return Outcome::Completed(value),

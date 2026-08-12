@@ -97,6 +97,11 @@ pub(crate) struct ToolEntry {
     pub(crate) description: Option<String>,
     /// The tool's JSON Schema, echoed verbatim. Opaque to busbar.
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// The tool's OUTPUT schema — published as `outputSchema`, and NOT opaque: it is the one schema
+    /// on this entry busbar itself is held to, because publishing it makes conforming structured
+    /// results a MUST. See [`super::config::ToolAllowCfg::output_schema`]. `None` ⇒ nothing is
+    /// published and nothing is checked.
+    pub(crate) output_schema: Option<serde_json::Value>,
     /// The rounds of input BUSBAR asks its own caller for before it dispatches this tool. EMPTY ⇒ no
     /// ask, which is deny-by-default by absence. Carried on the entry rather than re-read from the
     /// config at dispatch for the same reason everything else here is: the decision reads ONE
@@ -264,6 +269,14 @@ pub(crate) struct UpstreamPosture {
     pub(crate) token_exchange: Option<super::config::TokenExchangeCfg>,
     /// The RFC 8707 resource indicator — `tools.<server>.aud`. The exchanged token is bound to it.
     pub(crate) aud: Option<String>,
+    /// THE WALL-CLOCK BUDGET FOR ONE OUTBOUND LEG to this server. `None` ⇒
+    /// [`super::upstream::DEFAULT_UPSTREAM_TIMEOUT`], which is the value every registration used
+    /// before `tools.<server>.timeout:` existed.
+    ///
+    /// It rides on the snapshot rather than being re-read from `ToolsCfg` at dispatch, for the same
+    /// reason `refresh_policy` does: the request was ADMITTED against one snapshot, and a second
+    /// reader of the operator's intent could hand it a deadline from a different generation.
+    pub(crate) timeout: Option<std::time::Duration>,
 }
 
 /// THE VERSIONED SNAPSHOT. Immutable once built; replaced wholesale, never mutated in place.
@@ -415,6 +428,7 @@ impl Catalogue {
                         schema_hash: allow.schema_hash.clone(),
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
+                        output_schema: allow.output_schema.clone(),
                         ask_caller: allow.ask_caller.clone(),
                         task_support: allow.task_support,
                         task_ask_caller: allow.task_ask_caller.clone(),
@@ -856,6 +870,15 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
             credentials: def.upstream_credentials,
             token_exchange: def.token_exchange.clone(),
             aud: def.aud.clone(),
+            // `validate_server` already refused a malformed or zero value at BOOT, so a parse
+            // failure here cannot be an operator's typo reaching the request path. It falls back to
+            // the default rather than panicking, because a snapshot build is not a place to abort a
+            // running deployment.
+            timeout: def
+                .timeout
+                .as_deref()
+                .and_then(|t| crate::admin::parse_duration_secs(t).ok())
+                .map(std::time::Duration::from_secs),
         },
     }
 }

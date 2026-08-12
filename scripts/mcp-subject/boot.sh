@@ -327,6 +327,35 @@ tools:
               type: string
               description: "The tenant this call is for; mirrored into Mcp-Param-Tenant."
               x-mcp-header: "Tenant"
+      # ── THE OUTPUT SCHEMA, DECLARED BY THE OPERATOR ─────────────────────────────────────────
+      #
+      # \`output_schema:\` is the operator's, exactly as \`input_schema:\` and \`description:\` are, and
+      # it matters more than either: publishing an \`outputSchema\` makes conforming structured
+      # results a MUST for the server that published it, and that server is BUSBAR — a caller never
+      # speaks to the upstream and could not attribute a violation to it. An upstream that could
+      # write this schema could rewrite the promise busbar is held to.
+      #
+      # busbar published NO outputSchema on any tool until this commit
+      # (\`tools.withOutputSchema: control ["echo","add","always_fails"] / subject []\`), which made
+      # SRV.TOOLS.OUTPUTSCHEMA-CONFORMS vacuous for busbar and blinded every validating client: with
+      # no schema on the wire there is nothing to check a structured result against.
+      structured_report:
+        schema_hash: "sha256:diagnostic-structured-report"
+        description: "Returns a structured report alongside its text."
+        input_schema:
+          type: object
+          properties:
+            subject:
+              type: string
+              description: "What the report is about."
+        output_schema:
+          type: object
+          properties:
+            subject: { type: string }
+            status: { type: string, enum: ["ok", "degraded", "failed"] }
+            findings: { type: integer }
+          required: ["subject", "status", "findings"]
+          additionalProperties: false
       logging_tool:
         schema_hash: "sha256:diagnostic-logging-tool"
         description: "Exercises the request-scoped, logLevel-gated log channel."
@@ -733,6 +762,57 @@ tools:
               type: string
               description: "Who to greet."
 YAML
+
+  # ── THE SEAM UPSTREAM: THE BATTERY'S HOSTILE PEER, MOUNTED ───────────────────────────────────
+  #
+  # APPENDED ONLY WHEN `MCP_SEAM_UPSTREAM_URL` IS SET, so every other run of this file produces a
+  # byte-identical config. It is what turns the six `SEAM.*` clauses from "the seam could not be
+  # reached" into a judgement: those tests drive busbar's front door and observe what busbar sends
+  # out of its back door, and there is nothing to observe until a peer we control is registered.
+  #
+  # THE `publish_as: echo` IS MANDATORY, NOT COSMETIC. The seam suite calls the bare name `echo`,
+  # because that is the tool the battery's own `fakepeer/fake-server.mjs` has always exposed, and
+  # busbar's routing key is `{server}_{tool}` — which cannot compose a name with no separator in it.
+  # Without the override every seam `tools/call` is answered "unknown tool", nothing reaches an
+  # upstream, and FIVE OF THE SIX CLAUSES GO GREEN VACUOUSLY: each of them is looking for something
+  # that must NOT appear on the upstream connection, and nothing appears on a connection that was
+  # never opened. That is a worse outcome than the red it replaces, and the suite now refuses it
+  # independently — see `requireUpstreamWasReached` in `src/suites/seam.mjs`.
+  #
+  # `timeout: 10s` IS THE SECOND LOAD-BEARING LINE. `SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR` arms the
+  # `stall` mode and waits 20 seconds for busbar to answer its own client. busbar's default deadline
+  # is 30 seconds, so the clause was RED ON ARRIVAL against a busbar behaving exactly as configured.
+  # The fix is the per-server deadline in the `tools:` grammar, used here as an operator would use
+  # it — a loopback diagnostic that answers in milliseconds does not need thirty seconds — and NOT a
+  # constant tuned to the battery.
+  #
+  # Everything else goes through the ordinary path in full, exactly as the six registrations above
+  # do: a declared authenticity root, a per-tool approved digest, and `allow_private` said out loud
+  # because the peer is on loopback.
+  if [ -n "${MCP_SEAM_UPSTREAM_URL:-}" ]; then
+    cat >> "$dir/config.yaml" <<YAML
+
+  seam:
+    url: "$MCP_SEAM_UPSTREAM_URL"
+    allow_private: true
+    timeout: 10s
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      echo:
+        publish_as: echo
+        schema_hash: "sha256:battery-seam-echo"
+        description: "Returns the string it was given."
+        input_schema:
+          type: object
+          properties:
+            text:
+              type: string
+              description: "The text to echo."
+YAML
+    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline)"
+  fi
 }
 
 # One MCP JSON-RPC request, answered with its HTTP status only. Carries the mirrored headers AND

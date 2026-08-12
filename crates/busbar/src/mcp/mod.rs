@@ -163,6 +163,10 @@ pub(crate) mod connect;
 pub(crate) mod ingress;
 pub(crate) mod inputreq;
 pub(crate) mod method;
+/// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
+/// structured results a MUST for the server that published it, and on this plane that server is
+/// busbar — while the value itself comes from an upstream that can return whatever it likes.
+pub(crate) mod outputschema;
 pub(crate) mod resource;
 pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This

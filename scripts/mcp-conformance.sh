@@ -360,21 +360,91 @@ battery_subject() {
     # A workdir of its own: two legs writing one directory would leave each verdict standing over
     # the other's evidence, which is the defect `MCP_SUBJECT_OUT` exists to prevent on the official
     # leg.
-    MCP_SUBJECT_WORKDIR="${MCP_SUBJECT_WORKDIR:-.mcp-conformance/battery-subject-run}" \
-      boot_busbar_subject
+    local workdir="${MCP_SUBJECT_WORKDIR:-.mcp-conformance/battery-subject-run}"
+
+    # ── THE SEAM, ARMED ──────────────────────────────────────────────────────────────────────────
+    #
+    # The six `SEAM.*` clauses drive busbar's FRONT door and observe busbar's BACK door, so they
+    # need a hostile MCP server mounted as one of busbar's upstreams. The battery already owns the
+    # hostility — `fakepeer/fake-server.mjs`, twenty-odd named attacks emitting exact bytes no SDK
+    # would produce — but it speaks stdio, and busbar's client direction speaks streamable HTTP and
+    # deliberately nothing else (`transport: stdio` is refused at config validation; there is no
+    # child supervisor in this build). So the peer is reached through
+    # `fakepeer/http-fake-server.mjs`, the MIRROR of the `stdio-http-bridge.mjs` the battery already
+    # uses to reach busbar's front door: HTTP in, the fake server's stdio out, bytes unchanged in
+    # both directions. ONE source of hostility, two transports — a second HTTP-native hostile server
+    # would be twenty-odd chances for the two to disagree.
+    #
+    # THE MODE IS SELECTED BY A CONTROL FILE, NOT AN ENVIRONMENT VARIABLE, and that is what lets ONE
+    # long-lived busbar serve every seam test. An env-selected mode would mean a fresh peer process
+    # per test, therefore a fresh registration, therefore a fresh busbar per test — and a busbar
+    # booted seconds ago with nothing else in flight cannot demonstrate
+    # SEAM.ROLE-ISOLATION-UNDER-UPSTREAM-CRASH at all, because "the front door still serves" is only
+    # a claim about a process that was ALREADY SERVING when the upstream died.
+    #
+    # The cost is stated rather than hidden: the seam tests are NOT isolated from each other. That
+    # is the correct trade for these six — every one is about what a long-lived gateway does when an
+    # upstream misbehaves — and a run in which test N's damage broke test N+1 is a finding this
+    # arrangement can see and a per-test boot could not.
+    # A DIRECTORY OF ITS OWN, and NOT `$workdir`: `boot_busbar_subject` does `rm -rf` on its workdir
+    # before writing the config, which would delete the control file and the log of a peer that is
+    # already running — leaving a hostile upstream alive with its evidence unlinked underneath it.
+    local seamdir seam_control seam_port
+    seamdir=".mcp-conformance/battery-seam"
+    rm -rf "$seamdir"; mkdir -p "$seamdir"
+    seamdir="$(cd "$seamdir" && pwd)"
+    seam_control="$seamdir/seam-control.json"
+    seam_port="$(node -e '
+      const s = require("net").createServer();
+      s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => console.log(p)); });
+    ')"
+    node "$MCP_BATTERY_DIR/fakepeer/http-fake-server.mjs" "$seam_port" "$seam_control" \
+      >"$seamdir/seam-upstream.log" 2>&1 &
+    SEAM_PID=$!
+    # Reaped even if the boot below dies: a leaked hostile peer would hold a port and outlive the
+    # job that started it.
     # shellcheck disable=SC2064
-    trap "kill $SUBJECT_PIDS 2>/dev/null || true" EXIT
+    trap "kill $SEAM_PID 2>/dev/null || true" EXIT
+    say "   hostile seam upstream on 127.0.0.1:$seam_port (control $seam_control, log $seamdir/seam-upstream.log)"
+
+    # EXPORTED BEFORE THE BOOT, because `subject_write_config` reads it: the registration has to
+    # exist in the config busbar starts with. A busbar booted first and reconfigured later would be
+    # a different test.
+    export MCP_SEAM_UPSTREAM_URL="http://127.0.0.1:$seam_port/mcp"
+
+    MCP_SUBJECT_WORKDIR="$workdir" boot_busbar_subject
+    # shellcheck disable=SC2064
+    trap "kill $SUBJECT_PIDS $SEAM_PID 2>/dev/null || true" EXIT
     MCP_SUBJECT_SERVER_CMD="node $(pwd)/$MCP_BATTERY_DIR/scripts/stdio-http-bridge.mjs $SUBJECT_URL"
     export MCP_SUBJECT_SERVER_CMD
+
+    # THE SEAM LAUNCHER. `src/suites/seam.mjs` substitutes this for the ordinary server launch and
+    # hands it `MCP_FAKE_MODE` / `MCP_FAKE_TRANSCRIPT` per test; `seam-arm.sh` writes those into the
+    # control file the long-lived hostile peer reads, then execs the SAME bridge above so the front
+    # door is the same busbar the rest of the battery has been driving all run.
+    MCP_SUBJECT_UPSTREAM_CONFIG_CMD="bash $(pwd)/scripts/mcp-subject/seam-arm.sh $seam_control $SUBJECT_URL"
+    export MCP_SUBJECT_UPSTREAM_CONFIG_CMD
+
+    # THE ALWAYS-FAILING TOOL, named here for the same reason `run-control.sh` names
+    # `always_fails` for the python control: the harness contains no knowledge of any subject, so the
+    # ARMING script is the one place a subject's own tool name may be written. Without it
+    # `SRV.TOOLS.EXECUTION-ERROR-IS-RESULT` skips — and under MCP_NO_SKIPS it goes RED — over a
+    # surface busbar implements and the official suite's `tools-call-error` scenario already passes.
+    # `test_error_handling` is `subject_write_config`'s `test` server plus `error_handling`, the tool
+    # `diagnostic-upstream.mjs` answers with `isError: true`.
+    export MCP_SUBJECT_FAILING_TOOL="${MCP_SUBJECT_FAILING_TOOL:-test_error_handling}"
   fi
 
   require_armed "battery subject" MCP_SUBJECT_BUSBAR_BIN MCP_SUBJECT_SERVER_CMD MCP_SUBJECT_CLIENT_CMD
   # MCP_NO_SKIPS: a skipping test is not a passing test. Set HERE and not on the control legs,
   # because on the control legs a skip is the harness telling the truth about a peer it was never
-  # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched. It
-  # makes the six `pr`-tier seam tests RED while busbar has no MCP CLIENT direction to mount the
-  # battery's fake server as an upstream — which is the correct answer, because the seam is exactly
-  # the one property that is meaningless with only one direction built.
+  # pointed at, whereas here it is a green tick over a surface of BUSBAR that nobody touched.
+  #
+  # It used to make the six `pr`-tier seam tests RED, and that was the correct answer while nothing
+  # mounted a peer for busbar to be observed talking to. The MCP CLIENT direction was already built
+  # and already worked — what was missing was an HTTP-facing hostile peer, the arming, and a
+  # `publish_as: echo` registration for the bare name the suite calls. All three are above. The
+  # skip-to-red mechanism is UNCHANGED and still guards every other surface.
   MCP_NO_SKIPS=1 \
   MCP_SUBJECT_SERVER_CMD="${MCP_SUBJECT_SERVER_CMD:-}" \
   MCP_SUBJECT_CLIENT_CMD="${MCP_SUBJECT_CLIENT_CMD:-}" \

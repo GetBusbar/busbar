@@ -84,6 +84,7 @@ fn cfg_with(
         "fs".to_string(),
         McpServerDefCfg {
             refresh_ttl: None,
+            timeout: None,
             url: "https://fs.internal/mcp".to_string(),
             pin: ServerPinCfg { mechanism, key },
             tools_allow,

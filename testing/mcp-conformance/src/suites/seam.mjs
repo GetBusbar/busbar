@@ -31,12 +31,20 @@
 // correct". So the subject leg sets MCP_NO_SKIPS=1 and ctx.skip() below becomes
 // a FAILURE naming the missing variable (see src/core/runner.mjs).
 //
-// Concretely: these six `pr`-tier seam tests need busbar's MCP CLIENT direction
-// -- the ability to mount an upstream MCP server -- which does not exist on
-// this branch. Under the gate they are RED, and they should be: the seam is the
-// one property that is meaningless with only one direction built, so a green
-// here before the client direction lands would be a lie about exactly the
-// property that matters most.
+// AND WHEN IT IS PRESENT, THE ABSENCES THESE TESTS REPORT MUST STILL BE EARNED.
+//
+// Four of the six assert that something is NOT on the upstream connection: a
+// forwarded request id, a forwarded credential, a relayed server-initiated
+// request. Every one of those is satisfied by an upstream connection that was
+// never opened -- so a subject that answers "unknown tool" to the seam's
+// `tools/call`, or a launcher that mounts nothing, passes them all while
+// proving nothing. That is a worse outcome than the red it replaces, because it
+// is indistinguishable from the correct one.
+//
+// `requireUpstreamWasReached` below is the guard, and it THROWS rather than
+// asserting: a silent observation channel is a finding about this RUN, not a
+// spec violation by the subject, and the runner counts a throw as ERROR
+// alongside every failure. What it can never be is a pass.
 
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,10 +76,45 @@ function startSeam(ctx, upstreamMode) {
   const target = ctx.target;
   const saved = target.serverLaunch;
   target.serverLaunch = cmd;
-  const peer = target.spawnServer();
+  // THE MODE AND THE TRANSCRIPT REACH THE LAUNCHER, which they could not before: `spawnServer` took
+  // no environment, so `seamEnv` was dead code and `upstreamMode` was an unused argument. Every seam
+  // test would have run against the honest baseline and read an empty transcript — and an empty
+  // transcript satisfies four of these six assertions VACUOUSLY, because each of them is looking for
+  // something that must NOT be in it. That is the worst possible failure for this suite, and it was
+  // a defect in the battery rather than in any subject.
+  const peer = target.spawnServer(seamEnv(upstreamMode, transcript));
   target.serverLaunch = saved;
   peer.__transcript = transcript;
+  peer.__mode = upstreamMode;
   return peer;
+}
+
+/**
+ * ASSERT THE OBSERVATION CHANNEL IS LIVE before believing anything read from it.
+ *
+ * Four of these six clauses assert that something is ABSENT from the upstream transcript — a
+ * forwarded id, a forwarded credential. An absence read from a transcript that was never written is
+ * not evidence of anything, and it is indistinguishable from the honest result. So a test whose
+ * verdict rests on an absence first proves that the channel it is reading CARRIED SOMETHING: busbar
+ * must have been observed talking to our upstream at all.
+ *
+ * It THROWS rather than asserting, because a silent observation channel is not a finding about the
+ * subject and must not be reported as a spec violation by the subject. It is a finding about this
+ * RUN, and the runner records a throw as ERROR, which the gate counts alongside every failure. What
+ * it must never be is a pass.
+ */
+function requireUpstreamWasReached(peer, entries) {
+  const outbound = entries.filter((e) => e.direction === 'client->server');
+  if (outbound.length === 0) {
+    throw new Error(
+      `VACUOUS: the upstream transcript at ${peer.__transcript} recorded no request from the `
+      + `subject in mode "${peer.__mode}", so every absence this test would otherwise report is `
+      + 'evidence of nothing — the seam was never crossed. Check that '
+      + 'MCP_SUBJECT_UPSTREAM_CONFIG_CMD mounts the fake server, and that the tool this test calls '
+      + 'resolves to it rather than being answered "unknown tool".',
+    );
+  }
+  return outbound;
 }
 
 function readUpstream(peer) {
@@ -97,10 +140,15 @@ test({
   run: async (ctx) => {
     const peer = startSeam(ctx, 'honest');
     try {
+      // THE DISTINCTIVE ID RIDES THE REQUEST THAT CROSSES THE SEAM, and that is a correction.
+      // It used to ride `tools/list`, which an aggregating server answers from its own catalogue
+      // without contacting anybody — so the id had no back door to appear on and the assertion was
+      // satisfied by a request that never left. A `tools/call` is the one front-door request whose
+      // whole purpose is to become a back-door request, which is where a passthrough would show.
       const distinctive = 'front-door-id-e7f3a91c';
-      peer.send(request(distinctive, 'tools/list'));
-      await peer.waitForId(distinctive);
-      const upstream = readUpstream(peer).filter((e) => e.direction === 'client->server');
+      peer.send(request(distinctive, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }));
+      try { await peer.waitForId(distinctive, 15000); } catch { /* the call may fail; the trace is what matters */ }
+      const upstream = requireUpstreamWasReached(peer, readUpstream(peer));
       const leaked = upstream.filter((e) => e.payload && e.payload.id === distinctive);
       ctx.assert('BASE.REQ.ID-UNIQUE', leaked.length === 0,
         `the front-door request id appeared unchanged on the upstream connection: ${JSON.stringify(leaked)}`);
@@ -123,8 +171,11 @@ test({
         arguments: { text: 'hello' },
         _authProbe: secret,
       }, { extraMeta: { 'com.example.battery/authorization': `Bearer ${secret}` } }));
-      try { await peer.waitForId(1, 10000); } catch { /* the call may legitimately fail */ }
-      const blob = JSON.stringify(readUpstream(peer));
+      try { await peer.waitForId(1, 15000); } catch { /* the call may legitimately fail */ }
+      const entries = readUpstream(peer);
+      // The absence below is only evidence if there was a back door to be absent from.
+      requireUpstreamWasReached(peer, entries);
+      const blob = JSON.stringify(entries);
       ctx.assert('PAT.MRTR.STATE-UNTRUSTED', !blob.includes(secret),
         'a credential presented at the front door was observed on the upstream connection');
     } finally { await peer.stop(); }
@@ -142,6 +193,17 @@ test({
       peer.send(request(1, 'tools/list'));
       const res = await peer.waitForId(1);
       const blob = JSON.stringify(res.result || {});
+      // NOT VACUOUS: the aggregated list must actually CONTAIN the upstream's tool. A subject that
+      // exposed none of it would also not republish its description, and would pass this test for
+      // the one reason that proves nothing.
+      const names = (res.result && res.result.tools || []).map((t) => t.name);
+      if (!names.includes('echo')) {
+        throw new Error(
+          'VACUOUS: the hostile upstream\'s tool is not in the subject\'s aggregated tools/list '
+          + `(saw ${JSON.stringify(names)}), so "the injection was not republished" is satisfied by `
+          + 'the tool being absent rather than by anything this test is about.',
+        );
+      }
       const republished = /IGNORE ALL PREVIOUS INSTRUCTIONS/i.test(blob);
       // There is NO spec clause requiring sanitisation here. This is our
       // recommendation, and a strong variance point for a human.
@@ -167,6 +229,10 @@ test({
       peer.send(request(1, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }));
       let res = null;
       try { res = await peer.waitForId(1, 20000); } catch { /* recorded below */ }
+      // The subject must have TRIED. An answer produced without ever reaching the stalling upstream
+      // (an "unknown tool", say) is an answer to a different question, and would pass this test
+      // while proving nothing about a hung seam.
+      requireUpstreamWasReached(peer, readUpstream(peer));
       if (res) {
         // Either is defensible. The bad outcome is no answer at all.
         ctx.variance('seam.upstreamStall.answerKind',
@@ -187,7 +253,10 @@ test({
     const peer = startSeam(ctx, 'server-request');
     try {
       peer.send(request(1, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }));
-      try { await peer.waitForId(1, 12000); } catch { /* fine */ }
+      try { await peer.waitForId(1, 15000); } catch { /* fine */ }
+      // The hostile frame only exists if the upstream was reached, so an empty relay list means
+      // nothing until that is established.
+      requireUpstreamWasReached(peer, readUpstream(peer));
       const relayed = peer.serverRequests();
       ctx.assert('PAT.SERVER-NO-REQUESTS', relayed.length === 0,
         `the subject relayed a server-initiated request downstream: ${JSON.stringify(relayed)}`);
@@ -254,7 +323,10 @@ test({
     const peer = startSeam(ctx, 'half-answer');
     try {
       peer.send(request(1, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }));
-      try { await peer.waitForId(1, 12000); } catch { /* the call may fail: that is fine */ }
+      try { await peer.waitForId(1, 15000); } catch { /* the call may fail: that is fine */ }
+      // The upstream must actually have DIED under this subject. A front door that still works
+      // after a crash that never happened is not evidence of role isolation.
+      requireUpstreamWasReached(peer, readUpstream(peer));
       // The assertion is about the FRONT door still working.
       peer.send(request('after-crash', 'server/discover'));
       const res = await peer.waitForId('after-crash', 12000);

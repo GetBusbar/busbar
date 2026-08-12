@@ -90,6 +90,7 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
     );
     McpServerDefCfg {
         refresh_ttl: None,
+        timeout: None,
         url: format!("https://{id}.internal/mcp"),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,
@@ -558,10 +559,17 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // this test is here to show — the charge and the meter happen ahead of the call, so a dispatch
     // that never reaches an upstream is still charged and still audited. Charging afterwards would
     // let a runaway loop spend past the cap by exactly one unbounded loop.
-    assert_eq!(status, 403);
+    // The ANSWER is a tool execution error, not a refusal: the SSRF check refused the DESTINATION,
+    // which is an upstream leg that failed, and the caller's own grant was never in question. It
+    // asserted `403` until the `Outcome::UpstreamFailed` split — see `upstream_join_tests` for why
+    // conflating the two was the defect. What this test is about is UNCHANGED either way: the
+    // charge and the meter happen AHEAD of the call, so a dispatch that never reached an upstream
+    // is still charged and still audited.
+    assert_eq!(status, 200, "{body}");
     assert_eq!(
-        body.pointer("/error/data/reason").unwrap(),
-        "upstream_failed"
+        body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "{body}"
     );
 
     // THE METER. Read back from the real store, after the real flush, per output.
