@@ -278,6 +278,7 @@ fn every_refusal_arm_has_its_own_audit_word() {
         Rejected::WrongPrincipal,
         Rejected::WrongRequest,
         Rejected::WrongGeneration,
+        Rejected::AlreadySpent,
     ];
     let words: std::collections::BTreeSet<&str> = arms.iter().map(|r| r.audit_reason()).collect();
     assert_eq!(words.len(), arms.len(), "audit words must be distinct");
@@ -293,6 +294,10 @@ fn the_caller_facing_message_does_not_say_which_check_failed() {
         Rejected::WrongPrincipal,
         Rejected::WrongRequest,
         Rejected::WrongGeneration,
+        // An approval already spent renders IDENTICALLY. It is the one arm where a distinct message
+        // would be actively dangerous: it would tell a caller that the state it just presented WAS
+        // valid, which is more than any other refusal admits.
+        Rejected::AlreadySpent,
     ];
     let messages: std::collections::BTreeSet<String> = arms.iter().map(|r| r.to_string()).collect();
     assert_eq!(

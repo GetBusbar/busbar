@@ -13,6 +13,7 @@
 //!   might be matching nothing at all.
 
 use super::*;
+use crate::mcp::askstate::SpentAskStates;
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
 
 const KEY: [u8; 32] = [3u8; 32];
@@ -69,7 +70,18 @@ fn all_capabilities() -> serde_json::Value {
 const DIGEST: &str = "d";
 
 fn decide_with(rounds: &[AskRoundCfg], caps: &serde_json::Value, retry: Retry<'_>) -> AskDecision {
-    decide(rounds, 3, caps, retry, bind(), DIGEST, Some(&sealer()))
+    decide(
+        rounds,
+        3,
+        caps,
+        retry,
+        bind(),
+        DIGEST,
+        Approvals {
+            sealer: Some(&sealer()),
+            spent: &SpentAskStates::new(),
+        },
+    )
 }
 
 /// DENY BY DEFAULT, BY ABSENCE. A capability with no `ask_caller` never asks — which is every
@@ -262,7 +274,10 @@ fn one_callers_state_is_not_redeemable_by_another() {
         },
         b,
         DIGEST,
-        Some(&sealer()),
+        Approvals {
+            sealer: Some(&sealer()),
+            spent: &SpentAskStates::new(),
+        },
     );
     assert!(matches!(
         got,
@@ -348,7 +363,10 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
             retry,
             bind(),
             DIGEST,
-            Some(&sealer()),
+            Approvals {
+                sealer: Some(&sealer()),
+                spent: &SpentAskStates::new(),
+            },
         )
         else {
             panic!("round {expected} must be allowed under a cap of 2");
@@ -368,7 +386,10 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
             },
             bind(),
             DIGEST,
-            Some(&sealer()),
+            Approvals {
+                sealer: Some(&sealer()),
+                spent: &SpentAskStates::new(),
+            },
         );
         assert!(
             matches!(got, AskDecision::Refuse(Refusal::RoundCapExceeded { .. })),
@@ -388,7 +409,10 @@ fn a_cap_of_zero_never_asks() {
         Retry::default(),
         bind(),
         DIGEST,
-        Some(&sealer()),
+        Approvals {
+            sealer: Some(&sealer()),
+            spent: &SpentAskStates::new(),
+        },
     );
     assert!(matches!(
         got,
@@ -452,7 +476,10 @@ fn a_deployment_with_no_signing_key_refuses_rather_than_asking_with_unprotected_
         Retry::default(),
         bind(),
         DIGEST,
-        None,
+        Approvals {
+            sealer: None,
+            spent: &SpentAskStates::new(),
+        },
     );
     assert!(matches!(got, AskDecision::Refuse(Refusal::NoSealer { .. })));
 }

@@ -502,14 +502,32 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// `tools/list` — the GOVERNANCE-SCOPED catalogue.
+/// `tools/list` — the GOVERNANCE-SCOPED catalogue, MINUS anything currently quarantined.
+///
+/// ## Why the listing consults the drift sightings and not only the grants
+///
+/// Refusing to DISPATCH to a demoted upstream was the safety property and it was already proven. It
+/// is not the whole of it. A listing is not a neutral fact: it publishes the operator's APPROVED
+/// schema and APPROVED hash, and for a quarantined server that is a description of a tool the
+/// upstream has stopped serving that way. A planning client reads it, builds a call against a shape
+/// that no longer exists, and spends a turn and a budget being refused — while busbar's own stated
+/// position for every other field is that publishing something means the operator vouched for THIS
+/// tool at THIS digest. It cannot vouch for one it has just demoted.
+///
+/// The filter answers on exactly the arm the dispatch gate refuses on, and deliberately not on the
+/// other two. `Unsighted` — nobody has ever looked — still advertises, because that is the
+/// declarative deployment every existing operator runs, and treating "never looked" as "it moved"
+/// would empty the catalogue of all of them. Both halves are pinned by test beside each other.
 fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let grant = ctx.grant();
+    let sightings = ctx.app.mcp_sightings.load();
+    let live = LiveSightings::of(&sightings);
     let tools: Vec<serde_json::Value> = ctx
         .app
         .mcp_catalogue
         .tools_for(&grant)
         .into_iter()
+        .filter(|t| !ctx.app.mcp_catalogue.is_quarantined(live, t))
         .map(render_tool)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
@@ -892,23 +910,23 @@ fn resources_read(
         // meant is a question only the caller can answer. The whole reason the catalogue was
         // namespaced was that this case used to be resolved SILENTLY, by config order, and served
         // one server's content to a caller who had asked for the other's.
-        super::catalogue::ResourceLookup::Ambiguous(servers) => {
-            return error(
-                StatusCode::CONFLICT,
-                id,
-                CODE_REFUSED,
-                &format!(
-                    "`{uri}` is exposed by more than one server you are granted ({}). \
-                     Name the server's own resource, or narrow the grant.",
-                    servers.join(", ")
-                ),
-                Some(serde_json::json!({ "reason": "resource_ambiguous", "servers": servers })),
-            );
+        super::catalogue::ResourceLookup::Ambiguous(candidates) => {
+            return ambiguous_resource(id, uri, &candidates)
         }
         super::catalogue::ResourceLookup::NotFound => {
             match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
-                Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
-                None => {
+                super::catalogue::ResourceLookup::One((template, bindings)) => {
+                    templated_resource_content(uri, template, &bindings)
+                }
+                // THE SAME REFUSAL, and it must be the same one. An operator who writes an approval
+                // with a parameter in it has not thereby agreed that busbar may pick between two
+                // upstreams on their behalf; a plane where the literal spelling refuses and the
+                // parameterised spelling quietly resolves is a plane where the refusal is bypassed
+                // by writing the approval differently.
+                super::catalogue::ResourceLookup::Ambiguous(candidates) => {
+                    return ambiguous_resource(id, uri, &candidates)
+                }
+                super::catalogue::ResourceLookup::NotFound => {
                     return not_found(
                         id,
                         &format!("`{uri}` is not a resource this server exposes."),
@@ -920,6 +938,25 @@ fn resources_read(
     result(
         id,
         cache_hints(serde_json::json!({ "contents": [content] })),
+    )
+}
+
+/// THE ONE AMBIGUITY REFUSAL, shared by both address resolutions.
+///
+/// One function rather than one per resolution, because a second copy is a second place for one of
+/// them to answer a `200`, which is precisely the defect this was written to close: the literal
+/// address refused and the parameterised address did not, and nothing made the two agree.
+fn ambiguous_resource(id: Option<serde_json::Value>, uri: &str, candidates: &[String]) -> Response {
+    error(
+        StatusCode::CONFLICT,
+        id,
+        CODE_REFUSED,
+        &format!(
+            "`{uri}` is answered by more than one approval you are granted ({}). \
+             Narrow the grant so exactly one of them applies.",
+            candidates.join(", ")
+        ),
+        Some(serde_json::json!({ "reason": "resource_ambiguous", "candidates": candidates })),
     )
 }
 
@@ -1255,12 +1292,49 @@ async fn tools_call(
     // state is sealed over a digest of the arguments AS THE CALLER SENT THEM, so merging first
     // would make a retry's digest disagree with the seal minted on the previous round and every
     // multi-round exchange would fail verification on round two.
+    //
+    // AND THE MERGE IS BOUNDED BY WHAT THE OPERATOR ASKED FOR. This used to insert every key the
+    // caller put in `inputResponses`, overwriting whatever was there — which meant the one thing the
+    // seal covers, the arguments the confirmation was DISPLAYED about, could be rewritten on the way
+    // past it. A caller shown "approve moving 10 to alice?" answered `{"amount": 1000000}` and the
+    // upstream was told to move a million, with the digest check passing the whole way, because the
+    // digest is taken over `arguments` and the rewrite arrived in a sibling field. An approval that
+    // carries out a different call than the one it described is the same defect as an approval that
+    // is not required at all.
+    //
+    // So: an answer may bind ONLY a key this capability's own `ask_caller:` rounds declared, and may
+    // never name an argument the caller already sent. Anything else refuses the call rather than
+    // being dropped — a caller whose answer is being ignored has to be told, or the next attacker to
+    // try it learns nothing and the next honest client debugs a value that vanished.
     if let Some(responses) = params
         .and_then(|p| p.get("inputResponses"))
         .and_then(|v| v.as_object())
     {
-        let merged = arguments.as_object_mut();
-        if let Some(merged) = merged {
+        let declared: std::collections::BTreeSet<&str> = selected
+            .ask_caller
+            .iter()
+            .flat_map(|round| round.keys().map(String::as_str))
+            .collect();
+        let sealed: std::collections::BTreeSet<String> = arguments
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(offending) = responses
+            .keys()
+            .find(|k| !declared.contains(k.as_str()) || sealed.contains(*k))
+        {
+            let refusal = DispatchRefusal::NotGranted(format!(
+                "the answer named `{offending}`, which is not one of the inputs \
+                 `{}` requested — an answer may only supply what was asked for, and may never \
+                 rewrite an argument the confirmation was shown for.",
+                selected.namespaced
+            ));
+            return log.refused(
+                "caller_ask_answer_undeclared",
+                refuse(ctx, name, &refusal, id),
+            );
+        }
+        if let Some(merged) = arguments.as_object_mut() {
             for (key, value) in responses {
                 merged.insert(key.clone(), value.clone());
             }
@@ -2145,7 +2219,10 @@ fn caller_ask_decision(
             now: crate::store::now(),
         },
         &super::askstate::digest_arguments(arguments),
-        sealer.as_ref(),
+        callerask::Approvals {
+            sealer: sealer.as_ref(),
+            spent: &ctx.app.mcp_spent_approvals,
+        },
     )
 }
 

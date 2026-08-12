@@ -134,6 +134,9 @@ pub(crate) enum Rejected {
     WrongRequest,
     /// Sealed under a catalogue generation that is no longer live — an approval moved underneath it.
     WrongGeneration,
+    /// ALREADY REDEEMED. Perfectly valid, for this caller, for this request, inside its window — and
+    /// already spent on the call it was minted to approve. See [`SpentAskStates`].
+    AlreadySpent,
 }
 
 impl Rejected {
@@ -146,6 +149,7 @@ impl Rejected {
             Rejected::WrongPrincipal => "state_wrong_principal",
             Rejected::WrongRequest => "state_wrong_request",
             Rejected::WrongGeneration => "state_wrong_generation",
+            Rejected::AlreadySpent => "state_already_spent",
         }
     }
 }
@@ -289,6 +293,77 @@ pub(crate) fn digest_arguments(arguments: &serde_json::Value) -> String {
     let mut h = Sha256::new();
     h.update(serde_json::to_vec(arguments).unwrap_or_default());
     hex::encode(h.finalize())
+}
+
+/// THE SPENT-APPROVAL LEDGER — what makes an approval SINGLE-USE.
+///
+/// ## What the seal could not do on its own
+///
+/// Everything else about this module is a statement the seal itself can carry: who it was minted
+/// for, what request, which round, until when. Single use is the one property that cannot ride
+/// inside the blob, because a caller presenting the identical blob a second time presents an
+/// identical, perfectly valid blob. The only thing that can tell the second presentation from the
+/// first is a RECORD THAT THE FIRST HAPPENED — and until this existed there was none, so an operator
+/// who gated a money-moving tool behind a confirmation got confirm-once-execute-many.
+///
+/// ## Keyed on the nonce, and only the terminal redemption is recorded
+///
+/// The nonce already exists and is already unique per mint (`mrtr`'s multi-round scenario requires
+/// it), so it is the natural handle and nothing new has to be sealed. What is recorded is the ONE
+/// redemption that dispatches: an intermediate round's state is answered with a fresh ask and a
+/// fresh state, so burning it would refuse the ordinary case of a client retrying a request whose
+/// answer it never saw. The spend therefore happens exactly where the exchange COMPLETES.
+///
+/// ## What a restart does to it, and why that is the right trade
+///
+/// This is PROCESS-LOCAL, and deliberately so rather than for want of a durable store.
+///
+/// - The window a restart reopens is bounded by the state's own life: a state that has lapsed is
+///   already refused by [`Sealer::open`], so the most a restart can restore is the unredeemed
+///   remainder of one [`DEFAULT_TTL_SECS`] window. It is not a standing hole; it closes by itself.
+/// - It is not attacker-triggerable. A caller cannot restart the process, and a caller who could
+///   has a larger primitive than double-spending one confirmation.
+/// - The alternative is a durable spent-nonce table, which means a new `busbar_api::Store` method,
+///   which means the plugin ABI — a substantial change to buy the residual, and one this tree is
+///   the wrong place to spend: it is scheduled for deletion and rebuild on the `rmcp` SDK, and the
+///   rebuilt tree gets to decide where its state lives. The BEHAVIOUR is pinned by test either way,
+///   so the decision can be revisited without the property being lost.
+///
+/// A fleet is the same trade one hop out: two nodes sharing a signing key share the seal but not
+/// this ledger, so a redemption on node A does not stop one on node B. That is a real limit and it
+/// is written down here rather than discovered; closing it needs shared state, which is the same
+/// durable-store decision.
+///
+/// ## The size of it
+///
+/// An entry lives at most as long as the state it records, and every call evicts what has lapsed,
+/// so the table holds at most the approvals minted in one TTL window. Minting one costs the caller
+/// a metered, budget-charged round, so the rate is bounded by governance rather than by this map.
+#[derive(Debug, Default)]
+pub(crate) struct SpentAskStates {
+    /// nonce ⇒ the instant after which the entry is meaningless, because the state it records can
+    /// no longer be opened anyway.
+    seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+}
+
+impl SpentAskStates {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// SPEND this approval. `true` if it had not been spent before; `false` if it had.
+    ///
+    /// Test-and-set under one lock, and that is not an optimisation: a caller that fires two
+    /// redemptions of one approval concurrently is the obvious way to attack a check that reads and
+    /// then writes, and it is the shape the whole gate exists to refuse.
+    pub(crate) fn spend(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
+        // Poison-recovering, like every other request-path lock in this process: the data behind it
+        // is still valid after a panic, and cascading the poison would turn one stray panic into a
+        // gate that refuses every confirmation for the life of the process.
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        seen.retain(|_, expiry| *expiry >= now);
+        seen.insert(nonce.to_string(), expires_at).is_none()
+    }
 }
 
 /// A fresh nonce. `getrandom` is the same fail-closed entropy source key secrets use; a failure is

@@ -1154,19 +1154,18 @@ async fn run() {
     // and the A2A job are: a second job against the same registry would double every fetch and race
     // every ledger stamp. It holds the HANDLE, not the app, so a config apply is picked up on the
     // next tick rather than sweeping a generation the operator has already replaced.
-    if !app_handle.load().mcp_catalogue.is_empty() {
-        tracing::info!(
-            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
-            "mcp: tool-list refresh job started; registered servers are re-hashed on their own \
-             `refresh_ttl:` and quarantined on drift with no operator present"
-        );
-        // Handle intentionally dropped, exactly as the A2A job's is: it runs for the process
-        // lifetime and exits its own loop on the shutdown broadcast.
-        std::mem::drop(crate::trust::sweep::spawn(
-            crate::mcp::connect::RefreshSweeper(app_handle.clone()),
-            shutdown_tx.subscribe(),
-        ));
-    }
+    //
+    // The decision itself lives in `mcp::spawn_refresh_job` rather than inline here, because
+    // `run()` binds real listeners and joins them and so nothing can test a line of it. While this
+    // was inline, the whole battery in `mcp/tests/timer_dispatch_tests.rs` called `refresh_sweep`
+    // by hand, and deleting this block would have failed exactly nothing.
+    //
+    // Handle intentionally dropped, exactly as the A2A job's is: it runs for the process lifetime
+    // and exits its own loop on the shutdown broadcast.
+    std::mem::drop(crate::mcp::spawn_refresh_job(
+        &app_handle,
+        shutdown_tx.subscribe(),
+    ));
 
     // THE A2A RE-VERIFICATION JOB. An approval is a statement about a document at a moment and
     // nothing keeps it true; the pin catches a change only when somebody looks, and this is what
@@ -3970,6 +3969,13 @@ pub(crate) fn build_app_from_config(
         mcp_sightings: prior.map_or_else(
             || Arc::new(crate::mcp::client::catalogue::CatalogueCache::new()),
             |p| p.mcp_sightings.clone(),
+        ),
+        // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
+        // approval already spent is evidence, not intent, and a config apply that forgot it would
+        // hand every outstanding confirmation back to whoever still holds it.
+        mcp_spent_approvals: prior.map_or_else(
+            || Arc::new(crate::mcp::askstate::SpentAskStates::new()),
+            |p| p.mcp_spent_approvals.clone(),
         ),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
