@@ -769,6 +769,12 @@ async fn ingress_path_model(
     .await
 }
 
+// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by the MCP server plane and the A2A receiving
+// plane. It lives under `ingress/` because that is the shared owner `structure-lint`'s plane
+// ledger already names for the ingress concern: "one plane-neutral admission in ingress/, with the
+// plane supplying its wire reader". This is the envelope half of that.
+pub(crate) mod jsonrpc;
+
 mod dispatch;
 pub(crate) use dispatch::{operation_resolved, protocol_dispatch};
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.

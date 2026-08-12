@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE JSON-RPC 2.0 ENVELOPE READER — one reader, for every plane that speaks JSON-RPC.
+//!
+//! # Why this file exists, stated as the defect it closes
+//!
+//! Two planes carry JSON-RPC on the wire — MCP (server role) and A2A (receiving role) — and until
+//! this module they read the envelope in two separate places, with two different answers:
+//!
+//! | | `mcp/ingress.rs` (before) | `a2a/ingress.rs` (before) |
+//! |---|---|---|
+//! | `jsonrpc` member checked | yes | **no, not at all** |
+//! | `method` member checked | yes | no |
+//! | `id` typed as | `Option<Value>` | `Value`, via `.unwrap_or(Value::Null)` |
+//! | `"id": null` | accepted, served `200` + a `result` | accepted, served `200` + a `result` |
+//! | no `id` member | served `200` + a `result` | served `200` + a `result` with `"id": null` |
+//! | parse failure answered as | a JSON-RPC error | a bespoke `{"error":{"code":"invalid_request"}}` |
+//!
+//! One defect was REPORTED, on the MCP plane. Both planes had it, and the A2A plane had it worse:
+//! `.unwrap_or(Value::Null)` destroyed the missing-versus-null distinction before anything could act
+//! on it, so the two cases the specification treats most differently were literally the same value
+//! by the time the handler saw them. That is the shape `structure-lint`'s plane-coherence check was
+//! built to catch — one concern, implemented twice, fixed once.
+//!
+//! So the rule this module exists to make true is: **a plane supplies its wire transport, never its
+//! own envelope semantics.** There is one `read`, one set of codes, one refusal envelope and one
+//! notification acknowledgement, and a third JSON-RPC plane gets them for free.
+//!
+//! # What the specifications require, quoted, because the three cases differ
+//!
+//! **JSON-RPC 2.0 section 4 (Request object), `id`:** *"An identifier established by the Client that MUST
+//! contain a String, Number, or NULL value if included. If it is not included it is assumed to be a
+//! notification. The value SHOULD normally not be Null [1] …"* — and footnote **[1]**: *"The use of
+//! Null as a value for the id member in a Request object is discouraged, because this specification
+//! uses a value of Null for the id member in a Response object to indicate an unknown id (e.g.
+//! Parse error/Invalid Request). Also, because JSON-RPC 1.0 uses an id value of Null for
+//! Notifications this could cause confusion in handling."*
+//!
+//! **JSON-RPC 2.0 section 4.1 (Notification):** *"A Notification is a Request object without an `id`
+//! member. … The Server MUST NOT reply to a Notification, including those that are within a batch
+//! request."*
+//!
+//! **JSON-RPC 2.0 section 5 (Response object), `id`:** *"This member is REQUIRED. It MUST be the same as
+//! the value of the id member in the Request Object. If there was an error in detecting the id in
+//! the Request object (e.g. Parse error/Invalid Request), it MUST be Null."*
+//!
+//! **MCP, revision `2026-07-28`, `basic#requests`:** *"Requests MUST include a string or integer
+//! ID."* and *"Unlike base JSON-RPC, the ID MUST NOT be `null`."* **`basic#notifications`:**
+//! *"Notifications MUST NOT include an ID."* and *"The receiver MUST NOT send a response."*
+//!
+//! **A2A v0.3 section 3** binds the receiving plane to JSON-RPC 2.0 and adds no `id` clause of its own.
+//!
+//! # The one judgement call, and the argument for it
+//!
+//! Base JSON-RPC says `null` is *discouraged* (`SHOULD normally not be`); MCP says it is
+//! *forbidden* (`MUST NOT`). This module REFUSES it on every plane, including the one whose spec
+//! only discourages it, and that is a deliberate choice rather than an oversight:
+//!
+//! 1. section 5 spends the value `null` on a *different meaning* — "I could not tell which request this
+//!    was". A SUCCESS response carrying `"id": null` is therefore byte-identical to the envelope
+//!    reserved for an unattributable failure. A caller cannot correlate it, which is the entire
+//!    purpose of the member. Footnote [1] says precisely this is why `null` is discouraged.
+//! 2. `SHOULD NOT` binds the SENDER. Nothing obliges a server to accept a discouraged id, and
+//!    `-32600 Invalid Request` is exactly the code for an envelope a server will not honour.
+//! 3. The alternative is two readers again, differing on one member — and the whole cost of the
+//!    defect above was paid for that difference existing.
+//!
+//! If a real A2A peer is ever found that sends `"id": null` and cannot be changed, the right answer
+//! is a named, tracked variance here — not a second reader.
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde_json::Value;
+
+/// The JSON-RPC 2.0 standard error codes this module can produce.
+///
+/// Defined HERE and re-exported by the planes rather than re-declared, so `-32600` cannot come to
+/// mean two things in one binary. The plane-specific extension codes (`-32020`, `-32021`, `-32022`)
+/// stay with the plane that defines them: they are not JSON-RPC's.
+pub(crate) const PARSE_ERROR: i64 = -32700;
+pub(crate) const INVALID_REQUEST: i64 = -32600;
+
+/// What an inbound message IS, once the envelope has been read.
+///
+/// Two variants, and there is deliberately no third for "a request with a bad id": an envelope that
+/// does not name a caller-correlatable request is not a request, so it never becomes one of these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Envelope {
+    /// A REQUEST. `id` is a JSON string or number — never `null`, never absent, never a bool, array
+    /// or object. That is a type-level guarantee: the only constructor is [`read`], and every other
+    /// shape leaves through [`Invalid`]. A handler that holds one of these may echo `id` into its
+    /// response without checking anything.
+    Request { id: Value, method: String },
+    /// A NOTIFICATION: no `id` member. **The caller MUST answer with [`accepted`] and no body.**
+    Notification { method: String },
+}
+
+/// A refusal at the envelope level, carrying the `id` the response must echo.
+///
+/// `id` is carried rather than recomputed by the caller because section 5 makes it a two-case rule that is
+/// easy to get subtly wrong: echo the request's id when one could be established, `Null` when it
+/// could not. Deciding that once, next to the code that established it, is the point.
+#[derive(Debug, Clone)]
+pub(crate) struct Invalid {
+    pub(crate) code: i64,
+    pub(crate) message: &'static str,
+    /// section 5: *"If there was an error in detecting the id in the Request object … it MUST be Null."*
+    pub(crate) id: Value,
+}
+
+/// Read a parsed JSON body as a JSON-RPC 2.0 envelope.
+///
+/// ## The ORDER of these checks is load-bearing
+///
+/// `jsonrpc` and `method` are validated BEFORE `id` is looked at. That is not stylistic: a message
+/// that fails either of them is not a JSON-RPC message at all, so "is this a notification?" is not
+/// yet a question with an answer, and section 5's *"error in detecting the id"* clause is exactly the case
+/// it describes — answer, with `id` echoed if one was legible and `Null` if not.
+///
+/// Only once the message IS a JSON-RPC message does the absence of `id` mean *notification*, at
+/// which point section 4.1's MUST NOT applies with no exception for "but the rest of it was wrong".
+pub(crate) fn read(value: &Value) -> Result<Envelope, Invalid> {
+    // A top-level array is a BATCH. Neither plane's revision carries batches, and refusing
+    // explicitly beats reading `method` off an array as absent — which would answer the wrong
+    // question with the wrong message.
+    let Some(obj) = value.as_object() else {
+        return Err(Invalid {
+            code: INVALID_REQUEST,
+            message: "The request body must be a single JSON-RPC message object; batches are not \
+                      supported.",
+            id: Value::Null,
+        });
+    };
+
+    // The id AS THE RESPONSE SHOULD ECHO IT, computed once. A legible id is echoed on the refusals
+    // below; anything else collapses to Null, per section 5.
+    let echo = match obj.get("id") {
+        Some(id) if is_legible_id(id) => id.clone(),
+        _ => Value::Null,
+    };
+
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(Invalid {
+            code: INVALID_REQUEST,
+            message: "`jsonrpc` is required and must be exactly \"2.0\".",
+            id: echo,
+        });
+    }
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        return Err(Invalid {
+            code: INVALID_REQUEST,
+            message: "`method` is required and must be a string.",
+            id: echo,
+        });
+    };
+    let method = method.to_string();
+
+    match obj.get("id") {
+        // section 4.1 / MCP `basic#notifications`. NO id member — and note this is `get`, not a truthiness
+        // test: the difference between "the member is absent" and "the member is present and null"
+        // is the difference between the two arms below, and it is the distinction implementations
+        // most often lose. `a2a/ingress.rs` lost it to a single `.unwrap_or(Value::Null)`.
+        None => Ok(Envelope::Notification { method }),
+        // MCP `basic#requests`: "Unlike base JSON-RPC, the ID MUST NOT be `null`." See the module
+        // header for why this is refused on the A2A plane too.
+        Some(Value::Null) => Err(Invalid {
+            code: INVALID_REQUEST,
+            message: "`id` must not be null. A response echoing a null id is indistinguishable \
+                      from the envelope JSON-RPC 2.0 section 5 reserves for a request whose id could not \
+                      be established, so no caller could correlate it. Omit `id` entirely to send \
+                      a notification.",
+            id: Value::Null,
+        }),
+        Some(id) if is_legible_id(id) => Ok(Envelope::Request {
+            id: id.clone(),
+            method,
+        }),
+        // A bool, array or object id. section 4 permits only a String, a Number or NULL, so this is not a
+        // discouraged id — it is not an id.
+        Some(_) => Err(Invalid {
+            code: INVALID_REQUEST,
+            message: "`id` must be a string or a number.",
+            id: Value::Null,
+        }),
+    }
+}
+
+/// Whether a value is an id a response can be correlated by: a String or a Number, per section 4, minus
+/// the NULL that section 5 has already spent on another meaning.
+fn is_legible_id(id: &Value) -> bool {
+    id.is_string() || id.is_number()
+}
+
+/// The JSON-RPC error envelope, as a value.
+///
+/// ONE builder for both planes and for every code, because the pairing of `id` with `error` is the
+/// contract and a second builder is a second place for them to disagree. `id` is a `Value` and not
+/// an `Option`, deliberately: section 5 makes the member REQUIRED on a Response, so there is no shape this
+/// function could be asked for in which omitting it is right.
+pub(crate) fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
+    let mut error = serde_json::Map::new();
+    error.insert("code".into(), Value::from(code));
+    error.insert("message".into(), Value::from(message));
+    if let Some(d) = data {
+        error.insert("data".into(), d);
+    }
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".into(), Value::from("2.0"));
+    envelope.insert("id".into(), id);
+    envelope.insert("error".into(), Value::Object(error));
+    Value::Object(envelope)
+}
+
+/// The HTTP answer to an [`Invalid`] envelope: `400`, and the error envelope section 5 describes.
+///
+/// `400` rather than `200`-with-an-error-object: the request was malformed at the transport's own
+/// level, and a `200` there tells every proxy, cache and dashboard between the peers that the call
+/// succeeded.
+pub(crate) fn refused(invalid: &Invalid) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(error_body(
+            invalid.id.clone(),
+            invalid.code,
+            invalid.message,
+            None,
+        )),
+    )
+        .into_response()
+}
+
+/// The HTTP answer to a NOTIFICATION: `202 Accepted`, **and no body at all**.
+///
+/// The empty body is the requirement — section 4.1's *"MUST NOT reply"* — and `202` is the status the MCP
+/// Streamable HTTP binding names for it ("Notifications get `202 Accepted`"). A `204` would say the
+/// same thing about the body and a wrong thing about the outcome: `202` means received and not yet
+/// judged, which is exactly what a receiver can honestly claim about a message it may not answer.
+pub(crate) fn accepted() -> Response {
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// A body that is not JSON at all: `-32700`, `id` Null, per section 5's *"e.g. Parse error"*.
+pub(crate) fn parse_error() -> Response {
+    refused(&Invalid {
+        code: PARSE_ERROR,
+        message: "Request body is not valid JSON.",
+        id: Value::Null,
+    })
+}
+
+#[cfg(test)]
+#[path = "tests/jsonrpc_tests.rs"]
+mod jsonrpc_tests;
