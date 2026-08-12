@@ -737,6 +737,10 @@ pub(crate) struct TestApp {
     /// The validated MCP resource for the built App. `None` (the default) = not an MCP server, and
     /// the built router mounts no MCP route at all — which is what every pre-existing test expects.
     mcp: Option<crate::mcp::McpResource>,
+    /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
+    /// one, which is what every pre-existing test expects and what the gating proof in
+    /// `oauth_as::tests::mount_tests` asserts costs nothing.
+    oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
     tool_defs: crate::mcp::config::ToolsCfg,
     /// The LIVE tool-list sightings the built `App` dispatches against. `None` (the default) means
     /// no upstream has ever been contacted, which is what every pre-existing test expects and what
@@ -791,6 +795,7 @@ impl TestApp {
             login_methods: None,
             public_url: None,
             mcp: None,
+            oauth_as: None,
             role_bindings: None,
             governance: None,
             cost: None,
@@ -995,6 +1000,24 @@ impl TestApp {
         self
     }
 
+    /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
+    /// an operator writes.
+    ///
+    /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
+    /// `AsPlane::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled the
+    /// plane could mount a combination boot refuses, and would then be asserting against a
+    /// deployment that cannot exist. The signing key is left unset, so the plane generates the
+    /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
+    /// surface does not depend on which key signs.
+    pub(crate) fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
+        let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
+            .expect("test oauth_as config must be valid");
+        let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
+            .expect("test oauth_as plane must build");
+        self.oauth_as = Some(std::sync::Arc::new(plane));
+        self
+    }
+
     /// Register one `tools:` entry — one MCP server — through the SAME value validation the file
     /// path and the admin write path run.
     ///
@@ -1179,6 +1202,10 @@ impl TestApp {
             // Built from the SAME lowering production uses, so a test that configures agents gets
             // the same registry a deployment would and one that configures none gets no plane.
             a2a: a2a_plane.clone(),
+            // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
+            // the production default and is what keeps every existing test's route table unchanged
+            // by this plane's arrival.
+            oauth_as: self.oauth_as.clone(),
             agent_defs: self.agent_defs,
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),

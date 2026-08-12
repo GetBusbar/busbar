@@ -3471,6 +3471,7 @@ mod disposition_matrix_tests {
                 tool_defs: Default::default(),
                 // Not an MCP server.
                 mcp: None,
+                oauth_as: None,
                 agent_defs: Default::default(),
                 upstream_credentials: crate::auth::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),

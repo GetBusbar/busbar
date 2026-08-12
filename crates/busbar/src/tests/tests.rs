@@ -1178,6 +1178,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
         tool_defs: Default::default(),
         // Not an MCP server.
         mcp: None,
+        oauth_as: None,
         agent_defs: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),

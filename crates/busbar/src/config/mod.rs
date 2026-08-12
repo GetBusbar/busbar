@@ -394,6 +394,10 @@ pub(crate) struct RootCfg {
     /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
     /// re-parses the canonical URI or re-derives the mount path.
     pub(crate) mcp: Option<crate::mcp::McpResource>,
+    /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
+    /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
+    /// downstream re-parses the issuer or re-derives an endpoint path.
+    pub(crate) oauth_as: Option<crate::oauth_as::config::AsIdentity>,
     /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -2689,6 +2693,11 @@ pub(crate) struct DeployCfg {
     /// [`crate::mcp::McpCfg`].
     #[serde(default)]
     pub(crate) mcp: Option<crate::mcp::McpCfg>,
+    /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
+    /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
+    /// absent means nothing is built: see `crate::oauth_as`.
+    #[serde(default)]
+    pub(crate) oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
@@ -4421,11 +4430,29 @@ pub(crate) fn resolve(
         }
     };
 
+    // The `oauth_as:` block, validated HERE for the same reason `mcp:` is: an authorization server
+    // whose issuer is malformed advertises endpoints at paths it does not serve, and every
+    // conforming client discovers them and fails. A boot refusal names the field; a runtime one is
+    // found by an agent that cannot log in and cannot say why.
+    let oauth_as = match deploy
+        .oauth_as
+        .as_ref()
+        .map(crate::oauth_as::config::AsIdentity::from_cfg)
+    {
+        None => None,
+        Some(Ok(identity)) => Some(identity),
+        Some(Err(e)) => {
+            errors.push(e.to_string());
+            None
+        }
+    };
+
     if errors.is_empty() {
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
             mcp,
+            oauth_as,
             tool_defs: deploy.tools.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),

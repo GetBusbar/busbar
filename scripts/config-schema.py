@@ -70,6 +70,12 @@ SOURCES = [
     "crates/secret-ref/src/lib.rs",
     "crates/busbar/src/auth/mod.rs",
     "crates/busbar/src/a2a/config.rs",
+    # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,
+    # because the alternative is the hole this list already closed once for `a2a/`: the type name
+    # would appear in the snapshot as an opaque string and every field inside it — including the
+    # `default_grant` CEILING that decides what a self-registered client may ever hold — would be
+    # free to change without the additive-only gate noticing.
+    "crates/busbar/src/oauth_as/config.rs",
     "crates/busbar/src/a2a/creds.rs",
     "crates/busbar/src/mcp/config.rs",
 ]

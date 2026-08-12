@@ -2339,8 +2339,13 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
 
     // The table the SERVED router was built from: same function, same plugin-route input, same MCP
     // resource, so the enumeration cannot describe a different surface than the one under test.
-    let core_routes =
-        crate::base_data_router(&app.plugin_routes, app.mcp.as_deref(), app.a2a.as_ref()).1;
+    let core_routes = crate::base_data_router(
+        &app.plugin_routes,
+        app.mcp.as_deref(),
+        app.a2a.as_ref(),
+        app.oauth_as.as_ref(),
+    )
+    .1;
     // FLOOR ON THE DISCOVERED SET, in the one dimension that matters here: the walk below is only a
     // plane-boundary test if the router actually mounted the plane. Without this, deleting the MCP
     // mount would leave every assertion below trivially satisfied and the test would still pass.

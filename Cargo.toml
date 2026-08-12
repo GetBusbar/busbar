@@ -82,6 +82,34 @@ loom = "0.7"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-util = { version = "0.20.4", default-features = false }
+# THE OAUTH 2.1 AUTHORIZATION SERVER (scope item A of 1.5.5).
+#
+# `default-features = false` is not written because the crate's default set is ALREADY EMPTY and
+# stays that way by its own policy; the features below are the whole of what busbar turns on, and
+# each one is a decision:
+#
+#   http               the RFC-shaped wire surface as `http::Request` in / `http::Response` out.
+#                      NOT `axum`: that feature exists to hand back an `axum::Router`, and busbar
+#                      mounts core routes exclusively through `core_routes::CoreRouter` so that
+#                      every route declares its admission bar in the same act that wires it. A
+#                      pre-built router would enter the tree with no entry in `CoreRouteTable`,
+#                      which is the one thing that table exists to make impossible.
+#   jwt                RFC 9068 `at+jwt` access tokens and the RFC 7517 JWKS document — and, since
+#                      0.9.0 split the seam, the `Es256Signer`/`Es256Verifier` TRAITS with NO curve
+#                      implementation behind them. `jwt-p256` is deliberately ABSENT: busbar
+#                      already links `ring` through rustls and implements both traits over it
+#                      (`oauth_as::signer`), so the RustCrypto P-256 stack — twenty packages, a
+#                      complete second elliptic-curve implementation — never enters the tree.
+#   consent            the consent seam and RFC 9470 step-up. An authorization endpoint that does
+#                      not ask the user anything is not an authorization endpoint.
+#   resource-metadata  RFC 9728 §4 `protected_resources` on the AS metadata document, which is the
+#                      AS half of the discovery loop busbar's resource half already publishes.
+oauth-as = { version = "0.9.0", features = [
+    "http",
+    "jwt",
+    "consent",
+    "resource-metadata",
+] }
 opentelemetry = "0.32.0"
 opentelemetry-http = { version = "0.32.0", default-features = false, features = ["hyper"] }
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [

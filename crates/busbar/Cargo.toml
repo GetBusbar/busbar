@@ -95,6 +95,18 @@ loom = { workspace = true, optional = true }
 # of the service-account private key and the JWT base64url segments.
 ring = { workspace = true }
 base64 = { workspace = true }
+# THE OAUTH 2.1 AUTHORIZATION SERVER. Feature selection and the reason for each lives once, in the
+# workspace table; what belongs here is why busbar takes the crate at all and what it costs when the
+# operator has not asked for it.
+#
+# It is a NORMAL dependency, not an optional one, and that is the design rather than an oversight.
+# `oauth_as:` is absent from almost every config, and the requirement is not "compiled out" but
+# "costs nothing when off": `App::oauth_as` is `Option<Arc<AsPlane>>`, `None` when unconfigured, so
+# no `AuthorizationService` is built, no `MemoryStorage` is allocated, no signing key is generated
+# and no route is mounted — exactly the posture `mcp:` already takes. A cargo feature would make the
+# shipped artifact depend on how it was built, which is the class of difference that ends with an
+# operator enabling a config block that the binary in front of them cannot serve.
+oauth-as = { workspace = true }
 # SIMD JSON (NEON on arm64, AVX2/SSE on x86): used for the hot request/response parse+serialize on
 # the translate path, where its SIMD escape-scanning is ~5× serde_json on the large string-heavy
 # bodies LLM traffic carries. `serde_json` is retained for the cold/config/error paths and as the
@@ -253,4 +265,14 @@ rcgen = { workspace = true }
 # failover budget bound over the REAL selection + on_exhausted dispatch. Test-only; never in
 # the shipped binary. Config (cases/timeout) is set inline via `proptest!` `ProptestConfig`.
 proptest = { workspace = true }
+# The `Es256Signer`/`Es256Verifier` CONFORMANCE HARNESS and the `Storage` one, which live behind
+# `oauth-as`'s `test-util` feature. A dev-dependency, so resolver 2 keeps the feature out of
+# `cargo build --release` entirely: the shipped binary carries neither harness.
+#
+# WHY IT IS NOT OPTIONAL TO RUN IT: a broken `Es256Signer` fails SILENTLY. A signature that does not
+# verify is indistinguishable, at a resource server, from a tampered token, so the deployment learns
+# about it from its users. The harness carries the RFC 7515 appendix A.3 vector — a value neither
+# half of busbar produced — which is the only thing that can tell a verifier that is RIGHT from one
+# that merely agrees with our own signer.
+oauth-as = { workspace = true, features = ["test-util"] }
 

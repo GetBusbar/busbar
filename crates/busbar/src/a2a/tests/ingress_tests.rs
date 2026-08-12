@@ -34,7 +34,13 @@ fn unpinned_agent(url: &str) -> AgentDefCfg {
 /// The core route table the DATA router was actually built from — the same function production
 /// calls, with the same inputs, so the enumeration cannot describe a different surface.
 fn mounted(app: &std::sync::Arc<crate::state::App>) -> CoreRouteTable {
-    crate::base_data_router(&app.plugin_routes, app.mcp.as_deref(), app.a2a.as_ref()).1
+    crate::base_data_router(
+        &app.plugin_routes,
+        app.mcp.as_deref(),
+        app.a2a.as_ref(),
+        app.oauth_as.as_ref(),
+    )
+    .1
 }
 
 fn paths(table: &CoreRouteTable) -> Vec<String> {

@@ -412,6 +412,12 @@ pub(crate) struct App {
     /// the mount path from this ONE object, so the value advertised to clients and the value the
     /// verifier compares against cannot be two different strings.
     pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
+    /// THE AUTHORIZATION SERVER (`oauth_as:`), or `None` when this deployment is not one.
+    ///
+    /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
+    /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
+    /// `crate::oauth_as`.
+    pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
     /// THE MCP CATALOGUE SNAPSHOT for this config generation: every
     /// registered server, its approved tools/prompts/resources, and the monotonic PIN GENERATION the
     /// snapshot was built under.
