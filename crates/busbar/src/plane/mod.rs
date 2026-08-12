@@ -69,6 +69,11 @@
 // worth recording that the spine existing did not prevent it: two authors each wrote a plane-local
 // copy without consulting it. The lint caught what the spine alone could not.
 //
+// A FOURTH PRODUCTION CALLER, and the first to read the wire-format LIST rather than its length:
+// `a2a::serve::servable_bindings` decides which `supportedInterfaces[].protocolBinding` busbar may
+// publish on a card pointing at busbar's own address. That was previously a literal in the rewrite,
+// and it published a gRPC interface at an address busbar does not serve gRPC on.
+//
 // STILL WITHOUT A PRODUCTION CALLER, and named rather than left to be discovered: `PlaneSections`,
 // `has_superset_ir` and `wire_formats`. The candidate projection and the shared
 // pools/tools/agents container are the dependants those are waiting on, so the attribute stays
