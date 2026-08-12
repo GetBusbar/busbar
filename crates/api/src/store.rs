@@ -33,7 +33,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_server"` scope (1.5.5) - grants a caller access to a registered MCP
+    /// Build a `kind: "mcp_server"` scope (1.6.0) - grants a caller access to a registered MCP
     /// server as a whole. Carried on the wire by its OWN named field (`allowed_mcp_servers`),
     /// never mixed into `allowed_pools`.
     pub fn mcp_server(value: impl Into<String>) -> Self {
@@ -43,7 +43,7 @@ impl ScopeRef {
         }
     }
 
-    /// Build a `kind: "mcp_tool"` scope (1.5.5) - grants a caller access to one namespaced
+    /// Build a `kind: "mcp_tool"` scope (1.6.0) - grants a caller access to one namespaced
     /// `{server}_{tool}` bound identity. Carried on the wire by its OWN named field
     /// (`allowed_mcp_tools`), never mixed into `allowed_pools`.
     pub fn mcp_tool(value: impl Into<String>) -> Self {
@@ -54,7 +54,7 @@ impl ScopeRef {
     }
 }
 
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.5.5): each registered
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each registered
 /// scope kind gets its OWN named wire field -
 /// `allowed_pools` (kind `pool`), `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools`
 /// (kind `mcp_tool`) - each a plain array of bare value strings, never a `{kind, value}` object.
@@ -63,7 +63,7 @@ impl ScopeRef {
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
 ///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
-///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.5.5 row/reader never
+///   the MCP fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
 ///   sees them;
 /// - a kind with NO registered wire field is a HARD serialize error - never silently remapped
 ///   into `allowed_pools` (the pre-P0 defect: an `mcp_server` grant became a POOL grant on any
@@ -222,7 +222,7 @@ mod virtual_key_wire {
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
 /// so policy is mutable in config/store without re-issuing the credential.
 /// Serde note: `Serialize`/`Deserialize` are HAND-IMPLEMENTED in [`virtual_key_wire`] (the
-/// kind-partitioned scope wire, 1.5.5 P0) - keep the wire mirror struct's fields/defaults in
+/// kind-partitioned scope wire, 1.6.0 P0) - keep the wire mirror struct's fields/defaults in
 /// lockstep with this struct when adding a field.
 #[derive(Clone, PartialEq)]
 pub struct VirtualKey {
@@ -277,7 +277,7 @@ impl VirtualKey {
     /// # Cross-kind semantics are fail-closed, and frozen
     ///
     /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other kind.
-    /// When a later release introduces a new kind (`mcp_server` in 1.5.5, `agent` in 1.5.6), an
+    /// When a later release introduces a new kind (`mcp_server` and `agent`, both in 1.6.0), an
     /// existing key that named only pools does not silently acquire access to every server or agent —
     /// it acquires access to NONE of them, and an operator must add entries to grant any.
     ///

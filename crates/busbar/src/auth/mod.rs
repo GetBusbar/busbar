@@ -682,7 +682,7 @@ fn keys_arm_verdict(
     let Some(gov) = gov else {
         return ChainVerdict::Denied;
     };
-    // THE PLANE BOUNDARY, enforced in the verifier (1.5.5 P1). `expected_aud` is `None` on the
+    // THE PLANE BOUNDARY, enforced in the verifier (1.6.0 P1). `expected_aud` is `None` on the
     // residual data plane, and the verifier then rejects any token that CARRIES an audience — an
     // MCP token is inadmissible on the LLM plane. On an audience-bound ingress it is that plane's
     // canonical URI, and the verifier rejects a token whose audience is absent or different: the

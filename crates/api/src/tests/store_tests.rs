@@ -63,7 +63,7 @@ fn scope_allowed_pool_kind_c6_semantics() {
 /// CROSS-KIND `scope_allowed` is FAIL-CLOSED, and that is frozen.
 ///
 /// A key whose `allowed_scopes` names only `pool` entries grants NOTHING for any OTHER kind. This
-/// matters because 1.5.5 adds `mcp_server` and 1.5.6 adds `agent`: under the fail-OPEN reading
+/// matters because 1.6.0 adds `mcp_server` and `agent`: under the fail-OPEN reading
 /// (an unlisted kind is "unconstrained") every already-issued pool-scoped key would silently
 /// become a WILDCARD over the new kind on upgrade — a privilege escalation delivered by a
 /// version bump.
@@ -170,7 +170,7 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
     );
 }
 
-/// Scope KINDS survive a store wire round-trip (1.5.5).
+/// Scope KINDS survive a store wire round-trip (1.6.0).
 ///
 /// Before the kind-partitioned wire fields existed, `allowed_scopes_wire` serialized every
 /// entry's bare `value` under `allowed_pools` and deserialized every one back as
@@ -202,7 +202,7 @@ fn scope_kinds_survive_store_round_trip() {
 }
 
 /// A scope kind with no registered wire field is a HARD serialize error - never silently
-/// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.5.6
+/// remapped into `allowed_pools` (the pre-P0 behavior) and never silently dropped. When 1.6.0
 /// adds `agent`, this is the test that forces it to get its own named wire field before an
 /// `agent` grant can be persisted at all.
 #[test]
@@ -220,7 +220,7 @@ fn unknown_scope_kind_is_a_hard_serialize_error() {
 }
 
 /// The MCP wire fields are ADDITIVE: absent from a pool-only key's wire shape (so the
-/// pre-1.5.5 byte-identity contract holds), and readable when present. An explicit-empty
+/// pre-1.6.0 byte-identity contract holds), and readable when present. An explicit-empty
 /// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
 #[test]
 fn mcp_scope_wire_fields_are_additive() {

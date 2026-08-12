@@ -181,7 +181,7 @@ impl PlaneDispatch {
     ///
     /// The residual LLM plane takes none. It is not an audience-bound resource: a plain data-plane
     /// busbar key carries no audience at all, and the verifier rejects any token that does
-    /// (`governance::signing`, the 1.5.5 plane boundary). Handing the residual an audience here
+    /// (`governance::signing`, the 1.6.0 plane boundary). Handing the residual an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
     pub(crate) fn admit(mut self, plane: Plane, admission: PlaneAdmission) -> Self {
         match plane {

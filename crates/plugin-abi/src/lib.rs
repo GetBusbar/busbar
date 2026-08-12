@@ -126,7 +126,7 @@ pub mod kind {
 /// a real breaking bump, correctly gated by the engine's `supported_abi` range check at load,
 /// unlike every other change on this axis so far.
 ///
-/// v2 STAYS v2 for the A2A task + MCP call-log ops (1.5.5): the ten
+/// v2 STAYS v2 for the A2A task + MCP call-log ops (1.6.0): the ten
 /// `PutTask`/…/`PurgeMcpCallsBefore` request variants and their five response variants are
 /// ADDITIVE, so an already-signed v2 artifact that predates them still loads and still behaves
 /// exactly as it did. See the block comment on those variants in [`StoreRequest`] for the mechanism

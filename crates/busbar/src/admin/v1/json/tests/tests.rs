@@ -195,7 +195,7 @@ fn openapi_operations_carry_stable_operation_ids() {
         }
     }
     // 81 = 66 + the five generic named-map routes EACH plane section adds: `tools:`
-    // (1.5.5 MCP) and `agents:` (1.5.6 A2A) + the THREE MCP trust verbs on `tools:`
+    // (1.6.0 MCP) and `agents:` (1.6.0 A2A) + the THREE MCP trust verbs on `tools:`
     // (`POST .../connect`, `GET .../changes`, `GET .../health`) + the TWO A2A trust verbs on
     // `agents:` (`POST .../connect`, `POST .../approve`), which are specific to their section
     // rather than part of the generic named-map shape. The count is a FLOOR-and-CEILING

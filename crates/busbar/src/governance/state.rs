@@ -93,7 +93,7 @@ impl GovState {
     /// resolves to no binding (a token for a deleted key). The distinction is logged, never
     /// surfaced (no enumeration oracle - the auth path maps every `None` to one opaque 401).
     ///
-    /// `expected_aud` is the PLANE boundary (1.5.5 P1): the data plane passes `None`, meaning a
+    /// `expected_aud` is the PLANE boundary (1.6.0 P1): the data plane passes `None`, meaning a
     /// token carrying ANY audience is rejected here; the MCP ingress passes its canonical URI and
     /// rejects a token whose audience is absent or different. Enforced inside
     /// [`TokenVerifier::verify`](super::signing::TokenVerifier::verify), never per handler.

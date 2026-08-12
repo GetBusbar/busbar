@@ -6,7 +6,7 @@
 //! ## The hole this closes, stated plainly
 //!
 //! busbar's own signed tokens carry an audience claim and the verifier enforces it
-//! (`governance::signing`, the 1.5.5 plane boundary). That covers exactly one credential shape. The
+//! (`governance::signing`, the 1.6.0 plane boundary). That covers exactly one credential shape. The
 //! deployment shape this release actually ships is the OTHER one: the operator's IdP — Okta, Entra,
 //! Auth0 — mints the token, an auth PLUGIN in the chain verifies its signature, and busbar core
 //! never sees a claim.

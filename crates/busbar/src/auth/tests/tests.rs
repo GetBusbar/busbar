@@ -2117,7 +2117,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 }
 
 /// THE MCP PLANE BOUNDARY end-to-end through the real router + `auth_middleware` in GOVERNANCE
-/// mode (1.5.5): an AUDIENCE-BOUND token whose `sub` is a
+/// mode (1.6.0): an AUDIENCE-BOUND token whose `sub` is a
 /// fully valid enabled binding must be rejected 401 on the data plane - both a proxy ingress
 /// route (`/pa/v1/messages`) and a chain-verdict-only route (`/stats`, which admits on the chain
 /// verdict alone and so shows the blast radius is EVERY key-authenticated route, not just the
@@ -2240,7 +2240,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     server.shutdown().await;
 }
 
-/// THE PLANE-BOUNDARY RATCHET (1.5.5), driven by the
+/// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the
 /// ROUTER TABLE rather than by a hand-listed sample.
 ///
 /// The rule: an MCP access token is admissible on the MCP plane and nowhere else. A
