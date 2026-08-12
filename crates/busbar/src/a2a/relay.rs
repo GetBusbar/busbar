@@ -193,6 +193,18 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) lease: Option<&'a Lease>,
     /// THE LIVE TRUST DECISION, re-asked after the guard and before the socket. See the module note.
     pub(crate) gate: &'a dyn DelegationGate,
+    /// THE GUARD POLICY FOR THIS REGISTRATION — `A2aPlane::fetch_policy_for(agent_id)`, never the
+    /// plane-wide default.
+    ///
+    /// It is carried on the CALL rather than read off the seam, and that is the whole of a defect
+    /// this field exists to close. `RelaySeam::policy()` answers with the plane's default, which is
+    /// fail-closed and knows nothing about any registration; the card fetch, `connect`, `approve`
+    /// and the re-verification sweep all narrow it by the registration's `allow_private:` first.
+    /// The relay did not, so a registration an operator had marked `allow_private: true` was
+    /// fetched, verified and approved over its plaintext loopback endpoint — and then every task
+    /// submitted to it was refused by the relay's guard, quoting the very knob that was already set.
+    /// One operator line, two answers, decided by which code path asked.
+    pub(crate) policy: &'a FetchPolicy,
     /// The caller's request, VERBATIM. busbar is content-blind on this plane.
     pub(crate) body: &'a [u8],
 }
@@ -383,7 +395,10 @@ fn prepare<'a>(
     now_ms: u64,
 ) -> Result<(super::fetch::PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. ──
-    let target = super::fetch::resolve_and_pin(call.backend_url, seam.resolver(), seam.policy())
+    // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
+    // knows nothing about any registration; the call carries the one the operator's `allow_private:`
+    // narrowed, which is what every other reader of that line already uses.
+    let target = super::fetch::resolve_and_pin(call.backend_url, seam.resolver(), call.policy)
         .map_err(RelayRefusal::Guard)?;
 
     // ── THE LIVE TRUST DECISION, after the guard and before the socket. See the module note. ──
@@ -432,7 +447,7 @@ pub(crate) fn relay(
             status: resp.status,
         });
     }
-    if resp.body.len() > seam.policy().max_body_bytes {
+    if resp.body.len() > call.policy.max_body_bytes {
         return Err(RelayRefusal::BodyTooLarge {
             url: target.url.to_string(),
             bytes: resp.body.len(),
@@ -681,7 +696,7 @@ pub(crate) fn relay_stream(
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
     let (target, request) = prepare(call, seam, true, now_ms)?;
-    let cap = seam.policy().max_body_bytes;
+    let cap = call.policy.max_body_bytes;
 
     let mut reader = SseReader::default();
     let mut streamed_any = false;

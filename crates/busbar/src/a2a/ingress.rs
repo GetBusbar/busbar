@@ -65,13 +65,19 @@ fn credential_kind_of(app: &App) -> &'static str {
 /// A refusal, rendered. The body names the reason token and never the backend: `InboundRefusal`'s
 /// own `Display` is written to be safe to return, and `Dispatch::backend_url` never leaves here.
 fn refuse(refusal: &InboundRefusal) -> Response {
+    // THE PLANE'S OWN ERROR ENVELOPE, and the HTTP status the refusal already chose. An admission
+    // refusal has no A2A error type of its own, so it takes the nearest binding
+    // (`UnsupportedOperationError`) with the real reason in the message — see `rpcerror`'s note on
+    // why an invented code in the A2A range would be worse than a near one.
     let status = axum::http::StatusCode::from_u16(refusal.status())
         .unwrap_or(axum::http::StatusCode::FORBIDDEN);
     (
         status,
-        axum::Json(serde_json::json!({
-            "error": { "code": "refused", "message": refusal.to_string() }
-        })),
+        axum::Json(super::rpcerror::body(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::UnsupportedOperation,
+            refusal.to_string(),
+        )),
     )
         .into_response()
 }
@@ -156,11 +162,11 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
 /// unreachable while the mount and the config are created in one act, and is still answered rather
 /// than unwrapped because this is a request path.
 fn not_found() -> Response {
-    (
-        axum::http::StatusCode::NOT_FOUND,
-        axum::Json(serde_json::json!({ "error": { "code": "not_found" } })),
+    super::rpcerror::respond(
+        &serde_json::Value::Null,
+        super::rpcerror::A2aError::Internal,
+        "this deployment has no A2A plane",
     )
-        .into_response()
 }
 
 /// Everything the admitted half of a request needs, resolved under ONE read of the registry.
@@ -237,15 +243,98 @@ fn admit(
                 Err(Box::new(
                     (
                         axum::http::StatusCode::FORBIDDEN,
-                        axum::Json(serde_json::json!({
-                            "error": { "code": "refused", "message": reason }
-                        })),
+                        axum::Json(super::rpcerror::body(
+                            &serde_json::Value::Null,
+                            super::rpcerror::A2aError::UnsupportedOperation,
+                            reason,
+                        )),
                     )
                         .into_response(),
                 ))
             }
         }
     })
+}
+
+/// WHICH FRONTED AGENT `POST /a2a` IS FOR — answered by THIS CALLER'S CATALOGUE.
+///
+/// ## Why this endpoint exists at all
+///
+/// busbar's own Agent Card, at `/.well-known/agent-card.json`, publishes exactly one interface:
+/// `<public_url>/a2a`, a `JSONRPC` binding. That is what a stock A2A client reads and where it
+/// posts — the client never sees `/a2a/agents/{id}`, because a card that enumerated the fronted
+/// agents from an unauthenticated path would hand a stranger the internal agent inventory, which
+/// `serve::self_card` refuses to do and should keep refusing.
+///
+/// Nothing was mounted there. Every conformant client therefore discovered busbar, read its card,
+/// posted to the endpoint that card advertises, and got a `404` — from busbar's generic fallback,
+/// in busbar's generic error shape. Against the official A2A TCK that is 40 of the 48 MUST failures
+/// on the JSON-RPC transport, all reading `Operation failed: the requested resource was not found`.
+/// Publishing an endpoint nobody serves is worse than publishing none.
+///
+/// ## Why the CATALOGUE and not a name in the request
+///
+/// This is the sibling plane's shape, deliberately. `/mcp` is ONE endpoint and the upstream that
+/// serves a call is resolved from what the caller asked for, filtered by what that caller's key
+/// grants — `mcp::catalogue`. `super::catalogue::inbound_catalogue` is the same function for this
+/// plane and was written for exactly this: it takes the caller's key and a [`TaskShape`] and
+/// answers which registrations are trusted, granted, and structurally able to serve that shape. It
+/// had one caller, which passed a name and then filtered the answer down to it.
+///
+/// ## AMBIGUITY IS A REFUSAL, never a guess
+///
+/// One candidate dispatches. NONE is a refusal. MORE THAN ONE is also a refusal, and that is the
+/// decision worth defending: quietly picking the first of several would send a caller's work to a
+/// vendor they did not choose, and the caller has no way to tell it happened. A deployment fronting
+/// several agents that can all serve one shape has a caller who must say which — and that caller
+/// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
+fn select(
+    app: &App,
+    key: &busbar_api::VirtualKey,
+    shape: &super::catalogue::TaskShape,
+) -> Result<String, Box<Response>> {
+    let Some(plane) = app.a2a.as_ref() else {
+        return Err(Box::new(not_found()));
+    };
+    let mut ids = plane.with_registrations(|regs| {
+        super::catalogue::inbound_catalogue(key, regs, shape)
+            .into_iter()
+            .map(|c| c.registration.agent_id.clone())
+            .collect::<Vec<_>>()
+    });
+    match ids.len() {
+        1 => Ok(ids.remove(0)),
+        // The SAME answer a caller with no grant gets for a named agent, and for the same reason:
+        // "there is nothing here for you" and "there is something here you may not have" must not
+        // be distinguishable, or this endpoint is an inventory oracle for an unauthorised caller.
+        0 => Err(Box::new(super::rpcerror::respond(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::UnsupportedOperation,
+            "no agent this key may reach can serve this shape of task",
+        ))),
+        n => Err(Box::new(super::rpcerror::respond(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::InvalidParams,
+            format!(
+                "{n} agents this key may reach can serve this shape of task, so this endpoint \
+                 cannot choose one for you. Address the agent directly at \
+                 `/a2a/agents/{{id}}` — the ids are: {}",
+                ids.join(", ")
+            ),
+        ))),
+    }
+}
+
+/// THE PLANE'S OWN ENDPOINT — `POST /a2a`, the one busbar's Agent Card publishes.
+///
+/// Identical to [`rpc`] in everything except how the agent is named. See [`select`].
+pub(crate) async fn plane_rpc(
+    CurrentApp(app): CurrentApp,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
+    body: axum::body::Bytes,
+) -> Response {
+    invoke(app, gov, principal, FromCatalogue, body).await
 }
 
 /// SERVE THE AGENT CARD — `GET /a2a/agents/{agent_id}`.
@@ -331,13 +420,12 @@ pub(crate) async fn card(
 fn governance_required() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        axum::Json(serde_json::json!({
-            "error": {
-                "code": "unavailable",
-                "message": "the A2A plane requires governance: an inbound caller is admitted by \
-                            its key's `agent` scopes, and there are no keys here"
-            }
-        })),
+        axum::Json(super::rpcerror::body(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::Internal,
+            "the A2A plane requires governance: an inbound caller is admitted by its key's \
+             `agent` scopes, and there are no keys here",
+        )),
     )
         .into_response()
 }
@@ -346,13 +434,12 @@ fn governance_required() -> Response {
 fn no_receiving_side() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        axum::Json(serde_json::json!({
-            "error": {
-                "code": "unavailable",
-                "message": "this deployment fronts agents for delegation only: it has no \
-                            `public_url`, so it serves no inbound A2A surface"
-            }
-        })),
+        axum::Json(super::rpcerror::body(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::UnsupportedOperation,
+            "this deployment fronts agents for delegation only: it has no `public_url`, so it \
+             serves no inbound A2A surface",
+        )),
     )
         .into_response()
 }
@@ -372,6 +459,32 @@ pub(crate) async fn rpc(
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
+    invoke(app, gov, principal, Named(agent_id), body).await
+}
+
+/// WHICH FRONTED AGENT A SUBMISSION IS FOR, and the two ways a caller can say it.
+///
+/// The two mounted endpoints differ in this and in NOTHING else — same admission, same catalogue,
+/// same meter, same audit, same relay — which is why the difference is a two-variant value passed
+/// into one function rather than two handlers that happen to look alike. A second copy of the
+/// sequence is a second place for the egress gate or the push-callback guard to go missing.
+enum Target {
+    /// `POST /a2a/agents/{id}` — the caller named the agent in the path.
+    Named(String),
+    /// `POST /a2a` — the plane's own endpoint, the one busbar's Agent Card publishes. The agent is
+    /// resolved from THIS CALLER'S CATALOGUE for the shape of work asked for. See [`select`].
+    FromCatalogue,
+}
+use Target::{FromCatalogue, Named};
+
+/// THE INBOUND CALL, both endpoints, one sequence.
+async fn invoke(
+    app: Arc<App>,
+    gov: crate::governance::GovCtx,
+    principal: crate::auth::AuthPrincipal,
+    target: Target,
+    body: axum::body::Bytes,
+) -> Response {
     if app.a2a.is_none() {
         return not_found();
     }
@@ -381,15 +494,21 @@ pub(crate) async fn rpc(
     let now = crate::store::now();
 
     let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": { "code": "invalid_request", "message": "the request body is not JSON" }
-            })),
-        )
-            .into_response();
+        return super::rpcerror::respond(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::Parse,
+            "the request body is not JSON",
+        );
     };
+    let rpc_id = super::rpcerror::id_of(&envelope);
     let shape = shape_of(&envelope);
+    let agent_id = match &target {
+        Named(id) => id.clone(),
+        FromCatalogue => match select(&app, key, &shape) {
+            Ok(id) => id,
+            Err(resp) => return *resp,
+        },
+    };
     let context_id = envelope
         .get("params")
         .and_then(|p| p.get("message"))
@@ -421,9 +540,11 @@ pub(crate) async fn rpc(
             );
             return (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "budget_exhausted", "message": "this key's budget is spent" }
-                })),
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::UnsupportedOperation,
+                    "this key's budget is spent",
+                )),
             )
                 .into_response();
         }
@@ -452,9 +573,11 @@ pub(crate) async fn rpc(
             );
             return (
                 axum::http::StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "refused", "message": e.to_string() }
-                })),
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::UnsupportedOperation,
+                    e.to_string(),
+                )),
             )
                 .into_response();
         }
@@ -475,13 +598,11 @@ pub(crate) async fn rpc(
             match validate_callback(url, seam).await {
                 Ok(pinned) => Some(pinned),
                 Err(message) => {
-                    return (
-                        axum::http::StatusCode::BAD_REQUEST,
-                        axum::Json(serde_json::json!({
-                            "error": { "code": "invalid_request", "message": message }
-                        })),
-                    )
-                        .into_response();
+                    return super::rpcerror::respond(
+                        &rpc_id,
+                        super::rpcerror::A2aError::InvalidParams,
+                        message,
+                    );
                 }
             }
         }
@@ -559,9 +680,11 @@ pub(crate) async fn rpc(
             tracing::error!(task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
             return (
                 axum::http::StatusCode::CONFLICT,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "conflict", "message": "this task cannot be resumed" }
-                })),
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::TaskNotCancelable,
+                    "this task cannot be resumed",
+                )),
             )
                 .into_response();
         }
@@ -586,9 +709,11 @@ pub(crate) async fn rpc(
             tracing::error!(error = %e, "a2a: the inbound task could not be recorded");
             return (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "unavailable", "message": "the task could not be recorded" }
-                })),
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::Internal,
+                    "the task could not be recorded",
+                )),
             )
                 .into_response();
         }
@@ -655,7 +780,7 @@ pub(crate) async fn rpc(
             Ok(lease) => Some(lease),
             Err(e) => {
                 tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
-                return fail_task(&seam, &task_id, &request_id, now, 502, "upstream_error");
+                return fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502);
             }
         },
         None => None,
@@ -665,6 +790,10 @@ pub(crate) async fn rpc(
         seam: Arc::clone(&seam),
         agent_id: admitted.dispatch.agent_id.clone(),
         backend_url: admitted.dispatch.backend_url.clone(),
+        // THE ONE READING OF THE OPERATOR'S `allow_private:` LINE, obtained where every other
+        // caller obtains it. Reaching for `seam.policy()` inside the relay instead is the defect
+        // `relay::RelayCall::policy` documents.
+        policy: plane.fetch_policy_for(&admitted.dispatch.agent_id),
         task_id: task_id.clone(),
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
@@ -695,6 +824,9 @@ struct HopContext {
     seam: Arc<dyn super::relay::RelaySeam>,
     agent_id: String,
     backend_url: String,
+    /// THE GUARD POLICY FOR THIS REGISTRATION, narrowed by its `allow_private:` exactly as the card
+    /// fetch, `connect`, `approve` and the sweep narrow theirs. See `relay::RelayCall::policy`.
+    policy: super::fetch::FetchPolicy,
     task_id: String,
     context_id: String,
     matched_skill: Option<String>,
@@ -724,6 +856,7 @@ async fn unary_hop(
 ) -> Response {
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
+    let relay_policy = ctx.policy.clone();
     let now_ms = ctx.now_ms;
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
@@ -733,6 +866,7 @@ async fn unary_hop(
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
                 body: &body,
+                policy: &relay_policy,
             },
             seam.as_ref(),
             now_ms,
@@ -747,11 +881,11 @@ async fn unary_hop(
             tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
             return fail_task(
                 &ctx.seam,
+                &ctx.rpc_id,
                 &ctx.task_id,
                 &ctx.request_id,
                 ctx.now,
                 502,
-                "upstream_error",
             );
         }
     };
@@ -802,6 +936,7 @@ async fn stream_hop(
     let request_id = ctx.request_id.clone();
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
+    let relay_policy = ctx.policy.clone();
     let now = ctx.now;
     let now_ms = ctx.now_ms;
     // A SECOND HANDLE ON THE SEAM for the sink below. The stream's state changes are the caller's
@@ -855,6 +990,7 @@ async fn stream_hop(
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
                 body: &body,
+                policy: &relay_policy,
             },
             seam.as_ref(),
             &task_id,
@@ -898,11 +1034,11 @@ async fn stream_hop(
                 tracing::warn!(task = %ctx.task_id, "a2a: the backend's stream carried no event");
                 fail_task(
                     &ctx.seam,
+                    &ctx.rpc_id,
                     &ctx.task_id,
                     &ctx.request_id,
                     ctx.now,
                     502,
-                    "upstream_error",
                 )
             }
             Ok(Err(refusal)) => refuse_hop(&ctx, &refusal),
@@ -910,11 +1046,11 @@ async fn stream_hop(
                 tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
                 fail_task(
                     &ctx.seam,
+                    &ctx.rpc_id,
                     &ctx.task_id,
                     &ctx.request_id,
                     ctx.now,
                     502,
-                    "upstream_error",
                 )
             }
         };
@@ -1035,22 +1171,21 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
     match refusal {
         super::relay::RelayRefusal::Demoted(_) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({
-                "error": {
-                    "code": "unavailable",
-                    "message": "this agent is not currently serving",
-                    "taskId": ctx.task_id,
-                }
-            })),
+            axum::Json(super::rpcerror::about_task(
+                &ctx.rpc_id,
+                super::rpcerror::A2aError::UnsupportedOperation,
+                "this agent is not currently serving",
+                &ctx.task_id,
+            )),
         )
             .into_response(),
         _ => fail_task(
             &ctx.seam,
+            &ctx.rpc_id,
             &ctx.task_id,
             &ctx.request_id,
             ctx.now,
             refusal.status(),
-            "upstream_error",
         ),
     }
 }
@@ -1064,11 +1199,11 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// publishing the backend is publishing the way around every control busbar applies.
 fn fail_task(
     seam: &Arc<dyn super::relay::RelaySeam>,
+    rpc_id: &serde_json::Value,
     task_id: &str,
     request_id: &str,
     now: u64,
     status: u16,
-    code: &'static str,
 ) -> Response {
     match super::taskstore::TASKS.transition(
         task_id,
@@ -1086,13 +1221,12 @@ fn fail_task(
     }
     (
         axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-        axum::Json(serde_json::json!({
-            "error": {
-                "code": code,
-                "message": "the backend agent did not complete this task",
-                "taskId": task_id,
-            }
-        })),
+        axum::Json(super::rpcerror::about_task(
+            rpc_id,
+            super::rpcerror::A2aError::InvalidAgentResponse,
+            "the backend agent did not complete this task",
+            task_id,
+        )),
     )
         .into_response()
 }
@@ -1164,10 +1298,23 @@ fn shape_of(envelope: &serde_json::Value) -> super::catalogue::TaskShape {
             .and_then(|m| m.get("skill"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
+        // BOTH SPELLINGS OF "THIS IS A STREAM". A2A v0.3 names the streaming methods
+        // `message/stream` and `tasks/resubscribe`; v1.0 renames them `SendStreamingMessage` and
+        // `SubscribeToTask` — the vocabulary the official TCK and `a2a-go` v2.4 speak. busbar is
+        // content-blind on this plane and relays the envelope verbatim, so the ONLY place the
+        // method name is read is here, and reading only one vocabulary means a v1.0 caller's
+        // stream is dispatched down the unary path and its `capabilities.streaming` filter never
+        // applies. Both are listed rather than pattern-matched loosely, so a third spelling is a
+        // deliberate edit.
         requires_streaming: envelope
             .get("method")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|m| m.ends_with("/stream")),
+            .is_some_and(|m| {
+                m.ends_with("/stream")
+                    || m == "tasks/resubscribe"
+                    || m == "SendStreamingMessage"
+                    || m == "SubscribeToTask"
+            }),
         requires_push_notifications: cfg.and_then(|c| c.get("pushNotificationConfig")).is_some(),
         input_modes: Vec::new(),
         output_modes: cfg
@@ -1254,6 +1401,27 @@ pub(crate) fn mount(
             RouteMethod::Post,
             RouteAuth::Key,
             rpc,
+        )
+        // THE ENDPOINT BUSBAR'S OWN AGENT CARD PUBLISHES. `serve::self_card` advertises
+        // `<public_url>/a2a` as this deployment's `JSONRPC` interface and nothing was mounted
+        // there, so every conformant client that discovered busbar posted into a 404. See
+        // [`select`] for how the agent is resolved and why it is the catalogue's answer.
+        .route(
+            super::serve::MOUNT_PATH.to_string(),
+            RouteMethod::Post,
+            RouteAuth::Key,
+            plane_rpc,
+        )
+        // AND THE SAME PATH WITH A TRAILING SLASH. Not cosmetic, and not a guess: an HTTP client
+        // given `http://host/a2a` as a BASE URL resolves a request for `/` against it and sends
+        // `/a2a/` — that is what `httpx` does, which is what the official A2A TCK's JSON-RPC client
+        // is built on, and it is what a great many SDKs do. Axum matches paths exactly, so
+        // `/a2a` alone leaves the single most likely spelling of this endpoint answering 404.
+        .route(
+            format!("{}/", super::serve::MOUNT_PATH),
+            RouteMethod::Post,
+            RouteAuth::Key,
+            plane_rpc,
         )
 }
 

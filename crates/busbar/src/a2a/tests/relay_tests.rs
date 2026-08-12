@@ -196,9 +196,12 @@ async fn a_backend_failure_is_a_busbar_attributed_error_and_not_a_silent_empty_t
         status, 502,
         "a failed hop is an upstream fault and must be answered as one: {body}"
     );
+    // A2A §5.4 binds a backend that did not answer something busbar could relay to
+    // `InvalidAgentResponseError` (-32006), and the plane answers in the JSON-RPC error envelope a
+    // JSON-RPC endpoint owes: an INTEGER code, never a busbar-internal name.
     assert_eq!(
-        body.pointer("/error/code").and_then(|v| v.as_str()),
-        Some("upstream_error"),
+        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        Some(-32006),
         "the error must be attributed to the upstream hop: {body}"
     );
     assert!(
@@ -226,8 +229,9 @@ async fn a_non_success_status_from_the_backend_is_a_busbar_attributed_error_too(
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
     assert_eq!(
-        body.pointer("/error/code").and_then(|v| v.as_str()),
-        Some("upstream_error")
+        body.pointer("/error/code").and_then(serde_json::Value::as_i64),
+        Some(-32006),
+        "{body}"
     );
 }
 
@@ -287,11 +291,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
 
-    let id = body
-        .pointer("/error/taskId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let id = task_named_by(&body);
     assert!(
         id.starts_with("a2a-planner-"),
         "the refusal must name the task busbar opened so the caller can correlate it: {body}"
@@ -627,11 +627,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
     // AND THE TASK IS NOT BURNED. The work never started and the agent is what changed; failing the
     // caller's task for an operator's suspension would make a resume impossible once the agent is
     // restored.
-    let id = body
-        .pointer("/error/taskId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let id = task_named_by(&body);
     assert!(!id.is_empty(), "the refusal must name the task: {body}");
     let task = crate::a2a::taskstore::TASKS
         .get_unscoped(&id)
@@ -836,6 +832,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             lease: None,
             gate: &AlwaysDelegable,
             body: b"{}",
+            policy: &FetchPolicy::default(),
         },
         &Seam(FetchPolicy::default()),
         1_000,
@@ -869,4 +866,133 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_not_a_result() {
         !body.to_string().contains("BACKEND SAYS NO"),
         "the backend's own error text must not be reflected to the caller: {body}"
     );
+}
+
+/// THE GUARD READS THE REGISTRATION'S POLICY, NOT THE PLANE'S DEFAULT.
+///
+/// `allow_private:` is a per-registration line. The card fetch, `connect`, `approve` and the
+/// re-verification sweep all obtain their policy from `A2aPlane::fetch_policy_for`, which narrows
+/// the plane default by that line. The relay used `RelaySeam::policy()` — the plane default — so an
+/// operator who set `allow_private: true` got a registration that could be fetched, verified and
+/// approved over a loopback endpoint and then refused at every task submission, with the refusal
+/// quoting the knob that was already set. Measured on a live rig before this test existed:
+///
+///   a2a: the relayed task submission failed agent=conformance
+///   error=the relay target was refused: agent card URL `http://127.0.0.1:56868/` uses scheme
+///   `http`; … set this registration's `allow_private: true` if the endpoint is a loopback …
+///
+/// Both directions are asserted, because a relay that simply stopped guarding would also pass the
+/// first half.
+#[test]
+fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
+    struct Loopback;
+    impl Resolver for Loopback {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
+        }
+    }
+    struct Reached;
+    impl crate::a2a::relay::RelayTransport for Reached {
+        fn post(
+            &self,
+            _u: &reqwest::Url,
+            _a: IpAddr,
+            _h: &[(String, String)],
+            _b: &[u8],
+        ) -> Result<HttpResponse, String> {
+            Ok(HttpResponse {
+                status: 200,
+                location: None,
+                body: br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"}}}"#.to_vec(),
+                peer_spki: None,
+            })
+        }
+        fn post_stream(
+            &self,
+            _u: &reqwest::Url,
+            _a: IpAddr,
+            _h: &[(String, String)],
+            _b: &[u8],
+            _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
+        ) -> Result<StreamHead, String> {
+            unreachable!("this test does not stream")
+        }
+    }
+    struct Seam(FetchPolicy);
+    impl crate::a2a::relay::RelaySeam for Seam {
+        fn resolver(&self) -> &dyn Resolver {
+            &Loopback
+        }
+        fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
+            &Reached
+        }
+        fn policy(&self) -> &FetchPolicy {
+            &self.0
+        }
+    }
+
+    // The seam carries the PLANE DEFAULT, which is fail-closed and refuses loopback and plaintext.
+    // That is correct for the plane and is exactly what must not decide this hop.
+    let plane_default = FetchPolicy::default();
+    assert!(
+        !plane_default.allow_private,
+        "the plane default must stay fail-closed, or this test proves nothing"
+    );
+    let registration_policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+
+    let out = crate::a2a::relay::relay(
+        &crate::a2a::relay::RelayCall {
+            agent_id: "conformance",
+            backend_url: "http://127.0.0.1:9110/",
+            lease: None,
+            gate: &AlwaysDelegable,
+            body: b"{}",
+            policy: &registration_policy,
+        },
+        &Seam(plane_default.clone()),
+        1_000,
+    );
+    assert!(
+        !matches!(out, Err(crate::a2a::relay::RelayRefusal::Guard(_))),
+        "a registration whose `allow_private:` admits its loopback backend must reach it: {out:?}"
+    );
+
+    // AND THE GUARD IS STILL LIVE. The same seam, the same address, with the registration's own
+    // policy fail-closed, must refuse — otherwise the first half is equally consistent with a relay
+    // that has stopped guarding altogether.
+    let out = crate::a2a::relay::relay(
+        &crate::a2a::relay::RelayCall {
+            agent_id: "conformance",
+            backend_url: "http://127.0.0.1:9110/",
+            lease: None,
+            gate: &AlwaysDelegable,
+            body: b"{}",
+            policy: &plane_default,
+        },
+        &Seam(registration_policy.clone()),
+        1_000,
+    );
+    assert!(
+        matches!(out, Err(crate::a2a::relay::RelayRefusal::Guard(_))),
+        "the relay must still guard, and must not read the SEAM's permissive policy: {out:?}"
+    );
+}
+
+/// The busbar task id a refusal names, read out of the ProtoJSON `data` array.
+///
+/// It used to be an `error.taskId` member. JSON-RPC 2.0 §5 admits `code`, `message` and `data` and
+/// nothing else, so it now rides as a `google.rpc.ResourceInfo` beside the `ErrorInfo` — the same
+/// fact, in the place a conformant client looks.
+fn task_named_by(body: &serde_json::Value) -> String {
+    body.pointer("/error/data")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|e| e["@type"] == "type.googleapis.com/google.rpc.ResourceInfo")
+        .and_then(|e| e["resourceName"].as_str())
+        .unwrap_or_default()
+        .to_string()
 }
