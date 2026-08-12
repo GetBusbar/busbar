@@ -231,6 +231,14 @@ mod hook_opt_in_projection_tests;
 #[path = "tests/hook_ir_divergence_characterisation_tests.rs"]
 mod hook_ir_divergence_characterisation_tests;
 
+// THE DIFFERENTIAL TEST between the two implementations of "what is the text in this request":
+// `build_prompt_projection`'s raw-body flattening and the IR the protocol readers produce. Carries
+// the RED (ignored, never deleted) plus the pinned diff list that stops a divergence appearing —
+// or being closed — unnoticed between here and the cutover.
+#[cfg(test)]
+#[path = "tests/hook_ir_differential_tests.rs"]
+mod hook_ir_differential_tests;
+
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
