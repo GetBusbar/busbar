@@ -2,8 +2,9 @@
 # Structure lint — enforces the code-layout invariants in docs/code-layout.md so the tree stays
 # navigable ("I'm looking for X, I know where it is") instead of drifting back to giant, inconsistent
 # files, plus the behavioural invariants that only a structural read of the tree can catch: the
-# choke-point registry, request-path purity, plane coherence and axis purity.
-# Seven checks, all greppable, no external deps. Exit non-zero on any violation.
+# choke-point registry, request-path purity, plane coherence, axis purity, decision-input purity and
+# the declaration census.
+# Nine checks, all greppable, no external deps. Exit non-zero on any violation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -287,6 +288,26 @@ plane_dup_modules() {   # $1.. = plane=dir
     END { for (m in n) if (n[m] >= 2) printf "%s\t%s\n", m, where[m] }' | sort
 }
 
+# ══ THE CENSUS VERDICT (invariant 9's decision) ══════════════════════════════════════════════════
+#
+# Three arms, and the middle one is the reason the whole invariant exists. `$1` = the count found,
+# `$2` = the count declared.
+#
+#   MISSING — found NOTHING. Not a pass: it is a rule whose subject was renamed, moved or deleted,
+#             scanning the whole tree and asserting nothing. Reported as its own verdict rather than
+#             folded into WRONG because the remedy is different — you re-point the row, you do not
+#             go looking for a duplicate that is not there.
+#   WRONG   — found some, but not the declared number. A second spelling, or a second decision.
+#   OK      — exactly the declared number.
+#
+# It lives here as a function so `--selftest` exercises the REAL verdict rather than a copy of it: a
+# gate proven against a different predicate from the one that ships is not proven.
+census_verdict() {   # $1 = got, $2 = want
+  if [ "$1" -eq 0 ]; then printf 'MISSING\n'
+  elif [ "$1" -ne "$2" ]; then printf 'WRONG\n'
+  else printf 'OK\n'; fi
+}
+
 # ══ SELF-TEST: the scanner that guards the tree is itself guarded ════════════════════════════════
 #
 # `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` above (not a copy) over a fixture
@@ -416,6 +437,38 @@ selftest_plane_case() {   # $1 = name, stdin = corpus (`--- <path>` separated)
   wantm=$({ grep -rh '//= DUPMOD ' "$root" || true; } | sed -E 's|.*//= DUPMOD ||;s|[[:space:]]+$||' | sort -u | tr '\n' ' ')
   if [ "$got" != "$want" ] || [ "$gotm" != "$wantm" ]; then
     note "SELFTEST FAIL [$name] plane: symbols {${got}} expected {${want}}; modules {${gotm}} expected {${wantm}}"
+    selftest_fail=1; return 0
+  fi
+  selftest_pass=$((selftest_pass+1))
+  return 0
+}
+
+# Invariant 9's fixture helper. `$1` = case name, `$2` = the awk ERE to count, `$3` = the count the
+# row declares; stdin = the fixture. The fixture states the verdict it must get with a line reading
+# `//= VERDICT <OK|WRONG|MISSING>`, so the fixture and its expectation cannot drift apart. It runs
+# the REAL `scan_rule` and the REAL `census_verdict`, which is the only reason it proves anything.
+selftest_census_case() {   # $1 = name, $2 = pattern, $3 = want, stdin = fixture source
+  local name="$1" pat="$2" want="$3" src want_verdict got_verdict got
+  src="$SELFTEST_DIR/$name.rs"
+  cat > "$src"
+  selftest_ran=$((selftest_ran+1))
+  if [ ! -s "$src" ]; then
+    note "SELFTEST FAIL [$name] census: fixture is missing or empty at $src"
+    selftest_fail=1; return 0
+  fi
+  LINT_PAT="$pat"; LINT_WHAT='census'; LINT_UNLESS=''
+  export LINT_PAT LINT_WHAT LINT_UNLESS
+  got=$({ scan_rule "$src" || true; } | grep -c . || true)
+  got=$(printf '%s' "$got" | tr -d ' ')
+  got_verdict=$(census_verdict "$got" "$want")
+  unset LINT_PAT LINT_WHAT LINT_UNLESS
+  want_verdict=$({ grep -o '//= VERDICT [A-Z]*' "$src" || true; } | sed 's|//= VERDICT ||' | head -1)
+  if [ -z "$want_verdict" ]; then
+    note "SELFTEST FAIL [$name] census: the fixture declares no \`//= VERDICT\`, so it asserted nothing"
+    selftest_fail=1; return 0
+  fi
+  if [ "$got_verdict" != "$want_verdict" ]; then
+    note "SELFTEST FAIL [$name] census: counted ${got} against a declared ${want} and returned ${got_verdict}, expected ${want_verdict}"
     selftest_fail=1; return 0
   fi
   selftest_pass=$((selftest_pass+1))
@@ -797,6 +850,55 @@ pub(crate) mod catalogue;
 fn helper() {}
 RS
 
+  # ══ the declaration census (invariant 9) ═══════════════════════════════════════════════════════
+  # `//= VERDICT <word>` in the fixture names the answer the REAL census must return for it.
+
+  # ⑳ THE PROSE TRAP, and it is the one that would have broken this invariant on its first run. A
+  #    census over a wire word has to be documented, and documenting it means WRITING THE WORD —
+  #    twice in the block comment above the constant, once more in a `#[cfg(test)]` fixture. A
+  #    census that counted raw text would report its own documentation as a duplicate spelling and
+  #    fail on the very file that defines the single spelling correctly. Exactly one CODE line
+  #    carries it, so the verdict is OK.
+  selftest_census_case census_prose_is_not_a_spelling '"mcp-protocol-version"' 1 <<'RS'
+//= VERDICT OK
+// The header is "mcp-protocol-version" and it is written here once. This comment says the word
+// twice — "mcp-protocol-version" again — and neither mention is a second spelling of it.
+/// Doc comments are prose too: "mcp-protocol-version".
+pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let _ = "mcp-protocol-version";
+    }
+}
+RS
+
+  # ㉑ THE DUPLICATE. A second spelling in real code is the drift the deleted symmetry test existed
+  #    to catch: two directions, each internally consistent with its own copy, disagreeing silently.
+  selftest_census_case census_second_spelling '"mcp-protocol-version"' 1 <<'RS'
+//= VERDICT WRONG
+pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+
+pub fn outbound() -> (String, String) {
+    ("mcp-protocol-version".to_string(), "2026-07-28".to_string())
+}
+RS
+
+  # ㉒ THE FALSE-GREEN ARM, and the reason this invariant is a census and not another ban. The
+  #    subject has been renamed away. A ban would scan every file, match nothing, print nothing and
+  #    read exactly like a pass. The census must say MISSING instead — a distinct verdict from
+  #    WRONG, because the remedy is to re-point the row, not to hunt a duplicate that is not there.
+  selftest_census_case census_subject_renamed_away '"mcp-protocol-version"' 1 <<'RS'
+//= VERDICT MISSING
+pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version-v2";
+
+pub fn outbound() -> String {
+    H_PROTOCOL_VERSION.to_string()
+}
+RS
+
   # A self-test that asserted nothing would report exactly what a passing one reports. So the count
   # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
   if [ "$selftest_ran" -eq 0 ]; then
@@ -963,6 +1065,40 @@ CHOKE_POINTS=(
   #         verbs.
   'G-trust-parameterised|TRUST-MACHINE-FORK|crates/busbar/src/a2a/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)|crates/busbar/src/a2a/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own|supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs|-|two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined'
 
+  # ── H ── THE OPERATOR-AUTHORED ASK: one origin for the bytes busbar puts its own name to. This is
+  #         the second half of a two-part control whose first half is in the TYPE SYSTEM, and neither
+  #         half is a source scan — which is the point, because the source scan it replaces
+  #         (`tests/callerask_tests.rs::callerask_names_nothing_upstream_derived`) grepped a file
+  #         path that is being deleted.
+  #
+  #         HALF ONE, the compiler: `CallerAsk` lives in the private `callerask::authored` module
+  #         with all three fields private to it and exactly one constructor, `from_config(&str,
+  #         &AskEntryCfg)`. Nothing in the crate can build a `CallerAsk` from anything else — no
+  #         struct literal, no `From` impl, no field assignment. The invariant is unrepresentable
+  #         rather than merely untested.
+  #
+  #         HALF TWO, this row: that leaves `AskEntryCfg` itself as the way in. An `AskEntryCfg`
+  #         is DESERIALISED from the operator's YAML (or from the admin write path, which validates
+  #         identically); it is never assembled at runtime. A hand-built one is how upstream text
+  #         would reach `params` after half one closed every other door, and the resulting ask would
+  #         be busbar demanding authority from its own caller in busbar's name, on an upstream's
+  #         behalf. Construction is therefore allowed only in the module that defines it.
+  'H-operator-authored-ask|ASK-NOT-OPERATOR-AUTHORED|crates/busbar/src/mcp/config.rs (AskEntryCfg, deserialised from operator YAML) + crates/busbar/src/mcp/callerask.rs (the private `authored` module, sole constructor)|crates/busbar/src/mcp/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else|let the operator write the ask: an AskEntryCfg is deserialised, never assembled|AskEntryCfg[[:space:]]*\{>>an AskEntryCfg built in code rather than deserialised from operator configuration>>crates/busbar/src/mcp/config.rs|the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name'
+
+  # ── I ── THE ONE TRUST COMPARISON, negative half. `Approval::serves` is the single answer to "may
+  #         this upstream serve this capability at this digest?" and invariant 9's census keeps it
+  #         single. This row stops the other shape of the same defect: not a second `fn serves`, but
+  #         a call site re-deriving the answer INLINE from the raw registration fields, which is what
+  #         the deleted `the_catalogue_holds_no_second_may_this_serve_comparison` scanned
+  #         `mcp/catalogue.rs` for. Its banned spellings are kept verbatim, and they are kept because
+  #         the fields are still there: `catalogue.rs` still carries `schema_hash: Option<String>`,
+  #         so `schema_hash.is_some()` is still exactly the convenience somebody would reach for.
+  #         `Approval`'s own `pin` is private to `trust/mod.rs`, so `.pin.is_none()` outside it is
+  #         either a second copy of the machine or a plane-local pin field pretending to be one.
+  #         Both are the fail-OPEN divergence: one copy gets fixed and the other does not, and it
+  #         surfaces as a call that served after the operator quarantined the upstream.
+  'I-trust-serve-derivation|TRUST-COMPARISON-BYPASS|crates/busbar/src/trust/mod.rs (Approval::serves)|crates/busbar/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered|ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields|schema_hash[[:space:]]*\.is_some>>an inline "is there an approved digest?" test;schema_hash[[:space:]]*\.is_none>>an inline "is there no approved digest?" test;\.pin[[:space:]]*\.is_some>>an inline "is this upstream pinned?" test>>crates/busbar/src/trust/mod.rs;\.pin[[:space:]]*\.is_none>>an inline "is this upstream unpinned?" test>>crates/busbar/src/trust/mod.rs|a second answer to "may this serve?" diverges from the first the moment either is fixed, and the divergence is discovered as an in-flight call that served after the operator revoked it'
+
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 
@@ -1000,6 +1136,19 @@ for row in "${CHOKE_POINTS[@]}"; do
     # `pat>>what>>allow` → collapse the `>>` separators to a single `>` and split on it.
     IFS='>' read -r LINT_PAT LINT_WHAT rule_allow LINT_UNLESS <<<"${rule//>>/>}"
     export LINT_PAT LINT_WHAT LINT_UNLESS
+    # An allowed-exception path names the file that OWNS the correct implementation. If it moved,
+    # the row is pointing at nothing: the ban silently widens to cover the owner's new home, and the
+    # first thing that breaks is the owner reporting itself as a bypass — a lint that lies. Say so
+    # here, where the fix is one path, rather than there, where it reads as a real violation.
+    if [ -n "$rule_allow" ]; then
+      IFS=',' read -r -a cp_allowlist <<<"$rule_allow"
+      for p in "${cp_allowlist[@]}"; do
+        if [ ! -e "$p" ]; then
+          note "ALLOWED-PATH-MISSING: ${cp_id} — \`${p}\` does not exist; point the row at the owner's new home"
+          fail=1; ck=1
+        fi
+      done
+    fi
     files=()
     for f in "${CANDIDATES[@]}"; do
       case ",${rule_allow}," in *",${f},"*) continue ;; esac   # the owner / definer files
@@ -1053,9 +1202,20 @@ REQUEST_PATH=(
   'A7-govstate-try-admit|STORE-ON-REQUEST-PATH|crates/busbar/src/governance/state.rs|try_admit|[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]>>a store reference inside the admission path;[^A-Za-z0-9_][Ss]tore$>>a store reference inside the admission path;\.await>>an await inside the admission path (it is declared SYNCHRONOUS and INFALLIBLE)|keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it|the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O'
 )
 
-hdr "request-path purity (the store is a durability sink, never on the request path)"
-rp=0
-for row in "${REQUEST_PATH[@]}"; do
+# ══ THE FUNCTION-SCOPED RULE RUNNER ══════════════════════════════════════════════════════════════
+#
+# Invariants 5 and 8 are the same SHAPE — "this call appears nowhere inside THIS function" — over
+# two different subjects, so they share one runner rather than two copies of a forty-line loop that
+# would drift the first time either was fixed. It sets `fail` directly, which is why it is called
+# plainly and never on the right-hand side of a pipe: a subshell's `fail=1` dies with the subshell.
+#
+# `$1` is the noun for the closing ok-line; the rest are rows in the format documented above.
+run_fn_scoped() {
+  local label="$1"; shift
+  local rp=0 row rp_id rp_tag rp_file rp_fn rp_rules rp_remedy rp_why extra rp_span rule hits out s
+  local -a rp_rulelist
+  local n_rows=$#
+  for row in "$@"; do
   IFS='|' read -r rp_id rp_tag rp_file rp_fn rp_rules rp_remedy rp_why extra <<<"$row"
   if [ -n "$extra" ] || [ -z "$rp_why" ] || [ -z "$rp_rules" ]; then
     note "MALFORMED-ROW: ${rp_id} — a field contains a literal '|' (the row separator). Rewrite the"
@@ -1094,9 +1254,57 @@ for row in "${REQUEST_PATH[@]}"; do
       note "scanned ${rp_file}::${rp_fn} lines $2-$3 ($(( $3 - $2 + 1 )) lines)"
     done <<<"$rp_span"
   fi
-done
-unset LINT_PAT LINT_WHAT LINT_UNLESS RP_FN
-if [ "$rp" -eq 0 ]; then note "ok (${#REQUEST_PATH[@]} request-path invariant(s) enforced)"; fi
+  done
+  unset LINT_PAT LINT_WHAT LINT_UNLESS RP_FN
+  # A table that ran zero rows would print the same ok-line a clean run prints. It is not clean, it
+  # is unarmed — the same false green the SUBJECT-MISSING arms above exist to refuse.
+  if [ "$n_rows" -eq 0 ]; then
+    note "NO-ROWS: the ${label} table is empty, so this invariant scanned NOTHING"
+    fail=1; rp=1
+  fi
+  if [ "$rp" -eq 0 ]; then note "ok (${n_rows} ${label} enforced)"; fi
+}
+
+hdr "request-path purity (the store is a durability sink, never on the request path)"
+run_fn_scoped "request-path invariant(s)" "${REQUEST_PATH[@]}"
+
+# ══ Invariant 8: A DECISION NEVER READS ATTACKER-AUTHORED TEXT ════════════════════════════════════
+#
+# WHAT THIS REPLACES, and why the replacement is shaped differently. Until 2026-08-12 this invariant
+# was `mcp/client/tests/routing_key_tests.rs::dispatch_never_reads_a_tool_description`: a test that
+# `include_str!`-ed `client/dispatch.rs` and failed on the word `description` in any code line, with
+# a companion (`the_description_scan_would_catch_a_violation`) proving the predicate bit. It was a
+# good check with one fatal property: its SUBJECT was a file path, and `mcp/` is being deleted and
+# rebuilt. A test whose subject stops existing does not fail — it stops being compiled, and an
+# absent control has no failing test.
+#
+# THE INVARIANT ITSELF IS NOT GOING ANYWHERE: a route is decided on BOUND IDENTITY — registered
+# server, namespaced tool, approved digest — and never on an upstream's free text. An upstream
+# rewrites its own description at will; a router that reads one is a router the upstream steers,
+# which is the confused-deputy half of every MCP tool-poisoning writeup. Moving it here does not make
+# it path-independent, but it makes the path a DECLARED FACT that goes RED when it is wrong: point a
+# row at a file that moved, or a function that was renamed, and `run_fn_scoped` prints
+# SUBJECT-MISSING and fails. The rebuild cannot take this control out of the tree by accident; it can
+# only take it out by editing a row that is telling it not to.
+#
+# WHY FUNCTION-SCOPED AND NOT A TREE-WIDE BAN: `description` is a legitimate word almost everywhere.
+# The catalogue stores one, the admin projection renders one, the listing publishes the OPERATOR's
+# one. It is illegitimate in exactly one place — the code that decides WHERE A CALL GOES — and the
+# unit of that rule is the function.
+#
+# Same row format as REQUEST_PATH above; same runner.
+DECISION_INPUT=(
+  # The three functions that turn a caller's request into a destination, or decide what a caller is
+  # allowed to see. `resolve` maps a namespaced name to a bound identity, `revalidate` re-checks that
+  # identity against the live snapshot immediately before the call goes out, and `visible_catalogue`
+  # decides which capabilities a caller is shown. None of the three may consult free text.
+  'B10-routing-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|crates/busbar/src/mcp/client/dispatch.rs|resolve|description>>a tool description read while deciding a route|route on the bound identity alone — registered server, namespaced tool, approved digest — and never on text the upstream authors|an upstream rewrites its own description at will, so a router that reads one is a router the upstream steers'
+  'B10-revalidate-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|crates/busbar/src/mcp/client/dispatch.rs|revalidate|description>>a tool description read while re-validating a route|re-validate on the bound identity and the snapshot generation, never on text the upstream authors|the pre-dispatch re-check is the last gate an in-flight call passes; a hostile description reaching it would undo the resolve-time rule one line before the call goes out'
+  'B10-visibility-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|crates/busbar/src/mcp/client/dispatch.rs|visible_catalogue|description>>a tool description read while deciding what a caller may see|filter the catalogue on the caller grant and the approval, never on text the upstream authors|what a caller is shown is an authorisation answer, and an upstream that could influence it would be choosing its own audience'
+)
+
+hdr "decision-input purity (a routing decision never reads attacker-authored text)"
+run_fn_scoped "decision-input invariant(s)" "${DECISION_INPUT[@]}"
 
 # ══ Invariant 6: NO PLANE-LOCAL REIMPLEMENTATION OF A SHARED CONCERN (GOAL §A6) ══════════════════
 #
@@ -1429,6 +1637,138 @@ rm -rf "$AX_TMP"
 if [ "$ax" -eq 0 ]; then
   note "ok (${#AXIS_BRANCH[@]} axis/axes enforced over ${#ax_files[@]} production file(s))"
 fi
+
+# ══ Invariant 9: THE DECLARATION CENSUS ═════════════════════════════════════════════════════════
+#
+# Every rule above this one is a BAN: "this pattern appears nowhere". A ban has a blind spot that
+# this project has now been bitten by twice, and it is the same blind spot every time — a ban over a
+# pattern that no longer exists scans the whole tree, matches nothing, prints nothing, and reads
+# exactly like a clean bill of health. The bug is not in the scanner; it is that "zero" is the
+# passing answer AND the answer you get when the subject is gone.
+#
+# A CENSUS fixes that by making the expected answer a NUMBER THAT IS NOT ZERO. Each row declares a
+# pattern and how many production code lines must carry it. Too many is a duplicate — a second
+# spelling of a wire word, a second implementation of a decision. Too few is the false green: the
+# subject was renamed, moved, or deleted, and the row says so out loud instead of passing.
+#
+# WHAT THIS REPLACES. Three of the nine source-scanning tests under `mcp/` were census questions
+# wearing a scan's clothes:
+#
+#   * `client/tests/wire_tests.rs::the_client_and_the_ingress_agree_on_every_wire_literal`
+#     `include_str!`-ed `ingress.rs` and asserted the five shared wire words appeared in BOTH
+#     directions' source. It was comparing two copies. The copies are gone — `client/jsonrpc.rs`
+#     now `use`s the ingress's constants — so the question is no longer "do the two agree?" but
+#     "is there still exactly one?", which is a census row and needs no file path at all.
+#   * `tests/trust_gate_tests.rs::the_catalogue_holds_no_second_may_this_serve_comparison` had a
+#     positive half — `assert_eq!(serves_calls, 1)` — asserting the dispatch gate had not been
+#     routed somewhere else. Its negative half is choke point I below; this is the positive half,
+#     asked of the DECLARATION rather than of one file's call sites, so it survives the rebuild.
+#   * `tests/quarantine_boot_tests.rs::the_boot_path_starts_the_refresh_job` read `main.rs` looking
+#     for the call that spawns the quarantine sweep, because `run()` binds real listeners and no
+#     test can reach it. A sweep nothing spawns is a defence that does not run, and that was the
+#     exact hole `mcp::connect::refresh` had when its only caller was a human pressing a button.
+#
+# THE TRAP THIS AVOIDS, the same one the rest of this script does: it counts CODE lines. Comments
+# and `#[cfg(test)]` regions are invisible to `scan_rule`, so a doc comment quoting a wire word — and
+# the ones above this line quote all five — is not a second spelling of it. A census that read raw
+# text would report its own documentation as a duplicate.
+#
+# ── Row format (fields separated by `|`) ─────────────────────────────────────────────────────────
+#   1. id      — stable name for the census question.
+#   2. tag     — the violation label.
+#   3. pattern — awk ERE, counted over production code lines. NO `|` alternation (row separator).
+#   4. count   — the exact number of production code lines that must match. Never 0: a row whose
+#                honest answer is zero is a BAN, and bans belong in the choke-point registry.
+#   5. scope   — path prefix the census covers.
+#   6. why     — one line: what a wrong count means.
+DECLARATION_CENSUS=(
+  # ── The five shared MCP wire words. One definition each, in `mcp/ingress.rs`; the outbound client
+  #    imports them. A second occurrence is a second copy that can drift silently in the one
+  #    direction no single-sided test can see — busbar refusing a request busbar sent. Zero
+  #    occurrences means the word left the tree, which for a protocol constant is a rebuild that
+  #    quietly stopped speaking the protocol.
+  'wire-word-meta-protocol-version|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/protocolVersion"|1|crates/busbar/src/|the `_meta` protocol-version key must have exactly one spelling in the tree: the ingress REQUIRES it and the client EMITS it, and two copies disagree in the direction where each side is internally consistent with itself'
+  'wire-word-meta-client-capabilities|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/clientCapabilities"|1|crates/busbar/src/|the `_meta` client-capabilities key is REQUIRED on the way in and written on the way out; a second copy is a request busbar would send and then refuse'
+  'wire-word-header-protocol-version|WIRE-WORD-RESPELT|"mcp-protocol-version"|1|crates/busbar/src/|the protocol-version header name is read by the ingress and written by the client from one constant; a second literal is the drift the deleted symmetry test existed to catch'
+  'wire-word-header-method|WIRE-WORD-RESPELT|"mcp-method"|1|crates/busbar/src/|the method-mirror header name is required inbound and emitted outbound from one constant'
+  'wire-word-header-name|WIRE-WORD-RESPELT|"mcp-name"|1|crates/busbar/src/|the target-name header is required inbound on the three addressed methods and emitted outbound from one constant'
+
+  # ── THE ONE TRUST COMPARISON. `Approval::serves` is the single answer to "may this upstream serve
+  #    this capability at this digest?", and its fields (`pin`, `capabilities`, `suspension`) are
+  #    private to `trust/mod.rs`, so no plane can ask the question any other way. A SECOND `fn
+  #    serves` is the divergence: two answers to one question, and the failure mode of a second
+  #    answer is silent drift in the fail-OPEN direction, discovered as an in-flight call that
+  #    served after the operator quarantined it. Zero is the rebuild routing the gate somewhere
+  #    else, which is what the deleted test's `assert_eq!(serves_calls, 1)` was watching for.
+  'trust-serve-decision|TRUST-DECISION-RESPELT|fn[[:space:]]+serves[[:space:]]*\(|1|crates/busbar/src/|there is exactly ONE may-this-serve comparison in busbar; a second is two answers to one question and they diverge the first time either is fixed, and zero means the dispatch gate was routed somewhere this row cannot see'
+
+  # ── THE BOOT PATH STARTS THE QUARANTINE SWEEP. Scoped to `main.rs` on purpose: the question is not
+  #    "does this function exist" (a census over the whole tree would answer yes to a function
+  #    nothing calls) but "does BOOT call it". `run()` binds real listeners and joins them, so no
+  #    test can reach this call site; reading it is the only way to pin it, and this row is that
+  #    read moved out of a test whose file is being deleted. Zero is the whole point: a sweep
+  #    nothing spawns is a defence that does not run, which is exactly the state `mcp::connect::
+  #    refresh` was in when its only caller was a human pressing an admin button.
+  'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|crates/busbar/src/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
+)
+
+hdr "declaration census (a shared decision, and each shared wire word, exists EXACTLY once)"
+cs=0
+for row in "${DECLARATION_CENSUS[@]}"; do
+  IFS='|' read -r cs_id cs_tag cs_pat cs_want cs_scope cs_why extra <<<"$row"
+  if [ -n "$extra" ] || [ -z "$cs_why" ] || [ -z "$cs_scope" ] || [ -z "$cs_want" ] || [ -z "$cs_pat" ]; then
+    note "MALFORMED-ROW: ${cs_id} — a field contains a literal '|' (the row separator). Rewrite the"
+    note "  pattern without alternation, or split it into another census row."
+    fail=1; cs=1
+    continue
+  fi
+  # A census row whose expected count is zero is a BAN wearing a census's clothes, and it reintroduces
+  # the exact false green this whole invariant exists to remove: zero would then be both the passing
+  # answer and the answer a vanished subject gives.
+  case "$cs_want" in
+    ''|*[!0-9]*) note "MALFORMED-ROW: ${cs_id} — count \`${cs_want}\` is not a number"; fail=1; cs=1; continue ;;
+    0) note "MALFORMED-ROW: ${cs_id} — a census count of 0 is a BAN; put it in CHOKE_POINTS instead"; fail=1; cs=1; continue ;;
+  esac
+  if [ ! -e "$cs_scope" ]; then
+    note "SCOPE-MISSING: ${cs_id} — \`${cs_scope}\` does not exist; point the row at the subject's new root"
+    fail=1; cs=1
+    continue
+  fi
+  cs_files=()
+  for f in "${CANDIDATES[@]}"; do
+    case "$f" in "$cs_scope"*) cs_files+=("$f") ;; esac
+  done
+  if [ ${#cs_files[@]} -eq 0 ]; then
+    note "NO-SUBJECT: ${cs_id} — \`${cs_scope}\` holds no production .rs file, so this census counted"
+    note "  NOTHING. That is the false green, not a clean bill."
+    fail=1; cs=1
+    continue
+  fi
+  LINT_PAT="$cs_pat"; LINT_WHAT="census"; LINT_UNLESS=''
+  export LINT_PAT LINT_WHAT LINT_UNLESS
+  cs_hits=$(scan_rule "${cs_files[@]}" || true)
+  cs_got=$({ printf '%s' "$cs_hits" | grep -c . || true; } | tr -d ' ')
+  case "$(census_verdict "$cs_got" "$cs_want")" in
+    MISSING)
+      note "SUBJECT-MISSING: ${cs_id} — \`${cs_pat}\` occurs NOWHERE in production code under"
+      note "  ${cs_scope}, so this row scanned the whole tree and asserted nothing. Expected ${cs_want}."
+      note "  (${cs_why})"
+      fail=1; cs=1
+      ;;
+    WRONG)
+      note "${cs_tag}: ${cs_id} — expected ${cs_want} production occurrence(s) of \`${cs_pat}\`, found ${cs_got}:"
+      while IFS= read -r h; do [ -n "$h" ] && note "    ${h%%: census}"; done <<<"$cs_hits"
+      note "  (${cs_why})"
+      fail=1; cs=1
+      ;;
+  esac
+done
+unset LINT_PAT LINT_WHAT LINT_UNLESS
+if [ ${#DECLARATION_CENSUS[@]} -eq 0 ]; then
+  note "NO-ROWS: the census table is empty, so this invariant counted NOTHING"
+  fail=1; cs=1
+fi
+[ "$cs" -eq 0 ] && note "ok (${#DECLARATION_CENSUS[@]} census row(s), every count exact)"
 
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi

@@ -2038,8 +2038,8 @@ fn input_required_result(
     let mut requests = serde_json::Map::new();
     for ask in asks {
         requests.insert(
-            ask.key.clone(),
-            serde_json::json!({ "method": ask.method, "params": ask.params }),
+            ask.key().to_string(),
+            serde_json::json!({ "method": ask.method(), "params": ask.params() }),
         );
     }
     let mut value = serde_json::Map::new();

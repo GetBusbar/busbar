@@ -80,23 +80,28 @@ fn cancelling_a_terminal_task_leaves_its_settled_status_alone() {
     );
 }
 
+/// An ask, built the ONE way a `CallerAsk` can be built: from an operator-written config entry.
+///
+/// There is deliberately no struct literal here any more. `CallerAsk`'s fields are private to
+/// `callerask::authored`, which is what makes "an operator-authored ask is never composed from an
+/// upstream-derived value" a fact about the type rather than a source scan — so a test helper that
+/// bypassed the constructor would be quietly re-opening the hole it is testing around.
+fn elicitation(key: &str) -> CallerAsk {
+    CallerAsk::from_config(
+        key,
+        &crate::mcp::config::AskEntryCfg {
+            method: "elicitation/create".into(),
+            params: Some(serde_json::json!({})),
+        },
+    )
+}
+
 /// PARTIAL FULFILMENT: answering one key of a two-key round removes that key and leaves the task
 /// parked on the other.
 #[test]
 fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
     let task = TASKS.create("key-partial");
-    task.park(vec![
-        CallerAsk {
-            key: "first".into(),
-            method: "elicitation/create".into(),
-            params: serde_json::json!({}),
-        },
-        CallerAsk {
-            key: "second".into(),
-            method: "elicitation/create".into(),
-            params: serde_json::json!({}),
-        },
-    ]);
+    task.park(vec![elicitation("first"), elicitation("second")]);
     assert_eq!(task.detailed()["status"], "input_required");
 
     let mut answered = serde_json::Map::new();
@@ -157,11 +162,7 @@ fn no_task_shape_ever_carries_request_state() {
     let task = TASKS.create("key-no-state");
     assert!(task.created().get("requestState").is_none());
     assert!(task.detailed().get("requestState").is_none());
-    task.park(vec![CallerAsk {
-        key: "confirm".into(),
-        method: "elicitation/create".into(),
-        params: serde_json::json!({}),
-    }]);
+    task.park(vec![elicitation("confirm")]);
     assert!(task.detailed().get("requestState").is_none());
 }
 

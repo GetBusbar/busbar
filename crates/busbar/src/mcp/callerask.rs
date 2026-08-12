@@ -8,15 +8,26 @@
 //!
 //! **A [`CallerAsk`] is authored by the operator. An [`super::inputreq::Ask`] arrives from an
 //! upstream and terminates. There is no conversion between them, in either direction, and there
-//! cannot be one: the only constructor here takes an `AskEntryCfg` the operator wrote, and this
-//! module imports neither `inputreq` nor `upstream`.**
+//! cannot be one.**
 //!
-//! That is not a comment asking to be believed. `tests/callerask_tests.rs` scans this file's source
-//! for any reference to either module and fails on one, with a companion test that plants a
-//! violation and proves the scan catches it. The reason the scan is worth its weight is the failure
-//! mode it guards: the moment anyone adds `{{upstream.…}}` substitution into `params` "for
-//! convenience", this whole design becomes laundering with extra steps, and it would look like a
-//! feature while it did it.
+//! That is not a comment asking to be believed, and — since 2026-08-12 — it is not a source scan
+//! asking to be trusted either. It is a fact about what is CONSTRUCTIBLE.
+//!
+//! [`CallerAsk`] lives in the private [`authored`] submodule below with all three of its fields
+//! private to that module, and `authored` exports exactly one constructor:
+//! `CallerAsk::from_config(&str, &AskEntryCfg)`. Nothing in this file, in this plane, or in this
+//! crate can produce a `CallerAsk` from anything other than an operator-written `AskEntryCfg` —
+//! not by a struct literal, not by a `From` impl, not by mutating one after the fact. An
+//! `impl From<super::inputreq::Ask> for CallerAsk` is not merely forbidden; it cannot be written,
+//! because its body has no way to build the value it would have to return.
+//!
+//! This REPLACES `tests/callerask_tests.rs::callerask_names_nothing_upstream_derived`, which
+//! `include_str!`-scanned this file for the words `inputreq` / `upstream` / `ServerAsk` /
+//! `RpcOutcome`. That scan defended a real invariant by an accident of geography: it was a fact
+//! about a PATH, and the path stops existing when this tree is rebuilt. The invariant does not.
+//! The failure mode it guarded — somebody adds `{{upstream.…}}` substitution into `params` "for
+//! convenience", and the whole design becomes laundering with extra steps while looking like a
+//! feature — is now a compile error rather than a grep result.
 //!
 //! ## Why busbar may ask at all, when it refuses to relay
 //!
@@ -63,40 +74,84 @@ const ELICITATION: &str = "elicitation/create";
 const SAMPLING: &str = "sampling/createMessage";
 const ROOTS: &str = "roots/list";
 
-/// ONE ask busbar is making of its caller — an entry of the `inputRequests` map.
+pub(crate) use authored::CallerAsk;
+
+/// THE PRIVACY BOUNDARY, and it is the entire enforcement of this module's one sentence.
 ///
-/// Its ONLY constructor is [`CallerAsk::from_config`]. There is deliberately no `From` impl, no
-/// `new(method, params)`, and no field that is anything but a clone of operator configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CallerAsk {
-    /// The server-assigned key of this entry in `inputRequests`. The operator writes it, because the
-    /// conformance suite asserts one of them (`user_name`) BY NAME and because the retry addresses
-    /// its answer to it.
-    pub(crate) key: String,
-    /// `elicitation/create`, `sampling/createMessage` or `roots/list`.
-    pub(crate) method: String,
-    /// The request `params`, verbatim from the operator's YAML. No templating, no substitution, no
-    /// value from any upstream response — see the module header for why that is structural.
-    pub(crate) params: serde_json::Value,
+/// Rust's field privacy is MODULE-scoped, not type-scoped: a private field is readable and writable
+/// by every line of the module that declares it. So a `CallerAsk` declared at this file's top level
+/// with private fields would still be freely constructible by the rest of this file — including by
+/// an `impl From<super::inputreq::Ask>` somebody adds two hundred lines down. Putting the type in
+/// its OWN module shrinks that blast radius to the handful of lines below, which contain exactly one
+/// constructor and no other way in.
+///
+/// What this buys, stated as the compiler sees it: outside `authored`, `CallerAsk`'s fields do not
+/// exist. There is no struct literal, no `..Default::default()`, no field assignment, no `&mut`
+/// accessor and no `From` impl that could produce one, because none of them can name a field. The
+/// only expression in the entire crate whose type is `CallerAsk` is a call to `from_config`, whose
+/// single data argument is an `&AskEntryCfg` — the operator's deserialised YAML.
+///
+/// The residual, named rather than hidden: this makes the ONLY input an `AskEntryCfg`. It does not
+/// stop someone forging an `AskEntryCfg` at runtime out of upstream text and passing THAT. That
+/// residual is closed on the other side, by `structure-lint.sh`'s `H-operator-authored-ask` choke
+/// point, which bans constructing an `AskEntryCfg` anywhere but the config module that deserialises
+/// it. Two halves, both mechanical, neither of them a grep for a module name.
+mod authored {
+    use super::AskEntryCfg;
+
+    /// ONE ask busbar is making of its caller — an entry of the `inputRequests` map.
+    ///
+    /// Its ONLY constructor is [`CallerAsk::from_config`]. There is deliberately no `From` impl, no
+    /// `new(method, params)`, and no field that is anything but a clone of operator configuration.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct CallerAsk {
+        /// The server-assigned key of this entry in `inputRequests`. The operator writes it, because
+        /// the conformance suite asserts one of them (`user_name`) BY NAME and because the retry
+        /// addresses its answer to it.
+        key: String,
+        /// `elicitation/create`, `sampling/createMessage` or `roots/list`.
+        method: String,
+        /// The request `params`, verbatim from the operator's YAML. No templating, no substitution,
+        /// no value from any upstream response — see the module header for why that is structural.
+        params: serde_json::Value,
+    }
+
+    impl CallerAsk {
+        /// THE ONLY CONSTRUCTOR. Takes an operator-written map entry and nothing else. There is
+        /// deliberately no `From` impl and no `new(method, params)`: every field of a `CallerAsk` is
+        /// a clone of configuration, and the only way to get one is to hold configuration.
+        pub(crate) fn from_config(key: &str, cfg: &AskEntryCfg) -> Self {
+            Self {
+                key: key.to_string(),
+                method: cfg.method.clone(),
+                params: cfg.params.clone().unwrap_or_else(|| serde_json::json!({})),
+            }
+        }
+
+        /// The `inputRequests` map key this entry is published under.
+        pub(crate) fn key(&self) -> &str {
+            &self.key
+        }
+
+        /// The client-side method this ask names.
+        pub(crate) fn method(&self) -> &str {
+            &self.method
+        }
+
+        /// The request `params`, by shared reference. Deliberately NOT `&mut`: a mutable accessor
+        /// would hand back the exact edit this module's privacy exists to prevent.
+        pub(crate) fn params(&self) -> &serde_json::Value {
+            &self.params
+        }
+    }
 }
 
 impl CallerAsk {
-    /// THE ONLY CONSTRUCTOR. Takes an operator-written map entry and nothing else. There is
-    /// deliberately no `From` impl and no `new(method, params)`: every field of a `CallerAsk` is a
-    /// clone of configuration, and the only way to get one is to hold configuration.
-    fn from_config(key: &str, cfg: &AskEntryCfg) -> Self {
-        Self {
-            key: key.to_string(),
-            method: cfg.method.clone(),
-            params: cfg.params.clone().unwrap_or_else(|| serde_json::json!({})),
-        }
-    }
-
     /// The capability key the CALLER must have declared for this ask to be legal to send.
     /// `mrtr.mdx:246`: "Servers MUST NOT send an `inputRequests` that the client has not declared
     /// support for in its capabilities."
     fn capability_key(&self) -> Option<&'static str> {
-        match self.method.as_str() {
+        match self.method() {
             ELICITATION => Some("elicitation"),
             SAMPLING => Some("sampling"),
             ROOTS => Some("roots"),

@@ -126,8 +126,8 @@ fn a_configured_ask_is_emitted_with_state_busbar_minted() {
     };
     assert_eq!(round, 0);
     assert_eq!(asks.len(), 1);
-    assert_eq!(asks[0].key, "user_name");
-    assert_eq!(asks[0].method, "elicitation/create");
+    assert_eq!(asks[0].key(), "user_name");
+    assert_eq!(asks[0].method(), "elicitation/create");
     // The state is BUSBAR'S, and it opens under busbar's key bound to this caller and this request.
     let opened = sealer()
         .open(&request_state, NOW)
@@ -152,7 +152,7 @@ fn an_ask_the_caller_did_not_declare_is_filtered_out_and_the_declared_one_surviv
         panic!("a declared ask survives the filter, so busbar still asks");
     };
     assert_eq!(
-        asks.iter().map(|a| a.method.as_str()).collect::<Vec<_>>(),
+        asks.iter().map(|a| a.method()).collect::<Vec<_>>(),
         ["sampling/createMessage"],
         "the undeclared elicitation must not be sent"
     );
@@ -319,7 +319,7 @@ fn a_second_round_asks_again_with_a_different_state() {
         panic!("the second round asks again");
     };
     assert_eq!(round, 1);
-    assert_eq!(asks[0].key, "step2");
+    assert_eq!(asks[0].key(), "step2");
     assert_ne!(s1, s2, "the suite requires the state to have changed");
     // And the third round completes.
     let responses2 = serde_json::json!({ "step2": { "action": "accept", "content": {} } });
@@ -507,80 +507,5 @@ fn the_asks_params_are_the_operators_bytes_and_nothing_else() {
     else {
         panic!("asks");
     };
-    assert_eq!(asks[0].params, params);
-}
-
-// ─── THE SOURCE-SCAN GATE ────────────────────────────────────────────────────────────────────────
-
-/// The source of `callerask.rs`, read at test time from the file next to this one.
-fn callerask_source() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp/callerask.rs");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("callerask.rs must be readable at {}: {e}", path.display()))
-}
-
-/// The identifiers that must never appear in `callerask.rs`. Each is a module whose values are
-/// UPSTREAM-DERIVED, and a reference to any of them is the first step of turning an operator's ask
-/// into a relayed one.
-const FORBIDDEN: &[&str] = &["inputreq", "upstream", "ServerAsk", "RpcOutcome"];
-
-/// Does `source` reference anything upstream-derived? Factored out so the gate below and the
-/// planted-violation test below it run the IDENTICAL predicate — a gate proven against a different
-/// function from the one that ships is not proven at all.
-fn references_upstream(source: &str) -> Vec<&'static str> {
-    // The module's own header discusses the rule, and a header that could not state the rule would
-    // be a poor rule. Only CODE is scanned: lines outside a `//`-comment.
-    let code: String = source
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    FORBIDDEN
-        .iter()
-        .copied()
-        .filter(|f| code.contains(f))
-        .collect()
-}
-
-/// STRUCTURAL B.10: the module that composes busbar's own ask cannot so much as NAME the module an
-/// upstream's ask arrives in. There is therefore no value it could copy across, and no `From` impl
-/// anybody could add without this failing.
-#[test]
-fn callerask_names_nothing_upstream_derived() {
-    let source = callerask_source();
-    // A FLOOR. A scan of an empty string finds nothing and passes everything.
-    assert!(
-        source.lines().count() > 150,
-        "callerask.rs is suspiciously short ({} lines) — a scan of a gutted file proves nothing",
-        source.lines().count()
-    );
-    let hits = references_upstream(&source);
-    assert!(
-        hits.is_empty(),
-        "callerask.rs references upstream-derived machinery: {hits:?}. An operator's ask must be \
-         composed from configuration alone; the moment a value can flow from an upstream response \
-         into a `CallerAsk`, busbar is laundering an upstream's demand for authority under its own \
-         name."
-    );
-}
-
-/// AND THE SCAN BITES. A planted violation — the single line somebody would actually write — must
-/// be caught. Without this the test above is equally consistent with a predicate that matches
-/// nothing.
-#[test]
-fn the_scan_catches_a_planted_violation() {
-    let honest = callerask_source();
-    assert!(references_upstream(&honest).is_empty());
-    for planted in [
-        "use super::inputreq::Ask;",
-        "impl From<super::inputreq::Ask> for CallerAsk {}",
-        "let v = super::upstream::last_result();",
-        "fn kind(a: ServerAsk) {}",
-    ] {
-        let poisoned = format!("{honest}\n{planted}\n");
-        assert!(
-            !references_upstream(&poisoned).is_empty(),
-            "the scan did not catch `{planted}`, so it is not catching anything"
-        );
-    }
+    assert_eq!(asks[0].params(), &params);
 }
