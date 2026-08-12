@@ -13,6 +13,22 @@
 //! depth, including members busbar does not model — and fails if the backend authority appears
 //! anywhere in it.
 //!
+//! ## The card describes BUSBAR, so it advertises only the bindings busbar serves
+//!
+//! Once every interface's `url` is busbar's, the `protocolBinding` beside it is a claim about what
+//! BUSBAR speaks at that address, not about the backend. Carrying the backend's through published a
+//! gRPC interface at busbar's own endpoint — a protocol busbar does not implement — and
+//! `supportedInterfaces` is an ORDERED list a conformant client selects from, so a client picking
+//! that entry was directed at busbar for something nothing there answers. It is the same defect as a
+//! card advertising an address its own router does not serve, one member down.
+//!
+//! So an entry whose binding busbar cannot serve is DROPPED, and which bindings those are is read
+//! off [`crate::plane::Plane`]'s wire formats ([`servable_bindings`]) rather than named here: the
+//! day this plane speaks HTTP+JSON or gRPC, these cards advertise them without anyone editing this
+//! file. A card left with NO interface at all is refused ([`ServeError::NoServableBinding`]) rather
+//! than served with an empty list, because that member is the only thing that tells a client how to
+//! reach the agent.
+//!
 //! ## The vendor's signature is REMOVED, and BUSBAR'S REPLACES IT
 //!
 //! A card busbar has rewritten is no longer the document the vendor signed, so the vendor's
@@ -76,6 +92,19 @@ pub(crate) enum ServeError {
         host: String,
         at: Vec<String>,
     },
+    /// The backend offers no interface whose `protocolBinding` busbar can serve.
+    ///
+    /// Refused rather than served with an empty `supportedInterfaces`. That member is where an A2A
+    /// client SELECTS its transport, so a card with none says "busbar fronts this agent" and gives
+    /// the client no way to reach it — and the alternative, keeping the backend's binding, would
+    /// publish a protocol busbar does not speak at an address only busbar answers.
+    NoServableBinding {
+        agent_id: String,
+        /// The bindings the backend offered, in the order the card listed them.
+        offered: Vec<String>,
+        /// The bindings busbar can serve, as [`servable_bindings`] reads them off the plane.
+        served: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for ServeError {
@@ -89,6 +118,17 @@ impl std::fmt::Display for ServeError {
                  busbar endpoint to rewrite the backend's URLs to. Refused rather than served \
                  un-rewritten."
             ),
+            ServeError::NoServableBinding {
+                agent_id,
+                offered,
+                served,
+            } => write!(
+                f,
+                "refusing to serve the card for `{agent_id}`: it offers {offered:?}, and busbar \
+                 serves {served:?}. Publishing an interface at busbar's address for a protocol \
+                 busbar does not speak would send a conformant client to an endpoint nothing \
+                 answers, and publishing no interface at all would give it nothing to select."
+            ),
             ServeError::BackendLeak { agent_id, host, at } => write!(
                 f,
                 "refusing to serve the card for `{agent_id}`: the backend authority `{host}` still \
@@ -97,6 +137,38 @@ impl std::fmt::Display for ServeError {
             ),
         }
     }
+}
+
+/// THE BINDINGS BUSBAR CAN SERVE, read off the A2A plane rather than written down here.
+///
+/// A card busbar serves points every interface at BUSBAR'S OWN ADDRESS, so the `protocolBinding` on
+/// that interface is a claim about what BUSBAR speaks, not about what the backend speaks. The set of
+/// protocols busbar speaks on this plane is already stated once, in [`crate::plane::Plane`]'s wire
+/// formats — the same list that decides whether the plane has earned a superset IR and what its
+/// ingress metric label may say. Reading it here rather than restating it is what makes this
+/// function a RULE: when the HTTP+JSON and gRPC bindings land on the A2A plane, that list grows and
+/// these cards start advertising them, with nobody having to remember this function exists. Written
+/// as a literal `["JSONRPC"]` it would be a fact about today, and the day the plane moved it would
+/// quietly keep publishing the pre-change answer — which is exactly the failure mode that put a
+/// gRPC interface at busbar's address in the first place.
+///
+/// The A2A card spelling of a binding is the plane's wire-format name upper-cased (`jsonrpc` →
+/// `JSONRPC`, `http+json` → `HTTP+JSON`, `grpc` → `GRPC`), so [`can_serve_binding`] compares
+/// case-insensitively and exactly, never by prefix.
+pub(crate) fn servable_bindings() -> Vec<String> {
+    crate::plane::Plane::A2a
+        .wire_format_names()
+        .iter()
+        .map(|f| f.to_uppercase())
+        .collect()
+}
+
+/// Whether busbar can serve `binding` at its own address. See [`servable_bindings`].
+fn can_serve_binding(binding: &str) -> bool {
+    crate::plane::Plane::A2a
+        .wire_format_names()
+        .iter()
+        .any(|f| f.eq_ignore_ascii_case(binding))
 }
 
 /// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a
@@ -183,7 +255,35 @@ pub(crate) fn rewrite_card(
     // `supportedInterfaces[].url` is the modelled one. A top-level `url` is the pre-v0.3 spelling
     // and is rewritten too, because an upstream pinned to an older `protocolVersion` still serves
     // it and a caller reading it would reach the backend directly.
+    //
+    // AND THE BINDING IS FILTERED, NOT CARRIED. Once the url is busbar's, the entry's
+    // `protocolBinding` is a claim about what BUSBAR speaks at that address. Passing the backend's
+    // through published `{"url": "<busbar>/a2a/agents/x", "protocolBinding": "GRPC"}` — a gRPC
+    // interface at an address busbar does not serve gRPC on, and does not implement at all.
+    // `supportedInterfaces` is an ORDERED list a client selects from, so that is not a cosmetic
+    // surplus: a conformant client picking it is directed at busbar for a protocol nothing there
+    // answers. Which bindings survive is [`servable_bindings`], read off the plane.
     if let Some(Value::Array(interfaces)) = out.get_mut("supportedInterfaces") {
+        let offered: Vec<String> = interfaces
+            .iter()
+            .filter_map(|i| i.get("protocolBinding")?.as_str().map(str::to_string))
+            .collect();
+        let offered_any = !interfaces.is_empty();
+        interfaces.retain(|iface| match iface.get("protocolBinding") {
+            // A named binding busbar cannot serve is dropped: see above.
+            Some(Value::String(b)) => can_serve_binding(b),
+            // An entry naming NO binding makes no claim busbar would be making falsely — the
+            // specification's default reading is JSON-RPC, which is what busbar answers at the
+            // rewritten address. Kept rather than dropped, so the filter removes false claims only.
+            _ => true,
+        });
+        if offered_any && interfaces.is_empty() {
+            return Err(ServeError::NoServableBinding {
+                agent_id: agent_id.to_string(),
+                offered,
+                served: servable_bindings(),
+            });
+        }
         for iface in interfaces.iter_mut() {
             if let Some(iface) = iface.as_object_mut() {
                 if iface.contains_key("url") {
@@ -315,6 +415,16 @@ pub(crate) fn self_card(
     public_url: &str,
     signer: Option<&super::sign::CardSigner>,
 ) -> Result<Value, ServeError> {
+    // ONE SOURCE FOR WHAT BUSBAR SPEAKS, shared with the fronted-agent rewrite. busbar's own card
+    // and the cards busbar serves for others advertise the same address family and therefore the
+    // same bindings; two lists would let one of them start claiming a protocol the other knows
+    // busbar does not answer.
+    let interfaces: Vec<Value> = servable_bindings()
+        .into_iter()
+        .map(|binding| -> Result<Value, ServeError> {
+            Ok(json!({ "url": canonical_uri(public_url)?, "protocolBinding": binding }))
+        })
+        .collect::<Result<_, _>>()?;
     let card = json!({
         "protocolVersion": super::registry::DEFAULT_PROTOCOL_VERSION,
         "name": "busbar",
@@ -324,9 +434,7 @@ pub(crate) fn self_card(
              — ask for the one you are entitled to at the per-agent card path.",
         "version": env!("CARGO_PKG_VERSION"),
         "provider": { "organization": "busbar" },
-        "supportedInterfaces": [
-            { "url": canonical_uri(public_url)?, "protocolBinding": "JSONRPC" }
-        ],
+        "supportedInterfaces": interfaces,
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["text/plain", "application/json"],
         "capabilities": {
