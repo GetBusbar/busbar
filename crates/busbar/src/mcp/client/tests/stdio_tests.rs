@@ -211,7 +211,7 @@ async fn a_real_child_is_spawned_and_answers_one_request() {
         )
         .await
         .expect("the child answers");
-    let parsed = crate::mcp::client::jsonrpc::parse_response(&out);
+    let parsed = crate::mcp::client::jsonrpc::parse_response(&out, 1);
     assert_eq!(
         parsed,
         crate::mcp::client::jsonrpc::RpcOutcome::Result(serde_json::json!({"content": []}))

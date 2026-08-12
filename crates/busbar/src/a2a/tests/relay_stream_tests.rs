@@ -102,10 +102,12 @@ fn a_streamed_event_carries_busbars_identity_and_an_unreadable_frame_is_passed_t
             "kind": "status-update",
             "status": { "state": "working" }
         })),
+        &serde_json::json!(11),
         "busbar-task-1",
         "ctx-mine",
         Some("plan"),
-    );
+    )
+    .expect("the fixture frame is correlated to the id the stream envelope sent");
     let rendered = String::from_utf8(ev.sse).expect("utf8");
     assert!(
         rendered.contains("busbar-task-1") && rendered.contains("ctx-mine"),
@@ -118,7 +120,14 @@ fn a_streamed_event_carries_busbars_identity_and_an_unreadable_frame_is_passed_t
     assert_eq!(ev.state, Some(TaskState::Working));
 
     let comment = ": keep-alive\n\n";
-    let passed = read_event(comment, "busbar-task-1", "ctx-mine", None);
+    let passed = read_event(
+        comment,
+        &serde_json::json!(11),
+        "busbar-task-1",
+        "ctx-mine",
+        None,
+    )
+    .expect("a keep-alive is not a response and is not correlated");
     assert_eq!(
         String::from_utf8(passed.sse).expect("utf8"),
         comment,
@@ -219,7 +228,12 @@ async fn the_callers_busbar_key_is_absent_from_the_streaming_wire_too() {
 /// framing the backend never used.
 #[tokio::test]
 async fn a_stream_request_answered_with_one_document_comes_back_as_a_document() {
-    let h = harness(Outcome::StreamAnsweredUnary(backend_ok()), false).await;
+    // `11` is the id `stream_envelope` sends, and the relay now requires the answer to name it.
+    let h = harness(
+        Outcome::StreamAnsweredUnary(backend_ok_for(serde_json::json!(11))),
+        false,
+    )
+    .await;
     let (status, ct, body) = call_raw(&h, "planner", &stream_envelope("ctx-unary")).await;
     assert_eq!(status, 200, "{body}");
     assert!(

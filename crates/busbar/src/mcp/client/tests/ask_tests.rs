@@ -44,7 +44,7 @@ fn an_input_required_result_is_recognised_and_not_reported_as_a_plain_result() {
     assert_eq!(cases.len(), 3);
     for (request, expected) in cases {
         assert_eq!(
-            parse_response(&input_required(request)),
+            parse_response(&input_required(request), 1),
             RpcOutcome::InputRequired { kind: expected },
             "`{request}` must be recognised as an ask"
         );
@@ -56,7 +56,7 @@ fn an_input_required_result_is_recognised_and_not_reported_as_a_plain_result() {
 #[test]
 fn an_unrecognised_ask_is_refused_rather_than_passed_through_as_a_result() {
     assert_eq!(
-        parse_response(&input_required("some/future/method")),
+        parse_response(&input_required("some/future/method"), 1),
         RpcOutcome::InputRequired {
             kind: ServerAsk::Sampling
         }
@@ -75,7 +75,7 @@ fn an_ask_carrying_only_request_state_is_still_an_ask() {
     }))
     .expect("fixture serialises");
     assert_eq!(
-        parse_response(&body),
+        parse_response(&body, 1),
         RpcOutcome::InputRequired {
             kind: ServerAsk::Sampling
         },
@@ -98,7 +98,7 @@ fn a_complete_result_is_not_mistaken_for_an_ask() {
         }))
         .expect("fixture serialises");
         assert!(
-            matches!(parse_response(&body), RpcOutcome::Result(_)),
+            matches!(parse_response(&body, 1), RpcOutcome::Result(_)),
             "must remain a plain result: {result}"
         );
     }
@@ -123,7 +123,7 @@ fn a_multi_method_ask_is_judged_against_the_most_privileged_method_it_names() {
     }))
     .expect("fixture serialises");
     assert_eq!(
-        parse_response(&body),
+        parse_response(&body, 1),
         RpcOutcome::InputRequired {
             kind: ServerAsk::Sampling
         }

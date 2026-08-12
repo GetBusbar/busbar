@@ -470,11 +470,25 @@ pub(super) fn envelope() -> serde_json::Value {
     })
 }
 
-/// What a healthy backend answers: a Task envelope of its own, with ITS OWN ids.
+/// What a healthy backend answers: a Task envelope of its own, with ITS OWN ids — correlated to the
+/// JSON-RPC request id in [`envelope`].
 pub(super) fn backend_ok() -> String {
+    backend_ok_for(serde_json::json!(7))
+}
+
+/// The same answer under an explicit JSON-RPC `id`.
+///
+/// It has to be explicit because the relay now CORRELATES the backend's answer to the request it
+/// sent, and this harness serves envelopes with two different ids: `envelope()` sends `7` and the
+/// streaming tests send `11`. A fixture answering `7` to a request that sent `11` is not a healthy
+/// backend, it is the defect — and it was in this file, unnoticed, until the correlation landed and
+/// `relay_stream_tests::a_stream_request_answered_with_one_document_comes_back_as_a_document` went
+/// red. The lesson is the one the request side already paid for: a fixture that agrees with nothing
+/// but itself proves nothing.
+pub(super) fn backend_ok_for(id: serde_json::Value) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 7,
+        "id": id,
         "result": {
             "id": "BACKEND-OWN-TASK-ID",
             "contextId": "BACKEND-OWN-CONTEXT",

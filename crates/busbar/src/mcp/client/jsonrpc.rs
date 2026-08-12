@@ -231,7 +231,7 @@ fn encode_sentinel(name: &str) -> String {
     )
 }
 
-/// The parsed shape of a JSON-RPC response, reduced to the three outcomes dispatch cares about.
+/// The parsed shape of a JSON-RPC response, reduced to the outcomes dispatch cares about.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RpcOutcome {
     /// A normal result.
@@ -243,6 +243,16 @@ pub(crate) enum RpcOutcome {
     InputRequired { kind: ServerAsk },
     /// The body was not a JSON-RPC response at all.
     Malformed(String),
+    /// THE BODY WAS A JSON-RPC RESPONSE TO SOMETHING ELSE — a mismatched `id`, a `null` id, or no
+    /// `id` member at all.
+    ///
+    /// Its own arm rather than folded into [`RpcOutcome::Malformed`], because the two are different
+    /// facts and an operator has to act on them differently: `Malformed` says the upstream is
+    /// broken, `Uncorrelated` says the upstream answered something busbar did not ask, which is
+    /// either a broken multiplexer or a deliberate attempt to have busbar serve one caller another
+    /// caller's answer. Making it a distinct arm also means every `match` on this enum had to be
+    /// revisited when it was added, which is exactly the review the change wanted.
+    Uncorrelated(String),
 }
 
 /// The three things an upstream may ask for, kept as a closed enum so a fourth cannot be handled by
@@ -293,38 +303,58 @@ impl ServerAsk {
     }
 }
 
-/// Parse an upstream response body.
-pub(crate) fn parse_response(body: &[u8]) -> RpcOutcome {
+/// Parse an upstream response body AS THE ANSWER TO THE REQUEST `sent_id` NAMES.
+///
+/// ## `sent_id` is not decoration, and it is not a session either
+///
+/// Every builder in this module writes `"id": request_id` into the body it produces. Until this
+/// argument existed nothing ever read that member back: a response carrying a DIFFERENT id, a
+/// `null` id, or no `id` member at all was accepted as the answer to whatever busbar had just sent,
+/// because the only thing that associated the two was that they were the same function call. That
+/// holds right up until an upstream (or anything between busbar and it) puts a different answer on
+/// that socket, and then busbar serves one caller another caller's result while every test that
+/// pairs one request with one response stays green.
+///
+/// The correlation is therefore checked, and it is checked with a value that lives no longer than
+/// this dispatch. `sent_id` comes from the same `request_id` the caller handed the builder, a few
+/// lines up in the same function; nothing is stored, so there is nothing to invalidate and no
+/// counter that "outlived a dispatch" — which is the constraint this module's header sets, and it
+/// is a real one: this revision deleted sessions, and re-inventing one to hold pending ids would be
+/// re-adding the thing the revision removed.
+///
+/// The envelope rules themselves — the `jsonrpc` member, the `id` cases, exactly-one-of
+/// `result`/`error` — are [`crate::ingress::jsonrpc::read_response`]'s, shared with the A2A relay,
+/// for the reason the request side already established: one concern, one reader.
+pub(crate) fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
+    use crate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return RpcOutcome::Malformed("upstream response is not valid JSON".to_string());
     };
-    let Some(obj) = value.as_object() else {
-        return RpcOutcome::Malformed(
-            "upstream response is not a JSON-RPC message object".to_string(),
-        );
+    let reply = match read_response(&value, &serde_json::Value::from(sent_id)) {
+        Ok(reply) => reply,
+        // The shared reader names WHICH kind of non-answer it is; this plane maps the two onto its
+        // own two arms rather than re-deriving the distinction from the prose.
+        Err(e) => {
+            return match e.kind {
+                NotAnAnswerKind::Uncorrelated => RpcOutcome::Uncorrelated(e.reason),
+                NotAnAnswerKind::NotAResponse => RpcOutcome::Malformed(e.reason),
+            }
+        }
     };
-    if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
-        return RpcOutcome::Malformed("upstream response `jsonrpc` is not \"2.0\"".to_string());
+    match reply {
+        Reply::Error { code, message } => RpcOutcome::Error {
+            code: code
+                .as_ref()
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            message,
+        },
+        Reply::Result(result) => match input_required_kind(&result) {
+            Some(ask) => RpcOutcome::InputRequired { kind: ask },
+            None => RpcOutcome::Result(result),
+        },
     }
-    if let Some(err) = obj.get("error").and_then(|v| v.as_object()) {
-        return RpcOutcome::Error {
-            code: err.get("code").and_then(|v| v.as_i64()).unwrap_or(0),
-            message: err
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        };
-    }
-    let Some(result) = obj.get("result") else {
-        return RpcOutcome::Malformed(
-            "upstream response carries neither `result` nor `error`".to_string(),
-        );
-    };
-    if let Some(ask) = input_required_kind(result) {
-        return RpcOutcome::InputRequired { kind: ask };
-    }
-    RpcOutcome::Result(result.clone())
 }
 
 /// Recognise an `InputRequiredResult` and which authority it is asking for.
