@@ -131,7 +131,7 @@
       },
       "ApproveReq": {
         "additionalProperties": false,
-        "description": "The `approve` request body. ONE required field, and it is required for the reason the module note\ngives: it is the operator's evidence that they looked.",
+        "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
         "properties": {
           "fingerprint": {
             "description": "The canonical card fingerprint EXACTLY as `connect` reported it.",
