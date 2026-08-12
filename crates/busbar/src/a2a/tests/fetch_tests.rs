@@ -113,6 +113,7 @@ impl ScriptedTransport {
                 location: None,
                 body: body.as_bytes().to_vec(),
                 peer_spki: None,
+                client_identity_offered: false,
             },
         );
         self
@@ -126,6 +127,7 @@ impl ScriptedTransport {
                 location: Some(to.to_string()),
                 body: Vec::new(),
                 peer_spki: None,
+                client_identity_offered: false,
             },
         );
         self
@@ -139,6 +141,7 @@ impl ScriptedTransport {
                 location: None,
                 body: Vec::new(),
                 peer_spki: None,
+                client_identity_offered: false,
             },
         );
         self

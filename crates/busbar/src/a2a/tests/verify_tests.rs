@@ -93,6 +93,7 @@ impl CardEndpoint {
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
                 peer_spki: None,
+                client_identity_offered: false,
             },
         );
     }
@@ -654,6 +655,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                     location: None,
                     body: Vec::new(),
                     peer_spki: None,
+                    client_identity_offered: false,
                 });
             }
             Ok(HttpResponse {
@@ -661,6 +663,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                 location: None,
                 body: self.body.clone(),
                 peer_spki: None,
+                client_identity_offered: false,
             })
         }
     }
@@ -708,6 +711,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
                 location: None,
                 body,
                 peer_spki: None,
+                client_identity_offered: false,
             })
         }
     }

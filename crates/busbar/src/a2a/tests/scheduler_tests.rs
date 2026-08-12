@@ -105,6 +105,7 @@ impl Endpoints {
                 location: None,
                 body: serde_json::to_vec(card).expect("serialize"),
                 peer_spki: None,
+                client_identity_offered: false,
             },
         );
     }
@@ -518,6 +519,7 @@ fn the_sweep_honours_the_registrations_own_allow_private() {
             location: None,
             body: serde_json::to_vec(&card).expect("serialize"),
             peer_spki: None,
+            client_identity_offered: false,
         },
     );
 

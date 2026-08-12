@@ -64,6 +64,7 @@ impl CardSource for ScriptedSource {
         Ok(SightedCard {
             document: v,
             peer_spki: None,
+            client_identity_offered: false,
         })
     }
 }

@@ -152,12 +152,14 @@ impl RelayTransport for RecordingTransport {
                 location: None,
                 body: reply.clone().into_bytes(),
                 peer_spki: None,
+                client_identity_offered: false,
             }),
             Outcome::AnswersCorrelated(status, reply) => Ok(HttpResponse {
                 status: *status,
                 location: None,
                 body: correlated(reply, body).into_bytes(),
                 peer_spki: None,
+                client_identity_offered: false,
             }),
             Outcome::Fails(err) => Err(err.clone()),
             Outcome::Streams(_) | Outcome::StreamAnsweredUnary(_) => {

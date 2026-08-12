@@ -36,7 +36,7 @@ use super::*;
 use crate::a2a::config::{AgentPinCfg, PinMechanism};
 use crate::a2a::fetch::FetchPolicy;
 use crate::a2a::pin::{approve_registration, ApproveError, CardPin};
-use crate::a2a::verify::{verify_document, VerifyRefusal};
+use crate::a2a::verify::{verify_document, Handshake, VerifyRefusal};
 use crate::trust::{Approval, Observation, Sighting};
 
 /// A CA, a leaf it signed, and — computed independently of the certificate — the pin that leaf's
@@ -112,6 +112,18 @@ fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<St
     (document, resp.peer_spki)
 }
 
+/// A ONE-WAY HANDSHAKE: what the peer proved, and nothing of busbar's.
+///
+/// The shape every `cert_spki` and `unpinned` case here is about — those mechanisms are defined as
+/// one-way bindings, so naming the mutual half `false` at each call site is the honest spelling
+/// rather than a default that hides which question was asked.
+fn one_way(peer_spki: Option<&str>) -> Handshake<'_> {
+    Handshake {
+        peer_spki,
+        client_identity_offered: false,
+    }
+}
+
 fn transport_pin_cfg(mechanism: PinMechanism, pin: &str) -> AgentPinCfg {
     AgentPinCfg {
         mechanism,
@@ -150,7 +162,7 @@ fn a_card_served_under_a_certificate_whose_spki_does_not_match_the_pin_is_refuse
     let refusal = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &elsewhere.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect_err("a certificate that is not the pinned one must be refused");
 
@@ -180,7 +192,7 @@ fn a_card_served_under_the_pinned_certificate_is_accepted_and_pins_what_was_obse
     let verified = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("the pinned certificate must be accepted");
 
@@ -204,7 +216,7 @@ fn a_transport_pinned_registration_whose_hop_produced_no_certificate_is_refused(
     let refusal = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, "sha256/AAAA"),
         &an_unsigned_card(),
-        None,
+        one_way(None),
     )
     .expect_err("no observed certificate must refuse");
     assert_eq!(refusal, VerifyRefusal::TransportPinNotObserved("cert_spki"));
@@ -219,7 +231,7 @@ fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_d
             fingerprint: None,
         },
         &an_unsigned_card(),
-        Some("sha256/anything"),
+        one_way(Some("sha256/anything")),
     )
     .expect_err("a mechanism with nothing to compare against has no root");
     assert_eq!(refusal, VerifyRefusal::NoTransportPin("cert_spki"));
@@ -243,7 +255,7 @@ fn an_unsigned_card_with_a_matching_cert_spki_pin_is_a_root_an_operator_can_appr
     let verified = verify_document(
         &transport_pin_cfg(PinMechanism::CertSpki, &endpoint.expected_pin),
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("an unsigned card bound at the transport layer must verify");
 
@@ -285,7 +297,7 @@ fn an_unsigned_card_with_no_pin_at_all_is_still_refused() {
             fingerprint: None,
         },
         &document,
-        observed.as_deref(),
+        one_way(observed.as_deref()),
     )
     .expect("an unpinned registration is capturable");
     assert_eq!(verified.pin, CardPin::Unpinned);
@@ -321,9 +333,9 @@ impl crate::a2a::fetch::Resolver for HostOnLoopback {
 
 /// The registration an operator writes for an mTLS vendor, pointed at a server on loopback.
 ///
-/// `allow_private` is the operator's own knob and it is set for the same reason every other
-/// loopback test sets it: the guard refuses private addresses by default and adding a "test
-/// addresses are fine" escape hatch would be a hole in production to make a test pass.
+/// `allow_private` is set on the record as well as on the policy below because that is what the
+/// sweep lowers into the policy per registration; the two agreeing is the state a real deployment
+/// is in.
 fn an_mtls_registration(port: u16) -> crate::a2a::registry::AgentRegistration {
     let mut reg = crate::a2a::registry::AgentRegistration::registered(
         "planner",
@@ -333,6 +345,9 @@ fn an_mtls_registration(port: u16) -> crate::a2a::registry::AgentRegistration {
     reg
 }
 
+/// The operator's own `allow_private:`, and nothing else moved. The vendor under test is on
+/// loopback, which the guard refuses by default — teaching the guard that "test addresses are fine"
+/// would be a hole in production opened to make a test pass.
 fn loopback_policy() -> FetchPolicy {
     FetchPolicy {
         allow_private: true,
@@ -386,7 +401,10 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
          there is nothing left for `mtls` to refuse"
     );
     let Sighting::Seen(observation) = &registration.sighting else {
-        panic!("a verified card is a SEEN contact: {:?}", registration.sighting);
+        panic!(
+            "a verified card is a SEEN contact: {:?}",
+            registration.sighting
+        );
     };
     assert_eq!(
         observation.pin,
@@ -447,6 +465,38 @@ fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refus
         "a refusal is a FAILED CONTACT, not an absence of one: {:?}",
         registration.sighting
     );
+}
+
+/// THE PEER HALF IS DECIDED FIRST, and it stays that way now that the mutual half can pass.
+///
+/// A look-alike endpoint is reported as a look-alike endpoint whatever busbar presented, because an
+/// operator told "you have no client certificate" about an endpoint serving somebody else's key
+/// would go and configure a certificate FOR THE IMPOSTOR. The mutual half is only ever the reason
+/// once the peer is the one the operator pinned.
+#[test]
+fn an_mtls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate() {
+    let endpoint = endpoint_for(vec![HOST.to_string()]);
+    let elsewhere = endpoint_for(vec![HOST.to_string()]);
+    let (document, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
+
+    for offered in [true, false] {
+        assert!(
+            matches!(
+                verify_document(
+                    &transport_pin_cfg(PinMechanism::Mtls, &elsewhere.expected_pin),
+                    &document,
+                    Handshake {
+                        peer_spki: observed.as_deref(),
+                        client_identity_offered: offered,
+                    },
+                )
+                .expect_err("a look-alike endpoint must be named as one"),
+                VerifyRefusal::TransportPinMismatch { .. }
+            ),
+            "with client_identity_offered = {offered}, the endpoint that answered is still not the \
+             one the operator supplied a root for"
+        );
+    }
 }
 
 // ══ THE ORDERING THAT MAKES ALL OF THIS SAFE ═════════════════════════════════════════════════════
