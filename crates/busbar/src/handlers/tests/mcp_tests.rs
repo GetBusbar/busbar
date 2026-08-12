@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `(mcp, Invoke)` cell's tests. The contract a codec cell is held to is the one its own
-//! trait doc states — "feed it wire, assert the IR; feed it IR, assert the wire" — so these are
-//! round-trip and refusal tests, and nothing else.
+//! The MCP cells' tests. The contract a codec cell is held to is the one its own trait doc states —
+//! "feed it wire, assert the IR; feed it IR, assert the wire" — so these are round-trip and refusal
+//! tests, and nothing else. The notification tests are the same contract for a message that has no
+//! answer: write it, read it back, and assert it is what it was.
 
 use super::*;
 
@@ -131,18 +132,19 @@ fn structured_content_is_omitted_when_the_tool_produced_none() {
 
 // ── THE MATRIX DECLARATIONS ──────────────────────────────────────────────────────────────────────
 
-/// MCP SERVES `Invoke` AND NOTHING ELSE TODAY — which is the "no MCP to Chat" rule, enforced by the
+/// MCP SERVES `Invoke` AND `Subscribe` TODAY — and the "no MCP to Chat" rule is enforced by the
 /// absence of a cell rather than by a runtime check. There is no handler to translate an invocation
 /// into a chat completion through, so the pair is unrepresentable.
 ///
-/// The seven LLM operations are a permanent NO. `Catalogue`/`Fetch`/`Task`/`Subscribe`/`Control` are
-/// a NOT-YET — MCP does speak all five — and they are asserted here for the same reason: until the
-/// cell exists, the handler must not report one, and this test is what would catch a cell appearing
-/// without its own conformance evidence.
+/// The seven LLM operations are a permanent NO. `Catalogue`/`Fetch`/`Task`/`Control` are a NOT-YET —
+/// MCP does speak all four — and they are asserted here for the same reason: until the cell exists,
+/// the handler must not report one, and this test is what would catch a cell appearing without its
+/// own conformance evidence.
 #[test]
-fn mcp_serves_invoke_and_refuses_every_other_operation() {
+fn mcp_serves_invoke_and_subscribe_and_refuses_every_other_operation() {
     let h = McpRequestHandler;
     assert!(h.operation_handler(Operation::Invoke).is_some());
+    assert!(h.operation_handler(Operation::Subscribe).is_some());
     for op in [
         Operation::Chat,
         Operation::Embeddings,
@@ -154,13 +156,12 @@ fn mcp_serves_invoke_and_refuses_every_other_operation() {
         Operation::Catalogue,
         Operation::Fetch,
         Operation::Task,
-        Operation::Subscribe,
         Operation::Control,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
-            "MCP must serve no operation but Invoke; {} has no cell and must not acquire one by \
-             accident",
+            "MCP must serve no operation but Invoke and Subscribe; {} has no cell and must not \
+             acquire one by accident",
             op.name()
         );
     }
@@ -222,5 +223,241 @@ fn a_failing_tool_server_produces_a_classifiable_outcome() {
     assert!(
         raw.retry_after_secs.is_none(),
         "this sees only the body; the forwarding layer holds the headers and fills this in after"
+    );
+}
+
+// ── THE SUBSCRIPTION CELL ────────────────────────────────────────────────────────────────────────
+
+fn subscription_wire(method: &str, params: serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": method, "params": params
+    }))
+    .expect("fixture")
+}
+
+/// A CALLER CAN ASK TO BE TOLD WHEN A NAMED THING CHANGES, and can ask to stop. Both are the same
+/// operation, and the direction the registration moves survives the codec.
+#[test]
+fn both_subscription_verbs_read_into_one_operation_with_their_intent_intact() {
+    for (method, want) in [
+        ("resources/subscribe", SubscribeIntent::Register),
+        ("resources/unsubscribe", SubscribeIntent::Deregister),
+    ] {
+        let wire = subscription_wire(method, serde_json::json!({ "uri": "file:///log.txt" }));
+        let ir = SubscribeOperation
+            .read_request(&wire, crate::proxy::APPLICATION_JSON)
+            .expect("a well-formed subscription request reads");
+        let IrReq::Subscribe(r) = ir else {
+            panic!("a subscription request is a Subscribe")
+        };
+        assert_eq!(r.intent, want);
+        assert_eq!(r.target, "file:///log.txt");
+    }
+}
+
+/// THE TWO VERBS ARE ONE OPERATION AS FAR AS ROUTING IS CONCERNED. The engine must never learn that
+/// there were two method names; the intent is the codec's business.
+#[test]
+fn the_subscription_verbs_resolve_to_the_subscription_operation() {
+    let h = McpRequestHandler;
+    for method in ["resources/subscribe", "resources/unsubscribe"] {
+        let body = subscription_wire(method, serde_json::json!({ "uri": "u" }));
+        assert_eq!(
+            h.resolve_operation("/mcp", &body),
+            Some(Operation::Subscribe),
+            "{method} names the subscription operation"
+        );
+    }
+}
+
+/// A REQUEST THAT NAMES NOTHING IS REFUSED. A subscription to the empty string is not a narrower
+/// subscription; it is one nothing downstream could judge or deliver.
+#[test]
+fn a_subscription_that_names_no_target_is_refused() {
+    for params in [
+        serde_json::json!({}),
+        serde_json::json!({ "uri": "" }),
+        serde_json::json!({ "uri": 3 }),
+    ] {
+        assert!(
+            SubscribeOperation
+                .read_request(
+                    &subscription_wire("resources/subscribe", params.clone()),
+                    crate::proxy::APPLICATION_JSON
+                )
+                .is_err(),
+            "a subscription request whose params are {params} names no target"
+        );
+    }
+}
+
+#[test]
+fn the_subscription_request_round_trips_through_the_codec() {
+    let wire = subscription_wire(
+        "resources/unsubscribe",
+        serde_json::json!({ "uri": "file:///a" }),
+    );
+    let ir = SubscribeOperation
+        .read_request(&wire, crate::proxy::APPLICATION_JSON)
+        .expect("reads");
+    let out: serde_json::Value =
+        serde_json::from_slice(&SubscribeOperation.write_request(&ir)).expect("writes JSON");
+    assert_eq!(out["jsonrpc"], "2.0");
+    assert_eq!(
+        out["method"], "resources/unsubscribe",
+        "the direction the registration moves is carried by the method name, so it must survive"
+    );
+    assert_eq!(out["params"]["uri"], "file:///a");
+    assert!(
+        out.get("id").is_none(),
+        "THE CALLER'S ID DOES NOT TRAVEL, for the same reason it does not on an invocation: \
+         correlation is decided on the way out and read back when the answer arrives."
+    );
+}
+
+/// THE ACKNOWLEDGEMENT IS THE CONTENT. An empty result is a successful registration, not a missing
+/// one, and it must not be mistaken for a peer that returned a record.
+#[test]
+fn an_empty_result_is_an_acknowledgement_and_not_a_registration_record() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "result": {}
+    }))
+    .expect("fixture");
+    let ir = SubscribeOperation.read_response(&wire).expect("reads");
+    let IrResp::Subscribe(r) = ir else {
+        panic!("a subscription answer is a Subscribe")
+    };
+    assert_eq!(r.registration, None);
+    let out: serde_json::Value = serde_json::from_slice(
+        &SubscribeOperation
+            .write_response(&IrResp::Subscribe(r))
+            .bytes,
+    )
+    .expect("writes JSON");
+    assert_eq!(
+        out["result"],
+        serde_json::json!({}),
+        "and it is written back as the empty result the protocol asks for, never as null"
+    );
+}
+
+/// A PEER THAT DOES RETURN A REGISTRATION RECORD HAS IT CARRIED, NOT DISCARDED. The record is the
+/// peer's; busbar neither invents one nor drops one.
+#[test]
+fn a_registration_record_is_carried_through_untouched() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "result": { "id": "sub-1", "uri": "file:///a" }
+    }))
+    .expect("fixture");
+    let ir = SubscribeOperation.read_response(&wire).expect("reads");
+    let IrResp::Subscribe(r) = ir else {
+        panic!("a subscription answer is a Subscribe")
+    };
+    assert_eq!(r.registration.as_ref().expect("carried")["id"], "sub-1");
+    let out: serde_json::Value = serde_json::from_slice(
+        &SubscribeOperation
+            .write_response(&IrResp::Subscribe(r))
+            .bytes,
+    )
+    .expect("writes JSON");
+    assert_eq!(out["result"]["uri"], "file:///a");
+}
+
+/// A REGISTRATION IS METERED. Not because a model ran — none did — but because a call nothing charges
+/// for is a call a caller can make without limit, and the budget tree is the only thing that would
+/// otherwise see it.
+#[test]
+fn a_subscription_is_flat_metered_rather_than_free() {
+    let ir = IrResp::Subscribe(crate::ir::subscribe::SubscribeResp {
+        registration: None,
+        extra: Default::default(),
+    });
+    assert!(
+        matches!(ir.usage(), Some(crate::billing::Billing::Flat)),
+        "a registration bills one unit, so it lands on the same budget tree as every other call"
+    );
+}
+
+// ── THE NOTIFICATION VOCABULARY ──────────────────────────────────────────────────────────────────
+
+/// THE MESSAGE THAT MAKES A SUBSCRIPTION WORTH HAVING, and its sibling that says a tool list moved.
+/// One reader and one writer for both directions of travel: busbar emits these when it is the server
+/// and receives them when it is the client, and a second implementation per direction is how two
+/// readings of one message come to disagree.
+#[test]
+fn the_notifications_round_trip_and_carry_no_id() {
+    for n in [
+        McpNotification::ToolsListChanged,
+        McpNotification::ResourceUpdated {
+            uri: "file:///log.txt".to_string(),
+        },
+    ] {
+        let out: serde_json::Value = serde_json::from_slice(&n.write()).expect("writes JSON");
+        assert_eq!(out["jsonrpc"], "2.0");
+        assert_eq!(out["method"], n.method());
+        assert!(
+            out.get("id").is_none(),
+            "a notification has no id: an id would make it a request, and a request obliges an \
+             answer nobody is waiting for"
+        );
+        let back = McpNotification::read(
+            out["method"].as_str().expect("a method name"),
+            out.get("params"),
+        );
+        assert_eq!(back.as_ref(), Some(&n), "and it reads back as what it was");
+    }
+}
+
+#[test]
+fn the_tools_list_changed_notification_carries_no_params_at_all() {
+    let out: serde_json::Value =
+        serde_json::from_slice(&McpNotification::ToolsListChanged.write()).expect("writes JSON");
+    assert_eq!(out["method"], "notifications/tools/list_changed");
+    assert!(
+        out.get("params").is_none(),
+        "this message has no parameters, so emitting an empty object would be inventing a member"
+    );
+}
+
+/// AN UPDATE THAT NAMES NO RESOURCE IS NOT AN UPDATE. Acting on it would mean guessing which of a
+/// caller's subscriptions it was about.
+#[test]
+fn a_resource_update_that_names_no_resource_is_not_read() {
+    assert_eq!(
+        McpNotification::read("notifications/resources/updated", None),
+        None
+    );
+    assert_eq!(
+        McpNotification::read(
+            "notifications/resources/updated",
+            Some(&serde_json::json!({ "uri": "" }))
+        ),
+        None
+    );
+}
+
+/// A NOTIFICATION THIS PROTOCOL DOES NOT CARRY IS DROPPED, NOT REFUSED. JSON-RPC 2.0 forbids
+/// replying to a notification, so there is nothing to send back and inventing an error envelope
+/// would break that rule to report a message that harmed nothing.
+#[test]
+fn an_unknown_notification_is_simply_not_one_of_these() {
+    assert_eq!(McpNotification::read("notifications/nope", None), None);
+}
+
+/// THE WIRE NAMES ARE THE SDK's. This is the assertion that would catch a literal being typed here a
+/// second time and drifting from the specification the crate implements.
+#[test]
+fn every_wire_name_this_cell_serves_is_the_one_the_sdk_declares() {
+    use rmcp::model::ConstString;
+    assert_eq!(METHOD_TOOLS_CALL, rmcp::model::CallToolRequestMethod::VALUE);
+    assert_eq!(METHOD_RESOURCES_SUBSCRIBE, "resources/subscribe");
+    assert_eq!(METHOD_RESOURCES_UNSUBSCRIBE, "resources/unsubscribe");
+    assert_eq!(
+        METHOD_NOTIFY_TOOLS_LIST_CHANGED,
+        "notifications/tools/list_changed"
+    );
+    assert_eq!(
+        METHOD_NOTIFY_RESOURCES_UPDATED,
+        "notifications/resources/updated"
     );
 }

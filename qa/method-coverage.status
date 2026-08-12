@@ -45,6 +45,24 @@
 # ---------------------------------------------------------------------------
 
 # (none yet -- see the paragraph above)
+#
+# AND ONE THING THAT LANDED WITHOUT CLAIMING A CELL, RECORDED SO THAT ITS ABSENCE HERE IS NOT READ
+# AS AN OVERSIGHT. `resources/subscribe`, `resources/unsubscribe`,
+# `notifications/tools/list_changed` and `notifications/resources/updated` now exist as real code on
+# the protocol x operation matrix, on the specification authors' own crate's types. That is the
+# CODEC: it reads those bytes and it writes them, in either direction, and its tests are the wire
+# contract. It is NOT the capability, and the difference is the whole reason a cell is claimed on an
+# instrument rather than on a diff:
+#
+#   * the served MCP endpoint still answers those four names -32601, because the deployed surface is
+#     stateless -- no session, no server-to-client stream -- and a subscription with no channel to be
+#     notified over is a promise that would never be kept. Advertising it would be worse for a
+#     customer than refusing it, because a client would wait rather than fall back;
+#   * so a customer cannot yet do this, and a cell says a customer can.
+#
+# The cell is therefore still MISSING and its line is still in qa/method-coverage.missing, which is
+# the correct state. What changed is that the wire half is built and proven, so the remaining work is
+# the channel and the admission, not the vocabulary.
 
 # ---------------------------------------------------------------------------
 # waived
