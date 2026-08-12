@@ -892,23 +892,23 @@ fn resources_read(
         // meant is a question only the caller can answer. The whole reason the catalogue was
         // namespaced was that this case used to be resolved SILENTLY, by config order, and served
         // one server's content to a caller who had asked for the other's.
-        super::catalogue::ResourceLookup::Ambiguous(servers) => {
-            return error(
-                StatusCode::CONFLICT,
-                id,
-                CODE_REFUSED,
-                &format!(
-                    "`{uri}` is exposed by more than one server you are granted ({}). \
-                     Name the server's own resource, or narrow the grant.",
-                    servers.join(", ")
-                ),
-                Some(serde_json::json!({ "reason": "resource_ambiguous", "servers": servers })),
-            );
+        super::catalogue::ResourceLookup::Ambiguous(candidates) => {
+            return ambiguous_resource(id, uri, &candidates)
         }
         super::catalogue::ResourceLookup::NotFound => {
             match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
-                Some((template, bindings)) => templated_resource_content(uri, template, &bindings),
-                None => {
+                super::catalogue::ResourceLookup::One((template, bindings)) => {
+                    templated_resource_content(uri, template, &bindings)
+                }
+                // THE SAME REFUSAL, and it must be the same one. An operator who writes an approval
+                // with a parameter in it has not thereby agreed that busbar may pick between two
+                // upstreams on their behalf; a plane where the literal spelling refuses and the
+                // parameterised spelling quietly resolves is a plane where the refusal is bypassed
+                // by writing the approval differently.
+                super::catalogue::ResourceLookup::Ambiguous(candidates) => {
+                    return ambiguous_resource(id, uri, &candidates)
+                }
+                super::catalogue::ResourceLookup::NotFound => {
                     return not_found(
                         id,
                         &format!("`{uri}` is not a resource this server exposes."),
@@ -920,6 +920,25 @@ fn resources_read(
     result(
         id,
         cache_hints(serde_json::json!({ "contents": [content] })),
+    )
+}
+
+/// THE ONE AMBIGUITY REFUSAL, shared by both address resolutions.
+///
+/// One function rather than one per resolution, because a second copy is a second place for one of
+/// them to answer a `200`, which is precisely the defect this was written to close: the literal
+/// address refused and the parameterised address did not, and nothing made the two agree.
+fn ambiguous_resource(id: Option<serde_json::Value>, uri: &str, candidates: &[String]) -> Response {
+    error(
+        StatusCode::CONFLICT,
+        id,
+        CODE_REFUSED,
+        &format!(
+            "`{uri}` is answered by more than one approval you are granted ({}). \
+             Narrow the grant so exactly one of them applies.",
+            candidates.join(", ")
+        ),
+        Some(serde_json::json!({ "reason": "resource_ambiguous", "candidates": candidates })),
     )
 }
 

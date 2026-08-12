@@ -148,20 +148,29 @@ pub(crate) struct PromptEntry {
     pub(crate) messages: Vec<PromptMessageCfg>,
 }
 
-/// The answer to "which resource did this caller mean by this URI".
+/// The answer to "which approval did this caller mean by this address".
 ///
-/// Three arms rather than an `Option`, because the third is not an absence: two servers the caller
-/// can reach both exposing one URI is a question the registry genuinely cannot answer, and collapsing
-/// it into `None` would report an ambiguity as a not-found.
+/// Three arms rather than an `Option`, because the third is not an absence: two things the caller
+/// can reach both answering one address is a question the registry genuinely cannot answer, and
+/// collapsing it into `None` would report an ambiguity as a not-found.
+///
+/// GENERIC OVER WHAT WAS FOUND, and that is the fix rather than a tidy-up. There were two address
+/// resolutions on this plane — the LITERAL one below and the PARAMETERISED one above it — and only
+/// the literal one had the third arm. The parameterised one returned an `Option` filled by the first
+/// hit of an ordered map walk, so a caller granted two upstreams whose templates both matched one
+/// address was served one upstream's content under the other's name, decided silently by whichever
+/// upstream identifier sorted first. One type with one set of arms means a second resolution cannot
+/// be added without answering the ambiguity question, because there is no arm that means "pick one".
 #[derive(Debug)]
-pub(crate) enum ResourceLookup<'a> {
+pub(crate) enum ResourceLookup<T> {
     /// Exactly one, after the caller's grant narrowed the field.
-    One(&'a ResourceEntry),
+    One(T),
     /// No such resource, OR the caller holds no grant for it. Deliberately one arm: a catalogue that
     /// distinguishes them leaks the existence of what it hides.
     NotFound,
-    /// The caller is granted MORE THAN ONE server exposing this URI. Carries their names, sorted, so
-    /// the refusal can tell the operator what to disambiguate.
+    /// The caller is granted MORE THAN ONE thing answering this address. Carries the contending
+    /// approvals, named the way an operator can act on them and SORTED, so that two runs of one
+    /// ambiguity are never reported two different ways.
     Ambiguous(Vec<String>),
 }
 
@@ -574,31 +583,52 @@ impl Catalogue {
 
     /// MATCH a caller's EXPANDED uri against the grant-scoped templates.
     ///
-    /// Returns the template it matched and the parameter bindings the match produced. `None` covers
-    /// "no template matches" and "not yours" alike, which is the same answer
-    /// [`Catalogue::resource_for`] gives and for the same reason: distinguishing them would let a
-    /// caller probe for the shape of an approval it does not hold.
+    /// [`ResourceLookup::NotFound`] covers "no template matches" and "not yours" alike, which is the
+    /// same answer [`Catalogue::resource_by_uri`] gives and for the same reason: distinguishing them
+    /// would let a caller probe for the shape of an approval it does not hold.
     ///
-    /// Deterministic on a collision: the map is ordered, so the FIRST matching template by
-    /// namespaced key wins and wins the same way on every process. That is a weaker property than
-    /// refusing an ambiguity outright, and it is called out here rather than left to be discovered —
-    /// two templates of one server that both match one URI is an operator writing two overlapping
-    /// approvals, and which one they meant is a question the registry cannot answer for them.
+    /// AND THE THIRD ARM IS THE POINT. This used to answer an `Option` filled by the first hit of an
+    /// ordered map walk, and called the determinism a feature: the same process, the same config,
+    /// the same winner every time. It is worse than a coin toss precisely because it is stable —
+    /// the key walked is `{server}_{template}`, so whoever chooses an upstream's identifier chooses
+    /// which of two contending approvals answers, silently, for as long as the config stands. That
+    /// is the cross-trust-boundary content confusion the namespacing exists to prevent, arriving
+    /// through the newer surface. More than one match is REFUSED and NAMED, exactly as the literal
+    /// address is, because which one the caller meant is a question only the caller can answer.
+    ///
+    /// The candidates are named by their NAMESPACED approval rather than by their server, which is
+    /// where this differs from the literal path and is not an inconsistency: two templates on ONE
+    /// server can contend, and a refusal that named the server twice would tell the operator
+    /// nothing.
     pub(crate) fn resource_template_for(
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
         uri: &str,
-    ) -> Option<(
+    ) -> ResourceLookup<(
         &ResourceTemplateEntry,
         std::collections::BTreeMap<String, String>,
     )> {
         // Matched against the OPERATOR'S OWN template, not the namespaced spelling, for the same
         // reason a concrete resource is now addressed by its own URI: the caller expands the
         // template it was published, and it is published raw.
-        self.resource_templates
+        let mut matches = self
+            .resource_templates
             .values()
             .filter(|t| granted(grant, &t.server, &t.namespaced))
-            .find_map(|t| match_uri_template(&t.uri_template, uri).map(|p| (t, p)))
+            .filter_map(|t| match_uri_template(&t.uri_template, uri).map(|p| (t, p)));
+        let Some(first) = matches.next() else {
+            return ResourceLookup::NotFound;
+        };
+        let rest: Vec<_> = matches.collect();
+        if rest.is_empty() {
+            return ResourceLookup::One(first);
+        }
+        let mut candidates: Vec<String> = std::iter::once(&first)
+            .chain(rest.iter())
+            .map(|(t, _)| t.namespaced.clone())
+            .collect();
+        candidates.sort();
+        ResourceLookup::Ambiguous(candidates)
     }
 
     /// Look one resource up BY THE URI THE PROTOCOL DEFINES, under the caller's grant.
@@ -622,7 +652,7 @@ impl Catalogue {
         &self,
         grant: &dyn Fn(&str, &str) -> bool,
         uri: &str,
-    ) -> ResourceLookup<'_> {
+    ) -> ResourceLookup<&ResourceEntry> {
         let mut matches = self
             .resources
             .values()

@@ -79,6 +79,26 @@ resources_allow:
     ))
 }
 
+/// A server exposing ONE PARAMETERISED address, whose text names the server so a test can tell
+/// whose content it was served.
+///
+/// The same shape as [`server_exposing`] one line up, and deliberately so: the two differ only in
+/// whether the address the operator approved carries a parameter, which is exactly the difference
+/// the cases below say must NOT change the answer.
+fn server_exposing_template(template: &str, marker: &str) -> McpServerDefCfg {
+    def(&format!(
+        r#"
+url: "https://tools.example.com/mcp"
+pin: {{ mechanism: unpinned }}
+resource_templates_allow:
+  "{template}":
+    name: "A parameterised resource"
+    mime_type: "text/plain"
+    text: "{marker}/{{id}}"
+"#
+    ))
+}
+
 /// A `GovCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
 fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
     let key = busbar_api::VirtualKey {
@@ -327,5 +347,153 @@ async fn not_found_and_not_granted_are_indistinguishable() {
         missing["error"]["message"], hidden["error"]["message"],
         "a hidden resource must answer identically to an absent one, or the difference \
          is a probe for what the caller is not allowed to see"
+    );
+}
+
+// ── THE SAME PROPERTY WHERE THE ADDRESS CARRIES A PARAMETER ────────────────────────────────────
+//
+// Everything above is about an address the operator wrote out in full. An operator may also approve
+// a SHAPE — `shared://doc/{id}` — and a caller then addresses one expansion of it. That is a second
+// way for two upstreams a caller can reach to answer for one address, and the answer to "which one
+// did you mean" cannot depend on which of the two spellings the operator happened to use. A
+// deployment where the literal address refuses an ambiguity and the parameterised one quietly picks
+// is a deployment where the refusal is bypassed by writing the approval differently.
+
+/// TWO servers expose ONE parameterised address. A caller granted only ONE is served ITS content —
+/// and never the other's, **in either declaration order**.
+///
+/// The control for the case below it: this must go through, or the refusal there would be proving
+/// only that the plane refuses everything.
+#[tokio::test]
+async fn a_caller_granted_one_server_is_never_served_the_others_templated_content() {
+    crate::metrics::init();
+    for (first, second) in [("alpha", "beta"), ("beta", "alpha")] {
+        let app = TestApp::new()
+            .mcp(&mcp_cfg())
+            .mcp_server(first, server_exposing_template("shared://doc/{id}", first))
+            .mcp_server(
+                second,
+                server_exposing_template("shared://doc/{id}", second),
+            )
+            .build();
+        let g = gov_with_scopes(&[
+            ("mcp_server", "alpha"),
+            ("mcp_tool", "alpha_shared://doc/{id}"),
+        ]);
+        let (status, body) = call(
+            &app,
+            &g,
+            "resources/read",
+            serde_json::json!({ "uri": "shared://doc/42" }),
+        )
+        .await;
+        assert_eq!(status, 200, "declared {first} then {second}: {body}");
+        assert!(
+            body["result"]["contents"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("alpha"),
+            "a caller granted alpha was served another server's content \
+             (declared {first} then {second}): {body}"
+        );
+    }
+}
+
+/// TWO servers expose ONE parameterised address and the caller is granted BOTH. **Refused, naming
+/// both** — exactly as the literal spelling of the same ambiguity is, and never resolved by picking
+/// one.
+///
+/// The pick is not a coin toss and that is what makes it worth refusing: the two candidates are
+/// compared in a stable order derived from the upstream's own identifier, so whoever chooses the
+/// identifier chooses the winner, on every process, silently, for as long as the config stands.
+#[tokio::test]
+async fn a_genuine_template_ambiguity_is_refused_and_names_both_servers() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .mcp(&mcp_cfg())
+        .mcp_server(
+            "alpha",
+            server_exposing_template("shared://doc/{id}", "alpha"),
+        )
+        .mcp_server(
+            "beta",
+            server_exposing_template("shared://doc/{id}", "beta"),
+        )
+        .build();
+    let g = gov_with_scopes(&[
+        ("mcp_server", "alpha"),
+        ("mcp_tool", "alpha_shared://doc/{id}"),
+        ("mcp_server", "beta"),
+        ("mcp_tool", "beta_shared://doc/{id}"),
+    ]);
+    let (status, body) = call(
+        &app,
+        &g,
+        "resources/read",
+        serde_json::json!({ "uri": "shared://doc/42" }),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "an ambiguity must be refused, not resolved, whether the address the operator approved \
+         was literal or parameterised: {body}"
+    );
+    assert_eq!(
+        body["error"]["data"]["reason"], "resource_ambiguous",
+        "one ambiguity, one reason word — an operator reading the audit must not have to know \
+         which spelling produced it: {body}"
+    );
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("alpha") && msg.contains("beta"),
+        "the refusal must name both servers so the operator can act on it: {body}"
+    );
+}
+
+/// TWO parameterised addresses on ONE server both match one expansion, and the caller is granted
+/// that server. Still a question the registry cannot answer, and still refused.
+///
+/// This is the case the code's own comment described and then resolved anyway: an operator who
+/// wrote two overlapping approvals is an operator who has to say which they meant.
+#[tokio::test]
+async fn two_overlapping_templates_on_one_server_are_refused_rather_than_ordered() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .mcp(&mcp_cfg())
+        .mcp_server(
+            "alpha",
+            def(r#"
+url: "https://tools.example.com/mcp"
+pin: { mechanism: unpinned }
+resource_templates_allow:
+  "shared://doc/{id}":
+    mime_type: "text/plain"
+    text: "by-id {id}"
+  "shared://{kind}/42":
+    mime_type: "text/plain"
+    text: "by-kind {kind}"
+"#),
+        )
+        .build();
+    let g = gov_with_scopes(&[
+        ("mcp_server", "alpha"),
+        ("mcp_tool", "alpha_shared://doc/{id}"),
+        ("mcp_tool", "alpha_shared://{kind}/42"),
+    ]);
+    let (status, body) = call(
+        &app,
+        &g,
+        "resources/read",
+        serde_json::json!({ "uri": "shared://doc/42" }),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "two approvals that both cover one address is an ambiguity the operator must resolve, \
+         not one the registry may resolve for them: {body}"
+    );
+    assert_eq!(
+        body["error"]["data"]["reason"], "resource_ambiguous",
+        "{body}"
     );
 }
