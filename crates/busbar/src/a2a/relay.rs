@@ -512,25 +512,29 @@ fn read_reply(body: &[u8], url: &str) -> Result<RelayReply, RelayRefusal> {
 ///
 /// A wrapper is recognised by carrying `task` or `message` AS AN OBJECT. Nothing else is treated as
 /// one: a v0.3 Task has neither member at its top level, so the two shapes cannot be confused.
-fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
-    for member in ["task", "message"] {
-        if let Some(inner) = result.get(member) {
-            if inner.is_object() {
-                return inner;
-            }
-        }
-    }
-    result
+/// THE FOUR WRAPPER MEMBERS A2A v1.0 DEFINES, and what each one names its task by.
+///
+/// The identity member is NOT the same across them and that is not an inconsistency in A2A: a
+/// `Task` IS the task, so its identifier is `id`; a `Message` and the two update events are ABOUT a
+/// task, so they name it with `taskId` and carry their own identifier separately. Writing `id` into
+/// an update event invents a member its schema forbids and leaves the real one — the member a
+/// caller correlates a stream by — still naming the backend's task.
+const WRAPPERS: [(&str, &str); 4] = [
+    ("task", "id"),
+    ("message", "taskId"),
+    ("statusUpdate", "taskId"),
+    ("artifactUpdate", "taskId"),
+];
+
+fn wrapper_of(result: &serde_json::Value) -> Option<(&'static str, &'static str)> {
+    WRAPPERS
+        .into_iter()
+        .find(|(member, _)| result.get(member).is_some_and(serde_json::Value::is_object))
 }
 
-/// The mutable half of [`payload_of`]. Written out rather than shared, because the borrow checker
-/// cannot express "the same lookup, mutably" without one of the two being unsafe or a lookup key.
-fn payload_of_mut(result: &mut serde_json::Value) -> &mut serde_json::Value {
-    let wrapper = ["task", "message"]
-        .into_iter()
-        .find(|m| result.get(m).is_some_and(serde_json::Value::is_object));
-    match wrapper {
-        Some(member) => result.get_mut(member).expect("just found"),
+fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
+    match wrapper_of(result) {
+        Some((member, _)) => result.get(member).expect("just found"),
         None => result,
     }
 }
@@ -576,18 +580,30 @@ pub(crate) fn rewrite_identity(
     if !result.is_object() {
         *result = serde_json::json!({ "kind": "task" });
     }
-    // THE PAYLOAD, not the wrapper. See `payload_of`: writing `id`/`contextId` beside a `task`
-    // member rather than inside it left the backend's own ids in the document a caller reads, which
-    // is the failure this function's whole purpose is to prevent, and added two members the Task
-    // schema forbids.
-    let payload = payload_of_mut(result);
+    // THE PAYLOAD, not the wrapper, and BY ITS OWN IDENTITY MEMBER. See `WRAPPERS`: writing
+    // `id`/`contextId` beside a `task` member rather than inside it left the backend's own ids in
+    // the document a caller reads — which is the failure this function's whole purpose is to
+    // prevent — and added two members the schema forbids.
+    let (wrapper, id_member) = match wrapper_of(result) {
+        Some((member, id_member)) => (Some(member), id_member),
+        // A bare `result` is the v0.3 shape: the Task itself, identified by `id`.
+        None => (None, "id"),
+    };
+    let payload = match wrapper {
+        Some(member) => result.get_mut(member).expect("just found"),
+        None => result,
+    };
     let Some(obj) = payload.as_object_mut() else {
         return;
     };
-    obj.insert(
-        "id".to_string(),
-        serde_json::Value::String(task_id.to_string()),
-    );
+    // A `Message` names a task only when it belongs to one. Adding `taskId` to a standalone
+    // message would assert a relationship the backend did not.
+    if id_member != "taskId" || wrapper != Some("message") || obj.contains_key("taskId") {
+        obj.insert(
+            id_member.to_string(),
+            serde_json::Value::String(task_id.to_string()),
+        );
+    }
     obj.insert(
         "contextId".to_string(),
         serde_json::Value::String(context_id.to_string()),

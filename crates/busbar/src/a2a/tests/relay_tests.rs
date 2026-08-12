@@ -1166,3 +1166,57 @@ fn the_reported_state_is_read_from_either_vocabulary_and_either_shape() {
         );
     }
 }
+
+/// A STREAMED EVENT IS WRAPPED TOO, AND ITS IDENTITY MEMBER IS NAMED DIFFERENTLY.
+///
+/// v1.0 streams `result: {"statusUpdate": {…}}` and `result: {"artifactUpdate": {…}}`, and inside
+/// those the task is named by `taskId`, not `id` — they are events ABOUT a task, not the task. With
+/// only `task` and `message` recognised as wrappers, busbar wrote `id`/`contextId` beside the
+/// wrapper and left the backend's `taskId`/`contextId` inside it, which is the same defect as the
+/// unary one and worse in its consequence: a caller following a stream reads the update's `taskId`
+/// to correlate events, and it named the backend's task.
+#[test]
+fn a_streamed_update_event_is_rewritten_inside_its_wrapper_and_by_its_own_member_name() {
+    for wrapper in ["statusUpdate", "artifactUpdate"] {
+        let mut ev = serde_json::json!({
+            wrapper: {
+                "taskId": "backend-task",
+                "contextId": "backend-context",
+                "status": { "state": "TASK_STATE_WORKING" },
+            }
+        });
+        crate::a2a::relay::rewrite_identity(&mut ev, "busbar-task", "busbar-context", None);
+        assert_eq!(ev[wrapper]["taskId"], "busbar-task", "{ev}");
+        assert_eq!(ev[wrapper]["contextId"], "busbar-context", "{ev}");
+        assert!(
+            ev[wrapper].get("id").is_none(),
+            "an update event has no `id` member and must not be given one: {ev}"
+        );
+        assert!(
+            ev.get("id").is_none() && ev.get("contextId").is_none(),
+            "the wrapper must not grow identity members: {ev}"
+        );
+        let rendered = ev.to_string();
+        assert!(
+            !rendered.contains("backend-"),
+            "the backend's ids must not survive: {rendered}"
+        );
+    }
+}
+
+/// A MESSAGE IS NOT A TASK, and must not be given a task's `id`.
+///
+/// A2A's `Message` names the task it belongs to with `taskId`, and has no `id` at all — its own
+/// identifier is `messageId`. Inserting `id` invents a member the schema forbids, and overwriting
+/// `messageId` would rewrite the caller's own correlation handle.
+#[test]
+fn a_message_payload_keeps_its_own_identifier_and_is_never_given_a_task_id_member() {
+    let mut result = serde_json::json!({
+        "message": { "messageId": "caller-message", "role": "agent", "taskId": "backend-task" }
+    });
+    crate::a2a::relay::rewrite_identity(&mut result, "busbar-task", "busbar-context", None);
+    assert_eq!(result["message"]["messageId"], "caller-message");
+    assert_eq!(result["message"]["taskId"], "busbar-task");
+    assert_eq!(result["message"]["contextId"], "busbar-context");
+    assert!(result["message"].get("id").is_none(), "{result}");
+}
