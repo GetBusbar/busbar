@@ -232,6 +232,22 @@ loom-model = ["dep:loom"]
 txn-fence-red = []
 
 [dev-dependencies]
+# THE REAL `kind: store` PLUGIN CDYLIB, DEPENDED ON SO IT CANNOT BE STALE.
+#
+# `mcp/tests/calllog_dispatch_tests.rs` `dlopen`s this crate's built cdylib to prove that a real
+# `tools/call` lands a durable record ACROSS THE PLUGIN C ABI — the seam that once carried four store
+# methods while the trait carried ten, accepted every task and call-log write and kept none of them.
+# The test therefore has to load a cdylib built from the CURRENT tree.
+#
+# It is a dev-dependency purely to put the crate in this package's build graph: nothing in busbar's
+# `src/` names it. Without the edge, `cargo test -p busbar` finds whatever cdylib happens to be
+# sitting in the target directory — and a stale one answers every write `Ok(())` and every read
+# empty, which is byte-for-byte the signature of the unrelayed ABI. That is not hypothetical: the
+# sibling `store-sqlite` repo's own over-the-ABI durability test failed exactly that way against an
+# artifact `cargo test` had not rebuilt, and the failure is indistinguishable from the real defect.
+# The lib target declares `crate-type = ["cdylib", "rlib"]`, so the one rustc invocation this edge
+# forces emits both, and the cdylib the test loads is always current.
+busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The durable-audit tests exercise busbar-store-memory's append_audit/list_audit over a
 # simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
 # restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency

@@ -271,6 +271,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-secret-ref",
+ "busbar-store-example-plugin",
  "busbar-store-memory",
  "bytes",
  "crc32fast",

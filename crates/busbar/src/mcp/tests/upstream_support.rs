@@ -478,12 +478,29 @@ pub(super) async fn call(
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
+    call_as(app, gov, "test-principal", method, params).await
+}
+
+/// The same drive, with the ATTRIBUTED PRINCIPAL chosen by the caller.
+///
+/// It exists because the MCP per-call log chains records PER PRINCIPAL in a process-wide global that
+/// a config apply must not reset (see `mcp::calllog::CALLS`). Every test in this binary sharing one
+/// principal therefore shares one chain, and a test asserting `seq == 1` against a fresh store would
+/// read the sequence a SIBLING test left behind — which is exactly what happened the first time.
+/// A test that needs a virgin chain asks for its own principal.
+pub(super) async fn call_as(
+    app: &std::sync::Arc<crate::state::App>,
+    gov: &crate::governance::GovCtx,
+    actor: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> (u16, serde_json::Value) {
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         app,
         handle: &handle,
         gov,
-        actor: "test-principal",
+        actor,
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
     };
