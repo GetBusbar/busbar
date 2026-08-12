@@ -127,13 +127,24 @@ fn transports_do_not_count_as_wire_formats() {
 
 // ── plane DISPATCH ───────────────────────────────────────────────────────────────────────────────
 
+/// The plane a path resolves to, the residual included. Built here, over the ONE resolver, so the
+/// dispatch table below still reads as "path → plane" while every assertion in it exercises
+/// `ingress_of` — the merged resolver is what production reads, and a test helper that read
+/// anything else would be pinning a second answer.
+fn plane_of(d: &PlaneDispatch, path: &str) -> Plane {
+    match d.ingress_of(path) {
+        Ingress::Mounted(plane) => plane,
+        Ingress::Residual(_) => Plane::Llm,
+    }
+}
+
 /// With no plane mounted, everything is LLM: the LLM ingress is the residual, exactly as the
 /// protocol catch-all is today.
 #[test]
 fn with_nothing_mounted_every_path_is_the_llm_plane() {
     let d = PlaneDispatch::default();
     for path in ["/", "/v1/messages", "/mcp", "/a2a", "/pool/v1/messages"] {
-        assert_eq!(d.plane_of(path), Plane::Llm, "{path}");
+        assert_eq!(plane_of(&d, path), Plane::Llm, "{path}");
     }
 }
 
@@ -142,9 +153,9 @@ fn with_nothing_mounted_every_path_is_the_llm_plane() {
 #[test]
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
-    assert_eq!(d.plane_of("/mcp"), Plane::Mcp);
-    assert_eq!(d.plane_of("/mcp/"), Plane::Mcp);
-    assert_eq!(d.plane_of("/mcp/tools/list"), Plane::Mcp);
+    assert_eq!(plane_of(&d, "/mcp"), Plane::Mcp);
+    assert_eq!(plane_of(&d, "/mcp/"), Plane::Mcp);
+    assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Mcp);
 }
 
 /// THE SEGMENT-BOUNDARY RULE: a sibling path that merely shares a prefix is NOT the plane. A bare
@@ -154,7 +165,7 @@ fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
 fn a_prefix_sibling_is_not_the_plane() {
     let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
     for path in ["/mcpx", "/mcpx/tools", "/mc", "/xmcp", "/v1/mcp"] {
-        assert_eq!(d.plane_of(path), Plane::Llm, "{path} must not be MCP");
+        assert_eq!(plane_of(&d, path), Plane::Llm, "{path} must not be MCP");
     }
 }
 
@@ -164,9 +175,9 @@ fn two_mounted_planes_do_not_claim_each_other() {
     let d = PlaneDispatch::default()
         .mount(Plane::Mcp, "/mcp")
         .mount(Plane::A2a, "/a2a");
-    assert_eq!(d.plane_of("/mcp/tools/list"), Plane::Mcp);
-    assert_eq!(d.plane_of("/a2a/tasks/send"), Plane::A2a);
-    assert_eq!(d.plane_of("/v1/messages"), Plane::Llm);
+    assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Mcp);
+    assert_eq!(plane_of(&d, "/a2a/tasks/send"), Plane::A2a);
+    assert_eq!(plane_of(&d, "/v1/messages"), Plane::Llm);
 }
 
 /// An UNMOUNTED plane claims nothing, so a deployment that never enabled MCP cannot have a request
@@ -175,8 +186,8 @@ fn two_mounted_planes_do_not_claim_each_other() {
 #[test]
 fn an_unmounted_plane_claims_nothing() {
     let d = PlaneDispatch::default().mount(Plane::A2a, "/a2a");
-    assert_eq!(d.plane_of("/mcp"), Plane::Llm);
-    assert_eq!(d.plane_of("/mcp/tools/list"), Plane::Llm);
+    assert_eq!(plane_of(&d, "/mcp"), Plane::Llm);
+    assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Llm);
 }
 
 /// A mount is normalised, so an operator writing `/mcp/` or `mcp` gets the same dispatch as `/mcp`.
@@ -185,13 +196,13 @@ fn an_unmounted_plane_claims_nothing() {
 fn a_mount_is_normalised_before_it_is_matched() {
     for spelling in ["/mcp", "/mcp/", "mcp", "mcp/"] {
         let d = PlaneDispatch::default().mount(Plane::Mcp, spelling);
-        assert_eq!(d.plane_of("/mcp"), Plane::Mcp, "spelling {spelling}");
+        assert_eq!(plane_of(&d, "/mcp"), Plane::Mcp, "spelling {spelling}");
         assert_eq!(
-            d.plane_of("/mcp/tools/list"),
+            plane_of(&d, "/mcp/tools/list"),
             Plane::Mcp,
             "spelling {spelling}"
         );
-        assert_eq!(d.plane_of("/mcpx"), Plane::Llm, "spelling {spelling}");
+        assert_eq!(plane_of(&d, "/mcpx"), Plane::Llm, "spelling {spelling}");
     }
 }
 
@@ -201,7 +212,7 @@ fn a_mount_is_normalised_before_it_is_matched() {
 fn the_llm_plane_cannot_be_mounted() {
     let d = PlaneDispatch::default().mount(Plane::Llm, "/llm");
     assert_eq!(
-        d.plane_of("/llm"),
+        plane_of(&d, "/llm"),
         Plane::Llm,
         "it is the residual anyway, so the mount is a no-op rather than a second door"
     );
@@ -248,8 +259,86 @@ fn a_plane_is_labellable_at_its_door_exactly_when_it_speaks_one_wire_format() {
     assert_eq!(Plane::A2a.sole_wire_format(), Some("jsonrpc"));
 }
 
-/// `mounted_plane_of` distinguishes the residual from a mounted plane, and agrees with `plane_of`
-/// everywhere else — the two must never be able to name different planes for one path.
+/// EVERY MOUNTABLE PLANE SPEAKS JSON-RPC 2.0. `ingress::native` refuses on a mounted plane with a
+/// JSON-RPC error object without asking WHICH plane, and this is the fact that makes that correct.
+/// Pinned rather than assumed: the day a plane mounts something else, this test fails and the
+/// shaping seam is told to grow an arm, instead of quietly answering that plane's client in a
+/// dialect it does not speak — which is the whole failure this unit exists to close.
+#[test]
+fn every_mounted_planes_dialect_is_jsonrpc() {
+    for p in Plane::ALL.iter().copied().filter(|p| *p != Plane::Llm) {
+        assert_eq!(
+            p.sole_wire_format(),
+            Some(WIRE_JSONRPC),
+            "{p:?} is mountable but does not speak JSON-RPC — `ingress::native`'s mounted arm \
+             would mis-shape its refusals"
+        );
+    }
+}
+
+// ── THE MERGED RESOLVER ──────────────────────────────────────────────────────────────────────────
+
+/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE first, the path shape
+/// only for what is left over. `/v1/chat/completions` names a dialect by shape and is still
+/// residual; `/mcp` names none and is nevertheless claimed, because the operator mounted it.
+#[test]
+fn the_mount_table_is_read_before_the_path_shape() {
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    assert_eq!(d.ingress_of("/mcp"), Ingress::Mounted(Plane::Mcp));
+    assert_eq!(
+        d.ingress_of("/mcp/tools/list"),
+        Ingress::Mounted(Plane::Mcp)
+    );
+    assert_eq!(
+        d.ingress_of("/v1/chat/completions"),
+        Ingress::Residual(Some("openai"))
+    );
+    // The sibling: not the plane, and therefore resolved by shape like any other residual path.
+    assert_eq!(d.ingress_of("/mcpx"), Ingress::Residual(None));
+    // Nothing mounted there, so the path shape is all there is — and it names nothing.
+    assert_eq!(d.ingress_of("/a2a"), Ingress::Residual(None));
+}
+
+/// A MOUNT CANNOT BE INFERRED FROM A URL. The same path, on a deployment that mounted nothing, is
+/// an ordinary residual path — so the merge cannot have turned an unmounted plane into one that
+/// claims paths by name.
+#[test]
+fn an_unmounted_plane_is_never_resolved_from_the_path() {
+    let d = PlaneDispatch::default();
+    for path in ["/mcp", "/mcp/tools/list", "/a2a", "/a2a/tasks/send"] {
+        assert_eq!(
+            d.ingress_of(path),
+            Ingress::Residual(None),
+            "{path} on a deployment with no plane mounted"
+        );
+    }
+}
+
+/// THE WIRE FORMAT a resolved ingress is labelled and answered in. A mounted plane's is its own —
+/// never whichever LLM dialect its path happens to resemble — which is what keeps a metric label
+/// and an error envelope from disagreeing about the same request.
+#[test]
+fn a_resolved_ingress_names_its_own_wire_format() {
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    assert_eq!(d.ingress_of("/mcp").wire_format(), Some(WIRE_JSONRPC));
+    assert_eq!(
+        d.ingress_of("/v1/messages").wire_format(),
+        Some("anthropic")
+    );
+    // No mount, no dialect: `None` is a real answer, and the reply's shape is decided elsewhere.
+    assert_eq!(d.ingress_of("/stats").wire_format(), None);
+    // A mount at a path that ALSO names an LLM dialect by shape: the mount wins, both for the
+    // envelope and for the label. An operator who mounts a plane over an LLM surface has said which
+    // one it is.
+    let over = PlaneDispatch::default().mount(Plane::Mcp, "/v1/messages");
+    assert_eq!(
+        over.ingress_of("/v1/messages").wire_format(),
+        Some(WIRE_JSONRPC)
+    );
+}
+
+/// `mounted_plane_of` distinguishes the residual from a mounted plane, and agrees with the
+/// resolver everywhere else — the two must never be able to name different planes for one path.
 #[test]
 fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     let d = PlaneDispatch::default()
@@ -267,7 +356,7 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     ] {
         assert_eq!(
             d.mounted_plane_of(path).unwrap_or(Plane::Llm),
-            d.plane_of(path),
+            plane_of(&d, path),
             "the two readings disagree about {path}"
         );
     }

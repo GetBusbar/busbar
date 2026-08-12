@@ -617,49 +617,67 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
     );
 }
 
+/// The dialect an auth-failure envelope is shaped in for `path`, on a deployment with NO plane
+/// mounted — the residual arm of the ONE resolver `unauthorized_response` reads. A mounted plane's
+/// answer is a different arm entirely and is pinned where the mount lives (`plane_tests`, and the
+/// live-stack 413 tests in `crate::tests`).
+fn residual_dialect(path: &str) -> &'static str {
+    crate::ingress::native::envelope_dialect(
+        crate::plane::PlaneDispatch::default().ingress_of(path),
+    )
+}
+
+/// A deployment with no plane mounted, so every path below resolves through the residual arm.
+fn residual_app() -> std::sync::Arc<crate::state::App> {
+    crate::test_support::TestApp::new().build()
+}
+
 #[test]
-fn test_proto_for_path_inference() {
+fn test_residual_dialect_inference() {
     assert_eq!(
-        proto_for_path("/v1beta/models/gemini-1.5:generateContent"),
+        residual_dialect("/v1beta/models/gemini-1.5:generateContent"),
         "gemini"
     );
     // The stable `v1` Gemini alias the router also registers (`/v1/models/*rest`). A colon
     // `:<action>` in the final segment is the Gemini generateContent/streamGenerateContent shape
     // → gemini (mirrors main.rs::proto_for_path so the two classifiers cannot drift).
     assert_eq!(
-        proto_for_path("/v1/models/gemini-pro:generateContent"),
+        residual_dialect("/v1/models/gemini-pro:generateContent"),
         "gemini"
     );
     assert_eq!(
-        proto_for_path("/v1/models/gemini-1.5-pro:streamGenerateContent"),
+        residual_dialect("/v1/models/gemini-1.5-pro:streamGenerateContent"),
         "gemini"
     );
     // `/v1/models/...` WITHOUT a colon action is the OpenAI `model.retrieve` shape (`GET
     // /v1/models/{id}`) — shape the auth error as OpenAI so an OpenAI SDK gets a decodable body.
-    assert_eq!(proto_for_path("/v1/models/gpt-4o"), "openai");
+    assert_eq!(residual_dialect("/v1/models/gpt-4o"), "openai");
     // `/v1beta/models/...` is Gemini-only even without a colon (OpenAI has no v1beta surface).
-    assert_eq!(proto_for_path("/v1beta/models/gemini-pro"), "gemini");
+    assert_eq!(residual_dialect("/v1beta/models/gemini-pro"), "gemini");
     assert_eq!(
-        proto_for_path("/model/anthropic.claude/converse"),
+        residual_dialect("/model/anthropic.claude/converse"),
         "bedrock"
     );
     assert_eq!(
-        proto_for_path("/model/anthropic.claude/converse-stream"),
+        residual_dialect("/model/anthropic.claude/converse-stream"),
         "bedrock"
     );
     // A pool/model literally named "model" hitting `/model/v1/messages` must NOT be classified
     // as bedrock (no `/converse[-stream]` suffix) — it falls through to anthropic.
-    assert_eq!(proto_for_path("/model/v1/messages"), "anthropic");
+    assert_eq!(residual_dialect("/model/v1/messages"), "anthropic");
     // `/model/` prefix without a Converse suffix and without `/v1/messages` is unknown → openai.
-    assert_eq!(proto_for_path("/model/foo/bar"), "openai");
-    assert_eq!(proto_for_path("/v1/messages"), "anthropic");
-    assert_eq!(proto_for_path("/pa/v1/messages"), "anthropic");
-    assert_eq!(proto_for_path("/anthropic/claude/v1/messages"), "anthropic");
-    assert_eq!(proto_for_path("/v1/chat/completions"), "openai");
-    assert_eq!(proto_for_path("/v2/chat"), "cohere");
-    assert_eq!(proto_for_path("/v1/responses"), "responses");
+    assert_eq!(residual_dialect("/model/foo/bar"), "openai");
+    assert_eq!(residual_dialect("/v1/messages"), "anthropic");
+    assert_eq!(residual_dialect("/pa/v1/messages"), "anthropic");
+    assert_eq!(
+        residual_dialect("/anthropic/claude/v1/messages"),
+        "anthropic"
+    );
+    assert_eq!(residual_dialect("/v1/chat/completions"), "openai");
+    assert_eq!(residual_dialect("/v2/chat"), "cohere");
+    assert_eq!(residual_dialect("/v1/responses"), "responses");
     // Unknown → generic (openai-shaped) envelope.
-    assert_eq!(proto_for_path("/stats"), "openai");
+    assert_eq!(residual_dialect("/stats"), "openai");
 }
 
 /// Decode the JSON body of an `unauthorized_response` for shape assertions. Synchronously
@@ -683,7 +701,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     // genuine Generative Language API does NOT return 401/UNAUTHENTICATED for a bad API key; it
     // returns HTTP 400 INVALID_ARGUMENT. A 401/UNAUTHENTICATED body is a tell the google-genai
     // SDK never sees from real Google on the bad-key path.
-    let resp = unauthorized_response("/v1beta/models/x:generateContent");
+    let resp = unauthorized_response(&residual_app(), "/v1beta/models/x:generateContent");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
         resp.headers()
@@ -700,7 +718,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
 
     // Gemini stable-v1 alias (`/v1/models/<m>:generateContent`) must shape IDENTICALLY to the
     // v1beta surface — an earlier bug mis-shaped it as an OpenAI 401.
-    let resp = unauthorized_response("/v1/models/gemini-pro:generateContent");
+    let resp = unauthorized_response(&residual_app(), "/v1/models/gemini-pro:generateContent");
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -714,7 +732,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     );
 
     // Anthropic → top-level {"type":"error","error":{"type":"authentication_error",..}}.
-    let resp = unauthorized_response("/pa/v1/messages");
+    let resp = unauthorized_response(&residual_app(), "/pa/v1/messages");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let body = decode_body(resp);
     assert_eq!(body["type"], "error", "anthropic top-level type: {body}");
@@ -729,7 +747,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     // `AuthenticationError.code`; emitting `code: null` is a deterministic proxy tell. The
     // writers pair that code ONLY with `error.type: "authentication_error"`, so the envelope
     // must carry that pairing on the most common failure path.
-    let resp = unauthorized_response("/v1/chat/completions");
+    let resp = unauthorized_response(&residual_app(), "/v1/chat/completions");
     assert_eq!(
         resp.status(),
         StatusCode::UNAUTHORIZED,
@@ -751,7 +769,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
 
     // Responses → {"error":{"type":"authentication_error","code":"invalid_api_key","param":null,..}}
     // (same OpenAI-family bad-key shape, with the SDK-visible code populated).
-    let resp = unauthorized_response("/v1/responses");
+    let resp = unauthorized_response(&residual_app(), "/v1/responses");
     let body = decode_body(resp);
     assert_eq!(
         body["error"]["type"], "authentication_error",
@@ -767,7 +785,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     );
 
     // Cohere → bare {"message":..} with NO `error` and NO `type`.
-    let resp = unauthorized_response("/v2/chat");
+    let resp = unauthorized_response(&residual_app(), "/v2/chat");
     let body = decode_body(resp);
     assert!(
         body.get("message").is_some(),
@@ -779,7 +797,7 @@ fn test_unauthorized_response_is_json_with_native_envelope() {
     );
 
     // Bedrock → {"__type":"AccessDeniedException","message":..}, HTTP 403, x-amzn-* headers.
-    let resp = unauthorized_response("/model/anthropic.claude/converse");
+    let resp = unauthorized_response(&residual_app(), "/model/anthropic.claude/converse");
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
@@ -854,7 +872,7 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",            // unknown → openai fallback
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(path));
+        let body = decode_body(unauthorized_response(&residual_app(), path));
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
@@ -917,20 +935,21 @@ fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
         ("/v1beta/models/gemini-1.5:generateContent", "gemini"),
         // BOTH Gemini ingress prefixes the router registers (main.rs) must resolve to a
         // non-fallback proto. The stable `v1` alias was previously omitted here, masking the
-        // missing `/v1/models/` arm in proto_for_path (a `:`-action path mis-shaped as openai).
+        // missing `/v1/models/` arm in the residual classifier (a `:`-action path mis-shaped
+        // as openai).
         ("/v1/models/gemini-pro:generateContent", "gemini"),
         ("/model/anthropic.claude/converse", "bedrock"),
         ("/model/anthropic.claude/converse-stream", "bedrock"),
     ];
     for (path, expected) in cases {
         assert_eq!(
-            proto_for_path(path),
+            residual_dialect(path),
             expected,
             "router ingress path '{path}' must map to '{expected}', not the fallback"
         );
         // And the resolved proto must be a real protocol (never the dead `None` arm).
         assert!(
-            crate::proto::protocol_for(proto_for_path(path)).is_some(),
+            crate::proto::protocol_for(residual_dialect(path)).is_some(),
             "proto for '{path}' must resolve to a known protocol"
         );
     }

@@ -302,6 +302,7 @@ pub(crate) async fn protocol_dispatch(
     let Some(proto) = crate::proto::detect::protocol_id(&path, &headers) else {
         // Not a protocol endpoint: the pre-collapse 404 fallback shape (native envelope by path).
         return crate::fallback_error_response(
+            &app.planes,
             &path,
             StatusCode::NOT_FOUND,
             crate::admin::ERR_TYPE_NOT_FOUND,
@@ -311,6 +312,7 @@ pub(crate) async fn protocol_dispatch(
     if method != axum::http::Method::POST {
         // A protocol endpoint hit with the wrong method: the pre-collapse 405 shape.
         return crate::fallback_error_response(
+            &app.planes,
             &path,
             StatusCode::METHOD_NOT_ALLOWED,
             crate::admin::ERR_TYPE_INVALID_REQUEST,
@@ -395,6 +397,7 @@ pub(crate) async fn protocol_dispatch(
                 .await
             } else {
                 crate::fallback_error_response(
+                    &app.planes,
                     &path,
                     StatusCode::NOT_FOUND,
                     crate::admin::ERR_TYPE_NOT_FOUND,
@@ -417,6 +420,7 @@ pub(crate) async fn protocol_dispatch(
                     operation_ingress(&app, &gov, &caller, &headers, body, proto, op, None).await
                 }
                 None => crate::fallback_error_response(
+                    &app.planes,
                     &path,
                     StatusCode::NOT_FOUND,
                     crate::admin::ERR_TYPE_NOT_FOUND,

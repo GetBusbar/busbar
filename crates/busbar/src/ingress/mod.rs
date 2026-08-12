@@ -784,6 +784,9 @@ async fn ingress_path_model(
 // plane supplying its wire reader". This is the envelope half of that.
 pub(crate) mod jsonrpc;
 
+// The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
+pub(crate) mod native;
+
 mod dispatch;
 pub(crate) use dispatch::{operation_resolved, protocol_dispatch};
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
@@ -834,7 +837,7 @@ pub(crate) async fn gemini_ingress(
     // `model.retrieve` (`GET`/`POST /v1/models/{id}`), which carries no `:<action>`. Hardcoding a
     // Gemini-shaped NOT_FOUND for every colon-less `/v1/models/...` request would hand an OpenAI
     // client an undecodable Gemini envelope on this ambiguous prefix — and would diverge from the
-    // `proto_for_path` classifier the fallback/405 handlers use (which maps a colon-less
+    // ingress resolver the fallback/405 handlers use (which maps a colon-less
     // `/v1/models/{id}` to "openai", `/v1beta/models/...` to "gemini"). Resolve the error
     // ENVELOPE protocol from that same canonical classifier so a colon-less hit gets the shape its
     // most-likely client expects: `/v1beta/...` (Gemini-only surface) stays Gemini; a colon-less
@@ -846,11 +849,12 @@ pub(crate) async fn gemini_ingress(
         Some((m, a)) if !m.is_empty() && !a.is_empty() => (m, a),
         _ => {
             // Pre-routing failure (no parsable model/action in the path): the envelope protocol is
-            // the bounded `proto_for_path` literal, which doubles as the bounded metric
+            // the bounded resolved-dialect literal, which doubles as the bounded metric
             // `ingress_protocol` label; the model was never resolved, so the `pool` label is the
             // bounded `"unresolved"` sentinel. Routing through `finish_rejected` keeps this malformed-path
             // rejection observable in metrics + the webhook instead of a silent early-return.
-            let envelope_proto = crate::proto::proto_for_path(uri.path());
+            let envelope_proto =
+                crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
             if crate::proto::protocol_for(envelope_proto)
                 .map(|p| p.writer().has_native_path_not_found())
                 .unwrap_or(false)
@@ -903,12 +907,12 @@ pub(crate) async fn gemini_ingress(
     // supported actions are listed explicitly, with the unsupported-action fallback handled
     // afterwards.
     //
-    // The unsupported-action envelope SHAPE must match the same `proto::proto_for_path` classifier
+    // The unsupported-action envelope SHAPE must match the same `PlaneDispatch::ingress_of` resolver
     // the no-colon branch (and the fallback/405 handlers) use, for the same reason: the stable
     // `/v1/models/...` prefix is SHARED with the OpenAI surface. `rsplit_once(':')` on an OpenAI
     // fine-tune id like `ft:gpt-3.5-turbo:my-org::abc` splits a NON-empty `action` (`abc`) that is
     // NOT a Gemini method — so this branch fires for a request a real OpenAI client made. Classify
-    // by KNOWN Gemini action suffix (what `proto_for_path` does): a genuine Gemini method such as
+    // by KNOWN Gemini action suffix (what the resolver does): a genuine Gemini method such as
     // `:countTokens`/`:embedContent` stays Gemini-shaped (a real Gemini NOT_FOUND naming the
     // unsupported method); a colon-bearing OpenAI id whose tail is not a Gemini action gets the
     // canonical OpenAI `not_found_error` envelope, so the same path never yields two different error
@@ -918,9 +922,10 @@ pub(crate) async fn gemini_ingress(
         (true, _) => false, // generateContent / embedContent / predict — non-stream in 1.2
         (false, other) => {
             // Pre-routing failure (unsupported native action → model never resolved): route through
-            // `finish_rejected` with the bounded `proto_for_path` literal as both envelope + metric protocol
+            // `finish_rejected` with the bounded resolved-dialect literal as both envelope + metric protocol
             // and the bounded `"unresolved"` pool label, keeping it observable in metrics + webhook.
-            let envelope_proto = crate::proto::proto_for_path(uri.path());
+            let envelope_proto =
+                crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
             if crate::proto::protocol_for(envelope_proto)
                 .map(|p| p.writer().has_native_path_not_found())
                 .unwrap_or(false)

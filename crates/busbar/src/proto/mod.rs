@@ -153,22 +153,37 @@ pub(crate) const BASE62_REJECT_THRESHOLD: u8 = 248;
 /// truth so the abort text a client sees is identical on every framing.
 pub(crate) const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
-/// The CANONICAL ingress-protocol classifier: infer the wire protocol a request targets from its
-/// path prefix. This is the single source of truth shared by every site that must shape an error
-/// (or otherwise reason about protocol) from a path alone — `auth.rs::unauthorized_response`,
-/// `main.rs`'s fallback/405 handlers — so the auth-time and routing-time classifiers CANNOT drift
-/// (a divergence here means the same `/model/foo/bar` path gets a Bedrock-shaped error from one
-/// handler and an OpenAI-shaped error from another — an indistinguishability tell). Check order is
-/// significant: the more specific Gemini/Bedrock surfaces are tested before the generic
-/// `/v1/messages` / `/v1/chat/completions` suffixes.
+/// THE RESIDUAL ARM of the ingress resolver: which LLM wire dialect a path names, from its shape
+/// alone. `None` when it names none.
+///
+/// ## This is not the whole answer, and it must not be called as if it were
+///
+/// The whole answer is [`crate::plane::PlaneDispatch::ingress_of`], and this function is the arm it
+/// reaches only AFTER the mount table has declined the path. That ordering is the fix for a shipped
+/// defect: while this was the canonical classifier, it was consulted for paths a plane had been
+/// MOUNTED on, knew nothing of mounts, and answered `openai` for every one of them — so an
+/// oversized POST to `/mcp` came back in an OpenAI envelope an MCP client cannot decode. A path
+/// shape can only ever answer for the residual, because a mount is a fact about the deployment and
+/// no amount of looking at a URL will reveal it. `ingress_of` is therefore the only caller.
+///
+/// ## There is no `else { openai }` any more, and that is the point
+///
+/// The old tail arm claimed every unclassifiable path for OpenAI, which read as a harmless default
+/// and was in fact the resolver asserting a protocol identity for paths that carry none. What to
+/// say to a caller whose dialect is unknown is a decision — a real one, taken in
+/// `ingress::native_error`, where the alternatives are visible — not something a classifier should
+/// smuggle in as a fallthrough.
+///
+/// Check order is significant: the more specific Gemini/Bedrock surfaces are tested before the
+/// generic `/v1/messages` / `/v1/chat/completions` suffixes.
 ///
 /// The `/model/...` arm REQUIRES the `/converse` or `/converse-stream` suffix before classifying as
 /// bedrock: Bedrock's Converse API is `/model/<id>/converse[-stream]`, so a non-Converse `/model/...`
 /// path (e.g. `/model/foo/bar`, or a pool literally named "model" hitting `/model/v1/messages`) must
 /// NOT be handed a Bedrock-shaped envelope — it falls through to the `/v1/messages` (anthropic) arm
 /// or the OpenAI default, matching what a real client speaking that protocol expects.
-pub(crate) fn proto_for_path(path: &str) -> &'static str {
-    if path.starts_with("/v1beta/models") {
+pub(crate) fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
+    Some(if path.starts_with("/v1beta/models") {
         // `/v1beta/models/...` is a Gemini-only surface (OpenAI has no v1beta), so always Gemini.
         PROTO_GEMINI
     } else if path.starts_with("/v1/models/") {
@@ -207,9 +222,10 @@ pub(crate) fn proto_for_path(path: &str) -> &'static str {
     } else if path == "/v1/responses" {
         PROTO_RESPONSES
     } else {
-        // Unknown ingress: fall back to the widely-understood OpenAI envelope.
-        PROTO_OPENAI
-    }
+        // NAMES NO DIALECT. Not "openai by default": the path carries no evidence either way, and
+        // saying so is the whole reason this returns an `Option`.
+        return None;
+    })
 }
 
 /// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim

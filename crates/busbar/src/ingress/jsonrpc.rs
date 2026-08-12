@@ -455,6 +455,28 @@ pub(crate) fn accepted() -> Response {
     StatusCode::ACCEPTED.into_response()
 }
 
+/// The JSON-RPC answer to a refusal made BEFORE any envelope could be read — an oversized body the
+/// transport capped, a path with no handler, a method the transport does not allow.
+///
+/// Three decisions, and each is the same one [`refused`] makes for a different reason:
+///
+/// * **`id` is Null.** Section 5: *"If there was an error in detecting the id in the Request object
+///   … it MUST be Null."* No body was read, so no id was ever established. This is exactly the case
+///   the clause describes, rather than a convenient default.
+/// * **The code is `-32600`.** The message is one the server will not honour. `-32700` would claim
+///   the JSON failed to parse, which is a different and untrue statement about a body that was
+///   never parsed at all.
+/// * **The STATUS is the caller's**, not `400`. The transport's own refusal (`413`, `404`, `405`)
+///   is a fact about the HTTP hop that every proxy and dashboard between the peers reads, and
+///   flattening it to `400` would discard it. Only the BODY is JSON-RPC's.
+pub(crate) fn transport_refusal(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        axum::Json(error_body(Value::Null, INVALID_REQUEST, message, None)),
+    )
+        .into_response()
+}
+
 /// A body that is not JSON at all: `-32700`, `id` Null, per section 5's *"e.g. Parse error"*.
 pub(crate) fn parse_error() -> Response {
     refused(&Invalid {
