@@ -626,6 +626,63 @@ fn missing_plugin_gate_is_absent_not_stranded() {
     assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
 }
 
+/// THE ABA HAZARD IN THE RESOLUTION CACHE, WRITTEN AS A TEST.
+///
+/// `resolution::key` identifies a registry by its `Arc` ADDRESS, and a published entry outlives the
+/// registry it was resolved against. Nothing in the entry USED TO KEEP THAT ALLOCATION, so once the
+/// old registry was dropped its address was free, the very next `Arc<PluginRegistry>` the allocator
+/// handed out landed on it, and a resolution against a registry that had never heard of the plugin
+/// collided with the dead one's key and was served ITS transport.
+///
+/// That is the inverse of the property `missing_plugin_gate_is_absent_not_stranded` pins: a gate
+/// whose plugin is NOT installed must be absent, and here it would resolve — with a plugin image
+/// the operator removed. It is also exactly what a `plugins refresh` does in production (drop the
+/// old registry, install a new one), which is why this is an engine defect and not a test artifact.
+///
+/// Deterministic where the allocator cooperates: the freed slot is claimed by a same-sized
+/// allocation almost immediately, and non-matching candidates are kept alive so they are never
+/// recycled into the next attempt.
+#[test]
+fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let hooks = registry("h", base_gate());
+    // Resolve once against the REAL registry: this publishes into the resolution cache.
+    assert_eq!(
+        resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0).len(),
+        1,
+        "the plugin-backed gate resolves against the registry that carries it"
+    );
+    let freed = std::sync::Arc::as_ptr(&env.registry) as usize;
+    drop(env);
+
+    // Now hunt for a NEW, EMPTY registry that the allocator places on the freed allocation.
+    let mut keepalive: Vec<std::sync::Arc<busbar_plugin_loader::PluginRegistry>> = Vec::new();
+    for _ in 0..4096 {
+        let reg = std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
+        if std::sync::Arc::as_ptr(&reg) as usize == freed {
+            let reused = HookEnv::new(
+                reg,
+                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+            );
+            assert!(
+                resolve_pool_gates(&pool_with_hook("h"), &hooks, &reused, 0).is_empty(),
+                "a registry that does not carry the plugin must resolve to gate-absent even when \
+                 it was allocated on a dead registry's address — a resolution is identified by \
+                 WHICH registry it came out of, and an address is not an identity"
+            );
+            return;
+        }
+        keepalive.push(reg);
+    }
+    // Falling out of the loop is the ORDINARY outcome once the defect is fixed, not a skip: the
+    // published entry holds a `Weak` to the dead registry, which pins its allocation, so the
+    // address can never be handed to another registry and the collision has nowhere to form. Before
+    // the fix the FIRST candidate took that address, every run — which is what made this red.
+}
+
 /// SECURITY INVARIANT: `resolve_rewrite_hooks` admits ONLY `prompt: rw` GATES as rewrite hooks.
 /// A `ro`/`no` gate and a tap (even one that claims `prompt: rw`) are excluded — the rw grant is
 /// enforced at RESOLUTION, so a hook without the grant can NEVER reach the rewrite/transform path,

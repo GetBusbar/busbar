@@ -653,7 +653,7 @@ fn gate_transport_named(
     let Some(key) = resolution::key(name, hook, env) else {
         return gate_transport_uncached(name, hook, env);
     };
-    let claim = match resolution::admit(key) {
+    let claim = match resolution::admit(key, &env.registry) {
         resolution::Admission::Published(hit) => return Some(hit),
         resolution::Admission::Claim(claim) => claim,
     };
@@ -764,7 +764,9 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 ///
 /// **Bounded.** At most [`CAP`] published entries, oldest first, and an in-flight claim is never
 /// evicted. Each entry holds one mapped plugin image, which is the same resource a configured hook
-/// holds anyway.
+/// holds anyway — plus a `Weak` to the registry it came out of, which is what makes "which
+/// registry" an identity rather than an address that can be reissued (see [`Entry::registry`]).
+/// Entries whose registry is gone are dropped on the next eviction pass, ahead of the cap.
 mod resolution {
     use super::Resolved;
     use std::collections::HashMap;
@@ -781,6 +783,24 @@ mod resolution {
         /// A resolution is in progress for this key: waiters block instead of starting their own.
         in_flight: bool,
         value: Option<Resolved>,
+        /// THE REGISTRY THIS ENTRY IS KEYED ON, HELD WEAKLY — and the weak handle is what makes the
+        /// key's registry half an identity rather than a coincidence. See [`key`].
+        ///
+        /// A `Weak` keeps the `Arc`'s ALLOCATION alive (the strong count reaching zero drops the
+        /// registry's contents — every plugin image it owned is released on schedule — but the
+        /// allocation itself is only returned once the weak count goes too). So for as long as an
+        /// entry keyed on a registry exists, that registry's address CANNOT be handed back out by
+        /// the allocator, and no future registry can collide with this key.
+        ///
+        /// Without it the cache had a live ABA defect: a published entry outlives the registry it
+        /// was resolved against, the freed allocation is claimed by the very next
+        /// `Arc<PluginRegistry>` (measured: the immediately following one, every time), and a
+        /// resolution against a registry that never carried the plugin was served the DEAD
+        /// registry's transport. That is not a stale cache entry, it is a gate resolving out of a
+        /// plugin set the operator has already replaced — the exact thing a `plugins refresh` or a
+        /// config reload does to the old registry. Pinned by
+        /// `a_reused_registry_address_never_inherits_a_dead_registrys_resolution`.
+        registry: std::sync::Weak<busbar_plugin_loader::PluginRegistry>,
     }
 
     #[derive(Default)]
@@ -813,8 +833,13 @@ mod resolution {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         // Registry IDENTITY, not contents: a `plugins refresh` or a config reload installs a NEW
         // `Arc<PluginRegistry>`, so every entry keyed on the old one is unreachable from that moment
-        // and its plugin bytes can never be served again. The address cannot be recycled while a
-        // resolution using it is live, because the resolving closure holds its own `Arc` clone.
+        // and its plugin bytes can never be served again.
+        //
+        // The address is only an IDENTITY because every entry keyed on it holds a `Weak` to it
+        // (see `Entry::registry`), which pins the allocation and so keeps the allocator from
+        // reissuing that address to a different registry. This comment used to claim the resolving
+        // closure's own `Arc` clone was enough; it is not — the closure's clone is gone the moment
+        // the resolution returns, while the entry it published lives on.
         (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
@@ -882,7 +907,14 @@ mod resolution {
     /// Take the claim for `key`, or hand back what a previous resolution published. BLOCKS while
     /// another resolution of the same key is in flight — that block IS the fix: it is one thread
     /// waiting on one `dlopen` instead of two threads making each other's `dlopen` slower.
-    pub(super) fn admit(key: u64) -> Admission {
+    ///
+    /// Takes the registry the key was computed over so the entry can hold it WEAKLY — see
+    /// [`Entry::registry`]: that handle is what stops a dead registry's address being reissued to a
+    /// different registry, which is what makes the key's registry half mean "this registry".
+    pub(super) fn admit(
+        key: u64,
+        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    ) -> Admission {
         let (lock, cv) = state();
         let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
         loop {
@@ -903,6 +935,7 @@ mod resolution {
                             seq,
                             in_flight: true,
                             value: None,
+                            registry: std::sync::Arc::downgrade(registry),
                         },
                     );
                     return Admission::Claim(Claim {
@@ -934,8 +967,24 @@ mod resolution {
 
     /// Drop published entries oldest-first until at most [`CAP`] remain. An in-flight claim is never
     /// evicted (its `Entry` is the claim's own bookkeeping).
+    ///
+    /// Entries whose REGISTRY IS GONE go first, and unconditionally — not just when over cap. Such
+    /// an entry can never be hit again (the key names a registry nothing can hold any more), and it
+    /// is pinning both a plugin image and the dead registry's `Arc` allocation for nothing. This is
+    /// the reclaim half of the `Weak` in [`Entry::registry`]: the pin makes the address unreusable,
+    /// and this makes the pin end at the first eviction pass after a `plugins refresh` rather than
+    /// at [`CAP`] resolutions later.
     fn evict_over_cap(inner: &mut Inner) -> Vec<Entry> {
         let mut evicted = Vec::new();
+        let dead: Vec<u64> = inner
+            .entries
+            .iter()
+            .filter(|(_, e)| !e.in_flight && e.registry.strong_count() == 0)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in dead {
+            evicted.extend(inner.entries.remove(&k));
+        }
         while inner.entries.len() > CAP {
             let Some(oldest) = inner
                 .entries
