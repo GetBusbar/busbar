@@ -48,6 +48,37 @@ members = [
 # moves, the table disagrees with what the tree was actually building and the change is wrong. That
 # is the check — not a reviewer's eye.
 [workspace.dependencies]
+# ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
+# THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
+# a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
+# Apache-2.0, and pinning by name similarity would have taken the impostor.
+#
+# WHAT IS DELIBERATELY ABSENT, and it is the whole shape of this adoption:
+#   a2a-server-lf   a server FRAMEWORK. Its router is a pre-built `axum::Router`, which would enter
+#                   the tree with no entry in `CoreRouteTable` — the identical objection recorded
+#                   against `oauth-as`'s `axum` feature below, and it applies unchanged. Worse, it
+#                   carries its own `AgentExecutor` and `TaskStore`, and a SECOND task store means
+#                   two answers to "what happened" with the auditor reading whichever was wired last.
+#   a2a-client-lf   same framework, dialling out. busbar's own transport does resolve-then-pin (one
+#                   DNS resolution per hop, every returned address judged, the connection made to the
+#                   address that was judged). An SDK client handed a URL resolves it AGAIN, which is
+#                   the TOCTOU that transport exists to close. Taking it would be a measurable
+#                   security regression, not a convenience.
+#   a2a-grpc        looks like the one to take for the gRPC binding and is not: its `GrpcHandler`
+#                   implements the tonic service BY WRAPPING `a2a_server::RequestHandler`, so it
+#                   drags both crates above in behind it.
+#
+# Together those three cost +65 crate names. What is taken below costs +42 in the lock and **+13 in
+# the binary** — the other 29 are build-only. Measured with `cargo tree -e normal`, not estimated.
+#
+# a2a-lf   the core wire types. The protocol vocabulary, which is where compliance comes from and
+#          where hand-rolling was never justified.
+# a2a-pb   the protobuf types, generated from the a2aproject's own vendored `a2a.proto`. Required
+#          for the gRPC binding; there is no types-only path to one. Its build script shells out to
+#          protoc via `protoc-bin-vendored` — BUILD-only, so it ships nothing, but it is why this
+#          pin is gated on `cargo deny` and the 11-configuration gate rather than landing quietly.
+a2a-lf = "0.3.0"
+a2a-pb = "0.2.0"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
@@ -119,6 +150,31 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
 opentelemetry_sdk = "0.32.1"
 proptest = "1"
 rcgen = "0.14"
+# ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
+# `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
+# staying compatible with `2025-11-25` and earlier.
+#
+# `default-features = false` is LOAD-BEARING here, unlike `oauth-as` above where the crate's default
+# set is already empty. rmcp's defaults pull `server`, `macros`, `schemars`, `base64`, `uuid` and
+# `transport-async-rw`; what busbar wants is the protocol VOCABULARY and nothing else. Features are
+# turned on per member, one at a time, each with a reason.
+#
+# THE TWO FAMILIES THAT MUST NEVER BE ENABLED — stated here because a feature list is exactly where
+# this slips in unnoticed:
+#   auth, auth-client-credentials-jwt
+#       a SECOND OAuth implementation, beside `oauth_as/` and the `PlaneAdmission` verifier. Two
+#       implementations of one security concern that can disagree is the class behind three of this
+#       release's security defects. rmcp's auth is client-side helper code written for an agent
+#       author; busbar is a resource server AND an authorization server. Different problems.
+#   reqwest*, transport-streamable-http-*, transport-child-process, transport-io
+#       a second HTTP client and a second transport, both of which bypass the dispatch-time
+#       resolve-then-pin in busbar's own — one DNS resolution per hop, every returned address
+#       judged, the connection made to the address that was judged. Same objection recorded against
+#       `a2a-client-lf`, same answer.
+#
+# Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
+# (`rmcp`, `chrono`, `pastey`).
+rmcp = { version = "3.1.2", default-features = false }
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
 # to the other. Both decline default features — rustls only, so no second crypto backend enters.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -143,6 +199,14 @@ tikv-jemallocator = "0.6"
 # empty, so the whole feature choice belongs to the member.
 tokio = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# The generic gRPC runtime for the A2A gRPC binding. NOT an A2A-specific framework — this is the
+# same crate every Rust gRPC server uses, and taking it is what lets busbar implement the tonic
+# service trait itself, over its own admission and its own store, rather than adopting
+# `a2a-grpc`'s handler and the two framework crates behind it.
+#
+# `prost 0.14` is already in the lock (via `opentelemetry-otlp`) and the major aligns, so the
+# protobuf runtime is not new to the tree — only the service layer is.
+tonic = { version = "0.14", default-features = false }
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
