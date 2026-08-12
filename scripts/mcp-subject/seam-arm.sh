@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# INCOMPLETE — NOT WIRED, NOT RUN, NOT PROVEN. Stopped mid-build on an owner's change of plan.
-# Nothing sets MCP_SUBJECT_UPSTREAM_CONFIG_CMD to this script yet, so the six `SEAM.*` clauses are
-# still RED for the reason they were before: no upstream is mounted for the battery to observe.
-# What is still missing to finish the job is listed at the foot of this file.
-#
 # ARM ONE SEAM TEST, THEN BECOME THE FRONT-DOOR CLIENT.
 #
 # This is `MCP_SUBJECT_UPSTREAM_CONFIG_CMD`: the launch command the battery's seam suite substitutes
@@ -66,30 +61,3 @@ mv -f "$tmp" "$control"
 # inside the request that triggers it, so there is no window in which a request could be served by
 # the previous mode.
 exec node "$bridge" "$url"
-
-# ── WHAT IS STILL MISSING, STATED RATHER THAN LEFT TO BE REDISCOVERED ───────────────────────────
-#
-# 1. `boot.sh:subject_write_config` must gain an OPTIONAL `seam:` registration, written only when
-#    `MCP_SEAM_UPSTREAM_URL` is set, exposing one tool with `publish_as: echo`. The `publish_as`
-#    override already exists (it is how `greet` is published) and is REQUIRED here: the seam suite
-#    calls the bare name `echo`, and busbar's routing key is `{server}_{tool}`, which cannot compose
-#    a name with no separator in it. Without it every seam `tools/call` is answered "unknown tool",
-#    nothing reaches an upstream, and five of the six clauses go GREEN VACUOUSLY — the exact false
-#    green this whole leg exists to refuse.
-# 2. `scripts/mcp-conformance.sh:battery_subject` must start `fakepeer/http-fake-server.mjs` on a
-#    free port with a control file, export `MCP_SEAM_UPSTREAM_URL` BEFORE `boot_busbar_subject`, and
-#    export `MCP_SUBJECT_UPSTREAM_CONFIG_CMD="bash <abs>/seam-arm.sh <control> $SUBJECT_URL"`.
-# 3. `src/core/target.mjs:spawnServer()` takes no env, and `src/suites/seam.mjs` therefore never
-#    delivers `seamEnv(mode, transcript)` to the launch it spawns — `seamEnv` is dead code and the
-#    `upstreamMode` argument to `startSeam` is unused. So today the mode and the transcript path
-#    cannot reach the peer AT ALL: every seam test would run against the honest baseline and read an
-#    empty transcript. That is a defect in the battery, not in busbar, and it must be fixed before
-#    any seam verdict means anything.
-# 4. `upstream::UPSTREAM_TIMEOUT` is a hard-coded 30s and `SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR`
-#    waits 20s, so `stall` mode is RED on arrival. The honest fix is a per-server deadline in the
-#    `tools:` grammar (default unchanged at 30s), not a constant tuned to the battery.
-# 5. RED BEFORE GREEN is UNDONE. Nothing in this branch has been run. In particular the battery's
-#    `isResponse()` predicate is `'id' in msg`, which has previously mis-classified an illegal reply
-#    as neither response nor notification; before any of these six clauses is believed, busbar must
-#    be broken deliberately (relay the upstream's server-initiated request; forward the caller's
-#    bearer upstream) and each clause watched going RED.
