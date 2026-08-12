@@ -56,6 +56,25 @@
 //! reaches. Publishing them would tell a caller to present a credential to busbar that busbar does
 //! not accept, and would leak the backend's auth posture. The served card advertises exactly one
 //! scheme: busbar's own `a2a_inbound` credential.
+//!
+//! ## And it is spelled the way the NORMATIVE definition spells it
+//!
+//! SPEC 1.4 makes `a2a.proto` "the single authoritative normative definition of all protocol data
+//! objects", and the generated `a2a.json` an explicitly "non-normative build artifact". `SecurityScheme`
+//! there is a `oneof` over five variants, so a scheme is `{"httpAuthSecurityScheme": {…}}` and a
+//! caller identifies the mechanism by WHICH VARIANT KEY IS SET. busbar used to publish the OpenAPI
+//! spelling instead — `{"type": "http", "scheme": "bearer"}` — which sets no variant at all: a
+//! conformant client (the A2A project's own SDK parses cards straight into the protobuf message)
+//! reads a scheme it cannot classify, so it cannot work out how to authenticate and the first call
+//! comes back as an opaque `401` it has no way to act on. The requirement member beside it,
+//! `AgentCard.security_requirements` (proto field 9), is a `SecurityRequirement` whose `schemes` is
+//! `map<string, StringList>`, so it is `[{"schemes": {"<name>": {"list": []}}}]` and not the sample
+//! card's `[{"<name>": []}]`.
+//!
+//! Both of the backend's spellings are REMOVED before busbar's are inserted. The rewrite passes
+//! unmodelled members through by design, so leaving the backend's `security` behind while writing
+//! busbar's `securityRequirements` would publish the backend's auth posture beside busbar's — the
+//! exact leak the replacement exists to prevent, surviving under the other name.
 
 use serde_json::{json, Map, Value};
 
@@ -300,11 +319,21 @@ pub(crate) fn rewrite_card(
     out.remove("signatures");
 
     // ── THE SECURITY SCHEMES, replaced. See the module note. ──
+    //
+    // The backend's requirement member is removed under BOTH of its spellings first. `security` is
+    // the sample card's name and `securityRequirements` the proto's; busbar publishes the proto's,
+    // and an untouched `security` would ride through the unmodelled-member passthrough and publish
+    // the backend's auth posture next to busbar's.
+    out.remove("security");
+    out.remove("securityRequirements");
     out.insert(
         "securitySchemes".to_string(),
         Value::Object(inbound_security_schemes()),
     );
-    out.insert("security".to_string(), inbound_security_requirement());
+    out.insert(
+        "securityRequirements".to_string(),
+        inbound_security_requirement(),
+    );
 
     // ── AND THEN EVERY OTHER STRING IN THE DOCUMENT, at every depth. ──
     //
@@ -350,6 +379,12 @@ pub(crate) fn rewrite_card(
     }
 }
 
+/// The RFC 7235 authentication scheme a caller presents on [`INBOUND_HEADER`]. Spelled exactly as
+/// the `WWW-Authenticate` challenge an unauthenticated caller receives spells it
+/// ([`crate::auth::challenge`]), so the card and the challenge describe one mechanism rather than
+/// two.
+pub(crate) const INBOUND_AUTH_SCHEME: &str = "Bearer";
+
 /// THE ONE DESCRIPTION of how a caller authenticates to this plane.
 ///
 /// Shared by the fronted-agent cards and by busbar's own card at the well-known path, because two
@@ -360,21 +395,36 @@ fn inbound_security_schemes() -> Map<String, Value> {
     let mut schemes = Map::new();
     schemes.insert(
         INBOUND_SCHEME_NAME.to_string(),
+        // PROTO `SecurityScheme` is a oneof: the VARIANT KEY is what tells a client which of the
+        // five mechanisms this is, and it is the only thing that does. See the module note on why
+        // the OpenAPI spelling this replaced classified as none of them.
+        //
+        // `bearerFormat` is deliberately ABSENT. It is a hint about how the token is shaped, and the
+        // honest values are two: busbar's own credential is `bbk_<payload>.<signature>` and is
+        // explicitly NOT a JWT (`governance::signing` — no header, no `alg`, therefore no
+        // algorithm-confusion surface), while a deployment whose chain names an operator IdP admits
+        // that IdP's JWT as well. A card claiming `"JWT"` would be wrong about the first and a card
+        // claiming busbar's format would be wrong about the second, so the member is omitted and the
+        // description says what to present instead.
         json!({
-            "type": "http",
-            "scheme": "bearer",
-            "description": format!(
-                "A busbar credential of kind `{CREDENTIAL_KIND_A2A_INBOUND}`, presented on the \
-                 `{INBOUND_HEADER}` header. busbar authorises it against this fronted agent and \
-                 meters the task against the presenting key's budget."
-            ),
+            "httpAuthSecurityScheme": {
+                "scheme": INBOUND_AUTH_SCHEME,
+                "description": format!(
+                    "A busbar credential of kind `{CREDENTIAL_KIND_A2A_INBOUND}`, presented on the \
+                     `{INBOUND_HEADER}` header. busbar authorises it against this fronted agent and \
+                     meters the task against the presenting key's budget."
+                ),
+            }
         }),
     );
     schemes
 }
 
+/// PROTO `AgentCard.security_requirements`: a repeated `SecurityRequirement`, whose `schemes` is
+/// `map<string, StringList>`. The empty list is "this scheme, no scopes" — busbar scopes a caller by
+/// the grants on the presented key, not by an OAuth scope string.
 fn inbound_security_requirement() -> Value {
-    json!([{ INBOUND_SCHEME_NAME: [] }])
+    json!([{ "schemes": { INBOUND_SCHEME_NAME: { "list": [] } } }])
 }
 
 /// BUSBAR'S OWN AGENT CARD, served unauthenticated at [`super::card::WELL_KNOWN_CARD_PATH`].
@@ -445,7 +495,7 @@ pub(crate) fn self_card(
         },
         "skills": [],
         "securitySchemes": Value::Object(inbound_security_schemes()),
-        "security": inbound_security_requirement(),
+        "securityRequirements": inbound_security_requirement(),
     });
 
     match signer {

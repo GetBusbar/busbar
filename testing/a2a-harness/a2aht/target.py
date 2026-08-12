@@ -224,6 +224,24 @@ class Target:
         h.update(extra or {})
         return h
 
+    def request_headers(self, extra=None, version=spec.PROTOCOL_VERSION):
+        """The headers a CLIENT OF THIS TARGET sends on any request.
+
+        Public because several tests post raw bytes past `call()` -- a
+        truncated body, a request with no `jsonrpc` member -- and those are
+        still requests from the same client. Built by hand they arrived
+        anonymously, and a target that requires authentication answers an
+        anonymous request from its auth layer, before its parser has seen a
+        byte. The test then reports on the wrong component: not "the agent
+        faulted on malformed input" but "the agent asked who I was", which is
+        a different question and one `tests_auth` asks on purpose.
+
+        Nothing here decides WHETHER to authenticate. It attaches the
+        credential the harness was given (`--auth`) and nothing else, so a
+        target that needs none is unaffected.
+        """
+        return self._headers(extra, version)
+
     # -- calling -----------------------------------------------------------
 
     def call(self, method, params=None, iface=None, headers=None,

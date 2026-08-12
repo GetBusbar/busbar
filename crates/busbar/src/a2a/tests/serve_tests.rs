@@ -265,9 +265,33 @@ fn the_backends_security_schemes_are_replaced_by_busbars_own_inbound_credential(
     );
     assert!(schemes.get("corpMtls").is_none());
     assert!(schemes.get("vendorKey").is_none());
-    assert_eq!(served["security"], json!([{ INBOUND_SCHEME_NAME: [] }]));
+
+    // PROTO `SecurityScheme` is a oneof, so the mechanism IS the variant key. The OpenAPI spelling
+    // this replaced (`{"type": "http", …}`) sets no variant, and a client parsing the card into the
+    // protobuf message cannot classify it — which is a 401 nobody can act on, not a cosmetic gap.
+    assert_eq!(
+        schemes[INBOUND_SCHEME_NAME],
+        json!({
+            "httpAuthSecurityScheme": {
+                "scheme": "Bearer",
+                "description": schemes[INBOUND_SCHEME_NAME]["httpAuthSecurityScheme"]["description"],
+            }
+        }),
+        "the served scheme must select exactly one PROTO SecurityScheme variant"
+    );
+    assert_eq!(
+        served["securityRequirements"],
+        json!([{ "schemes": { INBOUND_SCHEME_NAME: { "list": [] } } }])
+    );
+    // The backend's requirement member is removed under the OTHER spelling too. Left behind, it
+    // would ride through the unmodelled-member passthrough and publish the backend's auth posture
+    // beside busbar's.
     assert!(
-        schemes[INBOUND_SCHEME_NAME]["description"]
+        served.get("security").is_none(),
+        "the backend's `security` survived beside busbar's `securityRequirements`: {served}"
+    );
+    assert!(
+        schemes[INBOUND_SCHEME_NAME]["httpAuthSecurityScheme"]["description"]
             .as_str()
             .expect("description")
             .contains(CREDENTIAL_KIND_A2A_INBOUND),
