@@ -71,7 +71,7 @@ fn error_code(body: &serde_json::Value) -> Option<i64> {
         .and_then(serde_json::Value::as_i64)
 }
 
-/// The `google.rpc.ErrorInfo` reason A2A §5.4 binds to the error, dug out of the ProtoJSON `data`
+/// The `google.rpc.ErrorInfo` reason A2A section 5.4 binds to the error, dug out of the ProtoJSON `data`
 /// array. Read rather than assumed: a code with the wrong reason is a body a conformant client
 /// mis-classifies, and the array shape is exactly what `rpcerror` had to be fixed to produce once.
 fn error_reason(body: &serde_json::Value) -> Option<String> {
@@ -104,7 +104,7 @@ async fn a_version_this_endpoint_does_not_speak_is_refused_with_minus_32009() {
         error_reason(&body).as_deref(),
         Some("VERSION_NOT_SUPPORTED")
     );
-    assert_eq!(status, 400, "A2A §5.4 binds -32009 to HTTP 400");
+    assert_eq!(status, 400, "A2A section 5.4 binds -32009 to HTTP 400");
     assert_eq!(
         hops(&h),
         0,
@@ -163,7 +163,7 @@ async fn a_media_type_this_endpoint_does_not_accept_is_refused_with_minus_32005(
         error_reason(&body).as_deref(),
         Some("CONTENT_TYPE_NOT_SUPPORTED")
     );
-    assert_eq!(status, 415, "A2A §5.4 binds -32005 to HTTP 415");
+    assert_eq!(status, 415, "A2A section 5.4 binds -32005 to HTTP 415");
     assert_eq!(
         hops(&h),
         0,
