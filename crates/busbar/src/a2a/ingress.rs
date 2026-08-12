@@ -739,6 +739,63 @@ async fn invoke(
         }
     };
 
+    // ── THE VERBS BUSBAR ANSWERS ITSELF. ────────────────────────────────────────────────────────
+    //
+    // AFTER admission and the meter — a locally-answered call is still this caller's call against
+    // this caller's budget, and answering it for free would make `ListTasks` the one unmetered verb
+    // on the plane — and BEFORE the egress gate, the callback guard and the task-open block, all
+    // three of which are about A HOP. None of these verbs makes one: no credential of busbar's is
+    // leased, and no task row is opened, which matters most for the two that name no task busbar
+    // holds (`ListTasks`, and a subscribe to an id busbar never issued). Relayed, each of those
+    // minted a durable row per call for work that does not exist.
+    //
+    // `super::local` documents, verb by verb, why the answer is a fact about BUSBAR rather than
+    // about the backend. Everything not listed there still relays, unread.
+    if let Some(verb) = super::local::verb_of(super::local::method_of(&envelope)) {
+        let principal = admitted.dispatch.billed_key_id.clone();
+        let local = match verb {
+            super::local::LocalVerb::ListTasks => {
+                Some(super::local::list_tasks(&envelope, &rpc_id, &principal))
+            }
+            super::local::LocalVerb::CreatePushConfig(dialect) => {
+                let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
+                    return not_found();
+                };
+                Some(
+                    super::local::create_push_config(
+                        dialect, &envelope, &rpc_id, &principal, seam, now,
+                    )
+                    .await,
+                )
+            }
+            super::local::LocalVerb::GetPushConfig(dialect) => Some(super::local::get_push_config(
+                dialect, &envelope, &rpc_id, &principal,
+            )),
+            super::local::LocalVerb::ListPushConfigs(dialect) => Some(
+                super::local::list_push_configs(dialect, &envelope, &rpc_id, &principal),
+            ),
+            super::local::LocalVerb::DeletePushConfig(_) => Some(super::local::delete_push_config(
+                &envelope, &rpc_id, &principal, now,
+            )),
+            // THE ONLY PARTIAL ONE. `None` means the task is live and this caller's, so the events
+            // are the backend's and the call relays unchanged.
+            super::local::LocalVerb::Subscribe => {
+                super::local::subscribe_refusal(&envelope, &rpc_id, &principal)
+            }
+        };
+        if let Some(response) = local {
+            // AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and resource spelling, so
+            // a locally-answered verb is not invisible in the record just because no socket opened.
+            crate::admin::audit::AUDIT.record_by(
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_APPLIED,
+                &actor,
+            );
+            return response;
+        }
+    }
+
     // ── THE EGRESS GATE (`creds::authorise_egress`). ────────────────────────────────────────────
     //
     // Run BEFORE any task row exists, because it is a statement about the caller rather than about
@@ -1577,7 +1634,7 @@ fn callback_of(envelope: &serde_json::Value) -> Option<String> {
 /// ON A BLOCKING THREAD, because `Resolver` is a synchronous seam and the production one performs a
 /// real name lookup. A lookup inline here would hold an axum worker for as long as a nameserver
 /// feels like taking, which a caller chooses by choosing the host.
-async fn validate_callback(
+pub(crate) async fn validate_callback(
     url: String,
     seam: Arc<dyn super::relay::RelaySeam>,
 ) -> Result<super::pushnotify::PinnedCallback, String> {

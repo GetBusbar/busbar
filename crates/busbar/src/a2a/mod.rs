@@ -72,6 +72,7 @@ pub(crate) mod idmap;
 pub(crate) mod inbound;
 pub(crate) mod ingress;
 pub(crate) mod jws;
+pub(crate) mod local;
 pub(crate) mod meter;
 pub(crate) mod pin;
 pub(crate) mod plane;
