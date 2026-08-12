@@ -25,6 +25,7 @@ pub(crate) mod bedrock;
 pub(crate) mod chat;
 pub(crate) mod cohere;
 pub(crate) mod gemini;
+pub(crate) mod mcp;
 pub(crate) mod openai;
 pub(crate) mod responses;
 
@@ -34,6 +35,7 @@ static COHERE: cohere::CohereRequestHandler = cohere::CohereRequestHandler;
 static GEMINI: gemini::GeminiRequestHandler = gemini::GeminiRequestHandler;
 static ANTHROPIC: anthropic::AnthropicRequestHandler = anthropic::AnthropicRequestHandler;
 static RESPONSES: responses::ResponsesRequestHandler = responses::ResponsesRequestHandler;
+static MCP: mcp::McpRequestHandler = mcp::McpRequestHandler;
 
 /// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). All six
 /// protocols are registered (every one speaks chat); a registered handler may still return `None`
@@ -46,6 +48,7 @@ pub(crate) fn request_handler(protocol: &str) -> Option<&'static dyn RequestHand
         "gemini" => Some(&GEMINI),
         "anthropic" => Some(&ANTHROPIC),
         "responses" => Some(&RESPONSES),
+        "mcp" => Some(&MCP),
         _ => None,
     }
 }
