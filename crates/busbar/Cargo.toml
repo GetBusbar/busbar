@@ -59,15 +59,23 @@ tower = { workspace = true }
 # flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
 # src/ — so it is NOT used; the slice below is hand-picked instead.
 #
-# `process` + `io-util` are the MCP stdio transport (1.5.5, `mcp/client/stdio.rs`): stdio is one of
-# the two transports the MCP specification itself defines, so supervising a child MCP server is a
-# baseline obligation rather than a busbar extension, and there is no way to own a child process's
-# lifecycle without them. This is a FEATURE on a crate already in the graph, not a new
-# dependency — no new crate, no new version requirement, nothing added to
-# `[workspace.dependencies]`. It does grow the request-path binary, which is the honest cost of the
-# transport, and it is spelled out here rather than slipped in: the previous comment said these two
-# were dropped because nothing referenced them, and now something does.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "io-util"] }
+# `process` IS DELIBERATELY ABSENT, AND ITS ABSENCE IS A GATE.
+#
+# It was enabled for `mcp/client/stdio.rs`, a complete child-process supervisor — spawn, reap, the
+# `spawning → ready → draining → dead` machine, capped backoff and a five-crashes-in-a-window
+# breaker — that NOTHING EVER CALLED, because a `tools:` entry carrying a stdio transport has no
+# dispatch arm and `transport: stdio` is refused at config validation. Unreachable security-relevant
+# code that reads as shipped is a false green, and this release ships one MCP transport
+# (streamable HTTP, revision `2026-07-28`), so the supervisor was DELETED rather than wired.
+#
+# Leaving the feature off is what keeps that decision enforced by the COMPILER instead of by memory:
+# re-introducing a child-process supervisor that nothing dispatches to now fails to build here, at
+# the dependency, rather than passing review as another quiet `#![allow(dead_code)]`. Turning it back
+# on is a deliberate act that has to be argued for in this comment.
+#
+# `io-util` stays: the TLS and transport batteries read and write sockets with `AsyncReadExt` /
+# `AsyncWriteExt`, which is unrelated to child processes.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

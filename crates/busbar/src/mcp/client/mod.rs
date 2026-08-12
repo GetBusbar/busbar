@@ -17,7 +17,6 @@
 //! | [`catalogue`] | the versioned tool-list snapshot, per-tool hash-pinning, drift detection |
 //! | [`jsonrpc`] | the `2026-07-28` outbound wire, and the rules for answering an upstream's ask |
 //! | [`transport`] | the streamable-HTTP stateless transport — the primary target |
-//! | [`stdio`] | spawn + supervise, with the `spawning → ready → draining → dead` state machine |
 //! | [`pool`] | engine-owned connection pooling, keyed by the PINNED address |
 //! | [`ssrf`] | dispatch-time resolve-then-pin |
 //! | [`argguard`] | the schema-aware walk of nested tool arguments for URL and host fields |
@@ -56,9 +55,15 @@
 //!
 //! What is still NOT wired, and is stated rather than softened:
 //!
-//! - **`stdio`** spawns and supervises a child, and nothing dispatches over it. The `tools:` grammar
-//!   refuses `transport: stdio` at boot for exactly that reason, so a deployment finds out at boot
-//!   rather than at first dispatch.
+//! - **stdio is NOT A TRANSPORT THIS BUILD HAS.** There is no child supervisor, no `Endpoint` arm
+//!   for one, and no dispatch path — and `transport: stdio` is refused at config validation, so a
+//!   deployment finds out at boot rather than at first dispatch. A complete supervisor (spawn, reap,
+//!   `spawning → ready → draining → dead`, capped backoff, a five-crashes-in-a-window breaker) used
+//!   to live here under a module-wide `#![allow(dead_code)]` with nothing calling it. It was
+//!   DELETED, not wired: this release ships exactly one MCP transport, and unreachable
+//!   security-relevant code that reads as shipped is a false green. The `process` tokio feature was
+//!   dropped with it, so re-introducing an unreachable supervisor now fails to COMPILE rather than
+//!   passing review.
 //! - **[`catalogue`]'s live cache and the background refresh that would feed it.** The dispatch path
 //!   validates against the SERVER direction's config-built snapshot, which carries the operator's
 //!   approved digests; nothing in this build polls an upstream's `tools/list` to detect a rug-pull in
@@ -75,7 +80,6 @@ pub(crate) mod identity;
 pub(crate) mod jsonrpc;
 pub(crate) mod pool;
 pub(crate) mod ssrf;
-pub(crate) mod stdio;
 pub(crate) mod transport;
 
 use catalogue::{CatalogueCache, ServerCatalogue, TransportPin};
@@ -99,13 +103,18 @@ use ssrf::SsrfPolicy;
 // its caller the build says so. That is the point: the gap stays visible in the code rather than in
 // a tracking document nobody reads.
 #[allow(dead_code)]
-/// How busbar reaches one upstream.
+/// How busbar reaches one upstream. ONE ARM, because this build speaks one transport.
+///
+/// Kept as an enum rather than collapsed into the bare URL it currently holds: the type is the
+/// place a second transport would be ADDED, and every match on it is a place that would then be
+/// forced to decide. A `String` would let a second transport be bolted on with no such prompt.
 #[derive(Clone, Debug)]
 pub(crate) enum Endpoint {
     /// Streamable HTTP, stateless. THE primary target of this revision.
     Http { url: String },
-    /// A local child process speaking newline-delimited JSON-RPC over stdio.
-    Stdio { program: String, args: Vec<String> },
+    // NO `Stdio` ARM. It existed, carried a program and args, and nothing could ever dispatch over
+    // it — see the header. A variant that models a transport the build refuses at config validation
+    // is the same false green as the supervisor that was deleted with it, one level down.
 }
 
 #[allow(dead_code)]

@@ -100,21 +100,3 @@ fn the_registry_and_the_catalogue_stay_in_step() {
         .collect();
     assert_eq!(after, vec!["a".to_string(), "c".into()]);
 }
-
-#[test]
-fn a_stdio_endpoint_is_representable_and_carries_no_url() {
-    let reg = McpServerRegistration::new(
-        sid("local"),
-        Endpoint::Stdio {
-            program: "/usr/bin/mcp-fs".into(),
-            args: vec!["--root".into(), "/srv".into()],
-        },
-    );
-    match &reg.endpoint {
-        Endpoint::Stdio { program, args } => {
-            assert_eq!(program, "/usr/bin/mcp-fs");
-            assert_eq!(args.len(), 2);
-        }
-        Endpoint::Http { .. } => panic!("expected a stdio endpoint"),
-    }
-}

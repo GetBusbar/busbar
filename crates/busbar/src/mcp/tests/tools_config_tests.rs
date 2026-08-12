@@ -174,6 +174,14 @@ fn an_unimplemented_transport_is_refused_at_parse() {
         err.contains("not implemented in this release"),
         "got: {err}"
     );
+    // THE REFUSAL MUST NOT ADVERTISE A SUPERVISOR. It used to say the "stdio child supervision
+    // state machine is net-new engine surface", which read as "we have one, it is just not
+    // attached" — and there really was one, complete and unreachable, until it was deleted. An
+    // operator reading a refusal is entitled to know the capability is ABSENT, not deferred.
+    assert!(
+        err.contains("no child supervisor at all"),
+        "the refusal must say the capability is absent, not merely unwired: {err}"
+    );
     parse(
         "s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  transport: streamable_http\n",
     )
