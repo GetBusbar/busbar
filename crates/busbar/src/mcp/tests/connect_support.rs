@@ -208,6 +208,7 @@ pub(crate) fn server_cfg(
     }
     McpServerDefCfg {
         refresh_ttl: None,
+        timeout: None,
         url: peer.mcp_url(),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

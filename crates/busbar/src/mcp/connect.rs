@@ -225,7 +225,10 @@ pub(crate) async fn refresh(
         RefreshCredential::None => None,
         RefreshCredential::Bearer(b) => Some(b),
         RefreshCredential::Exchange(req) => {
-            match super::upstream::exchange(pool, &req, policy).await {
+            // REFRESH_TIMEOUT, not the server's dispatch deadline: this leg is the refresh timer's,
+            // not a caller's, and it is bounded by the same budget as the `tools/list` it is about
+            // to authenticate.
+            match super::upstream::exchange(pool, &req, policy, REFRESH_TIMEOUT).await {
                 Ok(token) => Some(token),
                 // A refresh that could not obtain a credential is a refresh that FAILED, not one
                 // that goes out unauthenticated. Sending no credential where one was configured

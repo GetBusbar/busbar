@@ -104,6 +104,15 @@ use busbar_api::{McpCallRecord, Store, StoreResult};
 pub(crate) const OUTCOME_DISPATCHED: &str = "dispatched";
 pub(crate) const OUTCOME_REFUSED: &str = "refused";
 
+/// The reason token for a `tools/call` that WENT OUT and whose upstream then failed.
+///
+/// It rides `dispatched`, NOT `refused`, and the distinction is the point: `refused` means the call
+/// did not go out, and this one did. It carried `refused`/`upstream_failed` until the outcome split
+/// (`mcp::inputreq::Outcome::UpstreamFailed`), which made an upstream outage indistinguishable from
+/// a policy refusal to everything reading this field. The word itself is unchanged so that any
+/// tooling already grepping for it keeps finding the same event.
+pub(crate) const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
+
 /// The reason token for a `tools/call` answered with an unsatisfied caller-ask round.
 ///
 /// It is `refused`, not a third outcome, and that is the honest reading of the two tokens the store

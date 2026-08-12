@@ -32,6 +32,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
         id.to_string(),
         McpServerDefCfg {
             refresh_ttl: None,
+            timeout: None,
             url: format!("https://{id}.internal/mcp"),
             pin: ServerPinCfg {
                 mechanism: McpPinMechanism::CertSpki,

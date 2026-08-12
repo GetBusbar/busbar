@@ -327,6 +327,35 @@ tools:
               type: string
               description: "The tenant this call is for; mirrored into Mcp-Param-Tenant."
               x-mcp-header: "Tenant"
+      # ── THE OUTPUT SCHEMA, DECLARED BY THE OPERATOR ─────────────────────────────────────────
+      #
+      # \`output_schema:\` is the operator's, exactly as \`input_schema:\` and \`description:\` are, and
+      # it matters more than either: publishing an \`outputSchema\` makes conforming structured
+      # results a MUST for the server that published it, and that server is BUSBAR — a caller never
+      # speaks to the upstream and could not attribute a violation to it. An upstream that could
+      # write this schema could rewrite the promise busbar is held to.
+      #
+      # busbar published NO outputSchema on any tool until this commit
+      # (\`tools.withOutputSchema: control ["echo","add","always_fails"] / subject []\`), which made
+      # SRV.TOOLS.OUTPUTSCHEMA-CONFORMS vacuous for busbar and blinded every validating client: with
+      # no schema on the wire there is nothing to check a structured result against.
+      structured_report:
+        schema_hash: "sha256:diagnostic-structured-report"
+        description: "Returns a structured report alongside its text."
+        input_schema:
+          type: object
+          properties:
+            subject:
+              type: string
+              description: "What the report is about."
+        output_schema:
+          type: object
+          properties:
+            subject: { type: string }
+            status: { type: string, enum: ["ok", "degraded", "failed"] }
+            findings: { type: integer }
+          required: ["subject", "status", "findings"]
+          additionalProperties: false
       logging_tool:
         schema_hash: "sha256:diagnostic-logging-tool"
         description: "Exercises the request-scoped, logLevel-gated log channel."

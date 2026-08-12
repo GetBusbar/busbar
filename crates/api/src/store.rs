@@ -830,7 +830,18 @@ pub struct McpCallRecord {
     pub tool: String,
     /// Stable outcome token: `dispatched` (the call went out) | `refused` (it did not).
     pub outcome: String,
-    /// The refusal reason token, or empty on a dispatch. Never free text: tooling branches on it.
+    /// The reason token for this outcome, or empty. Never free text: tooling branches on it.
+    ///
+    /// It was documented as "the REFUSAL reason token, or empty on a dispatch", and that was too
+    /// narrow by exactly one case. A call that went out and whose upstream then failed is a
+    /// `dispatched` — the call did go out, and recording it as `refused` said the opposite of what
+    /// happened — but it is not an ordinary dispatch either, and a reader with no token could not
+    /// tell "the upstream is down" from "the tool worked". So a dispatch may carry a token too, and
+    /// an EMPTY reason on a `dispatched` continues to mean exactly what it always did: the call
+    /// went out and was answered.
+    ///
+    /// The set of tokens is additive and every one is a stable word, so tooling that branches on
+    /// the tokens it knows and ignores the rest keeps working across this change.
     pub reason: String,
     /// The tool digest the call was admitted against, or empty on a refusal that never reached one.
     /// This is what ties a call to the exact schema/description the operator approved.

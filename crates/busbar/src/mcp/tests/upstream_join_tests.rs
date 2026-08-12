@@ -166,11 +166,38 @@ async fn a_granted_call_to_an_unreachable_upstream_fails_at_the_round_trip() {
     )
     .await;
 
-    assert_eq!(status, 403);
+    // 200 AND `isError`, NOT 403. Every governance check PASSED and the call went out; what failed
+    // was the far end. This asserted `403` / `error.data.reason = upstream_failed` until the
+    // `Outcome::UpstreamFailed` split, which is the bug the assertion had frozen: an upstream that
+    // is down was reported to the caller as busbar refusing the request, so the model could neither
+    // see the failure nor retry it, and nothing reading dispositions could tell a policy refusal
+    // from an outage.
     assert_eq!(
-        body.pointer("/error/data/reason").unwrap(),
-        "upstream_failed",
-        "refused by the ROUND TRIP, after every governance check passed: {body}"
+        status, 200,
+        "an upstream failure is not busbar refusing: {body}"
+    );
+    assert!(
+        body.pointer("/error").is_none(),
+        "a tool that failed is not a protocol error: {body}"
+    );
+    assert_eq!(
+        body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "the failure must reach the MODEL, which reads isError results and not JSON-RPC errors: \
+         {body}"
+    );
+    assert_eq!(
+        body.pointer("/result/resultType").and_then(|v| v.as_str()),
+        Some("complete"),
+        "and it is a complete result: the dispatch finished, it finished badly: {body}"
+    );
+    let text = body
+        .pointer("/result/content/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        text.contains("`fs`"),
+        "the caller needs to know WHICH upstream failed: {text}"
     );
     // The exchange DID happen — this caller was authorised, so busbar was willing to spend its own
     // credential. That is the difference from arm 1, on the token endpoint's own counter.
@@ -211,27 +238,36 @@ async fn the_three_arms_are_distinguishable_by_their_audit_reason() {
     let (before_status, before_body) = call(&reachable, &none, "tools/call", params.clone()).await;
     let (after_status, after_body) = call(&unreachable, &granted, "tools/call", params).await;
 
-    assert_eq!((ok_status, before_status, after_status), (200, 404, 403));
+    // THREE OUTCOMES, THREE SHAPES, and the third one changed. It used to be `403` — the same
+    // status and the same `error.data.reason` family as the ungranted arm — so "you may not call
+    // this" and "the far end is down" were one signal wearing one word. They are now different
+    // KINDS of answer, which is the strongest form of distinguishable: a refusal is a JSON-RPC
+    // error, an upstream failure is an `isError` result.
+    assert_eq!((ok_status, before_status, after_status), (200, 404, 200));
     assert!(
         ok_body.pointer("/error").is_none(),
         "the success arm must carry no error at all: {ok_body}"
     );
-    let reasons: std::collections::BTreeSet<String> = [&before_body, &after_body]
-        .iter()
-        .map(|b| {
-            b.pointer("/error/data/reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<none>")
-                .to_string()
-        })
-        .collect();
     assert_eq!(
-        reasons,
-        ["not_granted".to_string(), "upstream_failed".to_string()]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>(),
-        "the two refusing arms must be distinguishable; a shared reason word would make the \
-         pairing vacuous"
+        before_body
+            .pointer("/error/data/reason")
+            .and_then(|v| v.as_str()),
+        Some("not_granted"),
+        "the REFUSAL arm is a busbar-attributed protocol error: {before_body}"
+    );
+    assert!(
+        after_body.pointer("/error").is_none()
+            && after_body
+                .pointer("/result/isError")
+                .and_then(|v| v.as_bool())
+                == Some(true),
+        "the UPSTREAM-FAILURE arm is a tool execution error, not a refusal: {after_body}"
+    );
+    assert_ne!(
+        ok_body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "and the success arm must not also look like a failure, or the pairing above is vacuous: \
+         {ok_body}"
     );
 }
 
@@ -410,18 +446,30 @@ async fn an_upstream_json_rpc_error_is_reported_as_an_upstream_failure() {
     )
     .await;
 
-    assert_eq!(status, 403);
+    // A TOOL THAT MERELY FAILED IS NOT BUSBAR REFUSING THE REQUEST. This asserted `403` /
+    // `upstream_failed` in `error.data.reason`, which conflated the two facts: `-32000` / FORBIDDEN
+    // is busbar's "I decline", and nothing here declined anything — busbar carried the call and the
+    // upstream answered badly. The spec's own division puts this on the other side of the line:
+    // protocol errors describe the REQUEST, tool execution errors describe the RUN, and the latter
+    // are reported in tool results with `isError: true` so the model can see the message.
     assert_eq!(
-        body.pointer("/error/data/reason").unwrap(),
-        "upstream_failed"
+        status, 200,
+        "the tool failed; busbar did not refuse: {body}"
+    );
+    assert!(body.pointer("/error").is_none(), "{body}");
+    assert_eq!(
+        body.pointer("/result/isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "{body}"
     );
     let message = body
-        .pointer("/error/message")
+        .pointer("/result/content/0/text")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(
         message.contains("-32003"),
-        "the operator needs the upstream's own code to diagnose it: {message}"
+        "the operator needs the upstream's own code to diagnose it, and the MODEL needs it in the \
+         place a model reads: {message}"
     );
 }
 

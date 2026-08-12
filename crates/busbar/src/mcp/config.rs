@@ -177,6 +177,31 @@ pub(crate) struct ToolAllowCfg {
     /// The tool's JSON Schema, echoed verbatim in `tools/list`. Opaque to busbar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) input_schema: Option<serde_json::Value>,
+    /// The tool's OUTPUT JSON Schema, published as `outputSchema` in `tools/list`.
+    ///
+    /// ## Why this is the OPERATOR's schema and not the upstream's, like every other field here
+    ///
+    /// Same rule as `description` and `input_schema`, and it bites harder. Publishing an
+    /// `outputSchema` is a PROMISE busbar makes to its own callers, and the spec turns it into a
+    /// MUST the moment it is made: *"If an output schema is provided: Servers MUST provide
+    /// structured results that conform to this schema."* An upstream that could write the schema
+    /// could rewrite the promise busbar is held to — narrowing it after a client cached it, or
+    /// widening it to legalise whatever it felt like returning that day. So it is approved here,
+    /// beside the digest, by the operator who vouches for the tool.
+    ///
+    /// ## And publishing it is only half of keeping it
+    ///
+    /// busbar does not compute the structured result; an upstream does. Publishing a schema and
+    /// relaying whatever came back would put busbar in violation of that MUST every time the
+    /// upstream lied, with busbar's name on the answer. So `mcp::method` VALIDATES an upstream's
+    /// `structuredContent` against this schema before it reaches the caller, and a violation is
+    /// reported as a TOOL FAILURE — the upstream did not do what the operator approved it to do.
+    ///
+    /// ABSENT ⇒ no `outputSchema` is published and nothing is validated, which is every
+    /// registration that predates this field. There is no default and there is no inference: a
+    /// schema busbar guessed would be a promise nobody made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) output_schema: Option<serde_json::Value>,
     /// THE WIRE NAME busbar publishes for this tool, overriding the default
     /// `{server}{NAMESPACE_SEP}{tool}`. OPTIONAL — absent means the namespaced default, exactly as
     /// before this field existed, which is why no existing config changes.
@@ -563,6 +588,27 @@ pub(crate) struct McpServerDefCfg {
     /// [`crate::trust::sweep`], the one job both planes run, which has no knob at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refresh_ttl: Option<String>,
+    /// `<n><s|m|h|d>` — the wall-clock budget for ONE outbound leg to THIS server: the tool call,
+    /// and separately the RFC 8693 token exchange. Absent ⇒ [`DEFAULT_UPSTREAM_TIMEOUT_SECS`],
+    /// which is the value every registration used before this key existed, so nothing that exists
+    /// today changes.
+    ///
+    /// ## Why it is per SERVER and not one constant
+    ///
+    /// A deadline is a statement about a particular peer, and the peers genuinely differ: a
+    /// loopback diagnostic answers in milliseconds, an LLM-backed upstream can legitimately take
+    /// most of a minute. One number for all of them is either too generous for the first — a
+    /// dispatch that hangs holds a concurrency slot the caller already paid for — or too mean for
+    /// the second.
+    ///
+    /// ## And why it is a DEADLINE and not a retry or a circuit breaker
+    ///
+    /// This plane deliberately has no per-server "skip if it failed last time" and no key that
+    /// slows detection (see `refresh_ttl`), because every one of those is a window an upstream can
+    /// open for itself by misbehaving. A deadline is the opposite: it is a bound the upstream
+    /// cannot lengthen by choosing to be slow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<String>,
     /// The approved tools, as a MAP so each carries its approved schema hash.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub(crate) tools_allow: indexmap::IndexMap<String, ToolAllowCfg>,
@@ -911,6 +957,23 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // uses a cadence the operator did not write is a defence whose behaviour nobody can predict.
     if let Some(ttl) = def.refresh_ttl.as_deref() {
         crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `refresh_ttl:` {e}"))?;
+    }
+
+    // The DEADLINE is parsed at boot for the same reason, and `0` is refused rather than accepted
+    // as "no deadline": a zero-second budget would refuse every call to this server on the first
+    // dispatch, and an operator who meant "unlimited" would get the exact opposite of what they
+    // wrote. There is deliberately no spelling for "unlimited" — a leg with no deadline holds a
+    // concurrency slot for as long as the upstream chooses.
+    if let Some(t) = def.timeout.as_deref() {
+        let secs =
+            crate::admin::parse_duration_secs(t).map_err(|e| format!("{at}: `timeout:` {e}"))?;
+        if secs == 0 {
+            return Err(format!(
+                "{at}: `timeout: {t}` is zero, which would refuse every call to this server before \
+                 it was sent. There is no spelling for an unlimited deadline: a leg that cannot \
+                 time out holds a concurrency slot for as long as the upstream chooses."
+            ));
+        }
     }
 
     if matches!(def.transport, Some(Transport::Stdio)) {

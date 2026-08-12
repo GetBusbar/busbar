@@ -918,6 +918,10 @@
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
         },
+        "timeout": {
+          "optional": true,
+          "type": "String"
+        },
         "token_exchange": {
           "optional": true,
           "type": "TokenExchangeCfg"
@@ -1943,6 +1947,10 @@
           "type": "String"
         },
         "input_schema": {
+          "optional": true,
+          "type": "serde_json::Value"
+        },
+        "output_schema": {
           "optional": true,
           "type": "serde_json::Value"
         },

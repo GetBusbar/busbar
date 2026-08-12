@@ -58,13 +58,18 @@ use super::inputreq::{Ask, Round};
 use busbar_api::{Redacted, VirtualKey};
 use std::time::Duration;
 
-/// The wall-clock budget for ONE outbound leg — the tool call, and separately the token exchange.
+/// The wall-clock budget for ONE outbound leg — the tool call, and separately the token exchange —
+/// FOR A REGISTRATION THAT NAMES NONE.
 ///
 /// A number rather than an inherited default, because an upstream MCP server is not trusted to
 /// answer and a dispatch that hangs holds a concurrency slot the caller already paid for. Thirty
 /// seconds is the same order the proxy path allows a provider, so a tool call and a model call fail
 /// on the same timescale rather than on two an operator has to learn separately.
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// It was the ONLY value, hard-coded, until `tools.<server>.timeout:` — and one constant for every
+/// upstream is either too generous for a loopback diagnostic or too mean for an LLM-backed tool.
+/// The DEFAULT is unchanged, so no registration that exists today behaves differently.
+pub(crate) const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Everything the outbound leg needs, resolved and AUTHORISED, ready to be spent.
 ///
@@ -83,6 +88,10 @@ pub(crate) struct Authorised {
     /// The INBOUND principal, carried through so the credential planner re-derives the same
     /// down-scope the gate was computed from.
     pub(crate) caller: VirtualKey,
+    /// THE DEADLINE for each leg of this dispatch, lifted from the snapshot the call was admitted
+    /// against. Resolved to a concrete `Duration` here — never `Option` past this point — so no
+    /// send site can forget to apply the default.
+    pub(crate) timeout: Duration,
 }
 
 /// Why the upstream leg could not even be set up. Distinct from an upstream FAILURE, because an
@@ -174,6 +183,7 @@ pub(crate) fn authorise(
         policy,
         credential,
         caller,
+        timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
     })
 }
 
@@ -257,7 +267,9 @@ pub(crate) async fn call(
     let bearer = match plan {
         CredentialPlan::None => None,
         CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
-        CredentialPlan::Exchange(req) => Some(exchange(pool, &req, auth.policy).await?),
+        CredentialPlan::Exchange(req) => {
+            Some(exchange(pool, &req, auth.policy, auth.timeout).await?)
+        }
     };
     // The namespaced name is stripped to the bare tool inside the builder — the upstream has never
     // heard of busbar's namespacing and would answer `-32602` to it.
@@ -268,7 +280,7 @@ pub(crate) async fn call(
         request_id,
         bearer.as_deref(),
     );
-    let response = HttpTransport::send(pool, &outbound, auth.policy, UPSTREAM_TIMEOUT)
+    let response = HttpTransport::send(pool, &outbound, auth.policy, auth.timeout)
         .await
         .map_err(|e| e.to_string())?;
     // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
@@ -310,13 +322,16 @@ pub(crate) async fn call(
 /// The token endpoint goes through the SAME pool, and therefore the same resolve-then-pin SSRF
 /// check, as the tool call. An authorization server reached without that check is a destination
 /// busbar sends its own subject token to on the strength of a string comparison.
+/// The DEADLINE is this server's, not a constant: the exchange is a leg of the same dispatch, and a
+/// registration whose operator said "this peer is slow" meant the whole round trip.
 pub(super) async fn exchange(
     pool: &McpConnectionPool,
     req: &ExchangeRequest,
     policy: SsrfPolicy,
+    timeout: Duration,
 ) -> Result<String, String> {
     let (client, _target) = pool
-        .client_for(&req.token_url, policy, UPSTREAM_TIMEOUT)
+        .client_for(&req.token_url, policy, timeout)
         .await
         .map_err(|e| format!("the token endpoint could not be reached: {e}"))?;
     let form = req.form_fields();

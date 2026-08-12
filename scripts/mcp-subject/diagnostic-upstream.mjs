@@ -359,6 +359,28 @@ TOOLS.greet = {
   }),
 };
 
+// THE STRUCTURED-OUTPUT TOOL, and it is the only fixture here whose RESULT busbar itself inspects.
+//
+// Every other tool's output is opaque to busbar and relayed. This one is registered in boot.sh with
+// an `output_schema:`, which makes `tools/list` publish an `outputSchema` — and the moment a server
+// publishes one, "servers MUST provide structured results that conform to this schema" applies to
+// THAT server. The caller only ever speaks to busbar, so the MUST is busbar's, while the value comes
+// from here. busbar therefore validates what this returns before serving it (`mcp::outputschema`).
+//
+// This one returns a CONFORMING result, because it is the honest baseline: the violating direction
+// is proven by `mcp::outputschema`'s own unit tests, which replay the battery's `outputschema-lie`
+// bytes, and by the deliberate break recorded in this branch's history.
+TOOLS.structured_report = {
+  description: "Returns a structured result alongside its text, conforming to its output schema.",
+  result: (_progressToken, args) => {
+    const subject = String(args?.subject ?? "unspecified");
+    return {
+      content: [{ type: "text", text: `report for ${subject}: ok` }],
+      structuredContent: { subject, status: "ok", findings: 0 },
+    };
+  },
+};
+
 // SEP-2243 §"Server Behavior for Custom Headers". The tool exists so busbar has an `x-mcp-header`
 // annotation to VALIDATE — the annotation itself is declared in the operator's `input_schema` in
 // boot.sh, because busbar publishes the operator's schema and never the upstream's, so this side of
