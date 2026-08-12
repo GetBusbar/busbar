@@ -38,13 +38,30 @@ export class Target {
 
   get hasClientRole() { return Boolean(this.clientLaunch); }
 
-  /** Spawn the subject in its MCP SERVER role and return a raw stdio driver. */
-  spawnServer() {
+  /**
+   * Spawn the subject in its MCP SERVER role and return a raw stdio driver.
+   *
+   * `extraEnv` is merged over the target's own environment for THIS spawn only, and it is what the
+   * seam suite uses to tell an `MCP_SUBJECT_UPSTREAM_CONFIG_CMD` launcher which attack to arm and
+   * where to record the upstream transcript. It used to take no environment at all, which made
+   * `seam.mjs:seamEnv()` DEAD CODE: the mode and the transcript path could not reach the spawned
+   * launcher by any route, so every seam test would have run against the honest baseline and read
+   * an empty transcript — five of the six clauses passing on evidence that could not exist. That is
+   * a defect in the battery and it is fixed here rather than worked around in the suite.
+   *
+   * It is still not per-subject knowledge: the harness passes an environment it documents and does
+   * not care what the launcher does with it, exactly as `spawnClient` already passed
+   * `MCP_TARGET_SERVER_COMMAND`.
+   */
+  spawnServer(extraEnv = {}) {
     if (!this.serverLaunch) {
       throw new Error(`target "${this.name}" has no serverLaunch configured`);
     }
     const { command, args } = parseLaunch(this.serverLaunch);
-    return new StdioPeer(command, args, { env: this.env, cwd: this.cwd }).start();
+    return new StdioPeer(command, args, {
+      env: { ...this.env, ...extraEnv },
+      cwd: this.cwd,
+    }).start();
   }
 
   /**

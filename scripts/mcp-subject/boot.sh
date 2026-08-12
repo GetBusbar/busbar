@@ -762,6 +762,57 @@ tools:
               type: string
               description: "Who to greet."
 YAML
+
+  # ── THE SEAM UPSTREAM: THE BATTERY'S HOSTILE PEER, MOUNTED ───────────────────────────────────
+  #
+  # APPENDED ONLY WHEN `MCP_SEAM_UPSTREAM_URL` IS SET, so every other run of this file produces a
+  # byte-identical config. It is what turns the six `SEAM.*` clauses from "the seam could not be
+  # reached" into a judgement: those tests drive busbar's front door and observe what busbar sends
+  # out of its back door, and there is nothing to observe until a peer we control is registered.
+  #
+  # THE `publish_as: echo` IS MANDATORY, NOT COSMETIC. The seam suite calls the bare name `echo`,
+  # because that is the tool the battery's own `fakepeer/fake-server.mjs` has always exposed, and
+  # busbar's routing key is `{server}_{tool}` — which cannot compose a name with no separator in it.
+  # Without the override every seam `tools/call` is answered "unknown tool", nothing reaches an
+  # upstream, and FIVE OF THE SIX CLAUSES GO GREEN VACUOUSLY: each of them is looking for something
+  # that must NOT appear on the upstream connection, and nothing appears on a connection that was
+  # never opened. That is a worse outcome than the red it replaces, and the suite now refuses it
+  # independently — see `requireUpstreamWasReached` in `src/suites/seam.mjs`.
+  #
+  # `timeout: 10s` IS THE SECOND LOAD-BEARING LINE. `SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR` arms the
+  # `stall` mode and waits 20 seconds for busbar to answer its own client. busbar's default deadline
+  # is 30 seconds, so the clause was RED ON ARRIVAL against a busbar behaving exactly as configured.
+  # The fix is the per-server deadline in the `tools:` grammar, used here as an operator would use
+  # it — a loopback diagnostic that answers in milliseconds does not need thirty seconds — and NOT a
+  # constant tuned to the battery.
+  #
+  # Everything else goes through the ordinary path in full, exactly as the six registrations above
+  # do: a declared authenticity root, a per-tool approved digest, and `allow_private` said out loud
+  # because the peer is on loopback.
+  if [ -n "${MCP_SEAM_UPSTREAM_URL:-}" ]; then
+    cat >> "$dir/config.yaml" <<YAML
+
+  seam:
+    url: "$MCP_SEAM_UPSTREAM_URL"
+    allow_private: true
+    timeout: 10s
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      echo:
+        publish_as: echo
+        schema_hash: "sha256:battery-seam-echo"
+        description: "Returns the string it was given."
+        input_schema:
+          type: object
+          properties:
+            text:
+              type: string
+              description: "The text to echo."
+YAML
+    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline)"
+  fi
 }
 
 # One MCP JSON-RPC request, answered with its HTTP status only. Carries the mirrored headers AND
