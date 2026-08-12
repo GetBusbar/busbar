@@ -195,6 +195,13 @@ jobs:
       # runs, which is worse than leaving it unarmed. The anti-vacuity assertion then holds the run
       # to SET EQUALITY with the revision's required scenario set -- never a count, because a floor
       # of 30 is satisfied by any 30 of 37.
+      # THE CONTROL REPORT THE DIFFERENTIAL COMPARES AGAINST. `needs:` orders the jobs; it does not
+      # share a workspace, so without this the subject leg reached its differential with nothing to
+      # differ against and exited 1 — reported as a defect in busbar.
+      - uses: actions/download-artifact@v7
+        with:
+          name: mcp-battery-control-report
+          path: testing/mcp-conformance/reports/
       - name: Judge busbar
         env:
           MCP_SUBJECT_BUSBAR_BIN: target/debug/busbar
@@ -239,6 +246,16 @@ jobs:
       # No fetch, no clone, no secret. The battery is `testing/mcp-conformance/` in this checkout.
       - name: Judge the pinned control peer
         run: ./scripts/mcp-conformance.sh --battery-control
+      # THE SUBJECT LEG NEEDS THIS REPORT, and until now it never received it. `battery-subject`
+      # declared `needs: battery-control`, which orders the jobs but does NOT share a workspace, so
+      # `run-subject.sh` found no control report and exited 1 — under a message blaming busbar.
+      # A differential with nothing to differ against is not a comparison.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mcp-battery-control-report
+          path: testing/mcp-conformance/reports/control-*.json
+          if-no-files-found: error
 
   battery-negative-control:
     name: in-house battery · NEGATIVE control (a broken peer MUST be red)

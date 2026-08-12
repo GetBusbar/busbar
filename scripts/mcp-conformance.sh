@@ -449,7 +449,15 @@ battery_subject() {
   MCP_SUBJECT_SERVER_CMD="${MCP_SUBJECT_SERVER_CMD:-}" \
   MCP_SUBJECT_CLIENT_CMD="${MCP_SUBJECT_CLIENT_CMD:-}" \
     bash -c 'cd "$0" && ./scripts/run-subject.sh' "$MCP_BATTERY_DIR" \
-    || die "the in-house battery found a defect in busbar."
+    || case $? in
+      # 2 IS "THE COMPARISON DID NOT RUN", not "busbar failed". Distinguished because the two used
+      # to arrive here identically, and this message is what a reader believes: a job that had
+      # simply never been handed the control report accused busbar of a defect, four lines under
+      # `50 pass, 0 fail`. Still fatal — an unrun differential is not a pass — but it must not be
+      # reported as a finding about the subject.
+      2) die "the differential did not run, so this leg proves nothing. See the reason above; it is not a verdict about busbar." ;;
+      *) die "the in-house battery found a defect in busbar." ;;
+    esac
 }
 
 # --selftest: prove the anti-vacuity assertions BITE, before any verdict from this script is

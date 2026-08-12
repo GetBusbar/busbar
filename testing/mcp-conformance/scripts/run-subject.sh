@@ -140,9 +140,22 @@ MSG
 fi
 echo "armed guard: $EXECUTED test(s) actually executed"
 
+# A MISSING CONTROL IS AN UNRUN COMPARISON, NOT A DEFECT IN THE SUBJECT, and the exit code has to
+# say which. Both used to leave here as 1, and the caller renders 1 as "the in-house battery found a
+# defect in busbar" — so a CI job that had merely never been handed the control report accused
+# busbar of failing, with `50 pass, 0 fail` printed four lines above it. That is the same
+# misattribution class as a leg that exits 0 while unarmed: the number was right and the verdict
+# was about something else entirely.
 if [ ! -f "$CONTROL_REPORT" ]; then
-  echo "no control report at $CONTROL_REPORT; run scripts/run-control.sh first" >&2
-  exit 1
+  cat >&2 <<MSG
+no control report at $CONTROL_REPORT, so the differential did not run.
+
+THIS IS NOT A VERDICT ABOUT BUSBAR. The subject's own results are above and stand on their own;
+what is missing is the control to compare them against. Run scripts/run-control.sh first, or, in
+CI, check that the control leg's report reached this job — ordering a job with \`needs:\` does not
+share its workspace.
+MSG
+  exit 2
 fi
 
 echo
