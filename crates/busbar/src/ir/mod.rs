@@ -4,6 +4,13 @@
 //! The superset intermediate representation (IR) — request and response/stream sides — that every
 //! protocol's Reader/Writer maps to and from, so any ingress protocol can reach any backend
 //! losslessly. (See `docs/adr/0005-ir-fidelity.md` for the fidelity contract.)
+//!
+//! OPACITY IS AN IR FACT, NOT A WIRE FACT. Three protocols carry assistant reasoning busbar cannot
+//! decrypt, in three different shapes; [`IrBlock::is_opaque`] is the single place that knows all
+//! three, so a consumer deciding "show this content or substitute a marker" never has to re-sniff
+//! the wire body to get the answer right. It is a PREDICATE rather than a flag flip on
+//! `Thinking.redacted` because `redacted` is a writer instruction with client-visible egress
+//! consequences — the full reasoning is on `is_opaque` itself.
 
 use serde_json::Value;
 
@@ -502,6 +509,84 @@ pub(crate) enum IrBlock {
     /// stringly-typed smell). Bedrock re-emits it natively; protocols whose tool-result content is
     /// text/image-only drop it with a warn (there is no lossless cross-protocol projection).
     Json(Value),
+}
+
+impl IrBlock {
+    /// Is this block's content OPAQUE to busbar — carried through verbatim, never readable as
+    /// plaintext, and therefore never disclosable to an operator's sidecar?
+    ///
+    /// THE ONE PLACE THAT KNOWS. Three wire shapes are opaque for the same reason, and until this
+    /// predicate existed only two of them said so from the IR:
+    ///
+    /// | wire shape | how it lands in the IR |
+    /// |---|---|
+    /// | Anthropic `redacted_thinking` | `Thinking { redacted: true, text: <ciphertext> }` |
+    /// | Bedrock `reasoningContent.redactedContent` | `Thinking { redacted: true, text: <ciphertext> }` |
+    /// | Responses `reasoning` item with ONLY `encrypted_content` | `Thinking { redacted: false, text: "", signature: Some(<blob>) }` |
+    ///
+    /// The third one is why this method exists. The Responses reader admits that item to the
+    /// provider on the blob ALONE, so the request goes upstream in full — but the block reads as
+    /// `redacted: false` with EMPTY text, so anything keying a redaction decision off `redacted`
+    /// sees an empty turn and passes it. That is a policy-enforcement-point bypass, and it was
+    /// dialect-conditional: the same deployment behaved correctly on Anthropic/Bedrock ingress and
+    /// wrongly on Responses ingress, with nothing in the code acknowledging the split.
+    ///
+    /// # Why a predicate and NOT `Thinking.redacted = true` on the Responses reader
+    ///
+    /// Because `redacted` is not an opacity flag — it is a **writer instruction**, and the writers
+    /// read it that way today:
+    ///
+    /// * `proto/openai_responses/writer.rs` DROPS a `redacted` Thinking block on both the request
+    ///   and response paths. Flipping the flag would delete `encrypted_content` from every
+    ///   Responses→Responses round-trip — the exact reasoning-reuse blob the reader was taught to
+    ///   preserve, silently lost.
+    /// * `proto/anthropic/writer.rs` and `proto/bedrock/writer.rs` re-emit `redacted` blocks as
+    ///   `redacted_thinking` / `redactedContent` with `text` as the payload. `text` is EMPTY for the
+    ///   Responses shape, so the flip would have those writers emit an empty-ciphertext redacted
+    ///   block on a cross-protocol hop.
+    /// * `proto/gemini/writer.rs` drops `redacted` blocks outright.
+    ///
+    /// So `redacted` means "this block's OWN `text` is the opaque payload, and the writer that has
+    /// a native redacted form should re-emit it from there". Overloading it with "busbar cannot
+    /// read this" would change client-visible egress bytes on three protocols to state a fact the
+    /// IR can state for free. The predicate states the fact and moves no bytes: this unit is
+    /// observable to nothing but a caller that asks.
+    ///
+    /// The second arm — plaintext EMPTY but an opaque blob present — is deliberately general rather
+    /// than Responses-shaped. It is true of any block whose entire content is a carrier blob
+    /// (Gemini's `thoughtSignature` on a text-less thought part reaches the IR the same way), and a
+    /// protocol-named condition here would be the wire-shape dispatch this predicate exists to
+    /// delete. A block with real plaintext AND a signature is READABLE — the signature is a
+    /// round-trip token beside content busbar can see — so it is not opaque.
+    ///
+    /// # The contract for a consumer
+    ///
+    /// `is_opaque()` is necessary AND sufficient to decide "substitute a marker rather than show
+    /// the content". Note it does not coincide with "`text` is safe to read": when this returns
+    /// true, `text` is either empty (Responses) or the ciphertext ITSELF (Anthropic/Bedrock), so a
+    /// consumer must check this BEFORE touching `text`, never after.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_opaque(&self) -> bool {
+        match self {
+            // `text` holds the opaque bytes (Anthropic `redacted_thinking`, Bedrock
+            // `redactedContent`) — opaque by the flag the readers already set.
+            IrBlock::Thinking { redacted: true, .. } => true,
+            // No plaintext at all, and a carrier blob in its place: the whole block is a blob
+            // busbar cannot read (a Responses `encrypted_content`-only `reasoning` item).
+            IrBlock::Thinking {
+                text, signature, ..
+            } => text.is_empty() && signature.is_some(),
+            // Every other block is content busbar reads in the clear. Enumerated rather than
+            // swallowed by `_` so a future variant that CAN carry an opaque payload has to decide
+            // here instead of silently defaulting to "readable" — the failure direction that
+            // produced this method.
+            IrBlock::Text { .. }
+            | IrBlock::ToolUse { .. }
+            | IrBlock::ToolResult { .. }
+            | IrBlock::Image { .. }
+            | IrBlock::Json(_) => false,
+        }
+    }
 }
 
 /// Typed source for an [`IrBlock::Image`] — replaces a `media_type: String` overloaded with
