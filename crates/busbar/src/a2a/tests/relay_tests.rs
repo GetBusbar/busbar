@@ -196,9 +196,13 @@ async fn a_backend_failure_is_a_busbar_attributed_error_and_not_a_silent_empty_t
         status, 502,
         "a failed hop is an upstream fault and must be answered as one: {body}"
     );
+    // A2A section 5.4 binds a backend that did not answer something busbar could relay to
+    // `InvalidAgentResponseError` (-32006), and the plane answers in the JSON-RPC error envelope a
+    // JSON-RPC endpoint owes: an INTEGER code, never a busbar-internal name.
     assert_eq!(
-        body.pointer("/error/code").and_then(|v| v.as_str()),
-        Some("upstream_error"),
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
+        Some(-32006),
         "the error must be attributed to the upstream hop: {body}"
     );
     assert!(
@@ -226,8 +230,10 @@ async fn a_non_success_status_from_the_backend_is_a_busbar_attributed_error_too(
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
     assert_eq!(
-        body.pointer("/error/code").and_then(|v| v.as_str()),
-        Some("upstream_error")
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
+        Some(-32006),
+        "{body}"
     );
 }
 
@@ -287,11 +293,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
 
-    let id = body
-        .pointer("/error/taskId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let id = task_named_by(&body);
     assert!(
         id.starts_with("a2a-planner-"),
         "the refusal must name the task busbar opened so the caller can correlate it: {body}"
@@ -627,11 +629,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
     // AND THE TASK IS NOT BURNED. The work never started and the agent is what changed; failing the
     // caller's task for an operator's suspension would make a resume impossible once the agent is
     // restored.
-    let id = body
-        .pointer("/error/taskId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let id = task_named_by(&body);
     assert!(!id.is_empty(), "the refusal must name the task: {body}");
     let task = crate::a2a::taskstore::TASKS
         .get_unscoped(&id)
@@ -837,6 +835,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             gate: &AlwaysDelegable,
             body: b"{}",
             rpc_id: &serde_json::json!(1),
+            policy: &FetchPolicy::default(),
         },
         &Seam(FetchPolicy::default()),
         1_000,
@@ -855,20 +854,489 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
 /// A JSON-RPC `error` ON A 200 IS A FAILED HOP. It is the shape in which a backend refusal would
 /// otherwise arrive looking like success, and the backend's own words stay out of the caller's
 /// answer.
+///
+/// ITS CODE, HOWEVER, TRAVELS. A backend that answered `TaskNotFoundError` said something specific,
+/// and collapsing every backend error into `InvalidAgentResponseError` reported a caller's typo as
+/// a gateway fault: measured against the official TCK, that is `CORE-GET-002`, `CORE-CANCEL-003`,
+/// `CORE-MULTI-004`, `STREAM-SUB-004`, `JSONRPC-SSE-002` and `JSONRPC-ERR-003` — "Expected error
+/// code -32001 (TaskNotFoundError), got -32006". The code is a protocol fact and is re-emitted; the
+/// prose is the backend's and is not; and the `ErrorInfo` reason is re-derived from the code
+/// through busbar's own table, so nothing the backend wrote reaches the caller even inside `data`.
 #[tokio::test]
-async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_not_a_result() {
+async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and_not_its_words() {
     let reply = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
-        "error": { "code": -32001, "message": "BACKEND SAYS NO" }
+        "error": {
+            "code": -32001,
+            "message": "BACKEND SAYS NO",
+            "data": [{ "@type": "x", "domain": "BACKEND DOMAIN", "reason": "BACKEND REASON" }]
+        }
+    })
+    .to_string();
+    let h = harness(Outcome::Answers(200, reply), false).await;
+    let (status, body) = call(&h).await;
+    // A2A section 5.4 binds TaskNotFoundError to -32001 and to HTTP 404, from one row.
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
+        Some(-32001),
+        "the backend's error SEMANTICS must survive the hop: {body}"
+    );
+    let rendered = body.to_string();
+    for leaked in ["BACKEND SAYS NO", "BACKEND DOMAIN", "BACKEND REASON"] {
+        assert!(
+            !rendered.contains(leaked),
+            "the backend's own words must not be reflected to the caller: {rendered}"
+        );
+    }
+    assert_eq!(
+        body.pointer("/error/data/0/reason")
+            .and_then(|v| v.as_str()),
+        Some("TASK_NOT_FOUND"),
+        "the reason must be re-derived from the code, not echoed: {body}"
+    );
+    // AND THE TASK IS STILL ENDED. A refusal that rendered differently must not also record
+    // differently, or a caller's task row would be left in flight for work nothing will finish.
+    let id = task_named_by(&body);
+    assert!(
+        !id.is_empty(),
+        "the refusal must still name the task: {body}"
+    );
+    assert_eq!(
+        crate::a2a::taskstore::TASKS
+            .get_unscoped(&id)
+            .expect("the task exists")
+            .state,
+        crate::a2a::task::TaskState::Failed,
+    );
+}
+
+/// A CODE A2A DOES NOT DEFINE IS NOT RE-EMITTED. To a client it is indistinguishable from one the
+/// specification will define later, so it collapses to `InvalidAgentResponseError` — which is the
+/// true statement: busbar could not make sense of what the backend answered.
+#[tokio::test]
+async fn a_backend_code_the_specification_does_not_define_is_not_passed_through() {
+    let reply = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "error": { "code": -31000, "message": "vendor specific" }
     })
     .to_string();
     let h = harness(Outcome::Answers(200, reply), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 502, "{body}");
+    assert_eq!(
+        body.pointer("/error/code")
+            .and_then(serde_json::Value::as_i64),
+        Some(-32006),
+        "{body}"
+    );
+}
+
+/// THE GUARD READS THE REGISTRATION'S POLICY, NOT THE PLANE'S DEFAULT.
+///
+/// `allow_private:` is a per-registration line. The card fetch, `connect`, `approve` and the
+/// re-verification sweep all obtain their policy from `A2aPlane::fetch_policy_for`, which narrows
+/// the plane default by that line. The relay used `RelaySeam::policy()` — the plane default — so an
+/// operator who set `allow_private: true` got a registration that could be fetched, verified and
+/// approved over a loopback endpoint and then refused at every task submission, with the refusal
+/// quoting the knob that was already set. Measured on a live rig before this test existed:
+///
+///   a2a: the relayed task submission failed agent=conformance
+///   error=the relay target was refused: agent card URL `http://127.0.0.1:56868/` uses scheme
+///   `http`; … set this registration's `allow_private: true` if the endpoint is a loopback …
+///
+/// Both directions are asserted, because a relay that simply stopped guarding would also pass the
+/// first half.
+#[test]
+fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
+    struct Loopback;
+    impl Resolver for Loopback {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
+        }
+    }
+    struct Reached;
+    impl crate::a2a::relay::RelayTransport for Reached {
+        fn post(
+            &self,
+            _u: &reqwest::Url,
+            _a: IpAddr,
+            _h: &[(String, String)],
+            _b: &[u8],
+        ) -> Result<HttpResponse, String> {
+            Ok(HttpResponse {
+                status: 200,
+                location: None,
+                body: br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed"}}}"#.to_vec(),
+                peer_spki: None,
+            })
+        }
+        fn post_stream(
+            &self,
+            _u: &reqwest::Url,
+            _a: IpAddr,
+            _h: &[(String, String)],
+            _b: &[u8],
+            _c: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
+        ) -> Result<StreamHead, String> {
+            unreachable!("this test does not stream")
+        }
+    }
+    struct Seam(FetchPolicy);
+    impl crate::a2a::relay::RelaySeam for Seam {
+        fn resolver(&self) -> &dyn Resolver {
+            &Loopback
+        }
+        fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
+            &Reached
+        }
+        fn policy(&self) -> &FetchPolicy {
+            &self.0
+        }
+    }
+
+    // The seam carries the PLANE DEFAULT, which is fail-closed and refuses loopback and plaintext.
+    // That is correct for the plane and is exactly what must not decide this hop.
+    let plane_default = FetchPolicy::default();
     assert!(
-        !body.to_string().contains("BACKEND SAYS NO"),
-        "the backend's own error text must not be reflected to the caller: {body}"
+        !plane_default.allow_private,
+        "the plane default must stay fail-closed, or this test proves nothing"
+    );
+    let registration_policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+
+    let out = crate::a2a::relay::relay(
+        &crate::a2a::relay::RelayCall {
+            agent_id: "conformance",
+            backend_url: "http://127.0.0.1:9110/",
+            lease: None,
+            gate: &AlwaysDelegable,
+            body: b"{}",
+            rpc_id: &serde_json::json!(1),
+            policy: &registration_policy,
+        },
+        &Seam(plane_default.clone()),
+        1_000,
+    );
+    assert!(
+        !matches!(out, Err(crate::a2a::relay::RelayRefusal::Guard(_))),
+        "a registration whose `allow_private:` admits its loopback backend must reach it: {out:?}"
+    );
+
+    // AND THE GUARD IS STILL LIVE. The same seam, the same address, with the registration's own
+    // policy fail-closed, must refuse — otherwise the first half is equally consistent with a relay
+    // that has stopped guarding altogether.
+    let out = crate::a2a::relay::relay(
+        &crate::a2a::relay::RelayCall {
+            agent_id: "conformance",
+            backend_url: "http://127.0.0.1:9110/",
+            lease: None,
+            gate: &AlwaysDelegable,
+            body: b"{}",
+            rpc_id: &serde_json::json!(1),
+            policy: &plane_default,
+        },
+        &Seam(registration_policy.clone()),
+        1_000,
+    );
+    assert!(
+        matches!(out, Err(crate::a2a::relay::RelayRefusal::Guard(_))),
+        "the relay must still guard, and must not read the SEAM's permissive policy: {out:?}"
+    );
+}
+
+/// The busbar task id a refusal names, read out of the ProtoJSON `data` array.
+///
+/// It used to be an `error.taskId` member. JSON-RPC 2.0 section 5 admits `code`, `message` and
+/// `data` and nothing else, so it now rides as a `google.rpc.ResourceInfo` beside the `ErrorInfo` —
+/// the same fact, in the place a conformant client looks.
+fn task_named_by(body: &serde_json::Value) -> String {
+    body.pointer("/error/data")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|e| e["@type"] == "type.googleapis.com/google.rpc.ResourceInfo")
+        .and_then(|e| e["resourceName"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// THE IDENTITY SUBSTITUTION HAS TO FIND THE PAYLOAD, NOT ASSUME IT IS THE `result`.
+///
+/// A2A v0.3 makes the JSON-RPC `result` the Task itself. v1.0 — the vocabulary the official TCK and
+/// the pinned `a2a-go` control speak — WRAPS it: `result: {"task": {…}}`. busbar wrote its ids at
+/// the top level either way, which against a v1.0 backend produced a `result` carrying busbar's
+/// `id`/`contextId` as siblings of `task` while the backend's own ids stayed inside it. Two
+/// consequences, both measured:
+///
+///   * the envelope stopped validating — `$: Additional properties are not allowed ('contextId',
+///     'id' were unexpected)`, which is 10 MUST requirements in the TCK's own report; and
+///   * a caller reading the Task got the BACKEND's id, presented it to `GetTask`, and busbar
+///     resolved it against a store that has never heard of it —
+///     `GetTask returned task ID 'a2a-conformance-…', expected '019ff370-…'`.
+///
+/// The second is the exact failure the function's own doc comment says it exists to prevent.
+#[test]
+fn the_identity_substitution_finds_the_task_inside_a_v1_result_wrapper() {
+    // v1.0: the payload is wrapped.
+    let mut wrapped = serde_json::json!({
+        "task": {
+            "id": "backend-task",
+            "contextId": "backend-context",
+            "status": { "state": "TASK_STATE_COMPLETED" },
+            "artifacts": [],
+        }
+    });
+    crate::a2a::relay::rewrite_identity(&mut wrapped, "busbar-task", "busbar-context", None);
+    assert_eq!(wrapped["task"]["id"], "busbar-task");
+    assert_eq!(wrapped["task"]["contextId"], "busbar-context");
+    assert!(
+        wrapped.get("id").is_none() && wrapped.get("contextId").is_none(),
+        "the wrapper must not grow members the Task schema forbids: {wrapped}"
+    );
+    let rendered = wrapped.to_string();
+    assert!(
+        !rendered.contains("backend-task") && !rendered.contains("backend-context"),
+        "the backend's own ids must not survive anywhere: {rendered}"
+    );
+
+    // v0.3: the payload IS the result. Unchanged behaviour.
+    let mut bare = serde_json::json!({
+        "kind": "task",
+        "id": "backend-task",
+        "contextId": "backend-context",
+        "status": { "state": "completed" },
+    });
+    crate::a2a::relay::rewrite_identity(&mut bare, "busbar-task", "busbar-context", None);
+    assert_eq!(bare["id"], "busbar-task");
+    assert_eq!(bare["contextId"], "busbar-context");
+
+    // A `message` payload is wrapped the same way in v1.0.
+    let mut msg = serde_json::json!({ "message": { "messageId": "m", "role": "agent" } });
+    crate::a2a::relay::rewrite_identity(&mut msg, "busbar-task", "busbar-context", None);
+    assert_eq!(msg["message"]["contextId"], "busbar-context");
+    assert!(msg.get("contextId").is_none(), "{msg}");
+}
+
+/// THE MATCHED SKILL IS METADATA, NOT A MEMBER OF THE TASK.
+///
+/// It used to be inserted as a top-level `skill` member. A2A's `Task` admits no such member, so a
+/// conformant client validating the envelope rejects it — and busbar has invented a field in
+/// somebody else's schema. `metadata` is the member the specification provides for exactly this,
+/// and the key is namespaced so it cannot collide with the backend's own.
+#[test]
+fn the_matched_skill_travels_in_metadata_rather_than_as_an_invented_member() {
+    let mut result =
+        serde_json::json!({ "task": { "id": "x", "status": { "state": "completed" } } });
+    crate::a2a::relay::rewrite_identity(&mut result, "t", "c", Some("plan"));
+    assert_eq!(result["task"]["metadata"]["busbar/skill"], "plan");
+    assert!(
+        result["task"].get("skill").is_none() && result.get("skill").is_none(),
+        "no invented member on the Task: {result}"
+    );
+}
+
+/// THE STATE BUSBAR RECORDS IS THE ONE THE BACKEND REPORTED, IN EITHER VOCABULARY.
+///
+/// `reported_task_state` read `/status/state` off the `result` and parsed it with the STORE's token
+/// parser. Against a v1.0 backend both halves missed: the status is at `/task/status/state`, and
+/// the token is `TASK_STATE_COMPLETED` rather than `completed`. Every relayed task was therefore
+/// recorded as `working` — including completed ones, including failed ones — so busbar's own task
+/// rows disagreed with the answer it had just handed the caller.
+#[test]
+fn the_reported_state_is_read_from_either_vocabulary_and_either_shape() {
+    for (payload, expected) in [
+        (
+            serde_json::json!({ "task": { "status": { "state": "TASK_STATE_COMPLETED" } } }),
+            crate::a2a::task::TaskState::Completed,
+        ),
+        (
+            serde_json::json!({ "status": { "state": "completed" } }),
+            crate::a2a::task::TaskState::Completed,
+        ),
+        (
+            serde_json::json!({ "task": { "status": { "state": "TASK_STATE_INPUT_REQUIRED" } } }),
+            crate::a2a::task::TaskState::InputRequired,
+        ),
+        (
+            serde_json::json!({ "status": { "state": "input-required" } }),
+            crate::a2a::task::TaskState::InputRequired,
+        ),
+        // Anything unreadable stays `working`: a relay that guessed `completed` from a state it
+        // could not read would close a task that is still running.
+        (
+            serde_json::json!({ "task": {} }),
+            crate::a2a::task::TaskState::Working,
+        ),
+    ] {
+        assert_eq!(
+            crate::a2a::relay::reported_task_state(&payload),
+            expected,
+            "{payload}"
+        );
+    }
+}
+
+/// A STREAMED EVENT IS WRAPPED TOO, AND ITS IDENTITY MEMBER IS NAMED DIFFERENTLY.
+///
+/// v1.0 streams `result: {"statusUpdate": {…}}` and `result: {"artifactUpdate": {…}}`, and inside
+/// those the task is named by `taskId`, not `id` — they are events ABOUT a task, not the task. With
+/// only `task` and `message` recognised as wrappers, busbar wrote `id`/`contextId` beside the
+/// wrapper and left the backend's `taskId`/`contextId` inside it, which is the same defect as the
+/// unary one and worse in its consequence: a caller following a stream reads the update's `taskId`
+/// to correlate events, and it named the backend's task.
+#[test]
+fn a_streamed_update_event_is_rewritten_inside_its_wrapper_and_by_its_own_member_name() {
+    for wrapper in ["statusUpdate", "artifactUpdate"] {
+        let mut ev = serde_json::json!({
+            wrapper: {
+                "taskId": "backend-task",
+                "contextId": "backend-context",
+                "status": { "state": "TASK_STATE_WORKING" },
+            }
+        });
+        crate::a2a::relay::rewrite_identity(&mut ev, "busbar-task", "busbar-context", None);
+        assert_eq!(ev[wrapper]["taskId"], "busbar-task", "{ev}");
+        assert_eq!(ev[wrapper]["contextId"], "busbar-context", "{ev}");
+        assert!(
+            ev[wrapper].get("id").is_none(),
+            "an update event has no `id` member and must not be given one: {ev}"
+        );
+        assert!(
+            ev.get("id").is_none() && ev.get("contextId").is_none(),
+            "the wrapper must not grow identity members: {ev}"
+        );
+        let rendered = ev.to_string();
+        assert!(
+            !rendered.contains("backend-"),
+            "the backend's ids must not survive: {rendered}"
+        );
+    }
+}
+
+/// A MESSAGE IS NOT A TASK, and must not be given a task's `id`.
+///
+/// A2A's `Message` names the task it belongs to with `taskId`, and has no `id` at all — its own
+/// identifier is `messageId`. Inserting `id` invents a member the schema forbids, and overwriting
+/// `messageId` would rewrite the caller's own correlation handle.
+#[test]
+fn a_message_payload_keeps_its_own_identifier_and_is_never_given_a_task_id_member() {
+    let mut result = serde_json::json!({
+        "message": { "messageId": "caller-message", "role": "agent", "taskId": "backend-task" }
+    });
+    crate::a2a::relay::rewrite_identity(&mut result, "busbar-task", "busbar-context", None);
+    assert_eq!(result["message"]["messageId"], "caller-message");
+    assert_eq!(result["message"]["taskId"], "busbar-task");
+    assert_eq!(result["message"]["contextId"], "busbar-context");
+    assert!(result["message"].get("id").is_none(), "{result}");
+}
+
+/// THE IDENTITY BUSBAR ISSUES IS ONE BUSBAR CAN RESOLVE — end to end, through the mounted route.
+///
+/// busbar substitutes its own task id into every answer, so the id a caller holds is busbar's. It
+/// then relayed the caller's follow-up VERBATIM, so that id was forwarded to a backend that has
+/// never heard of it: every `GetTask`, `CancelTask` and `SubscribeToTask` a caller made with the id
+/// busbar itself gave them failed. In the official TCK that is `CORE-GET-001` ("GetTask failed"),
+/// `CORE-CANCEL-002` and `CORE-SEND-002` — the last cluster of MUST failures that is busbar's own
+/// and not the fronted agent's.
+///
+/// Driven through the real route rather than over `idmap` directly, because the defect was never in
+/// the mapping — it was that nothing recorded one and nothing consulted it.
+#[tokio::test]
+async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_backends_own_id() {
+    let reply = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": { "task": {
+            "id": "BACKEND-OWN-TASK-ID",
+            "contextId": "backend-context",
+            "status": { "state": "TASK_STATE_COMPLETED" }
+        }}
+    })
+    .to_string();
+    // THREE CALLS, THREE REQUEST IDS — so the fixture has to answer the request it was asked. Under
+    // the literal `Answers` this document's hardcoded `"id": 7` was served to the follow-ups sent
+    // under `8` and `9` as well, and the relay's correlation refused them `502`: correctly, because
+    // an answer naming another request is exactly what it exists to stop. The backend is what was
+    // wrong, not the check. See `Outcome::AnswersCorrelated`.
+    let h = harness(Outcome::AnswersCorrelated(200, reply), false).await;
+
+    // 1. A submission. The caller is handed BUSBAR's id, and the backend's must not appear.
+    let (status, body) = call(&h).await;
+    assert_eq!(status, 200, "{body}");
+    let issued = body
+        .pointer("/result/task/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(issued.starts_with("a2a-planner-"), "{body}");
+    assert!(
+        !body.to_string().contains("BACKEND-OWN-TASK-ID"),
+        "the backend's id must not be published: {body}"
+    );
+
+    // 2. The follow-up, naming the id the caller was actually given.
+    let before = h.sent().len();
+    let (status, body) = call_agent(
+        &h,
+        "planner",
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 8, "method": "GetTask",
+            "params": { "id": issued, "historyLength": 2 }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // 3. WHAT ACTUALLY WENT ON THE WIRE. This is the assertion the defect was invisible to: the
+    //    caller's answer looked fine either way, and the wrong id only shows in the hop.
+    let sent = h.sent();
+    let forwarded = String::from_utf8_lossy(&sent[before..][0].body).to_string();
+    let forwarded: serde_json::Value = serde_json::from_str(&forwarded).expect("json on the wire");
+    assert_eq!(
+        forwarded["params"]["id"], "BACKEND-OWN-TASK-ID",
+        "the follow-up must reach the backend by the id the BACKEND knows: {forwarded}"
+    );
+    assert_eq!(
+        forwarded["params"]["historyLength"], 2,
+        "nothing but the identity may be rewritten: {forwarded}"
+    );
+
+    // 4. AND THE ANSWER IS ABOUT THE TASK THE CALLER ASKED ABOUT. busbar opened a FRESH task row
+    //    for every read and stamped that new row's id onto the answer, so a caller asking about
+    //    task A was told about task B — both busbar ids, for the same work:
+    //      CORE-GET-001: GetTask returned task ID 'a2a-conformance-61d1929…',
+    //                    expected 'a2a-conformance-522818d…'
+    assert_eq!(
+        body.pointer("/result/task/id").and_then(|v| v.as_str()),
+        Some(issued.as_str()),
+        "a read must answer about the task it named: {body}"
+    );
+
+    // 5. AND IT OPENED NO SECOND ROW. The other half of the same mistake: a caller polling a
+    //    long-running task once a second minted a durable task row per poll.
+    //
+    //    Asserted through the ANSWER rather than by counting rows in `TASKS`, and deliberately: the
+    //    registry is process-wide and these tests run in parallel, so a count is a race. The
+    //    property is exact either way — a read that opened a fresh row would stamp THAT row's id
+    //    onto the answer, which is precisely how this defect presented.
+    let (_, again) = call_agent(
+        &h,
+        "planner",
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "GetTask", "params": { "id": issued }
+        }),
+    )
+    .await;
+    assert_eq!(
+        again.pointer("/result/task/id").and_then(|v| v.as_str()),
+        Some(issued.as_str()),
+        "repeated reads must keep naming the one task, not a new row per poll: {again}"
     );
 }
 
