@@ -1356,33 +1356,22 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received; draining in-flight requests");
 }
 
-/// Infer the INGRESS protocol from a request path so an unmatched/wrong-method request can be
-/// answered in the protocol the client was speaking, not a generic shape. The prefixes mirror the
-/// route table: OpenAI (`/v1/chat/completions`), Responses (`/v1/responses`), Cohere (`/v2/chat`),
-/// Gemini (`/v1/models/...`, `/v1beta/models/...`), Bedrock (`/model/...`), and Anthropic
-/// (`.../v1/messages`). When nothing matches we default to `openai` — its envelope is the most
-/// widely understood and is what a generic HTTP client probing `/` is most likely to parse. This is
-/// inference for ERROR shaping only; it never routes a real request.
-fn proto_for_path(path: &str) -> &'static str {
-    // Delegate to the CANONICAL classifier in `proto` so the fallback/405 handlers and
-    // `auth.rs::unauthorized_response` cannot drift for the same path (the bug this fixes: a
-    // non-Converse `/model/foo/bar` path was shaped as bedrock here but openai by auth — contradictory
-    // error envelopes for one path, a protocol indistinguishability gap). The canonical version
-    // requires the `/converse`/`/converse-stream` suffix before classifying `/model/...` as bedrock.
-    proto::proto_for_path(path)
-}
-
-/// Render a native ingress-protocol error envelope (`application/json`) for the fallback handlers,
-/// attaching the `x-amzn-*` headers when the inferred protocol is Bedrock so the response is
-/// indistinguishable from a real vendor 404/405. Shared by [`fallback_handler`] (404, unmatched
-/// path) and [`method_not_allowed_handler`] (405, wrong method on a valid path).
+/// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
+/// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
+/// so the response is indistinguishable from a real vendor 404/405, and answering in JSON-RPC on a
+/// path a plane has been MOUNTED on. Shared by the 404 catch-all, [`method_not_allowed_handler`]
+/// (405, wrong method on a valid path) and the oversized-body 413 reshape.
+///
+/// `planes` is the mount table, and it is a parameter rather than something inferred here because
+/// a mount is a fact about the deployment: no amount of looking at the path reveals it, and the
+/// version of this function that tried shipped an OpenAI envelope onto the MCP plane.
 pub(crate) fn fallback_error_response(
+    planes: &crate::plane::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
     // The NATIVE-API root speaks the frozen admin envelope for EVERY response — including unmatched
     // paths and wrong methods, which previously fell through to the vendor-native shaping below and
     // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
@@ -1398,32 +1387,11 @@ pub(crate) fn fallback_error_response(
             return crate::admin::v1::json::err_json(&e);
         }
     }
-    let proto = proto_for_path(path);
-    let protocol = proto::protocol_for(proto);
-    let body = match &protocol {
-        Some(p) => p.writer().write_error(status.as_u16(), kind, message),
-        // proto_for_path only ever returns a registered protocol literal, so this is unreachable in
-        // practice; shape a generic OpenAI-style envelope rather than panic on the request path.
-        None => serde_json::json!({ "error": { "message": message, "type": kind } }),
-    };
-    let mut resp = (
-        status,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
-        )],
-        body.to_string(),
-    )
-        .into_response();
-    // Provider-specific error RESPONSE HEADERS (Bedrock `x-amzn-RequestId`/`x-amzn-errortype`;
-    // Anthropic `request-id` mirrored from the body) — dispatched via the writer vtable so this
-    // fallback handler matches the shape produced by `proxy::ingress_error` on the hot path,
-    // with no provider name-branch here.
-    if let Some(p) = &protocol {
-        p.writer()
-            .attach_error_response_headers(resp.headers_mut(), kind, &body);
-    }
-    resp
+    // ONE resolver, ONE shaping seam. The provider-specific response headers (Bedrock
+    // `x-amzn-RequestId`/`x-amzn-errortype`; Anthropic `request-id`) come with it, dispatched
+    // through the writer vtable inside `proxy::ingress_error`, so this handler matches the shape
+    // the hot path produces and carries no provider name-branch of its own.
+    crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
 // NOTE: the 404 fallback handler is superseded by `ingress::protocol_dispatch`, which owns the
@@ -1432,8 +1400,12 @@ pub(crate) fn fallback_error_response(
 /// 405 fallback: a valid ingress path hit with the wrong method (e.g. GET on a POST-only ingress).
 /// axum's built-in 405 is an `Allow`-header-only empty body; reshape to the protocol-native envelope
 /// so an SDK sees a vendor-shaped error instead of a bare proxy tell.
-async fn method_not_allowed_handler(uri: axum::http::Uri) -> axum::response::Response {
+async fn method_not_allowed_handler(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
     fallback_error_response(
+        &app.planes,
         uri.path(),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
         crate::admin::ERR_TYPE_INVALID_REQUEST,
@@ -1477,13 +1449,22 @@ const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 /// variants also gain `x-amzn-*` headers, via [`fallback_error_response`]). Any other 413 — a
 /// forward-path-relayed UPSTREAM 413 (whatever its content-type), or one a real ingress handler
 /// already shaped as JSON — is passed through untouched.
+///
+/// The envelope is the one the PATH's resolved ingress speaks, which is why this layer takes the
+/// swappable app handle: a body cap fires OUTSIDE routing and OUTSIDE auth, so the mount table is
+/// the only thing that can tell it whether `/mcp` is an MCP plane or an unclaimed residual path.
+/// Before it had one, every oversized POST — mounted plane or not — was answered in an OpenAI
+/// envelope.
 async fn reshape_body_limit_413(
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path().to_owned();
+    // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
+    // answer with the mount table that is live when the answer is written.
     let resp = next.run(req).await;
-    reshape_oversized_413(&path, resp).await
+    reshape_oversized_413(&handle.load().planes, &path, resp).await
 }
 
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the
@@ -1630,6 +1611,7 @@ async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 async fn reshape_oversized_413(
+    planes: &crate::plane::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -1667,6 +1649,7 @@ async fn reshape_oversized_413(
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
     }
     fallback_error_response(
+        planes,
         path,
         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
         // CANONICAL kind for an oversized payload across the protocol writers.
@@ -4330,7 +4313,10 @@ fn apply_common_layers(
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON
         // envelope. Must wrap the `DefaultBodyLimit` layer above, so it is applied LAST (the last
         // `.layer()` is the outermost on the response path) and therefore sees that layer's 413.
-        .layer(axum::middleware::from_fn(reshape_body_limit_413))
+        .layer(axum::middleware::from_fn_with_state(
+            handle.clone(),
+            reshape_body_limit_413,
+        ))
         // THE PLANE INGRESS BOUNDARY. Outside the auth layer, which in axum means it observes the
         // FINAL response — including a 401 the auth chain issued before any handler ran, which on
         // a mounted plane is exactly the failure an operator has no other signal for. It emits for

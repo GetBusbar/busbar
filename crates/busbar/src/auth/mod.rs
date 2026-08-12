@@ -711,17 +711,17 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     }
 }
 
-/// The ingress wire protocol a request targets, inferred from its path prefix. Auth runs BEFORE
-/// routing, so the path is the only signal available for shaping a native 401 envelope.
+/// The ingress a request targets — which plane by MOUNT, and in which wire dialect — resolved from
+/// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
+/// signals available for shaping a native 401 envelope.
 ///
-/// This is a THIN delegation to the CANONICAL `crate::proto::proto_for_path` (the single source of
-/// truth shared with `main.rs`'s fallback/405 handlers): the previous private copy here was a
-/// wire-identical duplicate that COULD drift from the routing-time classifier — the exact
-/// indistinguishability tell where one handler shapes `/model/foo/bar` as bedrock and another as
-/// openai. Calling the canonical fn makes that drift impossible by construction; the auth-time and
-/// routing-time classifiers are now literally the same code.
-fn proto_for_path(path: &str) -> &'static str {
-    crate::proto::proto_for_path(path)
+/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
+/// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
+/// as bedrock and another as openai — or where auth answers a MOUNTED MCP path in an OpenAI
+/// envelope because it could not see the mount.
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+    app.planes.ingress_of(path)
 }
 
 /// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
@@ -797,19 +797,25 @@ pub(crate) fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static
 /// No unwrap / expect / panic on this request path: `ingress_error` degrades a serialization failure
 /// to a generic JSON object internally.
 ///
-/// The envelope is built by `crate::proxy::ingress_error`, the single source of truth for native
-/// error shaping: it selects the protocol writer, sets `application/json`, and attaches the Bedrock
-/// `x-amzn-RequestId` / `x-amzn-errortype` headers via the
-/// `ProtocolWriter::attach_error_response_headers` vtable method. Using the shared builder means the
-/// auth path, the forward path, and the route/fallback path CANNOT diverge on error shape or
-/// headers. Bedrock's auth-failure modeled exception is `AccessDeniedException`;
-/// `ingress_error`'s header attach derives the same `x-amzn-errortype` from the `kind` we pass
+/// The envelope is built by `crate::ingress::native::native_error`, the single source of truth for
+/// shaping an answer from a resolved ingress: on the residual it selects the protocol writer, sets
+/// `application/json` and attaches the Bedrock `x-amzn-RequestId` / `x-amzn-errortype` headers via
+/// the `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED plane it answers
+/// in that plane's own dialect instead of handing a JSON-RPC client a vendor envelope. Using the
+/// shared builder means the auth path, the forward path, and the route/fallback path CANNOT diverge
+/// on error shape or headers. Bedrock's auth-failure modeled exception is `AccessDeniedException`;
+/// the header attach derives the same `x-amzn-errortype` from the `kind` we pass
 /// (`auth` → `AccessDeniedException`), so the wire body `__type` and the header agree.
-fn unauthorized_response(path: &str) -> Response {
-    let proto = proto_for_path(path);
-    let message = vendor_auth_failure_message(proto);
-    let (status, kind) = auth_failure_status_and_kind(proto);
-    crate::proxy::ingress_error(proto, status, kind, message)
+fn unauthorized_response(app: &crate::state::App, path: &str) -> Response {
+    let ingress = ingress_for_path(app, path);
+    // The dialect names the VENDOR whose bad-credential status, `kind` and copy a client expects. A
+    // mounted plane names its own wire format, which has no vendor writer, so both lookups take
+    // their neutral defaults (401 + `authentication_error`) and the body is JSON-RPC's — the same
+    // two facts a plane-specific 401 would have had to restate.
+    let dialect = crate::ingress::native::envelope_dialect(ingress);
+    let message = vendor_auth_failure_message(dialect);
+    let (status, kind) = auth_failure_status_and_kind(dialect);
+    crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
 /// Extract the operator admin token from the `x-admin-token` header, treating a present-but-blank
@@ -1221,7 +1227,11 @@ fn rate_limited_response() -> Response {
 /// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
 /// gemini/bedrock ingress denial contradict the response the client actually got.
 fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
-    let proto = proto_for_path(path);
+    // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
+    // mounted plane is tapped as that plane's dialect rather than as whichever LLM dialect its path
+    // happens to resemble; a residual path that names none is labelled with the dialect its answer
+    // is shaped in, so the tap and the response can never disagree.
+    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -1248,7 +1258,7 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
             &app.groups_registry,
         );
     }
-    unauthorized_response(path)
+    unauthorized_response(app, path)
 }
 
 /// Axum middleware layer that validates auth before routing.
@@ -1505,9 +1515,11 @@ pub(crate) async fn auth_middleware(
     // `Identified { resolved: Some(key) }` the bearer keys arm produces, feeding the SINGLE match
     // below. The "which protocol uses SigV4" decision is a `ProtocolReader` vtable predicate, NOT a
     // `proto == "bedrock"` name-branch.
-    let ingress_uses_sigv4 = crate::proto::protocol_for(proto_for_path(&path))
-        .map(|p| p.reader().uses_sigv4_ingress_auth())
-        .unwrap_or(false);
+    let ingress_uses_sigv4 = crate::proto::protocol_for(crate::ingress::native::envelope_dialect(
+        ingress_for_path(&app, &path),
+    ))
+    .map(|p| p.reader().uses_sigv4_ingress_auth())
+    .unwrap_or(false);
     // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
     // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
     // secret and produces an identity with no audience anywhere in it, so allowing it here would be
@@ -1538,7 +1550,7 @@ pub(crate) async fn auth_middleware(
             && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
             && req.headers().contains_key(X_AMZ_DATE);
         if !structurally_valid {
-            return Err(unauthorized_response(&path));
+            return Err(unauthorized_response(&app, &path));
         }
         // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
         // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
@@ -1560,7 +1572,7 @@ pub(crate) async fn auth_middleware(
         let Ok(body_bytes) =
             axum::body::to_bytes(body, crate::limits::translate_body_max_bytes()).await
         else {
-            return Err(unauthorized_response(&path));
+            return Err(unauthorized_response(&app, &path));
         };
         req = Request::from_parts(parts, Body::from(body_bytes.clone()));
         // Governance is always constructed (RAM by default); if somehow absent there is no store
@@ -1576,9 +1588,9 @@ pub(crate) async fn auth_middleware(
                 // signed-headers mismatch, bad signature, OR a body whose bytes don't match the
                 // signed x-amz-content-sha256) maps to the identical native auth error — the
                 // distinction is logged inside the verifier, never surfaced, so there is no oracle.
-                Err(()) => return Err(unauthorized_response(&path)),
+                Err(()) => return Err(unauthorized_response(&app, &path)),
             },
-            None => return Err(unauthorized_response(&path)),
+            None => return Err(unauthorized_response(&app, &path)),
         }
     } else {
         // Not `run_chain_cached` directly: a plugin chain does blocking I/O on a Tokio worker. The

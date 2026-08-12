@@ -100,40 +100,71 @@ fn test_write_error_default_envelope_is_valid_json() {
     assert_eq!(reparsed["error"]["type"], serde_json::json!("not_found"));
 }
 
-/// Conformance (`proto_for_path`): a `GET /v1/models/<id>` whose id legitimately
+/// Conformance (`residual_dialect_for_path`): a `GET /v1/models/<id>` whose id legitimately
 /// CONTAINS a colon (OpenAI fine-tuned `ft:...`, deployment-style `gpt-4o:deployment`) must
 /// classify as OpenAI — NOT Gemini — so `model.retrieve` gets an OpenAI-decodable error envelope.
 /// Only the known Gemini ACTION suffixes (`:generateContent`, …) are Gemini.
 #[test]
-fn test_proto_for_path_colon_model_id_is_openai_not_gemini() {
+fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
     // OpenAI fine-tuned model id (multiple colons) on the model.retrieve path → OpenAI.
     assert_eq!(
-        proto_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
-        "openai",
+        residual_dialect_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
+        Some("openai"),
         "a colon-bearing OpenAI fine-tuned model id must stay OpenAI"
     );
     // Azure-style deployment id with a colon → OpenAI.
-    assert_eq!(proto_for_path("/v1/models/gpt-4o:deployment"), "openai");
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gpt-4o:deployment"),
+        Some("openai")
+    );
     // Plain model id (no colon) → OpenAI.
-    assert_eq!(proto_for_path("/v1/models/gpt-4o"), "openai");
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gpt-4o"),
+        Some("openai")
+    );
     // A genuine Gemini action suffix → Gemini.
     assert_eq!(
-        proto_for_path("/v1/models/gemini-pro:generateContent"),
-        "gemini",
+        residual_dialect_for_path("/v1/models/gemini-pro:generateContent"),
+        Some("gemini"),
         "the Gemini :generateContent action suffix still classifies as Gemini"
     );
     assert_eq!(
-        proto_for_path("/v1/models/gemini-pro:streamGenerateContent"),
-        "gemini"
+        residual_dialect_for_path("/v1/models/gemini-pro:streamGenerateContent"),
+        Some("gemini")
     );
     assert_eq!(
-        proto_for_path("/v1/models/text-embedding-004:embedContent"),
-        "gemini"
+        residual_dialect_for_path("/v1/models/text-embedding-004:embedContent"),
+        Some("gemini")
     );
     assert_eq!(
-        proto_for_path("/v1/models/gemini-pro:countTokens"),
-        "gemini"
+        residual_dialect_for_path("/v1/models/gemini-pro:countTokens"),
+        Some("gemini")
     );
+}
+
+/// A PATH THAT NAMES NO DIALECT ANSWERS `None`, and that is the whole of the change: the classifier
+/// used to end in `else { openai }`, so it asserted an OpenAI identity for every path it did not
+/// recognise — including `/mcp`, a path an operator may have MOUNTED as another plane entirely. The
+/// site composing a reply decides what to say to an unknown caller (`ingress::native`); the
+/// classifier's job is to say what it knows, and here it knows nothing.
+#[test]
+fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
+    for path in [
+        "/",
+        "/stats",
+        "/mcp",
+        "/mcp/anything",
+        "/a2a",
+        "/totally/unknown/path",
+        // `/model/...` without a Converse suffix: the arm exists and deliberately declines.
+        "/model/foo/bar",
+    ] {
+        assert_eq!(
+            residual_dialect_for_path(path),
+            None,
+            "`{path}` names no LLM dialect — the classifier must say so, not answer `openai`"
+        );
+    }
 }
 
 /// Conformance (`synth_anthropic_request_id`): the synthesized `request-id` header value must

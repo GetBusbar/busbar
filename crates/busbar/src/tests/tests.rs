@@ -341,93 +341,82 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
     assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 
-/// The fallback handlers infer the ingress protocol from the
-/// request path so a 404/405 is shaped in the client's own protocol, not a bare axum body.
+/// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
+/// which is the arm these vendor-envelope assertions are about.
+fn residual_planes() -> crate::plane::PlaneDispatch {
+    crate::plane::PlaneDispatch::default()
+}
+
+/// The dialect a 404/405/413 is shaped in for `path` on a residual-only deployment — read through
+/// the ONE resolver the fallback handlers read, so this table cannot drift from what they answer.
+fn residual_dialect(path: &str) -> &'static str {
+    crate::ingress::native::envelope_dialect(residual_planes().ingress_of(path))
+}
+
+/// The fallback handlers resolve the ingress from the request path so a 404/405 is shaped in the
+/// client's own dialect, not a bare axum body.
 #[test]
-fn test_proto_for_path_inference() {
-    assert_eq!(proto_for_path("/v1/chat/completions"), "openai");
-    assert_eq!(proto_for_path("/v1/responses"), "responses");
-    assert_eq!(proto_for_path("/v2/chat"), "cohere");
+fn test_residual_dialect_inference() {
+    assert_eq!(residual_dialect("/v1/chat/completions"), "openai");
+    assert_eq!(residual_dialect("/v1/responses"), "responses");
+    assert_eq!(residual_dialect("/v2/chat"), "cohere");
     // Both the stable v1 and v1beta Gemini surfaces infer gemini.
     assert_eq!(
-        proto_for_path("/v1/models/gemini-pro:generateContent"),
+        residual_dialect("/v1/models/gemini-pro:generateContent"),
         "gemini"
     );
     assert_eq!(
-        proto_for_path("/v1beta/models/gemini-pro:streamGenerateContent"),
+        residual_dialect("/v1beta/models/gemini-pro:streamGenerateContent"),
         "gemini"
     );
     // REGRESSION: an OpenAI-SDK `model.retrieve` hits
     // `GET /v1/models/{model_id}` — NO `:<action>` colon. That must infer OpenAI (so the 405/404
     // error is OpenAI-decodable), not Gemini, even though it shares the `/v1/models/` prefix.
-    assert_eq!(proto_for_path("/v1/models/gpt-4o"), "openai");
-    assert_eq!(proto_for_path("/v1/models"), "openai"); // list-models (no trailing id)
-                                                        // A `/v1/models/` path WITH a colon action is still the Gemini surface.
+    assert_eq!(residual_dialect("/v1/models/gpt-4o"), "openai");
+    assert_eq!(residual_dialect("/v1/models"), "openai"); // list-models (no trailing id)
+                                                          // A `/v1/models/` path WITH a colon action is still the Gemini surface.
     assert_eq!(
-        proto_for_path("/v1/models/gemini-1.5-pro:generateContent"),
+        residual_dialect("/v1/models/gemini-1.5-pro:generateContent"),
         "gemini"
     );
     // `/v1beta/models/...` is Gemini-only even without a colon (OpenAI has no v1beta surface).
-    assert_eq!(proto_for_path("/v1beta/models/gemini-pro"), "gemini");
+    assert_eq!(residual_dialect("/v1beta/models/gemini-pro"), "gemini");
     assert_eq!(
-        proto_for_path("/model/anthropic.claude/converse"),
+        residual_dialect("/model/anthropic.claude/converse"),
         "bedrock"
     );
     assert_eq!(
-        proto_for_path("/model/anthropic.claude/converse-stream"),
+        residual_dialect("/model/anthropic.claude/converse-stream"),
         "bedrock"
     );
-    assert_eq!(proto_for_path("/my-model/v1/messages"), "anthropic");
+    assert_eq!(residual_dialect("/my-model/v1/messages"), "anthropic");
     // REGRESSION: a NON-Converse `/model/...` path must NOT be classified as bedrock
     // (it lacks the `/converse`/`/converse-stream` suffix). The previous unconditional
     // `starts_with("/model/")` shaped it as bedrock here while auth shaped it as openai —
     // contradictory error envelopes for one path. The canonical classifier now requires the
     // suffix, so a bare `/model/foo/bar` falls through to the OpenAI default, matching auth.rs.
     assert_eq!(
-        proto_for_path("/model/foo/bar"),
+        residual_dialect("/model/foo/bar"),
         "openai",
         "non-Converse /model/ path must align with auth.rs (openai), not bedrock"
     );
-    assert_eq!(proto_for_path("/model/foo/predict"), "openai");
+    assert_eq!(residual_dialect("/model/foo/predict"), "openai");
     // Unknown path defaults to the widely-understood OpenAI envelope.
-    assert_eq!(proto_for_path("/totally/unknown"), "openai");
+    assert_eq!(residual_dialect("/totally/unknown"), "openai");
 }
 
-/// REGRESSION: the two `proto_for_path` classifiers (main.rs fallback/405 handlers
-/// and `auth.rs` 401 shaping) must agree for EVERY path — they now share one canonical
-/// implementation in `proto`, so this guards that main.rs's delegate matches the canonical source
-/// across the full table including the previously-divergent non-Converse `/model/` paths.
-#[test]
-fn test_proto_for_path_matches_canonical() {
-    for path in [
-        "/v1/chat/completions",
-        "/v1/responses",
-        "/v2/chat",
-        "/v1/models/gemini-pro:generateContent",
-        "/v1beta/models/gemini-pro:streamGenerateContent",
-        "/v1/models/gpt-4o",
-        "/v1/models",
-        "/model/anthropic.claude/converse",
-        "/model/anthropic.claude/converse-stream",
-        "/model/foo/bar",
-        "/model/foo/predict",
-        "/my-model/v1/messages",
-        "/v1/messages",
-        "/totally/unknown",
-    ] {
-        assert_eq!(
-            proto_for_path(path),
-            proto::proto_for_path(path),
-            "main.rs proto_for_path must equal the canonical proto::proto_for_path for {path}"
-        );
-    }
-}
+// (The test that pinned `main.rs::proto_for_path` against the canonical `proto::proto_for_path`
+// is GONE WITH ITS SUBJECT: there is no second classifier left for it to agree with. ONE resolver
+// — `plane::PlaneDispatch::ingress_of` — answers for the fallback handlers, the 413 reshape and the
+// auth-time 401 alike, so agreement is now a property of the code rather than of a test watching
+// two copies. `plane_tests::the_mount_table_is_read_before_the_path_shape` pins what it answers.)
 
 /// A 404 fallback on a Bedrock path must carry the native `__type` envelope AND the `x-amzn-*`
 /// headers a real AWS endpoint always emits — never axum's empty body (a proxy tell).
 #[test]
 fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
     let resp = fallback_error_response(
+        &residual_planes(),
         "/model/some.model/converse",
         axum::http::StatusCode::NOT_FOUND,
         crate::admin::ERR_TYPE_NOT_FOUND,
@@ -455,6 +444,7 @@ fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
 #[tokio::test]
 async fn test_fallback_openai_404_is_json_no_amzn_headers() {
     let resp = fallback_error_response(
+        &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
         // REGRESSION: the fallback 404 emits the CANONICAL `not_found_error` kind, so
@@ -478,6 +468,7 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
         "OpenAI-inferred 404 must carry the canonical not_found_error type, not not_found"
     );
     let resp = fallback_error_response(
+        &residual_planes(),
         "/v1/chat/completions",
         axum::http::StatusCode::NOT_FOUND,
         crate::admin::ERR_TYPE_NOT_FOUND,
@@ -589,7 +580,8 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     )
         .into_response();
 
-    let reshaped = reshape_oversized_413("/v1/chat/completions", axum_native_413).await;
+    let reshaped =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
     assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     let ct = reshaped
         .headers()
@@ -632,7 +624,12 @@ async fn test_oversized_body_413_bedrock_native_envelope_with_amzn_headers() {
     )
         .into_response();
 
-    let reshaped = reshape_oversized_413("/model/some.model/converse", axum_native_413).await;
+    let reshaped = reshape_oversized_413(
+        &residual_planes(),
+        "/model/some.model/converse",
+        axum_native_413,
+    )
+    .await;
     assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(
         reshaped
@@ -667,7 +664,7 @@ async fn test_reshape_oversized_413_passthrough() {
 
     // Non-413: untouched.
     let ok = (axum::http::StatusCode::OK, "hello").into_response();
-    let passed = reshape_oversized_413("/v1/chat/completions", ok).await;
+    let passed = reshape_oversized_413(&residual_planes(), "/v1/chat/completions", ok).await;
     assert_eq!(passed.status(), axum::http::StatusCode::OK);
     let bytes = passed.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
@@ -686,7 +683,8 @@ async fn test_reshape_oversized_413_passthrough() {
         r#"{"error":{"type":"request_too_large","message":"native"}}"#,
     )
         .into_response();
-    let passed = reshape_oversized_413("/v1/chat/completions", already_json).await;
+    let passed =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", already_json).await;
     let bytes = passed.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
@@ -719,7 +717,8 @@ async fn test_relayed_upstream_413_not_reshaped() {
     )
         .into_response();
 
-    let passed = reshape_oversized_413("/v1/chat/completions", upstream_413).await;
+    let passed =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", upstream_413).await;
     assert_eq!(passed.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     // Content-type must remain the upstream's text/plain — NOT rewritten to application/json.
     assert_eq!(
@@ -756,7 +755,8 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
     )
         .into_response();
 
-    let reshaped = reshape_oversized_413("/v1/chat/completions", axum_native_413).await;
+    let reshaped =
+        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
     assert_eq!(
         reshaped
             .headers()
@@ -1721,6 +1721,136 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     );
 
     server.abort();
+}
+
+// ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────
+//
+// One resolver answers "which plane, and in which dialect, is this path spoken", and an oversized
+// POST is the cheapest place to READ its answer: the body cap fires OUTSIDE auth and OUTSIDE
+// routing, so the 413 envelope is shaped by the resolver alone with nothing else in the way. If the
+// mount table and the path-shape classifier ever disagree again, these three tests are where it
+// shows.
+
+/// Drive a REAL oversized POST to `path` through the REAL layer stack and return the 413 body.
+/// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
+async fn oversized_413_body(app: std::sync::Arc<state::App>, path: &str) -> serde_json::Value {
+    // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
+    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let oversized = "x".repeat(4096);
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "pad": oversized }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        413,
+        "the body cap must reject the oversized POST to {path}"
+    );
+    let body = r.text().await.unwrap();
+    server.abort();
+    serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
+}
+
+/// An MCP resource mounted at `/mcp`, from the same `mcp:` config shape an operator writes.
+fn mcp_cfg_at(canonical: &str) -> crate::mcp::McpCfg {
+    crate::mcp::McpCfg {
+        canonical_uri: canonical.to_string(),
+        authorization_servers: vec!["https://login.example.com".to_string()],
+        scopes_supported: Vec::new(),
+        allowed_origins: Vec::new(),
+    }
+}
+
+/// THE SHIPPED DEFECT: an oversized POST to a MOUNTED MCP plane was answered with an
+/// **OpenAI** error envelope — `{"error":{"message","type","code"}}` — because the error-shaping
+/// classifier read the PATH SHAPE only, knew nothing of the mount table, and fell through its
+/// unknown-ingress arm to OpenAI. An MCP client speaks JSON-RPC 2.0 and cannot decode that body;
+/// worse, the answer contradicted the mount the operator configured.
+///
+/// RED before the merge: the body carried `error.type` and no `jsonrpc` member.
+#[tokio::test]
+async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dialect() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .mcp(&mcp_cfg_at("https://gateway.example.com/mcp"))
+        .build();
+
+    let v = oversized_413_body(app, "/mcp").await;
+
+    assert_eq!(
+        v.get("jsonrpc").and_then(|j| j.as_str()),
+        Some("2.0"),
+        "a mounted MCP plane must refuse in JSON-RPC 2.0, the only wire format it speaks; got {v}"
+    );
+    assert!(
+        v.pointer("/error/code").and_then(|c| c.as_i64()).is_some(),
+        "a JSON-RPC refusal carries a numeric `error.code`; got {v}"
+    );
+    assert!(
+        v.pointer("/error/type").is_none(),
+        "`error.type` is the OpenAI envelope's member — the vendor shape must not survive on a \
+         mounted plane; got {v}"
+    );
+}
+
+/// THE SEGMENT BOUNDARY, IN BOTH DIRECTIONS. A mount at `/mcp` claims `/mcp` and everything
+/// beneath it at a segment boundary, and claims `/mcpx` not at all. A sibling path must inherit
+/// neither the plane's grants nor its refusals, so `/mcpx` keeps the residual plane's answer.
+#[tokio::test]
+async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .mcp(&mcp_cfg_at("https://gateway.example.com/mcp"))
+        .build();
+
+    // UNDER the mount, at a segment boundary: claimed.
+    let under = oversized_413_body(app.clone(), "/mcp/anything").await;
+    assert_eq!(
+        under.get("jsonrpc").and_then(|j| j.as_str()),
+        Some("2.0"),
+        "`/mcp/anything` lies beneath the `/mcp` mount at a segment boundary; got {under}"
+    );
+
+    // The SIBLING: a bare-prefix match would claim it. It must fall through to the residual.
+    let sibling = oversized_413_body(app, "/mcpx").await;
+    assert!(
+        sibling.get("jsonrpc").is_none(),
+        "`/mcpx` is NOT under a `/mcp` mount — it must not inherit the plane's refusal shape; \
+         got {sibling}"
+    );
+    assert!(
+        sibling.pointer("/error/message").is_some(),
+        "the residual plane still answers a legible native envelope; got {sibling}"
+    );
+}
+
+/// A PLANE CLAIMS A PATH ONLY WHEN THE OPERATOR MOUNTED IT. With no `mcp:` section there is no MCP
+/// plane, so `/mcp` is an ordinary unclaimed path on the residual and is answered as one. The merge
+/// must not turn an unmounted plane into one that claims paths by URL shape.
+#[tokio::test]
+async fn an_unmounted_plane_claims_no_path_by_url_shape() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new().build();
+
+    let v = oversized_413_body(app, "/mcp").await;
+
+    assert!(
+        v.get("jsonrpc").is_none(),
+        "nothing mounted MCP, so `/mcp` is a residual path and must not be answered as a plane; \
+         got {v}"
+    );
+    assert!(
+        v.pointer("/error/message").is_some(),
+        "the residual plane answers the widely-understood envelope; got {v}"
+    );
 }
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
