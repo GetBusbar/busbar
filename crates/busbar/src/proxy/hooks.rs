@@ -351,9 +351,46 @@ pub(crate) enum BlockText<'a> {
     /// `redacted: false` (Responses has no IR-level redacted-reasoning concept; `redacted` is an
     /// Anthropic/Bedrock-only distinction — see `read_response`/the request-item reader in
     /// `proto/openai_responses/reader.rs`), yet `block_text` must still report `Redacted` here
-    /// because there is no plaintext to show. A future "harmonization" that keys this variant off
-    /// `IrBlock::Thinking.redacted` instead of the wire shape would silently reopen this exact
-    /// bypass for the Responses encrypted-content-only case.
+    /// because there is no plaintext to show.
+    ///
+    /// # HARMONIZING THIS ONTO THE IR: the hazard, and the actual prerequisite
+    ///
+    /// This is NOT an argument against the harmonization. Moving the hook projection onto the IR
+    /// is the right direction and is planned work: a second implementation of "what is the text in
+    /// this request" is how a PII redactor gets handed a different payload than the one that goes
+    /// upstream, and that is the defect this whole dispatch table is a workaround for, not a
+    /// design.
+    ///
+    /// **The hazard is doing it in the wrong ORDER, and it is specific and checkable.** The naive
+    /// port — `if thinking.redacted { MARKER } else { thinking.text }` — reopens this exact bypass
+    /// for the Responses encrypted-content-only case, because that shape reads as
+    /// `Thinking { text: "", signature: Some(blob), redacted: false }` (see the `ITEM_TYPE_REASONING`
+    /// arms of `proto/openai_responses/reader.rs`). `redacted` is `false`, so the port takes the
+    /// `text` branch; `text` is EMPTY, because the blob is parked in `signature`. A screening hook
+    /// would see an empty turn for a request the provider receives in full — the original bypass,
+    /// restored, by a change described as a refactor. The mirror-image hazard: for the
+    /// Anthropic/Bedrock shapes `redacted` IS `true` and `text` holds the opaque bytes themselves
+    /// (`ir/mod.rs`), so a projection that reads `text` without first checking opacity is a NEW
+    /// disclosure of provider ciphertext to the operator's hook sidecar. Neither hazard is caught
+    /// by a single naive rule, which is why the order matters rather than the care taken.
+    ///
+    /// **The prerequisite is therefore: FIX THE IR FIRST, then key off it.** The IR is the half
+    /// that is wrong here — it models "this block is opaque to busbar" for Anthropic and Bedrock
+    /// and not for Responses, even though the Responses case is opaque for the same reason. Land
+    /// the IR-side fix on its own, ahead of and independent of any projection change: either set
+    /// `IrBlock::Thinking.redacted = true` for a Responses `encrypted_content`-only item, or — if
+    /// `redacted` must stay Anthropic/Bedrock-shaped because the writers key re-emission off it —
+    /// add an explicit `IrBlock::is_opaque()` that all three shapes answer true to. Check the
+    /// writer side before choosing; that check is the real work. The whole test is "all three
+    /// opaque shapes read as opaque FROM THE IR", which fails on Responses today and passes once
+    /// the reader is fixed — with this projection and the entire existing suite untouched.
+    ///
+    /// Until that lands, `block_text` keys on the WIRE SHAPE, deliberately. The divergence in both
+    /// directions is pinned by `characterise_responses_encrypted_content_only_reasoning_projection_vs_ir`
+    /// and `characterise_anthropic_ciphertext_projection_vs_ir`
+    /// (`proxy/tests/hook_ir_divergence_characterisation_tests.rs`), which assert today's behaviour
+    /// on BOTH sides including where it is wrong — so the harmonization has to update them
+    /// consciously rather than pass through them silently.
     Redacted,
     /// Structurally text-less (image, tool_use, tool_result) or a block/item this dialect has no
     /// declared text field for.

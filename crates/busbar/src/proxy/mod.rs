@@ -224,6 +224,13 @@ mod probe_release_owner_tests;
 #[path = "tests/hook_opt_in_projection_tests.rs"]
 mod hook_opt_in_projection_tests;
 
+// CHARACTERISATION tests for the projection↔IR divergences.
+// They pin TODAY's behaviour on both sides, including where today's behaviour is wrong, so the IR
+// unification has to consciously update each one rather than silently pass through it.
+#[cfg(test)]
+#[path = "tests/hook_ir_divergence_characterisation_tests.rs"]
+mod hook_ir_divergence_characterisation_tests;
+
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
