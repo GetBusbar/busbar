@@ -41,13 +41,15 @@
 // comes back as itself and the task is persisted paused, which on an asynchronous plane is the
 // NORMAL path rather than an edge case. Every outcome lands on the per-task provenance chain.
 //
-// AND THE TRUST VERBS ARE NOW REACHABLE. [`adminverbs`] mounts `POST /agents/{name}/connect` and
-// `POST /agents/{name}/approve` on the admin API, which is what takes a registration out of the
-// fail-closed `Pending` its only constructor puts it in. Before that, [`verbs::connect`] was
-// written, unit-tested and callable from nothing: `A2aPlane::from_config` rightly refuses to lift a
-// declared pin into an approval, so a busbar booted from YAML fronted agents it could never serve,
-// and every A2A test in the tree passed while it did. The shape is the MCP plane's
-// (`mcp::adminverbs`) rather than a second one, deliberately.
+// AND THE TRUST VERBS ARE REACHABLE. `POST /agents/{name}/connect` is the shared
+// [`crate::admin::planeverbs::connect`] mounted over this plane's [`verbs::A2aAgents`], and
+// `POST /agents/{name}/approve` is [`verbs::approve`]; together they are what takes a registration
+// out of the fail-closed `Pending` its only constructor puts it in. Before that, [`verbs::connect`]
+// was written, unit-tested and callable from nothing: `A2aPlane::from_config` rightly refuses to
+// lift a declared pin into an approval, so a busbar booted from YAML fronted agents it could never
+// serve, and every A2A test in the tree passed while it did. The shape is not merely LIKE the MCP
+// plane's — the sequence is literally the same code, which is the only version of "the same shape"
+// that cannot drift.
 //
 // MODULES WITH RESIDUAL SURFACE THAT NO PRODUCTION PATH CALLS still carry their OWN narrowed
 // attribute at the top of their own file, stating what is driven and what is not. The residue is
@@ -59,7 +61,6 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
-pub(crate) mod adminverbs;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
@@ -83,7 +84,6 @@ pub(crate) mod relay;
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
 pub(crate) use crate::trust::reverify;
-pub(crate) mod scheduler;
 pub(crate) mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;

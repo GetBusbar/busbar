@@ -336,6 +336,10 @@ mod internal_error_tests;
 // are a first-class v1 resource served by these handlers until they migrate into the versioned
 // service module.
 pub(crate) mod audit;
+/// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
+/// registered upstream resolves it, looks at it and audits what it found in the same order; that
+/// order lives here, and the plane supplies only the look.
+pub(crate) mod planeverbs;
 pub(crate) mod rate;
 pub(crate) mod restart;
 pub(crate) mod transport;

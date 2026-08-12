@@ -44,6 +44,28 @@ fn plane_identity_strings_never_collide_across_planes() {
     let before = kinds.len();
     kinds.dedup();
     assert_eq!(kinds.len(), before, "two planes claim one scope kind");
+
+    // THE AUDIT RESOURCE KIND is on the same footing, and for the same reason: it is the `kind`
+    // half of every `kind:name` audit resource the plane's admin verbs record, and the prefix of
+    // every action word. Two planes sharing one would make an audit query for one plane's history
+    // answer with the other's.
+    let mut audit: Vec<&str> = Plane::ALL.iter().map(|p| p.audit_kind()).collect();
+    audit.sort_unstable();
+    let before = audit.len();
+    audit.dedup();
+    assert_eq!(
+        audit.len(),
+        before,
+        "two planes claim one audit resource kind"
+    );
+
+    // The operator-facing noun a `404` reads back. One rule serves every plane's not-found, so two
+    // planes sharing a noun would produce a refusal that names the wrong registration.
+    let mut nouns: Vec<&str> = Plane::ALL.iter().map(|p| p.subject_noun()).collect();
+    nouns.sort_unstable();
+    let before = nouns.len();
+    nouns.dedup();
+    assert_eq!(nouns.len(), before, "two planes claim one subject noun");
 }
 
 /// THE SUPERSET-IR RULE, computed rather than asserted per plane: a plane earns a superset IR when

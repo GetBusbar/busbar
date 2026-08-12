@@ -34,7 +34,7 @@
 
 // PARTLY UNMOUNTED. The artifact and its refusals are driven by the re-verification sweep, and
 // `approve_registration` — the A2A cap on approving an unrooted registration — is now driven by
-// `super::adminverbs::approve`. What remains without a caller is the mechanism-specific
+// `super::verbs::approve`. What remains without a caller is the mechanism-specific
 // construction `pin_a_signed_card` performs for a mechanism the sweep does not reach.
 #![cfg_attr(not(test), allow(dead_code))]
 

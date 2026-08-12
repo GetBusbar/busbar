@@ -17,7 +17,7 @@
 //! being awake.
 //!
 //! **Nothing in this file calls `refresh`, and nothing in it calls an admin verb.** The only thing
-//! that ever contacts the upstream is [`crate::mcp::scheduler::sweep`], which is the function the
+//! that ever contacts the upstream is [`crate::mcp::connect::refresh_sweep`], which is the function the
 //! spawned job calls on its tick. If the sweep does not do the work, these tests fail — which is
 //! exactly what they did before the sweep was written.
 //!
@@ -33,7 +33,7 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
-use crate::mcp::scheduler::sweep;
+use crate::mcp::connect::refresh_sweep;
 use crate::test_support::TestApp;
 use std::sync::Arc;
 
@@ -115,7 +115,7 @@ async fn the_first_sweep_observes_a_server_nobody_ever_connected() {
         0,
         "nothing has contacted the upstream yet — that is the point of this case"
     );
-    let swept = sweep(&app, 0).await;
+    let swept = refresh_sweep(&app, 0).await;
     assert_eq!(swept.len(), 1, "one registration, one outcome: {swept:?}");
     assert_eq!(
         swept[0].due,
@@ -123,7 +123,7 @@ async fn the_first_sweep_observes_a_server_nobody_ever_connected() {
         "no record of ever looking is DUE NOW, never freshness: {swept:?}"
     );
     assert!(
-        swept[0].report.is_some(),
+        swept[0].detail.report.is_some(),
         "and the timer must actually take that first observation: {swept:?}"
     );
     assert_eq!(peer.list_calls(), 1, "it reached the wire exactly once");
@@ -138,8 +138,8 @@ async fn an_unchanged_schema_still_dispatches_after_a_sweep() {
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     // One sweep stamps the ledger; the next, well past the one-second window, must look again.
-    let _ = sweep(&app, 0).await;
-    let swept = sweep(&app, 10_000).await;
+    let _ = refresh_sweep(&app, 0).await;
+    let swept = refresh_sweep(&app, 10_000).await;
     assert_eq!(
         swept[0].due,
         crate::trust::reverify::Due::TtlExpired,
@@ -190,8 +190,9 @@ async fn the_timer_alone_quarantines_a_drifted_tool_with_no_operator_present() {
     peer.reserve(vec![wire_tool("read", DESCRIPTION, poisoned_schema())]);
 
     // ── THE TIMER TICKS. This is the only thing that happens between the drift and the refusal. ─
-    let swept = sweep(&app, 10_000).await;
+    let swept = refresh_sweep(&app, 10_000).await;
     let report = swept[0]
+        .detail
         .report
         .as_ref()
         .expect("the sweep must have refreshed a server whose TTL elapsed");
@@ -241,17 +242,17 @@ async fn a_server_inside_its_ttl_is_not_contacted() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let (app, _cache) = approved_and_connected_once(&peer, "1h").await;
-    let _ = sweep(&app, 0).await; // stamps the ledger at t=0
+    let _ = refresh_sweep(&app, 0).await; // stamps the ledger at t=0
 
     let before = peer.list_calls();
-    let swept = sweep(&app, 1_000).await;
+    let swept = refresh_sweep(&app, 1_000).await;
     assert_eq!(
         swept[0].due,
         crate::trust::reverify::Due::No,
         "one second into a one-hour window is not due: {swept:?}"
     );
     assert!(
-        swept[0].report.is_none(),
+        swept[0].detail.report.is_none(),
         "a server that is not due must not be refreshed: {swept:?}"
     );
     assert_eq!(
@@ -272,15 +273,15 @@ async fn a_backwards_clock_is_due_rather_than_fresh() {
     let (app, _cache) = approved_and_connected_once(&peer, "1h").await;
 
     // This sweep stamps the ledger at 5_000; the next one arrives EARLIER than that.
-    let _ = sweep(&app, 5_000).await;
-    let swept = sweep(&app, 1_000).await;
+    let _ = refresh_sweep(&app, 5_000).await;
+    let swept = refresh_sweep(&app, 1_000).await;
     assert_eq!(
         swept[0].due,
         crate::trust::reverify::Due::ClockWentBackwards,
         "elapsed time cannot be computed, so freshness cannot be trusted: {swept:?}"
     );
     assert!(
-        swept[0].report.is_some(),
+        swept[0].detail.report.is_some(),
         "and 'cannot be trusted' means LOOK, not skip: {swept:?}"
     );
 }

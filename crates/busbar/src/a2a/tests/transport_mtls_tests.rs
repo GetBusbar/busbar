@@ -227,7 +227,7 @@ fn an_mtls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_iden
 /// This is the assertion the old shape could not have satisfied at any price. `sweep` held ONE
 /// transport for the whole plane, so whatever identity it carried went to every endpoint — an
 /// operator who gave busbar one vendor's client certificate would have had busbar offer it to every
-/// other vendor as well. Here the bundle is the one `spawn_reverifier` builds, and each hop is made
+/// other vendor as well. Here the bundle is the one the re-verification job builds, and each hop is made
 /// with the transport `for_agent` hands out.
 ///
 /// The two peers demand certificates from DIFFERENT CAs and are otherwise identical — same server

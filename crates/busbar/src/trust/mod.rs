@@ -439,6 +439,14 @@ impl<A: PinnedArtifact> Approval<A> {
 /// second plane wants it". The MCP refresh timer is that second plane.
 pub(crate) mod reverify;
 
+/// THE SWEEP JOB that drives [`reverify::due`] on a timer, written once for every plane. `reverify`
+/// decides WHEN to look; this is what makes somebody look with no operator present, which is the
+/// difference between a control that exists and a control that runs.
+///
+/// It lives beside the cadence rather than on either plane because both planes need exactly it. The
+/// plane supplies one method — the fetch — and nothing above that method knows which plane it is on.
+pub(crate) mod sweep;
+
 #[cfg(test)]
 #[path = "tests/lifecycle_tests.rs"]
 mod lifecycle_tests;

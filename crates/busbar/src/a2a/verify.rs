@@ -429,6 +429,209 @@ impl super::verbs::CardObserver for RegistrationProbe<'_> {
     }
 }
 
+// ══ THE TIMER'S HALF: this plane's `Sweeper`, driven by the ONE job in `crate::trust::sweep` ═════
+//
+// [`reverify_once`] above is the pass; this is what puts it on a timer, which is the difference
+// between a control that exists and a control that runs.
+//
+// THE ASYMMETRY SURVIVES BEING SCHEDULED, and that is why the knobs are somewhere else. A scheduler
+// is made of exactly the settings that would lose it — a tick interval, a concurrency cap, a
+// per-agent cooldown, a "skip if we checked recently" fast path — and every one of those slows
+// DETECTION. So this plane supplies no scheduling policy at all: the tick, the clock, the shutdown
+// and the panic containment are `crate::trust::sweep`, once, for every plane, and that module has
+// no knob either. What is here is the only part that is genuinely this plane's: the fetch.
+//
+// ONE TRANSPORT PER REGISTRATION, and it is a correctness property rather than a refactor. This
+// sweep used to build ONE transport and use it for every registration on the plane. That read as an
+// efficiency, and it was a defect with a name: `pin.mechanism: mtls` could be written in config and
+// could never work, because the client certificate busbar must present is per REGISTRATION — it is
+// the certificate this operator agreed to present to THAT vendor — and a single plane-wide transport
+// has exactly one place to put one. Anywhere it went, it went to everybody.
+
+/// WHICH TRANSPORT ONE REGISTRATION IS RE-VERIFIED OVER.
+///
+/// THE SEAM THAT USED NOT TO EXIST, and its absence was the whole of the `mtls` defect. It is
+/// deliberately not a factory returning an owned transport: the production implementation builds one
+/// transport per agent ONCE per config generation, and a `-> Box<dyn Transport>` would have invited
+/// a rebuild per agent per tick, which is a fresh TLS client every thirty seconds for every
+/// registration.
+pub(crate) trait CardTransports {
+    /// The transport for `agent_id`. Total, because a sweep must never skip a registration: an
+    /// agent with no client identity gets one that presents no certificate and is refused by an
+    /// mTLS peer, which is an observation the ledger should record rather than a hole in the sweep.
+    fn for_agent(&self, agent_id: &str) -> &dyn Transport;
+}
+
+/// ONE TRANSPORT FOR EVERY REGISTRATION — the shape this sweep used to have, kept as a NAMED adapter
+/// so what it costs is legible at the call site.
+///
+/// It is `#[cfg(test)]`, so it is not merely unused in production — it is ABSENT from the release
+/// binary. A future caller that wants one transport for the whole plane has to write the words "one
+/// for all" and compile it in, which is the review conversation the old signature never prompted.
+#[cfg(test)]
+pub(crate) struct OneForAll<'a>(pub(crate) &'a dyn Transport);
+
+#[cfg(test)]
+impl CardTransports for OneForAll<'_> {
+    fn for_agent(&self, _agent_id: &str) -> &dyn Transport {
+        self.0
+    }
+}
+
+/// WHAT ONE RE-VERIFICATION PASS FOUND, as the shared sweep job carries it.
+///
+/// The `pass` is [`reverify_once`]'s own answer, unflattened: the plane's tests assert against the
+/// type their subject actually produces. `drift` is carried beside it so the operator's first notice
+/// names the skills that moved rather than only the fact that something did — the shared renderer
+/// itemises drift on every plane, and a plane that had nothing to itemise would be the odd one out.
+#[derive(Debug)]
+pub(crate) struct ReverifyDetail {
+    pub(crate) pass: Pass,
+    pub(crate) drift: crate::trust::Drift,
+    /// The DERIVED trust state after the pass landed, in the word every plane renders. Read off the
+    /// registration rather than inferred from `drift_observed`, because a suspension outranks a
+    /// quarantine and a log line that reported the wrong one would send an operator to the wrong
+    /// remedy.
+    pub(crate) state: &'static str,
+}
+
+impl crate::trust::sweep::SweepDetail for ReverifyDetail {
+    fn events(&self) -> Vec<crate::trust::sweep::SweepEvent> {
+        use crate::trust::sweep::SweepEvent;
+        let mut events = Vec::new();
+        // The breaker is reported FIRST and independently of the observation: a suspension is a
+        // statement about the pattern of contacts, not about this one.
+        if let Some(trip) = &self.pass.trip {
+            events.push(SweepEvent::Suspended {
+                reason: trip.reason().to_string(),
+            });
+        }
+        if let Some(refusal) = &self.pass.refusal {
+            events.push(SweepEvent::ContactFailed {
+                reason: refusal.to_string(),
+            });
+            return events;
+        }
+        let Some(settled) = &self.pass.settled else {
+            return events;
+        };
+        if settled.drift_observed {
+            events.push(SweepEvent::Drifted {
+                state: self.state,
+                drift: self.drift.clone(),
+            });
+        } else if settled.recovery_held {
+            events.push(SweepEvent::RecoveryHeld);
+        }
+        events
+    }
+}
+
+/// ONE SWEEP over every registration on the plane.
+///
+/// Takes the clock as an argument and holds no timer of its own, which is what makes the asymmetry
+/// testable: a test drives the same function the job drives, at times it chooses, with no sleeping
+/// and nothing for a scheduler to race.
+///
+/// The write lock is held for the whole sweep. That is deliberate on a registry whose size is the
+/// operator's `agents:` count: a sweep that released the lock between registrations could interleave
+/// with a config apply and leave half the registry re-verified against one generation's pins and
+/// half against another's.
+pub(crate) fn reverify_sweep(
+    plane: &super::plane::A2aPlane,
+    resolver: &dyn Resolver,
+    transports: &dyn CardTransports,
+    now_ms: u64,
+) -> Vec<crate::trust::sweep::SweepOutcome<ReverifyDetail>> {
+    let base: FetchPolicy = plane.fetch_policy().clone();
+    plane.with_registrations_mut(|registrations| {
+        let mut out = Vec::with_capacity(registrations.len());
+        for reg in registrations.iter_mut() {
+            // A registration whose pin is not in this generation's config is one the operator has
+            // REMOVED. It is not re-verified against a remembered pin: verifying a card against a
+            // trust root nobody currently declares would be busbar deciding the operator did not
+            // mean it.
+            let Some(pin_cfg) = plane.pin_for(&reg.agent_id).cloned() else {
+                continue;
+            };
+            // THE POLICY IS PER REGISTRATION, because `allow_private:` is. Read off the record
+            // rather than from `fetch_policy_for` — this closure already holds the registry's write
+            // lock, and re-entering it to read one bool would deadlock. It is the same value: the
+            // record is where `from_config` lowered the operator's line to.
+            let policy = FetchPolicy {
+                allow_private: reg.allow_private,
+                ..base.clone()
+            };
+            // THE TRANSPORT THAT BELONGS TO THIS REGISTRATION, carrying this registration's client
+            // certificate and no other's. Asked for INSIDE the loop, per agent, which is the entire
+            // structural change: one transport per plane could only ever have presented one
+            // identity.
+            let transport = transports.for_agent(&reg.agent_id);
+            let pass = reverify_once(
+                reg, &pin_cfg, resolver, transport, &policy, now_ms,
+                // THE TIMER IS NOT AN OPERATOR. `sync` outranks the timer; the timer never claims
+                // to be a sync, and there is no argument here through which a check could be
+                // suppressed.
+                false,
+            );
+            // Read AFTER the pass, so it reflects what was just recorded rather than the previous
+            // generation's changes queue.
+            let drift = reg.changes();
+            let state = reg.trust_state().word();
+            out.push(crate::trust::sweep::SweepOutcome {
+                subject: reg.agent_id.clone(),
+                due: pass.due,
+                detail: ReverifyDetail { pass, drift, state },
+            });
+        }
+        out
+    })
+}
+
+/// THIS PLANE'S `Sweeper`. Holds the plane this config generation built and the per-agent transports
+/// built ONCE for the job's lifetime: the identities were resolved at boot, so rebuilding the bundle
+/// every tick would re-derive a constant — and, now that a transport can carry a private key, would
+/// do so with key material in hand every thirty seconds.
+pub(crate) struct ReverifySweeper {
+    pub(crate) plane: std::sync::Arc<super::plane::A2aPlane>,
+    pub(crate) live: std::sync::Arc<super::transport::LiveCardFetch>,
+}
+
+impl crate::trust::sweep::Sweeper for ReverifySweeper {
+    type Detail = ReverifyDetail;
+
+    fn plane(&self) -> crate::plane::Plane {
+        crate::plane::Plane::A2a
+    }
+
+    async fn sweep(&self, now_ms: u64) -> Vec<crate::trust::sweep::SweepOutcome<ReverifyDetail>> {
+        let plane = std::sync::Arc::clone(&self.plane);
+        let live = std::sync::Arc::clone(&self.live);
+        // OFF THE REACTOR. A card fetch is a blocking socket read behind a guard that resolves,
+        // pins and connects synchronously; running it on a worker thread would stall every request
+        // sharing that thread for as long as an upstream chose to take.
+        match tokio::task::spawn_blocking(move || {
+            reverify_sweep(&plane, live.resolver(), live.as_ref(), now_ms)
+        })
+        .await
+        {
+            Ok(outcomes) => outcomes,
+            // A PANIC IN THE BLOCKING SWEEP IS RE-RAISED so the ONE containment site in
+            // `trust::sweep::spawn` sees it. Swallowing it here would give this plane its own
+            // private panic handling, which is a second place for the "the job continues"
+            // guarantee to be got wrong.
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/verify_tests.rs"]
 mod verify_tests;
+
+// THE ASYMMETRY, DRIVEN THROUGH THE SWEEP the job actually calls rather than through the pure
+// function underneath it.
+#[cfg(test)]
+#[path = "tests/scheduler_tests.rs"]
+mod scheduler_tests;

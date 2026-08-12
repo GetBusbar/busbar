@@ -53,12 +53,17 @@
 //! the catalogue cache and the audit records instead of staying contained to the reader and writer
 //! at the edge.
 
-// NO PRODUCTION CALLER YET. This is the spine the next two items are built on: the candidate
-// projection keys its per-plane payload by `Plane`, and the shared pools/tools/agents container
-// keys its sections by `Plane::config_section` and refuses a cross-plane reference using
-// `Plane::scope_kinds`. Landing the spine first is what stops those two inventing a second, subtly
-// different notion of what a plane is. Same posture as the trust lifecycle and the entry merge
-// patch on this branch.
+// THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. Two shared
+// machines are parameterised over `Plane` rather than written once per plane: the trust sweep job
+// (`crate::trust::sweep`, which carries `Plane` as its log label) and the admin trust verb surface
+// (`crate::admin::planeverbs`, which reads `Plane::subject_noun` for its one `404` and
+// `Plane::audit_kind` for its audit action and resource). Both replaced a pair of plane-local
+// copies, which is exactly what landing the spine first was meant to prevent being written twice.
+//
+// STILL WITHOUT A PRODUCTION CALLER, and named rather than left to be discovered: `PlaneSections`,
+// `has_superset_ir` and `wire_formats`. The candidate projection and the shared
+// pools/tools/agents container are the dependants those are waiting on, so the attribute stays
+// until they land.
 #![cfg_attr(not(test), allow(dead_code))]
 
 /// One governance plane. The variant set is the only thing a new plane adds here.
@@ -106,6 +111,36 @@ impl Plane {
             Plane::Llm => &["pool"],
             Plane::Mcp => &["mcp_server", "mcp_tool"],
             Plane::A2a => &["agent"],
+        }
+    }
+
+    /// WHAT ONE REGISTRATION ON THIS PLANE IS CALLED, in the words an operator reads back in a
+    /// `404`. The vocabularies genuinely differ — a `tools:` entry is a server, an `agents:` entry
+    /// is a fronted agent — and stating them here is what lets ONE not-found rule serve both admin
+    /// surfaces instead of one hand-written refusal per plane that can drift apart in wording.
+    ///
+    /// The residual LLM plane has no registered upstream of its own; a pool is named by its own
+    /// section and is not looked up through this rule.
+    pub(crate) fn subject_noun(self) -> &'static str {
+        match self {
+            Plane::Llm => "pool",
+            Plane::Mcp => "MCP server",
+            Plane::A2a => "fronted agent",
+        }
+    }
+
+    /// THE AUDIT RESOURCE KIND for a registration on this plane — the `kind` half of a
+    /// `kind:name` audit resource, and the prefix of every audit ACTION word the plane's verbs
+    /// record (`mcp_server.connect`, `a2a_agent.approve`).
+    ///
+    /// Named once, per plane, for the same reason the scope kinds are: these strings are read back
+    /// by audit queries and compliance exports, and two of them agreeing by coincidence is how one
+    /// plane's records start answering another plane's question.
+    pub(crate) fn audit_kind(self) -> &'static str {
+        match self {
+            Plane::Llm => "pool",
+            Plane::Mcp => "mcp_server",
+            Plane::A2a => "a2a_agent",
         }
     }
 

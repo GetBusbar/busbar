@@ -12133,10 +12133,10 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_named_map_errors().await;
     // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
     // condition witnessed only by a sibling test is witnessed nowhere.
-    crate::mcp::adminverbs::adminverbs_tests::drive_mcp_verb_errors().await;
+    crate::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;
     // And the A2A plane's, for the same reason — the two trust surfaces are the same shape and the
     // witness obligation is the same obligation.
-    crate::a2a::adminverbs::adminverbs_tests::drive_a2a_verb_errors().await;
+    crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,

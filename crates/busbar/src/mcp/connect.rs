@@ -425,11 +425,201 @@ pub(crate) fn overlay_patch(
     serde_json::json!({ "tools": { "servers": { server: serde_json::Value::Object(entry) } } })
 }
 
+// ══ THE TIMER'S HALF: this plane's `Sweeper`, driven by the ONE job in `crate::trust::sweep` ═════
+//
+// WHY IT IS HERE AND NOT IN A SCHEDULER OF ITS OWN. Schema hash-pinning with automatic drift
+// quarantine was, until something drove it on a timer, a defence that depended on somebody pressing
+// a button: quarantine-on-drift is automatic GIVEN a refresh, and `refresh`'s only caller was the
+// admin verb. An upstream that rug-pulls a schema at 02:00 on a Saturday against a deployment whose
+// operator is asleep was detected exactly never, and an attacker picks the moment.
+//
+// The tick, the clock, the shutdown, the panic containment and the operator-facing reporting are
+// NOT here — they are `crate::trust::sweep`, once, for every plane. What is here is the only part
+// that is genuinely this plane's: the fetch. It is an async JSON-RPC round trip through a shared
+// connection pool that may first perform an RFC 8693 token exchange, over entries cloned out of a
+// catalogue that is rebuilt on every config apply. The sibling plane's is a blocking socket read
+// under a registry write lock. Forcing one function over both would be a shared shape hiding two
+// behaviours, so the shared job takes exactly one method from each plane and this is ours.
+//
+// NO KNOB, and the shared job has none either:
+//   * No server is ever skipped. The sweep asks `due` about every registration on every tick and
+//     lets it answer. There is no rate limit on being CHECKED and no backoff on being checked — a
+//     failing upstream is the one that most needs looking at.
+//   * `operator_sync` is always `false`. THE TIMER IS NOT AN OPERATOR. The admin verb outranks it by
+//     calling `refresh` outright, and nothing on this path can suppress a check the arithmetic says
+//     is due.
+//
+// THE ONE STATED DIFFERENCE FROM THE SIBLING PLANE: A2A runs its observation through
+// `trust::reverify::settle`, which can hold a CLEAN answer for a recovery backoff after a drift.
+// This plane does not, because `ServerCatalogue::observe` has no arm that can decline to adopt what
+// it saw, so `refresh_policy_for` sets `recovery_backoff_ms: 0` rather than carrying a number
+// nothing reads. The half that matters is identical on both planes: DEMOTION IS NEVER HELD.
+
+/// WHAT ONE REFRESH FOUND, as the shared sweep job carries it.
+///
+/// Two fields rather than one because a refresh that was never ATTEMPTED and a refresh that was
+/// attempted and failed are different facts about different parties: one is the operator's own
+/// configuration, the other is a network.
+#[derive(Debug)]
+pub(crate) struct RefreshDetail {
+    /// What the refresh found. `None` when the server was fresh and nothing was attempted, or when
+    /// the refresh could not be attempted at all.
+    pub(crate) report: Option<ConnectReport>,
+    /// Why the refresh could not be attempted.
+    pub(crate) refusal: Option<String>,
+}
+
+impl crate::trust::sweep::SweepDetail for RefreshDetail {
+    fn events(&self) -> Vec<crate::trust::sweep::SweepEvent> {
+        use crate::trust::sweep::SweepEvent;
+        if let Some(reason) = &self.refusal {
+            return vec![SweepEvent::NotAttempted {
+                reason: reason.clone(),
+            }];
+        }
+        let Some(report) = &self.report else {
+            return Vec::new();
+        };
+        if let Some(failure) = &report.failure {
+            return vec![SweepEvent::ContactFailed {
+                reason: failure.clone(),
+            }];
+        }
+        if !report.drift.is_empty() {
+            return vec![SweepEvent::Drifted {
+                state: report.state_word(),
+                drift: report.drift.clone(),
+            }];
+        }
+        Vec::new()
+    }
+}
+
+/// ONE SWEEP over every registered MCP server.
+///
+/// Takes the clock as an argument and holds no timer of its own, which is what makes the behaviour
+/// testable: a test drives the same function the job drives, at times it chooses, with no sleeping
+/// and nothing for a scheduler to race.
+pub(crate) async fn refresh_sweep(
+    app: &crate::state::App,
+    now_ms: u64,
+) -> Vec<crate::trust::sweep::SweepOutcome<RefreshDetail>> {
+    // The registrations are read from the CATALOGUE — the operator's live intent — and not from the
+    // sightings cache. A server the operator registered and nothing has ever observed has no cache
+    // entry at all, and iterating the evidence would mean the one registration most in need of a
+    // first look is the one the timer never reaches.
+    let servers: Vec<_> = app.mcp_catalogue.servers().cloned().collect();
+    let mut out = Vec::with_capacity(servers.len());
+
+    for entry in &servers {
+        let ledger = ledger_of(&app.mcp_sightings, &entry.id);
+        // THE TIMER IS NOT AN OPERATOR. `operator_sync` is `false` and there is no argument on this
+        // path through which a due check could be suppressed.
+        let why = crate::trust::reverify::due(&ledger, &entry.refresh_policy, now_ms, false);
+        if !why.should_check() {
+            out.push(crate::trust::sweep::SweepOutcome {
+                subject: entry.id.clone(),
+                due: why,
+                detail: RefreshDetail {
+                    report: None,
+                    refusal: None,
+                },
+            });
+            continue;
+        }
+
+        let (report, refusal) = match refresh(&app.mcp_pool, &app.mcp_sightings, entry).await {
+            Ok(report) => (Some(report), None),
+            // A refusal means the refresh was never ATTEMPTED — an unroutable id, or a
+            // `passthrough` credential posture whose credential belongs to a caller the timer does
+            // not have. It is deliberately NOT recorded as a failed contact: nothing was contacted,
+            // and writing a failure would demote a server over the operator's own configuration
+            // rather than over anything the upstream did.
+            Err(refusal) => (None, Some(refusal.to_string())),
+        };
+
+        // THE LEDGER IS STAMPED WHETHER OR NOT THE ANSWER WAS GOOD, and drift is counted before any
+        // decision about what to believe. Detection and demotion are different acts. A refusal
+        // stamps nothing: the clock records when we LOOKED, and we did not look.
+        if let Some(r) = &report {
+            stamp(&app.mcp_sightings, &entry.id, now_ms, !r.drift.is_empty());
+        }
+
+        out.push(crate::trust::sweep::SweepOutcome {
+            subject: entry.id.clone(),
+            due: why,
+            detail: RefreshDetail { report, refusal },
+        });
+    }
+    out
+}
+
+/// This server's refresh ledger, or a fresh one for a registration nothing has ever observed.
+///
+/// A missing cache entry yields [`crate::trust::reverify::Ledger::default`], whose `last_checked_ms`
+/// is `None` — which `due` reads as `NeverChecked`, i.e. DUE NOW. That is the fail-closed direction:
+/// the alternative would treat "we have no record of ever looking" as freshness.
+fn ledger_of(cache: &CatalogueCache, id: &str) -> crate::trust::reverify::Ledger {
+    ServerId::new(id)
+        .ok()
+        .and_then(|sid| cache.load().server(&sid).map(|sc| sc.ledger.clone()))
+        .unwrap_or_default()
+}
+
+/// Record that we LOOKED, and whether what we saw had drifted.
+///
+/// Deliberately mirrors the ledger half of [`crate::trust::reverify::settle`] and stops there: the
+/// half `settle` adds on top is the recovery hold, which this plane's `observe` cannot express. See
+/// the stated difference above.
+fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool) {
+    let Ok(sid) = ServerId::new(id) else {
+        return;
+    };
+    cache.apply(|servers| {
+        if let Some(sc) = servers.get_mut(sid.as_str()) {
+            sc.ledger.last_checked_ms = Some(now_ms);
+            if drifted {
+                sc.ledger.drift_observations += 1;
+                sc.ledger.last_drift_ms = Some(now_ms);
+            }
+        }
+    });
+}
+
+/// THIS PLANE'S `Sweeper`. Holds the [`crate::state::AppHandle`] rather than a snapshot of the app,
+/// and that is the one place this plane's job differs from its sibling's in a way that matters: the
+/// MCP catalogue is REBUILT on every config apply, so a job holding an `Arc<App>` taken at boot
+/// would go on sweeping the registrations of a config the operator has already replaced — refreshing
+/// servers they deleted and never looking at the ones they added. Loading the handle on each tick
+/// means the sweep always sees the live generation.
+pub(crate) struct RefreshSweeper(pub(crate) std::sync::Arc<crate::state::AppHandle>);
+
+impl crate::trust::sweep::Sweeper for RefreshSweeper {
+    type Detail = RefreshDetail;
+
+    fn plane(&self) -> crate::plane::Plane {
+        crate::plane::Plane::Mcp
+    }
+
+    async fn sweep(&self, now_ms: u64) -> Vec<crate::trust::sweep::SweepOutcome<RefreshDetail>> {
+        // Every leg is non-blocking I/O through the shared pool, so unlike the sibling plane's card
+        // fetch there is nothing here to move onto a blocking thread.
+        let app = self.0.load();
+        refresh_sweep(&app, now_ms).await
+    }
+}
+
 // Shared fixtures for the connect batteries: a REAL fake MCP peer whose tool list can CHANGE under
 // a live cache, which is the one thing a rug-pull proof cannot do without.
 #[cfg(test)]
 #[path = "tests/connect_support.rs"]
 pub(super) mod connect_support;
+
+// THE PROOF THAT THE DEFENCE RUNS WITH NOBODY WATCHING: a schema changed under a live cache, the
+// TIMER'S OWN SWEEP (never the admin verb), and the dispatch that is refused because of it.
+#[cfg(test)]
+#[path = "tests/timer_dispatch_tests.rs"]
+mod timer_dispatch_tests;
 
 #[cfg(test)]
 #[path = "tests/connect_tests.rs"]

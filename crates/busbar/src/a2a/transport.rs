@@ -75,7 +75,7 @@ use std::time::Duration;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
-use super::scheduler::CardTransports;
+use super::verify::CardTransports;
 
 /// How long one hop may take, end to end. An agent card is a small JSON document from a host an
 /// operator named; a hop that has not completed in this long is not going to.

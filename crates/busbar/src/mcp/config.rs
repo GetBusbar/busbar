@@ -560,7 +560,7 @@ pub(crate) struct McpServerDefCfg {
     /// key that slows DETECTION, none that delays a QUARANTINE, and no per-server "skip if it failed
     /// last time" — every one of those would be a window an upstream could open for itself by
     /// misbehaving, and choosing when to misbehave is entirely within its gift. See
-    /// [`crate::mcp::scheduler`], which has no knob at all.
+    /// [`crate::trust::sweep`], the one job both planes run, which has no knob at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refresh_ttl: Option<String>,
     /// The approved tools, as a MAP so each carries its approved schema hash.
