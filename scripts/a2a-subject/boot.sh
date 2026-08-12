@@ -261,6 +261,22 @@ boot_busbar_a2a_subject() {
   local bin="${A2A_SUBJECT_BUSBAR_BIN:?boot_busbar_a2a_subject needs A2A_SUBJECT_BUSBAR_BIN}"
   [ -x "$bin" ] || die "A2A_SUBJECT_BUSBAR_BIN=$bin is not an executable. The subject leg judges a \
 busbar built FROM THIS COMMIT; if the build step did not produce one, that is the finding."
+  # RESOLVED TO AN ABSOLUTE PATH, HERE, WHERE THE `-x` TEST JUST PASSED AGAINST IT.
+  #
+  # busbar is launched below from inside `$dir` — deliberately, so its mutable-config overlay lands
+  # in the scratch directory — and a RELATIVE arm does not survive that `cd`. The workflow's arm is
+  # `A2A_SUBJECT_BUSBAR_BIN: target/debug/busbar`, so every armed run since this leg was written has
+  # passed the executable check at the repository root and then died with
+  # `.a2a-conformance/subject-run/target/debug/busbar: No such file or directory`. The leg has
+  # therefore never booted busbar in CI at all: not a low conformance number, no number, behind an
+  # error that reads like a missing build rather than a resolved-in-the-wrong-directory path.
+  #
+  # Resolved at the point of the check rather than at the point of use, so the file that was proven
+  # executable and the file that is executed cannot be two different files.
+  case "$bin" in
+    /*) ;;
+    *) bin="$PWD/$bin" ;;
+  esac
 
   local dir="${A2A_SUBJECT_WORKDIR:-.a2a-conformance/subject-run}"
   rm -rf "$dir"; mkdir -p "$dir"
