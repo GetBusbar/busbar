@@ -332,9 +332,139 @@ pub(crate) async fn plane_rpc(
     CurrentApp(app): CurrentApp,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
+    wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
-    invoke(app, gov, principal, FromCatalogue, body).await
+    invoke(app, gov, principal, FromCatalogue, wire, body).await
+}
+
+/// The A2A protocol versions THIS ENDPOINT SPEAKS, in the `Major.Minor` spelling the specification
+/// negotiates in.
+///
+/// Both, and each because the tree can be pointed at for it rather than because it sounds
+/// generous. `shape_of` reads the v0.3 streaming methods (`message/stream`, `tasks/resubscribe`)
+/// AND the v1.0 renames (`SendStreamingMessage`, `SubscribeToTask`); [`super::relay`] reads a bare
+/// v0.3 `result` and a v1.0 `{"task": …}` wrapper; [`super::idmap`] rewrites `id`, `taskId` and
+/// v1.0's `task_id`. Everything else on this plane is relayed verbatim and is version-agnostic by
+/// construction. A version this list claims that no code reads would be exactly the defect
+/// `serve::self_card` refuses to commit with `extendedAgentCard: false` — a document asserting a
+/// property nothing implements.
+const SUPPORTED_A2A_VERSIONS: &[&str] = &["0.3", "1.0"];
+
+/// The media type A2A's JSON-RPC binding names. Compared as a MEDIA TYPE, never as a header string:
+/// `application/json; charset=utf-8` is the same media type and a great many clients send it.
+const JSON_MEDIA_TYPE: &str = "application/json";
+
+/// WHETHER A DECLARED MEDIA TYPE IS ONE THIS ENDPOINT READS.
+///
+/// `application/json` is A2A's JSON-RPC binding (specification section 9.1). `application/a2a+json`
+/// is the spelling section 11.1 says SHOULD be used, and refusing it would refuse the protocol's own
+/// preferred media type — the independent battery in `testing/a2a-harness` sends exactly that on
+/// every call, which is how the first draft of this predicate was caught before it shipped.
+///
+/// So the rule is the RFC 6839 structured-syntax suffix rather than a two-name list: anything ending
+/// `+json` is JSON by the registration's own definition, and a future `application/a2a-v2+json` is
+/// admitted without anybody having to remember this function exists. What is refused is a media type
+/// that does not claim to be JSON at all, which is the only case the caller can act on.
+fn is_json_media_type(media: &str) -> bool {
+    media.eq_ignore_ascii_case(JSON_MEDIA_TYPE)
+        || media
+            .rsplit_once('+')
+            .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("json"))
+}
+
+/// THE TWO HEADERS THIS PLANE READS OFF AN INBOUND REQUEST, and deliberately the only two.
+///
+/// A `HeaderMap` is NOT extracted, here or anywhere on this path, and that is a security property
+/// rather than a style: the first draft of the relay extracted one and the caller's own credential
+/// went out on the backend hop (see step 7 in [`invoke`]). An extractor that can only ever hold
+/// these two owned strings cannot forward a third header by accident, because there is no third
+/// header in it to forward.
+pub(crate) struct Wire {
+    /// The request's `Content-Type`, as sent. `None` when the caller sent none.
+    content_type: Option<String>,
+    /// The requested `A2A-Version`. `None` when absent; `Some("")` when present and empty, which
+    /// the specification defines as `0.3` rather than as a refusal.
+    version: Option<String>,
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        // A header whose bytes are not UTF-8 reads as absent rather than as a refusal: neither of
+        // these two carries a value that could legitimately be non-ASCII, so a non-UTF-8 one is a
+        // broken client, and the request still has to satisfy every gate below this one.
+        let read = |name: &str| {
+            parts
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        Ok(Wire {
+            content_type: read("content-type"),
+            version: read("a2a-version"),
+        })
+    }
+}
+
+impl Wire {
+    /// THE REFUSAL THIS REQUEST'S HEADERS EARN, or `None` when they earn none.
+    ///
+    /// `Null` as the JSON-RPC `id` throughout, and that is the specification's instruction rather
+    /// than laziness: the body has not been read at this point, so the id has not been determined,
+    /// and JSON-RPC 2.0 section 5 says an answer sent before the id is known MUST carry `null`.
+    fn refuse(&self) -> Option<Response> {
+        if let Some(ct) = self.content_type.as_deref() {
+            // The media type is everything before the first `;`, case-insensitively. A caller that
+            // sent NO `Content-Type` has not sent a WRONG one and is not refused here — the body
+            // still has to parse as JSON, which is the check that already existed and which stays
+            // the floor. Tightening that would be a new way to break callers that work today, so
+            // it is stated here rather than left to be discovered.
+            let media = ct.split(';').next().unwrap_or_default().trim();
+            if !is_json_media_type(media) {
+                return Some(super::rpcerror::respond(
+                    &serde_json::Value::Null,
+                    super::rpcerror::A2aError::ContentTypeNotSupported,
+                    format!(
+                        "this endpoint reads `{JSON_MEDIA_TYPE}` and any `+json` media type; the \
+                         request declared `{media}`"
+                    ),
+                ));
+            }
+        }
+
+        // ABSENT OR EMPTY IS `0.3`, which is A2A's own rule for a caller that names no version and
+        // not a leniency invented here. Every client written before the header existed sends
+        // neither, and refusing them would be this gate breaking the compatibility it is about.
+        let asked = self.version.as_deref().unwrap_or_default().trim();
+        if asked.is_empty() {
+            return None;
+        }
+        // NEGOTIATION IS ON `Major.Minor`: the specification's own granularity. A caller asking for
+        // `1.0.7` is asking for `1.0`, and a comparison against the whole string would refuse it
+        // for naming a patch level nobody negotiates.
+        let mut parts = asked.split('.');
+        let major_minor = match (parts.next(), parts.next()) {
+            (Some(major), Some(minor)) => format!("{major}.{minor}"),
+            _ => asked.to_string(),
+        };
+        if SUPPORTED_A2A_VERSIONS.contains(&major_minor.as_str()) {
+            return None;
+        }
+        Some(super::rpcerror::respond(
+            &serde_json::Value::Null,
+            super::rpcerror::A2aError::VersionNotSupported,
+            format!(
+                "this endpoint speaks A2A {}; the request asked for `{asked}`",
+                SUPPORTED_A2A_VERSIONS.join(" and ")
+            ),
+        ))
+    }
 }
 
 /// SERVE THE AGENT CARD — `GET /a2a/agents/{agent_id}`.
@@ -457,9 +587,10 @@ pub(crate) async fn rpc(
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
+    wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
-    invoke(app, gov, principal, Named(agent_id), body).await
+    invoke(app, gov, principal, Named(agent_id), wire, body).await
 }
 
 /// WHICH FRONTED AGENT A SUBMISSION IS FOR, and the two ways a caller can say it.
@@ -483,6 +614,7 @@ async fn invoke(
     gov: crate::governance::GovCtx,
     principal: crate::auth::AuthPrincipal,
     target: Target,
+    wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
     if app.a2a.is_none() {
@@ -492,6 +624,23 @@ async fn invoke(
         return governance_required();
     };
     let now = crate::store::now();
+
+    // ── THE TWO FACTS OFF THE REQUEST LINE, JUDGED BEFORE ANYTHING ELSE. ────────────────────────
+    //
+    // busbar is content-blind about the caller's ENVELOPE and is not content-blind about the HTTP
+    // request carrying it. busbar terminated this connection; busbar is the server the client
+    // discovered, authenticated to and addressed. A media type this endpoint does not read and a
+    // protocol version this endpoint does not speak are therefore busbar's answers to give, and
+    // relaying either to a backend and forwarding its cheerful reply tells the caller it was
+    // understood when nothing understood it.
+    //
+    // FIRST, and before the JSON parse, because the order IS the behaviour: a request with a wrong
+    // media type usually also carries a body that is not JSON, and a gate placed after the parse
+    // answers `Parse` (-32700) forever and never reaches -32005. The caller is then told to fix its
+    // body when the thing to fix is a header.
+    if let Some(refusal) = wire.refuse() {
+        return refusal;
+    }
 
     let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return super::rpcerror::respond(
