@@ -89,8 +89,9 @@ fn series_for<'a>(exposition: &'a str, family: &str, plane: &str) -> Vec<&'a str
 /// `busbar_request_duration_seconds` series on a real `/metrics` scrape, labelled with the plane
 /// they arrived on.
 ///
-/// RED BEFORE GREEN: on the pre-change tree this fails on the very first assertion, because
+/// Delete the observation layer and this test fails on its very first assertion: without it,
 /// `plane` is not a label on any series and no MCP or A2A request reaches an emission site at all.
+/// That is what the test is for — the two planes were invisible on `/metrics`, not under-labelled.
 #[tokio::test]
 async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
     crate::metrics::init();
