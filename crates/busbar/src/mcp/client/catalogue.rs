@@ -229,7 +229,7 @@ pub(crate) struct ServerCatalogue {
     /// (`main.rs` carries `mcp_sightings` across), so a reload cannot reset a server's freshness
     /// clock and buy an upstream a fresh window.
     ///
-    /// Read by [`crate::mcp::scheduler`] and by nothing on the request path.
+    /// Read by [`crate::mcp::connect::refresh_sweep`] and by nothing on the request path.
     pub(crate) ledger: crate::trust::reverify::Ledger,
 }
 

@@ -1103,14 +1103,14 @@ async fn run() {
     // next tick rather than sweeping a generation the operator has already replaced.
     if !app_handle.load().mcp_catalogue.is_empty() {
         tracing::info!(
-            tick_secs = crate::mcp::scheduler::REFRESH_TICK.as_secs(),
+            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
             "mcp: tool-list refresh job started; registered servers are re-hashed on their own \
              `refresh_ttl:` and quarantined on drift with no operator present"
         );
         // Handle intentionally dropped, exactly as the A2A job's is: it runs for the process
         // lifetime and exits its own loop on the shutdown broadcast.
-        std::mem::drop(crate::mcp::scheduler::spawn_refresher(
-            app_handle.clone(),
+        std::mem::drop(crate::trust::sweep::spawn(
+            crate::mcp::connect::RefreshSweeper(app_handle.clone()),
             shutdown_tx.subscribe(),
         ));
     }
@@ -1124,7 +1124,7 @@ async fn run() {
     if let Some(plane) = app_handle.load().a2a.clone() {
         tracing::info!(
             agents = plane.len(),
-            tick_secs = crate::a2a::scheduler::REVERIFY_TICK.as_secs(),
+            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
             "a2a: re-verification job started"
         );
         // PUBLISH BUSBAR'S AGENT-CARD ISSUER KEY, once, at the one moment an operator is watching.
@@ -1162,9 +1162,16 @@ async fn run() {
         .unwrap_or_else(|e| die(format!("a2a: outbound client identity: {e}")));
         // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
         // lifetime and exits its own loop on the shutdown broadcast.
-        std::mem::drop(crate::a2a::scheduler::spawn_reverifier(
-            plane,
+        // THE PER-AGENT TRANSPORTS, BUILT ONCE for the job's lifetime rather than per tick. The
+        // identities were resolved at boot and the plane the job holds is this generation's, so
+        // rebuilding the bundle every thirty seconds would re-derive a constant — and, now that a
+        // transport can carry a private key, would do so with key material in hand on every tick.
+        let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
+            plane.fetch_policy().clone(),
             &a2a_identities,
+        ));
+        std::mem::drop(crate::trust::sweep::spawn(
+            crate::a2a::verify::ReverifySweeper { plane, live },
             shutdown_tx.subscribe(),
         ));
     }

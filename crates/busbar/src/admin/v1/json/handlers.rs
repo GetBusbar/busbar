@@ -4738,18 +4738,18 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/agents/{name}/connect",
         "post",
         "200",
-        crate::a2a::adminverbs::A2aTrustView
+        crate::a2a::verbs::A2aTrustView
     );
     typed!(
         "/agents/{name}/approve",
         "post",
         "200",
-        crate::a2a::adminverbs::A2aTrustView
+        crate::a2a::verbs::A2aTrustView
     );
     body!(
         "/agents/{name}/approve",
         "post",
-        crate::a2a::adminverbs::ApproveReq
+        crate::a2a::verbs::ApproveReq
     );
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
     typed!("/hooks/{name}/status", "get", "200", sview::HookStatusView);

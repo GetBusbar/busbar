@@ -8,8 +8,12 @@
 //! where it would be lost, because a scheduler is made of the knobs that would lose it: a tick
 //! interval, a skip-if-checked-recently fast path, a back-off on an agent that keeps failing. So the
 //! canonical case — `recovery_backoff_ms = u64::MAX`, still demoted on the first drift — is re-run
-//! HERE, through [`sweep`], the function the spawned job actually calls. A guard that only ever
-//! judged the function underneath the job would pass a job that never called it.
+//! HERE, through [`reverify_sweep`], the function the spawned job actually calls. A guard that only
+//! ever judged the function underneath the job would pass a job that never called it.
+//!
+//! The tick, the shutdown and the reporting are no longer this plane's — they are
+//! [`crate::trust::sweep`], once, for every plane — so the assertions about them name that job. What
+//! stayed here is what only this plane can prove: that the asymmetry survives ITS sweep.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,8 +24,11 @@ use super::*;
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
 use crate::a2a::fetch::HttpResponse;
 use crate::a2a::jws::ED25519_SPKI_PREFIX;
+use crate::a2a::plane::A2aPlane;
 use crate::a2a::reverify::Due;
-use crate::a2a::scheduler::CardTransports;
+use crate::a2a::verify::{CardTransports, ReverifyDetail};
+use crate::plane::Plane;
+use crate::trust::sweep::{report, SweepOutcome, SWEEP_TICK};
 use crate::trust::TrustState;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
@@ -166,16 +173,16 @@ fn sweep_one(
     endpoints: &Endpoints,
     now_ms: u64,
     agent_id: &str,
-) -> Option<SweepOutcome> {
-    sweep(plane, &FixedResolver, &OneForAll(endpoints), now_ms)
+) -> Option<SweepOutcome<ReverifyDetail>> {
+    reverify_sweep(plane, &FixedResolver, &OneForAll(endpoints), now_ms)
         .into_iter()
-        .find(|o| o.agent_id == agent_id)
+        .find(|o| o.subject == agent_id)
 }
 
 /// Take the plane through its first successful contact and APPROVE what was seen, which is the
 /// operator act every later drift is measured against.
 fn approve_after_first_sweep(plane: &A2aPlane, endpoints: &Endpoints, agent_id: &str) {
-    sweep(plane, &FixedResolver, &OneForAll(endpoints), 1_000);
+    reverify_sweep(plane, &FixedResolver, &OneForAll(endpoints), 1_000);
     plane.with_registrations_mut(|regs| {
         let reg = regs
             .iter_mut()
@@ -217,7 +224,7 @@ fn the_scheduled_sweep_demotes_on_the_first_drift_however_long_the_recovery_back
 
     endpoints.serve("a2a.vendor", &signed_by(&k, a_card("moved")));
     let outcome = sweep_one(&plane, &endpoints, 62_000, "planner").expect("the agent was swept");
-    let settled = outcome.pass.settled.as_ref().expect("settled");
+    let settled = outcome.detail.pass.settled.as_ref().expect("settled");
 
     assert!(
         settled.drift_observed,
@@ -255,7 +262,12 @@ fn recovery_is_the_half_the_scheduled_sweep_holds() {
     endpoints.serve("a2a.vendor", &good);
     let held = sweep_one(&plane, &endpoints, 123_000, "planner").expect("swept");
     assert!(
-        held.pass.settled.as_ref().expect("settled").recovery_held,
+        held.detail
+            .pass
+            .settled
+            .as_ref()
+            .expect("settled")
+            .recovery_held,
         "a clean answer inside the backoff is DISBELIEVED"
     );
     assert_eq!(
@@ -268,6 +280,7 @@ fn recovery_is_the_half_the_scheduled_sweep_holds() {
     let believed = sweep_one(&plane, &endpoints, 500_000, "planner").expect("swept");
     assert!(
         !believed
+            .detail
             .pass
             .settled
             .as_ref()
@@ -290,20 +303,20 @@ fn the_sweep_never_claims_to_be_an_operator_sync() {
 
     let first = sweep_one(&plane, &endpoints, 1_000, "planner").expect("swept");
     assert_eq!(
-        first.pass.due,
+        first.detail.pass.due,
         Due::NeverChecked,
         "a registration lowered from config has never been contacted, so it is due at once"
     );
 
     let inside_window = sweep_one(&plane, &endpoints, 30_000, "planner").expect("swept");
     assert_eq!(
-        inside_window.pass.due,
+        inside_window.detail.pass.due,
         Due::No,
         "and the timer does not manufacture an OperatorSync to check anyway"
     );
 
     let elapsed = sweep_one(&plane, &endpoints, 62_000, "planner").expect("swept");
-    assert_eq!(elapsed.pass.due, Due::TtlExpired);
+    assert_eq!(elapsed.detail.pass.due, Due::TtlExpired);
 }
 
 #[test]
@@ -325,14 +338,14 @@ fn every_registration_is_swept_on_every_tick_and_a_failing_one_is_not_backed_off
 
     let mut now = 1_000;
     for tick in 1..=3 {
-        let outcomes = sweep(&plane, &FixedResolver, &OneForAll(&endpoints), now);
+        let outcomes = reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), now);
         assert_eq!(
             outcomes.len(),
             3,
             "tick {tick}: every registration is visited, not a subset"
         );
         assert!(
-            outcomes.iter().all(|o| o.pass.due.should_check()),
+            outcomes.iter().all(|o| o.detail.pass.due.should_check()),
             "tick {tick}: every registration was DUE and every one was checked"
         );
         assert_eq!(
@@ -366,7 +379,7 @@ fn an_agent_the_operator_removed_is_not_reverified_against_a_remembered_pin() {
     // the pins map — the shape a partially-applied config would produce.
     plane.with_registrations_mut(|regs| regs[0].agent_id = "renamed".to_string());
 
-    let outcomes = sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000);
+    let outcomes = reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000);
     assert!(
         outcomes.is_empty(),
         "an agent this generation's config does not declare is not swept"
@@ -384,9 +397,9 @@ fn the_tick_is_a_constant_and_bounds_only_granularity() {
     // This asserts the shape rather than the number: the tick is a compile-time constant, so there
     // is no config path that can make detection rarer, and it is short relative to the shortest
     // cadence an operator can express.
-    assert!(REVERIFY_TICK.as_secs() > 0);
+    assert!(SWEEP_TICK.as_secs() > 0);
     assert!(
-        REVERIFY_TICK.as_secs() <= 60,
+        SWEEP_TICK.as_secs() <= 60,
         "the sweep must notice an elapsed TTL within a minute of it elapsing"
     );
 }
@@ -398,9 +411,12 @@ async fn the_job_exits_on_the_shutdown_broadcast() {
     let k = key(1);
     let plane = plane_of(&[("planner", signed_agent("a2a.vendor", &k))]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let job = spawn_reverifier(
-        plane,
+    let live = Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
+        plane.fetch_policy().clone(),
         &crate::a2a::transport::ClientIdentities::new(),
+    ));
+    let job = crate::trust::sweep::spawn(
+        crate::a2a::verify::ReverifySweeper { plane, live },
         shutdown_rx,
     );
     shutdown_tx.send(()).expect("the receiver is live");
@@ -417,25 +433,19 @@ fn reporting_a_sweep_is_separate_from_deciding_it() {
     endpoints.serve("a2a.vendor", &signed_by(&k, a_card("decompose a goal")));
     let plane = plane_of(&[("planner", signed_agent("a2a.vendor", &k))]);
 
-    report(&sweep(
-        &plane,
-        &FixedResolver,
-        &OneForAll(&endpoints),
-        1_000,
-    ));
-    report(&sweep(
-        &plane,
-        &FixedResolver,
-        &OneForAll(&endpoints),
-        2_000,
-    ));
+    report(
+        Plane::A2a,
+        &reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000),
+    );
+    report(
+        Plane::A2a,
+        &reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 2_000),
+    );
     endpoints.serve("a2a.vendor", &signed_by(&key(2), a_card("moved")));
-    report(&sweep(
-        &plane,
-        &FixedResolver,
-        &OneForAll(&endpoints),
-        70_000,
-    ));
+    report(
+        Plane::A2a,
+        &reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 70_000),
+    );
 }
 
 // ── THE TRANSPORT IS ASKED FOR PER REGISTRATION ──────────────────────────────────────────────────
@@ -475,7 +485,7 @@ fn the_sweep_asks_for_a_transport_per_registration_by_agent_id() {
         ("payments", signed_agent("payments.vendor", &k)),
     ]);
 
-    let outcomes = sweep(&plane, &FixedResolver, &bundle, 1_000);
+    let outcomes = reverify_sweep(&plane, &FixedResolver, &bundle, 1_000);
 
     assert_eq!(outcomes.len(), 2);
     assert_eq!(
@@ -518,24 +528,24 @@ fn the_sweep_honours_the_registrations_own_allow_private() {
     refused.allow_private = false;
 
     let plane = plane_of(&[("opted-in", opted_in), ("refused", refused)]);
-    let outcomes = sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000);
+    let outcomes = reverify_sweep(&plane, &FixedResolver, &OneForAll(&endpoints), 1_000);
 
     let seen = outcomes
         .iter()
-        .find(|o| o.agent_id == "opted-in")
+        .find(|o| o.subject == "opted-in")
         .expect("swept");
     assert!(
-        seen.pass.refusal.is_none(),
+        seen.detail.pass.refusal.is_none(),
         "`allow_private: true` must reach its own loopback backend: {:?}",
-        seen.pass.refusal
+        seen.detail.pass.refusal
     );
 
     let blocked = outcomes
         .iter()
-        .find(|o| o.agent_id == "refused")
+        .find(|o| o.subject == "refused")
         .expect("swept");
     assert!(
-        blocked.pass.refusal.is_some(),
+        blocked.detail.pass.refusal.is_some(),
         "and the registration that did NOT opt in is refused on the same sweep, from the same \
          plane — the knob is per registration, not per deployment"
     );

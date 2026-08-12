@@ -498,7 +498,7 @@ impl Catalogue {
     /// The refresh timer's reach, and the reason it is a plain iterator over the whole map with no
     /// filter argument: a sweep that could be handed a subset is a sweep that can be handed an empty
     /// one, and "which servers get watched" is not a decision this plane wants spread across call
-    /// sites. [`crate::mcp::scheduler::sweep`] asks
+    /// sites. [`crate::mcp::connect::refresh_sweep`] asks
     /// [`crate::trust::reverify::due`] about every entry this yields and lets IT answer.
     pub(crate) fn servers(&self) -> impl Iterator<Item = &ServerEntry> {
         self.servers.values()

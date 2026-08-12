@@ -47,7 +47,7 @@
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
 // `declared_pin`. The `connect`/`approve` verbs it was waiting for are now mounted
-// (`super::adminverbs`), and they deliberately do NOT consult it: an approval locks the pin that was
+// (`super::verbs`), and they deliberately do NOT consult it: an approval locks the pin that was
 // OBSERVED and verified against the operator's out-of-band root, and the operator attests to it by
 // echoing the fingerprint back. Handing `Approval::approve` a declared pin as the override would
 // lock a value nobody's fetch confirmed. So this stays a reader with no caller until a surface that

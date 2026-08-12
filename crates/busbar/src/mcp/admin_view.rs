@@ -8,8 +8,33 @@
 //! for when they ask "what does the admin API say about an MCP server" is MCP, and this is where
 //! every other answer about MCP already is. The generic CRUD handler, the overlay persistence and
 //! the OpenAPI emission stay entirely generic and know nothing about this file.
+//!
+//! ## THE TRUST VERBS live here too, and this is where the plane's half of them stops
+//!
+//! `connect` is NOT here. It is [`crate::admin::planeverbs::connect`], written once and
+//! parameterised by plane, because "resolve the registration, go and look, audit whatever you
+//! found" is one sequence and it was written down twice. What this file supplies is the plane's
+//! half of that contract — [`McpServers`], which says where an MCP registration is resolved from
+//! and what looking at one means — plus the two verbs that contact NOTHING:
+//!
+//! - `GET /tools/{name}/changes` — the trust view, computed from the LAST observation. Safe to poll.
+//! - `GET /tools/{name}/health` — can busbar use this server right now, and if not, why.
+//!
+//! Those two are `GET`s that read the recorded sighting, so they have no shared sequence to belong
+//! to: there is no upstream contact to audit and nothing that can change a trust state. A plane's
+//! own derived reads staying with the plane's own views is the layout rule working, not an exception
+//! to the unification.
 
-use crate::admin::v1::contract::NamedDefView;
+use std::sync::Arc;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::Response;
+
+use crate::admin::planeverbs::{self, PlaneTrust};
+use crate::admin::v1::contract::{AdminError, NamedDefView};
+use crate::plane::Plane;
+use crate::state::AppHandle;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
 ///
@@ -220,3 +245,104 @@ fn capability_views(
     }
     out.into_values().collect()
 }
+
+// ══ THE TRUST VERBS: this plane's half of the ONE surface in `crate::admin::planeverbs` ══════════
+
+/// Everything the MCP look needs, cloned out of the live snapshot.
+///
+/// Both halves are required and a missing EITHER is the same `404`. The catalogue ENTRY carries the
+/// standing approval; the config DEFINITION carries the allow-list the pending rows come from. A
+/// server present in one and absent from the other is not a state the build can produce, so
+/// distinguishing them in the refusal would tell a caller which names exist and nothing else.
+pub(crate) struct McpSubject {
+    entry: crate::mcp::catalogue::ServerEntry,
+    cfg: crate::mcp::config::McpServerDefCfg,
+    pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
+    sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
+}
+
+/// THE MCP PLANE'S TRUST SURFACE. Three items, and the surface owns everything else.
+pub(crate) struct McpServers;
+
+impl PlaneTrust for McpServers {
+    const PLANE: Plane = Plane::Mcp;
+    type Subject = McpSubject;
+    type View = McpTrustView;
+
+    fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<McpSubject, AdminError> {
+        planeverbs::registered(Plane::Mcp, name, || {
+            match (
+                app.mcp_catalogue.server(name),
+                app.mcp_servers.servers.get(name),
+            ) {
+                (Some(entry), Some(cfg)) => Some(McpSubject {
+                    entry: entry.clone(),
+                    cfg: cfg.clone(),
+                    pool: app.mcp_pool.clone(),
+                    sightings: app.mcp_sightings.clone(),
+                }),
+                _ => None,
+            }
+        })
+    }
+
+    async fn look(subject: McpSubject, _name: String) -> Result<McpTrustView, AdminError> {
+        let report =
+            crate::mcp::connect::refresh(&subject.pool, &subject.sightings, &subject.entry)
+                .await
+                // A refusal here means the refresh was never attempted — a registration busbar
+                // cannot name, or a credential posture an operator-driven refresh cannot honour.
+                // Both are the operator's own configuration, so both are `invalid_request` rather
+                // than a 404 or a 5xx.
+                .map_err(|refusal| AdminError::Validation(refusal.to_string()))?;
+        Ok(trust_view(&report, &subject.entry, &subject.cfg))
+    }
+}
+
+/// `GET /api/v1/admin/tools/{name}/changes` — the changes queue, derived, contacting nothing.
+pub(crate) async fn changes(
+    State(handle): State<Arc<AppHandle>>,
+    Path(name): Path<String>,
+) -> Response {
+    let app = handle.load();
+    let subject = match McpServers::resolve(&app, &name) {
+        Ok(v) => v,
+        Err(e) => return crate::admin::v1::json::err_json(&e),
+    };
+    let report = crate::mcp::connect::changes(&subject.sightings, &subject.entry);
+    crate::admin::v1::json::ok_json(
+        StatusCode::OK,
+        &trust_view(&report, &subject.entry, &subject.cfg),
+    )
+}
+
+/// `GET /api/v1/admin/tools/{name}/health` — can busbar use this server right now.
+pub(crate) async fn health(
+    State(handle): State<Arc<AppHandle>>,
+    Path(name): Path<String>,
+) -> Response {
+    let app = handle.load();
+    let subject = match McpServers::resolve(&app, &name) {
+        Ok(v) => v,
+        Err(e) => return crate::admin::v1::json::err_json(&e),
+    };
+    let report = crate::mcp::connect::changes(&subject.sightings, &subject.entry);
+    crate::admin::v1::json::ok_json(StatusCode::OK, &health_view(&report))
+}
+
+// Driven over the REAL router, because "mounted and reachable at the right scope" is the claim.
+//
+// GATED ON `auth-admin-tokens`, WHICH IS WHAT MAKES THE CLAIM TESTABLE AT ALL. Every test in here
+// authenticates with `x-admin-token`, and the only thing that verifies that header is the
+// `admin-tokens` module this feature compiles in. Under `--no-default-features` there is no admin
+// auth module at all, so the chain fails closed and every request is a 401 before it reaches a
+// verb — the tests were asserting 200/404/400 and getting 401.
+//
+// THE COVERAGE GAP, STATED RATHER THAN LEFT TO BE FOUND: with this feature off, the trust verbs
+// have no test coverage. That is not a hole in the verbs — it is that a build with no admin auth
+// module cannot admit an admin request by design, so there is no authenticated caller to test
+// with. Covering it would mean standing up an external admin auth module in the fixture, which is
+// a different test than this one and belongs with the plugin suite.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[path = "tests/adminverbs_tests.rs"]
+pub(crate) mod adminverbs_tests;

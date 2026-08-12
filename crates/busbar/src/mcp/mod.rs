@@ -104,9 +104,11 @@
 //! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
+/// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —
+/// where an MCP registration is resolved from, what looking at one means, and the two derived reads
+/// (`changes`, `health`) that contact nothing. `connect` itself is
+/// [`crate::admin::planeverbs::connect`], written once for every plane.
 pub(crate) mod admin_view;
-/// THE MCP TRUST VERBS on the admin API — `connect`, `changes`, `health`.
-pub(crate) mod adminverbs;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
 pub(crate) mod askstate;
@@ -163,9 +165,6 @@ pub(crate) mod inputreq;
 pub(crate) mod method;
 pub(crate) mod resource;
 pub(crate) mod sanitize;
-/// THE REFRESH TIMER — what calls `connect::refresh` on a tick, so quarantine-on-drift happens with
-/// no operator present. The MCP half of the defence the A2A plane already had.
-pub(crate) mod scheduler;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;

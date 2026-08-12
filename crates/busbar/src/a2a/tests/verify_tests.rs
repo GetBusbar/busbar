@@ -571,12 +571,16 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     let reverify_src = read("src/trust/reverify.rs");
     let config_src = read("src/a2a/config.rs");
     let verify_src = read("src/a2a/verify.rs");
-    // THE OTHER PLANE'S CADENCE, held to the identical rule. MCP now has a `refresh_ttl:` and a
-    // sweep of its own, and both drive the SAME `due`. A knob that slowed detection or delayed a
-    // quarantine would be exactly as dangerous there, and a ratchet that guarded only the plane it
-    // was written for would be the plane-local drift this release has already been bitten by.
+    // THE OTHER PLANE'S CADENCE, held to the identical rule, PLUS THE SHARED JOB BOTH PLANES NOW
+    // RUN. MCP has a `refresh_ttl:` and a sweep of its own, and both drive the SAME `due`. A knob
+    // that slowed detection or delayed a quarantine would be exactly as dangerous there, and a
+    // ratchet that guarded only the plane it was written for would be the plane-local drift this
+    // release has already been bitten by. `trust/sweep.rs` is the one place a tick interval or a
+    // per-registration cooldown could now be introduced for BOTH planes at once, which makes it the
+    // single most important file on this list.
     let mcp_config_src = read("src/mcp/config.rs");
-    let mcp_scheduler_src = read("src/mcp/scheduler.rs");
+    let mcp_sweep_src = read("src/mcp/connect.rs");
+    let shared_sweep_src = read("src/trust/sweep.rs");
 
     let code = |s: &str| -> String {
         s.lines()
@@ -593,7 +597,8 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
         ("a2a/config.rs", code(&config_src)),
         ("a2a/verify.rs", code(&verify_src)),
         ("mcp/config.rs", code(&mcp_config_src)),
-        ("mcp/scheduler.rs", code(&mcp_scheduler_src)),
+        ("mcp/connect.rs", code(&mcp_sweep_src)),
+        ("trust/sweep.rs", code(&shared_sweep_src)),
     ] {
         for banned in [
             "detection_backoff",
