@@ -14,13 +14,13 @@ All notable changes to Busbar are documented here. The format is based on
   no prior configuration: it connects with no credential, receives a `401` whose
   `WWW-Authenticate` header points at an RFC 9728 protected-resource metadata document, follows that
   to your IdP, does ordinary OAuth, and comes back with a token. Busbar then checks the token's
-  audience is Busbar itself (RFC 8707) before anything else happens — which is what stops a token
+  audience is Busbar itself (RFC 8707) before anything else happens, which is what stops a token
   your IdP legitimately issued for some other service being spent against Busbar's pools and budget.
   Tokens are minted by your existing IdP; Busbar issues none.
 
   Without an `mcp:` block nothing changes: no endpoint, no metadata document, no new routes.
 
-  The endpoint speaks MCP revision `2026-07-28` (the stateless streamable-HTTP revision — no
+  The endpoint speaks MCP revision `2026-07-28` (the stateless streamable-HTTP revision: no
   handshake, no sessions, no resumable stream) and enforces its transport rules: mirrored
   `Mcp-Method` / `Mcp-Name` headers must agree with the request body, `GET` and `DELETE` answer
   `405`, an unknown method answers `404`, an unlisted browser `Origin` answers `403`, and a request
@@ -31,7 +31,7 @@ All notable changes to Busbar are documented here. The format is based on
   `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`,
   `resources/read` and `completion/complete`
   are served, and Busbar calls OUT to the upstream MCP servers you register under
-  `tools:` — so Busbar is a governed gateway in front of your tool estate, not only an endpoint that
+  `tools:`, so Busbar is a governed gateway in front of your tool estate, not only an endpoint that
   speaks the protocol.
 
   What a caller SEES and what it may CALL are one decision, taken from that caller's own key
@@ -53,7 +53,7 @@ All notable changes to Busbar are documented here. The format is based on
   A prompt registered with `{placeholder}` spellings now has them SUBSTITUTED from the arguments a
   client sends on `prompts/get`; before, the arguments were ignored and the caller received the
   template unchanged. Substitution happens BEFORE the markup strip, so a value supplied on the
-  request is normalised exactly as the operator's own template is — an argument value ends up in a
+  request is normalised exactly as the operator's own template is. An argument value ends up in a
   model's context and is the more attacker-controlled of the two. A placeholder you supply no value
   for is left visible rather than emptied, so a missing argument stays legible instead of producing
   a prompt that reads as complete and means something else.
@@ -71,12 +71,12 @@ All notable changes to Busbar are documented here. The format is based on
 - **Every MCP tool call is now written to a tamper-evident, per-caller durable record.** Point
   Busbar at a durable store (`store: sqlite`/`postgres`/`valkey`/`mysql`) and each inbound
   `tools/call` appends one row to that caller's own hash-linked chain: who called, which tool, under
-  which approved schema digest and which registry generation, whether it went out, and — when it did
-  not — a stable refusal token you can group on. Refusals are recorded as deliberately as successes:
+  which approved schema digest and which registry generation, whether it went out, and (when it did
+  not) a stable refusal token you can group on. Refusals are recorded as deliberately as successes:
   the record an auditor asks for first is the one where somebody asked for something they could not
   have. Each row links to the previous row for the same caller, so an altered, reordered, inserted or
   removed row is detectable afterwards. Chains are read back and VERIFIED at boot, and any break is
-  logged at `ERROR` naming the caller and the position, while the rows stay restored — refusing to
+  logged at `ERROR` naming the caller and the position, while the rows stay restored. Refusing to
   restore an unverifiable chain would let anyone who can write to your store delete a caller's whole
   history by corrupting one byte.
 
@@ -84,7 +84,7 @@ All notable changes to Busbar are documented here. The format is based on
   fact; it does not stop a write, and a host compromised at the moment of writing can rewrite a whole
   chain consistently. Verification today happens at boot; there is no on-demand verify endpoint, so
   between two restarts a tamper is undetected. And there is no retention window for these records
-  yet — a busy deployment's call log grows until you prune it yourself.
+  yet. A busy deployment's call log grows until you prune it yourself.
 
   With the default `store: memory` nothing is persisted and nothing is claimed: the log keeps chain
   positions in RAM, the boot restore reports zero, and that zero is the truth being reported.
@@ -95,13 +95,13 @@ All notable changes to Busbar are documented here. The format is based on
   names a target, hands it arguments, and gets content or an error back" now also carries A2A
   `message/send`, so it is no longer named after one protocol's method. The same string is the
   `paths:` configuration key for that operation, so a `paths:` entry keyed `tool_call` must be
-  re-keyed to `invoke`. The five operations that arrive alongside it — `catalogue`, `fetch`, `task`,
-  `subscribe` and `control` — publish those names as their label and their key.
+  re-keyed to `invoke`. The five operations that arrive alongside it (`catalogue`, `fetch`, `task`,
+  `subscribe` and `control`) publish those names as their label and their key.
 
 - **BREAKING (metrics): `busbar_requests_total` and `busbar_request_duration_seconds` gained a
   `plane` label, and the model plane's existing series carry it too.** The values are `llm`, `mcp`
-  and `a2a`. If you group or join on the full label set of either family — a recording rule, a
-  `group_left`, a panel legend built from `{{...}}` — those series are NEW series after this
+  and `a2a`. If you group or join on the full label set of either family (a recording rule, a
+  `group_left`, a panel legend built from `{{...}}`), those series are NEW series after this
   upgrade, so counters restart from zero at the changeover and a `rate()` window spanning the
   restart will read low once. Queries that only aggregate (`sum(rate(busbar_requests_total[5m]))`)
   are unaffected. To keep an existing panel exactly as it was, add `plane="llm"` to its selector;
@@ -111,26 +111,26 @@ All notable changes to Busbar are documented here. The format is based on
   We added the label to the model plane rather than only to the new planes on purpose. A label
   present on some series of a family and absent from others cannot be grouped by: `sum by (plane)`
   would bucket every model-plane series under the empty string, and an operator would have to know
-  that the blank bucket means "LLM" — which is a footnote, not a dashboard. One breaking change,
+  that the blank bucket means "LLM", which is a footnote, not a dashboard. One breaking change,
   once, buys `sum by (plane) (rate(busbar_requests_total[5m]))` meaning what it says.
 
 ### Removed
 
 - **The MCP stdio child-process supervisor has been deleted, and `transport: stdio` says so
-  plainly.** Busbar carried a complete, tested supervisor for local stdio MCP servers — spawn, reap,
+  plainly.** Busbar carried a complete, tested supervisor for local stdio MCP servers (spawn, reap,
   a `spawning → ready → draining → dead` lifecycle, capped restart backoff and a
-  five-crashes-in-a-window circuit breaker — that **nothing could ever call**: there is no dispatch
+  five-crashes-in-a-window circuit breaker) that **nothing could ever call**: there is no dispatch
   path for a stdio upstream, and `transport: stdio` has always been refused at config validation. It
   is removed rather than wired, because unreachable code that reads as a shipped resilience feature
   is worse than an absent one: it is the kind of thing that ends up in a security questionnaire
-  answer. The MCP design commits to no stdio build for this release — all three transports are
+  answer. The MCP design commits to no stdio build for this release. All three transports are
   DESIGNED, the transport baseline at ship is explicitly still open, and the owner rulings that
   override earlier sections say nothing about it.
 
   Nothing an operator can configure changes: `transport: stdio` was refused before and is refused
   now, with a message that no longer implies a supervisor exists somewhere waiting to be switched
   on. The `process` feature was dropped from Busbar's async runtime along with it, so Busbar's
-  release binary can no longer spawn a child process at all — which is also what stops an
+  release binary can no longer spawn a child process at all, which is also what stops an
   unreachable supervisor being re-introduced quietly, since doing so now fails to compile.
 
 ### Fixed
@@ -138,11 +138,11 @@ All notable changes to Busbar are documented here. The format is based on
 - **MCP and A2A traffic was invisible on `/metrics`. It is now on the same series as model
   traffic.** `busbar_requests_total` and `busbar_request_duration_seconds` were emitted from the
   model plane's ingress and nowhere else, so a tool call and an agent task produced no sample at
-  all — not an under-labelled one, none. An operator watching a dashboard saw model traffic and had
+  all: not an under-labelled one, none. An operator watching a dashboard saw model traffic and had
   no signal that the tool or agent plane was refusing or timing out every request. Both planes now
   emit the same two families, with the same `outcome` vocabulary (`ok` / `client_error` /
   `exhausted` / `error`) and the same label keys, distinguished by the new `plane` label. A refusal
-  issued before the handler runs — a `401` on an audience-bound MCP endpoint, for instance — is
+  issued before the handler runs (a `401` on an audience-bound MCP endpoint, for instance) is
   counted too, because the emission happens at the plane's door rather than inside its handler.
 
   The `pool` label reads `unresolved` on both new planes for now: it names the routing target a
