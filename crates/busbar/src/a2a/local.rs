@@ -5,7 +5,8 @@
 //!
 //! Every other method on this plane is RELAYED. busbar reads the envelope only far enough to
 //! authorise, meter and record it, and the backend agent decides what the answer is
-//! (`a2a-design.md` section 3.4, content-blind dispatch). This module is the deliberate exception,
+//! (content-blind dispatch: busbar carries a caller's payload without reading it). This module is
+//! the deliberate exception,
 //! and it is deliberately small: three groups of verbs whose ANSWER IS A FACT ABOUT BUSBAR, not a
 //! fact about the backend.
 //!
@@ -19,7 +20,7 @@
 //! the backend's names for the same work are held in `super::idmap` and are never client-visible.
 //! So a `ListTasks` relayed to a backend enumerates ids the caller has never seen and cannot use,
 //! for a tenancy the backend does not know about. The task rows busbar persists — the ones
-//! `a2a-design.md` section 7.6 designs and section 7.7 scopes to "the presenting key's own tasks" —
+//! busbar's own task rows are scoped to "the presenting key's own tasks" —
 //! are the only set that answers the question the caller actually asked.
 //!
 //! **What this answer IS, stated so nobody reads more into it.** It is the set of tasks busbar
@@ -251,7 +252,7 @@ pub(crate) fn list_tasks(
         .to_string();
 
     // SCOPED FIRST, filtered second. `list_scoped` is the authorization boundary of
-    // `a2a-design.md` section 7.7: a caller can only ever be shown its own rows, and every filter
+    // THE SCOPING RULE: a caller can only ever be shown its own rows, and every filter
     // below narrows that set rather than widening it.
     let mut rows: Vec<Task> = super::taskstore::TASKS
         .list_scoped(principal)
@@ -312,7 +313,7 @@ pub(crate) struct PushConfig {
 /// task row (`taskstore::set_push_callback`), so a delivery still happens after a restart on a
 /// durable store, but the config's ID — the handle the CRUD verbs are addressed by — does not
 /// survive. That is the same honesty `super::pushdeliver::pins` is documented with and the same
-/// shape as `a2a-design.md` section 7.6's own correction: survival is a property of the configured
+/// shape as the callback's own durability rule: survival is a property of the configured
 /// backend, and the RAM default has none.
 fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
     static CONFIGS: OnceLock<Mutex<HashMap<String, PushConfig>>> = OnceLock::new();

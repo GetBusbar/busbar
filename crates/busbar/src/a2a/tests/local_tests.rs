@@ -73,7 +73,7 @@ async fn error_code(response: axum::response::Response) -> i64 {
 // ══ WHICH VERBS ARE LOCAL ════════════════════════════════════════════════════════════════════════
 
 /// The list is EXACT. A method that is not here relays unread, which is this plane's default and the
-/// property `a2a-design.md` section 3.4 is about — so an accidental addition is a silent change to
+/// property content-blind dispatch is about — so an accidental addition is a silent change to
 /// content-blindness, and an accidental removal is a verb going back to a backend that cannot
 /// answer it.
 #[test]
