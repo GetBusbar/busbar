@@ -1016,6 +1016,58 @@ async fn run() {
         }
     }
 
+    // DURABLE MCP PER-CALL LOG. The tamper-evident record of who called which tool, under which
+    // approved digest, and whether it went out — the Art 26(6) record-keeping pillar, and the thing
+    // that makes "tamper-evident audit" a property an operator can exercise rather than a sentence.
+    //
+    // Attached here for the same reason and in the same shape as the two blocks above: the
+    // configured governance store is the single durable home (store-or-RAM rule), attached as a
+    // write-through sink and READ BACK, because a write's `Ok(())` proves nothing about a trait
+    // whose defaults accept and keep nothing.
+    //
+    // THE RESTORE IS NOT A FORMALITY. It is the only place in a running deployment where a persisted
+    // chain is recomputed, so it is also the only place a tamper is detected — every break it finds
+    // is logged at ERROR, naming the principal, while the records stay restored (refusing to restore
+    // them would let anyone able to write to the store DELETE a caller's history by corrupting one
+    // byte). With `store: memory` nothing is implemented, the sink no-ops and this reports zero: the
+    // call log is ephemeral BY DESIGN there, exactly as the audit ring and the task table are.
+    if let Some(gov) = app.governance.as_ref() {
+        let store = gov.store();
+        crate::mcp::calllog::CALLS.set_sink(store.clone());
+        match crate::mcp::calllog::CALLS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::mcp::calllog::Restored::default() => {}
+            Ok(r) => {
+                tracing::info!(
+                    principals = r.principals,
+                    records = r.records,
+                    "MCP per-call log restored from the durable governance store"
+                );
+                // An ENUMERATED-BUT-EMPTY chain is the one shape the verifier cannot judge alone,
+                // and it is what one caller's evidence being deleted wholesale looks like. Counted
+                // and surfaced separately rather than summed into `principals`.
+                if r.empty_chains > 0 {
+                    tracing::warn!(
+                        principals = r.empty_chains,
+                        "the durable MCP call log enumerates these principals but holds NO records \
+                         for them; their chains reopen at seq 1"
+                    );
+                }
+                for brk in &r.chain_breaks {
+                    tracing::error!(
+                        break_detail = %brk,
+                        "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not read the durable MCP per-call log; chains start at their persisted \
+                 tail being unknown, which means a principal with rows in the store may reopen at \
+                 seq 1 and collide"
+            ),
+        }
+    }
+
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that

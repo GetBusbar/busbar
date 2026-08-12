@@ -68,6 +68,27 @@ All notable changes to Busbar are documented here. The format is based on
   server and every approved tool, and there would be no inbound grant to bind Busbar's outbound
   credentials to. Close the data-plane chain, or drop the `mcp:` block.
 
+- **Every MCP tool call is now written to a tamper-evident, per-caller durable record.** Point
+  Busbar at a durable store (`store: sqlite`/`postgres`/`valkey`/`mysql`) and each inbound
+  `tools/call` appends one row to that caller's own hash-linked chain: who called, which tool, under
+  which approved schema digest and which registry generation, whether it went out, and — when it did
+  not — a stable refusal token you can group on. Refusals are recorded as deliberately as successes:
+  the record an auditor asks for first is the one where somebody asked for something they could not
+  have. Each row links to the previous row for the same caller, so an altered, reordered, inserted or
+  removed row is detectable afterwards. Chains are read back and VERIFIED at boot, and any break is
+  logged at `ERROR` naming the caller and the position, while the rows stay restored — refusing to
+  restore an unverifiable chain would let anyone who can write to your store delete a caller's whole
+  history by corrupting one byte.
+
+  Read the claim precisely: this is tamper-EVIDENCE, not tamper-prevention. It detects after the
+  fact; it does not stop a write, and a host compromised at the moment of writing can rewrite a whole
+  chain consistently. Verification today happens at boot; there is no on-demand verify endpoint, so
+  between two restarts a tamper is undetected. And there is no retention window for these records
+  yet — a busy deployment's call log grows until you prune it yourself.
+
+  With the default `store: memory` nothing is persisted and nothing is claimed: the log keeps chain
+  positions in RAM, the boot restore reports zero, and that zero is the truth being reported.
+
 ### Changed
 
 - **BREAKING (metrics): `busbar_requests_total` and `busbar_request_duration_seconds` gained a
@@ -85,6 +106,25 @@ All notable changes to Busbar are documented here. The format is based on
   would bucket every model-plane series under the empty string, and an operator would have to know
   that the blank bucket means "LLM" — which is a footnote, not a dashboard. One breaking change,
   once, buys `sum by (plane) (rate(busbar_requests_total[5m]))` meaning what it says.
+
+### Removed
+
+- **The MCP stdio child-process supervisor has been deleted, and `transport: stdio` says so
+  plainly.** Busbar carried a complete, tested supervisor for local stdio MCP servers — spawn, reap,
+  a `spawning → ready → draining → dead` lifecycle, capped restart backoff and a
+  five-crashes-in-a-window circuit breaker — that **nothing could ever call**: there is no dispatch
+  path for a stdio upstream, and `transport: stdio` has always been refused at config validation. It
+  is removed rather than wired, because unreachable code that reads as a shipped resilience feature
+  is worse than an absent one: it is the kind of thing that ends up in a security questionnaire
+  answer. The MCP design commits to no stdio build for this release — all three transports are
+  DESIGNED, the transport baseline at ship is explicitly still open, and the owner rulings that
+  override earlier sections say nothing about it.
+
+  Nothing an operator can configure changes: `transport: stdio` was refused before and is refused
+  now, with a message that no longer implies a supervisor exists somewhere waiting to be switched
+  on. The `process` feature was dropped from Busbar's async runtime along with it, so Busbar's
+  release binary can no longer spawn a child process at all — which is also what stops an
+  unreachable supervisor being re-introduced quietly, since doing so now fails to compile.
 
 ### Fixed
 

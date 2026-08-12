@@ -967,22 +967,116 @@ fn templated_resource_content(
     serde_json::Value::Object(content)
 }
 
+/// THE PER-CALL RECORD UNDER CONSTRUCTION: what this dispatch knows about itself so far.
+///
+/// ## Why an accumulator and not one emit at the end
+///
+/// `tools_call` has fourteen terminals and they are not interchangeable — an unknown tool, a
+/// revoked grant, a schema that drifted under a live cache, an exhausted budget and an upstream that
+/// refused are five different operator remedies. A single emit at the bottom could only report the
+/// HTTP status, which collapses all of them, and deriving the reason by re-inspecting the response
+/// body would make the durable record depend on the wire format. So each terminal names its own
+/// reason token, in the same statement that produces the response, and the compiler keeps them
+/// paired: [`CallLog::refused`] takes the response BY VALUE, so a terminal cannot return without
+/// going through it.
+///
+/// ## The fields are learned, not assumed
+///
+/// `tool` starts as the name the CALLER asked for, because a refusal that matched no registration
+/// still has to say what was asked for; `server`, `tool_digest` and `pin_generation` are filled in
+/// by [`CallLog::resolved`] once admission has produced a catalogue entry, and stay empty/zero on
+/// every refusal that never reached one — which is exactly what `McpCallRecord` documents those
+/// fields to mean.
+struct CallLog<'a> {
+    /// The AUTHENTICATED caller. The same string the admin audit row is attributed to, so a record
+    /// and its audit row name one principal rather than two spellings of one.
+    principal: &'a str,
+    /// The request-spine join key, minted once per dispatch from the engine's own counter.
+    request_id: String,
+    tool: String,
+    server: String,
+    tool_digest: String,
+    pin_generation: u64,
+}
+
+impl<'a> CallLog<'a> {
+    fn open(ctx: &'a Ctx<'_>, requested: &str, generation: u64) -> Self {
+        CallLog {
+            principal: ctx.actor,
+            request_id: ctx.app.next_request_id().to_string(),
+            tool: requested.to_string(),
+            server: String::new(),
+            tool_digest: String::new(),
+            pin_generation: generation,
+        }
+    }
+
+    /// ADMISSION SUCCEEDED: bind the record to the entry the call actually resolved to, and to the
+    /// digest the operator approved for it. That digest is what ties this call to the exact schema
+    /// and description that were vouched for, so a later re-approval cannot be mistaken for the one
+    /// this call rode.
+    fn resolved(&mut self, selected: &ToolEntry, generation: u64) {
+        self.tool = selected.namespaced.clone();
+        self.server = selected.server.clone();
+        self.tool_digest = selected.schema_hash.clone().unwrap_or_default();
+        self.pin_generation = generation;
+    }
+
+    fn write(&self, outcome: &'static str, reason: &str) {
+        super::calllog::emit(
+            self.principal,
+            super::calllog::CallInput {
+                ts: crate::store::now(),
+                server: self.server.clone(),
+                tool: self.tool.clone(),
+                outcome,
+                reason: reason.to_string(),
+                tool_digest: self.tool_digest.clone(),
+                pin_generation: self.pin_generation,
+                request_id: self.request_id.clone(),
+            },
+        );
+    }
+
+    /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and
+    /// the answer are produced in one statement and a terminal cannot quietly skip the record.
+    fn refused(&self, reason: &str, response: Response) -> Response {
+        self.write(super::calllog::OUTCOME_REFUSED, reason);
+        response
+    }
+
+    /// Record a call that WENT OUT and was answered. `reason` is empty on a dispatch, per the store
+    /// contract — the field is a refusal token, not a description.
+    fn dispatched(&self, response: Response) -> Response {
+        self.write(super::calllog::OUTCOME_DISPATCHED, "");
+        response
+    }
+}
+
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
 async fn tools_call(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Response {
+    let selected_gen = ctx.app.mcp_catalogue.generation();
     let Some(name) = string_param(params, "name") else {
-        return invalid_params(id, "`params.name` is required and must be a string.");
+        // THE CALLER IS ALREADY AUTHENTICATED HERE, so a malformed request is still one this
+        // principal made and still belongs in their chain. `tool` and `server` stay empty, which is
+        // what `McpCallRecord` documents as "a refusal that matched no registration".
+        let log = CallLog::open(ctx, "", selected_gen);
+        return log.refused(
+            super::calllog::REASON_MALFORMED,
+            invalid_params(id, "`params.name` is required and must be a string."),
+        );
     };
+    let mut log = CallLog::open(ctx, name, selected_gen);
     let mut arguments = params
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 
     let grant = ctx.grant();
-    let selected_gen = ctx.app.mcp_catalogue.generation();
 
     // THE LIVE TOOL-LIST SIGHTINGS as of admission. This is the right-hand side of the rug-pull
     // comparison: with one, the gate below compares the operator's approved digest against what the
@@ -998,8 +1092,11 @@ async fn tools_call(
             .resolve(&grant, LiveSightings::of(&admitted_sightings), name)
         {
             Ok(entry) => entry.clone(),
-            Err(refusal) => return refuse(ctx, name, &refusal, id),
+            Err(refusal) => {
+                return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id))
+            }
         };
+    log.resolved(&selected, selected_gen);
 
     // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot. Re-read, not
     // re-use: `ctx.app` is the snapshot the request arrived on, and comparing it against itself
@@ -1015,22 +1112,18 @@ async fn tools_call(
         &selected,
         selected_gen,
     ) {
-        return refuse(ctx, name, &refusal, id);
+        return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id));
     }
     let Some(server) = live.mcp_catalogue.server(&selected.server).cloned() else {
-        return refuse(
-            ctx,
-            name,
-            &DispatchRefusal::UnknownTool(name.to_string()),
-            id,
-        );
+        let refusal = DispatchRefusal::UnknownTool(name.to_string());
+        return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id));
     };
 
     // (2a-i) SEP-2243 CUSTOM PARAM HEADERS. Validated here, where the tool's approved `inputSchema`
     // is finally in hand, and BEFORE any decision that costs anything: a header/body disagreement is
     // a malformed request, and a malformed request must not be charged, dispatched or asked about.
     if let Some(refusal) = custom_param_mismatch(ctx, &selected, &arguments) {
-        return header_mismatch(id, &refusal);
+        return log.refused("custom_param_mismatch", header_mismatch(id, &refusal));
     }
 
     // (2a-ii) THE TASKS GATE. A `task_support: required` tool CANNOT be answered synchronously, so a
@@ -1046,7 +1139,7 @@ async fn tools_call(
             crate::admin::audit::OUTCOME_REJECTED,
             ctx.actor,
         );
-        return missing_tasks_capability(id);
+        return log.refused("tasks_capability_undeclared", missing_tasks_capability(id));
     }
 
     // (2a) THE CALLER-ASK DECISION — does busbar want something from ITS OWN CALLER before it will
@@ -1077,11 +1170,14 @@ async fn tools_call(
     ) {
         AskDecision::Proceed => {}
         AskDecision::Refuse(refusal) => {
-            return refuse_ask(
-                ctx,
-                &format!("mcp_tool:{}", selected.namespaced),
-                &refusal,
-                id,
+            return log.refused(
+                refusal.audit_reason(),
+                refuse_ask(
+                    ctx,
+                    &format!("mcp_tool:{}", selected.namespaced),
+                    &refusal,
+                    id,
+                ),
             )
         }
         AskDecision::Ask {
@@ -1104,14 +1200,10 @@ async fn tools_call(
                 },
                 &mut holds,
             ) {
-                return refuse(
-                    ctx,
-                    name,
-                    &DispatchRefusal::NotGranted(format!(
-                        "this round of the input exchange was refused by your budget: {reason}"
-                    )),
-                    id,
-                );
+                let refusal = DispatchRefusal::NotGranted(format!(
+                    "this round of the input exchange was refused by your budget: {reason}"
+                ));
+                return log.refused("caller_ask_round_budget", refuse(ctx, name, &refusal, id));
             }
             crate::admin::audit::AUDIT.record_by(
                 "mcp.caller_ask",
@@ -1119,7 +1211,10 @@ async fn tools_call(
                 crate::admin::audit::OUTCOME_APPLIED,
                 ctx.actor,
             );
-            return input_required_result(id, &asks, &request_state);
+            return log.refused(
+                super::calllog::REASON_CALLER_ASK_PENDING,
+                input_required_result(id, &asks, &request_state),
+            );
         }
     }
 
@@ -1161,7 +1256,7 @@ async fn tools_call(
         .task_support
         .creates_task(super::tasks::client_declares_tasks(ctx.capabilities))
     {
-        return create_task(ctx, &server, &selected, arguments, id).await;
+        return create_task(ctx, &log, &server, &selected, arguments, id).await;
     }
 
     // (3) THE EGRESS GATE — the transitive confused-deputy defence, and it runs BEFORE the loop and before any network I/O.
@@ -1173,7 +1268,12 @@ async fn tools_call(
     let authorised =
         match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key.as_deref()) {
             Ok(a) => a,
-            Err(denied) => return refuse_setup(ctx, &selected.namespaced, &denied, id),
+            Err(denied) => {
+                return log.refused(
+                    denied.audit_reason(),
+                    refuse_setup(ctx, &selected.namespaced, &denied, id),
+                )
+            }
         };
 
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
@@ -1254,17 +1354,20 @@ async fn tools_call(
                     crate::admin::audit::OUTCOME_REJECTED,
                     ctx.actor,
                 );
-                return error(
-                    StatusCode::FORBIDDEN,
-                    id,
-                    CODE_REFUSED,
-                    &format!(
-                        "MCP server `{}` answered with an input-required result (`{field}`), which \
-                         is a request that YOU spend authority on its behalf. An upstream's ask \
-                         terminates at busbar and is never forwarded to you.",
-                        selected.server
+                return log.refused(
+                    "ask_not_proxied",
+                    error(
+                        StatusCode::FORBIDDEN,
+                        id,
+                        CODE_REFUSED,
+                        &format!(
+                            "MCP server `{}` answered with an input-required result (`{field}`), \
+                             which is a request that YOU spend authority on its behalf. An \
+                             upstream's ask terminates at busbar and is never forwarded to you.",
+                            selected.server
+                        ),
+                        Some(serde_json::json!({ "reason": "ask_not_proxied" })),
                     ),
-                    Some(serde_json::json!({ "reason": "ask_not_proxied" })),
                 );
             }
             crate::admin::audit::AUDIT.record_by(
@@ -1276,7 +1379,7 @@ async fn tools_call(
             // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
             // RESULT is exactly as injectable as its description, and it arrives later, when the
             // operator has already approved the tool.
-            result(id, sanitize::normalise_json(&value))
+            log.dispatched(result(id, sanitize::normalise_json(&value)))
         }
         Outcome::Refused(refusal) => {
             crate::admin::audit::AUDIT.record_by(
@@ -1294,15 +1397,18 @@ async fn tools_call(
             // satisfy it, never handed onward for the caller to answer: an upstream's ask
             // TERMINATES at busbar, because proxying it would ask the caller to grant, on the
             // upstream's behalf, authority busbar itself just declined to spend.
-            error(
-                match refusal {
-                    Refusal::BudgetExhausted { .. } => StatusCode::TOO_MANY_REQUESTS,
-                    _ => StatusCode::FORBIDDEN,
-                },
-                id,
-                CODE_REFUSED,
-                &refusal.to_string(),
-                Some(serde_json::json!({ "reason": refusal.audit_reason() })),
+            log.refused(
+                refusal.audit_reason(),
+                error(
+                    match refusal {
+                        Refusal::BudgetExhausted { .. } => StatusCode::TOO_MANY_REQUESTS,
+                        _ => StatusCode::FORBIDDEN,
+                    },
+                    id,
+                    CODE_REFUSED,
+                    &refusal.to_string(),
+                    Some(serde_json::json!({ "reason": refusal.audit_reason() })),
+                ),
             )
         }
     }
@@ -1317,6 +1423,7 @@ async fn tools_call(
 /// `CreateTaskResult` therefore always resolves, because the row existed before the id did.
 async fn create_task(
     ctx: &Ctx<'_>,
+    log: &CallLog<'_>,
     server: &super::catalogue::ServerEntry,
     selected: &ToolEntry,
     arguments: serde_json::Value,
@@ -1328,7 +1435,12 @@ async fn create_task(
     let authorised =
         match super::upstream::authorise(server, selected, &arguments, ctx.gov.key.as_deref()) {
             Ok(a) => a,
-            Err(denied) => return refuse_setup(ctx, &selected.namespaced, &denied, id),
+            Err(denied) => {
+                return log.refused(
+                    denied.audit_reason(),
+                    refuse_setup(ctx, &selected.namespaced, &denied, id),
+                )
+            }
         };
 
     // CHARGED ONCE, HERE, and this is the only moment at which a refusal can still be reported to
@@ -1345,11 +1457,11 @@ async fn create_task(
         },
         &mut holds,
     ) {
-        return refuse(
-            ctx,
-            &selected.namespaced,
-            &DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}")),
-            id,
+        let refusal =
+            DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}"));
+        return log.refused(
+            "task_budget",
+            refuse(ctx, &selected.namespaced, &refusal, id),
         );
     }
     // The admission hold is RELEASED rather than parked for the life of the task. A concurrency
@@ -1377,7 +1489,13 @@ async fn create_task(
         crate::admin::audit::OUTCOME_APPLIED,
         ctx.actor,
     );
-    task_result(id, created)
+    // RECORDED AS `refused`/`task_created`, and the module header for `calllog` says why: at the
+    // moment this request is answered nothing has gone out. What the runner does next belongs to the
+    // task's own provenance, not to a second per-call record under a request already answered.
+    log.refused(
+        super::calllog::REASON_TASK_CREATED,
+        task_result(id, created),
+    )
 }
 
 /// SEP-2243 §"Server Behavior for Custom Headers" — validate every `Mcp-Param-*` header this tool's

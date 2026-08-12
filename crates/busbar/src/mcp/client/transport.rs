@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STREAMABLE-HTTP STATELESS TRANSPORT (`2026-07-28`) — the primary target, and the seam the
-//! stdio transport plugs into beside it.
+//! second transport would plug in beside it. There is no second transport in this build.
 //!
 //! ## What "stateless" removes, and what that buys
 //!

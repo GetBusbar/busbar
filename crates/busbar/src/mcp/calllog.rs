@@ -48,13 +48,52 @@
 //! NEGATIVE test asserting exactly that, because a durability test that has never seen a
 //! non-durable store has proven nothing.
 
-// NO PRODUCTION CALL SITE ON THIS BRANCH, and that is a coordination fact rather than an oversight.
-// The one place a per-call record is emitted today is the inbound method dispatcher, which a
-// sibling agent holds open on a parallel branch for the upstream leg; rewriting its audit call here
-// would guarantee a conflict on the file whose merge matters most. The substrate, its chain, its
-// verifier and its restore are what needed settling and pinning first, and they are exercised
-// end-to-end by their own tests. Same posture the trust lifecycle and the audience-bound mint took.
-#![cfg_attr(not(test), allow(dead_code))]
+// ── WIRED. WHAT IS WRITTEN, AND WHAT IS STILL NOT ───────────────────────────────────────────────
+//
+// This module carried `#![cfg_attr(not(test), allow(dead_code))]` and a header saying it had NO
+// PRODUCTION CALL SITE: the substrate, the chain, the verifier and the restore were all real, all
+// tested, and nothing wrote a record. It is wired now, and the exact extent of the wiring is stated
+// here rather than left to be discovered:
+//
+//   WRITTEN — every inbound `tools/call` that reaches `mcp::method::tools_call`, at every terminal:
+//   the dispatched result, every refusal (admission, dispatch-time re-validation, header mismatch,
+//   the tasks gate, the caller-ask gate, the budget, the egress gate, the upstream's own refusal,
+//   and the terminal ask assertion), and the creation of an asynchronous task.
+//
+//   NOT WRITTEN — three things, each for a stated reason:
+//     * `prompts/get` and `resources/read`. `McpCallRecord.tool` is the tool routing key and the
+//       chain is documented as one record per TOOL CALL; widening it to every capability is a
+//       schema decision, not a wiring decision, and inventing a `tool` value for a prompt would put
+//       a name in that field that no `mcp_tool:` grant can ever name.
+//     * The ROUND STRUCTURE of a multi-round exchange. One `tools/call` request produces one
+//       record. A caller-ask round that returns `InputRequiredResult` records the round as refused
+//       with `caller_ask_pending`, and the retry that follows is its own inbound request and its
+//       own record; the upstream input-required rounds inside a single dispatch are NOT individually
+//       recorded. The log answers "who called what, and did it go out", not "how many round trips it
+//       took".
+//     * The task's OWN upstream leg. A `tools/call` answered with a task records `task_created` at
+//       the moment the task is created and admitted; the runner's later dispatch, retries and
+//       terminal status are the A2A-shaped task provenance chain's business (`mcp::tasks`), not a
+//       second per-call record under a request that has already been answered.
+//
+// The sink is attached at boot in `main.rs`, beside the durable audit and the A2A task table, and
+// with no durable store configured the log keeps chain positions in RAM and persists nothing — the
+// documented `store: memory` behaviour, and the reason `restore_from_store` reports what it found
+// rather than assuming.
+//
+// ── AND THE OPERATOR-FACING READ SURFACE IS STILL NOT MOUNTED ───────────────────────────────────
+//
+// `McpCallLog::verify_principal_chain`, `read_back`, `compact`, `next_seq` and `len` have NO
+// production caller. Each carries its own `#[allow(dead_code)]` and its own note, individually
+// rather than under one module-wide blanket, so that the next thing to lose its caller BREAKS THE
+// BUILD instead of joining a silent amnesty — which is precisely how the writer itself went missing.
+//
+// The one that matters commercially is `verify_principal_chain`. By this module's own argument a
+// chain nothing ever recomputes proves nothing, because nobody ever finds out that it does not
+// verify. Today the ONLY recomputation in a running deployment is the boot rehydrate
+// (`restore_from_store`, which does verify every chain it restores and reports every break at
+// ERROR). There is no on-demand admin verb, so between two boots a tamper is undetected. That is a
+// REAL GAP, it is named here, and it must not be described as continuous verification anywhere.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -64,6 +103,29 @@ use busbar_api::{McpCallRecord, Store, StoreResult};
 /// Outcome tokens. Small, stable, greppable — tooling branches on these strings.
 pub(crate) const OUTCOME_DISPATCHED: &str = "dispatched";
 pub(crate) const OUTCOME_REFUSED: &str = "refused";
+
+/// The reason token for a `tools/call` answered with an unsatisfied caller-ask round.
+///
+/// It is `refused`, not a third outcome, and that is the honest reading of the two tokens the store
+/// contract documents: `dispatched` means THE CALL WENT OUT, and this one did not. The caller's
+/// retry is a fresh inbound request and gets its own record, so the exchange is reconstructable from
+/// the chain without a token that means "neither".
+pub(crate) const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
+
+/// The reason token for a `tools/call` answered with a task rather than a result.
+///
+/// Also `refused` for the same reason: at the moment the request is answered nothing has gone out.
+/// What happens next belongs to the task's own provenance, and this record's job is to say that the
+/// request existed, who made it, which tool and digest it named, and that it became task work.
+pub(crate) const REASON_TASK_CREATED: &str = "task_created";
+
+/// The reason token for a request whose `params.name` was missing or not a string.
+///
+/// Recorded rather than dropped: the caller is already AUTHENTICATED at this point, and a chain that
+/// silently omits every malformed request from a principal is a chain with a hole an attacker can
+/// choose. The `tool` and `server` fields are empty, which the store contract already documents as
+/// "a refusal that matched no registration".
+pub(crate) const REASON_MALFORMED: &str = "malformed_params";
 
 /// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
 /// they are the chain's own business and are computed by [`CallChain::append`], so no call site can
@@ -485,6 +547,10 @@ impl McpCallLog {
     }
 
     /// The sequence the next record for `principal` will carry. 1 for a principal with no chain.
+    ///
+    /// NO PRODUCTION CALLER. A diagnostic on the chain position, kept because the position is the one
+    /// piece of state the store does not own and the tests assert the append ordering through it.
+    #[allow(dead_code)]
     pub(crate) fn next_seq(&self, principal: &str) -> u64 {
         self.chains()
             .get(principal)
@@ -493,12 +559,21 @@ impl McpCallLog {
     }
 
     /// How many principals this process is holding a chain position for.
+    ///
+    /// NO PRODUCTION CALLER — a diagnostic, not a metric: it counts principals seen SINCE BOOT, which
+    /// is not the number of principals the store holds rows for, and publishing it as if it were
+    /// would be a number that quietly means something else.
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.chains().len()
     }
 
     /// READ ONE PRINCIPAL'S CALLS BACK from the store. The durability question, asked the only way
     /// it can honestly be asked.
+    ///
+    /// NO PRODUCTION CALLER: nothing in a running deployment reads a principal's calls back, because
+    /// there is no admin verb that would. See the module header — the read surface is not mounted.
+    #[allow(dead_code)]
     pub(crate) fn read_back(
         &self,
         store: &dyn Store,
@@ -513,6 +588,10 @@ impl McpCallLog {
     /// decoration: a chain nothing ever recomputes proves nothing, because nobody ever finds out
     /// that it does not verify. `Ok(Ok(n))` is `n` records verified; `Ok(Err(brk))` names where and
     /// which; `Err` is the store failing to answer, which is not a verdict about the chain.
+    ///
+    /// NO PRODUCTION CALLER, and this is the gap the module header names: between two boots nothing
+    /// recomputes a chain, so a tamper is detected at the next restart and not before.
+    #[allow(dead_code)]
     pub(crate) fn verify_principal_chain(
         &self,
         store: &dyn Store,
@@ -532,11 +611,68 @@ impl McpCallLog {
     /// Chain positions are NOT reset. A purge removes the oldest records; reopening the chain at
     /// seq 1 afterwards would make every subsequent record collide with a sequence the store may
     /// still hold, which is the one thing the append contract calls a forked log.
+    ///
+    /// NO PRODUCTION CALLER: no retention window is configurable for the call log in this release,
+    /// so nothing purges it. The mechanism is here and the POLICY is absent, which means a durable
+    /// deployment's call log grows without bound until an operator prunes it themselves.
+    #[allow(dead_code)]
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
         match self.sink() {
             Some(store) => store.purge_mcp_calls_before(before),
             None => Ok(0),
         }
+    }
+}
+
+/// THE ONE PRODUCTION EMITTER. Every per-call record a running busbar writes goes through here.
+///
+/// ## Why the failure is swallowed, loudly, instead of failing the call
+///
+/// [`McpCallLog::record`] surfaces a durable-write failure precisely so the CALLER can decide, and
+/// this is that decision, made once and in one place. A store hiccup must not turn into a refused
+/// tool call: the log is EVIDENCE, not ADMISSION, and a gateway whose data plane stops when its
+/// audit backend blinks has converted an observability dependency into an availability dependency.
+/// The same call the durable audit log makes, for the same reason.
+///
+/// It is swallowed at `error!` with the record's own identifying fields, never at `warn!` and never
+/// silently: a deployment that is losing evidence has to be able to find out, and the ONE thing that
+/// would make this defensible-looking and wrong is a failure nobody can see. The chain position is
+/// left untouched on failure (see `record`), so the next call reuses the sequence and the chain
+/// stays contiguous rather than acquiring a permanent gap at the point of the outage.
+///
+/// ## The `request_id` really is a join key
+///
+/// It is emitted on the success line too, at `debug!`, because a join key that appears in exactly
+/// one place joins nothing. That line is what lets an operator holding a request id find the durable
+/// record, and holding a durable record find the request.
+pub(crate) fn emit(principal: &str, input: CallInput) {
+    let (server, tool, outcome, request_id) = (
+        input.server.clone(),
+        input.tool.clone(),
+        input.outcome,
+        input.request_id.clone(),
+    );
+    match CALLS.record(principal, input) {
+        Ok(record) => tracing::debug!(
+            principal = %principal,
+            request_id = %request_id,
+            seq = record.seq,
+            server = %server,
+            tool = %tool,
+            outcome = %outcome,
+            "mcp per-call record appended"
+        ),
+        Err(e) => tracing::error!(
+            principal = %principal,
+            request_id = %request_id,
+            server = %server,
+            tool = %tool,
+            outcome = %outcome,
+            error = %e,
+            "the durable MCP per-call record could NOT be written: this call is being served and \
+             its evidence is being LOST. The chain position is unchanged, so the chain stays \
+             contiguous — what is missing is this record, not the ones after it."
+        ),
     }
 }
 

@@ -13,9 +13,6 @@
 use crate::mcp::client::catalogue::TransportPin;
 use crate::mcp::client::egress::{CallerContext, UpstreamCredential};
 use crate::mcp::client::ssrf::SsrfRefusal;
-// Both are used ONLY by the `cfg(unix)` spawning test below, so the import carries the same gate.
-#[cfg(unix)]
-use crate::mcp::client::stdio::{RestartPolicy, StdioChild};
 use crate::mcp::client::support::key_wildcard;
 use crate::mcp::client::{
     dispatch::DispatchRefusal, Endpoint, McpClientEngine, McpServerRegistration,
@@ -31,9 +28,10 @@ fn an_http_registration_carries_the_url_the_transport_will_post_to() {
             url: "https://fs.example/mcp".into(),
         },
     );
-    let Endpoint::Http { url } = &reg.endpoint else {
-        panic!("expected an http endpoint");
-    };
+    // IRREFUTABLE, and that is the point: `Endpoint` has exactly one arm in this build because
+    // there is exactly one transport. When a second arm is added this line stops compiling, which
+    // is a better prompt than an `else` clause that silently keeps passing.
+    let Endpoint::Http { url } = &reg.endpoint;
     assert_eq!(url, "https://fs.example/mcp");
     // And the credential defaults to the fail-closed arm.
     assert!(matches!(reg.credential, UpstreamCredential::None));
@@ -84,48 +82,4 @@ fn the_caller_context_carries_the_busbar_key_so_its_absence_downstream_means_som
     // that scan a tautology.
     assert_eq!(c.busbar_key.expose_secret(), "bb-sk-secret");
     assert_eq!(c.key.id, "agent");
-}
-
-/// Crash DETECTION: `exited` is the non-blocking observation that drives the `crashed` transition.
-// ── THE SPAWNING TEST BELOW NEEDS A POSIX SHELL, SO IT IS UNIX-ONLY ─────────────────────────────
-//
-// The fixture is `/bin/sh -c 'read line; printf ...'` — a one-line JSON-RPC server that keeps the
-// test's child out of the build graph. A comment here used to claim `sh` is present on every
-// platform this crate builds for. It is not: Windows is a CI target, `/bin/sh` does not exist
-// there, and the full tier caught it on a merge the branch tier had passed.
-//
-// WHAT WINDOWS THEREFORE DOES NOT COVER, stated rather than left to be discovered: the spawn, the
-// pipe plumbing and the `Spawning -> Ready -> Draining -> Dead` transitions are proven on unix
-// only. The transport itself is not unix-only — an operator on Windows configures a Windows
-// command and the same machine drives it — so this is a TEST-COVERAGE gap, not a capability one.
-// Closing it properly means a portable child (re-invoking the test binary through
-// `std::env::current_exe()` with an env var, rather than a shell), which is a real change and is
-// tracked separately. `cfg(unix)` is the honest interim: it says Windows is uncovered here instead
-// of pretending a `cmd.exe` rewrite exercises the same thing.
-#[cfg(unix)]
-#[tokio::test]
-async fn an_exited_child_is_observed_without_blocking() {
-    let mut child = StdioChild::spawn(
-        "/bin/sh",
-        &["-c".to_string(), "exit 3".to_string()],
-        RestartPolicy::default(),
-    )
-    .await
-    .expect("spawn");
-    // Give the child a moment to actually exit; `try_wait` is non-blocking, so a bounded poll is the
-    // honest shape rather than one unsynchronised call.
-    let mut seen = false;
-    for _ in 0..200 {
-        if child.exited() {
-            seen = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(seen, "an exited child must be observable through `exited`");
-    child.supervisor.crashed(1_000);
-    assert_eq!(
-        child.supervisor.state(),
-        crate::mcp::client::stdio::ChildState::Dead
-    );
 }

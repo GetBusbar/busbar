@@ -59,15 +59,23 @@ tower = { workspace = true }
 # flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
 # src/ — so it is NOT used; the slice below is hand-picked instead.
 #
-# `process` + `io-util` are the MCP stdio transport (1.6.0, `mcp/client/stdio.rs`): stdio is one of
-# the two transports the MCP specification itself defines, so supervising a child MCP server is a
-# baseline obligation rather than a busbar extension, and there is no way to own a child process's
-# lifecycle without them. This is a FEATURE on a crate already in the graph, not a new
-# dependency — no new crate, no new version requirement, nothing added to
-# `[workspace.dependencies]`. It does grow the request-path binary, which is the honest cost of the
-# transport, and it is spelled out here rather than slipped in: the previous comment said these two
-# were dropped because nothing referenced them, and now something does.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "io-util"] }
+# `process` IS DELIBERATELY ABSENT, AND ITS ABSENCE IS A GATE.
+#
+# It was enabled for `mcp/client/stdio.rs`, a complete child-process supervisor — spawn, reap, the
+# `spawning → ready → draining → dead` machine, capped backoff and a five-crashes-in-a-window
+# breaker — that NOTHING EVER CALLED, because a `tools:` entry carrying a stdio transport has no
+# dispatch arm and `transport: stdio` is refused at config validation. Unreachable security-relevant
+# code that reads as shipped is a false green, and this release ships one MCP transport
+# (streamable HTTP, revision `2026-07-28`), so the supervisor was DELETED rather than wired.
+#
+# Leaving the feature off is what keeps that decision enforced by the COMPILER instead of by memory:
+# re-introducing a child-process supervisor that nothing dispatches to now fails to build here, at
+# the dependency, rather than passing review as another quiet `#![allow(dead_code)]`. Turning it back
+# on is a deliberate act that has to be argued for in this comment.
+#
+# `io-util` stays: the TLS and transport batteries read and write sockets with `AsyncReadExt` /
+# `AsyncWriteExt`, which is unrelated to child processes.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -244,6 +252,22 @@ loom-model = ["dep:loom"]
 txn-fence-red = []
 
 [dev-dependencies]
+# THE REAL `kind: store` PLUGIN CDYLIB, DEPENDED ON SO IT CANNOT BE STALE.
+#
+# `mcp/tests/calllog_dispatch_tests.rs` `dlopen`s this crate's built cdylib to prove that a real
+# `tools/call` lands a durable record ACROSS THE PLUGIN C ABI — the seam that once carried four store
+# methods while the trait carried ten, accepted every task and call-log write and kept none of them.
+# The test therefore has to load a cdylib built from the CURRENT tree.
+#
+# It is a dev-dependency purely to put the crate in this package's build graph: nothing in busbar's
+# `src/` names it. Without the edge, `cargo test -p busbar` finds whatever cdylib happens to be
+# sitting in the target directory — and a stale one answers every write `Ok(())` and every read
+# empty, which is byte-for-byte the signature of the unrelayed ABI. That is not hypothetical: the
+# sibling `store-sqlite` repo's own over-the-ABI durability test failed exactly that way against an
+# artifact `cargo test` had not rebuilt, and the failure is indistinguishable from the real defect.
+# The lib target declares `crate-type = ["cdylib", "rlib"]`, so the one rustc invocation this edge
+# forces emits both, and the cdylib the test loads is always current.
+busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The durable-audit tests exercise busbar-store-memory's append_audit/list_audit over a
 # simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
 # restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency

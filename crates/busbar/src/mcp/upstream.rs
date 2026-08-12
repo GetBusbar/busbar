@@ -359,3 +359,11 @@ mod upstream_join_tests;
 #[cfg(test)]
 #[path = "tests/deputy_pair_tests.rs"]
 mod deputy_pair_tests;
+
+// THE PER-CALL LOG'S WRITER, proven from the dispatcher outwards rather than from the log inwards.
+// It lives here, beside the upstream-leg batteries, because it needs the same real fake peer: the
+// claim is about what a REAL `tools/call` leaves behind, and a call with no upstream to reach could
+// only ever demonstrate the refusing half.
+#[cfg(test)]
+#[path = "tests/calllog_dispatch_tests.rs"]
+mod calllog_dispatch_tests;

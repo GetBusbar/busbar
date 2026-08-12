@@ -679,10 +679,19 @@ fn default_subject_token_type() -> String {
 pub(crate) enum Transport {
     /// Streamable HTTP, the `2026-07-28` stateless shape. The only one busbar speaks.
     StreamableHttp,
-    /// A locally spawned child process. Named because the transport set is designed for all three
-    /// generations; refused at validation because
-    /// nothing in this release supervises a child, and a config value that boots into an
-    /// unimplemented path is a deployment that fails at first dispatch instead of at boot.
+    /// A locally spawned child process. SPELLED, AND REFUSED — the two halves are both deliberate.
+    ///
+    /// Spelled because the specification defines it and an operator who writes it is entitled to a
+    /// refusal that names the value they wrote rather than "unknown transport", and because the
+    /// config-schema fingerprint pins this variant: silently dropping it would be a breaking change
+    /// to a grammar operators have already written.
+    ///
+    /// Refused because NOTHING IN THIS BUILD SPAWNS OR SUPERVISES A CHILD. Not "the supervisor is
+    /// not wired up" — there is no supervisor: `mcp/client/stdio.rs` was deleted along with the
+    /// tokio `process` feature, because a complete, adversarially-tested child supervisor that
+    /// nothing could ever call read as shipped resilience that this build does not have. A config
+    /// value that boots into an unimplemented path is a deployment that fails at first dispatch
+    /// instead of at boot.
     Stdio,
 }
 
@@ -906,10 +915,10 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
 
     if matches!(def.transport, Some(Transport::Stdio)) {
         return Err(format!(
-            "{at}: `transport: stdio` is not implemented in this release. The stdio child \
-             supervision state machine is net-new engine surface and nothing in this build \
-             spawns or reaps a child, so a deployment that booted with it would fail at first \
-             dispatch instead of here. Use `transport: streamable_http`."
+            "{at}: `transport: stdio` is not implemented in this release. This build has no child \
+             supervisor at all — it neither spawns nor reaps a process — so a deployment that \
+             booted with it would fail at first dispatch instead of here. Use \
+             `transport: streamable_http`."
         ));
     }
 
