@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MCP `RequestHandler` AND ITS ONE CELL — MCP as a protocol in the matrix, not a plane beside
-//! it.
+//! THE MCP `RequestHandler` AND ITS CELLS — MCP as a protocol in the matrix, not a plane beside it.
 //!
 //! ## WHAT THIS FILE IS EVIDENCE FOR
 //!
@@ -30,18 +29,45 @@
 //! reader checked no `jsonrpc` member at all, and a malformed envelope was relayed to a backend
 //! agent. One reader, two protocols.
 //!
+//! ## THE WIRE VOCABULARY IS `rmcp`'s, NOT A SECOND COPY OF IT
+//!
+//! Every method name and every parameter shape below comes from `rmcp`, the specification authors'
+//! own crate, pinned with `default-features = false`. A method name typed as a string literal here
+//! would be a second statement of what the protocol calls something, and the two statements can
+//! disagree — which is how a gateway ends up serving a name the specification retired. Taking the
+//! name off the SDK's own const-string type means the compiler holds the pair together.
+//!
+//! **The pin stays narrow, and that is part of the design rather than a default.** `rmcp`'s auth
+//! feature is a second OAuth implementation beside busbar's own authorization server and its
+//! admission verifier, and its transport features are a second HTTP client beside the one that does
+//! busbar's resolve-then-pin. Two implementations of one security concern that can disagree is the
+//! shape this release has already paid for three times. What is taken from the crate is the
+//! protocol vocabulary and nothing else.
+//!
 //! ## WHAT IS NOT BUILT HERE, STATED RATHER THAN DISCOVERED
 //!
-//! This cell reads and writes the `tools/call` shape. It does NOT yet carry the catalogue, the
-//! schema pinning, the per-call audit chain or the arguments guard — those live in `mcp/` today and
-//! are ported onto the core in their own units, each proven against the conformance suite. A cell
-//! that quietly reimplemented them would be the original mistake a second time.
+//! This cell reads and writes the `tools/call` and subscription shapes. It does NOT yet carry the
+//! catalogue, the schema pinning, the per-call audit chain or the arguments guard — those live in
+//! `mcp/` today and are ported onto the core separately, each proven against the conformance suite.
+//! A cell that quietly reimplemented them would be the original mistake a second time.
+//!
+//! **And one limit that is real and is not papered over:** the subscription verbs below are a
+//! CODEC. A subscription is only a capability once there is a channel to be notified over, and the
+//! revision's server→client stream is a surface of its own, not something a codec can supply. The
+//! notification vocabulary is here so that the channel, when it is mounted, frames the same bytes
+//! this cell already reads — not so that the surface can be claimed before it exists.
 
 use bytes::Bytes;
+use rmcp::model::{
+    CallToolRequestMethod, ConstString, ResourceUpdatedNotificationMethod,
+    ResourceUpdatedNotificationParam, SubscribeRequestMethod, SubscribeRequestParams,
+    ToolListChangedNotificationMethod, UnsubscribeRequestMethod, UnsubscribeRequestParams,
+};
 
 use crate::handlers::IngressReject;
 use crate::handlers::{CodecError, EgressCtx, OperationHandler, RequestHandler, WireBody};
 use crate::ir::invoke::{InvokeReq, InvokeResp};
+use crate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use crate::ir::variant::{IrReq, IrResp};
 use crate::operation::Operation;
 
@@ -49,13 +75,23 @@ use crate::operation::Operation;
 /// opposite of OpenAI, and the reason [`McpRequestHandler::resolve_operation`] reads the body.
 const PATH_MCP: &str = "/mcp";
 
-/// The JSON-RPC method this cell serves.
-const METHOD_TOOLS_CALL: &str = "tools/call";
+/// The JSON-RPC method names this file serves, each read off `rmcp`'s own const-string type rather
+/// than spelled again here. `ConstString::VALUE` is a `const`, so these are compile-time literals
+/// with no runtime cost — and a name the SDK retires stops compiling instead of being served.
+const METHOD_TOOLS_CALL: &str = CallToolRequestMethod::VALUE;
+const METHOD_RESOURCES_SUBSCRIBE: &str = SubscribeRequestMethod::VALUE;
+const METHOD_RESOURCES_UNSUBSCRIBE: &str = UnsubscribeRequestMethod::VALUE;
+const METHOD_NOTIFY_TOOLS_LIST_CHANGED: &str = ToolListChangedNotificationMethod::VALUE;
+const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotificationMethod::VALUE;
 
 pub(crate) struct McpRequestHandler;
 
 /// The `(mcp, Invoke)` cell. One protocol, one operation, one codec.
 static INVOKE: InvokeOperation = InvokeOperation;
+
+/// The `(mcp, Subscribe)` cell — `resources/subscribe` and `resources/unsubscribe`, which are one
+/// operation because they are one shape.
+static SUBSCRIBE: SubscribeOperation = SubscribeOperation;
 
 impl RequestHandler for McpRequestHandler {
     fn protocol_name(&self) -> &'static str {
@@ -65,6 +101,7 @@ impl RequestHandler for McpRequestHandler {
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
         match op {
             Operation::Invoke => Some(&INVOKE),
+            Operation::Subscribe => Some(&SUBSCRIBE),
             // Enumerated (not `_`) so adding an operation is a compile error here — the documented
             // removability/symmetry gate.
             //
@@ -79,20 +116,18 @@ impl RequestHandler for McpRequestHandler {
             | Operation::Transcription
             | Operation::Speech
             | Operation::Rerank
-            // THESE FIVE ARE NOT A "NO": THEY ARE A "NOT YET", AND THE DIFFERENCE IS DELIBERATE.
-            // MCP genuinely speaks all five — `tools/list` is `Catalogue`, `resources/read` is
-            // `Fetch`, `tasks/get` is `Task`, `resources/subscribe` is `Subscribe`, `initialize`
-            // is `Control` — and each will get a cell in its own unit, proven against the
-            // conformance suite. Until that cell exists, `None` is the honest answer and it is
-            // the SAME answer the chat protocols give: no cell, so no conversion is
-            // representable. Inventing a cell here to make the row look complete would be the
-            // original `mcp/` mistake (a plane beside the pipeline) in a smaller box, and
-            // `resolve_operation` below still returns `None` for those methods, so nothing can
+            // THESE FOUR ARE NOT A "NO": THEY ARE A "NOT YET", AND THE DIFFERENCE IS DELIBERATE.
+            // MCP genuinely speaks all four — `tools/list` is `Catalogue`, `resources/read` is
+            // `Fetch`, `tasks/get` is `Task`, `initialize` is `Control` — and each gets a cell of
+            // its own, proven against the conformance suite. Until that cell exists, `None` is the
+            // honest answer and it is the SAME answer the chat protocols give: no cell, so no
+            // conversion is representable. Inventing a cell here to make the row look complete
+            // would be the original `mcp/` mistake (a plane beside the pipeline) in a smaller box,
+            // and `resolve_operation` below still returns `None` for those methods, so nothing can
             // reach a handler that is not there.
             | Operation::Catalogue
             | Operation::Fetch
             | Operation::Task
-            | Operation::Subscribe
             | Operation::Control => None,
         }
     }
@@ -113,7 +148,13 @@ impl RequestHandler for McpRequestHandler {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-        (v.get("method")?.as_str()? == METHOD_TOOLS_CALL).then_some(Operation::Invoke)
+        match v.get("method")?.as_str()? {
+            METHOD_TOOLS_CALL => Some(Operation::Invoke),
+            // BOTH DIRECTIONS OF ONE REGISTRATION ARE ONE OPERATION. The codec reads the intent
+            // back off the method name; the engine never learns there were two names.
+            METHOD_RESOURCES_SUBSCRIBE | METHOD_RESOURCES_UNSUBSCRIBE => Some(Operation::Subscribe),
+            _ => None,
+        }
     }
 }
 
@@ -215,6 +256,241 @@ impl OperationHandler for InvokeOperation {
             serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "result": result }))
                 .unwrap_or_default(),
         ))
+    }
+}
+
+/// The subscription codec — `resources/subscribe` and `resources/unsubscribe`, on `rmcp`'s own
+/// parameter types.
+///
+/// ## WHY THE TWO METHODS SHARE ONE CELL
+///
+/// They are the same request with the registration pointing the other way: the same target name,
+/// the same acknowledgement, the same admission question. Two cells would be two places to decide
+/// what a target name is, and the pair is meaningless the moment those two answers differ.
+///
+/// ## WHY THE PARAMS ARE DESERIALIZED INTO `rmcp`'s STRUCTS RATHER THAN READ FIELD BY FIELD
+///
+/// A hand-read `params["uri"]` accepts shapes the specification does not — a missing member read as
+/// an empty string, a number read as a name — and each acceptance is a difference between what
+/// busbar serves and what the specification says. Deserializing into the SDK's own parameter type
+/// makes the SDK's schema the acceptance test, so a body busbar admits is a body the protocol
+/// admits. The `_meta` member rides along on those types for the same reason.
+pub(crate) struct SubscribeOperation;
+
+impl SubscribeOperation {
+    /// The wire method name for an intent. The pair is decided in exactly one place so the reader
+    /// and the writer cannot come to disagree about which name means which direction.
+    fn method_for(intent: SubscribeIntent) -> &'static str {
+        match intent {
+            SubscribeIntent::Register => METHOD_RESOURCES_SUBSCRIBE,
+            SubscribeIntent::Deregister => METHOD_RESOURCES_UNSUBSCRIBE,
+        }
+    }
+}
+
+impl OperationHandler for SubscribeOperation {
+    /// A registration is one exchange, so every capability default is already correct: no
+    /// streaming, no stream intent, no affinity, no usage tap. `taps_usage` stays FALSE because
+    /// there are no tokens to tap — the response is an acknowledgement, and `IrResp::usage` states
+    /// the flat meter that applies instead.
+    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
+        let v: serde_json::Value =
+            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+        // The envelope's own validity is `ingress::jsonrpc`'s business and is decided before a body
+        // reaches a codec. What this reader owns is which of the two verbs was named, and the
+        // `params` shape that goes with it.
+        let method = v
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                IngressReject::BadRequest(
+                    "a subscription request names its method in `method`".to_string(),
+                )
+            })?;
+        let params = v.get("params").cloned().ok_or_else(|| {
+            IngressReject::BadRequest(
+                "a subscription request carries a `params` member".to_string(),
+            )
+        })?;
+        // The SDK's parameter type IS the acceptance test — see the note on this struct. A body it
+        // refuses is a body the protocol refuses, and the error it gives is the reason why.
+        let (intent, target) = match method {
+            METHOD_RESOURCES_SUBSCRIBE => {
+                let p: SubscribeRequestParams = serde_json::from_value(params)
+                    .map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+                (SubscribeIntent::Register, p.uri)
+            }
+            METHOD_RESOURCES_UNSUBSCRIBE => {
+                let p: UnsubscribeRequestParams = serde_json::from_value(params)
+                    .map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+                (SubscribeIntent::Deregister, p.uri)
+            }
+            other => {
+                return Err(IngressReject::BadRequest(format!(
+                    "`{other}` is not a subscription method"
+                )))
+            }
+        };
+        // AN EMPTY TARGET NAMES NOTHING. A subscription to the empty string is not a narrower
+        // subscription, it is an unanswerable one, and admitting it would hand the admission layer
+        // a name it cannot judge.
+        if target.is_empty() {
+            return Err(IngressReject::BadRequest(
+                "a subscription request names a non-empty target in `params.uri`".to_string(),
+            ));
+        }
+        Ok(IrReq::Subscribe(SubscribeReq {
+            intent,
+            target,
+            extra: Default::default(),
+        }))
+    }
+
+    fn write_request(&self, ir: &IrReq) -> Bytes {
+        let IrReq::Subscribe(r) = ir else {
+            // A cell is only ever handed its own operation's IR — the matrix lookup is what
+            // guarantees it. Reaching this arm means the matrix was bypassed, which is a bug in the
+            // engine and not something to paper over with a plausible default.
+            return Bytes::new();
+        };
+        // Built through the SDK's own constructor, so the member names and the `_meta` handling are
+        // the SDK's rather than a second spelling of them here.
+        let params = match r.intent {
+            SubscribeIntent::Register => {
+                serde_json::to_value(SubscribeRequestParams::new(r.target.clone()))
+            }
+            SubscribeIntent::Deregister => {
+                serde_json::to_value(UnsubscribeRequestParams::new(r.target.clone()))
+            }
+        }
+        .unwrap_or_else(|_| serde_json::json!({ "uri": r.target }));
+        // The `id` is the ENGINE's, not the caller's, for the reason the invocation codec states:
+        // correlation is decided on the way out and read back by `ingress::jsonrpc::read_response`.
+        Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": Self::method_for(r.intent),
+                "params": params,
+            }))
+            .unwrap_or_default(),
+        )
+    }
+
+    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
+        let v: serde_json::Value =
+            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+        let result = v
+            .get("result")
+            .ok_or_else(|| CodecError::Malformed("no `result` member".to_string()))?;
+        // AN EMPTY RESULT IS THE ACKNOWLEDGEMENT, NOT A MISSING ONE. MCP answers both verbs with an
+        // empty object; a peer whose wire returns a registration record gets that record carried
+        // through untouched. The two are kept distinct so neither has to be inferred later.
+        let empty = result.as_object().is_some_and(serde_json::Map::is_empty) || result.is_null();
+        Ok(IrResp::Subscribe(SubscribeResp {
+            registration: (!empty).then(|| result.clone()),
+            extra: Default::default(),
+        }))
+    }
+
+    fn write_response(&self, ir: &IrResp) -> WireBody {
+        let IrResp::Subscribe(r) = ir else {
+            return WireBody::json(Bytes::new());
+        };
+        WireBody::json(Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                // Carried, never synthesised: a peer that returned no record does not acquire one
+                // by passing through busbar, and the empty object is what the protocol asks for.
+                "result": r.registration.clone().unwrap_or_else(|| serde_json::json!({})),
+            }))
+            .unwrap_or_default(),
+        ))
+    }
+}
+
+// ══ THE NOTIFICATION HALF ════════════════════════════════════════════════════════════════════════
+
+/// THE SERVER-ORIGINATED NOTIFICATIONS THIS PROTOCOL CARRIES, and the reason a subscription is worth
+/// registering at all.
+///
+/// ## WHY THIS IS NOT AN `OperationHandler`
+///
+/// A notification has no id, no answer and no correlation: JSON-RPC 2.0 section 4.1 forbids replying
+/// to one. It is therefore not a request/response codec and modelling it as one would give it a
+/// response half that must never be produced. It sits beside the codecs, in the protocol's own
+/// file, because the thing it is specific to is the DIALECT — the same reason the JSON-RPC envelope
+/// itself is read once, in one place, for every plane that speaks it.
+///
+/// ## BOTH DIRECTIONS READ THE SAME BYTES
+///
+/// When busbar is the server it EMITS these to its caller; when busbar is the client it RECEIVES
+/// them from an upstream. That is one wire message and two directions of travel, so it is one
+/// reader and one writer here rather than a pair per direction — which is exactly the arrangement
+/// that stopped the JSON-RPC envelope from being parsed two ways that disagreed.
+///
+/// ## WHAT A RECEIVED `notifications/tools/list_changed` MAY AND MAY NOT DO
+///
+/// It is a HINT, and it arrives from a party whose timing and content are not busbar's to trust. It
+/// may prompt a re-read of a catalogue through the ordinary approval path; it may never itself
+/// install, approve or promote anything, because that would let the party being catalogued decide
+/// when its own catalogue is believed. This type carries the message and takes no such action, which
+/// is what keeps that decision at the call site that has the approval context.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum McpNotification {
+    /// The peer's tool list is no longer what it was.
+    ToolsListChanged,
+    /// A subscribed resource changed. The delivery half of [`SubscribeOperation`].
+    ResourceUpdated {
+        /// The resource that changed, in the peer's vocabulary.
+        uri: String,
+    },
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl McpNotification {
+    /// The wire method name, off `rmcp`'s const-string types.
+    pub(crate) fn method(&self) -> &'static str {
+        match self {
+            McpNotification::ToolsListChanged => METHOD_NOTIFY_TOOLS_LIST_CHANGED,
+            McpNotification::ResourceUpdated { .. } => METHOD_NOTIFY_RESOURCES_UPDATED,
+        }
+    }
+
+    /// Read a notification that has ALREADY been established as a JSON-RPC notification envelope by
+    /// [`crate::ingress::jsonrpc`]. `None` means "a notification this protocol does not carry",
+    /// which is the correct answer to give and the correct thing to do nothing about: section 4.1
+    /// forbids replying, so an unknown notification is dropped rather than refused.
+    pub(crate) fn read(method: &str, params: Option<&serde_json::Value>) -> Option<Self> {
+        match method {
+            METHOD_NOTIFY_TOOLS_LIST_CHANGED => Some(McpNotification::ToolsListChanged),
+            METHOD_NOTIFY_RESOURCES_UPDATED => {
+                // The SDK's parameter type is the acceptance test here too: a notification that
+                // names no resource says a resource changed without saying which, and acting on it
+                // would mean guessing.
+                let p: ResourceUpdatedNotificationParam =
+                    serde_json::from_value(params?.clone()).ok()?;
+                (!p.uri.is_empty()).then_some(McpNotification::ResourceUpdated { uri: p.uri })
+            }
+            _ => None,
+        }
+    }
+
+    /// The complete JSON-RPC notification envelope for this message.
+    ///
+    /// **There is no `id` member and there must never be one.** Section 4.1 makes the absence of
+    /// `id` the definition of a notification; an id would make this a request, and a request obliges
+    /// the receiver to answer something busbar is not waiting for.
+    pub(crate) fn write(&self) -> Bytes {
+        let mut envelope = serde_json::json!({ "jsonrpc": "2.0", "method": self.method() });
+        if let McpNotification::ResourceUpdated { uri } = self {
+            // `params` is emitted only where the message has any, so the notification that carries
+            // none stays byte-identical to what the specification describes.
+            envelope["params"] =
+                serde_json::to_value(ResourceUpdatedNotificationParam::new(uri.clone()))
+                    .unwrap_or_else(|_| serde_json::json!({ "uri": uri }));
+        }
+        Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default())
     }
 }
 

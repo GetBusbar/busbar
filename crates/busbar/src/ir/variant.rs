@@ -51,6 +51,10 @@ pub(crate) enum IrReq {
     /// match in this file a compile error until it has an answer — which is the whole mechanism.
     #[cfg_attr(not(test), allow(dead_code))]
     Invoke(crate::ir::invoke::InvokeReq),
+    /// The NINTH, and the second from the protocol surface. A caller names a thing and asks to start
+    /// or stop being told when it changes. See [`crate::ir::subscribe`] for why register and
+    /// deregister are one variant carrying an intent rather than two variants.
+    Subscribe(crate::ir::subscribe::SubscribeReq),
 }
 
 impl IrReq {
@@ -68,6 +72,7 @@ impl IrReq {
             IrReq::Speech(_) => Operation::Speech,
             IrReq::Rerank(_) => Operation::Rerank,
             IrReq::Invoke(_) => Operation::Invoke,
+            IrReq::Subscribe(_) => Operation::Subscribe,
         }
     }
 
@@ -83,6 +88,11 @@ impl IrReq {
             // A tool call is a request/response exchange: the tool runs and answers. Progress
             // notifications are a separate channel, not an incremental rendering of THIS result.
             IrReq::Invoke(_) => false,
+            // REGISTERING IS NOT THE STREAM. A subscription request is answered once, with an
+            // acknowledgement; the events that follow travel on the channel the transport already
+            // provides. Treating the registration as a streaming request would make the engine hold
+            // a response open for a body that is never coming.
+            IrReq::Subscribe(_) => false,
             IrReq::Embeddings(_) | IrReq::Moderation(_) | IrReq::Image(_) => false,
         }
     }
@@ -317,7 +327,13 @@ impl IrReq {
             // either. Enumerated rather than swept into a `_` so that if this operation ever grows
             // a control that must be prepared before a foreign egress, this is a compile error
             // rather than a silent omission.
-            | IrReq::Invoke(_) => {}
+            | IrReq::Invoke(_)
+            // A subscription request carries a target name and an intent. Neither is a sampling
+            // control, neither is a tool id and neither needs a default filled in before a foreign
+            // egress, so there is nothing here to prepare. Enumerated rather than swept into a `_`
+            // so that if this operation ever grows a member that must be prepared, this is a
+            // compile error rather than a silent omission.
+            | IrReq::Subscribe(_) => {}
         }
     }
 
@@ -340,6 +356,10 @@ impl IrReq {
             // the WRITER's business (`rewrite_model`), which is where a lane's spelling belongs on
             // every operation. So routing's injection point is a no-op here, as it is for chat.
             IrReq::Invoke(_) => {}
+            // THE TARGET ON THIS OPERATION IS NOT A MODEL AND ROUTING DOES NOT CHOOSE IT. The
+            // caller named the thing it wants to follow; a lane's spelling of that name is the
+            // writer's business, exactly as it is on an invocation.
+            IrReq::Subscribe(_) => {}
         }
     }
 }
@@ -357,6 +377,8 @@ pub(crate) enum IrResp {
     /// The EIGHTH. See [`crate::ir::invoke`] and [`IrReq::Invoke`].
     #[cfg_attr(not(test), allow(dead_code))]
     Invoke(crate::ir::invoke::InvokeResp),
+    /// The NINTH. See [`crate::ir::subscribe`] and [`IrReq::Subscribe`].
+    Subscribe(crate::ir::subscribe::SubscribeResp),
 }
 
 /// Resolved primitives for [`IrReq::prepare_for_egress`] — never a `Lane` or config handle.
@@ -422,7 +444,10 @@ impl IrResp {
             | IrResp::Rerank(_)
             // Nothing to re-encode on the way back to a tool caller: the ids a tool call carries
             // are the caller's own, not backend-issued ones busbar had to translate.
-            | IrResp::Invoke(_) => {}
+            | IrResp::Invoke(_)
+            // An acknowledgement carries no backend-issued identity to strip and no ids busbar had
+            // to translate, so there is nothing to reshape on the way back.
+            | IrResp::Subscribe(_) => {}
         }
     }
 
@@ -445,7 +470,10 @@ impl IrResp {
             // A tool call has one answer; there is no buffered stream to re-frame as an
             // incremental one, and pretending otherwise would invent frames the caller never
             // asked for.
-            | IrResp::Invoke(_) => None,
+            | IrResp::Invoke(_)
+            // There is no buffered stream to re-frame: the answer to a subscription request is a
+            // single acknowledgement, and the events it enables are not this response.
+            | IrResp::Subscribe(_) => None,
         }
     }
 
@@ -461,6 +489,7 @@ impl IrResp {
             IrResp::Speech(_) => Operation::Speech,
             IrResp::Rerank(_) => Operation::Rerank,
             IrResp::Invoke(_) => Operation::Invoke,
+            IrResp::Subscribe(_) => Operation::Subscribe,
         }
     }
 
@@ -488,6 +517,12 @@ impl IrResp {
             // budget tree as a chat completion rather than being invisible to it, which is the
             // whole reason this arm exists rather than returning `None`.
             IrResp::Invoke(_) => Some(Billing::Flat),
+            // A SUBSCRIPTION REQUEST IS A CALL, AND AN UNMETERED CALL IS AN AMPLIFIER. Nothing here
+            // is token-metered — no model runs — but a caller that can register and deregister
+            // without touching a budget can drive a peer as hard as it likes for free. `Flat` is the
+            // same honest meter an invocation takes, one request one unit, and it is what keeps the
+            // registration visible to the budget tree rather than invisible to it.
+            IrResp::Subscribe(_) => Some(Billing::Flat),
         }
     }
 

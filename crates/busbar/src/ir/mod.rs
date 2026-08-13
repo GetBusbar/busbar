@@ -26,6 +26,7 @@ pub(crate) mod image;
 pub(crate) mod invoke;
 pub(crate) mod moderation;
 pub(crate) mod rerank;
+pub(crate) mod subscribe;
 pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface
 
 #[derive(Debug, Clone, PartialEq, Default)]

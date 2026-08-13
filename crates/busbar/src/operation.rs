@@ -57,14 +57,16 @@ pub(crate) enum Operation {
     /// the MCP-flavoured name would have been a protocol branch waiting to happen. The engine
     /// must never learn which protocol it is serving, and a name that says `tool` invites it to.
     Invoke,
-    // THE FIVE BELOW HAVE NO CONSTRUCTOR YET — no `resolve_operation` names them, because the cells
-    // that read their wire land in their own units, each proven against the conformance suite. They
-    // land here FIRST and deliberately: their arrival is what makes every exhaustive match in the
-    // tree a compile error until it has an answer, which is the whole mechanism, and it is the
-    // reverse of how the MCP plane was built the first time. `cfg_attr(not(test), allow(dead_code))`
-    // is the same idiom `IrReq::Invoke` used for the same reason — it is scoped to the VARIANT's
-    // never-constructed warning and to nothing else; no match site anywhere is suppressed. The
-    // attribute comes off the moment a cell constructs the variant.
+    // FOUR OF THE FIVE BELOW HAVE NO CONSTRUCTOR YET — no `resolve_operation` names them, because
+    // the cells that read their wire land separately, each proven against the conformance suite.
+    // They are declared here FIRST and deliberately: their arrival is what makes every exhaustive
+    // match in the tree a compile error until it has an answer, which is the whole mechanism, and it
+    // is the reverse of how the MCP plane was built the first time.
+    // `cfg_attr(not(test), allow(dead_code))` is the same idiom `IrReq::Invoke` used for the same
+    // reason — it is scoped to the VARIANT's never-constructed warning and to nothing else; no match
+    // site anywhere is suppressed. The attribute comes off the moment a cell constructs the variant,
+    // which is why `Subscribe` no longer carries it: the MCP protocol cell in
+    // `crate::handlers::mcp` resolves `resources/subscribe` and `resources/unsubscribe` onto it.
     //
     /// A query answered with a list of named things and their schemas. The discovery half of every
     /// protocol on this axis; it is one operation because a tool list, a resource list and an agent
@@ -88,7 +90,6 @@ pub(crate) enum Operation {
     /// Registration and deregistration of a callback or a stream. The subject is the SUBSCRIPTION,
     /// not the events: delivering them is the transport's business, and an operation that tried to
     /// model the delivery would be modelling a channel rather than a request.
-    #[cfg_attr(not(test), allow(dead_code))]
     Subscribe,
     /// Handshake, liveness and knobs — the operations that are ABOUT the connection rather than
     /// about a payload. They share a shape (small in, small out, no model, no billing subject) and
