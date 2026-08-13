@@ -51,6 +51,8 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use crate::catalogue::CatalogueItem;
+
 use super::callerask::{self, AskDecision, Bind, Retry};
 use super::catalogue::{DispatchRefusal, ToolEntry};
 use super::client::catalogue::LiveSightings;
@@ -183,12 +185,28 @@ impl Ctx<'_> {
             .and_then(|g| g.signing_secret())
     }
 
-    fn grant(&self) -> impl Fn(&str, &str) -> bool + '_ {
-        move |kind: &str, value: &str| {
-            self.gov
-                .key
-                .as_ref()
-                .is_none_or(|k| k.scope_allowed(kind, value))
+    /// WHO IS ASKING, for every catalogue read on this request.
+    ///
+    /// One value, built once, passed to every catalogue read, so the catalogue a caller sees and the
+    /// tools it may dispatch are decided by the same principal, the same clock and the same
+    /// snapshot. It replaced a grant CLOSURE, which could only carry the grant: the identity and
+    /// expiry steps had nowhere to arrive, so a listing served a deleted key.
+    ///
+    /// A `None` key means governance is DISABLED for this deployment. `crate::trust::validate`
+    /// states that posture once for the whole tree — with no key there is no grant to narrow, and
+    /// refusing everything would make an ungoverned deployment unable to serve at all — so this
+    /// carries the `Option` rather than restating the rule.
+    ///
+    /// `at_admission`, because a listing IS its own admission: there is no earlier snapshot for it
+    /// to have outlived. `tools/call` says [`crate::trust::validate::Generations::since`] instead,
+    /// out loud, at its own call site.
+    fn caller(&self) -> crate::catalogue::Caller<'_> {
+        crate::catalogue::Caller {
+            key: self.gov.key.as_deref(),
+            now: crate::store::now(),
+            generation: crate::trust::validate::Generations::at_admission(
+                self.app.mcp_catalogue.generation(),
+            ),
         }
     }
 }
@@ -439,10 +457,10 @@ fn cache_hints(value: serde_json::Value) -> serde_json::Value {
 /// caller holds at least one capability on.
 fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let cat = &ctx.app.mcp_catalogue;
-    let grant = ctx.grant();
-    let tools = cat.tools_for(&grant);
-    let prompts = cat.prompts_for(&grant);
-    let resources = cat.resources_for(&grant);
+    let caller = ctx.caller();
+    let tools = cat.tools_for(&caller);
+    let prompts = cat.prompts_for(&caller);
+    let resources = cat.resources_for(&caller);
     let mut servers: Vec<&str> = tools
         .iter()
         .map(|t| t.server.as_str())
@@ -530,82 +548,28 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// declarative deployment every existing operator runs, and treating "never looked" as "it moved"
 /// would empty the catalogue of all of them. Both halves are pinned by test beside each other.
 fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let grant = ctx.grant();
+    let caller = ctx.caller();
     let sightings = ctx.app.mcp_sightings.load();
     let live = LiveSightings::of(&sightings);
+    // ENTITLEMENT FIRST (core's walk, through the ordered gate), then trust, then render. The
+    // quarantine filter sits between the two because it is not an entitlement question — see
+    // `Catalogue::is_quarantined`, which takes no caller — so it cannot be folded into
+    // `required_grants` without making trust a second place a grant is interpreted.
     let tools: Vec<serde_json::Value> = ctx
         .app
         .mcp_catalogue
-        .tools_for(&grant)
+        .tools_for(&caller)
         .into_iter()
         .filter(|t| !ctx.app.mcp_catalogue.is_quarantined(live, t))
-        .map(render_tool)
+        .map(CatalogueItem::render)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
 }
 
-/// One catalogue entry as the wire carries it. The description is MARKUP-NORMALISED here: this is
-/// the moment it is shown or fed as context, and that moment is exactly where the strip belongs.
-fn render_tool(t: &ToolEntry) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    // The NAMESPACED name is the wire name, because it is the routing key — the bound identity a
-    // route is decided on, never the free-text description — and the value an `mcp_tool` grant
-    // carries. Exposing the bare upstream name would let two servers collide in one caller's
-    // catalogue, so one server's tool would silently answer for another's.
-    obj.insert("name".into(), t.namespaced.clone().into());
-    if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
-        obj.insert("description".into(), d.into());
-    }
-    obj.insert(
-        "inputSchema".into(),
-        t.input_schema
-            .clone()
-            // A tool with no declared schema still needs a schema-shaped answer: clients reject a
-            // tool whose `inputSchema` is absent, and an empty object is the honest "no constraints
-            // declared" rather than a fabricated one.
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
-    );
-    // THE OUTPUT SCHEMA, when the operator approved one — and ONLY then. Unlike `inputSchema` there
-    // is no schema-shaped stand-in for its absence: an absent `outputSchema` means "this tool makes
-    // no promise about structured output", and `{}` would mean "it promises, and the promise is
-    // vacuous". The spec reads the presence of this key, not its contents, to decide whether
-    // conforming structured results are a MUST, so inventing one would invent an obligation.
-    //
-    // Dropping it, which is what busbar did until this commit, is the mirror-image defect: a client
-    // that would have validated the structured result has nothing to validate against and cannot
-    // tell a conforming result from a violating one. `mcp::method::tools_call` therefore also
-    // CHECKS what comes back — see `structured_output_violation`.
-    if let Some(s) = &t.output_schema {
-        obj.insert("outputSchema".into(), s.clone());
-    }
-    // The approved schema hash is published because it is the operator's approval, not a secret, and
-    // a client that pins what it saw is a client that notices a rug-pull too.
-    if let Some(h) = &t.schema_hash {
-        obj.insert(
-            "_meta".into(),
-            serde_json::json!({ "io.busbar/schemaHash": h }),
-        );
-    }
-    serde_json::Value::Object(obj)
-}
-
 /// `prompts/list`, with every description markup-normalised on the way out.
 fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let grant = ctx.grant();
-    let prompts: Vec<serde_json::Value> = ctx
-        .app
-        .mcp_catalogue
-        .prompts_for(&grant)
-        .into_iter()
-        .map(|p| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("name".into(), p.namespaced.clone().into());
-            if let Some(d) = sanitize::normalise_opt(p.description.as_deref()) {
-                obj.insert("description".into(), d.into());
-            }
-            serde_json::Value::Object(obj)
-        })
-        .collect();
+    let caller = ctx.caller();
+    let prompts: Vec<serde_json::Value> = ctx.app.mcp_catalogue.prompts_rendered(&caller);
     result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
 }
 
@@ -658,8 +622,8 @@ fn prompts_get(
     let Some(name) = string_param(params, "name") else {
         return invalid_params(id, "`params.name` is required and must be a string.");
     };
-    let grant = ctx.grant();
-    let Some(prompt) = ctx.app.mcp_catalogue.prompt_for(&grant, name) else {
+    let caller = ctx.caller();
+    let Some(prompt) = ctx.app.mcp_catalogue.prompt_for(&caller, name) else {
         // Not-found and not-granted answer the same, deliberately: a catalogue that distinguishes
         // them tells an unauthorised caller what exists behind the grant it does not hold.
         return not_found(
@@ -824,31 +788,8 @@ fn render_prompt_messages(
 
 /// `resources/list`, with every free-text field markup-normalised on the way out.
 fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let grant = ctx.grant();
-    let resources: Vec<serde_json::Value> = ctx
-        .app
-        .mcp_catalogue
-        .resources_for(&grant)
-        .into_iter()
-        .map(|r| {
-            let mut obj = serde_json::Map::new();
-            // The NAMESPACED uri. Two registered servers may legitimately expose the same upstream
-            // URI, and keying the catalogue on the raw one made the second silently replace the
-            // first — a name overlap arriving through a key nobody thought of as a name.
-            // THE RAW URI, because that is what a client hands back on `resources/read`.
-            obj.insert("uri".into(), r.uri.clone().into());
-            if let Some(n) = sanitize::normalise_opt(r.name.as_deref()) {
-                obj.insert("name".into(), n.into());
-            }
-            if let Some(d) = sanitize::normalise_opt(r.description.as_deref()) {
-                obj.insert("description".into(), d.into());
-            }
-            if let Some(m) = &r.mime_type {
-                obj.insert("mimeType".into(), m.clone().into());
-            }
-            serde_json::Value::Object(obj)
-        })
-        .collect();
+    let caller = ctx.caller();
+    let resources: Vec<serde_json::Value> = ctx.app.mcp_catalogue.resources_rendered(&caller);
     result(
         id,
         cache_hints(serde_json::json!({ "resources": resources })),
@@ -869,31 +810,9 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// no reach to its templates. The empty list survives for a caller whose grant reaches none, which
 /// is where the old answer was right all along.
 fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let grant = ctx.grant();
-    let templates: Vec<serde_json::Value> = ctx
-        .app
-        .mcp_catalogue
-        .resource_templates_for(&grant)
-        .into_iter()
-        .map(|t| {
-            let mut obj = serde_json::Map::new();
-            // The NAMESPACED template, for the reason `resources_list` publishes the namespaced uri:
-            // two servers may legitimately publish one template, and the raw form would let the
-            // second silently answer for the first.
-            // The operator's own template, for the same reason: the caller expands what it is given.
-            obj.insert("uriTemplate".into(), t.uri_template.clone().into());
-            if let Some(n) = sanitize::normalise_opt(t.name.as_deref()) {
-                obj.insert("name".into(), n.into());
-            }
-            if let Some(d) = sanitize::normalise_opt(t.description.as_deref()) {
-                obj.insert("description".into(), d.into());
-            }
-            if let Some(m) = &t.mime_type {
-                obj.insert("mimeType".into(), m.clone().into());
-            }
-            serde_json::Value::Object(obj)
-        })
-        .collect();
+    let caller = ctx.caller();
+    let templates: Vec<serde_json::Value> =
+        ctx.app.mcp_catalogue.resource_templates_rendered(&caller);
     result(
         id,
         cache_hints(serde_json::json!({ "resourceTemplates": templates })),
@@ -910,12 +829,12 @@ fn resources_read(
     let Some(uri) = string_param(params, "uri") else {
         return invalid_params(id, "`params.uri` is required and must be a string.");
     };
-    let grant = ctx.grant();
+    let caller = ctx.caller();
     // CONCRETE FIRST, TEMPLATE SECOND, and never the other way round. A URI the operator approved BY
     // NAME must not be answered by a template that happens to match it: the two are different
     // approvals, and letting the broader one win would let adding a template silently change what an
     // already-approved URI returns.
-    let content = match ctx.app.mcp_catalogue.resource_by_uri(&grant, uri) {
+    let content = match ctx.app.mcp_catalogue.resource_by_uri(&caller, uri) {
         super::catalogue::ResourceLookup::One(res) => concrete_resource_content(res),
         // NEVER A GUESS. Two servers this caller can reach both expose this URI, so which one was
         // meant is a question only the caller can answer. The whole reason the catalogue was
@@ -925,7 +844,7 @@ fn resources_read(
             return ambiguous_resource(id, uri, &candidates)
         }
         super::catalogue::ResourceLookup::NotFound => {
-            match ctx.app.mcp_catalogue.resource_template_for(&grant, uri) {
+            match ctx.app.mcp_catalogue.resource_template_for(&caller, uri) {
                 super::catalogue::ResourceLookup::One((template, bindings)) => {
                     templated_resource_content(uri, template, &bindings)
                 }

@@ -383,13 +383,24 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
 
 use crate::mcp::config::validate_published_names;
 
+/// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `crate::trust::validate`
+/// states that posture once for the whole tree; these two tests are about which NAMES the catalogue
+/// publishes, not about who may see them, so they ask as the deployment with governance off.
+fn ungoverned() -> crate::catalogue::Caller<'static> {
+    crate::catalogue::Caller {
+        key: None,
+        now: 0,
+        generation: crate::trust::validate::Generations::at_admission(1),
+    }
+}
+
 /// Every name the catalogue would PUBLISH for `cfg`, sorted — read off the built snapshot rather
 /// than recomputed from the config, so a test cannot agree with a formula the catalogue no longer
 /// uses.
 fn published_names(cfg: &ToolsCfg) -> Vec<String> {
     let cat = crate::mcp::catalogue::Catalogue::build(cfg);
     let mut names: Vec<String> = cat
-        .tools_for(&|_, _| true)
+        .tools_for(&ungoverned())
         .into_iter()
         .map(|t| t.namespaced.clone())
         .collect();
@@ -434,7 +445,7 @@ github:
     validate_published_names(&cfg).expect("one tool cannot collide with itself");
 
     let cat = crate::mcp::catalogue::Catalogue::build(&cfg);
-    let all = cat.tools_for(&|_, _| true);
+    let all = cat.tools_for(&ungoverned());
     // ONE name, not two: the override REPLACES the default rather than aliasing it. Two names for
     // one tool would mean an `mcp_tool:` grant on one of them silently missing the other, and the
     // uniqueness check would then be validating a set that is not what is published.

@@ -11,7 +11,7 @@
 //!    middleware reads this mount's admission facts and threads its audience into the token
 //!    verifier, which refuses a token whose `aud` is absent or different.
 //! 2. AUTHORISE — [`super::inbound::authorize`], whose decision is `scope_allowed("agent", id)`.
-//! 3. CATALOGUE — [`super::catalogue::inbound_catalogue`], which answers whether this caller may
+//! 3. CATALOGUE — [`super::registry::inbound_catalogue`], which answers whether this caller may
 //!    see this agent for the SHAPE of work it is asking for, and names the skill that matched.
 //! 4. DISPATCH — the [`super::inbound::Dispatch`] naming the backend, and a durable task recording
 //!    that it happened.
@@ -199,7 +199,7 @@ fn admit(
     app: &App,
     key: &busbar_api::VirtualKey,
     agent_id: &str,
-    shape: &super::catalogue::TaskShape,
+    shape: &super::registry::TaskShape,
     now_secs: u64,
 ) -> Result<Admitted, Box<Response>> {
     let Some(plane) = app.a2a.as_ref() else {
@@ -209,8 +209,8 @@ fn admit(
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
     // the generation the decision below was actually taken on.
     let generation = plane.generation();
-    let caller = super::catalogue::Caller {
-        key,
+    let caller = crate::catalogue::Caller {
+        key: Some(key),
         now: now_secs,
         generation: crate::trust::validate::Generations::at_admission(generation),
     };
@@ -225,10 +225,14 @@ fn admit(
         //    says whether it may reach it for the work it is actually asking for. Both run: a
         //    caller with a grant on an agent whose card declares none of the requested capability
         //    is refused here rather than dispatched into a backend that will not serve it.
-        let matched = super::catalogue::inbound_catalogue(&caller, regs, shape)
+        let wanted = super::registry::Wanted {
+            shape: shape.clone(),
+            delegating_from: None,
+        };
+        let matched = super::registry::inbound_catalogue(&caller, regs, &wanted)
             .into_iter()
-            .find(|c| c.registration.agent_id == dispatch.agent_id)
-            .map(|c| c.matched_skill.clone());
+            .find(|c| c.item.agent_id == dispatch.agent_id)
+            .map(|c| c.fit.clone());
         let outbound_cred = regs
             .iter()
             .find(|r| r.agent_id == dispatch.agent_id)
@@ -247,7 +251,7 @@ fn admit(
                 let reason = regs
                     .iter()
                     .find(|r| r.agent_id == dispatch.agent_id)
-                    .and_then(|r| super::catalogue::explain(r, &caller, shape, None).err())
+                    .and_then(|r| super::registry::explain(r, &caller, &wanted).err())
                     .map_or_else(
                         || "the agent is not in this caller's catalogue".to_string(),
                         |e| format!("{e:?}"),
@@ -288,7 +292,7 @@ fn admit(
 ///
 /// This is the sibling plane's shape, deliberately. `/mcp` is ONE endpoint and the upstream that
 /// serves a call is resolved from what the caller asked for, filtered by what that caller's key
-/// grants — `mcp::catalogue`. `super::catalogue::inbound_catalogue` is the same function for this
+/// grants — `mcp::catalogue`. `super::registry::inbound_catalogue` is the same function for this
 /// plane and was written for exactly this: it takes the caller's key and a [`TaskShape`] and
 /// answers which registrations are trusted, granted, and structurally able to serve that shape. It
 /// had one caller, which passed a name and then filtered the answer down to it.
@@ -303,20 +307,24 @@ fn admit(
 fn select(
     app: &App,
     key: &busbar_api::VirtualKey,
-    shape: &super::catalogue::TaskShape,
+    shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
     let Some(plane) = app.a2a.as_ref() else {
         return Err(Box::new(not_found()));
     };
-    let caller = super::catalogue::Caller {
-        key,
+    let caller = crate::catalogue::Caller {
+        key: Some(key),
         now: crate::store::now(),
         generation: crate::trust::validate::Generations::at_admission(plane.generation()),
     };
+    let wanted = super::registry::Wanted {
+        shape: shape.clone(),
+        delegating_from: None,
+    };
     let mut ids = plane.with_registrations(|regs| {
-        super::catalogue::inbound_catalogue(&caller, regs, shape)
+        super::registry::inbound_catalogue(&caller, regs, &wanted)
             .into_iter()
-            .map(|c| c.registration.agent_id.clone())
+            .map(|c| c.item.agent_id.clone())
             .collect::<Vec<_>>()
     });
     match ids.len() {
@@ -576,7 +584,7 @@ pub(crate) async fn card(
 
     // A card read asks for no particular work, so the shape is the empty one: every filter that
     // depends on the requested capability is vacuous and only trust, scope and a cached card decide.
-    let shape = super::catalogue::TaskShape::default();
+    let shape = super::registry::TaskShape::default();
     let admitted = match admit(&app, key, &agent_id, &shape, crate::store::now()) {
         Ok(a) => a,
         Err(resp) => return *resp,
@@ -1444,7 +1452,7 @@ fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
 /// [`super::serve::extended_card`] carries the argument for what this publishes and why it is the
 /// caller's catalogue rather than a merge across upstreams. What is decided HERE is the one thing
 /// that needs the request: WHICH agents are this caller's, and it is answered by
-/// [`super::catalogue::inbound_catalogue`] — the same judgement that decides dispatch, so the card
+/// [`super::registry::inbound_catalogue`] — the same judgement that decides dispatch, so the card
 /// cannot name an agent a submission would refuse.
 ///
 /// THE EMPTY TASK SHAPE, deliberately. The catalogue's structural filter narrows a set to the
@@ -1474,25 +1482,22 @@ fn extended_agent_card(
     // A caller entitled to none of several configured agents DOES get the empty card, and the
     // distinction is deliberate: that is a statement about that caller's grants, which is exactly
     // what the caller is entitled to be told.
-    let caller = super::catalogue::Caller {
-        key,
+    let caller = crate::catalogue::Caller {
+        key: Some(key),
         now: crate::store::now(),
         generation: crate::trust::validate::Generations::at_admission(plane.generation()),
     };
+    let anything = super::registry::Wanted::default();
     let card = plane.with_registrations(|regs| {
         if regs.is_empty() {
             return None;
         }
-        let shape = super::catalogue::TaskShape::default();
+        // THE EMPTY TASK SHAPE, deliberately. The structural filter narrows a set to the agents
+        // that can accept a PARTICULAR task, and this request is not a task: it asks what this
+        // caller may reach at all. Passing a shape here would silently drop every agent that cannot
+        // serve whatever shape was invented.
         let entitled: Vec<super::serve::EntitledAgent<'_>> =
-            super::catalogue::inbound_catalogue(&caller, regs, &shape)
-                .into_iter()
-                .map(|c| super::serve::EntitledAgent {
-                    agent_id: &c.registration.agent_id,
-                    backend_url: &c.registration.backend_url,
-                    card: c.registration.cached_card.as_ref(),
-                })
-                .collect();
+            super::registry::entitled_agents(&caller, regs, &anything);
         Some(super::serve::extended_card(
             public_url,
             &entitled,
@@ -2226,10 +2231,10 @@ pub(crate) fn reads_as_streaming_for_test(method: &str) -> bool {
 /// Read from the request rather than assumed, because the catalogue's whole job is to refuse an
 /// agent whose card does not declare what this call needs. An envelope that names nothing
 /// constrains nothing, which is the empty shape.
-fn shape_of(envelope: &serde_json::Value) -> super::catalogue::TaskShape {
+fn shape_of(envelope: &serde_json::Value) -> super::registry::TaskShape {
     let params = envelope.get("params");
     let cfg = params.and_then(|p| p.get("configuration"));
-    super::catalogue::TaskShape {
+    super::registry::TaskShape {
         skill: params
             .and_then(|p| p.get("metadata"))
             .and_then(|m| m.get("skill"))

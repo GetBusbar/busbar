@@ -105,7 +105,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// header: an unbounded stream is indistinguishable from a hung one.
 ///
 /// **THIS BOUND IS LOAD-BEARING FOR AUTHORISATION, NOT ONLY FOR LIVENESS — DO NOT RAISE IT WITHOUT
-/// MEETING THAT ARGUMENT.** The caller's key is FROZEN at open (see [`grant_of`]), so a key that is
+/// MEETING THAT ARGUMENT.** The caller's key is FROZEN at open (see [`caller_of`]), so a key that is
 /// revoked, tombstoned or re-scoped mid-stream keeps being honoured until the stream ends. This
 /// constant is therefore the ONLY thing bounding how long a dead credential can still be served:
 /// the exposure window IS this number. Five minutes is defensible; an hour would not be, and
@@ -198,9 +198,9 @@ fn change_key(mut parts: Vec<&str>) -> u64 {
 /// snapshot answers all three.
 fn change_keys(
     catalogue: &super::catalogue::Catalogue,
-    grant: &dyn Fn(&str, &str) -> bool,
+    caller: &crate::catalogue::Caller<'_>,
 ) -> [u64; 3] {
-    let tools = catalogue.tools_for(grant);
+    let tools = catalogue.tools_for(caller);
     // The SCHEMA HASH rides in the tool change key and the name alone does not. A tool whose
     // arguments changed shape under an unchanged name is exactly the case a client must re-read
     // `tools/list` for, and it is the case a membership-only comparison cannot see.
@@ -213,14 +213,14 @@ fn change_keys(
         change_key(tool_parts),
         change_key(
             catalogue
-                .prompts_for(grant)
+                .prompts_for(caller)
                 .iter()
                 .map(|p| p.namespaced.as_str())
                 .collect(),
         ),
         change_key(
             catalogue
-                .resources_for(grant)
+                .resources_for(caller)
                 .iter()
                 .map(|r| r.namespaced.as_str())
                 .collect(),
@@ -304,10 +304,22 @@ struct Listen {
 ///
 /// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
 /// this — two disjoint fields, which the borrow checker allows and a `&self` method does not.
-fn grant_of(
-    key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
-) -> impl Fn(&str, &str) -> bool + '_ {
-    move |kind: &str, value: &str| key.is_none_or(|k| k.scope_allowed(kind, value))
+///
+/// It builds a `Caller` rather than a grant closure so that the per-frame catalogue read asks the
+/// same ordered gate every other catalogue read asks, identity step included.
+fn caller_of<'a>(
+    key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
+    generation: u64,
+) -> crate::catalogue::Caller<'a> {
+    crate::catalogue::Caller {
+        key: key.map(|k| &**k),
+        now: crate::store::now(),
+        // AT ADMISSION for the FRAME, not for the stream. This value is re-built on every poll from
+        // the generation the frame is being computed against, so the catalogue read cannot be judged
+        // against a snapshot other than the one it is reading. The stream's own relationship to the
+        // generation is `Snapshot::Watching`, held by `Standing` and re-asked above.
+        generation: crate::trust::validate::Generations::at_admission(generation),
+    }
 }
 
 impl Listen {
@@ -379,11 +391,11 @@ impl Listen {
                 return Some(self.closing_frame(&lapsed));
             }
         };
-        let grant = grant_of(key.as_ref());
+        let caller = caller_of(key.as_ref(), catalogue.generation());
         let now = Instant::now();
         match &mut self.phase {
             Phase::Acknowledge => {
-                let seen = change_keys(catalogue, &grant);
+                let seen = change_keys(catalogue, &caller);
                 let params = serde_json::json!({
                     "notifications": serde_json::to_value(&self.accepted)
                         .unwrap_or_else(|_| serde_json::json!({})),
@@ -405,7 +417,7 @@ impl Listen {
                 let mut out = String::new();
                 if live != *generation {
                     *generation = live;
-                    let fresh = change_keys(catalogue, &grant);
+                    let fresh = change_keys(catalogue, &caller);
                     for (index, kind) in Kind::ALL.into_iter().enumerate() {
                         if fresh[index] == seen[index] || !kind.wanted(&self.accepted) {
                             continue;

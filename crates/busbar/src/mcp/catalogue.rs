@@ -33,6 +33,23 @@
 //! this upstream at all" and `mcp_tool` is "may it reach this capability", and a key scoped to one
 //! tool on a server must not acquire the rest by having been let through the door.
 //!
+//! THE WALK THAT APPLIES THEM IS CORE'S, NOT THIS MODULE'S. [`crate::catalogue`] owns the mechanism
+//! — walk the inventory, collect what each item requires, hand it to the ordered gate, keep the
+//! entitled subset, render it — and this plane supplies only the ITEM: which grants each entry
+//! requires ([`CatalogueItem::required_grants`]), WHICH QUESTION this plane's catalogue asks
+//! ([`CatalogueItem::admit`]), and how an entry is written onto the MCP wire
+//! ([`CatalogueItem::render`]). The two grants are stated once, in one `mcp_grants` for four entry
+//! types, so `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`,
+//! `prompts/get`, `resources/read` and `tools/call` cannot drift apart about who may see what.
+//!
+//! WHAT THIS PLANE'S CATALOGUE ASKS FOR is identity and grant — [`crate::trust::validate::validate_visibility`]
+//! — and deliberately not the artifact step, because the MCP catalogue LISTS what it will not
+//! dispatch: a tool with no approved hash and a server with no locked pin both appear, so an
+//! operator can see the approval queue. `tools/call` asks the FULL ordered gate, in
+//! [`Catalogue::resolve`], which is why "listed" and "served" are two different answers here and one
+//! answer on A2A. The listing gained the IDENTITY step it never had: a catalogue that enumerated
+//! tools for a deleted key was answering a principal that no longer exists.
+//!
 //! ## "May this artifact serve?" has ONE owner, and it is not this module
 //!
 //! The admission gate in [`Catalogue::resolve`] is [`crate::trust::Approval::serves`] — the shared
@@ -63,11 +80,23 @@
 
 use std::collections::BTreeMap;
 
+use crate::catalogue::{Caller, CatalogueItem};
+use crate::trust::validate::Grant;
+
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{
     McpPinMechanism, McpServerDefCfg, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
 };
 use crate::trust::Approval;
+
+/// THE TWO SCOPE KINDS AN MCP CAPABILITY IS REACHED THROUGH.
+///
+/// Named once rather than spelt at each call site, because the LISTING and the DISPATCH must ask
+/// about the same two kinds: a caller that could see a tool it would then be refused for, or be
+/// refused for one it can see, is a catalogue and a gate that disagree. `mcp/client/egress.rs` names
+/// the same two on the outbound leg and is that unification's business, not this one's.
+pub(crate) const SCOPE_KIND_SERVER: &str = "mcp_server";
+pub(crate) const SCOPE_KIND_TOOL: &str = "mcp_tool";
 
 /// ONE approved capability — the bound identity in full, plus the inert display fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -554,32 +583,45 @@ impl Catalogue {
 
     /// THE GRANT-SCOPED TOOL CATALOGUE for one caller.
     ///
-    /// `grant` answers `scope_allowed(kind, value)`. Passing the predicate rather than the key keeps
-    /// this module free of the governance types (it is the same function whether the caller is a
-    /// virtual key, a synthesised principal, or a test), and it makes the two-grant rule visible in
-    /// one expression instead of spread across a struct.
-    pub(crate) fn tools_for(&self, grant: &dyn Fn(&str, &str) -> bool) -> Vec<&ToolEntry> {
-        self.tools
-            .values()
-            .filter(|t| granted(grant, &t.server, &t.namespaced))
-            .collect()
+    /// The WALK is [`crate::catalogue::visible`] — core's, shared with every other plane — and the
+    /// entitlement decision inside it is [`crate::trust::validate`]'s, so what a caller may see is
+    /// decided by one mechanism asking one gate. The two-grant rule this plane contributes is in
+    /// `<ToolEntry as CatalogueItem>::required_grants`, once, for all four entry types.
+    pub(crate) fn tools_for(&self, caller: &Caller<'_>) -> Vec<&ToolEntry> {
+        crate::catalogue::visible(self.tools.values(), caller, &())
     }
 
     /// The grant-scoped prompt catalogue. Scoped by the SAME two grants as tools: a prompt is a
     /// capability of a server, and a caller with no reach to the server has no reach to its prompts.
-    pub(crate) fn prompts_for(&self, grant: &dyn Fn(&str, &str) -> bool) -> Vec<&PromptEntry> {
-        self.prompts
-            .values()
-            .filter(|p| granted(grant, &p.server, &p.namespaced))
-            .collect()
+    pub(crate) fn prompts_for(&self, caller: &Caller<'_>) -> Vec<&PromptEntry> {
+        crate::catalogue::visible(self.prompts.values(), caller, &())
     }
 
     /// The grant-scoped resource catalogue.
-    pub(crate) fn resources_for(&self, grant: &dyn Fn(&str, &str) -> bool) -> Vec<&ResourceEntry> {
-        self.resources
-            .values()
-            .filter(|r| granted(grant, &r.server, &r.namespaced))
-            .collect()
+    pub(crate) fn resources_for(&self, caller: &Caller<'_>) -> Vec<&ResourceEntry> {
+        crate::catalogue::visible(self.resources.values(), caller, &())
+    }
+
+    /// `prompts/list`'s answer for one caller: the SAME walk, rendered.
+    ///
+    /// One expression, so the entitlement decision and the rendering cannot be separated by an
+    /// intervening edit at the call site — an item is rendered only once core has decided this
+    /// caller may see it.
+    pub(crate) fn prompts_rendered(&self, caller: &Caller<'_>) -> Vec<serde_json::Value> {
+        crate::catalogue::rendered(self.prompts.values(), caller, &())
+    }
+
+    /// `resources/list`'s answer for one caller.
+    pub(crate) fn resources_rendered(&self, caller: &Caller<'_>) -> Vec<serde_json::Value> {
+        crate::catalogue::rendered(self.resources.values(), caller, &())
+    }
+
+    /// `resources/templates/list`'s answer for one caller.
+    pub(crate) fn resource_templates_rendered(
+        &self,
+        caller: &Caller<'_>,
+    ) -> Vec<serde_json::Value> {
+        crate::catalogue::rendered(self.resource_templates.values(), caller, &())
     }
 
     /// Look one prompt up under the caller's grant. `None` covers both "no such prompt" and "not
@@ -587,23 +629,21 @@ impl Catalogue {
     /// leaks the existence of what it is hiding.
     pub(crate) fn prompt_for(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        caller: &Caller<'_>,
         namespaced_name: &str,
     ) -> Option<&PromptEntry> {
-        self.prompts
-            .get(namespaced_name)
-            .filter(|p| granted(grant, &p.server, &p.namespaced))
+        let entry = self.prompts.get(namespaced_name)?;
+        crate::catalogue::judge(entry, caller, &())
+            .ok()
+            .map(|e| e.item)
     }
 
     /// The grant-scoped resource-TEMPLATE catalogue.
     pub(crate) fn resource_templates_for(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        caller: &Caller<'_>,
     ) -> Vec<&ResourceTemplateEntry> {
-        self.resource_templates
-            .values()
-            .filter(|t| granted(grant, &t.server, &t.namespaced))
-            .collect()
+        crate::catalogue::visible(self.resource_templates.values(), caller, &())
     }
 
     /// MATCH a caller's EXPANDED uri against the grant-scoped templates.
@@ -627,7 +667,7 @@ impl Catalogue {
     /// nothing.
     pub(crate) fn resource_template_for(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        caller: &Caller<'_>,
         uri: &str,
     ) -> ResourceLookup<(
         &ResourceTemplateEntry,
@@ -636,10 +676,9 @@ impl Catalogue {
         // Matched against the OPERATOR'S OWN template, not the namespaced spelling, for the same
         // reason a concrete resource is now addressed by its own URI: the caller expands the
         // template it was published, and it is published raw.
-        let mut matches = self
-            .resource_templates
-            .values()
-            .filter(|t| granted(grant, &t.server, &t.namespaced))
+        let entitled = self.resource_templates_for(caller);
+        let mut matches = entitled
+            .into_iter()
             .filter_map(|t| match_uri_template(&t.uri_template, uri).map(|p| (t, p)));
         let Some(first) = matches.next() else {
             return ResourceLookup::NotFound;
@@ -675,13 +714,11 @@ impl Catalogue {
     /// guess would usually be right.
     pub(crate) fn resource_by_uri(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        caller: &Caller<'_>,
         uri: &str,
     ) -> ResourceLookup<&ResourceEntry> {
-        let mut matches = self
-            .resources
-            .values()
-            .filter(|r| r.uri == uri && granted(grant, &r.server, &r.namespaced));
+        let entitled = self.resources_for(caller);
+        let mut matches = entitled.into_iter().filter(|r| r.uri == uri);
         let Some(first) = matches.next() else {
             return ResourceLookup::NotFound;
         };
@@ -746,11 +783,11 @@ impl Catalogue {
             // lines happen to be written in.
             grants: &[
                 crate::trust::validate::Grant::Scope {
-                    kind: "mcp_server",
+                    kind: SCOPE_KIND_SERVER,
                     name: &entry.server,
                 },
                 crate::trust::validate::Grant::Scope {
-                    kind: "mcp_tool",
+                    kind: SCOPE_KIND_TOOL,
                     name: &entry.namespaced,
                 },
             ],
@@ -928,12 +965,6 @@ fn match_uri_template(
     }
 }
 
-/// BOTH grants, and the order is the one an operator reads: the server first (may this caller reach
-/// this upstream at all), then the capability.
-fn granted(grant: &dyn Fn(&str, &str) -> bool, server: &str, namespaced_name: &str) -> bool {
-    grant("mcp_server", server) && grant("mcp_tool", namespaced_name)
-}
-
 /// `{server}_{tool}` — the routing key. One function so the catalogue, the grant value and every
 /// operator-facing rendering are the same string by construction.
 pub(crate) fn namespaced(server: &str, capability: &str) -> String {
@@ -1099,3 +1130,254 @@ mod catalogue_tests;
 #[cfg(test)]
 #[path = "tests/trust_gate_tests.rs"]
 mod trust_gate_tests;
+
+// ══ THE PLANE'S HALF OF THE CATALOGUE SEAM ═══════════════════════════════════════════════════════
+//
+// Core ([`crate::catalogue`]) owns the walk, the fail-closed floor, the order in which entitlement
+// and fitness are applied and the rule that nothing is rendered before it is entitled. The ordered
+// gate ([`crate::trust::validate`]) owns the entitlement decision itself. Everything below is what
+// THIS PLANE contributes, and it is deliberately nothing but declarations: which grants an entry
+// requires, which question this catalogue is asking, what a refusal is called here, and how an entry
+// is written onto the MCP wire.
+//
+// THE SCOPE KINDS ARE WRITTEN ONCE FOR FOUR ENTRY TYPES. `mcp_server` is "may this caller reach this
+// upstream at all" and `mcp_tool` is "may it reach this capability", and both are required for every
+// capability an MCP registration exposes — a tool, a prompt, a resource and a template alike. A
+// prompt is a capability of a server, so a caller with no reach to the server has no reach to its
+// prompts; the alternative is a second scope kind per capability that operators would have to keep
+// in agreement by hand.
+//
+// The four impls differ in exactly one thing — `render` — which is the point: the wire form is the
+// protocol's and the entitlement rule is not per-capability.
+
+/// The MCP grant pair, stated in ONE place so four entry types cannot drift about what "granted"
+/// means. The order is the one an operator reads: the server first (may this caller reach this
+/// upstream at all), then the capability.
+///
+/// SCOPE KIND CONSTANTS, not literals, so the listing and [`Catalogue::resolve`] name the same two
+/// kinds by construction — a caller must never be able to see a tool it would then be refused for,
+/// or be refused for one it can see.
+fn mcp_grants<'g>(out: &mut Vec<Grant<'g>>, server: &'g str, namespaced_name: &'g str) {
+    out.push(Grant::Scope {
+        kind: SCOPE_KIND_SERVER,
+        name: server,
+    });
+    out.push(Grant::Scope {
+        kind: SCOPE_KIND_TOOL,
+        name: namespaced_name,
+    });
+}
+
+/// WHAT THIS PLANE'S CATALOGUE ASKS, and it is identity and grant and no more.
+///
+/// The artifact step is deliberately absent: the MCP catalogue LISTS what it will not dispatch, so
+/// an operator can see the approval queue, and `tools/call` asks the full ordered gate in
+/// [`Catalogue::resolve`]. That is a statement about what a listing MEANS on this wire, made at one
+/// call site in this file, rather than a step some shared function decided to skip — see
+/// [`crate::trust::validate::validate_visibility`], which says the same thing from the other side.
+///
+/// Every refusal renders as `NotGranted`/`IdentityNotLive`, which are the two arms whose WIRE text
+/// is identical to `UnknownTool`'s: a caller learns only that there is nothing there for it, and the
+/// audit record keeps the three apart for the operator.
+fn admit_listing(
+    caller: &Caller<'_>,
+    grants: &[Grant<'_>],
+    name: &str,
+) -> Result<(), DispatchRefusal> {
+    crate::trust::validate::validate_visibility(caller.key, caller.now, grants).map_err(|r| {
+        match r {
+            crate::trust::validate::Refusal::IdentityNotLive { .. } => {
+                DispatchRefusal::IdentityNotLive(name.to_string())
+            }
+            // No egress list is consulted on a listing, and the artifact and generation steps are
+            // not asked at all. Answered rather than unwrapped because this is a request path and
+            // "unreachable" is a claim about today's arguments.
+            _ => DispatchRefusal::NotGranted(name.to_string()),
+        }
+    })
+}
+
+impl CatalogueItem for ToolEntry {
+    type Excluded = DispatchRefusal;
+    /// Nothing. A tool is addressed BY NAME and is either the caller's or not: there is no
+    /// structural fitness question on this plane, which is precisely the difference from A2A, where
+    /// an agent that cannot accept a shape of task is not a candidate for it.
+    type Query = ();
+    type Fit = ();
+    type Wire<'a> = serde_json::Value;
+
+    fn required_grants<'g>(&'g self, _query: &'g (), out: &mut Vec<Grant<'g>>) {
+        mcp_grants(out, &self.server, &self.namespaced);
+    }
+
+    fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), DispatchRefusal> {
+        admit_listing(caller, grants, &self.namespaced)
+    }
+
+    fn fit(&self, _query: &()) -> Result<(), DispatchRefusal> {
+        Ok(())
+    }
+
+    fn ungranted(&self) -> DispatchRefusal {
+        DispatchRefusal::NotGranted(self.namespaced.clone())
+    }
+
+    /// One catalogue entry as the wire carries it. The description is MARKUP-NORMALISED here: this
+    /// is the moment it is shown or fed as context, and that moment is exactly where the strip
+    /// belongs.
+    fn render(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        // The NAMESPACED name is the wire name, because it is the routing key — the bound identity a
+        // route is decided on, never the free-text description — and the value an `mcp_tool` grant
+        // carries. Exposing the bare upstream name would let two servers collide in one caller's
+        // catalogue, so one server's tool would silently answer for another's.
+        obj.insert("name".into(), self.namespaced.clone().into());
+        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
+            obj.insert("description".into(), d.into());
+        }
+        obj.insert(
+            "inputSchema".into(),
+            self.input_schema
+                .clone()
+                // A tool with no declared schema still needs a schema-shaped answer: clients reject
+                // a tool whose `inputSchema` is absent, and an empty object is the honest "no
+                // constraints declared" rather than a fabricated one.
+                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+        );
+        // THE OUTPUT SCHEMA, when the operator approved one — and ONLY then. Unlike `inputSchema`
+        // there is no schema-shaped stand-in for its absence: an absent `outputSchema` means "this
+        // tool makes no promise about structured output", and `{}` would mean "it promises, and the
+        // promise is vacuous". The spec reads the PRESENCE of this key, not its contents, to decide
+        // whether conforming structured results are a MUST, so inventing one would invent an
+        // obligation.
+        //
+        // Dropping it is the mirror-image defect: a client that would have validated the structured
+        // result has nothing to validate against and cannot tell a conforming result from a
+        // violating one. `mcp::method::tools_call` therefore also CHECKS what comes back — see
+        // `structured_output_violation`.
+        if let Some(s) = &self.output_schema {
+            obj.insert("outputSchema".into(), s.clone());
+        }
+        // The approved schema hash is published because it is the operator's approval, not a secret,
+        // and a client that pins what it saw is a client that notices a rug-pull too.
+        if let Some(h) = &self.schema_hash {
+            obj.insert(
+                "_meta".into(),
+                serde_json::json!({ "io.busbar/schemaHash": h }),
+            );
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
+impl CatalogueItem for PromptEntry {
+    type Excluded = DispatchRefusal;
+    type Query = ();
+    type Fit = ();
+    type Wire<'a> = serde_json::Value;
+
+    fn required_grants<'g>(&'g self, _query: &'g (), out: &mut Vec<Grant<'g>>) {
+        mcp_grants(out, &self.server, &self.namespaced);
+    }
+
+    fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), DispatchRefusal> {
+        admit_listing(caller, grants, &self.namespaced)
+    }
+
+    fn fit(&self, _query: &()) -> Result<(), DispatchRefusal> {
+        Ok(())
+    }
+
+    fn ungranted(&self) -> DispatchRefusal {
+        DispatchRefusal::NotGranted(self.namespaced.clone())
+    }
+
+    fn render(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert("name".into(), self.namespaced.clone().into());
+        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
+            obj.insert("description".into(), d.into());
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
+impl CatalogueItem for ResourceEntry {
+    type Excluded = DispatchRefusal;
+    type Query = ();
+    type Fit = ();
+    type Wire<'a> = serde_json::Value;
+
+    fn required_grants<'g>(&'g self, _query: &'g (), out: &mut Vec<Grant<'g>>) {
+        mcp_grants(out, &self.server, &self.namespaced);
+    }
+
+    fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), DispatchRefusal> {
+        admit_listing(caller, grants, &self.namespaced)
+    }
+
+    fn fit(&self, _query: &()) -> Result<(), DispatchRefusal> {
+        Ok(())
+    }
+
+    fn ungranted(&self) -> DispatchRefusal {
+        DispatchRefusal::NotGranted(self.namespaced.clone())
+    }
+
+    fn render(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        // THE RAW URI, because that is what a client hands back on `resources/read`. The namespaced
+        // form stays the grant value and the map key — both of which must remain unique per
+        // (server, uri) — but it is not what a client has to say.
+        obj.insert("uri".into(), self.uri.clone().into());
+        if let Some(n) = super::sanitize::normalise_opt(self.name.as_deref()) {
+            obj.insert("name".into(), n.into());
+        }
+        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
+            obj.insert("description".into(), d.into());
+        }
+        if let Some(m) = &self.mime_type {
+            obj.insert("mimeType".into(), m.clone().into());
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
+impl CatalogueItem for ResourceTemplateEntry {
+    type Excluded = DispatchRefusal;
+    type Query = ();
+    type Fit = ();
+    type Wire<'a> = serde_json::Value;
+
+    fn required_grants<'g>(&'g self, _query: &'g (), out: &mut Vec<Grant<'g>>) {
+        mcp_grants(out, &self.server, &self.namespaced);
+    }
+
+    fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), DispatchRefusal> {
+        admit_listing(caller, grants, &self.namespaced)
+    }
+
+    fn fit(&self, _query: &()) -> Result<(), DispatchRefusal> {
+        Ok(())
+    }
+
+    fn ungranted(&self) -> DispatchRefusal {
+        DispatchRefusal::NotGranted(self.namespaced.clone())
+    }
+
+    fn render(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        // The operator's own template: the caller expands what it is given.
+        obj.insert("uriTemplate".into(), self.uri_template.clone().into());
+        if let Some(n) = super::sanitize::normalise_opt(self.name.as_deref()) {
+            obj.insert("name".into(), n.into());
+        }
+        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
+            obj.insert("description".into(), d.into());
+        }
+        if let Some(m) = &self.mime_type {
+            obj.insert("mimeType".into(), m.clone().into());
+        }
+        serde_json::Value::Object(obj)
+    }
+}

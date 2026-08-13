@@ -32,9 +32,13 @@
 
 use serde_json::Value;
 
+use crate::catalogue::{Caller, CatalogueItem};
+use crate::trust::validate::Grant;
 use crate::trust::{Approval, Sighting, TrustState};
 
 use super::anomaly;
+use super::card::{AgentCard, CardError};
+use super::inbound::SCOPE_KIND_AGENT;
 use super::pin::CardPin;
 use super::reverify;
 
@@ -188,12 +192,329 @@ impl AgentRegistration {
     /// Whether this registration is a candidate for the DELEGATION CATALOGUE at all: approved, and
     /// therefore neither pending, quarantined, suspended nor in error.
     ///
-    /// Scope and capability matching are [`super::catalogue`]'s; this is only the trust half.
+    /// Scope is the ordered gate's ([`crate::trust::validate`]) and capability matching is
+    /// [`judge`]'s; this is only the trust half, and it is the same derivation the gate makes.
     pub(crate) fn is_delegable(&self) -> bool {
         self.trust_state() == TrustState::Approved
     }
 }
 
+// ══ THE CATALOGUE: WHICH AGENTS A GIVEN CALLER MAY EVEN SEE ══════════════════════════════════════
+//
+// Not "discovery". The vocabulary is CATALOGUE and DISPATCH, and the split is load-bearing:
+// catalogue is AUTHORIZATION plus STRUCTURAL FITNESS; dispatch ordering is ordinary pool machinery.
+// Nothing here is a hook, nothing here is a score, and nothing here reads task content.
+//
+// ## THE WALK IS CORE'S AND THE GATE IS CORE'S. THIS PLANE SUPPLIES AN ITEM TYPE.
+//
+// [`crate::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
+// hand it to the ordered gate, keep the entitled subset, render it — and [`crate::trust::validate`]
+// owns the entitlement decision. This file supplies the four things a plane owes them: the item
+// (`AgentRegistration`, the record this module already was), the grants it requires, its structural
+// fitness and refusal words, and its wire form. The catalogue module this plane kept of its own is
+// gone: two implementations of "who may see what" agree right up until they do not, and the
+// divergence fails OPEN.
+//
+// ## Four conjunctive filters, and only one of them is this file's
+//
+// 1. **Trusted.** Only an `Approved` registration is ever a candidate. `Pending`, `Quarantined`,
+//    `Suspended` and `Error` are not.
+// 2. **Scope-granted.** `scope_allowed("agent", agent_id)`. No hook on this path, no filter verb, no
+//    auto-tagging, no tag conventions. TAGS GROUP, IDENTITY IDENTIFIES.
+// 3. **Capability-matched.** A2A agents are NOT FUNGIBLE: an arbitrary agent cannot serve an
+//    arbitrary task, so an unfiltered candidate set is unsafe in a way an LLM lane set is not. This
+//    is STRUCTURAL matching — an agent either can accept this shape of task or it cannot — and never
+//    a score.
+// 4. **Not suspended.** Folded into (1) rather than checked twice: `Suspended` outranks every other
+//    state in the lifecycle, so a suspended registration is not `Approved` and is already out.
+//
+// FILTERS 1, 2 AND 4 ARE ONE CALL to [`crate::trust::validate::validate_request`], made from
+// [`CatalogueItem::admit`] below. Only filter 3 is this file's, because only filter 3 is about this
+// wire format's document. THIS PLANE ASKS THE FULL ORDERED GATE — identity, grant, artifact,
+// generation — because on A2A a listing IS an admission: an agent that is not `Approved` is not a
+// candidate for anything. MCP's catalogue asks only identity and grant, because it deliberately
+// LISTS what it will not dispatch so an operator can see the approval queue. That difference is a
+// fact about the two protocols, stated at two `admit` call sites, and never a step a shared function
+// decided to skip.
+//
+// ## Structural matching reads TYPES, never prose
+//
+// [`TaskShape`] carries a skill id, requested capabilities and input/output MIME modes. There is
+// deliberately no field on it for text: the dispatch decision is content-blind, and the way that is
+// enforced is that the decision function is not given any content to read.
+//
+// Content-blindness defeats the PROSE attack, not the TYPED-FIELD attack: `skills[]` and
+// `capabilities` are upstream-authored, and what bounds them is that only an operator-approved
+// `Approved` registration is ever a candidate. Operator approval is a capability VOUCH as well as an
+// authenticity check, and the anomaly breaker is what catches an agent that betrays the vouch.
+
+/// THE SHAPE OF A TASK, as the catalogue is allowed to see it.
+///
+/// Typed metadata only. There is no `text` member and there is not going to be one: a field for
+/// prose is a field somebody eventually matches on, and the moment selection reads prose the
+/// upstream's free text is deciding where tasks go.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TaskShape {
+    /// The skill being asked for, by `id`. `None` means "any skill this agent declares".
+    pub(crate) skill: Option<String>,
+    /// Protocol features the task REQUIRES (`streaming`, `pushNotifications`, …). An agent that does
+    /// not declare a required feature cannot accept this shape of task.
+    pub(crate) requires_streaming: bool,
+    pub(crate) requires_push_notifications: bool,
+    /// MIME modes the caller will SEND and the modes it can ACCEPT back.
+    pub(crate) input_modes: Vec<String>,
+    pub(crate) output_modes: Vec<String>,
+}
+
+/// WHAT THE CALLER WANTS — everything the grant list and the fitness test need beyond the
+/// registration itself, and this plane's [`CatalogueItem::Query`].
+///
+/// It carries no caller-authored content and cannot: [`TaskShape`] has no channel for prose, and
+/// `delegating_from` is a busbar-local agent id the operator wrote, never anything an upstream
+/// supplied.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Wanted {
+    pub(crate) shape: TaskShape,
+    /// The FRONTED agent doing the delegating, on the delegation side only. `None` is the receiving
+    /// direction, where the egress grant does not apply.
+    pub(crate) delegating_from: Option<String>,
+}
+
+/// Why a registration is not in a caller's catalogue. Returned rather than merely filtered, because
+/// "why can this key not see the planner" is the question an operator actually asks, and a filter
+/// that only ever returns survivors cannot answer it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Excluded {
+    /// Not `Approved`: pending, quarantined, suspended or in error.
+    NotTrusted(TrustState),
+    /// The caller's key does not grant `agent:<id>`.
+    NotInScope,
+    /// The caller's key is no longer live: deleted, disabled or expired. Its own arm rather than
+    /// folded into `NotInScope`, because "grant this key a scope" and "this key is gone" are two
+    /// different things for an operator to do.
+    CallerNotLive,
+    /// The FRONTED agent asking is not on this registration's `egress_scopes`. Delegation only.
+    NoEgressGrant,
+    /// The card declares no skill with the requested id.
+    SkillNotDeclared(String),
+    /// The card does not declare a capability the task requires.
+    CapabilityNotDeclared(&'static str),
+    /// The card accepts none of the modes the caller will send, or produces none it can accept.
+    ModesIncompatible,
+    /// There is no cached card, so there is nothing to match against. An agent whose card has never
+    /// been captured is not a candidate, whatever its approval says.
+    NoCachedCard,
+    /// The cached card cannot be read.
+    Unreadable(CardError),
+}
+
+/// One catalogue row: the registration, and the skill it matched. Core's type, aliased rather than
+/// redeclared — a plane that keeps its own row type is a plane that can quietly add a field the
+/// mechanism does not know it is carrying.
+pub(crate) type Candidate<'a> = crate::catalogue::Entitled<'a, AgentRegistration>;
+
+impl CatalogueItem for AgentRegistration {
+    type Excluded = Excluded;
+    type Query = Wanted;
+    /// The skill id the task shape matched. `None` when the task named no skill.
+    type Fit = Option<String>;
+    type Wire<'a> = super::serve::EntitledAgent<'a>;
+
+    /// ONE GRANT on the receiving side, TWO on the delegating side.
+    ///
+    /// The scope grant names the OPERATOR's id for the agent, never anything the upstream supplied.
+    /// The egress grant is the only structural difference between the two directions on this path —
+    /// receiving is a strict subset of delegating minus the trust root — and it is the target's
+    /// standing list rather than the caller's, which is why the ordered gate has two grant arms and
+    /// not one.
+    fn required_grants<'g>(&'g self, wanted: &'g Wanted, out: &mut Vec<Grant<'g>>) {
+        out.push(Grant::Scope {
+            kind: SCOPE_KIND_AGENT,
+            name: &self.agent_id,
+        });
+        if let Some(from) = wanted.delegating_from.as_deref() {
+            // Empty is NOBODY, never everybody — the ordered gate's rule, not a second one here.
+            out.push(Grant::Egress {
+                from,
+                allowed: &self.egress_scopes,
+            });
+        }
+    }
+
+    /// THE FULL ORDERED GATE. Identity, grant, artifact and generation, in one call, and it is the
+    /// same call the invocation check and the pre-socket relay gate make.
+    fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Excluded> {
+        crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+            principal: caller.key,
+            now: caller.now,
+            grants,
+            approval: &self.approval,
+            sighting: &self.sighting,
+            // The card's SKILL is matched structurally in `fit`, against a declaration rather than
+            // against an approved digest: this plane approves a card, and the skill list is part of
+            // the document the fingerprint already covers.
+            capability: None,
+            generation: caller.generation,
+        })
+        .map_err(|refusal| match refusal {
+            crate::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
+            crate::trust::validate::Refusal::EgressDenied { .. } => Excluded::NoEgressGrant,
+            crate::trust::validate::Refusal::IdentityNotLive { .. } => Excluded::CallerNotLive,
+            crate::trust::validate::Refusal::NotServing { state, .. } => {
+                Excluded::NotTrusted(state)
+            }
+            // The catalogue asks at admission with no capability, where neither can fire; answered
+            // rather than unwrapped because this is a request path.
+            _ => Excluded::NotTrusted(self.approval.state(&self.sighting)),
+        })
+    }
+
+    /// STRUCTURAL FITNESS against the CACHED card — filter (3), and the only one this file owns.
+    fn fit(&self, wanted: &Wanted) -> Result<Option<String>, Excluded> {
+        let document = self.cached_card.as_ref().ok_or(Excluded::NoCachedCard)?;
+        let card = super::card::parse(document).map_err(Excluded::Unreadable)?;
+        judge(&card, &wanted.shape)
+    }
+
+    /// A registration reaches this only if it named no grant at all, which it cannot: the scope
+    /// grant above is unconditional. It exists because core will not enumerate an item that declares
+    /// none, and a plane that could answer that case with `Ok` would be a plane with a way past the
+    /// floor.
+    fn ungranted(&self) -> Excluded {
+        Excluded::NotInScope
+    }
+
+    /// ONE ENTITLED AGENT, as the extended card carries it. Rendered only after core has decided the
+    /// caller may see it — which is the whole defence against the naive extended card that unions
+    /// every fronted agent's skills and hands the estate to anybody who authenticates.
+    fn render(&self) -> super::serve::EntitledAgent<'_> {
+        super::serve::EntitledAgent {
+            agent_id: &self.agent_id,
+            backend_url: &self.backend_url,
+            card: self.cached_card.as_ref(),
+        }
+    }
+}
+
+/// JUDGE WHETHER AN AGENT CARD MATCHES A TASK SHAPE. Structural, never a score: an agent either can
+/// accept this shape of task or it cannot.
+///
+/// Unrelated to `mcp/client/argguard.rs`'s `judge`, which asks whether an ARGUMENT is a URL-ish SSRF
+/// hazard. Same verb, unrelated subjects; `scripts/structure-lint.sh` carries that as a signed
+/// DISTINCT row rather than leaving it as duplication nobody noticed.
+fn judge(card: &AgentCard, shape: &TaskShape) -> Result<Option<String>, Excluded> {
+    if shape.requires_streaming && !card.capabilities.streaming {
+        return Err(Excluded::CapabilityNotDeclared("streaming"));
+    }
+    if shape.requires_push_notifications && !card.capabilities.push_notifications {
+        return Err(Excluded::CapabilityNotDeclared("pushNotifications"));
+    }
+
+    let matched = match &shape.skill {
+        None => None,
+        Some(wanted) => {
+            let skill = card
+                .skills
+                .iter()
+                .find(|s| &s.id == wanted)
+                .ok_or_else(|| Excluded::SkillNotDeclared(wanted.clone()))?;
+            // A skill's own modes OVERRIDE the card defaults where it declares them, and fall back
+            // to the defaults where it does not. Reading the skill's empty list as "accepts nothing"
+            // would exclude every agent that sensibly declares its modes once.
+            let inputs = pick(&skill.input_modes, &card.default_input_modes);
+            let outputs = pick(&skill.output_modes, &card.default_output_modes);
+            check_modes(shape, inputs, outputs)?;
+            return Ok(Some(skill.id.clone()));
+        }
+    };
+
+    check_modes(shape, &card.default_input_modes, &card.default_output_modes)?;
+    Ok(matched)
+}
+
+fn pick<'a>(specific: &'a [String], fallback: &'a [String]) -> &'a [String] {
+    if specific.is_empty() {
+        fallback
+    } else {
+        specific
+    }
+}
+
+/// The caller must be able to SEND something the agent accepts, and RECEIVE something the agent
+/// produces. Both directions, because an agent that accepts the request and answers in a format the
+/// caller cannot read has not served the task.
+///
+/// A caller that names no modes is not constraining the match: it has said nothing, and treating
+/// silence as "accepts nothing" would empty every catalogue by default.
+fn check_modes(
+    shape: &TaskShape,
+    agent_inputs: &[String],
+    agent_outputs: &[String],
+) -> Result<(), Excluded> {
+    let compatible = |wanted: &[String], declared: &[String]| -> bool {
+        wanted.is_empty() || declared.is_empty() || wanted.iter().any(|w| declared.contains(w))
+    };
+    if !compatible(&shape.input_modes, agent_inputs)
+        || !compatible(&shape.output_modes, agent_outputs)
+    {
+        return Err(Excluded::ModesIncompatible);
+    }
+    Ok(())
+}
+
+/// RECEIVING: which LOCAL fronted agents this caller may see and invoke.
+///
+/// Order follows the registry's own, which is insertion-ordered from config, so an operator-facing
+/// listing is deterministic rather than hash-ordered. Core preserves it and does not re-sort.
+pub(crate) fn inbound_catalogue<'a>(
+    caller: &Caller<'_>,
+    registrations: &'a [AgentRegistration],
+    wanted: &Wanted,
+) -> Vec<Candidate<'a>> {
+    crate::catalogue::entitled(registrations, caller, wanted)
+}
+
+/// DELEGATING: which registered agents THIS FRONTED AGENT may see as delegation targets.
+///
+/// It is the same walk with one more grant in the list, which is what makes the subset relation a
+/// property of the data rather than of two functions that must be kept in agreement.
+pub(crate) fn delegation_catalogue<'a>(
+    caller: &Caller<'_>,
+    registrations: &'a [AgentRegistration],
+    wanted: &Wanted,
+) -> Vec<Candidate<'a>> {
+    crate::catalogue::entitled(registrations, caller, wanted)
+}
+
+/// THE ENTITLED AGENTS, AS THE EXTENDED CARD CARRIES THEM — the same walk as [`inbound_catalogue`],
+/// rendered by core rather than projected at the call site.
+///
+/// This is the data-exposure surface the extended card is: the naive implementation unions every
+/// fronted agent's `skills[]` and hands every authenticated caller the whole inventory. Rendering
+/// through [`crate::catalogue::rendered`] makes that shape unreachable — an item is rendered only
+/// after core has decided the caller may see it, and there is no path here that renders first.
+pub(crate) fn entitled_agents<'a>(
+    caller: &Caller<'_>,
+    registrations: &'a [AgentRegistration],
+    wanted: &Wanted,
+) -> Vec<super::serve::EntitledAgent<'a>> {
+    crate::catalogue::rendered(registrations, caller, wanted)
+}
+
+/// WHY a named registration is not in a caller's catalogue. The same judgement, with the reason kept
+/// — for the admin surface and for the operator asking "why can this key not see the planner".
+pub(crate) fn explain(
+    registration: &AgentRegistration,
+    caller: &Caller<'_>,
+    wanted: &Wanted,
+) -> Result<(), Excluded> {
+    crate::catalogue::judge(registration, caller, wanted).map(|_| ())
+}
+
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod registry_tests;
+
+#[cfg(test)]
+#[path = "tests/catalogue_tests.rs"]
+mod catalogue_tests;

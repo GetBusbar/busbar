@@ -193,7 +193,7 @@ impl EgressGrant<'_> {
 /// A2A's wording, and nothing else.
 ///
 /// The question it asks — may busbar spend a credential on this backend agent ON BEHALF OF THIS
-/// CALLER? — is the SAME predicate [`super::inbound::authorize`] and [`super::catalogue`] ask, and
+/// CALLER? — is the SAME predicate [`super::inbound::authorize`] and [`super::registry`]'s catalogue ask, and
 /// asking it again here is not redundancy: those two answer "what may this caller SEE and INVOKE",
 /// and this one answers "what may busbar's own credentials be spent on", which is a different
 /// question asked at a different moment by a function that may one day have a call site the other

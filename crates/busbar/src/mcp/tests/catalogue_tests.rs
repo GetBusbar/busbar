@@ -7,7 +7,10 @@
 
 use super::{Catalogue, DispatchRefusal};
 use crate::mcp::client::catalogue::LiveSightings;
-use crate::mcp::config::{McpPinMechanism, McpServerDefCfg, ServerPinCfg, ToolAllowCfg, ToolsCfg};
+use crate::mcp::config::{
+    McpPinMechanism, McpServerDefCfg, PromptAllowCfg, ResourceAllowCfg, ResourceTemplateAllowCfg,
+    ServerPinCfg, ToolAllowCfg, ToolsCfg,
+};
 
 /// A registered server with `tools` approved AT a hash (so it serves) and `pending` allowed with no
 /// hash (so it is catalogued and does not serve).
@@ -60,6 +63,36 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
     )
 }
 
+/// The same registration with ONE capability of EVERY kind — a tool, a prompt, a resource and a
+/// template — so the entitlement rule can be asserted on all four surfaces rather than on the one
+/// that happened to have a test.
+fn full_server(id: &str) -> (String, McpServerDefCfg) {
+    let (name, mut def) = server(id, &["read"], &[]);
+    def.prompts_allow.insert(
+        "brief".to_string(),
+        PromptAllowCfg {
+            description: Some(format!("{id} brief")),
+            template: Some("hello".to_string()),
+            ..PromptAllowCfg::default()
+        },
+    );
+    def.resources_allow.insert(
+        format!("{id}://doc"),
+        ResourceAllowCfg {
+            text: Some("body".to_string()),
+            ..ResourceAllowCfg::default()
+        },
+    );
+    def.resource_templates_allow.insert(
+        format!("{id}://logs/{{day}}"),
+        ResourceTemplateAllowCfg {
+            text: Some("log for {day}".to_string()),
+            ..ResourceTemplateAllowCfg::default()
+        },
+    );
+    (name, def)
+}
+
 fn cfg(servers: Vec<(String, McpServerDefCfg)>) -> ToolsCfg {
     let mut c = ToolsCfg::default();
     for (name, def) in servers {
@@ -96,11 +129,16 @@ fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
     }
 }
 
-/// The CATALOGUE LISTING still asks a predicate — it filters what a caller may SEE, which is a
-/// different question from what the gate answers — so the key is adapted here rather than the
-/// listing changed.
-fn seeing(key: &busbar_api::VirtualKey) -> impl Fn(&str, &str) -> bool + '_ {
-    move |kind: &str, value: &str| key.scope_allowed(kind, value)
+/// THE CALLER, as every catalogue read now takes it. The LISTING asks a different question from the
+/// gate — identity and grant, and deliberately not the artifact step, because this plane CATALOGUES
+/// what it will not dispatch — but it asks it of the same ordered validator, so the key, the clock
+/// and the snapshot travel together instead of a bare grant closure.
+fn seeing(key: &busbar_api::VirtualKey) -> crate::catalogue::Caller<'_> {
+    crate::catalogue::Caller {
+        key: Some(key),
+        now: 0,
+        generation: crate::trust::validate::Generations::at_admission(1),
+    }
 }
 
 /// THE HEADLINE PROPERTY (goal item 5): two grants see two DIFFERENT lists, and a third sees NONE.
@@ -384,4 +422,195 @@ fn revalidation_also_re_derives_the_identity_under_the_live_grant() {
         Err(DispatchRefusal::NotGranted("fs_read".to_string())),
         "same generation, revoked grant: still refused"
     );
+}
+
+/// CROSS-TENANT ISOLATION, ON EVERY CATALOGUE SURFACE.
+///
+/// `two_grants_see_two_different_catalogues_and_a_third_sees_none` above proved this for TOOLS and
+/// only for tools; `prompts/list`, `resources/list` and `resources/templates/list` had no
+/// entitlement test of their own at all, on a plane where each of them is a separate wire verb
+/// answering "what exists here". That absence is the finding this test closes: the four surfaces
+/// route through one `required_grants` now, and one test asserts the property on all four, so a
+/// surface cannot be added and left out of the rule.
+///
+/// Asserted as DISJOINTNESS and NON-EMPTINESS together: "each saw one thing" is exactly what a
+/// swapped filter would also report, and "each saw nothing" is what a filter that refuses everything
+/// would.
+#[test]
+fn no_principal_sees_another_principals_prompts_resources_or_templates() {
+    let cat = Catalogue::build(&cfg(vec![full_server("fs"), full_server("db")]));
+
+    let a = grant_of(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_read"),
+        ("mcp_tool", "fs_brief"),
+        ("mcp_tool", "fs_fs://doc"),
+        ("mcp_tool", "fs_fs://logs/{day}"),
+    ]);
+    let b = grant_of(&[
+        ("mcp_server", "db"),
+        ("mcp_tool", "db_read"),
+        ("mcp_tool", "db_brief"),
+        ("mcp_tool", "db_db://doc"),
+        ("mcp_tool", "db_db://logs/{day}"),
+    ]);
+
+    /// One catalogue SURFACE, read for one caller. A named type because the four surfaces are the
+    /// point of this test: a fifth one added without a row here is a surface with no entitlement
+    /// assertion, and naming the shape is what makes adding the row obvious.
+    type ReadSurface = fn(&Catalogue, &crate::catalogue::Caller<'_>) -> Vec<String>;
+    let surfaces: [(&str, ReadSurface); 4] = [
+        ("tools", |c, k| {
+            c.tools_for(k)
+                .iter()
+                .map(|t| t.namespaced.clone())
+                .collect()
+        }),
+        ("prompts", |c, k| {
+            c.prompts_for(k)
+                .iter()
+                .map(|p| p.namespaced.clone())
+                .collect()
+        }),
+        ("resources", |c, k| {
+            c.resources_for(k)
+                .iter()
+                .map(|r| r.namespaced.clone())
+                .collect()
+        }),
+        ("templates", |c, k| {
+            c.resource_templates_for(k)
+                .iter()
+                .map(|t| t.namespaced.clone())
+                .collect()
+        }),
+    ];
+
+    for (what, read) in surfaces {
+        let mine = read(&cat, &seeing(&a));
+        let theirs = read(&cat, &seeing(&b));
+        assert!(
+            !mine.is_empty() && !theirs.is_empty(),
+            "`{what}`: both principals must see something, or the disjointness below is trivial"
+        );
+        assert!(
+            mine.iter().all(|m| m.starts_with("fs_")),
+            "`{what}`: principal A saw something that is not its own: {mine:?}"
+        );
+        assert!(
+            theirs.iter().all(|t| t.starts_with("db_")),
+            "`{what}`: principal B saw something that is not its own: {theirs:?}"
+        );
+        assert!(
+            mine.iter().all(|m| !theirs.contains(m)),
+            "`{what}`: one principal's inventory appeared in the other's"
+        );
+    }
+
+    // And the two ADDRESSED reads answer the same way: a caller cannot reach across by NAMING the
+    // other tenant's capability rather than listing it.
+    assert!(
+        cat.prompt_for(&seeing(&a), "db_brief").is_none(),
+        "`prompts/get` must not reach another principal's prompt by name"
+    );
+    assert!(
+        matches!(
+            cat.resource_by_uri(&seeing(&a), "db://doc"),
+            super::ResourceLookup::NotFound
+        ),
+        "`resources/read` must not reach another principal's resource by uri"
+    );
+    assert!(
+        matches!(
+            cat.resource_template_for(&seeing(&a), "db://logs/monday"),
+            super::ResourceLookup::NotFound
+        ),
+        "an expanded uri must not match another principal's template"
+    );
+}
+
+/// THE FAIL-CLOSED FLOOR, reached through this plane's own entry types.
+///
+/// `crate::catalogue` refuses an item that requires NO grant, and every MCP entry type requires two.
+/// This is the plane-side half of that: a caller holding NOTHING sees nothing on any surface, which
+/// is the assertion that would go red if a `required_grants` were ever emptied.
+#[test]
+fn a_caller_holding_no_grant_at_all_sees_nothing_on_any_surface() {
+    let cat = Catalogue::build(&cfg(vec![full_server("fs")]));
+    let none = grant_of(&[]);
+    assert!(cat.tools_for(&seeing(&none)).is_empty());
+    assert!(cat.prompts_for(&seeing(&none)).is_empty());
+    assert!(cat.resources_for(&seeing(&none)).is_empty());
+    assert!(cat.resource_templates_for(&seeing(&none)).is_empty());
+    assert!(cat.prompt_for(&seeing(&none), "fs_brief").is_none());
+    assert!(matches!(
+        cat.resource_by_uri(&seeing(&none), "fs://doc"),
+        super::ResourceLookup::NotFound
+    ));
+    assert!(matches!(
+        cat.resource_template_for(&seeing(&none), "fs://logs/monday"),
+        super::ResourceLookup::NotFound
+    ));
+}
+
+/// THE LISTING GAINED THE IDENTITY STEP IT NEVER HAD.
+///
+/// Before the walk was unified the catalogue took a grant CLOSURE, which could carry the grant and
+/// nothing else: a key deleted, disabled or expired between ingress and the listing still saw the
+/// whole of what it had been granted. `tools/call` grew the check with the ordered validator; the
+/// four listing surfaces are the other half, and this is that half.
+///
+/// The refusal is `identity_not_live` in the AUDIT record and identical to `unknown_tool` on the
+/// wire, which is the same distinction `not_granted` already keeps.
+#[test]
+fn a_key_that_is_no_longer_live_sees_nothing_on_any_surface() {
+    let cat = Catalogue::build(&cfg(vec![full_server("fs")]));
+    let live = grant_of(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_read"),
+        ("mcp_tool", "fs_brief"),
+        ("mcp_tool", "fs_fs://doc"),
+        ("mcp_tool", "fs_fs://logs/{day}"),
+    ]);
+    // The control: while the key is live it sees all four surfaces, or the rows below prove nothing.
+    assert_eq!(cat.tools_for(&seeing(&live)).len(), 1);
+    assert_eq!(cat.prompts_for(&seeing(&live)).len(), 1);
+    assert_eq!(cat.resources_for(&seeing(&live)).len(), 1);
+    assert_eq!(cat.resource_templates_for(&seeing(&live)).len(), 1);
+
+    for (what, mutate) in [
+        (
+            "deleted",
+            (|k: &mut busbar_api::VirtualKey| k.deleted_at = Some(1))
+                as fn(&mut busbar_api::VirtualKey),
+        ),
+        ("disabled", |k: &mut busbar_api::VirtualKey| {
+            k.enabled = false
+        }),
+        ("expired", |k: &mut busbar_api::VirtualKey| {
+            k.expires_at = Some(1)
+        }),
+    ] {
+        let mut gone = live.clone();
+        mutate(&mut gone);
+        let asked = crate::catalogue::Caller {
+            key: Some(&gone),
+            now: 100,
+            generation: crate::trust::validate::Generations::at_admission(1),
+        };
+        assert!(cat.tools_for(&asked).is_empty(), "{what}: tools");
+        assert!(cat.prompts_for(&asked).is_empty(), "{what}: prompts");
+        assert!(cat.resources_for(&asked).is_empty(), "{what}: resources");
+        assert!(
+            cat.resource_templates_for(&asked).is_empty(),
+            "{what}: templates"
+        );
+        assert_eq!(
+            crate::catalogue::judge(cat.tools_for(&seeing(&live))[0], &asked, &(),)
+                .unwrap_err()
+                .audit_reason(),
+            crate::audit::vocab::REASON_IDENTITY_NOT_LIVE,
+            "{what}: the audit record must say the key is gone, not that it lacks a grant"
+        );
+    }
 }

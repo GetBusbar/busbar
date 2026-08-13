@@ -62,6 +62,7 @@ mod auth;
 mod auth_cache;
 mod billing;
 mod breaker;
+mod catalogue;
 mod config;
 mod config_validate;
 mod core_routes;

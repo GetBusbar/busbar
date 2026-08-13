@@ -734,7 +734,7 @@ pub(crate) struct EntitledAgent<'a> {
 /// busbar's card by the same rule busbar applies to everyone else's would reject it outright.
 /// Namespacing them (`planner/summarise`) would fix the collision and break the thing they are for,
 /// because `metadata.skill` is matched against the backend's own id by
-/// [`super::catalogue::match_shape`].
+/// [`super::registry::judge`].
 ///
 /// One skill per AGENT has neither problem: agent ids are unique by construction (they are the
 /// operator's own keys), and the id published is the one the caller actually addresses. A caller
