@@ -115,6 +115,30 @@ pub(crate) fn requested_signals(
     mask
 }
 
+/// Does ANY registered hook hold a prompt-CONTENT grant (`prompt: ro` or `prompt: rw`)?
+///
+/// THE COMPUTE GATE for the request IR, and deliberately the SAME mechanism as
+/// [`requested_signals`] directly above: one boolean resolved ONCE per config apply and read on the
+/// request path as a single load, never recomputed. A deployment that grants no hook access to
+/// prompt content — the overwhelming default — never builds the IR for the hook seam at all.
+///
+/// THE PROPERTY THIS KEYS ON IS THE DEPLOYMENT'S, NOT THE REQUEST'S. "Same protocol in and out" is
+/// the tempting alternative and it is the wrong question: the same-protocol short-circuit compares
+/// the ingress protocol against the RESOLVED EGRESS OF THE HOP, which is not known until a lane has
+/// been chosen — and a content hook may reroute the request across protocols before that point. The
+/// IR must therefore exist before egress is chosen, so the gate can only ask something answerable at
+/// boot.
+///
+/// Read from the DEFINITION registry (`App::hook_registry`), so the answer is a SUPERSET of the
+/// hooks that actually fire: a granted hook that no pool wires still reads `true`. The one-sided
+/// direction is deliberate — over-reporting costs an unused IR build, under-reporting would hand a
+/// content-granted hook a view the request was never parsed into.
+pub(crate) fn any_content_hook(
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+) -> bool {
+    hooks.values().any(|h| h.prompt.sends_prompt())
+}
+
 /// The plugin-resolution environment threaded through every hook-transport builder: the validated
 /// plugin registry (the ONLY resolution surface — a hook's `plugin:` ref opens a `DlopenPolicy`
 /// through it) and the shared [`HookProjectors`] every `DlopenPolicy` uses to project the request and

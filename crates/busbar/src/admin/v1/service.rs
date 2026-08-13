@@ -531,6 +531,9 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     next.config_version = current.config_version.wrapping_add(1);
     let is_global = cfg.global;
     next.hook_registry.insert(name.to_string(), cfg);
+    // The IR compute gate follows the registry it is derived from: a newly registered `prompt: ro`
+    // hook must be able to see content on the very next request.
+    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     if is_global {
         if !next.global_hooks.iter().any(|n| n == name) {
             next.global_hooks.push(name.to_string());
@@ -607,6 +610,7 @@ pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, Admin
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry.remove(name);
+    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     next.global_hooks.retain(|n| n != name);
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
@@ -825,6 +829,7 @@ pub(crate) fn build_with_registry(
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
+    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     next.global_hooks = global_hooks;
     // FAIL-CLOSED (open-time variant): OPEN every referenced decision/rewrite gate before
     // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being

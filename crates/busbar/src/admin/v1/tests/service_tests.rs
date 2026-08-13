@@ -2068,3 +2068,44 @@ async fn healthz_returns_a_real_response_not_the_default() {
              Response::default()'s empty body: {body:?}"
     );
 }
+
+/// THE IR COMPUTE GATE FOLLOWS THE REGISTRY IT IS DERIVED FROM. `any_content_hook` is resolved at
+/// config apply, and every snapshot builder that rewrites `hook_registry` must recompute it:
+/// registering a `prompt: ro` hook opens the gate for the very next request, and deleting the last
+/// granted hook closes it again. A builder that skipped the recompute would leave a live snapshot
+/// whose gate disagrees with its own hook registry.
+#[test]
+fn hook_snapshot_builders_recompute_the_content_gate() {
+    let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let app = TestApp::new().hook_env(env).build();
+    assert!(
+        !app.any_content_hook,
+        "a fixture with no hooks grants no content"
+    );
+
+    let mut granted = hook(HookKind::Tap, true);
+    granted.prompt = PromptAccess::Ro;
+    let registered = build_with_hook(&app, "screener", granted.clone()).expect("registers");
+    assert!(
+        registered.any_content_hook,
+        "registering a `prompt: ro` hook must open the gate"
+    );
+
+    let deleted = build_without_hook(&registered, "screener").expect("deletes");
+    assert!(
+        !deleted.any_content_hook,
+        "deleting the last granted hook must close the gate"
+    );
+
+    let mut registry = HashMap::new();
+    registry.insert("screener".to_string(), granted);
+    let rolled_back =
+        build_with_registry(&app, registry, vec!["screener".to_string()]).expect("rolls back");
+    assert!(
+        rolled_back.any_content_hook,
+        "a rolled-back snapshot's gate must match the registry it installed"
+    );
+}

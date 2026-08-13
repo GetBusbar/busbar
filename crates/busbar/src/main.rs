@@ -3892,6 +3892,7 @@ pub(crate) fn build_app_from_config(
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),
         requested_signals: hooks::requested_signals(&cfg.hooks),
+        any_content_hook: hooks::any_content_hook(&cfg.hooks),
         export_projections: cfg.export.projection_union(),
         global_hooks: cfg.global_hooks.clone(),
         groups_registry: cfg.groups.clone(),

@@ -1187,6 +1187,7 @@ impl TestApp {
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
+        let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
         let plugin_routes = std::sync::Arc::new(if self.no_plugin_routes {
             crate::plugin_routes::PluginRouteTable::empty()
         } else {
@@ -1233,6 +1234,7 @@ impl TestApp {
             }),
             hook_registry: self.hook_registry,
             requested_signals,
+            any_content_hook,
             export_projections: Default::default(),
             global_hooks: self.global_hooks,
             groups_registry: self.groups_registry,

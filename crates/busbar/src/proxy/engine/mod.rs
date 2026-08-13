@@ -802,6 +802,21 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
     }
 
+    // ── REQUEST IR ───────────────────────────────────────────────────────────────────────────────
+    // Parse the EFFECTIVE request (post-rewrite) into the IR, once, here — before the taps, before
+    // the gates, and before a lane (and therefore an egress protocol) has been chosen. That ordering
+    // is the requirement, not an accident: a content hook may reroute the request across protocols,
+    // so "is this hop same-protocol?" is not answerable at the point the hook's view must exist.
+    //
+    // GATED ON THE DEPLOYMENT, resolved at config apply: `any_content_hook` is true only when some
+    // hook holds a `prompt: ro`/`rw` grant. A deployment that grants no hook access to content —
+    // the default — takes a single predictable always-false branch and builds nothing.
+    if app.any_content_hook {
+        if let Some(lazy) = v.as_mut() {
+            let _ = lazy.ensure_ir(ingress_protocol, op);
+        }
+    }
+
     // ── GLOBAL TAP (observe) FIRE ────────────────────────────────────────────────────────────────
     // Fire the global request-stage `kind: tap` hooks FIRE-AND-FORGET: serialize the projection(s) to
     // owned bytes ONCE, then spawn one detached task per tap. A tap gets a write-only send with its

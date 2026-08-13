@@ -19,7 +19,11 @@
 //!      during that same scan, plus
 //!   3. on-demand materialization of the full `Value` ([`LazyBody::ensure_dom`] /
 //!      [`LazyBody::into_value`]) for every path that genuinely needs the tree (cross-protocol
-//!      translation, rewrite hooks, taps, gates/routing policies, failover hops 2+).
+//!      translation, rewrite hooks, taps, gates/routing policies, failover hops 2+), plus
+//!   4. on-demand materialization of the request IR ([`LazyBody::ensure_ir`]) — the PROTOCOL's parse
+//!      of the body, as opposed to the JSON parse above — for the hook seam. Built at most once per
+//!      request and only when the deployment grants some hook access to prompt content
+//!      (`App::any_content_hook`); a deployment with no content hook never reaches it.
 //!
 //! SAFETY CONTRACT for [`LazyBody::probe`]: the head projection answers top-level reads ONLY for
 //! the keys in [`captured_head_keys`] (`model`, `stream`, `system`, and every registered protocol's
@@ -140,14 +144,25 @@ impl<'de> serde::Deserialize<'de> for Head {
     }
 }
 
-/// The request body as the forward engine carries it: validated pristine bytes + the head
-/// projection, with the full DOM materialized ONLY on the paths that need it. See the module docs.
-pub(crate) enum LazyBody {
+/// How much of the body has been materialized so far.
+enum Body {
     /// Validated JSON bytes + top-level head projection; no DOM built yet.
     Head { bytes: Bytes, head: Value },
     /// The full DOM — materialized on demand, or supplied eagerly by a caller that already parsed
     /// (path-model ingress routes, failover re-parse, tests).
     Dom(Value),
+}
+
+/// The request body as the forward engine carries it: validated pristine bytes + the head
+/// projection, with the full DOM materialized ONLY on the paths that need it, and the parsed IR
+/// materialized ONLY when a hook is granted the request's content. See the module docs.
+pub(crate) struct LazyBody {
+    body: Body,
+    /// The request IR, parsed from the DOM by the ingress operation's reader and memoized here so
+    /// one request costs one read. `None` until [`Self::ensure_ir`] is called and successful, and
+    /// dropped again whenever [`Self::ensure_dom`] hands out a mutable body — see that method for
+    /// why that invalidation is the invariant rather than a precaution.
+    ir: Option<crate::ir::variant::IrReq>,
 }
 
 impl LazyBody {
@@ -157,25 +172,31 @@ impl LazyBody {
     /// `Err` ⇒ the caller takes its existing malformed-body 400 path, exactly as before.
     pub(crate) fn parse(bytes: &Bytes) -> Result<Self, sonic_rs::Error> {
         let head: Head = crate::json::parse(bytes)?;
-        Ok(LazyBody::Head {
-            bytes: bytes.clone(), // refcount bump — the engine retains the same pristine bytes
-            head: head.0,
+        Ok(LazyBody {
+            body: Body::Head {
+                bytes: bytes.clone(), // refcount bump — the engine retains the same pristine bytes
+                head: head.0,
+            },
+            ir: None,
         })
     }
 
     /// Wrap an ALREADY-parsed body (path-model ingress routes that injected shim keys, tests). The
     /// DOM is present from the start; every read sees it directly.
     pub(crate) fn from_value(v: Value) -> Self {
-        LazyBody::Dom(v)
+        LazyBody {
+            body: Body::Dom(v),
+            ir: None,
+        }
     }
 
     /// Top-level POINT-READ view: the DOM when materialized (always authoritative — it may have
     /// been mutated by rewrite hooks), else the head projection. ONLY valid for reads of the
     /// [`captured_head_keys`] — any other key must go through [`Self::ensure_dom`].
     pub(crate) fn probe(&self) -> &Value {
-        match self {
-            LazyBody::Dom(v) => v,
-            LazyBody::Head { head, .. } => head,
+        match &self.body {
+            Body::Dom(v) => v,
+            Body::Head { head, .. } => head,
         }
     }
 
@@ -183,24 +204,59 @@ impl LazyBody {
     /// practice — `Self::parse` already validated these exact bytes — but the `Err` is surfaced so
     /// callers keep their existing unreachable-parse-failure guards instead of unwrapping on the
     /// request path.
+    ///
+    /// Handing out `&mut Value` DROPS any memoized IR. This is the invariant that keeps the two
+    /// views of one body from disagreeing: a rewrite hook mutating the tree through this handle
+    /// would otherwise leave a stale IR behind for the next reader, which is precisely the
+    /// "screened one view, forwarded another" class the IR exists to close. The cost is paid only
+    /// by callers that asked to mutate, and the next [`Self::ensure_ir`] re-reads the body as it now
+    /// stands.
     pub(crate) fn ensure_dom(&mut self) -> Result<&mut Value, ()> {
-        if let LazyBody::Head { bytes, .. } = self {
+        self.ir = None;
+        if let Body::Head { bytes, .. } = &self.body {
             let v: Value = crate::json::parse(bytes).map_err(|_| ())?;
-            *self = LazyBody::Dom(v);
+            self.body = Body::Dom(v);
         }
-        match self {
-            LazyBody::Dom(v) => Ok(v),
+        match &mut self.body {
+            Body::Dom(v) => Ok(v),
             // Unreachable: the Head arm above either converted to Dom or returned Err.
-            LazyBody::Head { .. } => Err(()),
+            Body::Head { .. } => Err(()),
         }
+    }
+
+    /// Materialize (memoized) the request IR — the parse the PROTOCOL performs, as distinct from
+    /// the JSON parse [`Self::ensure_dom`] performs — and return it.
+    ///
+    /// The IR is read by the ingress operation's own handler, so it is the SAME parse the
+    /// cross-protocol translate path performs, not a second reading of the wire. `None` when the
+    /// body cannot be materialized or the ingress protocol/operation has no handler or rejects the
+    /// body: a caller that cannot get an IR falls back to what it does today, never to a guess.
+    ///
+    /// COST: the caller decides whether to call this at all, and the deployment-wide answer is
+    /// `App::any_content_hook`. This method deliberately does NOT consult that flag itself — a
+    /// method that silently no-ops on a config bit is a method whose contract depends on config.
+    pub(crate) fn ensure_ir(
+        &mut self,
+        ingress_protocol: &str,
+        op: crate::handlers::Op,
+    ) -> Option<&crate::ir::variant::IrReq> {
+        if self.ir.is_none() {
+            let handler = crate::handlers::request_handler(ingress_protocol)
+                .and_then(|rh| rh.operation_handler(op.operation))?;
+            // `ensure_dom` clears the memo, so read the IR from the materialized tree and only then
+            // install it — the order matters and is the reason this is not two statements.
+            let dom = self.ensure_dom().ok()?;
+            self.ir = handler.read_request_value(dom).ok();
+        }
+        self.ir.as_ref()
     }
 
     /// Consume into the full DOM (memoized parse if not yet materialized). Same infallibility note
     /// as [`Self::ensure_dom`].
     pub(crate) fn into_value(self) -> Result<Value, ()> {
-        match self {
-            LazyBody::Dom(v) => Ok(v),
-            LazyBody::Head { bytes, .. } => crate::json::parse(&bytes).map_err(|_| ()),
+        match self.body {
+            Body::Dom(v) => Ok(v),
+            Body::Head { bytes, .. } => crate::json::parse(&bytes).map_err(|_| ()),
         }
     }
 }
