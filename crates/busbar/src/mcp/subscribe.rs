@@ -86,6 +86,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How long one subscription is held before it is closed with a graceful result. See the module
 /// header: an unbounded stream is indistinguishable from a hung one.
+///
+/// **THIS BOUND IS LOAD-BEARING FOR AUTHORISATION, NOT ONLY FOR LIVENESS — DO NOT RAISE IT WITHOUT
+/// MEETING THAT ARGUMENT.** The caller's key is FROZEN at open (see [`grant_of`]), so a key that is
+/// revoked, tombstoned or re-scoped mid-stream keeps being honoured until the stream ends. This
+/// constant is therefore the ONLY thing bounding how long a dead credential can still be served:
+/// the exposure window IS this number. Five minutes is defensible; an hour would not be, and
+/// "unbounded, since we send keep-alives anyway" would mean a revoked key never stops working.
+/// Raising it is a security change, not a tuning change, and the honest way to buy a longer stream
+/// is to re-resolve the key per poll first — see the characterisation test
+/// `a_revoked_key_keeps_being_served_until_the_lifetime_bound`, which pins today's behaviour.
 const MAX_LIFETIME: Duration = Duration::from_secs(300);
 
 /// How often a stream that has nothing to say writes an SSE comment. Not a protocol message —
@@ -263,9 +273,28 @@ struct Listen {
 
 /// The grant predicate, rebuilt per poll from the key the stream was opened with.
 ///
-/// The KEY is captured and the PREDICATE is not, and that is the same re-check-every-round rule the
-/// input-required loop states: a grant read once and trusted for five minutes is a revocation that
-/// does not bite until the stream ends.
+/// **WHAT IS RE-READ AND WHAT IS FROZEN — and the difference matters more than the rebuild does.**
+/// The CATALOGUE is genuinely live: [`Listen::step`] loads the handle every poll, so a registration
+/// that appears or disappears is reflected within [`POLL_INTERVAL`]. The KEY is NOT. `gov` is an
+/// `Arc<VirtualKey>` cloned into the stream at open — a SNAPSHOT resolved once at ingress by the
+/// auth middleware — and nothing below re-resolves it against the store.
+///
+/// So rebuilding this closure per poll re-evaluates the grant against FRESH CATALOGUE ENTRIES but
+/// against a STALE KEY, and the two revocations behave differently:
+///
+/// * An APPROVAL withdrawn from the catalogue bites within [`POLL_INTERVAL`] — the entry stops
+///   being visible and the caller stops being woken for it.
+/// * The KEY ITSELF being deleted, disabled, tombstoned or re-scoped does NOT bite at all. Note
+///   that [`busbar_api::VirtualKey::scope_allowed`] consults `allowed_scopes` only: it does not
+///   look at `enabled` and does not call `is_live()`, so even a tombstoned key answers here exactly
+///   as it did at open.
+///
+/// The only thing bounding that is [`MAX_LIFETIME`], which is why that constant carries a warning
+/// against being raised. Closing this properly needs a standing-permission re-resolution primitive
+/// rather than a local patch — the auth chain that produced this key is async and consumes the
+/// presented credential, which the stream deliberately does not retain — so this comment states the
+/// gap rather than papering over it, and
+/// `a_revoked_key_keeps_being_served_until_the_lifetime_bound` pins it as a characterisation test.
 ///
 /// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
 /// this — two disjoint fields, which the borrow checker allows and a `&self` method does not.

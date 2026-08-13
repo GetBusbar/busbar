@@ -26,7 +26,7 @@
 //!
 //! ## Two version axes (the crux)
 //!
-//! 1. **Transport version** = [`busbar_abi`], frozen at [`TRANSPORT_VERSION`] (=1), ONE number for all
+//! 1. **Transport version** = the `busbar_abi` symbol, frozen at [`TRANSPORT_VERSION`] (=1), ONE number for all
 //!    kinds. It is the low-level linker contract (the six signatures, ptr+len byte buffers, the
 //!    plugin-allocates/plugin-frees rule, the status codes). Bumping it is a real, no-turning-back
 //!    linker event; it changes ~never.
@@ -38,7 +38,7 @@
 //! ## Kind bound AT LOAD — the security spine
 //!
 //! Kind is NEVER in the per-call envelope. At load the engine reads the signed manifest `kind`,
-//! cross-checks it EQUALS the exported [`busbar_plugin_kind`] (mismatch = hard fail-closed load
+//! cross-checks it EQUALS the exported `busbar_plugin_kind` (mismatch = hard fail-closed load
 //! error), then dispatches to the TYPED seam (`Box<dyn Store>` / `Box<dyn SecretModule>` /
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
@@ -137,7 +137,7 @@ pub const ABI_VERSION: u32 = 2;
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
 /// aliases below. NUL-terminated so they pass straight to `libloading`'s C-string symbol lookup. The
-/// KIND a library speaks is read from [`PLUGIN_KIND`], not encoded in the symbol names.
+/// KIND a library speaks is read from [`symbol::PLUGIN_KIND`], not encoded in the symbol names.
 pub mod symbol {
     /// `busbar_abi() -> u32` — the frozen TRANSPORT version handshake ([`super::TRANSPORT_VERSION`]).
     pub const ABI: &[u8] = b"busbar_abi\0";

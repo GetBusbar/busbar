@@ -38,9 +38,9 @@
 //! `ECDSA_P256_SHA256_FIXED_SIGNING` is the correct one and `ECDSA_P256_SHA256_ASN1_SIGNING` is the
 //! wrong one, and a build that picks the wrong one COMPILES, since both produce bytes. The
 //! `[u8; 64]` return refuses the wrong LENGTH and cannot refuse the wrong ENCODING; the thing that
-//! catches it is `oauth_as::signer_conformance`, driven from
-//! `tests/signer_conformance_tests.rs` against the RFC 7515 appendix A.3 vector, which is a value
-//! neither half of busbar produced.
+//! catches it is `oauth_as::signer_conformance` — the harness in the upstream `oauth-as` crate —
+//! driven from busbar's own `oauth_as/tests/signer_tests.rs` against the RFC 7515 appendix A.3
+//! vector, which is a value neither half of busbar produced.
 
 use base64::Engine as _;
 use oauth_as::jwt::{Es256Signer, Es256Verifier, Jwk, PublicJwk, SignerError};

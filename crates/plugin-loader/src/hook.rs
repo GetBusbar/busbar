@@ -78,7 +78,7 @@ pub struct DlopenPolicy {
 
 /// Concurrency cap on hook FFI calls occupying the shared blocking pool.
 ///
-/// A `spawn_blocking` task, once scheduled, runs to completion: the deadline in [`call_bounded`]
+/// A `spawn_blocking` task, once scheduled, runs to completion: the deadline in `call_bounded`
 /// abandons the FUTURE, never the thread. A plugin that deadlocks, spins, or blocks on an unbounded
 /// syscall therefore holds its blocking thread for the life of the process, and a gate fires once
 /// per request. Uncapped, sustained traffic against one wedged plugin leaks a thread per call until

@@ -12,11 +12,14 @@
 //!
 //! The six LLM protocols are six DIALECTS over ONE channel, so transport never varied and was never
 //! modelled. A2A is ONE dialect over THREE (JSON-RPC, HTTP+JSON, gRPC), and gRPC is not the axum
-//! catch-all at all. MCP has the same question already latent: `mcp/client/stdio.rs` ships a
-//! crash-loop supervisor that is DEAD CODE today, because "a `tools:` entry carrying a stdio
-//! transport has no dispatch arm yet". A transport axis is where that arm goes. Without one it
-//! becomes a second dispatch path beside the matrix — which is precisely how `mcp/` came to hold
-//! 13,069 lines of a core that already existed.
+//! catch-all at all. MCP has the same question latent, and this release ANSWERED it by subtraction:
+//! [`super::mcp::config::Transport::Stdio`] is spelled in the config grammar and REFUSED at
+//! validation, because nothing in this build spawns or supervises a child process. There was once a
+//! complete child supervisor here; it was deleted along with the tokio `process` feature precisely
+//! because nothing dispatched to it, and `crates/busbar/Cargo.toml` keeps that decision enforced by
+//! the compiler rather than by memory. A transport axis is where a stdio dispatch arm would go if
+//! one is ever bought. Without an axis it becomes a second dispatch path beside the matrix — which
+//! is precisely how `mcp/` came to hold 13,069 lines of a core that already existed.
 //!
 //! ## WHY IT IS A TOP-LEVEL MODULE, BESIDE `operation.rs`
 //!

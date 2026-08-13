@@ -7,7 +7,7 @@
 //! This is the engine side of "drop a plugin in the folder and it works": [`load_store`] opens a
 //! library with `libloading` (portable `dlopen`/`LoadLibrary`), checks the ABI-version handshake,
 //! calls the plugin's `open` with the JSON config, and returns a [`DynStore`] — a `Box<dyn Store>` any
-//! governance code can use exactly like the compiled-in [`busbar_store_memory::MemoryStore`]. Every
+//! governance code can use exactly like the compiled-in `busbar_store_memory::MemoryStore`. Every
 //! `Store` call is serialized to JSON and shipped across the C boundary; because the store is
 //! write-behind (off the request hot path), that serialize never touches request latency.
 //!
@@ -148,7 +148,7 @@ impl RawPlugin {
         self.transport_call_status(req).map_err(|e| e.message)
     }
 
-    /// The status-preserving transport primitive. Identical wire behavior to [`transport_call`] but on
+    /// The status-preserving transport primitive. Identical wire behavior to `transport_call` but on
     /// failure returns the numeric ABI `status` alongside the message, so a caller can key a decision
     /// on the OUT-OF-BAND status (e.g. [`STATUS_PROTOCOL`] = "this plugin cannot decode this request
     /// variant") rather than on the plugin-controlled body TEXT. On the OK path the numeric status is
@@ -1132,7 +1132,7 @@ pub fn load_store_from_bytes(
 }
 
 /// [`load_store_from_bytes`] before the trait object boxes it away. Split out so the staging
-/// lifecycle tests can reach [`DynStore::staged_path`] and assert on their OWN artifact; the public
+/// lifecycle tests can reach `DynStore::staged_path` and assert on their OWN artifact; the public
 /// entry point is this plus a `Box`.
 fn load_dyn_store_from_bytes(
     bytes: &[u8],

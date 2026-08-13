@@ -27,7 +27,7 @@
 //! Two different things are remembered, with different lifetimes and for different reasons:
 //!
 //! * A **session** says "this browser is the operator", and lasts minutes. It is what
-//!   [`subject_of`] reads.
+//!   [`subject_resolver`] reads.
 //! * An **approval** says "the operator has just agreed to THIS client for THESE scopes", and is
 //!   SPENT the first time it is read. Without the spend, one approval would authorise every
 //!   subsequent authorization request the same browser made — including one an attacker had
@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use axum::http;
 use oauth_as::http::{ConsentDecision, ConsentRequest};
 
-/// The cookie the consent screen sets and [`subject_of`] reads. Scoped to the consent path, so it is
+/// The cookie the consent screen sets and [`subject_resolver`] reads. Scoped to the consent path, so it is
 /// not sent to the token endpoint or to any other plane.
 pub(crate) const SESSION_COOKIE: &str = "busbar_as_session";
 

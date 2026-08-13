@@ -589,7 +589,8 @@ pub(crate) struct McpServerDefCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refresh_ttl: Option<String>,
     /// `<n><s|m|h|d>` — the wall-clock budget for ONE outbound leg to THIS server: the tool call,
-    /// and separately the RFC 8693 token exchange. Absent ⇒ [`DEFAULT_UPSTREAM_TIMEOUT_SECS`],
+    /// and separately the RFC 8693 token exchange. Absent ⇒
+    /// [`super::upstream::DEFAULT_UPSTREAM_TIMEOUT`],
     /// which is the value every registration used before this key existed, so nothing that exists
     /// today changes.
     ///

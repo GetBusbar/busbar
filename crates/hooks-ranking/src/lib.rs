@@ -29,7 +29,8 @@ use std::time::Duration;
 //   • the `name()` impls below (what feeds `x-busbar-route-policy`),
 //   • the `native_policy` registry match arms below,
 //   • `config.rs` (deserialization / shorthand desugar),
-//   • `routing/mod.rs` (zero-cost-path guard).
+//   • busbar's `hooks/mod.rs` (the zero-cost-path guard: the `native_policy` lookup that turns a
+//     built-in name into one sync, non-failing link instead of a registry hop).
 const POLICY_NAME_WEIGHTED: &str = "weighted";
 const POLICY_NAME_CHEAPEST: &str = "cheapest";
 const POLICY_NAME_FASTEST: &str = "fastest";

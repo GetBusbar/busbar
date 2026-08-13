@@ -81,10 +81,19 @@ pub(crate) enum Operation {
     /// A task id resolved to its state and artifacts, or a lifecycle command applied to one.
     ///
     /// **THIS IS THE ROW THAT PAYS FOR THE WHOLE THESIS, AND IT MUST NOT BE SPLIT.** MCP tasks and
-    /// A2A tasks are the SAME SHAPE, so they land on the SAME operation and share the one durable
-    /// task store. Two variants here would make "one core, many protocols" an assertion again — a
-    /// `McpTask`/`A2aTask` pair is an `if protocol ==` spelled as an enum, and every exhaustive
-    /// match in the tree would then have to decide the same thing twice.
+    /// A2A tasks are the SAME SHAPE, so they land on the SAME operation. Two variants here would
+    /// make "one core, many protocols" an assertion again — a `McpTask`/`A2aTask` pair is an
+    /// `if protocol ==` spelled as an enum, and every exhaustive match in the tree would then have
+    /// to decide the same thing twice.
+    ///
+    /// **ONE OPERATION IS NOT YET ONE STORE, and the gap is stated here rather than glossed.** The
+    /// two planes are backed by two different substrates today: [`crate::a2a::taskstore`] writes
+    /// every state change through to the configured governance store and rehydrates at boot, while
+    /// [`crate::mcp::tasks`] is an IN-PROCESS registry that disclaims durability in its own header
+    /// — a restart loses every in-flight MCP task, and its rows are bounded by a TTL and a RAM cap
+    /// rather than by a backend. That is a property of the SUBSTRATE, not of this axis: the shape
+    /// they share is what makes one operation correct, and converging the two stores is a separate
+    /// piece of work that this variant does not claim has happened.
     #[cfg_attr(not(test), allow(dead_code))]
     Task,
     /// Registration and deregistration of a callback or a stream. The subject is the SUBSCRIPTION,
