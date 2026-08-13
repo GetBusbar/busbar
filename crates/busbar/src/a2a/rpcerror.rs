@@ -155,7 +155,13 @@ impl A2aError {
     pub(crate) fn status(self) -> &'static str {
         match self {
             A2aError::TaskNotFound => "NOT_FOUND",
-            A2aError::TaskNotCancelable => "FAILED_PRECONDITION",
+            // The same row `http_status` reads 400 out of, and the same one
+            // `a2aht/spec.py::ERROR_MAP` transcribes: the request is well formed and the
+            // deployment's configuration is what cannot satisfy it, which is a precondition and not
+            // an argument.
+            A2aError::TaskNotCancelable | A2aError::ExtendedAgentCardNotConfigured => {
+                "FAILED_PRECONDITION"
+            }
             A2aError::UnsupportedOperation
             | A2aError::VersionNotSupported
             | A2aError::MethodNotFound => "UNIMPLEMENTED",
