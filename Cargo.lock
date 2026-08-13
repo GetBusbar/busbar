@@ -2094,9 +2094,9 @@ dependencies = [
 
 [[package]]
 name = "oauth-as"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc1413536fec562f165abfc2fc83670058fc13547af82366ee628d16e3022edd"
+checksum = "38820626cb9f028aa65818a7fd2f2443add5140c24a78d209c0ffd39a32c2142"
 dependencies = [
  "base64 0.22.1",
  "bytes",

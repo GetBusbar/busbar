@@ -239,6 +239,42 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Changed
 
+- **The embedded OAuth 2.1 authorization server moved to `oauth-as` 0.9.1, which is a security
+  release published under a patch number.** Nothing an operator writes changes: the `oauth_as:`
+  config block, the paths the plane mounts, the consent screen and the tokens it issues are all
+  what they were. What changed is underneath, and four of the five items below are fixes rather
+  than renames:
+
+  - **A revoked refresh-token family can no longer be resurrected by an issuance already in
+    flight.** In 0.9.0, detecting a stolen refresh token revoked the family, but a token being
+    signed across an `await` could land behind the revocation and leave a live access token; the
+    same held for authorization-code replay. 0.9.1 makes a revocation record a durable barrier and
+    refuses the writes that would undo it. Busbar's exposure to the original defect was small
+    rather than zero — the window scales with signing latency, and busbar signs locally and eagerly
+    through `ring` — but it was never nil, and it is closed now.
+  - **`acr_values` can no longer break a `WWW-Authenticate` header.** The RFC 9470 step-up
+    challenge escaped `"` and `\` in the authentication-context classes it echoes, which is not
+    enough: a CR or an LF has no legal spelling inside an RFC 9110 §5.6.4 `quoted-string` at all,
+    and was being emitted verbatim out of a client-supplied query parameter. Control characters are
+    now dropped, and the auth scheme is filtered to the `tchar` set for the same reason.
+  - **`acr_values` can no longer be used as an allocation amplifier.** It is one unauthenticated
+    parameter carrying a space-delimited list, one heap allocation per segment, at two bytes a
+    segment. It is now capped at 16 classes and REFUSED rather than truncated past that.
+  - **The RFC 7592 registration-management endpoint checks the credential before parsing the
+    body**, so an anonymous caller can no longer buy a full JSON parse per request, and its
+    bodyless error responses no longer claim a `Content-Type` they have no body for.
+
+  One change is visible on the wire without being a defect: **the discovery document no longer
+  advertises `introspection_endpoint`.** It used to be emitted unconditionally, defaulting to
+  `{issuer}/introspect` — a path busbar has never mounted, so the RFC 8414 document named an
+  endpoint that answered 404. It is now published only where the host sets it, and busbar does not.
+
+  The library also renamed the seam busbar wires: what it now calls an APPROVAL (a per-request
+  prompt, answered once) is distinguished from a CONSENT (a persisted, withdrawable grant). Busbar
+  has only the first and stores none of the second, so the change is a rename in
+  `crates/busbar/src/oauth_as/`, with no behaviour attached. The dependency tree is unchanged: the
+  lockfile moves one version and one checksum and nothing else.
+
 - **The documentation now states exactly what "lossless" covers, and what it does not cover yet.**
   An audit of the translation path (code read plus an executed read/write round trip per protocol,
   against the 1.6.0 tree) found the word doing more work than the engine earns on a cross-protocol

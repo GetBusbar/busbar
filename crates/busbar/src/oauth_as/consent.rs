@@ -41,7 +41,13 @@ use std::time::{Duration, Instant};
 // they are the same crate and the same types, and taking them from axum means the version this
 // module speaks cannot drift from the one the router speaks.
 use axum::http;
-use oauth_as::http::{ConsentDecision, ConsentRequest};
+// APPROVAL, not CONSENT, since 0.9.1: the library now reserves "consent" for a PERSISTED grant
+// (`oauth_as::consent::ConsentRecord`, which survives the request and can be withdrawn) and calls
+// the per-request prompt an APPROVAL. busbar's plane has only the prompt — it stores no
+// `ConsentRecord` at all, see [`approval_resolver`] — so the types below are the whole of what it
+// speaks. This module keeps the name `consent` because that is what the SCREEN is called, in the
+// URL an operator sees and in the route table.
+use oauth_as::http::{ApprovalDecision, ApprovalRequest};
 
 /// The cookie the consent screen sets and [`subject_resolver`] reads. Scoped to the consent path, so it is
 /// not sent to the token endpoint or to any other plane.
@@ -185,15 +191,23 @@ pub(crate) fn subject_resolver(
     }
 }
 
-/// The consent resolver `oauth-as` calls once the request has been validated.
+/// The approval resolver `oauth-as` calls once the request has been validated.
 ///
 /// Three outcomes, in this order, and the order is the design: an unauthenticated browser is sent to
 /// log in BEFORE it is shown what it would be approving, because a consent screen that renders for
 /// an anonymous visitor is a phishing page this deployment hosts.
-pub(crate) fn consent_resolver(
+///
+/// NOTHING IS EVER REMEMBERED HERE. The two outcomes are `Approve` — for a staked, and now spent,
+/// approval — and the redirect that sends the operator to the screen; `ApproveAndRemember` is never
+/// returned, so no `oauth_as::consent::ConsentRecord` is ever written and `request.remembered` is
+/// always `None`. That is what makes the one-shot spend above the ONLY thing standing between an
+/// authorization request and a code, which is the property this plane wants: every request is
+/// shown, every request is approved on its own, and there is no stored grant that a later request
+/// could be silently matched against.
+pub(crate) fn approval_resolver(
     sessions: Arc<Sessions>,
     login_url: String,
-) -> impl Fn(&ConsentRequest<'_>) -> ConsentDecision + Send + Sync + 'static {
+) -> impl Fn(&ApprovalRequest<'_>) -> ApprovalDecision + Send + Sync + 'static {
     move |request| {
         let Some(id) = session_id(request.headers) else {
             return redirect(&login_url, request);
@@ -205,7 +219,7 @@ pub(crate) fn consent_resolver(
             &id,
             &approval_key(request.client_id.as_str(), request.scope),
         ) {
-            return ConsentDecision::Approve;
+            return ApprovalDecision::Approve;
         }
         // Logged in, nothing staked: this is the first time the operator has seen this request, so
         // send them to the screen that describes it. `Deny` here would refuse a legitimate first
@@ -221,7 +235,7 @@ pub(crate) fn consent_resolver(
 /// The `return` parameter is the request URI this server itself received and already validated, not
 /// a URL a caller supplied, so echoing it is not an open redirect: it is percent-encoded into a
 /// query parameter of our own origin and is only ever used to rebuild a path on this host.
-fn redirect(login_url: &str, request: &ConsentRequest<'_>) -> ConsentDecision {
+fn redirect(login_url: &str, request: &ApprovalRequest<'_>) -> ApprovalDecision {
     let target = format!(
         "{login_url}?return={}",
         percent_encode(&request.uri.to_string())
@@ -234,10 +248,10 @@ fn redirect(login_url: &str, request: &ConsentRequest<'_>) -> ConsentDecision {
         .header(http::header::CACHE_CONTROL, "no-store")
         .body(oauth_as::http::Body::empty());
     match response {
-        Ok(r) => ConsentDecision::Respond(Box::new(r)),
+        Ok(r) => ApprovalDecision::Respond(Box::new(r)),
         // Unreachable: every header value above is built from an already-validated URI. A refusal
         // rather than an unwrap, because this is a request path.
-        Err(_) => ConsentDecision::Deny,
+        Err(_) => ApprovalDecision::Deny,
     }
 }
 
