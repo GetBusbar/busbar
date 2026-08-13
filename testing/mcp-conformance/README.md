@@ -48,6 +48,29 @@ transcript satisfies half the hostile clauses vacuously, because each is looking
 for something that must *not* be in it. `MCP_NO_SKIPS=1` is what refused to
 render that as a clean pass.
 
+## An unarmed ROLE is louder than a skip, because it never even skipped
+
+`MCP_NO_SKIPS=1` catches a test that ran and declined to conclude. It cannot
+catch a test that was **never selected**, and that is the strictly worse hole the
+role filter used to open: when a role had no launch command, `cmdRun` deleted it
+from the filter, so its scenarios left the *denominator*. Nothing printed `SKIP`,
+nothing was countable, and `50 pass, 0 fail` read as complete coverage of a
+battery that registers 69 scenarios across three roles
+(**server 47, client 14, seam 8**).
+
+So a role you do not measure must now be named, before the run starts:
+
+| situation | result |
+|---|---|
+| role requested (or defaulted) and **armed** | it runs |
+| role **not requested** — `--role server` | allowed; `roles NOT run:` names it and the scenario count, and the totals line carries `[roles: server]` |
+| role requested but **not armed** | **exit 2**, with a message naming the role and how many scenarios would have gone unmeasured |
+| role requested, not armed, and **declared** — `--allow-unarmed-role client` | it runs, and the untested direction is printed and written to `roleAudit` in the report JSON |
+
+Every result line this battery prints now carries the roles it measured, and
+`roleAudit` is persisted in the report. A conformance number that does not say
+which direction it measured is precisely what let the client-role hole survive.
+
 ## Quick start
 
 ```bash

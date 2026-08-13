@@ -105,6 +105,41 @@ def select(tests, tier=PRE_RELEASE, role=None, only=None, needs=None,
     return out
 
 
+def role_audit(all_registered, selected, tier=PRE_RELEASE):
+    """Which DIRECTIONS this run measured, and which it did not, with counts.
+
+    A conformance count with no role beside it is how a one-directional number
+    comes to be read as a two-directional claim. The sibling MCP battery had
+    exactly that defect: its fourteen client-role scenarios left the
+    denominator when the role was unarmed and `50 pass, 0 fail` printed as
+    total coverage.
+
+    Here the deselection is done by `--role`, not by an unset launch command --
+    an unsupplied `--client-drive` is already NOT_CONFIGURED and RED, which is
+    correct -- so this function does not refuse anything. It makes the
+    narrowing IMPOSSIBLE TO QUOTE WITHOUT: every role in the registry that this
+    run did not select is named in the report and on the summary line, with the
+    number of scenarios that went unmeasured.
+    """
+    ceiling = TIER_ORDER[tier]
+    registered = {}
+    for t in all_registered:
+        if t.role == "governance":
+            continue
+        if TIER_ORDER[t.tier] > ceiling:
+            continue
+        registered[t.role] = registered.get(t.role, 0) + 1
+    ran = {}
+    for t in selected:
+        ran[t.role] = ran.get(t.role, 0) + 1
+    return {
+        "roles_run": sorted(ran),
+        "roles_not_run": sorted(r for r in registered if r not in ran),
+        "scenarios_by_role": registered,
+        "scenarios_run_by_role": ran,
+    }
+
+
 def run_battery(target, config, tests):
     results = []
     for test in tests:
@@ -171,8 +206,22 @@ def print_human(rep, stream=sys.stdout, verbose=False):
                                                  "recorded", 48)))
         w("\n")
 
+    # THE ROLES THIS NUMBER MEASURED, printed immediately above the number so the
+    # two cannot be separated when somebody quotes it.
+    audit = (rep.get("meta") or {}).get("role_audit")
+    if audit:
+        w("  roles run     %s\n" % (", ".join(
+            "%s (%d)" % (r, audit["scenarios_run_by_role"].get(r, 0))
+            for r in audit["roles_run"]) or "<none>"))
+        for r in audit["roles_not_run"]:
+            w("  ROLE NOT RUN  %s -- %d scenario(s) in this tier were NOT "
+              "selected, so this number says NOTHING about that direction\n"
+              % (r, audit["scenarios_by_role"].get(r, 0)))
+
     counts = rep["counts"]
-    w("  " + "  ".join("%s=%d" % (k, counts[k]) for k in sorted(counts)) + "\n")
+    w("  " + "  ".join("%s=%d" % (k, counts[k]) for k in sorted(counts))
+      + ("   [roles: %s]" % ",".join(audit["roles_run"]) if audit else "")
+      + "\n")
     bad = sum(counts.get(o, 0) for o in BAD_OUTCOMES)
     w("  %s\n" % ("BATTERY GREEN" if bad == 0
                   else "BATTERY RED: %d test(s) need attention" % bad))
