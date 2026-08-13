@@ -129,6 +129,14 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         //     the top-level `upstream_credentials: _` above already declines for the same reason.
         //     (`Passthrough` is refused outright on this plane; see `a2a::config`.)
         agent_defs,
+        // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
+        // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
+        // references INTO sections this walk already covers, so a credential could only appear here
+        // by somebody putting one in a pool member's name. Declined, and the decline is checkable the
+        // same way every other one on this list is: layer 2 fails by TYPE NAME the day
+        // `CandidatePoolCfg` grows a field that holds a `SecretRef`.
+        tool_pools: _,
+        agent_pools: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();

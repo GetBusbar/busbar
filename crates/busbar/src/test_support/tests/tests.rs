@@ -3473,6 +3473,8 @@ mod disposition_matrix_tests {
                 mcp: None,
                 oauth_as: None,
                 agent_defs: Default::default(),
+                tool_pools: Default::default(),
+                agent_pools: Default::default(),
                 upstream_credentials: crate::auth::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,

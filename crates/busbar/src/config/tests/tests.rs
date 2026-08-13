@@ -43,6 +43,8 @@ pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
+        tool_pools: Default::default(),
+        agent_pools: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
         mcp: None,
@@ -3685,4 +3687,113 @@ other:
     let mut deploy = base_deploy();
     deploy.tools = ok;
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
+}
+
+// ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
+//
+// `tool_pools:`/`agent_pools:` are OPT-IN, so the first thing checked is that saying nothing changes
+// nothing; the rest is the one shared check refusing what an operator cannot have meant.
+
+/// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
+/// did, with no pools on either plane — which is every deployment that exists today.
+#[test]
+fn failover_pools_are_absent_by_default() {
+    let deploy = base_deploy();
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    assert!(
+        cfg.tool_pools.is_empty(),
+        "no MCP failover unless asked for"
+    );
+    assert!(
+        cfg.agent_pools.is_empty(),
+        "no A2A failover unless asked for"
+    );
+}
+
+/// A member naming nothing is an operator believing a request has somewhere to go when it does not.
+#[test]
+fn a_tool_pool_member_that_names_no_server_is_refused() {
+    let mut deploy = base_deploy();
+    deploy.tool_pools.insert(
+        "search".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["search-eu".into(), "search-us".into()],
+            repeatable: Vec::new(),
+        },
+    );
+    let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("search-eu") && e.contains("`tools:`")),
+        "the message names the missing entry and the section it belongs in: {errs:?}"
+    );
+}
+
+/// NO POOL MAY STRADDLE TWO PLANES, and the refusal says which section the name actually lives in —
+/// "not found" would send an operator hunting a typo they did not make.
+#[test]
+fn a_pool_may_not_straddle_two_planes() {
+    let mut deploy = base_deploy();
+    deploy.agents.agents.insert(
+        "planner".to_string(),
+        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
+            .expect("a minimal agent"),
+    );
+    deploy.tool_pools.insert(
+        "mixed".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["planner".into(), "planner".into()],
+            repeatable: Vec::new(),
+        },
+    );
+    let errs =
+        resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("straddle") && e.contains("`agents:`")),
+        "the message names the plane the entry is really on: {errs:?}"
+    );
+}
+
+/// A one-member pool changes nothing, so writing one is a mistake and is named as one.
+#[test]
+fn a_failover_pool_needs_two_members() {
+    let mut deploy = base_deploy();
+    deploy.agent_pools.insert(
+        "planner".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["only-one".into()],
+            repeatable: Vec::new(),
+        },
+    );
+    let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");
+    assert!(
+        errs.iter().any(|e| e.contains("at least TWO members")),
+        "{errs:?}"
+    );
+}
+
+/// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
+/// here rather than only in the seam's own tests because this is where an operator's document is
+/// turned into the answer, and a default that drifted here would be invisible there.
+#[test]
+fn nothing_is_repeatable_unless_the_operator_names_it() {
+    let pool = crate::failover::CandidatePoolCfg {
+        members: vec!["a".into(), "b".into()],
+        repeatable: vec!["search_code".into()],
+    };
+    assert_eq!(
+        pool.repeatability("search_code"),
+        crate::failover::Repeatable::Yes
+    );
+    assert_eq!(
+        pool.repeatability("send_email"),
+        crate::failover::Repeatable::No,
+        "an operation nobody spoke about is NEVER repeated"
+    );
+    assert_eq!(
+        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
+        crate::failover::Repeatable::No,
+        "and an empty declaration repeats nothing at all"
+    );
 }

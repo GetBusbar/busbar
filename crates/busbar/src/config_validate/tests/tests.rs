@@ -10,6 +10,8 @@ fn make_root_cfg(
     config::RootCfg {
         tool_defs: Default::default(),
         agent_defs: Default::default(),
+        tool_pools: Default::default(),
+        agent_pools: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
         mcp: None,

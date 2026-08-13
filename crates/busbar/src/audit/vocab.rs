@@ -74,6 +74,53 @@ pub(crate) const REASON_TASK_CREATED: &str = "task_created";
 /// a principal is a chain with a hole an attacker can choose.
 pub(crate) const REASON_MALFORMED: &str = "malformed_params";
 
+// ── THE FAILOVER SEAM'S REASONS ─────────────────────────────────────────────────────────────────
+//
+// `crate::failover` asks one question before every hop on every plane — is there anywhere left, are
+// these two the same deployment, and may this call be made twice. Its refusals are recorded, so its
+// words are audit words and they live here with the rest rather than in the module that decides.
+//
+// THEY STAY PLURAL, for the reason the whole file states: each one sends an operator somewhere
+// different. One is an outage, one is a configuration that does not hold up against the digests
+// busbar computed, and one is busbar declining to repeat something with effects.
+
+/// There is nowhere left to send this request: the pool names no candidate, or every candidate in it
+/// refused admission. ONE word for both, because they are one incident with one operator question
+/// ("what is up with that pool?") — the refusal itself carries the per-candidate reasons in the
+/// shared `Unavailable` taxonomy, so nothing is lost by not spelling them apart here.
+// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
+// later must find it rather than spell a fourth synonym.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
+
+/// A FAILOVER HOP WAS REFUSED BECAUSE THE PINS DISAGREE. The operator declared two registrations to
+/// be the same deployment, busbar compared the fingerprints it already had, and they are not equal —
+/// so the request was not moved.
+///
+/// Its own word because it indicts neither the caller nor the upstream: it is the one refusal that
+/// says the CONFIGURATION claimed something checkable and the check failed. Distinct from
+/// [`REASON_ARTIFACT_DRIFTED`], which is one upstream changing under an approval; this is two
+/// upstreams that were never the same thing.
+// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
+// later must find it rather than spell a fourth synonym.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
+
+/// THE SAFETY RULE FIRED. The call already went out, it is not declared repeatable, and busbar
+/// therefore did NOT send it to a second member of the pool.
+///
+/// Recorded rather than folded into a generic failure because it is the one outcome an operator may
+/// actually want to change, and the change is a deliberate one: declare the operation safe to repeat.
+/// A log that called this "upstream failed" would hide the fact that busbar had somewhere else to go
+/// and chose not to use it.
+// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
+// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
+// later must find it rather than spell a fourth synonym.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const REASON_NOT_REPEATABLE: &str = "not_repeatable";
+
 // ── THE ORDERED REQUEST VALIDATOR'S REASONS ─────────────────────────────────────────────────────
 //
 // `crate::trust::validate` asks one ordered question before every dispatch on every plane —

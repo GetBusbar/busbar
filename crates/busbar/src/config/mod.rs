@@ -486,6 +486,16 @@ pub(crate) struct RootCfg {
     /// control plane derives its runtime `AgentRegistration` from this plus what the store has
     /// accumulated. Nothing here is accumulation.
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
+    /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
+    /// like `tool_defs` beside it. Empty ⇒ no MCP failover.
+    #[cfg_attr(not(test), allow(dead_code))]
+    // read by the dispatch-path wiring; see crate::failover
+    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM. Empty ⇒ no A2A
+    /// failover.
+    #[cfg_attr(not(test), allow(dead_code))]
+    // read by the dispatch-path wiring; see crate::failover
+    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
 }
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
@@ -1558,6 +1568,72 @@ impl<'de> Deserialize<'de> for PoolCfg {
 ///
 /// Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 pub(crate) const RESERVED_POOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+
+/// THE ONE CHECK BOTH FAILOVER SECTIONS GET, parameterised by which registry a bare name resolves
+/// against rather than written once per plane. `tool_pools:` and `agent_pools:` are the same grammar
+/// over two registries, so a second copy of this would be the shape `structure-lint.sh`'s plane
+/// ledger calls DEBT: the copy that is hardened and the copy that is not look identical from outside.
+///
+/// Three refusals, in the order an operator can act on them: a pool with fewer than two members is a
+/// pool that cannot fail over (a typo, or a leftover), a member on the WRONG PLANE is named as the
+/// thing it actually is, and a member that exists nowhere is a plain dangling reference.
+#[allow(clippy::too_many_arguments)] // eight small, positional facts about ONE check; bundling them
+                                     // into a struct would move the same arguments one line up.
+fn check_failover_pool(
+    errors: &mut Vec<String>,
+    section: &str,
+    pool: &str,
+    def: &crate::failover::CandidatePoolCfg,
+    on_this_plane: impl Fn(&str) -> bool,
+    on_other_plane: impl Fn(&str) -> bool,
+    this_registry: &str,
+    other_registry: &str,
+) {
+    if def.members.len() < 2 {
+        errors.push(format!(
+            "{section}.{pool}: a failover pool needs at least TWO members (it has {}). A pool with \
+             one member has nowhere to fail over to, so it changes nothing; remove it or add the \
+             second registration.",
+            def.members.len()
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for member in &def.members {
+        if !seen.insert(member.as_str()) {
+            errors.push(format!(
+                "{section}.{pool}: `{member}` is named twice. A repeated member would be tried \
+                 twice against the same upstream, which is a retry wearing a failover's clothes."
+            ));
+        }
+        if on_this_plane(member) {
+            continue;
+        }
+        if on_other_plane(member) {
+            errors.push(format!(
+                "{section}.{pool}: `{member}` is an entry in the top-level `{other_registry}:` \
+                 section, not `{this_registry}:`. A failover pool may not straddle two planes — the \
+                 section a pool is written in IS which plane it is on."
+            ));
+        } else {
+            errors.push(format!(
+                "{section}.{pool}: `{member}` is not defined in the top-level `{this_registry}:` \
+                 map. Define it there, or remove it from the pool."
+            ));
+        }
+    }
+    // `repeatable:` naming an operation is a SAFETY declaration, so a typo in it silently leaves the
+    // operation non-repeatable — which fails SAFE and is therefore not an error. It is still worth
+    // nothing to write, so it is refused when it is empty of meaning: a `repeatable:` list on a pool
+    // is only ever read for operations dispatched through that pool.
+    for op in &def.repeatable {
+        if op.trim().is_empty() {
+            errors.push(format!(
+                "{section}.{pool}: `repeatable:` holds an empty entry. Every entry names ONE \
+                 operation that may be performed twice; an empty one names nothing."
+            ));
+        }
+    }
+}
 
 /// The top-level `pools:` map (1.5.3), which carries the [`RESERVED_POOLS_SECTION_KEYS`] alongside the
 /// pools themselves. Every key that is NOT one of those two reserved words is a pool. A pool may NOT be
@@ -2786,6 +2862,28 @@ pub(crate) struct DeployCfg {
     /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
     #[serde(default)]
     pub(crate) agents: crate::a2a::config::AgentsCfg,
+    /// The top-level `tool_pools:` map (1.6.0) — MCP FAILOVER, and OPT-IN. Pool name →
+    /// [`crate::failover::CandidatePoolCfg`], whose `members:` are bare names from `tools:`.
+    ///
+    /// The same concept as `pools:` on the model plane, deliberately spelled with the same words, so
+    /// an operator learns "a pool is a set of interchangeable upstreams" ONCE. ABSENT ⇒ no MCP
+    /// failover anywhere, which is every deployment that exists today.
+    ///
+    /// It is a SEPARATE top-level section rather than a reserved key inside `tools:` for one reason:
+    /// adding a reserved word to an existing section container retroactively outlaws a server name
+    /// that is legal today, and the config grammar is additive-only after 1.5.3.
+    #[serde(default)]
+    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// The top-level `agent_pools:` map (1.6.0) — A2A FAILOVER, and OPT-IN. Pool name →
+    /// [`crate::failover::CandidatePoolCfg`], whose `members:` are bare names from `agents:`.
+    ///
+    /// The A2A twin of `tool_pools:`, sharing its type rather than copying its shape: a second struct
+    /// would be a second grammar for one idea, and the two would diverge the first time either grew a
+    /// key. Which registry a bare name resolves against is decided by the SECTION it is written in,
+    /// exactly as `tools:` and `agents:` already decide which plane an entry is on — so there is no
+    /// selector that could disagree with the section, and no pool can straddle two planes.
+    #[serde(default)]
+    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -4351,6 +4449,38 @@ pub(crate) fn resolve(
             }
         }
     }
+    // THE FAILOVER POOLS' CROSS-REFERENCES, judged exactly like every other bare-name reference in
+    // this function. A member naming nothing is an operator believing a request has somewhere to go
+    // when it does not, which is the same class of defect as a dangling hook reference and is
+    // therefore an error rather than a warning. NO POOL MAY STRADDLE TWO PLANES: `tool_pools:`
+    // members resolve ONLY against `tools:` and `agent_pools:` members ONLY against `agents:`, so an
+    // agent named in a tool pool fails here rather than at dispatch — and the message says which
+    // section the name actually lives in, because "not found" would send an operator looking for a
+    // typo they did not make.
+    for (pool, def) in &deploy.tool_pools {
+        check_failover_pool(
+            &mut errors,
+            "tool_pools",
+            pool,
+            def,
+            |m| deploy.tools.servers.contains_key(m),
+            |m| deploy.agents.agents.contains_key(m),
+            "tools",
+            "agents",
+        );
+    }
+    for (pool, def) in &deploy.agent_pools {
+        check_failover_pool(
+            &mut errors,
+            "agent_pools",
+            pool,
+            def,
+            |m| deploy.agents.agents.contains_key(m),
+            |m| deploy.tools.servers.contains_key(m),
+            "agents",
+            "tools",
+        );
+    }
     for (name, def) in &deploy.hooks {
         if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
             errors.push(format!(
@@ -4483,6 +4613,8 @@ pub(crate) fn resolve(
             mcp,
             oauth_as,
             tool_defs: deploy.tools.clone(),
+            tool_pools: deploy.tool_pools.clone(),
+            agent_pools: deploy.agent_pools.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),
