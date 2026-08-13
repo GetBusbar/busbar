@@ -454,46 +454,13 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
             .map_err(|e| format!("{at}: `recovery_backoff:` {e}"))?;
     }
 
+    // THE PARSE-TIME PLANE BOUNDARY, owned by `plane::config` and called with this plane's own
+    // wording for the site. The section list it judges against is DERIVED from the config grammar,
+    // so a section added to `Plane::ALL` or `NamedMapSection::ALL` is refused here with nothing
+    // written in this file.
+    let sections = crate::plane::config::config_sections();
     for hook in &def.hooks {
-        refuse_cross_plane_reference(&at, hook)?;
-    }
-    Ok(())
-}
-
-/// The all-agents attach list is validated by the same rule as a per-agent one.
-pub(crate) fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
-    for hook in hooks {
-        refuse_cross_plane_reference("`agents.hooks`", hook)?;
-    }
-    Ok(())
-}
-
-/// REFUSE, rather than ignore, a reference that reaches onto another plane.
-///
-/// A hook reference is a bare name into the one top-level `hooks:` map. Somebody who writes
-/// `pools.fast` or `agents.planner` there means something, and the something is not available: no
-/// entry on one plane may reference an entry on another. Dropping it silently would leave an
-/// operator believing a control is attached that is not, which is worse than the typo.
-fn refuse_cross_plane_reference(at: &str, hook: &str) -> Result<(), String> {
-    let hook = hook.trim();
-    if hook.is_empty() {
-        return Err(format!("{at}: `hooks:` contains an empty name"));
-    }
-    // A dotted name is the tell: bare names into `hooks:` never contain a plane prefix.
-    for plane in ["pools", "tools", "agents", "export", "identity-providers"] {
-        if let Some(rest) = hook.strip_prefix(&format!("{plane}.")) {
-            return Err(format!(
-                "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
-                 `{hook}` reaches onto the `{plane}:` plane, and no entry on one plane may \
-                 reference an entry on another. Did you mean the hook `{rest}`?"
-            ));
-        }
-    }
-    if hook.contains('.') {
-        return Err(format!(
-            "{at}: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
-             `{hook}` is not a bare name."
-        ));
+        crate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }
     Ok(())
 }

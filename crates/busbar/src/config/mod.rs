@@ -4330,7 +4330,13 @@ pub(crate) fn resolve(
     // THE A2A PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
     // per-agent lists are checked at parse (`a2a::config::validate_agent`); the section list has no
     // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
-    if let Err(e) = crate::a2a::config::validate_section_hooks(&deploy.agents.all_agent_hooks) {
+    // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
+    // `plane::config`'s, shared with the `tools:` plane below.
+    if let Err(e) = crate::plane::config::validate_section_hooks(
+        "`agents.hooks`",
+        &deploy.agents.all_agent_hooks,
+        &crate::plane::config::config_sections(),
+    ) {
         errors.push(e);
     }
     // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
@@ -4370,7 +4376,11 @@ pub(crate) fn resolve(
     // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
     // silently dropped attachment. A dropped reference leaves an operator believing a control is
     // attached that is not, which is worse than the typo it came from.
-    if let Err(e) = crate::mcp::config::validate_section_hooks(&deploy.tools.all_server_hooks) {
+    if let Err(e) = crate::plane::config::validate_section_hooks(
+        "`tools.hooks`",
+        &deploy.tools.all_server_hooks,
+        &crate::plane::config::config_sections(),
+    ) {
         errors.push(e);
     }
     for (server, def) in &deploy.tools.servers {

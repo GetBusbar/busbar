@@ -90,6 +90,7 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub(crate) mod config;
 pub(crate) mod observe;
 
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read

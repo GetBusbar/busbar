@@ -4,9 +4,20 @@
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having.
 
 use crate::a2a::config::{
-    policy_for, validate_agent, validate_section_hooks, AgentDefCfg, AgentPinCfg, AgentsCfg,
-    PinMechanism, DEFAULT_REVERIFY_TTL, RESERVED_AGENTS_SECTION_KEYS,
+    policy_for, validate_agent, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism,
+    DEFAULT_REVERIFY_TTL, RESERVED_AGENTS_SECTION_KEYS,
 };
+
+/// The section-level attach list as `config_validate` judges it: the shared rule in
+/// `plane::config`, called with THIS plane's wording and the DERIVED section list. The wrapper
+/// exists only so these tests read as the boot path does.
+fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
+    crate::plane::config::validate_section_hooks(
+        "`agents.hooks`",
+        hooks,
+        &crate::plane::config::config_sections(),
+    )
+}
 use crate::a2a::pin::CardPin;
 use crate::config::named_map::NamedMapSection;
 
