@@ -325,7 +325,7 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// identifying which plugin emitted it.
 ///
 /// The host installs a sink through the optional `busbar_set_log_sink` symbol right after `open`.
-/// Until then — and forever, for a host too old to call it — [`log`] falls back to `eprintln!`, so a
+/// Until then — and forever, for a host too old to call it — [`hostlog::log`] falls back to `eprintln!`, so a
 /// plugin never loses a message by using this.
 pub mod hostlog {
     use busbar_plugin_abi::{log_level, LogSinkFn};

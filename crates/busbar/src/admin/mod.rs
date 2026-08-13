@@ -49,8 +49,10 @@ use crate::governance::{NewKeySpec, VirtualKey};
 ///   afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
 ///
 /// The proper store-layer fix is an UPDATE-ONLY `put`/`update` (`UPDATE … WHERE id=?` that affects 0
-/// rows when absent, never an upsert) used by `update_key`, which would need no lock at all — but that
-/// method lives in `governance.rs` and does not exist yet. This gate is the admin-side guard that
+/// rows when absent, never an upsert), which would need no lock at all. `GovState::update_key`
+/// (`governance/state.rs`) EXISTS and is what the PATCH runs, but it still finishes with a `put_key`
+/// UPSERT, so it is not that fix and the race it would close is still open. This gate is the
+/// admin-side guard that
 /// closes the resurrection race from the admin surface. Both ops are admin-only and rare, so a
 /// single global lock has no meaningful cost.
 ///

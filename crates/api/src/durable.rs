@@ -96,7 +96,7 @@ fn sync_holding_dir(path: &Path) {
 }
 
 /// DURABLY remove `path`: unlink it, then fsync the holding directory so the REMOVAL survives a
-/// power loss. The asymmetric sibling of [`write`] -- installing a file fsynced the directory entry
+/// power loss. The asymmetric sibling of [`write()`] -- installing a file fsynced the directory entry
 /// and removing one did not, so a crash after a plugin delete could resurrect the deleted artifact
 /// on the next boot and load it. `Err` only if the unlink itself fails.
 pub fn remove(path: &Path) -> io::Result<()> {

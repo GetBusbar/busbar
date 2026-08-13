@@ -301,9 +301,10 @@ pub(crate) const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
 /// Install the recorder for an operator who OPTED IN, retaining `buffer` seconds of observations.
 ///
 /// `buffer` is `observability.metrics.buffer_seconds` — a REQUIRED config field, so this value is
-/// always one a human named (see `config::MetricsCfg`). It sets both halves of the retention
-/// contract: the rolling-summary window (quantiles cover the last `buffer`; anything older is
-/// dropped) and, via [`MAINTENANCE_DIVISOR`], how often parked raw samples are folded into it.
+/// always one a human named. It sets both halves of the retention contract: the rolling-summary
+/// window (quantiles cover the last `buffer`; anything older is dropped) and, divided by
+/// [`SUMMARY_BUCKETS`], how often parked raw samples are folded into it — that quotient is the
+/// bucket width AND the [`spawn_maintenance`] tick.
 ///
 /// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
 /// macro and every bank helper is a no-op against the default recorder, so an operator who did not

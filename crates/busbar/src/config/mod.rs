@@ -2175,7 +2175,7 @@ pub(crate) fn caller_in_hook_groups(
 
 /// The default hard wall-clock deadline for a gate decision, in milliseconds. Used by serde's
 /// `default = "default_policy_timeout_ms"`. Also the single source of truth consumed at the
-/// resolution sites in `routing/mod.rs`.
+/// resolution sites in [`crate::limits`] and [`crate::hooks`].
 pub(crate) const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
 
 fn default_policy_timeout_ms() -> u64 {
