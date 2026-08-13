@@ -143,20 +143,20 @@ fn structured_content_is_omitted_when_the_tool_produced_none() {
 #[test]
 fn mcp_serves_invoke_and_subscribe_and_refuses_every_other_operation() {
     let h = McpRequestHandler;
-    assert!(h.operation_handler(Operation::Invoke).is_some());
-    assert!(h.operation_handler(Operation::Subscribe).is_some());
+    assert!(h.operation_handler(Operation::INVOKE).is_some());
+    assert!(h.operation_handler(Operation::SUBSCRIBE).is_some());
     for op in [
-        Operation::Chat,
-        Operation::Embeddings,
-        Operation::Moderation,
-        Operation::Image,
-        Operation::Transcription,
-        Operation::Speech,
-        Operation::Rerank,
-        Operation::Catalogue,
-        Operation::Fetch,
-        Operation::Task,
-        Operation::Control,
+        Operation::CHAT,
+        Operation::EMBEDDINGS,
+        Operation::MODERATION,
+        Operation::IMAGE,
+        Operation::TRANSCRIPTION,
+        Operation::SPEECH,
+        Operation::RERANK,
+        Operation::CATALOGUE,
+        Operation::FETCH,
+        Operation::TASK,
+        Operation::CONTROL,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
@@ -173,7 +173,7 @@ fn mcp_serves_invoke_and_subscribe_and_refuses_every_other_operation() {
 fn the_operation_is_resolved_from_the_body_method() {
     let h = McpRequestHandler;
     let body = call_wire(serde_json::json!({ "name": "t" }));
-    assert_eq!(h.resolve_operation("/mcp", &body), Some(Operation::Invoke));
+    assert_eq!(h.resolve_operation("/mcp", &body), Some(Operation::INVOKE));
     assert_eq!(
         h.resolve_operation("/v1/chat/completions", &body),
         None,
@@ -264,7 +264,7 @@ fn the_subscription_verbs_resolve_to_the_subscription_operation() {
         let body = subscription_wire(method, serde_json::json!({ "uri": "u" }));
         assert_eq!(
             h.resolve_operation("/mcp", &body),
-            Some(Operation::Subscribe),
+            Some(Operation::SUBSCRIBE),
             "{method} names the subscription operation"
         );
     }

@@ -20,67 +20,44 @@ static EMB: BedrockEmbeddings = BedrockEmbeddings;
 static IMG: BedrockImage = BedrockImage;
 static RERANK: BedrockRerank = BedrockRerank;
 
+/// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
+/// from it is a genuine gap → the standard no-handler 404.
+static CELLS: &[crate::handlers::Cell] = &[
+    (Operation::CHAT, &CHAT),
+    (Operation::EMBEDDINGS, &EMB),
+    (Operation::IMAGE, &IMG),
+    (Operation::RERANK, &RERANK),
+];
+
 impl RequestHandler for BedrockRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "bedrock"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Embeddings => Some(&EMB),
-            Operation::Image => Some(&IMG),
-            Operation::Rerank => Some(&RERANK),
-            Operation::Chat => Some(&CHAT),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate. These are genuine gaps → no-handler 404.
-            Operation::Moderation
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
-        match ctx.operation {
-            // Chat uses the Converse API (stream-aware); embeddings/images use InvokeModel.
-            Operation::Chat => {
-                let verb = if ctx.stream {
-                    "converse-stream"
-                } else {
-                    "converse"
-                };
-                format!("/model/{}/{verb}", ctx.model)
-            }
-            // Enumerated (not `_`) so adding an operation is a compile error here too — the same
-            // removability/symmetry gate `operation_handler` enforces. This site was the ONE place
-            // on the axis that a pre-existing wildcard had exempted from that gate, so the five new
-            // operations would have silently acquired an InvokeModel URL rather than being decided;
-            // enumerating it is what makes "every exhaustive match decided" true rather than
-            // approximately true. Embeddings/image/rerank genuinely ride InvokeModel; the rest are
-            // unreachable (no handler above), and they answer the same thing for want of a truer
-            // answer at a site that must return a `String`.
-            Operation::Embeddings
-            | Operation::Image
-            | Operation::Rerank
-            | Operation::Moderation
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => format!("/model/{}/invoke", ctx.model),
+        // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
+        // discriminator is this protocol's OWN verb constant, compared against this protocol's OWN
+        // table — not a core enum's variant, which is the point of the 1.6.0 split.
+        if ctx.operation == Operation::CHAT {
+            let verb = if ctx.stream {
+                "converse-stream"
+            } else {
+                "converse"
+            };
+            return format!("/model/{}/{verb}", ctx.model);
         }
+        // Embeddings/image/rerank genuinely ride InvokeModel; a verb with no cell above is
+        // unreachable here and answers the same thing for want of a truer answer at a site that
+        // must return a `String`. That is the pre-1.6.0 answer, verbatim.
+        format!("/model/{}/invoke", ctx.model)
     }
     fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
         // Converse is chat; InvokeModel multiplexes — the BODY names the op (Titan image vs Titan
         // embeddings). Unknown invoke bodies resolve to None (a clean 400 at the route layer).
         if path.ends_with("/converse") || path.ends_with("/converse-stream") {
-            return Some(Operation::Chat);
+            return Some(Operation::CHAT);
         }
         if path.ends_with("/invoke") {
             // Anchor every scan to the QUOTED JSON key (`"key"`), not the bare token: an unanchored
@@ -91,13 +68,13 @@ impl RequestHandler for BedrockRequestHandler {
             // Rerank models (cohere.rerank-*, amazon.rerank-*) take {query, documents} — no
             // other InvokeModel body carries both keys.
             if has(b"\"query\"") && has(b"\"documents\"") {
-                return Some(Operation::Rerank);
+                return Some(Operation::RERANK);
             }
             if has(b"\"textToImageParams\"") {
-                return Some(Operation::Image);
+                return Some(Operation::IMAGE);
             }
             if has(b"\"inputText\"") {
-                return Some(Operation::Embeddings);
+                return Some(Operation::EMBEDDINGS);
             }
         }
         None

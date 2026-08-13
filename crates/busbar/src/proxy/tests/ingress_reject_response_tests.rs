@@ -13,7 +13,7 @@ async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
     let resp = ingress_reject_response(
         "openai",
         &crate::handlers::IngressReject::UnsupportedSubOp {
-            op: crate::operation::Operation::Image,
+            op: crate::operation::Operation::IMAGE,
             model: "dall-e-2".into(),
         },
     );
@@ -24,8 +24,18 @@ async fn unsupported_sub_op_rejects_with_404_naming_op_and_model() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let detail = v["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        detail.contains("Image") && detail.contains("dall-e-2"),
+        detail.contains("image") && detail.contains("dall-e-2"),
         "detail must name both the operation and the model: {detail}"
+    );
+    // AND IT MUST NAME IT WITH THE PUBLISHED IDENTIFIER, not with a Rust `Debug` rendering. Until
+    // 1.6.0 this string was `format!("{op:?}")`, so it read `Image` — the enum variant's spelling
+    // on the wire in front of a customer. The moment the axis grew a field that same expression
+    // rendered `Verb { op: Invoke, name: "image" }`, which is what caught it. Assert the leak is
+    // gone rather than only that the word is present, because `contains("image")` alone is true of
+    // the leaking form too.
+    assert!(
+        !detail.contains("Verb") && !detail.contains("OpShape") && !detail.contains("Invoke"),
+        "the 404 detail must carry `Operation::name`, never the type's Debug shape: {detail}"
     );
 }
 

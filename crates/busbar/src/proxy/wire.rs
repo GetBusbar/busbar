@@ -173,11 +173,17 @@ pub(crate) fn ingress_reject_response(
             KIND_INVALID_REQUEST,
             "We could not process the content of your request.",
         ),
+        // NAMED WITH `Operation::name`, NOT WITH `{op:?}`. The Debug rendering of a core type is a
+        // by-product of a derive, and this string is on the wire in front of a customer: before
+        // 1.6.0 it read `Image`, which was the enum variant's identifier leaking out of the
+        // process, and the moment the axis grew a field it would have read
+        // `Verb { op: Invoke, name: "image" }`. `name()` is the identifier this project publishes
+        // and pins — the same word the metric label and the `paths:` key use.
         crate::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
-            &format!("{op:?} is not supported for model \"{model}\"."),
+            &format!("{} is not supported for model \"{model}\".", op.name()),
         ),
     }
 }

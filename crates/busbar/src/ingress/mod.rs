@@ -1191,7 +1191,7 @@ pub(crate) async fn named(
     // anthropic-dialect chat surface, so they consult the anthropic chat OperationHandler exactly
     // like the catch-all does. Absent handler → the standard no-handler 404 in the caller's dialect.
     if crate::handlers::request_handler(PROTO_ANTHROPIC)
-        .and_then(|rh| rh.operation_handler(crate::operation::Operation::Chat))
+        .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
         .is_none()
     {
         return crate::proxy::ingress_error(
@@ -1319,7 +1319,7 @@ pub(crate) async fn adhoc(
 ) -> Response {
     // Deletion switch — same consult as `named` (this is the other anthropic-dialect chat surface).
     if crate::handlers::request_handler(PROTO_ANTHROPIC)
-        .and_then(|rh| rh.operation_handler(crate::operation::Operation::Chat))
+        .and_then(|rh| rh.operation_handler(crate::operation::Operation::CHAT))
         .is_none()
     {
         return crate::proxy::ingress_error(

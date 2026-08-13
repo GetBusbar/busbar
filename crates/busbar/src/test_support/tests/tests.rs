@@ -4894,7 +4894,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -4960,7 +4960,7 @@ async fn test_openai_ingress_missing_model() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5044,7 +5044,7 @@ async fn test_openai_ingress_unknown_model() {
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5186,7 +5186,7 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     )
     .await;
@@ -5247,7 +5247,7 @@ async fn forwarded_openai_to_anthropic(
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     )
     .await;

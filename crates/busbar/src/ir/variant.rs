@@ -64,15 +64,15 @@ impl IrReq {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn operation(&self) -> Operation {
         match self {
-            IrReq::Chat(_) => Operation::Chat,
-            IrReq::Embeddings(_) => Operation::Embeddings,
-            IrReq::Moderation(_) => Operation::Moderation,
-            IrReq::Image(_) => Operation::Image,
-            IrReq::Transcription(_) => Operation::Transcription,
-            IrReq::Speech(_) => Operation::Speech,
-            IrReq::Rerank(_) => Operation::Rerank,
-            IrReq::Invoke(_) => Operation::Invoke,
-            IrReq::Subscribe(_) => Operation::Subscribe,
+            IrReq::Chat(_) => Operation::CHAT,
+            IrReq::Embeddings(_) => Operation::EMBEDDINGS,
+            IrReq::Moderation(_) => Operation::MODERATION,
+            IrReq::Image(_) => Operation::IMAGE,
+            IrReq::Transcription(_) => Operation::TRANSCRIPTION,
+            IrReq::Speech(_) => Operation::SPEECH,
+            IrReq::Rerank(_) => Operation::RERANK,
+            IrReq::Invoke(_) => Operation::INVOKE,
+            IrReq::Subscribe(_) => Operation::SUBSCRIBE,
         }
     }
 
@@ -481,15 +481,15 @@ impl IrResp {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn operation(&self) -> Operation {
         match self {
-            IrResp::Chat(_) => Operation::Chat,
-            IrResp::Embeddings(_) => Operation::Embeddings,
-            IrResp::Moderation(_) => Operation::Moderation,
-            IrResp::Image(_) => Operation::Image,
-            IrResp::Transcription(_) => Operation::Transcription,
-            IrResp::Speech(_) => Operation::Speech,
-            IrResp::Rerank(_) => Operation::Rerank,
-            IrResp::Invoke(_) => Operation::Invoke,
-            IrResp::Subscribe(_) => Operation::Subscribe,
+            IrResp::Chat(_) => Operation::CHAT,
+            IrResp::Embeddings(_) => Operation::EMBEDDINGS,
+            IrResp::Moderation(_) => Operation::MODERATION,
+            IrResp::Image(_) => Operation::IMAGE,
+            IrResp::Transcription(_) => Operation::TRANSCRIPTION,
+            IrResp::Speech(_) => Operation::SPEECH,
+            IrResp::Rerank(_) => Operation::RERANK,
+            IrResp::Invoke(_) => Operation::INVOKE,
+            IrResp::Subscribe(_) => Operation::SUBSCRIBE,
         }
     }
 

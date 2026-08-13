@@ -359,7 +359,7 @@ fn the_shape_signals_come_from_the_normalized_ir() {
     assert!(!r.shape().has_tools);
     assert!(r.wants_stream());
     assert_eq!(r.end_user(), Some("alice"));
-    assert_eq!(r.verb(), Operation::Chat);
+    assert_eq!(r.verb(), Operation::CHAT);
     assert_eq!(
         r.content(),
         project(&r),

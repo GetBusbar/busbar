@@ -13,7 +13,7 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
     let body = br#"{"query":"how does inputText work?","documents":["textToImageParams too"]}"#;
     assert_eq!(
         h.resolve_operation("/model/cohere.rerank-v3-5:0/invoke", body),
-        Some(Operation::Rerank),
+        Some(Operation::RERANK),
     );
     // Real Titan embeddings (top-level inputText key) still resolves to Embeddings.
     assert_eq!(
@@ -21,7 +21,7 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
             "/model/amazon.titan-embed-text-v2:0/invoke",
             br#"{"inputText":"hello"}"#,
         ),
-        Some(Operation::Embeddings),
+        Some(Operation::EMBEDDINGS),
     );
     // Real Titan image (top-level textToImageParams key) still resolves to Image.
     assert_eq!(
@@ -29,12 +29,12 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
             "/model/amazon.titan-image-generator-v1/invoke",
             br#"{"textToImageParams":{"text":"a cat"}}"#,
         ),
-        Some(Operation::Image),
+        Some(Operation::IMAGE),
     );
     // Converse remains chat.
     assert_eq!(
         h.resolve_operation("/model/anthropic.claude/converse", b"{}"),
-        Some(Operation::Chat),
+        Some(Operation::CHAT),
     );
 }
 

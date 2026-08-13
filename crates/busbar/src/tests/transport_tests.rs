@@ -51,13 +51,13 @@ fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
 fn framing_carries_the_codec_through_unchanged() {
     let rh = request_handler("openai").expect("openai is registered");
     let codec = rh
-        .operation_handler(Operation::Chat)
+        .operation_handler(Operation::CHAT)
         .expect("openai serves chat");
-    let framed = Transport::Http.frame(Operation::Chat, codec);
+    let framed = Transport::Http.frame(Operation::CHAT, codec);
 
-    assert_eq!(framed.operation, Operation::Chat);
+    assert_eq!(framed.operation, Operation::CHAT);
     assert_eq!(framed.transport(), Transport::Http);
-    assert_eq!(framed.name(), Operation::Chat.name());
+    assert_eq!(framed.name(), Operation::CHAT.name());
     assert_eq!(framed.transport().name(), "http");
     // The codec is the SAME object, not a wrapper around it.
     assert!(std::ptr::eq(
@@ -77,13 +77,13 @@ fn framing_carries_the_codec_through_unchanged() {
 #[test]
 fn all_seven_protocols_frame_over_http() {
     let cells = [
-        ("openai", Operation::Chat),
-        ("anthropic", Operation::Chat),
-        ("gemini", Operation::Chat),
-        ("bedrock", Operation::Chat),
-        ("cohere", Operation::Chat),
-        ("responses", Operation::Chat),
-        ("mcp", Operation::Invoke),
+        ("openai", Operation::CHAT),
+        ("anthropic", Operation::CHAT),
+        ("gemini", Operation::CHAT),
+        ("bedrock", Operation::CHAT),
+        ("cohere", Operation::CHAT),
+        ("responses", Operation::CHAT),
+        ("mcp", Operation::INVOKE),
     ];
     for (protocol, operation) in cells {
         let rh = request_handler(protocol).unwrap_or_else(|| panic!("{protocol} is registered"));

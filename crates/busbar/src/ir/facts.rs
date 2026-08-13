@@ -293,7 +293,7 @@ pub(crate) trait IrFacts {
 
 impl IrFacts for IrRequest {
     fn verb(&self) -> Operation {
-        Operation::Chat
+        Operation::CHAT
     }
 
     fn wants_stream(&self) -> bool {

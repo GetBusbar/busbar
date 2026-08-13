@@ -18,8 +18,11 @@
 //!   honoring a per-lane `path` override in `upstream_path` before falling back to the protocol
 //!   default. [`request_handler`] is the registry the catch-all dispatch resolves through.
 //!
-//! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers. Adding an
-//! operation: an OperationHandler + a line in each `RequestHandler` that speaks it. Adding a
+//! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers, and a
+//! `CELLS` table naming the verbs it speaks. Adding an OPERATION: an OperationHandler plus a row in
+//! the `CELLS` table of each protocol that speaks it — a row, not a match arm, and only in the
+//! protocols that speak it, because a verb is that protocol's vocabulary and not a core enum's
+//! variant (see [`Cell`], and `operation.rs` for what the core kept: the SHAPE). Adding a
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
@@ -66,6 +69,46 @@ use crate::operation::Operation;
 use crate::proto::ProtocolWriter;
 use bytes::Bytes;
 use serde_json::Value;
+
+/// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.
+///
+/// **THE ROW IS DATA, AND THAT IS THE CHANGE 1.6.0 MADE.** It used to be a `match` arm per verb in
+/// every `RequestHandler`, which meant a verb was a variant of a CORE enum and adding one was a
+/// compile error in every protocol — including the six that will never speak it. That gate was the
+/// right mechanism pointed at the wrong tag: what a protocol must not be able to duck is a decision
+/// about the SHAPE of an exchange (`crate::operation::OpShape`, still closed, still exhaustively
+/// matched, still with no catch-all anywhere), not a decision about another family's method names.
+///
+/// A protocol's vocabulary now lives beside its codecs, so deleting a protocol deletes its verbs
+/// with it and no core type mentions them — which is the deletion test the plugin seam is measured
+/// by. A verb absent from a row is the no-handler 404, exactly as an arm returning `None` was.
+pub(crate) type Cell = (Operation, &'static dyn OperationHandler);
+
+/// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
+/// seven copies of a linear scan. Rows are single-digit in length, so this is a handful of pointer
+/// comparisons and is not worth a map.
+pub(crate) fn cell_of(
+    cells: &'static [Cell],
+    op: Operation,
+) -> Option<&'static dyn OperationHandler> {
+    cells
+        .iter()
+        .find(|(candidate, _)| *candidate == op)
+        .map(|(_, handler)| *handler)
+}
+
+/// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
+/// than templates. Same table shape, same reason it is data: `resolve_operation` reads these very
+/// constants on the ingress side, so the two directions cannot drift.
+pub(crate) fn path_of(
+    paths: &'static [(Operation, &'static str)],
+    op: Operation,
+) -> Option<&'static str> {
+    paths
+        .iter()
+        .find(|(candidate, _)| *candidate == op)
+        .map(|(_, path)| *path)
+}
 
 /// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
 /// interpreting either — `application/json` for JSON ops, `audio/mpeg` etc. for a binary op like speech.
@@ -337,11 +380,25 @@ impl OpDispatch {
     ) -> crate::breaker::RawUpstreamError {
         self.op_handler.extract_error(status, body)
     }
+    /// Can this cell produce a client-facing incremental stream?
+    ///
+    /// THE SHAPE IS A FLOOR UNDER THE CELL'S ANSWER, and it is the one place the operation axis is
+    /// a decision rather than a label. `OpShape::may_stream` says whether an exchange of this shape
+    /// has anything to stream at all; the cell says whether IT does. A cell may always say less —
+    /// MCP's `tools/call` is `Invoke` and answers `false` — and it may never say more, because a
+    /// shape whose reply is one message (a catalogue page, a fetched document, a subscription
+    /// acknowledgement, a handshake) streamed by an over-eager cell leaves the engine holding a
+    /// response open for a body that is never coming.
+    ///
+    /// This is a floor and not a replacement deliberately: it removes a failure the cell cannot be
+    /// trusted to prevent, and removes nothing the cell legitimately decides.
     pub(crate) fn streaming(&self) -> bool {
-        self.op_handler.streaming()
+        self.operation.shape().may_stream() && self.op_handler.streaming()
     }
+    /// The caller's stream INTENT, under the same shape floor and for the same reason: a caller
+    /// cannot ask for an incremental answer to an exchange that has no increments.
     pub(crate) fn wants_stream(&self, body: &Value) -> bool {
-        self.op_handler.wants_stream(body)
+        self.operation.shape().may_stream() && self.op_handler.wants_stream(body)
     }
     pub(crate) fn body_affinity_key<'a>(&self, body: &'a Value) -> Option<&'a str> {
         self.op_handler.body_affinity_key(body)
@@ -380,7 +437,7 @@ impl OpDispatch {
 /// Chat — operation #1. A const handle to the shared chat OperationHandler, for tests and as the resolver's
 /// fallback. Prefer [`chat`] on the request path so the RequestHandler actually decides the OperationHandler.
 pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
-    Operation::Chat,
+    Operation::CHAT,
     &crate::handlers::chat::ChatOperation("openai"),
 );
 
@@ -393,7 +450,7 @@ pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
 pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    op_for(protocol, Operation::Chat, transport).unwrap_or(CHAT)
+    op_for(protocol, Operation::CHAT, transport).unwrap_or(CHAT)
 }
 
 /// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and

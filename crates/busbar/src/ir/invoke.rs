@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INVOKE IR — the `Operation::Invoke` subclass of the parent [`crate::ir::variant::IrReq`]
+//! THE INVOKE IR — the `Operation::INVOKE` subclass of the parent [`crate::ir::variant::IrReq`]
 //! / [`crate::ir::variant::IrResp`] enums.
 //!
 //! Named `ToolCall` through 1.5. `Invoke` is the same shape — a caller names a target, hands it
@@ -84,7 +84,7 @@ pub(crate) struct InvokeReq {
 /// so the turn index it is attributed to is `0`.
 impl crate::ir::facts::IrFacts for InvokeReq {
     fn verb(&self) -> crate::operation::Operation {
-        crate::operation::Operation::Invoke
+        crate::operation::Operation::INVOKE
     }
 
     /// An invocation is one exchange. The streaming question belongs to the operations that can

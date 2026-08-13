@@ -31,78 +31,78 @@ fn resolver_table() {
         (
             "/v1/chat/completions",
             &[],
-            Some(("openai", Operation::Chat)),
+            Some(("openai", Operation::CHAT)),
         ),
         (
             "/v1/embeddings",
             &[],
-            Some(("openai", Operation::Embeddings)),
+            Some(("openai", Operation::EMBEDDINGS)),
         ),
         (
             "/v1/moderations",
             &[],
-            Some(("openai", Operation::Moderation)),
+            Some(("openai", Operation::MODERATION)),
         ),
         (
             "/v1/images/generations",
             &[],
-            Some(("openai", Operation::Image)),
+            Some(("openai", Operation::IMAGE)),
         ),
         (
             "/v1/audio/transcriptions",
             &[],
-            Some(("openai", Operation::Transcription)),
+            Some(("openai", Operation::TRANSCRIPTION)),
         ),
         (
             "/v1/audio/translations",
             &[],
-            Some(("openai", Operation::Transcription)),
+            Some(("openai", Operation::TRANSCRIPTION)),
         ),
-        ("/v1/audio/speech", &[], Some(("openai", Operation::Speech))),
-        ("/v2/chat", &[], Some(("cohere", Operation::Chat))),
-        ("/v2/embed", &[], Some(("cohere", Operation::Embeddings))),
-        ("/v2/rerank", &[], Some(("cohere", Operation::Rerank))),
-        ("/v1/responses", &[], Some(("responses", Operation::Chat))),
+        ("/v1/audio/speech", &[], Some(("openai", Operation::SPEECH))),
+        ("/v2/chat", &[], Some(("cohere", Operation::CHAT))),
+        ("/v2/embed", &[], Some(("cohere", Operation::EMBEDDINGS))),
+        ("/v2/rerank", &[], Some(("cohere", Operation::RERANK))),
+        ("/v1/responses", &[], Some(("responses", Operation::CHAT))),
         // anthropic ingress: mandatory header wins even though path is model-prefixed
         (
             "/claude-3/v1/messages",
             &[("anthropic-version", "2023-06-01")],
-            Some(("anthropic", Operation::Chat)),
+            Some(("anthropic", Operation::CHAT)),
         ),
         // anthropic via x-api-key alone (curl user, no version header)
         (
             "/v1/messages",
             &[("x-api-key", "sk-ant-xxx")],
-            Some(("anthropic", Operation::Chat)),
+            Some(("anthropic", Operation::CHAT)),
         ),
         // anthropic via anthropic-beta alone
         (
             "/v1/messages",
             &[("anthropic-beta", "prompt-caching-2024-07-31")],
-            Some(("anthropic", Operation::Chat)),
+            Some(("anthropic", Operation::CHAT)),
         ),
         // gemini via header
         (
             "/v1beta/models/x:generateContent",
             &[("x-goog-api-key", "k")],
-            Some(("gemini", Operation::Chat)),
+            Some(("gemini", Operation::CHAT)),
         ),
         // gemini via path verb (no header)
         (
             "/v1beta/models/x:embedContent",
             &[],
-            Some(("gemini", Operation::Embeddings)),
+            Some(("gemini", Operation::EMBEDDINGS)),
         ),
         (
             "/v1beta/models/x:predict",
             &[],
-            Some(("gemini", Operation::Image)),
+            Some(("gemini", Operation::IMAGE)),
         ),
         // bedrock via SigV4 auth; InvokeModel op comes from the BODY (see body cases below)
         (
             "/model/m/converse",
             &[("authorization", "AWS4-HMAC-SHA256 Credential=x")],
-            Some(("bedrock", Operation::Chat)),
+            Some(("bedrock", Operation::CHAT)),
         ),
         // non-operation paths → None
         ("/v1/models", &[], None),
@@ -119,19 +119,19 @@ fn resolver_table() {
 
     // BODY-disambiguated cases (the RequestHandler needs more than the path):
     let body_cases: &[(&str, &[u8], (&str, Operation))] = &[
-            ("/model/m/invoke", br#"{"inputText":"hi"}"#, ("bedrock", Operation::Embeddings)),
+            ("/model/m/invoke", br#"{"inputText":"hi"}"#, ("bedrock", Operation::EMBEDDINGS)),
             ("/model/m/invoke", br#"{"taskType":"TEXT_IMAGE","textToImageParams":{"text":"x"}}"#,
-             ("bedrock", Operation::Image)),
+             ("bedrock", Operation::IMAGE)),
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"inline_data":{"mime_type":"audio/wav","data":"AA=="}}]}]}"#,
-             ("gemini", Operation::Transcription)),
+             ("gemini", Operation::TRANSCRIPTION)),
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"responseModalities":["AUDIO"]}}"#,
-             ("gemini", Operation::Speech)),
+             ("gemini", Operation::SPEECH)),
             // an inline IMAGE part is multimodal CHAT, not audio
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"inline_data":{"mime_type":"image/png","data":"AA=="}}]}]}"#,
-             ("gemini", Operation::Chat)),
+             ("gemini", Operation::CHAT)),
         ];
     for (path, body, (want_proto, want_op)) in body_cases {
         let proto = protocol_id(path, &hm(&[])).expect(path);

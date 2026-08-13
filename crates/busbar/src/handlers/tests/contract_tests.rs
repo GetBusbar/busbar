@@ -25,28 +25,28 @@ impl RequestHandler for OpenAiLike {
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
         // openai serves moderation; not, say, chat-on-a-moderation-only stub → None = no-handler 404.
         match op {
-            Operation::Moderation => Some(&NoopModeration),
+            Operation::MODERATION => Some(&NoopModeration),
             _ => None,
         }
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.operation {
-            Operation::Moderation => "/v1/moderations".into(),
+            Operation::MODERATION => "/v1/moderations".into(),
             _ => String::new(),
         }
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
         path.ends_with("/v1/moderations")
-            .then_some(Operation::Moderation)
+            .then_some(Operation::MODERATION)
     }
 }
 
 #[test]
 fn no_handler_lookup_returns_none_for_unsupported_op() {
     let h = OpenAiLike;
-    assert!(h.operation_handler(Operation::Moderation).is_some());
+    assert!(h.operation_handler(Operation::MODERATION).is_some());
     assert!(
-        h.operation_handler(Operation::Chat).is_none(),
+        h.operation_handler(Operation::CHAT).is_none(),
         "an absent OperationHandler IS the no-handler 404"
     );
     assert_eq!(h.protocol_name(), "openai");
@@ -55,13 +55,13 @@ fn no_handler_lookup_returns_none_for_unsupported_op() {
 #[test]
 fn sub_op_reject_carries_op_and_model() {
     let r = IngressReject::UnsupportedSubOp {
-        op: Operation::Image,
+        op: Operation::IMAGE,
         model: "gpt-image-1".into(),
     };
     assert!(matches!(
         r,
         IngressReject::UnsupportedSubOp {
-            op: Operation::Image,
+            op: Operation::IMAGE,
             ..
         }
     ));

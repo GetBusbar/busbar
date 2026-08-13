@@ -23,28 +23,30 @@ static IMG: GeminiImage = GeminiImage;
 static TRANSCRIPTION: GeminiTranscription = GeminiTranscription;
 static SPEECH: GeminiSpeech = GeminiSpeech;
 
+/// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
+/// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
+static CELLS: &[crate::handlers::Cell] = &[
+    (Operation::CHAT, &CHAT),
+    (Operation::EMBEDDINGS, &EMB),
+    (Operation::IMAGE, &IMG),
+    (Operation::TRANSCRIPTION, &TRANSCRIPTION),
+    (Operation::SPEECH, &SPEECH),
+];
+
+/// The `:verb` suffix each verb's egress URL ends in — this protocol's own vocabulary, keyed by
+/// this protocol's own verb constants. The three that ride `generateContent` are absent because
+/// that is the fallback below; the two stream-aware ones are decided there too.
+static ACTIONS: &[(Operation, &str)] = &[
+    (Operation::EMBEDDINGS, "embedContent"),
+    (Operation::IMAGE, "predict"),
+];
+
 impl RequestHandler for GeminiRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "gemini"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Embeddings => Some(&EMB),
-            Operation::Image => Some(&IMG),
-            Operation::Transcription => Some(&TRANSCRIPTION),
-            Operation::Speech => Some(&SPEECH),
-            Operation::Chat => Some(&CHAT),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate. Gemini has no moderation/rerank surface.
-            Operation::Moderation
-            | Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         let m = ctx.model;
@@ -52,29 +54,19 @@ impl RequestHandler for GeminiRequestHandler {
         // override it via `path_base` (e.g. Vertex AI's `/v1/projects/{p}/locations/{l}/publishers/
         // google/models`). The `:verb` suffix and streaming selection are unchanged.
         let base = ctx.path_base.unwrap_or("/v1beta/models");
-        match ctx.operation {
-            Operation::Embeddings => format!("{base}/{m}:embedContent"),
-            Operation::Image => format!("{base}/{m}:predict"),
-            // Chat + audio understanding/TTS all ride generateContent (stream-aware for chat/audio).
-            Operation::Chat | Operation::Transcription | Operation::Speech => {
-                let verb = if ctx.stream {
-                    "streamGenerateContent"
-                } else {
-                    "generateContent"
-                };
-                format!("{base}/{m}:{verb}")
-            }
-            // Unreachable in practice: gemini has no moderation/rerank handler (operation_handler
-            // returns None), so these never reach egress path resolution.
-            Operation::Moderation => format!("{base}/{m}:generateContent"),
-            Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => format!("{base}/{m}:generateContent"),
+        if let Some(action) = crate::handlers::path_of(ACTIONS, ctx.operation) {
+            return format!("{base}/{m}:{action}");
         }
+        // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
+        // verb with no cell above, which is unreachable in practice and answers the same thing —
+        // the pre-1.6.0 answer, verbatim. `stream` is already false for those, because a shape that
+        // cannot stream never sets it (`OpDispatch::wants_stream`'s shape floor).
+        let action = if ctx.stream {
+            "streamGenerateContent"
+        } else {
+            "generateContent"
+        };
+        format!("{base}/{m}:{action}")
     }
     fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
         // Gemini multiplexes: the ACTION names embeddings/image; `generateContent` serves chat AND
@@ -82,10 +74,10 @@ impl RequestHandler for GeminiRequestHandler {
         // an audio mime ⇒ transcription, an inline IMAGE part is multimodal CHAT. The byte-scan is a
         // cheap pre-filter so plain chat never pays the JSON parse.
         if path.contains(":embedContent") || path.contains(":batchEmbedContents") {
-            return Some(Operation::Embeddings);
+            return Some(Operation::EMBEDDINGS);
         }
         if path.contains(":predict") {
-            return Some(Operation::Image);
+            return Some(Operation::IMAGE);
         }
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
@@ -113,7 +105,7 @@ impl RequestHandler for GeminiRequestHandler {
                     .and_then(Value::as_array)
                     .is_some_and(|m| m.iter().any(|x| x.as_str() == Some("AUDIO")));
                 if audio_out {
-                    return Some(Operation::Speech);
+                    return Some(Operation::SPEECH);
                 }
                 let audio_in = v
                     .pointer("/contents/0/parts")
@@ -128,11 +120,11 @@ impl RequestHandler for GeminiRequestHandler {
                         })
                     });
                 if audio_in {
-                    return Some(Operation::Transcription);
+                    return Some(Operation::TRANSCRIPTION);
                 }
             }
         }
-        Some(Operation::Chat)
+        Some(Operation::CHAT)
     }
     fn path_model(&self, path: &str) -> Option<String> {
         // `/{v1,v1beta}/models/{model}:{action}` — model is the last segment up to the LAST colon.

@@ -93,43 +93,36 @@ static INVOKE: InvokeOperation = InvokeOperation;
 /// operation because they are one shape.
 static SUBSCRIBE: SubscribeOperation = SubscribeOperation;
 
+/// MCP'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data.
+///
+/// **THIS IS THE "NO MCP TO CHAT" RULE, in the only place it needs to exist.** MCP does not serve
+/// chat, so there is no cell to translate an invocation into a chat completion through; the pair is
+/// UNREPRESENTABLE rather than refused at runtime. The six chat protocols say the mirror image
+/// about `Invoke` by leaving it out of their own rows.
+///
+/// **THE FOUR ABSENT PROTOCOL VERBS ARE NOT A "NO": THEY ARE A "NOT YET", AND THE DIFFERENCE IS
+/// DELIBERATE.** MCP genuinely speaks all four — `tools/list` is `Catalogue`, `resources/read` is
+/// `Fetch`, `tasks/get` is `Task`, `initialize` is `Control` — and each gets a cell of its own,
+/// proven against the conformance suite. Until that cell exists, absence is the honest answer and
+/// it is the SAME answer the chat protocols give. Inventing a row here to make the matrix look
+/// complete would be the original `mcp/` mistake (a plane beside the pipeline) in a smaller box,
+/// and `resolve_operation` below still returns `None` for those methods, so nothing can reach a
+/// handler that is not there.
+///
+/// **AND THIS IS THE DELETION TEST.** Deleting MCP deletes this table and its two codecs; no core
+/// type names a single MCP verb, because the verbs are values in this file.
+static CELLS: &[crate::handlers::Cell] = &[
+    (Operation::INVOKE, &INVOKE),
+    (Operation::SUBSCRIBE, &SUBSCRIBE),
+];
+
 impl RequestHandler for McpRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "mcp"
     }
 
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Invoke => Some(&INVOKE),
-            Operation::Subscribe => Some(&SUBSCRIBE),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate.
-            //
-            // AND THIS IS THE "NO MCP TO CHAT" RULE, in the only place it needs to exist. MCP does
-            // not serve chat, so there is no cell to translate an invocation into a chat completion
-            // through; the pair is UNREPRESENTABLE rather than refused at runtime. The six chat
-            // protocols say the mirror image about `Invoke`.
-            Operation::Chat
-            | Operation::Embeddings
-            | Operation::Moderation
-            | Operation::Image
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Rerank
-            // THESE FOUR ARE NOT A "NO": THEY ARE A "NOT YET", AND THE DIFFERENCE IS DELIBERATE.
-            // MCP genuinely speaks all four — `tools/list` is `Catalogue`, `resources/read` is
-            // `Fetch`, `tasks/get` is `Task`, `initialize` is `Control` — and each gets a cell of
-            // its own, proven against the conformance suite. Until that cell exists, `None` is the
-            // honest answer and it is the SAME answer the chat protocols give: no cell, so no
-            // conversion is representable. Inventing a cell here to make the row look complete
-            // would be the original `mcp/` mistake (a plane beside the pipeline) in a smaller box,
-            // and `resolve_operation` below still returns `None` for those methods, so nothing can
-            // reach a handler that is not there.
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
 
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
@@ -149,10 +142,10 @@ impl RequestHandler for McpRequestHandler {
         }
         let v: serde_json::Value = serde_json::from_slice(body).ok()?;
         match v.get("method")?.as_str()? {
-            METHOD_TOOLS_CALL => Some(Operation::Invoke),
+            METHOD_TOOLS_CALL => Some(Operation::INVOKE),
             // BOTH DIRECTIONS OF ONE REGISTRATION ARE ONE OPERATION. The codec reads the intent
             // back off the method name; the engine never learns there were two names.
-            METHOD_RESOURCES_SUBSCRIBE | METHOD_RESOURCES_UNSUBSCRIBE => Some(Operation::Subscribe),
+            METHOD_RESOURCES_SUBSCRIBE | METHOD_RESOURCES_UNSUBSCRIBE => Some(Operation::SUBSCRIBE),
             _ => None,
         }
     }

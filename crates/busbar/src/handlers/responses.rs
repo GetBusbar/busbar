@@ -17,34 +17,22 @@ pub(crate) struct ResponsesRequestHandler;
 static CHAT: crate::handlers::chat::ChatOperation =
     crate::handlers::chat::ChatOperation("responses");
 
+/// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
+/// no-handler 404.
+static CELLS: &[crate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+
 impl RequestHandler for ResponsesRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "responses"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Chat => Some(&CHAT),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate. The Responses API serves only chat here.
-            Operation::Embeddings
-            | Operation::Moderation
-            | Operation::Image
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         PATH_RESPONSES.into()
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
-        path.ends_with(PATH_RESPONSES).then_some(Operation::Chat)
+        path.ends_with(PATH_RESPONSES).then_some(Operation::CHAT)
     }
 }
 

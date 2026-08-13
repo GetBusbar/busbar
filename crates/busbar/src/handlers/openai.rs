@@ -36,65 +36,60 @@ static IMAGE: OpenAiImage = OpenAiImage;
 static TRANSCRIPTION: OpenAiTranscription = OpenAiTranscription;
 static SPEECH: OpenAiSpeech = OpenAiSpeech;
 
+/// OPENAI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
+/// this table is the standard no-handler 404, which is what the enumerated `None` arm used to say:
+/// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
+/// is unrepresentable rather than refused at runtime.
+static CELLS: &[crate::handlers::Cell] = &[
+    (Operation::CHAT, &CHAT),
+    (Operation::MODERATION, &MODERATION),
+    (Operation::EMBEDDINGS, &EMBEDDINGS),
+    (Operation::IMAGE, &IMAGE),
+    (Operation::TRANSCRIPTION, &TRANSCRIPTION),
+    (Operation::SPEECH, &SPEECH),
+];
+
+/// The egress half of the path constants above; `resolve_operation` reads the same constants on the
+/// ingress side, so the two directions cannot drift.
+static PATHS: &[(Operation, &str)] = &[
+    (Operation::CHAT, PATH_CHAT_COMPLETIONS),
+    (Operation::EMBEDDINGS, PATH_EMBEDDINGS),
+    (Operation::MODERATION, PATH_MODERATIONS),
+    (Operation::IMAGE, PATH_IMAGES_GENERATIONS),
+    (Operation::TRANSCRIPTION, PATH_AUDIO_TRANSCRIPTIONS),
+    (Operation::SPEECH, PATH_AUDIO_SPEECH),
+];
+
 impl RequestHandler for OpenAiRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "openai"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Moderation => Some(&MODERATION),
-            Operation::Embeddings => Some(&EMBEDDINGS),
-            Operation::Image => Some(&IMAGE),
-            Operation::Transcription => Some(&TRANSCRIPTION),
-            Operation::Speech => Some(&SPEECH),
-            Operation::Chat => Some(&CHAT),
-            // OpenAI ships no rerank surface — the standard no-handler 404. Nor does it serve the
-            // protocol-surface operations (`Invoke`..`Control`): those are MCP's and A2A's, and a
-            // protocol that does not speak an operation returns `None` here so the pair is
-            // unrepresentable rather than refused at runtime.
-            Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
-        match ctx.operation {
-            Operation::Chat => PATH_CHAT_COMPLETIONS.into(),
-            Operation::Embeddings => PATH_EMBEDDINGS.into(),
-            Operation::Moderation => PATH_MODERATIONS.into(),
-            Operation::Image => PATH_IMAGES_GENERATIONS.into(),
-            Operation::Transcription => PATH_AUDIO_TRANSCRIPTIONS.into(),
-            Operation::Speech => PATH_AUDIO_SPEECH.into(),
-            // Unreachable in practice: no handler above means these never reach egress here.
-            Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => PATH_RERANK.into(),
-        }
+        // The fallback is unreachable in practice: a verb with no cell above never reaches egress
+        // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.
+        crate::handlers::path_of(PATHS, ctx.operation)
+            .unwrap_or(PATH_RERANK)
+            .into()
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
         // OpenAI names the operation in the path — the body is never needed.
         if path.ends_with(PATH_CHAT_COMPLETIONS) {
-            Some(Operation::Chat)
+            Some(Operation::CHAT)
         } else if path.ends_with(PATH_EMBEDDINGS) {
-            Some(Operation::Embeddings)
+            Some(Operation::EMBEDDINGS)
         } else if path.ends_with(PATH_MODERATIONS) {
-            Some(Operation::Moderation)
+            Some(Operation::MODERATION)
         } else if path.contains("/v1/images/") {
-            Some(Operation::Image)
+            Some(Operation::IMAGE)
         } else if path.ends_with(PATH_AUDIO_TRANSCRIPTIONS)
             || path.ends_with("/v1/audio/translations")
         {
-            Some(Operation::Transcription)
+            Some(Operation::TRANSCRIPTION)
         } else if path.ends_with(PATH_AUDIO_SPEECH) {
-            Some(Operation::Speech)
+            Some(Operation::SPEECH)
         } else {
             None
         }
@@ -678,14 +673,14 @@ impl OperationHandler for OpenAiImage {
             .unwrap_or_default()
             .to_string();
         // `read_request` sees the body + content-type, never the PATH — so `/v1/images/edits` vs
-        // `/v1/images/generations` (both resolve to `Operation::Image`, handlers/openai.rs:79) is
+        // `/v1/images/generations` (both resolve to `Operation::IMAGE`, handlers/openai.rs:79) is
         // distinguished by BODY SHAPE, not the route: an `image` reference names an edit
         // (`mask` present) or variation sub-op. No 1.5.0 egress writer emits anything but
         // `/v1/images/generations` (`upstream_path`, below), so every edit/variation request is
         // unsupported today — the second 404 site, not a missing route.
         if wire.get("image").is_some() {
             return Err(IngressReject::UnsupportedSubOp {
-                op: Operation::Image,
+                op: Operation::IMAGE,
                 model,
             });
         }
