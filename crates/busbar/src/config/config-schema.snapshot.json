@@ -247,6 +247,21 @@
       "kind": "struct",
       "transparent": false
     },
+    "CandidatePoolCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "members": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "repeatable": {
+          "optional": true,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "ChildDefault": {
       "deny_unknown_fields": true,
       "fields": {
@@ -324,6 +339,10 @@
         "advanced": {
           "optional": true,
           "type": "AdvancedCfg"
+        },
+        "agent_pools": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>"
         },
         "agents": {
           "optional": true,
@@ -424,6 +443,10 @@
         "tls": {
           "optional": true,
           "type": "TlsCfg"
+        },
+        "tool_pools": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>"
         },
         "tools": {
           "optional": true,

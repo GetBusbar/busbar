@@ -1763,6 +1763,16 @@ DECLARATION_CENSUS=(
   'refusal-word-artifact-drifted|REFUSAL-WORD-RESPELT|"artifact_drifted"|1|crates/busbar/src/|the rug-pull refusal has one spelling: it is the one word that indicts the UPSTREAM rather than the config or the grant, and a second copy is two answers to who is at fault'
   'refusal-word-generation-moved|REFUSAL-WORD-RESPELT|"generation_moved"|1|crates/busbar/src/|the lifecycle-race refusal has one spelling across both planes; two copies is the in-flight-outliving-an-approval story told two ways'
 
+  # ── THE FAILOVER SEAM'S REFUSAL WORDS, and they are here for the reason the four above are: the
+  #    seam is CORE, so its words are core's, and a plane that renders a refusal must render THIS
+  #    word rather than invent a near-synonym. One production occurrence each, in
+  #    `crate::audit::vocab`; `crate::failover` names the CONST. A second string literal is a second
+  #    home for one vocabulary — the defect the validator's own merge conflict already was, once —
+  #    and zero means the word left the tree and every query written against it stopped matching.
+  'refusal-word-no-upstream-left|REFUSAL-WORD-RESPELT|"no_upstream_left"|1|crates/busbar/src/|the nowhere-left-to-send refusal has one spelling across every plane that fails over; a second copy is one outage recorded under two words'
+  'refusal-word-not-interchangeable|REFUSAL-WORD-RESPELT|"not_interchangeable"|1|crates/busbar/src/|the pins-disagree refusal has one spelling: it is the one word that indicts the CONFIGURATION rather than the caller or the upstream, and a second copy is two answers to who is at fault'
+  'refusal-word-not-repeatable|REFUSAL-WORD-RESPELT|"not_repeatable"|1|crates/busbar/src/|the safety rule'"'"'s refusal has one spelling; it is the one outcome an operator may deliberately want to change, and a second copy is a change they would make in one place and not the other'
+
   'the-one-ordered-request-validator|VALIDATOR-RESPELT|fn[[:space:]]+validate_request[^a-zA-Z0-9_]|1|crates/busbar/src/|there is exactly ONE ordered request validator in busbar and every protocol reaches it; a second is a protocol that has acquired its own order, and zero means the order was inlined back into a plane where nothing owns it'
 
   # ── THE ONE GENERATION SOURCE. A generation only has to be DIFFERENT after a change, so a second

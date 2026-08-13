@@ -78,6 +78,13 @@ SOURCES = [
     "crates/busbar/src/oauth_as/config.rs",
     "crates/busbar/src/a2a/creds.rs",
     "crates/busbar/src/mcp/config.rs",
+    # `tool_pools:` / `agent_pools:` — the failover grammar, which is CORE's rather than either
+    # plane's (one type, two sections). Added WITH the block for the reason stated for `oauth_as:`
+    # above: `config/mod.rs` names the type, so without this line `CandidatePoolCfg` would appear in
+    # the snapshot as an opaque string and `members:`/`repeatable:` — the latter being the SAFETY
+    # declaration that decides whether an operation with effects may be performed twice — would be
+    # free to change without the additive-only gate noticing.
+    "crates/busbar/src/failover/mod.rs",
 ]
 
 

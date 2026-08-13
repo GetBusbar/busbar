@@ -214,16 +214,59 @@ agents:
 
 Omit the block and you get the defaults, exactly as with a pool. There is no inheritance between servers or between agents: each target's breaker is independent, which is the point. One dead tool server must not bench a healthy one.
 
-### What is deliberately different: there is no failover
+### Failover on MCP and A2A: the same server, deployed twice
 
-The breaker's state machine needs a target identity and a failure history. **Member selection** needs something else: members that can substitute for one another. On MCP and A2A there are none.
+An earlier draft of this page said there was no failover on these planes, and gave a reason: a tool is namespaced to the server that exports it, so there is no second server to send the call to. That reason was about **two different vendors' servers**, and for that case it still holds. It was never true of the case operators actually run.
 
-- A tool is namespaced to the server that exports it. `acme_read_file` exists on exactly one server, so there is no second server to send the call to.
-- An A2A task addressed to one agent cannot be served by a different agent. Agents are not interchangeable; that is what makes them agents.
+**Nobody runs one instance of anything important.** One MCP server image in two regions, a hosted instance beside a self-hosted twin, one agent registered twice against the same card — that is the normal shape, and busbar's inability to be told about it was busbar's absence, not the protocol's.
 
-**`failover:` therefore does not appear under `tools:` or `agents:`, and its absence is the statement.** A reader who looks for it and does not find it has learned something true. If it were accepted and quietly ignored, they would have learned something false.
+So `tool_pools:` and `agent_pools:` exist, they are **opt-in**, and an absent section is exactly today's behaviour:
 
-What the breaker buys on these planes is not a reroute. It is **failing fast instead of failing slowly**, and an operator-visible reason why.
+```yaml
+tools:
+  search-eu: { url: https://eu.search.example/mcp, pin: { mechanism: cert_spki, key: "…" } }
+  search-us: { url: https://us.search.example/mcp, pin: { mechanism: cert_spki, key: "…" } }
+
+tool_pools:
+  search:
+    members: [search-eu, search-us]     # ORDERED; the first is the primary
+    repeatable: [search_code]           # operations safe to perform TWICE. Default: none.
+
+agent_pools:
+  planner:
+    members: [planner-eu, planner-us]
+```
+
+They are one grammar, in core, over two registries — the same sentence `pools:` already says on the LLM plane, so an operator learns the concept once. A pool may not straddle two planes: the section a pool is written in **is** which plane it is on, and a `tool_pools:` member naming an `agents:` entry refuses boot naming the section the entry really lives in.
+
+#### Interchangeability is CHECKED, not claimed
+
+This is the part that makes it safe. Naming two servers in a pool is **not** what makes them interchangeable. busbar compares the fingerprints it already computes — the approved tool schema digest on MCP, the approved canonical card fingerprint on A2A — and moves a request between two candidates only when those pins **agree**.
+
+- Same image in two regions ⇒ same schemas, same descriptions, **same fingerprint** ⇒ interchangeable, provably.
+- Two different vendors' `search` tools ⇒ different fingerprints ⇒ **refused**, with both digests named.
+- A registration with nothing approved yet ⇒ never matches, not even another unapproved one. Two unknowns are not one fact.
+
+The operator is asserting only *"these names are the same deployment"*, and that claim is verified before a single request moves. Failing over between genuinely different tools could hand a model a tool carrying different instructions, which is a confused deputy; it is refused rather than defaulted.
+
+#### A REROUTE IS NOT A RETRY, and the difference is the safety rule
+
+| movement | has anything been sent? | default |
+|---|---|---|
+| the primary's breaker is Open — **reroute** | no | **allowed** |
+| the call went out and failed — **retry** | yes | **refused** |
+
+When the breaker is Open the request never left busbar, so sending it to an equivalent deployment duplicates nothing. That is the case an agent never learns about, and it is on by default.
+
+Once a call **has** gone out, moving it is a genuine repeat of work an upstream may already have done — and two deployments of the same image makes that worse, not better, because both are wired to the same downstream. `send_email` is not retried. `charge_card` is not retried. Only an operation the operator has written into `repeatable:` is, and there is deliberately no `repeatable: all` and no switch that turns the rule off wholesale.
+
+The two rules compose, and the composition is the whole safety story: **repeat a call only when the pins match AND the operation is safe to repeat.**
+
+#### What the breaker buys when there is nowhere to go
+
+For a single registration with no pool, unchanged: **failing fast instead of failing slowly**, and an operator-visible reason why.
+
+> **Landed state (1.6.0):** the selection seam, its config vocabulary and its proofs are in `crate::failover`, running on the one `try_admit_breaker` the LLM plane uses. Wiring the MCP dispatch and A2A relay call sites to it is a separate change; until it lands, a configured pool is validated at boot but not yet consulted at dispatch. This note is here rather than omitted because a page that describes a path before it is wired is how a reader learns something false.
 
 ### What a tripped target returns: MCP
 

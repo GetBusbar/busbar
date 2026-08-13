@@ -74,6 +74,7 @@ mod egress_auth;
 mod endpoints;
 mod eventstream;
 mod export;
+mod failover;
 mod governance;
 mod handlers;
 mod health;
