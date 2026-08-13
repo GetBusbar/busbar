@@ -129,7 +129,9 @@ impl SetupRefusal {
     pub(crate) fn audit_reason(&self) -> &'static str {
         match self {
             SetupRefusal::Malformed(_) => "malformed_identity",
-            SetupRefusal::Egress(_) => "egress_denied",
+            // Core's word — see `crate::audit::vocab::REASON_EGRESS_DENIED` for why an
+            // egress refusal is deliberately distinguishable from a grant refusal.
+            SetupRefusal::Egress(_) => crate::audit::vocab::REASON_EGRESS_DENIED,
             SetupRefusal::Credential(_) => "credential_unavailable",
             SetupRefusal::Argument(_) => "tool_argument_refused",
         }

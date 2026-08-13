@@ -42,7 +42,8 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
-use crate::mcp::calllog::{verify_chain, CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED};
+use crate::audit::verify_chain;
+use crate::mcp::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED};
 use crate::test_support::TestApp;
 use busbar_api::{McpCallRecord, Store};
 use std::path::PathBuf;

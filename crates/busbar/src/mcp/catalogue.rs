@@ -396,7 +396,10 @@ impl DispatchRefusal {
             DispatchRefusal::NotApproved(_) => "not_approved",
             DispatchRefusal::NotPinned(_) => "not_pinned",
             DispatchRefusal::Quarantined { .. } => "quarantined",
-            DispatchRefusal::NotGranted(_) => "not_granted",
+            // The word is core's (`crate::audit::vocab`), not this plane's: the refusal
+            // vocabulary is shared across every stream of evidence, so a second stream cannot
+            // spell the same refusal differently.
+            DispatchRefusal::NotGranted(_) => crate::audit::vocab::REASON_NOT_GRANTED,
         }
     }
 }

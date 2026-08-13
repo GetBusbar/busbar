@@ -43,7 +43,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::provenance::{self, ChainBreak, EventInput, TaskChain};
+use crate::audit::ChainBreak;
+
+use super::provenance::{self, EventInput, TaskChain};
 use super::task::{Task, TaskError, TaskState};
 use busbar_api::{Store, StoreError, StoreResult};
 
@@ -533,7 +535,7 @@ impl TaskRegistry {
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
         let events = store.list_task_events(task_id)?;
-        match provenance::verify_chain(&events) {
+        match crate::audit::verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
         }
