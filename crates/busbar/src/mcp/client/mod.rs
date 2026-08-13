@@ -24,6 +24,9 @@
 //! | [`argguard`] | the schema-aware walk of nested tool arguments for URL and host fields |
 //! | [`egress`] | per-server credentials, RFC 8707/8693, and the transitive confused-deputy gate |
 //! | [`dispatch`] | selection, and the re-validation that runs on every single request |
+//! | [`verb`] | the CLOSED set of methods busbar issues, and how each becomes a request |
+//! | [`peer`] | what a peer sends BUSBAR, and the deny-by-default gate on its three authority asks |
+//! | [`issue`] | the ONE governed path a verb travels: gate, send, correlate, record |
 //!
 //! ## The revision, stated once
 //!
@@ -78,11 +81,21 @@ pub(crate) mod catalogue;
 pub(crate) mod dispatch;
 pub(crate) mod egress;
 pub(crate) mod identity;
+/// THE ONE GOVERNED ISSUANCE PATH for every method busbar sends an upstream. One gate, one audit
+/// record, one vtable send — see the module header for why a second one is a hole and not a feature.
+pub(crate) mod issue;
 pub(crate) mod jsonrpc;
+/// WHAT A CHILD SENDS BUSBAR: the `busbar-as-client / server-originated` half of the matrix, and
+/// the deny-by-default gate on the three asks that would spend busbar's own authority.
+pub(crate) mod peer;
 pub(crate) mod pool;
 pub(crate) mod ssrf;
 pub(crate) mod stdio;
 pub(crate) mod transport;
+/// THE CLOSED SET OF METHODS BUSBAR ISSUES to an upstream MCP server — one enum, so the column of
+/// the coverage matrix this leg owns is a value a test can enumerate rather than a property of its
+/// call sites.
+pub(crate) mod verb;
 pub(crate) mod wire;
 
 use catalogue::{CatalogueCache, ServerCatalogue, TransportPin};

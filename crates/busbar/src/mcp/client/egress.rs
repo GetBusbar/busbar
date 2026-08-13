@@ -257,6 +257,97 @@ pub(crate) fn authorise_tool_egress(
         .map_err(EgressDenied::from)
 }
 
+/// A SERVER-SCOPED EGRESS SUBJECT: a method busbar issues that names no tool.
+///
+/// ## Why this exists and is not a `ToolKey` with an invented tool in it
+///
+/// `prompts/list`, `resources/read`, `ping`, `tasks/get` and the rest of the verbs in
+/// [`super::verb::UpstreamVerb`] reach an upstream without naming a tool. The tool subject above
+/// requires BOTH `mcp_server` and `mcp_tool`, so putting one of these through it would need a
+/// `mcp_tool:` value to compare against — and every available choice is wrong. A literal
+/// (`fs_prompts/list`) invents a grant no operator can write, because `mcp_tool` values are routing
+/// keys and that is not one. A wildcard would make the tool grant vacuous. Reusing the tool of an
+/// unrelated call would authorise a verb against a grant for something else.
+///
+/// So the honest subject is the SERVER, and the requirement list says exactly that: one grant, not
+/// two. An operator who grants `mcp_server: fs` has said this caller may reach that upstream, and a
+/// `prompts/list` is precisely reaching that upstream.
+///
+/// This is NOT a second gate. It is a second SUBJECT for the one gate in
+/// [`crate::egress_auth::gate`] — the same extension point the A2A plane uses for its own — so the
+/// decision, the ordering and the refusal type are all core's.
+#[derive(Clone, Debug)]
+pub(crate) struct ServerVerb<'a> {
+    /// The registration being reached.
+    pub(crate) server: &'a ServerId,
+    /// The method name. Carried for the refusal's wording and for the audit record; it is NOT a
+    /// grant value and nothing compares it against a scope.
+    pub(crate) method: &'a str,
+}
+
+impl EgressSubject for &ServerVerb<'_> {
+    type Grant = ToolGrant;
+
+    /// FALSE, matching the tool subject above. The two subjects of one plane answering differently
+    /// about key liveness would make the answer a property of which verb a caller happened to use.
+    const REQUIRE_LIVE_KEY: bool = false;
+
+    fn grants_required(&self) -> Vec<Requirement<ToolGrant>> {
+        vec![Requirement {
+            grant: ToolGrant::Server,
+            scope_kind: "mcp_server",
+            value: self.server.to_string(),
+        }]
+    }
+}
+
+/// THE EGRESS GATE FOR A SERVER-SCOPED VERB. Same gate, same wording, one grant.
+pub(crate) fn authorise_server_egress(
+    caller: &VirtualKey,
+    subject: &ServerVerb<'_>,
+) -> Result<(), EgressDenied> {
+    crate::egress_auth::gate::authorise(caller, subject, 0)
+        .map(|_witness| ())
+        .map_err(|refusal| {
+            let denied = EgressDenied::from(refusal);
+            // THE METHOD IS LOGGED AND NOT PUT IN THE REFUSAL. `EgressDenied`'s sentences are
+            // asserted byte-for-byte by the batteries that own them, and widening one to carry a
+            // verb would change a message an operator's own tooling may already match on. An
+            // operator debugging a denial needs to know WHICH verb was refused, and this is where
+            // that lives.
+            tracing::debug!(
+                server = %subject.server,
+                method = %subject.method,
+                caller = %caller.id,
+                "mcp egress: a server-scoped verb was refused by the egress gate"
+            );
+            denied
+        })
+}
+
+/// The DOWN-SCOPE for a SERVER-SCOPED verb: every tool the caller is granted on THIS server.
+///
+/// A wildcard principal gets the EMPTY string, which asks the authorization server for no narrowing
+/// beyond the RFC 8707 `resource` — and that is deliberate rather than a gap. The tool subject's
+/// wildcard rule narrows to "the single tool being called", and there is no tool here to narrow to;
+/// inventing one would ask for a token scoped to a tool this verb is not touching. The audience
+/// binding still holds, so the token is spendable at this upstream and at no other.
+pub(crate) fn server_downscope(caller: &VirtualKey, server: &ServerId) -> String {
+    let Some(list) = &caller.allowed_scopes else {
+        return String::new();
+    };
+    let mut scopes: Vec<String> = list
+        .iter()
+        .filter(|s| s.kind == "mcp_tool")
+        .filter_map(|s| ToolKey::parse(&s.value).ok())
+        .filter(|k| k.server() == server)
+        .map(|k| k.namespaced())
+        .collect();
+    scopes.sort();
+    scopes.dedup();
+    scopes.join(" ")
+}
+
 /// The DOWN-SCOPE for an RFC 8693 exchange: the space-delimited scope string to request.
 ///
 /// Derived from the caller's grant, per the module header. A wildcard principal (`allowed_scopes:
@@ -354,6 +445,49 @@ pub(crate) fn plan_credential(
     // THE GATE FIRST. Nothing below runs for a caller that is not authorised, so an unauthorised
     // caller cannot even cause a token-endpoint round trip on busbar's credentials.
     authorise_tool_egress(caller_key, called)?;
+    plan_after_gate(
+        server,
+        credential,
+        caller_upstream_credential,
+        downscope(caller_key, server, called),
+    )
+}
+
+/// PLAN the outbound credential for a SERVER-SCOPED verb — one that names no tool.
+///
+/// The same shape as [`plan_credential`] and deliberately the same ORDER: gate first, so a caller
+/// with no `mcp_server` grant cannot cause a token-endpoint round trip on busbar's own credentials.
+/// Only the subject and the down-scope differ, and both differences are argued for at
+/// [`ServerVerb`] and [`server_downscope`].
+pub(crate) fn plan_verb_credential(
+    server: &ServerId,
+    method: &str,
+    credential: &UpstreamCredential,
+    caller_key: &VirtualKey,
+    caller_upstream_credential: Option<&Redacted<String>>,
+) -> Result<CredentialPlan, EgressDenied> {
+    authorise_server_egress(caller_key, &ServerVerb { server, method })?;
+    plan_after_gate(
+        server,
+        credential,
+        caller_upstream_credential,
+        server_downscope(caller_key, server),
+    )
+}
+
+/// The credential decision itself, AFTER whichever gate applies has passed.
+///
+/// One function so the two planners cannot come to disagree about what `passthrough` with no caller
+/// credential means, or about whether an absent exchange config falls back to something. Reached
+/// only from the two functions above, each of which has already run a gate — which is why this one
+/// takes no caller key: it has nothing left to decide about authority, and a parameter it did not
+/// need would be a parameter a later edit could believe was a check.
+fn plan_after_gate(
+    server: &ServerId,
+    credential: &UpstreamCredential,
+    caller_upstream_credential: Option<&Redacted<String>>,
+    scope: String,
+) -> Result<CredentialPlan, EgressDenied> {
     match credential {
         UpstreamCredential::None => Ok(CredentialPlan::None),
         UpstreamCredential::Static(secret) => Ok(CredentialPlan::Bearer(secret.clone())),
@@ -369,7 +503,7 @@ pub(crate) fn plan_credential(
             subject_token: cfg.subject_token.clone(),
             subject_token_type: cfg.subject_token_type.clone(),
             resource: cfg.resource.clone(),
-            scope: downscope(caller_key, server, called),
+            scope,
             requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
         })),
     }

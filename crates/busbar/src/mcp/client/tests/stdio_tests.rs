@@ -23,6 +23,23 @@ use crate::mcp::client::stdio::{StdioChild, StdioCommand};
 #[cfg(unix)]
 use std::time::Duration;
 
+/// THE INBOUND HALF'S POLICY for a bare-child test: no grants at all.
+///
+/// Deny-by-default is the shape every one of these fixtures needs, and it is the shape a real
+/// registration has unless an operator wrote otherwise. The triggers are a fresh set per call, so a
+/// fixture that emitted a `…/list_changed` would record it and nothing here would be affected by
+/// another test's.
+#[cfg(unix)]
+fn bare_policy(
+    triggers: &crate::mcp::client::pool::RefreshTriggers,
+) -> crate::mcp::client::stdio::PeerPolicy<'_> {
+    crate::mcp::client::stdio::PeerPolicy {
+        server: "fixture",
+        grants: Default::default(),
+        triggers,
+    }
+}
+
 fn policy() -> RestartPolicy {
     RestartPolicy {
         base_backoff_ms: 100,
@@ -213,6 +230,7 @@ async fn a_real_child_is_spawned_and_answers_one_request() {
         .call(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
             Duration::from_secs(5),
+            &bare_policy(&Default::default()),
         )
         .await
         .expect("the child answers");
@@ -243,7 +261,11 @@ async fn the_child_environment_is_replaced_and_not_inherited() {
     );
     let mut child = StdioChild::spawn(&cmd).await.expect("spawn");
     let out = child
-        .call(b"{}", Duration::from_secs(5))
+        .call(
+            b"{}",
+            Duration::from_secs(5),
+            &bare_policy(&Default::default()),
+        )
         .await
         .expect("the child answers");
     let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
@@ -263,7 +285,11 @@ async fn the_child_environment_is_replaced_and_not_inherited() {
 async fn a_child_that_says_nothing_is_an_error_rather_than_a_hang() {
     let mut child = StdioChild::spawn(&sh("exit 0")).await.expect("spawn");
     let err = child
-        .call(b"{}", Duration::from_secs(5))
+        .call(
+            b"{}",
+            Duration::from_secs(5),
+            &bare_policy(&Default::default()),
+        )
         .await
         .expect_err("a closed stdout must be an error");
     assert!(
@@ -288,7 +314,11 @@ async fn a_child_that_never_ends_its_message_is_refused_rather_than_buffered() {
     .await
     .expect("spawn");
     let err = child
-        .call(b"{}", Duration::from_secs(30))
+        .call(
+            b"{}",
+            Duration::from_secs(30),
+            &bare_policy(&Default::default()),
+        )
         .await
         .expect_err("an endless message must be refused");
     assert!(
@@ -306,7 +336,11 @@ async fn a_silent_child_hits_the_timeout() {
         .await
         .expect("spawn");
     let err = child
-        .call(b"{}", Duration::from_millis(150))
+        .call(
+            b"{}",
+            Duration::from_millis(150),
+            &bare_policy(&Default::default()),
+        )
         .await
         .expect_err("the timeout must bite");
     assert!(err.contains("did not answer within the timeout"), "{err}");

@@ -286,6 +286,43 @@ impl Supervisor {
     }
 }
 
+/// THE WORK BUDGET for one exchange: how many messages of its OWN a child may send while busbar
+/// waits for one answer.
+///
+/// Not redundant with the deadline, and the distinction is the reason both exist. The deadline
+/// bounds the exchange in TIME, which is what protects the caller's concurrency slot. This bounds it
+/// in WORK: a child writing notifications as fast as the pipe drains stays comfortably inside any
+/// deadline while making busbar parse, judge and reply without limit. 256 is far above what a
+/// conformant child emits for one call (a handful of progress frames and a log line) and far below
+/// anything that could matter as a cost.
+const MAX_INTERLEAVED_MESSAGES: u32 = 256;
+
+/// The JSON-RPC id busbar puts on its handshake.
+///
+/// A constant, and DISTINCT from any dispatch id, so an answer to the handshake can never correlate
+/// to a caller's call. It does not need to be unique across children: correlation is per exchange
+/// (see `super::jsonrpc::parse_response`), and there is no table of pending ids for two children to
+/// collide in.
+const HANDSHAKE_REQUEST_ID: u64 = 0;
+
+/// EVERYTHING THE INBOUND HALF NEEDS about one leg: whose child this is, what authority the operator
+/// granted it, and where an accepted refresh trigger goes.
+///
+/// A struct rather than three parameters because the three travel together to every reply site, and
+/// a positional signature that grows a parameter per policy is how one call site ends up passing a
+/// default `ServerRequestGrants` — which would silently grant nothing, look exactly like a correct
+/// denial, and be discovered by an operator whose grants stopped working.
+pub(crate) struct PeerPolicy<'a> {
+    /// The registration id. Names the child in every refusal and is the refresh trigger's key.
+    pub(crate) server: &'a str,
+    /// The three authority grants, read at the moment each ask is judged. See
+    /// [`super::wire::WireLeg::grants`].
+    pub(crate) grants: crate::mcp::config::ServerRequestGrants,
+    /// Where an accepted `…/list_changed` goes. The NAME only — see
+    /// [`super::pool::RefreshTriggers`].
+    pub(crate) triggers: &'a super::pool::RefreshTriggers,
+}
+
 /// A LIVE stdio child: the process and its pipes.
 ///
 /// The framing is newline-delimited JSON, which is what MCP stdio specifies: one JSON-RPC message
@@ -366,12 +403,8 @@ impl StdioChild {
         })
     }
 
-    /// Send one JSON-RPC message and read one back, bounded by `timeout`.
-    ///
-    /// The timeout is not optional and has no "unlimited" spelling. A child that stops answering is
-    /// indistinguishable from a child that is slow, and the only safe reading of that ambiguity on a
-    /// dispatch path is the bounded one.
-    pub(crate) async fn call(&mut self, body: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    /// WRITE one JSON-RPC message, newline-terminated, bounded by `timeout`.
+    async fn write_line(&mut self, body: &[u8], timeout: Duration) -> Result<(), String> {
         use tokio::io::AsyncWriteExt as _;
         let write = async {
             self.stdin.write_all(body).await?;
@@ -383,7 +416,16 @@ impl StdioChild {
             .map_err(|_| {
                 "stdio MCP child did not accept the request within the timeout".to_string()
             })?
-            .map_err(|e| format!("write to stdio MCP child: {e}"))?;
+            .map_err(|e| format!("write to stdio MCP child: {e}"))
+    }
+
+    /// READ one message, bounded by what is left of the exchange's budget.
+    ///
+    /// The remaining budget rather than a fresh `timeout` per line: a peer that emitted one
+    /// notification just inside every timeout would otherwise extend the leg without limit, one line
+    /// at a time, and the whole point of a bounded leg is that the caller's concurrency slot is
+    /// released at a time the caller can predict.
+    async fn read_message(&mut self, deadline: tokio::time::Instant) -> Result<Vec<u8>, String> {
         // CAPPED, and this is a defence rather than a tidiness rule. A child process is an untrusted
         // peer exactly as an upstream HTTP server is, and it can write forever without ever sending a
         // newline — `read_line` on that is an unbounded allocation driven by the peer, which is a
@@ -393,9 +435,211 @@ impl StdioChild {
             &mut self.stdout,
             crate::proxy::max_upstream_buffered_bytes(),
         );
-        tokio::time::timeout(timeout, read)
+        tokio::time::timeout_at(deadline, read)
             .await
             .map_err(|_| "stdio MCP child did not answer within the timeout".to_string())?
+    }
+
+    /// Send one JSON-RPC NOTIFICATION. Writes and DOES NOT READ.
+    ///
+    /// The absence of the read is the whole method. See [`super::wire::McpWire::notify`] for why a
+    /// notification put through the request path desynchronises a child's stream permanently.
+    pub(crate) async fn notify(&mut self, body: &[u8], timeout: Duration) -> Result<(), String> {
+        self.write_line(body, timeout).await
+    }
+
+    /// Send one JSON-RPC REQUEST and read back the answer TO IT, bounded by `timeout`.
+    ///
+    /// ## The loop, and the defect it fixes
+    ///
+    /// This wrote one line and read one line, and treated whatever came back as the answer. A
+    /// child's stdout carries EVERYTHING the child says — log records, progress, list-changed
+    /// notifications, and its own requests — so one entirely conformant notification arriving before
+    /// the answer was adopted AS the answer, and every later call on that child was then served the
+    /// previous call's response. See [`super::peer`] for the full statement of that failure.
+    ///
+    /// So every line is classified, and only a line that is not a server-originated message is
+    /// returned. Everything else is HANDLED — including the two classes a peer is blocked waiting on
+    /// — and the read continues.
+    ///
+    /// ## Two bounds, because they stop two different things
+    ///
+    /// The DEADLINE bounds the exchange in time and is what keeps a caller's concurrency slot from
+    /// being held by a slow peer. [`MAX_INTERLEAVED_MESSAGES`] bounds it in WORK, and it is not
+    /// redundant: a peer emitting notifications as fast as the pipe allows stays inside the deadline
+    /// while making busbar parse, judge and answer without limit. One is a clock and the other is a
+    /// budget.
+    ///
+    /// The timeout is not optional and has no "unlimited" spelling. A child that stops answering is
+    /// indistinguishable from a child that is slow, and the only safe reading of that ambiguity on a
+    /// dispatch path is the bounded one.
+    pub(crate) async fn call(
+        &mut self,
+        body: &[u8],
+        timeout: Duration,
+        policy: &PeerPolicy<'_>,
+    ) -> Result<Vec<u8>, String> {
+        self.write_line(body, timeout).await?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut interleaved = 0u32;
+        loop {
+            let line = self.read_message(deadline).await?;
+            // NOT JSON AT ALL. Returned rather than judged here: the JSON-RPC layer owns the
+            // "this is not a response" complaint, and producing a second one at this layer would
+            // give an operator two different sentences for one defect.
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
+                return Ok(line);
+            };
+            let Some(message) = super::peer::classify(&value) else {
+                return Ok(line);
+            };
+            interleaved += 1;
+            if interleaved > MAX_INTERLEAVED_MESSAGES {
+                return Err(format!(
+                    "stdio MCP child sent more than {MAX_INTERLEAVED_MESSAGES} messages of its own \
+                     while busbar waited for one answer; the exchange is abandoned rather than \
+                     served at whatever rate the child chooses"
+                ));
+            }
+            self.handle_server_message(&value, message, policy, deadline)
+                .await?;
+        }
+    }
+
+    /// Apply ONE server-originated message, answering it where a peer is waiting on a reply.
+    async fn handle_server_message(
+        &mut self,
+        raw: &serde_json::Value,
+        message: super::peer::ServerMessage,
+        policy: &PeerPolicy<'_>,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        use super::peer::{NotificationEffect, ServerMessage};
+        let reply = match message {
+            ServerMessage::Notification(n) => {
+                match n.effect() {
+                    // THE TIMING, NEVER THE CONTENT. The notification's body is not read: an
+                    // accepted trigger puts the SERVER'S NAME into the pending set and the
+                    // authoritative `tools/list` is re-fetched and re-hashed by the sweep exactly as
+                    // a scheduled refresh would do it.
+                    NotificationEffect::BringRefreshForward => {
+                        let accepted = policy.triggers.signal(policy.server, now_ms());
+                        tracing::debug!(
+                            server = %policy.server,
+                            notification = ?n,
+                            accepted,
+                            "mcp stdio: peer signalled a catalogue change"
+                        );
+                    }
+                    NotificationEffect::RelayProgress => {
+                        // Silent when there is no slot: a leg outside `ingress`'s scope simply has
+                        // nowhere to put a progress frame, which is the correct answer rather than
+                        // an error. The same posture `super::transport` takes on the SSE path.
+                        //
+                        // THE WHOLE FRAME, exactly as the HTTP wire relays an SSE progress frame,
+                        // and it is safe to relay verbatim for the same reason: this arm is reached
+                        // ONLY for `notifications/progress`, which `super::peer`'s closed table
+                        // decides. An arm that relayed whatever notification arrived would let a
+                        // child inject arbitrary JSON-RPC into busbar's answer to its own caller.
+                        let _ = crate::mcp::UPSTREAM_PROGRESS.try_with(|slot| {
+                            if let Ok(mut ch) = slot.lock() {
+                                ch.frames.push(raw.clone());
+                            }
+                        });
+                    }
+                    NotificationEffect::Log => tracing::debug!(
+                        server = %policy.server,
+                        notification = ?n,
+                        "mcp stdio: peer notification recorded"
+                    ),
+                }
+                None
+            }
+            // Counted and dropped. NOT answered: a notification is defined as unanswerable, and
+            // replying to one would put a response on the stream that the peer is not reading and
+            // that busbar's own next `call` would then have to skip.
+            ServerMessage::UnknownNotification(method) => {
+                tracing::debug!(
+                    server = %policy.server,
+                    method = %method,
+                    "mcp stdio: peer sent a notification busbar does not implement; dropped"
+                );
+                None
+            }
+            ServerMessage::Request { id, verb } => Some(super::peer::answer(
+                &id,
+                verb,
+                &policy.grants,
+                policy.server,
+            )),
+            ServerMessage::UnknownRequest { id, method } => {
+                Some(super::peer::method_not_found(&id, &method))
+            }
+        };
+        if let Some(reply) = reply {
+            let bytes = serde_json::to_vec(&reply)
+                .map_err(|e| format!("busbar could not serialise its reply to the child: {e}"))?;
+            // The reply shares the exchange's deadline. A child whose stdin has filled because it
+            // is not reading is a child busbar must not block on: that is a hang, and this
+            // transport's rule is that a hang is a crash.
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            self.write_line(&bytes, remaining).await?;
+        }
+        Ok(())
+    }
+
+    /// THE HANDSHAKE, sent as the first two messages on a freshly spawned child.
+    ///
+    /// ## Why this exists on stdio and is waived on the HTTP leg
+    ///
+    /// See [`super::verb`]'s header for the argument in full. In one line: over HTTP busbar's peer
+    /// speaks the revision busbar's own front door serves, which deleted the handshake; over stdio
+    /// busbar's peer is whatever binary the OPERATOR named in `command:`, and the installed stdio
+    /// ecosystem speaks revisions in which `initialize` is a MUST and a server may refuse every
+    /// other request until it arrives. busbar does not get to pick the child's revision.
+    ///
+    /// ## It is NON-FATAL, deliberately
+    ///
+    /// A child that answers `-32601` to `initialize` is a child speaking the stateless revision,
+    /// which is a correct child. Refusing to serve it would make busbar unable to talk to the one
+    /// peer it agrees with. So a JSON-RPC refusal is RECORDED and the leg continues; only a
+    /// TRANSPORT failure — a child that died, or never answered — propagates, because that is not a
+    /// disagreement about revisions, it is a dead process.
+    async fn handshake(
+        &mut self,
+        policy: &PeerPolicy<'_>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        use super::verb::UpstreamVerb;
+        // Its own id, distinct from any dispatch's, so an answer to the handshake can never be
+        // correlated to a caller's call — see `super::jsonrpc::parse_response` on why correlation is
+        // per-exchange and never a table of pending ids.
+        let request = UpstreamVerb::Initialize.build("", HANDSHAKE_REQUEST_ID, None);
+        let answer = self.call(&request.body, timeout, policy).await?;
+        match super::jsonrpc::parse_response(&answer, HANDSHAKE_REQUEST_ID) {
+            super::jsonrpc::RpcOutcome::Result(value) => {
+                tracing::debug!(
+                    server = %policy.server,
+                    peer_protocol = ?value.get("protocolVersion"),
+                    "mcp stdio: child completed the initialize handshake"
+                );
+            }
+            other => {
+                // RECORDED, NOT REFUSED. The child told busbar it does not do handshakes, which is a
+                // fact about the child rather than a fault, and busbar is a gateway rather than a
+                // conformance test.
+                tracing::debug!(
+                    server = %policy.server,
+                    outcome = ?other,
+                    "mcp stdio: child did not complete an initialize handshake; the leg continues"
+                );
+                return Ok(());
+            }
+        }
+        // THE ACKNOWLEDGEMENT, and it is a NOTIFICATION. A client that waited for a reply to it
+        // would hang against every conformant server.
+        let ack = UpstreamVerb::NotificationsInitialized.build("", HANDSHAKE_REQUEST_ID, None);
+        self.notify(&ack.body, timeout).await
     }
 
     /// Whether the child has exited, without blocking. Drives the `crashed` transition.
@@ -559,6 +803,74 @@ impl McpWire for StdioWire {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError> {
+        let mut slot = self.ready_child(leg).await?;
+        let policy = peer_policy(leg);
+        // (5) THE CALL. The URL and the headers on `req` are not sent: stdio has no request line and
+        // no header block, and the credential the HTTP wire would put in an `Authorization` header
+        // has no carrier here. That is not a silent drop — `mcp::config` refuses a stdio
+        // registration that configures one, so no credential can reach this point to be lost.
+        let child = slot
+            .child
+            .as_mut()
+            .expect("a child was spawned or found live above");
+        match child.call(&req.body, leg.timeout, &policy).await {
+            Ok(body) => Ok(TransportResponse { status: 200, body }),
+            Err(e) => {
+                // ANY failure of the exchange retires the child. A stdio peer has no way to say "that
+                // request failed but I am fine": the stream is the connection, so a write or read
+                // that failed leaves busbar unable to say where in the byte stream the next answer
+                // starts. Reusing it would risk serving one caller another caller's payload.
+                slot.supervisor.crashed(now_ms());
+                slot.child = None;
+                Err(TransportError::Io(e))
+            }
+        }
+    }
+
+    /// A NOTIFICATION down a child's stdin: written, never read back.
+    ///
+    /// Goes through the SAME supervision gate as a request — a notification to a quarantined child
+    /// is still a write to a process busbar has decided not to talk to, and a path that skipped the
+    /// breaker would be a way to keep a crash-looping child alive by never asking it anything.
+    async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError> {
+        let mut slot = self.ready_child(leg).await?;
+        let child = slot
+            .child
+            .as_mut()
+            .expect("a child was spawned or found live above");
+        match child.notify(&req.body, leg.timeout).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                slot.supervisor.crashed(now_ms());
+                slot.child = None;
+                Err(TransportError::Io(e))
+            }
+        }
+    }
+}
+
+/// The peer half's policy for this leg, assembled in one place so the two wire arms cannot
+/// assemble it differently.
+fn peer_policy<'a>(leg: &WireLeg<'a>) -> PeerPolicy<'a> {
+    PeerPolicy {
+        server: leg.server,
+        grants: leg.grants,
+        triggers: &leg.pool.triggers,
+    }
+}
+
+impl StdioWire {
+    /// STEPS 1-4 of a dispatch: reap a dead child, notice a changed recipe, spawn subject to the
+    /// breaker and the backoff, and gate.
+    ///
+    /// Lifted out of `send` when `notify` arrived, because the alternative was a second copy of the
+    /// supervision sequence — and a second copy is how one of the two arms comes to skip the
+    /// breaker. Returns the LOCKED slot, so the caller holds the same lock the checks were made
+    /// under and nothing can move between the gate and the write.
+    async fn ready_child<'a>(
+        &self,
+        leg: &WireLeg<'a>,
+    ) -> Result<tokio::sync::OwnedMutexGuard<ChildSlot>, TransportError> {
         // A registration whose transport is stdio ALWAYS carries a command: `mcp::config` refuses
         // one that does not at boot, and `mcp::catalogue` carries it onto the snapshot. Reaching
         // this arm means the two disagreed, which is a bug in busbar and not an operator error, so
@@ -570,7 +882,11 @@ impl McpWire for StdioWire {
             ));
         };
         let slot = leg.pool.children.slot(leg.server);
-        let mut slot = slot.lock().await;
+        // OWNED, so the guard can be RETURNED to the arm that writes. The checks below and the write
+        // that follows them must happen under ONE lock: a guard released at the end of this function
+        // would open a window in which another dispatch could retire the child between the gate and
+        // the write, which is the exact race the per-slot serialisation exists to close.
+        let mut slot = slot.lock_owned().await;
 
         // (1) IS THERE A LIVE CHILD? A child that has already exited is dropped here rather than
         // written to: writing to a dead pipe is the failure mode that presents as a lost message.
@@ -616,6 +932,24 @@ impl McpWire for StdioWire {
                     // that call and lands on the crash arm below, which is where a child that
                     // cannot start belongs.
                     slot.supervisor.ready();
+                    // (3a) THE HANDSHAKE, on a freshly spawned child and NEVER on a reused one.
+                    // `initialize` is a once-per-connection message; re-sending it on every dispatch
+                    // would be busbar re-negotiating with a peer it is already talking to, and a
+                    // conformant server answers a second one with an error.
+                    let policy = peer_policy(leg);
+                    let child = slot
+                        .child
+                        .as_mut()
+                        .expect("the child was just stored two lines up");
+                    if let Err(e) = child.handshake(&policy, leg.timeout).await {
+                        // A handshake that fails at the TRANSPORT is a dead child, not a revision
+                        // disagreement — `handshake` swallows the latter itself. So it counts as a
+                        // crash, exactly as a failed `tools/call` exchange does, and for the same
+                        // reason: the stream is the connection and there is no resync point.
+                        slot.supervisor.crashed(now_ms());
+                        slot.child = None;
+                        return Err(TransportError::Io(e));
+                    }
                 }
                 Err(e) => {
                     // A spawn that FAILS is a crash for the breaker's purposes. It has to be: a
@@ -634,26 +968,7 @@ impl McpWire for StdioWire {
             .may_dispatch()
             .map_err(|r| TransportError::Supervision(r.to_string()))?;
 
-        // (5) THE CALL. The URL and the headers on `req` are not sent: stdio has no request line and
-        // no header block, and the credential the HTTP wire would put in an `Authorization` header
-        // has no carrier here. That is not a silent drop — `mcp::config` refuses a stdio
-        // registration that configures one, so no credential can reach this point to be lost.
-        let child = slot
-            .child
-            .as_mut()
-            .expect("a child was spawned or found live above");
-        match child.call(&req.body, leg.timeout).await {
-            Ok(body) => Ok(TransportResponse { status: 200, body }),
-            Err(e) => {
-                // ANY failure of the exchange retires the child. A stdio peer has no way to say "that
-                // request failed but I am fine": the stream is the connection, so a write or read
-                // that failed leaves busbar unable to say where in the byte stream the next answer
-                // starts. Reusing it would risk serving one caller another caller's payload.
-                slot.supervisor.crashed(now_ms());
-                slot.child = None;
-                Err(TransportError::Io(e))
-            }
-        }
+        Ok(slot)
     }
 }
 

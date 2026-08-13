@@ -179,7 +179,12 @@ pub(crate) fn tools_list(
 /// mirrored header whose value is computed twice is a mirrored header that can differ, which is the
 /// request-smuggling primitive the mirroring exists to close — and busbar's own ingress answers
 /// `-32020` to it, so a bug here would be caught only by an upstream strict enough to check.
-fn envelope(
+///
+/// `pub(super)` so [`super::verb`] — the CLOSED SET of methods busbar issues — builds through this
+/// one function rather than assembling a second header block. Two envelope builders is two places
+/// the mirrored headers can be got wrong, and only one of them would be scanned by
+/// `no_key_passthrough_tests`.
+pub(super) fn envelope(
     url: &str,
     method: &str,
     name: Option<&str>,

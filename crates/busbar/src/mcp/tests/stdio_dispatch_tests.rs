@@ -82,10 +82,17 @@ fn stdio_server(script: &str) -> McpServerDefCfg {
     }
 }
 
-/// A `sh` MCP server that answers every line with a result, echoing back the JSON-RPC id it was
+/// A `sh` MCP server that answers every REQUEST with a result, echoing back the JSON-RPC id it was
 /// sent. The id is extracted with POSIX parameter expansion rather than a JSON parser, because the
 /// whole value of a `/bin/sh` fixture is that it adds nothing to the build graph.
+///
+/// IT SKIPS NOTIFICATIONS, and that line is not decoration. busbar sends `notifications/initialized`
+/// as the second half of its handshake, and a notification has no reply by definition — a fixture
+/// that answered one would put an extra line on the stream and every later call would be served the
+/// previous one's response. That is exactly the desynchronisation `client::peer` was written for,
+/// and a fixture that could not model a conformant server would be unable to demonstrate it.
 const ECHO_SERVER: &str = r#"while IFS= read -r line; do
+  case "$line" in *'"id":'*) ;; *) continue;; esac
   id=${line#*\"id\":}
   id=${id%%,*}
   printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"STDIO RESULT"}]}}\n' "$id"
@@ -142,9 +149,14 @@ async fn the_same_child_serves_consecutive_calls() {
         .mcp_server(
             "fs",
             stdio_server(
+                // COUNTS `tools/call` AND NOTHING ELSE. busbar's handshake is a real request on
+                // this stream, so a fixture that counted every line would report the tool call as
+                // number two and the test would be asserting on the handshake rather than on child
+                // reuse.
                 r#"n=0
 while IFS= read -r line; do
-  n=$((n+1))
+  case "$line" in *'"id":'*) ;; *) continue;; esac
+  case "$line" in *'"method":"tools/call"'*) n=$((n+1));; esac
   id=${line#*\"id\":}
   id=${id%%,*}
   printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"call-%s"}]}}\n' "$id" "$n"
@@ -194,8 +206,21 @@ async fn a_refresh_re_observes_a_child_process_tool_list() {
         .mcp_server(
             "fs",
             stdio_server(
-                r#"read line
-printf '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"read","description":"reads a file","inputSchema":{"type":"object"}}]}}\n'"#,
+                // A LOOP, NOT A ONE-SHOT `read`. busbar handshakes a freshly spawned child before
+                // it asks anything, so a fixture that answered exactly one line would answer the
+                // handshake and then exit — and the refresh would record a healthy server as a
+                // failed contact. Echoing the id back is what makes the two exchanges correlate.
+                r#"while IFS= read -r line; do
+  case "$line" in *'"id":'*) ;; *) continue;; esac
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"read","description":"reads a file","inputSchema":{"type":"object"}}]}}\n' "$id"
+      ;;
+    *) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id";;
+  esac
+done"#,
             ),
         )
         .with_mcp_sightings(cache.clone())

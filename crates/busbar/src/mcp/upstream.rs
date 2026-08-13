@@ -92,6 +92,11 @@ pub(crate) struct Authorised {
     pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
     /// The addressing posture for the dispatch-time SSRF check.
     pub(crate) policy: SsrfPolicy,
+    /// THE PER-SERVER GRANTS for the three authority asks a peer can make. Carried onto the leg so
+    /// the INBOUND half — a child's own `sampling/createMessage`, arriving on its stdout while
+    /// busbar waits for an answer — is judged against the operator's grants rather than against a
+    /// default nobody chose. See `super::client::peer`.
+    pub(crate) grants: super::config::ServerRequestGrants,
     /// The credential MODE this server is configured with.
     pub(crate) credential: UpstreamCredential,
     /// The INBOUND principal, carried through so the credential planner re-derives the same
@@ -194,6 +199,7 @@ pub(crate) fn authorise(
         transport: server.transport,
         stdio: server.stdio.clone(),
         policy,
+        grants: server.grants,
         credential,
         caller,
         timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
@@ -302,6 +308,7 @@ pub(crate) async fn call(
         timeout: auth.timeout,
         server: auth.key.server().as_str(),
         command: auth.stdio.as_ref(),
+        grants: auth.grants,
     };
     let response = auth
         .transport
@@ -412,6 +419,13 @@ mod upstream_join_tests;
 #[cfg(test)]
 #[path = "tests/stdio_dispatch_tests.rs"]
 mod stdio_dispatch_tests;
+
+// THE WHOLE STDIO CLIENT COLUMN — every method busbar ISSUES and every message a child SENDS,
+// against a real child process. It hangs here for the same reason its neighbour does: the claim is
+// about the JOIN, and `Authorised` has exactly one constructor, which is the gate.
+#[cfg(test)]
+#[path = "tests/stdio_client_leg_tests.rs"]
+mod stdio_client_leg_tests;
 
 // PROVEN AS A PAIR — this property is meaningless with only one direction built: an inbound
 // surface with no upstream cannot demonstrate that the outbound credential followed the
