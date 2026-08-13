@@ -324,7 +324,10 @@ pub(crate) struct App {
     pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
     /// The "decision observability" signal catalog's config-generation
     /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
-    /// alongside `hook_registry` above, never per request. All-zero (the default) when no hook
+    /// alongside `hook_registry` above and recomputed by `admin::v1::service::rebuild_hook_derived`
+    /// on every snapshot that rewrites that registry (so a hook registered through the admin API
+    /// declaring `signals:` is honoured on the very next request, not only after a restart) — never
+    /// per request. All-zero (the default) when no hook
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
     /// check downstream short-circuits on.
     pub(crate) requested_signals: crate::hooks::RequestedSignals,

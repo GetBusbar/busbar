@@ -104,7 +104,8 @@ impl RequestedSignals {
 /// Build the config generation's [`RequestedSignals`] from the UNION of every registered hook's
 /// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
 /// declaration surface). Called ONCE per config apply (alongside `hook_registry: cfg.hooks.clone()`
-/// in `main.rs`'s `App` construction) — never per request. A config with no hook declaring any
+/// in `main.rs`'s `App` construction, and again from `admin::v1::service::rebuild_hook_derived` on
+/// every admin snapshot that rewrites that registry) — never per request. A config with no hook declaring any
 /// `signals:` (the overwhelming default, and every config that predates the catalog) yields the
 /// all-zero mask, so every `requested.wants(_)` check downstream is `false` for that generation.
 pub(crate) fn requested_signals(
