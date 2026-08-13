@@ -19,9 +19,62 @@ Point any SDK at one URL, reach any provider, and keep serving when a provider d
   <img src="assets/readme/matrix-light.svg" alt="Six by six matrix of ingress protocol against upstream protocol. All 36 pairs served. The same-protocol diagonal is forwarded byte for byte.">
 </picture>
 
-Six wire protocols, first class on both sides: OpenAI, OpenAI Responses, Anthropic, Gemini, Cohere and Bedrock Converse. Same-protocol routes are byte-for-byte identical to calling the provider directly, because busbar forwards your original bytes rather than re-serializing them; cross-protocol, every modelled field arrives in the target's native shape, and anything that cannot cross is dropped deliberately and logged rather than mangled.
+Six wire protocols, first class on both sides: OpenAI, OpenAI Responses, Anthropic, Gemini, Cohere and Bedrock Converse.
 
-Self-hosted, always. No hosted service, no signup, nothing phones home, and your provider keys stay in your own config on your own machine.
+Same-protocol routes are byte-for-byte identical to calling the provider directly, because busbar forwards your original bytes rather than re-serializing them. Cross-protocol, every modelled field arrives in the target's native shape.
+
+Self-hosted, always. No hosted service, no signup, nothing phones home. Your provider keys stay in your config on your machine.
+
+---
+
+## The numbers
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/perf-dark.svg">
+  <img src="assets/readme/perf-light.svg" alt="73 microseconds added latency p50, 65.1 microseconds of gateway CPU per request, 67,837 requests per second sustained with zero failures.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/memory-dark.svg">
+  <img src="assets/readme/memory-light.svg" alt="Resident set size flat at 7.3 MiB idle, 22.4 MiB under sustained load, returning to 16.1 MiB when the load stops.">
+</picture>
+
+<sub>busbar 1.5.1, AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.</sub>
+
+---
+
+## Why not LiteLLM, Kong or Portkey
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/field-dark.svg">
+  <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing busbar with LiteLLM, Kong and Portkey.">
+</picture>
+
+| Measured 2026-08-03 &middot; m7g.4xlarge &middot; 4 cores | busbar | LiteLLM&nbsp;Py | LiteLLM&nbsp;Rust | Kong | Portkey |
+|---|---|---|---|---|---|
+| Wire protocol pairs served, of 36 | **36** | 8 | 1 | 4 | 8 |
+| Added latency p99 | **82 µs** | 8,221 µs | 106 µs | 389 µs | 3,720 µs |
+| CPU per request, c=8 | **65 µs** | 6,775 µs | 89 µs | 210 µs | 1,486 µs |
+| Requests/sec, zero failures | **67,837** | 170 | 48,354 | 22,418 | 855 |
+| Time to first token, streaming p50 | **129 µs** | 9,088 µs | 181 µs | 105,907 µs | 27,908 µs |
+| Idle resident memory | **7.3 MiB** | 1,080 MiB | 253 MiB | 403 MiB | 124 MiB |
+
+**What you install, measured today:**
+
+| | Container image | Install |
+|---|---|---|
+| busbar | **5.74 MB**, 3 layers | one **12.4 MiB** static binary |
+| LiteLLM | 360.77 MB, 21 layers | **558 MiB** across 107 packages |
+
+<sub>Registry manifests for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, both linux/amd64. Install figure is `pip install 'litellm[proxy]'` into a clean virtualenv.</sub>
+
+Three things we will say against ourselves:
+
+- **LiteLLM's provider catalogue is far larger than ours**, and that is a real reason to pick it. The coverage row counts ingress-to-upstream *wire protocol* pairs, not providers.
+- **LiteLLM Rust is early beta** with a deliberately narrow surface, and its overhead is the same class as ours. The difference there is scope, not speed.
+- **Kong is a general API gateway** with an LLM plugin bolted on. That is why its streaming row reads 106 ms and ours reads 129 µs.
+
+Every cell is published with its own verdict and reason at [onthebench.ai](https://onthebench.ai). The harness is open source, so you can disagree with it in public. &nbsp; [busbar vs LiteLLM](https://getbusbar.com/docs/vs-litellm/)
 
 ---
 
@@ -221,48 +274,6 @@ pools:
 ```
 
 Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
-
----
-
-## Why not LiteLLM, Kong or Portkey
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/field-dark.svg">
-  <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing busbar with LiteLLM, Kong and Portkey.">
-</picture>
-
-Every figure below is the same box, the same harness and the same day, published cell by cell with its own verdict and reason at [onthebench.ai](https://onthebench.ai). The harness is ours and it is open source, so you can disagree with it in public.
-
-| Measured 2026-08-03, AWS m7g.4xlarge, 4-core pin | busbar 1.5.1 | LiteLLM Python 1.94.0 | LiteLLM Rust 6980723 | Kong 3.9.3 | Portkey 1.15.2 |
-|---|---|---|---|---|---|
-| Wire protocol pairs served, of 36 | **36** | 8 | 1 | 4 | 8 |
-| Added latency p99, best cell | **82 µs** | 8,221 µs | 106 µs | 389 µs | 3,720 µs |
-| Gateway CPU per request, c=8 | **65 µs** | 6,775 µs | 89 µs | 210 µs | 1,486 µs |
-| Requests/sec, zero failures | **67,837** | 170 | 48,354 | 22,418 | 855 |
-| Added time to first token, streaming p50 | **129 µs** | 9,088 µs | 181 µs | 105,907 µs | 27,908 µs |
-| Idle resident memory | **7.3 MiB** | 1,080 MiB | 253 MiB | 403 MiB | 124 MiB |
-
-Each gateway is measured on its own best cell, which for LiteLLM Rust is its Anthropic diagonal, the one pair of the 36 it served, and for the others their OpenAI diagonal. Read the coverage row carefully: it counts ingress and upstream **wire protocol** pairs, not providers. LiteLLM's provider catalogue is far larger than busbar's, and that is a real reason to pick it. What the row says is that LiteLLM takes OpenAI-shaped ingress into any provider plus two native diagonals, so a Gemini SDK or a SigV4 boto3 client cannot address a non-Gemini, non-Bedrock backend through it. LiteLLM's Rust gateway is early beta with a deliberately narrow surface today, and its published sub-millisecond overhead is the same class as ours, so the honest difference there is scope, not speed.
-
-Kong is a general API gateway with an LLM plugin bolted on, and the streaming row is where that shows: 106 ms of added time to first token against our 129 µs, on the same box. Portkey is a Node gateway and sustained 855 requests/sec on four cores where busbar sustained 67,837.
-
-**What you install** is the first thing you feel. Measured today, `getbusbar/busbar:latest` is 5.74 MB of compressed layers against 360.77 MB for `ghcr.io/berriai/litellm:main-latest`, both linux/amd64, read straight from the registry manifests. Outside a container the gap is the same shape: one 12.4 MiB static binary, or `pip install 'litellm[proxy]'`, which put 558 MiB across 107 packages into a clean virtualenv when we ran it. Longer form, with citations to each vendor's own documentation: [busbar vs LiteLLM](https://getbusbar.com/docs/vs-litellm/).
-
----
-
-## The numbers
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/perf-dark.svg">
-  <img src="assets/readme/perf-light.svg" alt="73 microseconds added latency p50, 65.1 microseconds of gateway CPU per request, 67,837 requests per second sustained with zero failures.">
-</picture>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/memory-dark.svg">
-  <img src="assets/readme/memory-light.svg" alt="Resident set size flat at 7.3 MiB idle, 22.4 MiB under sustained load, returning to 16.1 MiB when the load stops.">
-</picture>
-
-Latency, throughput and memory come from the same neutral run on the same box: busbar 1.5.1 on an AWS m7g.4xlarge (Graviton3) pinned to 4 cores, measured 2026-08-03. Memory here is the same-protocol OpenAI cell; across all 36 cells idle stayed between 7.32 and 7.42 MiB and every cell reached a steady state.
 
 ---
 
