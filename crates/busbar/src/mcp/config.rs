@@ -575,7 +575,43 @@ pub(crate) const DEFAULT_MCP_REFRESH_TTL: &str = "6h";
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin a server.
 pub(crate) struct McpServerDefCfg {
     /// The real remote MCP endpoint. Never client-visible: callers reach it through busbar.
+    ///
+    /// REQUIRED for `transport: streamable_http` (the default) and REFUSED for `transport: stdio`,
+    /// which reaches no address at all. Defaulted rather than mandatory at the serde layer so the
+    /// two transports can be told apart by [`validate_server`], which can then say WHICH key the
+    /// operator is missing — `serde`'s "missing field `url`" on a stdio registration would name the
+    /// wrong repair.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) url: String,
+    /// `transport: stdio` ONLY — the ABSOLUTE path of the binary busbar spawns as this server.
+    ///
+    /// Absolute, and refused otherwise: a bare name is resolved through `PATH`, which would make the
+    /// binary that actually runs a property of the environment busbar was started in rather than of
+    /// the file the operator wrote. There is no shell — the program is exec'd directly, so no
+    /// character in this string has any meaning beyond being part of a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) command: Option<String>,
+    /// `transport: stdio` ONLY — the child's argument vector, verbatim.
+    ///
+    /// A LIST, never a command line: busbar does not split a string on spaces, so there is no
+    /// quoting rule to get wrong and no way for a value to become a second argument. Nothing on the
+    /// dispatch path can add to it — a tool call's arguments reach the child as JSON on its stdin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) args: Vec<String>,
+    /// `transport: stdio` ONLY — the child's WHOLE environment, not additions to busbar's.
+    ///
+    /// busbar's own process environment holds provider API keys, store credentials and admin
+    /// tokens. Handing that set to an operator-configured child would make every stdio registration
+    /// a credential-exfiltration primitive and would do it silently, so the child is spawned with a
+    /// CLEARED environment and exactly these variables. An operator who needs one names it; a
+    /// value that is itself a secret is written as a secret REFERENCE, like every other.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) env: std::collections::BTreeMap<String, ChildEnvValue>,
+    /// `transport: stdio` ONLY — the child's working directory, absolute. Absent ⇒ busbar's own,
+    /// which is the platform default and is spelled here because a child that resolves relative
+    /// paths resolves them against whatever directory the operator happened to start busbar in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cwd: Option<String>,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is `unpinned`.
     pub(crate) pin: ServerPinCfg,
     /// `<n><s|m|h|d>` — how long an observation stays fresh before the upstream's tool list is
@@ -725,21 +761,84 @@ fn default_subject_token_type() -> String {
 pub(crate) enum Transport {
     /// Streamable HTTP, the `2026-07-28` stateless shape. The only one busbar speaks.
     StreamableHttp,
-    /// A locally spawned child process. SPELLED, AND REFUSED — the two halves are both deliberate.
+    /// A LOCALLY SPAWNED CHILD PROCESS, newline-delimited JSON-RPC on its stdin and stdout.
     ///
-    /// Spelled because the specification defines it and an operator who writes it is entitled to a
-    /// refusal that names the value they wrote rather than "unknown transport", and because the
-    /// config-schema fingerprint pins this variant: silently dropping it would be a breaking change
-    /// to a grammar operators have already written.
+    /// Spelled and REFUSED for two releases, because there was no supervisor to reach — the one that
+    /// existed was deleted rather than left unreachable. It is implemented now: `command:` names the
+    /// binary, `mcp/client/stdio.rs` spawns and supervises it, and
+    /// [`crate::transport::Transport::mcp_wire`] is the arm a `tools/call` takes to get there.
     ///
-    /// Refused because NOTHING IN THIS BUILD SPAWNS OR SUPERVISES A CHILD. Not "the supervisor is
-    /// not wired up" — there is no supervisor: `mcp/client/stdio.rs` was deleted along with the
-    /// tokio `process` feature, because a complete, adversarially-tested child supervisor that
-    /// nothing could ever call read as shipped resilience that this build does not have. A config
-    /// value that boots into an unimplemented path is a deployment that fails at first dispatch
-    /// instead of at boot.
+    /// This registration is reached by SPAWNING, so the keys it takes are disjoint from the network
+    /// ones: `command:`, `args:`, `env:` and `cwd:` instead of `url:`, and no credential keys at all
+    /// — see [`validate_endpoint`].
     Stdio,
 }
+
+impl Transport {
+    /// Whether a registration on this transport is reached by SPAWNING A CHILD rather than by
+    /// addressing an endpoint.
+    ///
+    /// The ONE question the config grammar has of the transport, asked once and answered on the type
+    /// itself. It is a method rather than a comparison at the call site because `structure-lint.sh`
+    /// bans the core from branching on the transport axis, and because an exhaustive match here is
+    /// what makes a third transport a compile error in the one place that must decide.
+    pub(crate) fn spawns_child(self) -> bool {
+        match self {
+            Transport::StreamableHttp => false,
+            Transport::Stdio => true,
+        }
+    }
+
+    /// The ENGINE axis this config value names.
+    ///
+    /// Two types, deliberately: this one is the operator's GRAMMAR, frozen and additive-only, and
+    /// [`crate::transport::Transport`] is the engine's dispatch axis. Collapsing them would tie a
+    /// wire word an operator has already written to an enum the engine is free to reshape.
+    pub(crate) fn axis(self) -> crate::transport::Transport {
+        match self {
+            Transport::StreamableHttp => crate::transport::Transport::Http,
+            Transport::Stdio => crate::transport::Transport::Stdio,
+        }
+    }
+}
+
+/// ONE VALUE in a stdio child's environment: a plain string, or a reference to a secret module.
+///
+/// ## Why both, and why the secret arm is not optional
+///
+/// A child's environment is the ONLY channel busbar has for giving it a credential — a pipe has no
+/// header block, so `token_exchange:` is refused on this transport (see [`validate_endpoint`]). If
+/// the map took plain strings only, then the single supported way to give an MCP server its API key
+/// would be to paste that key into `config.yaml`, which is the one thing every other credential on
+/// this engine is designed to avoid.
+///
+/// ## Why the secret is NOT resolved into the catalogue snapshot
+///
+/// The reference is carried, unresolved, all the way to the spawn. Resolving at snapshot build would
+/// put plaintext in a value that is compared on every config apply and printed by the admin surface,
+/// and it would make rotating the secret require a restart. The same reasoning
+/// `mcp::upstream::credential_mode` records for the RFC 8693 subject token, one transport over.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub(crate) enum ChildEnvValue {
+    /// A literal value: `LOG_LEVEL: debug`. A YAML scalar, and this arm is FIRST so a scalar can
+    /// never be mistaken for a malformed reference.
+    Plain(String),
+    /// A secret reference: `API_KEY: { env: UPSTREAM_KEY }` or `{ file: /run/secrets/key }`.
+    ///
+    /// Resolved at spawn, never earlier, and through the BUILT-IN resolver (`env` / `file`) — the
+    /// same one the RFC 8693 subject token one transport over is read with, and for the same
+    /// reason: a spawn happens on the dispatch path, which holds no plugin host handle. A
+    /// `kind: secret` PLUGIN module here fails the spawn with a named refusal rather than silently
+    /// handing the child an empty variable.
+    Secret(crate::config::SecretRef),
+}
+
+/// `Eq` is asserted rather than derived because [`crate::config::SecretRef`] derives only
+/// `PartialEq`. The relation is still a true equivalence — a `String` and a module name plus opaque
+/// JSON settings, none of them a float — and the snapshot types this rides in must be comparable so
+/// a config apply can be recognised as a no-op.
+impl Eq for ChildEnvValue {}
 
 /// The top-level `tools:` map, carrying [`RESERVED_TOOLS_SECTION_KEYS`] alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -892,6 +991,134 @@ pub(crate) fn refresh_policy_for(
     })
 }
 
+/// WHICH ENDPOINT KEYS THIS REGISTRATION MAY CARRY, and the whole of the boot-time safety check on
+/// a registration that busbar will spawn as a child process.
+///
+/// The two transports take disjoint halves of the grammar, and mixing them is refused rather than
+/// silently resolved: a registration with both a `url:` and a `command:` has told busbar two
+/// different things about where its server is, and picking one would make the answer depend on
+/// which check ran first.
+///
+/// EVERYTHING SPAWN-RELATED IS CHECKED HERE, at boot, where the operator who wrote it is standing.
+/// The SSRF guard is what protects the HTTP wire and it has nothing to say about a child process, so
+/// this function is what stands in its place — see `mcp/client/stdio.rs`'s header for the four
+/// decisions and why each one is fail-closed.
+fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
+    // `is_some_and` on the value rather than a comparison: this file may not branch on the transport
+    // axis (`structure-lint.sh`), so the transport answers the ONE question the grammar has of it
+    // and the grammar never learns which variant answered.
+    if !def.transport.is_some_and(Transport::spawns_child) {
+        for (key, present) in [
+            ("command:", def.command.is_some()),
+            ("args:", !def.args.is_empty()),
+            ("env:", !def.env.is_empty()),
+            ("cwd:", def.cwd.is_some()),
+        ] {
+            if present {
+                return Err(format!(
+                    "{at}: `{key}` describes a child process to spawn, and this registration is \
+                     reached over the network. Set `transport: stdio` if busbar should launch this \
+                     server, or drop the key."
+                ));
+            }
+        }
+        if def.url.trim().is_empty() {
+            return Err(format!("{at}: `url:` must name the MCP server's endpoint"));
+        }
+        // Scheme is checked here rather than at dispatch so the failure lands on the operator who
+        // wrote it, at boot, rather than on a tool call an hour later.
+        if !(def.url.starts_with("https://") || def.url.starts_with("http://")) {
+            return Err(format!(
+                "{at}: `url:` must be an http:// or https:// endpoint, got `{}`",
+                def.url
+            ));
+        }
+        return Ok(());
+    }
+
+    if !def.url.trim().is_empty() {
+        return Err(format!(
+            "{at}: `transport: stdio` reaches no address, so `url:` cannot be honoured. A \
+             registration carrying both has named two different servers; drop one."
+        ));
+    }
+    let Some(program) = def
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    else {
+        return Err(format!(
+            "{at}: `transport: stdio` needs `command:` — the absolute path of the binary busbar \
+             spawns as this server. There is no default and busbar will not guess one."
+        ));
+    };
+    // ABSOLUTE, and this is a security check rather than a tidiness one. A bare name is resolved
+    // through `PATH`, so the binary that actually runs would be decided by the environment busbar
+    // happened to be started in — and anyone who can prepend a directory to that `PATH` chooses the
+    // program instead of the operator. A relative path has the same problem with the working
+    // directory in place of `PATH`.
+    if !program.starts_with('/') {
+        return Err(format!(
+            "{at}: `command: {program}` must be an ABSOLUTE path. A bare name is resolved through \
+             `PATH`, which would let whoever controls busbar's environment choose the binary that \
+             runs instead of you."
+        ));
+    }
+    if let Some(dir) = def.cwd.as_deref().map(str::trim) {
+        if !dir.starts_with('/') {
+            return Err(format!(
+                "{at}: `cwd: {dir}` must be an ABSOLUTE path. A relative one is resolved against \
+                 whatever directory busbar was started in, which is not a thing this file can see."
+            ));
+        }
+    }
+    for name in def.env.keys() {
+        // An empty name, or one containing `=` or NUL, is not a variable an exec can carry. The
+        // platform's own behaviour on these ranges from "ignored" to "undefined", and an operator
+        // whose credential was silently ignored is an operator whose child failed for a reason the
+        // config file does not show.
+        if name.is_empty() || name.contains('=') || name.contains('\0') {
+            return Err(format!(
+                "{at}: `env:` name `{name}` is not a usable environment variable name — it must be \
+                 non-empty and contain neither `=` nor a NUL byte."
+            ));
+        }
+    }
+    // THE CREDENTIAL KEYS, refused rather than ignored. The stdio wire writes a JSON-RPC message to
+    // a pipe: there is no request line, no header block, and therefore no carrier for a bearer
+    // token. A registration that configures one and is then dispatched without it would be a
+    // credential SILENTLY DROPPED on the one path where the operator believed it was applied.
+    if def.token_exchange.is_some() {
+        return Err(format!(
+            "{at}: `token_exchange:` has no carrier on `transport: stdio` — a pipe has no header \
+             block to put a bearer token in. Give the child its credential through `env:`, which is \
+             the channel a child process actually reads one from."
+        ));
+    }
+    if def.aud.is_some() {
+        return Err(format!(
+            "{at}: `aud:` is the RFC 8707 resource indicator for an OUTBOUND token, and \
+             `transport: stdio` mints none. Drop it."
+        ));
+    }
+    if def.upstream_credentials.is_some() {
+        return Err(format!(
+            "{at}: `upstream_credentials:` selects how busbar credentials a NETWORK hop, and \
+             `transport: stdio` makes none. A child process's credential belongs in `env:`."
+        ));
+    }
+    // `allow_private:` widens the dispatch-time SSRF check, and there is no address here for it to
+    // widen. Left set, it would read to an operator as a posture busbar was applying.
+    if def.allow_private {
+        return Err(format!(
+            "{at}: `allow_private:` widens the addressing check for a network hop, and \
+             `transport: stdio` makes none. Drop it."
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
     let at = format!("`tools.{name}`");
 
@@ -922,17 +1149,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
         ));
     }
 
-    if def.url.trim().is_empty() {
-        return Err(format!("{at}: `url:` must name the MCP server's endpoint"));
-    }
-    // Scheme is checked here rather than at dispatch so the failure lands on the operator who wrote
-    // it, at boot, rather than on a tool call an hour later.
-    if !(def.url.starts_with("https://") || def.url.starts_with("http://")) {
-        return Err(format!(
-            "{at}: `url:` must be an http:// or https:// endpoint, got `{}`",
-            def.url
-        ));
-    }
+    validate_endpoint(&at, def)?;
 
     // THE PIN, matched against the material its mechanism needs. This is the rule the object form
     // exists to make expressible.
@@ -974,15 +1191,6 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
                  time out holds a concurrency slot for as long as the upstream chooses."
             ));
         }
-    }
-
-    if matches!(def.transport, Some(Transport::Stdio)) {
-        return Err(format!(
-            "{at}: `transport: stdio` is not implemented in this release. This build has no child \
-             supervisor at all — it neither spawns nor reaps a process — so a deployment that \
-             booted with it would fail at first dispatch instead of here. Use \
-             `transport: streamable_http`."
-        ));
     }
 
     for (tool, allow) in &def.tools_allow {

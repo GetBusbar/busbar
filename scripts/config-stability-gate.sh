@@ -425,9 +425,21 @@ assert not bad, bad'
   # The `tools:` grammar (#60). `tools: ToolsCfg` was in the snapshot as a bare TYPE NAME and
   # nothing under it was, so `tools.<server>.url` could be retyped and a `transport:` value dropped
   # with ZERO delta. These assert the per-server keys an operator actually writes.
+  # `url` is `optional` at the SERDE layer since `transport: stdio` landed — a spawned server has no
+  # address, so requiredness moved to `mcp::config::validate_endpoint`, which can name the key the
+  # operator is actually missing. The assertion follows it rather than pinning the old shape: the
+  # TYPE is still fingerprinted, and the four SPAWN keys are now fingerprinted beside it. They are
+  # the grammar of "busbar launches this binary with these arguments in this environment", which is
+  # the single most security-relevant thing an operator can write in this file — a retype or a
+  # silent drop there must never be a zero-delta change.
   py_assert "coverage: the MCP \`tools:\` server grammar IS fingerprinted" \
     'f = t["McpServerDefCfg"]["fields"]
-assert f["url"] == {"type": "String", "optional": False}, f["url"]
+assert f["url"]["type"] == "String", f["url"]
+assert f["command"] == {"type": "String", "optional": True}, f["command"]
+assert f["args"]["type"] == "Vec<String>", f["args"]
+assert f["cwd"]["type"] == "String", f["cwd"]
+assert "ChildEnvValue" in f["env"]["type"], f["env"]
+assert t["ChildEnvValue"]["variants"] == ["Plain", "Secret"], t["ChildEnvValue"]
 assert {"pin", "tools_allow", "prompts_allow", "resources_allow", "grants"} <= set(f), sorted(f)'
   py_assert "coverage: the MCP pin mechanisms are fingerprinted" \
     'assert t["McpPinMechanism"]["variants"] == ["cert_spki", "mtls", "pinned_pubkey", "unpinned"], t["McpPinMechanism"]'

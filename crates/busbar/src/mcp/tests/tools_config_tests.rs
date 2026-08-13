@@ -163,29 +163,104 @@ fn server_initiated_grants_default_to_denied() {
     assert!(!g.allows("elicitation") && !g.allows("roots"));
 }
 
-/// A transport nothing implements must fail at BOOT, where the operator who typed it is standing,
-/// rather than at the first dispatch an hour later.
+/// BOTH TRANSPORTS BOOT. `transport: stdio` was refused outright for two releases — first because
+/// the supervisor was unreachable, then because it had been deleted — and this is the test that used
+/// to pin that refusal. It now pins the opposite, which is the whole unit in one assertion.
 #[test]
-fn an_unimplemented_transport_is_refused_at_parse() {
-    let err =
-        parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  transport: stdio\n")
-            .expect_err("stdio has no supervisor in this build");
-    assert!(
-        err.contains("not implemented in this release"),
-        "got: {err}"
-    );
-    // THE REFUSAL MUST NOT ADVERTISE A SUPERVISOR. It used to say the "stdio child supervision
-    // state machine is net-new engine surface", which read as "we have one, it is just not
-    // attached" — and there really was one, complete and unreachable, until it was deleted. An
-    // operator reading a refusal is entitled to know the capability is ABSENT, not deferred.
-    assert!(
-        err.contains("no child supervisor at all"),
-        "the refusal must say the capability is absent, not merely unwired: {err}"
-    );
+fn both_transports_are_accepted_at_parse() {
     parse(
         "s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  transport: streamable_http\n",
     )
-    .expect("the implemented transport is accepted");
+    .expect("the network transport is accepted");
+    let cfg = parse(
+        "s:\n  pin: { mechanism: unpinned }\n  transport: stdio\n  command: /usr/local/bin/mcp-fs\n\
+         \x20 args: [\"--root\", \"/srv\"]\n",
+    )
+    .expect("a stdio registration with a command is accepted");
+    let s = &cfg.servers["s"];
+    assert_eq!(s.command.as_deref(), Some("/usr/local/bin/mcp-fs"));
+    assert_eq!(s.args, vec!["--root".to_string(), "/srv".to_string()]);
+    assert!(
+        s.url.is_empty(),
+        "a stdio registration reaches no address, so it carries no url"
+    );
+}
+
+/// THE SPAWN SAFETY RULES, refused at BOOT where the operator who typed them is standing.
+///
+/// Each row is a real way to turn "busbar launches this binary" into something else, and each is a
+/// separate assertion so a refusal that stopped firing cannot hide behind one that still does. The
+/// SSRF guard is what protects the network transport and it has nothing to say about any of these,
+/// which is why they are checked here rather than nowhere.
+#[test]
+fn a_stdio_registration_is_refused_unless_it_is_safe_to_spawn() {
+    let base = "s:\n  pin: { mechanism: unpinned }\n  transport: stdio\n";
+    let cases: [(&str, &str, &str); 8] = [
+        (
+            "no command at all",
+            "",
+            "needs `command:`",
+        ),
+        // A BARE NAME IS A `PATH` LOOKUP, so whoever controls busbar's environment picks the binary.
+        (
+            "a PATH-resolved program",
+            "  command: mcp-fs\n",
+            "must be an ABSOLUTE path",
+        ),
+        (
+            "a relative program",
+            "  command: ./mcp-fs\n",
+            "must be an ABSOLUTE path",
+        ),
+        (
+            "a relative working directory",
+            "  command: /bin/true\n  cwd: ../srv\n",
+            "must be an ABSOLUTE path",
+        ),
+        // A registration that names both has said where its server is TWICE, differently.
+        (
+            "both a url and a command",
+            "  command: /bin/true\n  url: \"https://x/\"\n",
+            "reaches no address",
+        ),
+        // A PIPE HAS NO HEADER BLOCK. Accepting these would drop a credential the operator believes
+        // is being applied — silently, on the one path where it cannot be.
+        (
+            "a token exchange",
+            "  command: /bin/true\n  token_exchange: { token_url: \"https://as/\", subject_token: { env: T } }\n",
+            "has no carrier",
+        ),
+        (
+            "an outbound audience",
+            "  command: /bin/true\n  aud: \"https://backend/\"\n",
+            "mints none",
+        ),
+        (
+            "an environment variable that is not one",
+            "  command: /bin/true\n  env: { \"BAD=NAME\": x }\n",
+            "not a usable environment variable name",
+        ),
+    ];
+    for (what, extra, expected) in cases {
+        let err = parse(&format!("{base}{extra}"))
+            .err()
+            .unwrap_or_else(|| panic!("{what}: SHOULD HAVE BEEN REFUSED, but the config parsed"));
+        assert!(
+            err.contains(expected),
+            "{what}: the refusal must say `{expected}`, got: {err}"
+        );
+    }
+}
+
+/// The SPAWN keys belong to the spawning transport, and a registration reached over the network may
+/// not carry them. A `command:` that is silently ignored is an operator believing busbar launches
+/// something it does not.
+#[test]
+fn the_spawn_keys_are_refused_on_a_network_registration() {
+    let err =
+        parse("s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  command: /bin/true\n")
+            .expect_err("a url registration must not carry a command");
+    assert!(err.contains("describes a child process to spawn"), "{err}");
 }
 
 /// A typo'd key must fail boot rather than silently un-pinning a server. `deny_unknown_fields`, and

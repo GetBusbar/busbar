@@ -695,7 +695,19 @@ impl AppHandle {
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
     /// Doing it in `swap` itself makes it impossible for a future swap site to forget.
+    /// Also RETIRES every stdio MCP child whose registration is gone from `next`. Same reasoning as
+    /// the probers, one plane over: `mcp_pool` deliberately outlives an apply, so deleting a `tools:`
+    /// entry would otherwise leave its child process running forever — unreferenced, unreachable, and
+    /// with nothing on any surface an operator reads to say so. Doing it here rather than at each
+    /// apply site makes it impossible for a future swap site to forget.
     pub(crate) fn swap(&self, next: Arc<App>) {
+        next.mcp_pool.children.retain(
+            &next
+                .mcp_catalogue
+                .servers()
+                .map(|s| s.id.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         crate::health::spawn_probers(&next);
     }

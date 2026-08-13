@@ -48,7 +48,7 @@ use super::client::identity::ServerId;
 use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
-use super::client::transport::HttpTransport;
+use super::client::wire::WireLeg;
 use crate::trust::{Drift, TrustState};
 use std::time::Duration;
 
@@ -240,7 +240,23 @@ pub(crate) async fn refresh(
     };
 
     let request = jsonrpc::tools_list(&server.url, REFRESH_REQUEST_ID, bearer.as_deref());
-    let response = match HttpTransport::send(pool, &request, policy, REFRESH_TIMEOUT).await {
+    // THE SAME VTABLE THE DISPATCH PATH USES, and it has to be. This was a direct
+    // `HttpTransport::send`, which was correct while there was one transport and became a real
+    // defect the moment there were two: a stdio registration carries no `url:`, so the refresh would
+    // have POSTed to an empty string, recorded a FAILED CONTACT, and eventually demoted a server
+    // that was healthy — a drift quarantine caused entirely by busbar asking the wrong channel.
+    //
+    // Routing it through the axis fixes that and buys the thing that matters more: rug-pull
+    // detection RUNS on stdio servers. A transport whose tool list is never re-observed is a
+    // transport where the operator's approved digests are never compared against anything.
+    let leg = WireLeg {
+        pool,
+        policy,
+        timeout: REFRESH_TIMEOUT,
+        server: server_id.as_str(),
+        command: server.stdio.as_ref(),
+    };
+    let response = match server.transport.mcp_wire().send(&leg, &request).await {
         Ok(r) => r,
         Err(e) => return Ok(record_failure(cache, server, &server_id, &e.to_string())),
     };

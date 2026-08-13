@@ -53,7 +53,7 @@ use super::client::identity::{ServerId, ToolKey};
 use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
-use super::client::transport::HttpTransport;
+use super::client::wire::WireLeg;
 use super::inputreq::{Ask, Round};
 use busbar_api::{Redacted, VirtualKey};
 use std::time::Duration;
@@ -79,8 +79,17 @@ pub(crate) const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) struct Authorised {
     /// The routing key — the bound identity, never a description.
     pub(crate) key: ToolKey,
-    /// The upstream endpoint, as the operator registered it.
+    /// The upstream endpoint, as the operator registered it. Empty for a transport that reaches no
+    /// address; the wire that needs it is the wire that has one.
     pub(crate) url: String,
+    /// THE CHANNEL this dispatch rides, resolved once here and turned into a vtable by
+    /// [`crate::transport::Transport::mcp_wire`] at the send site. Nothing between the two asks it
+    /// which one it is — that is the axis rule, and it is what keeps a second transport from
+    /// becoming a second dispatch path.
+    pub(crate) transport: crate::transport::Transport,
+    /// The spawn recipe for a child-process upstream, carried verbatim from the snapshot. `None` on
+    /// every registration that is reached over a network.
+    pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
     /// The addressing posture for the dispatch-time SSRF check.
     pub(crate) policy: SsrfPolicy,
     /// The credential MODE this server is configured with.
@@ -180,6 +189,8 @@ pub(crate) fn authorise(
     Ok(Authorised {
         key,
         url: server.url.clone(),
+        transport: server.transport,
+        stdio: server.stdio.clone(),
         policy,
         credential,
         caller,
@@ -280,7 +291,20 @@ pub(crate) async fn call(
         request_id,
         bearer.as_deref(),
     );
-    let response = HttpTransport::send(pool, &outbound, auth.policy, auth.timeout)
+    // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
+    // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
+    // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.
+    let leg = WireLeg {
+        pool,
+        policy: auth.policy,
+        timeout: auth.timeout,
+        server: auth.key.server().as_str(),
+        command: auth.stdio.as_ref(),
+    };
+    let response = auth
+        .transport
+        .mcp_wire()
+        .send(&leg, &outbound)
         .await
         .map_err(|e| e.to_string())?;
     // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
@@ -379,6 +403,13 @@ mod upstream_support;
 #[cfg(test)]
 #[path = "tests/upstream_join_tests.rs"]
 mod upstream_join_tests;
+
+// THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
+// because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the
+// supervisor being reachable at all is the whole property under test.
+#[cfg(test)]
+#[path = "tests/stdio_dispatch_tests.rs"]
+mod stdio_dispatch_tests;
 
 // PROVEN AS A PAIR — this property is meaningless with only one direction built: an inbound
 // surface with no upstream cannot demonstrate that the outbound credential followed the

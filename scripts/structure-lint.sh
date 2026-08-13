@@ -1338,8 +1338,14 @@ AXIS_BRANCH=(
 # matches is a HARD ERROR (a ledger nobody prunes becomes a permanent exemption), and ADDING a row
 # for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
 # Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
+# EMPTY, and it got here the way the rules say a row leaves: the branch went. The one row this
+# ledger ever carried was `mcp/config.rs`'s `Some(Transport::Stdio)` — the pre-axis branch guarding a
+# crash-loop supervisor with no dispatch arm to reach it. `Transport::Stdio` is now a real arm of the
+# axis, `mcp/config.rs` asks the transport ONE question through a method on the type
+# (`Transport::spawns_child`) instead of comparing it, and the supervisor has a production caller. A
+# row is added here only by a change that cannot avoid a branch, and SHRINKING is still the only
+# permitted edit.
 AXIS_EXCEPTIONS="
-transport|crates/busbar/src/mcp/config.rs|2026-08-12: the pre-axis stdio branch. It guards a crash-loop supervisor that has no dispatch arm to reach it: the dead code the transport axis exists to give a home. It is not ported, it is DELETED with mcp/, and this row goes with it.
 "
 
 hdr "axis purity (nothing branches on an axis outside that axis's own arms)"

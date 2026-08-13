@@ -258,6 +258,15 @@
       "kind": "struct",
       "transparent": false
     },
+    "ChildEnvValue": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "Plain",
+        "Secret"
+      ]
+    },
     "ClientIdentityCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -878,9 +887,25 @@
           "optional": true,
           "type": "bool"
         },
+        "args": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
         "aud": {
           "optional": true,
           "type": "String"
+        },
+        "command": {
+          "optional": true,
+          "type": "String"
+        },
+        "cwd": {
+          "optional": true,
+          "type": "String"
+        },
+        "env": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, ChildEnvValue>"
         },
         "grants": {
           "optional": true,
@@ -939,7 +964,7 @@
           "type": "crate::auth::UpstreamCreds"
         },
         "url": {
-          "optional": false,
+          "optional": true,
           "type": "String"
         }
       },

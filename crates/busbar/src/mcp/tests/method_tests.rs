@@ -89,6 +89,11 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         },
     );
     McpServerDefCfg {
+        // This registration is reached over the network, so it carries none of the spawn keys.
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
         refresh_ttl: None,
         timeout: None,
         url: format!("https://{id}.internal/mcp"),

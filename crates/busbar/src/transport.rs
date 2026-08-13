@@ -27,6 +27,14 @@
 //! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
 //! it a codec's property (it is not — the codec must never learn it).
 //!
+//! ## THE SECOND VARIANT ARRIVED, AND IT IS `Stdio`
+//!
+//! The paragraph below is kept as written because it recorded a decision, and the decision held:
+//! the axis landed with one variant, the shape was proven by the one that existed, and `Stdio` was
+//! added afterwards by driving a real request down it rather than by anticipating one. What that
+//! bought is [`Transport::mcp_wire`] — the ONE match on this axis in the tree — and the deleted
+//! `mcp/client/stdio.rs` supervisor coming back with a caller instead of an `#![allow(dead_code)]`.
+//!
 //! ## ONE VARIANT, ON PURPOSE
 //!
 //! This lands the axis with a single variant for what exists today and nothing else. `Stdio` and
@@ -58,6 +66,17 @@ pub(crate) enum Transport {
     /// response may be buffered, SSE-framed or binary event-stream framed; that choice belongs to
     /// the codec and the ingress writer, not here, which is why one variant covers all seven cells.
     Http,
+    /// A CHILD PROCESS with a pipe on each side of it: newline-delimited JSON-RPC on its stdin and
+    /// stdout, which is what MCP's stdio transport is. OUTBOUND ONLY in this build — busbar is the
+    /// parent and the MCP server is the child; busbar is never itself launched as one. See
+    /// `mcp/client/stdio.rs` for why that direction and not the other.
+    ///
+    /// The variant that makes the axis earn its keep. Everything [`Transport::Http`] gets for free
+    /// from the shared `reqwest` pool — a destination, a connection, a resolver to SSRF-check, a
+    /// peer that was already running — is absent here, and a channel with none of those properties
+    /// is precisely the thing that would have become a second dispatch path if it had nowhere to
+    /// hang.
+    Stdio,
 }
 
 impl Transport {
@@ -67,6 +86,26 @@ impl Transport {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",
+            Transport::Stdio => "stdio",
+        }
+    }
+
+    /// THE MCP CLIENT LEG'S ARM — the one and only place the transport's identity is asked on the
+    /// path that calls an upstream MCP server, and the reason there is no second one.
+    ///
+    /// `structure-lint.sh` bans the agnostic core from comparing a transport, and this is what
+    /// replaces the comparison it bans: the axis answers "which channel" ONCE and hands back a
+    /// vtable, so `mcp/upstream.rs` sends bytes and cannot tell an HTTP POST from a write to a
+    /// child's stdin. A `match` in the dispatcher instead would have forked selection, credential
+    /// planning, timeout handling and error reporting the moment the second arm landed — which is
+    /// the shape the header above calls "a second dispatch path beside the matrix".
+    ///
+    /// The returned wire is ZERO-SIZED and `'static`: everything per-upstream (sockets, children,
+    /// deadlines) rides on `WireLeg`, so this is a table lookup and not a construction.
+    pub(crate) fn mcp_wire(self) -> &'static dyn crate::mcp::client::wire::McpWire {
+        match self {
+            Transport::Http => &crate::mcp::client::transport::HttpTransport,
+            Transport::Stdio => &crate::mcp::client::stdio::StdioWire,
         }
     }
 

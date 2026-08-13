@@ -8,6 +8,52 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Added
 
+- **Busbar can front a local MCP server that has no URL — `transport: stdio`.** Most of the MCP
+  server estate is not on a network: a filesystem server, a database server, a git server, the
+  reference servers the SDKs ship. They are programs an agent LAUNCHES, and they speak JSON-RPC on
+  their own stdin and stdout. Busbar now launches them too, so the same governance every other
+  upstream gets — the caller's grant, the catalogue filter, the schema pin, the budget charge, the
+  per-call log — applies to them as well:
+
+  ```yaml
+  tools:
+    filesystem:
+      transport: stdio
+      command: /usr/local/bin/mcp-server-filesystem   # absolute, always
+      args: ["--root", "/srv/shared"]
+      env:
+        LOG_LEVEL: info
+        UPSTREAM_KEY: { env: FS_SERVER_KEY }          # a reference, never a pasted secret
+      pin: { mechanism: unpinned }
+      tools_allow: { read_file: {} }
+  ```
+
+  A stdio registration takes `command:`, `args:`, `env:` and `cwd:` instead of `url:`, and Busbar
+  refuses at boot — not at the first tool call — if you mix the two, or if `command:` is anything
+  other than an absolute path.
+
+  **What Busbar does to keep a spawned process from being a hole in your gateway.** There is no
+  shell: the program is executed directly and the arguments are a list, so no character in either
+  has a second meaning. The path must be absolute, because a bare name is resolved through `PATH`
+  and would let whoever controls Busbar's environment choose the binary that runs instead of you.
+  **The child does NOT inherit Busbar's environment** — it is spawned with a cleared one and exactly
+  the variables you named, because Busbar's own environment holds your provider API keys, your store
+  credentials and your admin tokens, and handing that set to a configured child would make every
+  stdio registration a way to read them. A tool call's arguments reach the child as JSON on its
+  stdin and never as command-line arguments.
+
+  **A child that will not start does not become a fork bomb.** Busbar supervises the process: it
+  restarts a crashed child with an exponential backoff, and after five crashes in a minute it stops
+  restarting and refuses calls to that server with a message saying so. Fixing the `command:` and
+  re-applying the config is what re-arms it; nothing re-arms itself on a timer. Editing `command:`,
+  `args:`, `env:` or `cwd:` retires the running child and starts the new one, and deleting the
+  registration stops its process rather than leaving it running unreachable.
+
+  Busbar being LAUNCHED as a child itself — serving MCP on its own stdin to one agent — is
+  deliberately not supported, and `qa/method-coverage.status` records why: every control Busbar
+  exists to apply is scoped to a long-lived multi-tenant listener, so a Busbar inside one client's
+  own process would be a governance gateway with the governance switched off.
+
 - **Busbar can be an MCP server, and agents log into it exactly as they log into anything else.**
   Add an `mcp:` block naming your endpoint's canonical URI and your identity provider, and Busbar
   mounts an MCP endpoint plus the OAuth 2.1 discovery surface that lets an agent find its way in with
