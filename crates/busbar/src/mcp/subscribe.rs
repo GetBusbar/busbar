@@ -8,7 +8,7 @@
 //! Every earlier revision gave a server one way to say something its client had not asked for: a
 //! standing `GET` stream, opened once, resumed with `Last-Event-ID`, held for the life of a session.
 //! This revision deleted all three of those things — the stream, the resumption and the session —
-//! and `super::ingress::legacy_verb` answers `405` to the verb that used to open it, which is what
+//! and `super::envelope::legacy_verb` answers `405` to the verb that used to open it, which is what
 //! the specification says a server SHOULD do.
 //!
 //! Reading that as "so a server can no longer notify a client" is the mistake this module corrects,
@@ -484,10 +484,10 @@ pub(crate) fn listen(
         // to say nothing, and a client waiting on one waits for ever. Refusing is the answer that
         // lets it fall back; acknowledging an empty filter and then going silent is the answer that
         // looks identical to a server that is merely quiet.
-        return super::ingress::error_response(
+        return super::envelope::error_response(
             StatusCode::BAD_REQUEST,
             id,
-            super::ingress::code::INVALID_PARAMS,
+            super::envelope::code::INVALID_PARAMS,
             "`params.notifications` opts in to no category this server delivers. busbar delivers \
              `toolsListChanged`, `promptsListChanged` and `resourcesListChanged`; \
              `resourceSubscriptions` is not delivered, because a resource's contents change at the \

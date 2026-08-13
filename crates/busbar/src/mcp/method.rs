@@ -83,7 +83,7 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
     "tasks/cancel",
     // SEP-2575's replacement for the GET stream. It is a METHOD in this revision, so it belongs in
     // this list rather than in the route table — which is the whole difference the revision made,
-    // and the reason `super::ingress::legacy_verb` can go on answering `405` without that being a
+    // and the reason `super::envelope::legacy_verb` can go on answering `405` without that being a
     // statement that busbar cannot notify a client. See `super::subscribe`.
     super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN,
 ];
@@ -234,7 +234,7 @@ pub(crate) async fn dispatch(
         "tasks/cancel" => Some(tasks_cancel(ctx, params, id)),
         // The one method whose answer is a STREAM rather than a document. It returns through the
         // same `Response` as every other arm — what makes it different is the `content-type`, which
-        // is also what tells `super::ingress` not to re-frame it.
+        // is also what tells `super::envelope` not to re-frame it.
         super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN => {
             Some(super::subscribe::listen(ctx, params, id))
         }
@@ -433,7 +433,7 @@ fn completion_complete(id: Option<serde_json::Value>) -> Response {
 /// [`CACHE_TTL_MS`] for the two values and why they are those values.
 ///
 /// One function so the pair cannot drift apart across the six cacheable results, for the same
-/// reason [`super::ingress::error_response`] is one function for the status/code pair: a hint that
+/// reason [`super::envelope::error_response`] is one function for the status/code pair: a hint that
 /// says "private" in one place and "public" in another is a hint no client can act on.
 fn cache_hints(value: serde_json::Value) -> serde_json::Value {
     let mut value = value;
@@ -473,7 +473,7 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     result(
         id,
         cache_hints(serde_json::json!({
-            "protocolVersion": super::ingress::PROTOCOL_VERSION,
+            "protocolVersion": super::envelope::PROTOCOL_VERSION,
             // The versions this server will ACCEPT, which is the mandatory field of a
             // `DiscoverResult` and is not the same statement as `protocolVersion` above (that one
             // names the revision this answer is written in). It is the SAME constant the ingress
@@ -481,7 +481,7 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             // for a reason the conformance suite checks directly: it correlates the `data.supported`
             // list on an `UnsupportedProtocolVersionError` against this list, so two lists that
             // could disagree would be a client told to retry with a version it will be refused for.
-            "supportedVersions": super::ingress::SUPPORTED_PROTOCOL_VERSIONS,
+            "supportedVersions": super::envelope::SUPPORTED_PROTOCOL_VERSIONS,
             "serverInfo": { "name": "busbar", "version": env!("CARGO_PKG_VERSION") },
             // Advertised as present only when this caller can actually reach one. A capability
             // advertised to a caller who holds nothing under it is an invitation to a refusal.
@@ -1084,7 +1084,10 @@ async fn tools_call(
     ) {
         Ok(entry) => entry.clone(),
         Err(refusal) => {
-            return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id))
+            return log.refused(
+                refusal.audit_reason(),
+                refuse_catalogue(ctx, name, &refusal, id),
+            )
         }
     };
     log.resolved(&selected, selected_gen);
@@ -1104,11 +1107,17 @@ async fn tools_call(
         selected_gen,
         crate::store::now(),
     ) {
-        return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id));
+        return log.refused(
+            refusal.audit_reason(),
+            refuse_catalogue(ctx, name, &refusal, id),
+        );
     }
     let Some(server) = live.mcp_catalogue.server(&selected.server).cloned() else {
         let refusal = DispatchRefusal::UnknownTool(name.to_string());
-        return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id));
+        return log.refused(
+            refusal.audit_reason(),
+            refuse_catalogue(ctx, name, &refusal, id),
+        );
     };
 
     // (2a-i) SEP-2243 CUSTOM PARAM HEADERS. Validated here, where the tool's approved `inputSchema`
@@ -1195,7 +1204,10 @@ async fn tools_call(
                 let refusal = DispatchRefusal::NotGranted(format!(
                     "this round of the input exchange was refused by your budget: {reason}"
                 ));
-                return log.refused("caller_ask_round_budget", refuse(ctx, name, &refusal, id));
+                return log.refused(
+                    "caller_ask_round_budget",
+                    refuse_catalogue(ctx, name, &refusal, id),
+                );
             }
             crate::admin::audit::AUDIT.record_by(
                 "mcp.caller_ask",
@@ -1261,7 +1273,7 @@ async fn tools_call(
             ));
             return log.refused(
                 "caller_ask_answer_undeclared",
-                refuse(ctx, name, &refusal, id),
+                refuse_catalogue(ctx, name, &refusal, id),
             );
         }
         if let Some(merged) = arguments.as_object_mut() {
@@ -1664,7 +1676,7 @@ async fn create_task(
             DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}"));
         return log.refused(
             "task_budget",
-            refuse(ctx, &selected.namespaced, &refusal, id),
+            refuse_catalogue(ctx, &selected.namespaced, &refusal, id),
         );
     }
     // The admission hold is RELEASED rather than parked for the life of the task. A concurrency
@@ -1763,7 +1775,7 @@ fn custom_param_mismatch(
                 ))
             }
             (Some(header), Some(body)) => {
-                let Some(decoded) = super::ingress::decode_param_sentinel(header) else {
+                let Some(decoded) = super::envelope::decode_param_sentinel(header) else {
                     return Some(format!(
                         "The `Mcp-Param-{suffix}` header carries a `=?base64?…?=` sentinel whose \
                          contents are not valid Base64. It is refused rather than decoded \
@@ -1789,7 +1801,7 @@ fn header_mismatch(id: Option<serde_json::Value>, message: &str) -> Response {
     error(
         StatusCode::BAD_REQUEST,
         id,
-        super::ingress::code::HEADER_MISMATCH,
+        super::envelope::code::HEADER_MISMATCH,
         message,
         None,
     )
@@ -1899,12 +1911,19 @@ fn refuse_setup(
 
 /// A refusal from the catalogue, rendered and audited: the rejection is audited AS a rejection,
 /// before anything could mistake it for a successful route to a server the operator revoked.
-fn refuse(
+///
+/// THE TRIPLE IS ASSEMBLED BY CORE and worded by `super::envelope::McpWords`. What is left here is
+/// the two facts that were ever this plane's — which status each member of this taxonomy earns,
+/// and the audit word that makes one refusal distinguishable from another afterwards. The sibling
+/// plane's `refuse_admission` is the same two facts for its own taxonomy, which is what the
+/// plane-coherence ledger's `refuse` row was pointing at: one shape, assembled twice.
+fn refuse_catalogue(
     ctx: &Ctx<'_>,
     name: &str,
     refusal: &DispatchRefusal,
     id: Option<serde_json::Value>,
 ) -> Response {
+    use crate::ingress::protocol::Words as _;
     crate::admin::audit::AUDIT.record_by(
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
@@ -1928,13 +1947,12 @@ fn refuse(
         | DispatchRefusal::NotPinned(_)
         | DispatchRefusal::Quarantined { .. } => StatusCode::FORBIDDEN,
     };
-    error(
+    super::envelope::McpWords.refuse(crate::ingress::protocol::CoreRefusal::Admission {
+        id: id.unwrap_or(serde_json::Value::Null),
         status,
-        id,
-        CODE_REFUSED,
-        &refusal.to_string(),
-        Some(serde_json::json!({ "reason": refusal.audit_reason() })),
-    )
+        message: refusal.to_string(),
+        reason: Some(refusal.audit_reason()),
+    })
 }
 
 /// The JSON-RPC code busbar answers a governance refusal with.
@@ -1943,7 +1961,7 @@ fn refuse(
 /// a refusal by policy is: the request was well formed, the method exists, and the server declined.
 /// `-32602` would say the arguments were wrong and `-32601` would say the method was missing, and
 /// both would send an operator debugging the wrong thing.
-const CODE_REFUSED: i64 = -32000;
+pub(super) const CODE_REFUSED: i64 = -32000;
 
 /// `MissingRequiredClientCapability` — the MCP-band sibling of `-32020` (header mismatch) and
 /// `-32022` (unsupported protocol version). Emitted on ONE arm only; see the comment at its single
@@ -2239,7 +2257,7 @@ fn error(
     message: &str,
     data: Option<serde_json::Value>,
 ) -> Response {
-    super::ingress::error_response(status, id, code, message, data)
+    super::envelope::error_response(status, id, code, message, data)
 }
 
 #[cfg(test)]

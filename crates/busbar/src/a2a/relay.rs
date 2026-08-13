@@ -253,7 +253,7 @@ pub(crate) struct RelayCall<'a> {
     ///
     /// busbar is a CLIENT here, and A2A section 3.3 says a client MUST send this header with each
     /// request; an absent or empty one means `0.3`. The value is the one busbar's own edge already
-    /// negotiated from the caller — see `super::ingress::Wire::negotiated_version` — because the
+    /// negotiated from the caller — see `super::receive::Wire::negotiated_version` — because the
     /// body below goes out VERBATIM and the two dialects spell every method differently. Sending a
     /// v1.0 caller's `SendMessage` with no version declares `0.3` by omission and then speaks
     /// `1.0`, and a backend that believes the omission refuses a request busbar had just accepted
@@ -814,7 +814,7 @@ fn rest_op(method: &str) -> Option<RestOp> {
 /// THE OPERATION A METHOD NAME NAMES, in A2A v1.0's spelling, from EITHER dialect.
 ///
 /// This plane speaks two protocol versions and every reader on it already handles both — see
-/// `super::local::verb_of` and `super::ingress::shape_of`. The two non-JSON-RPC bindings are v1.0
+/// `super::local::verb_of` and `super::receive::shape_of`. The two non-JSON-RPC bindings are v1.0
 /// constructs, so a v0.3 caller's `tasks/get` has to be recognised as `GetTask` before it can be
 /// framed for one; a table that read only the v1.0 spelling would refuse every v0.3 caller at the
 /// hop with "no such operation", which is busbar failing to carry a request it had just admitted.

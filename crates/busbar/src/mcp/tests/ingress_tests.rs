@@ -9,7 +9,7 @@
 //! admission. A handler-level test would answer none of those questions and would pass while the
 //! endpoint was unmounted.
 
-use crate::mcp::ingress::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::mcp::envelope::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 

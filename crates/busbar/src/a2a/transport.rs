@@ -56,7 +56,7 @@
 //! A card fetch happens on a re-verification tick, so a thread and a client per hop was a cost not
 //! worth engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
 //! request hot path. Two consequences, and only one of them is fixed here. The blocking is handled
-//! at the call site — `ingress::rpc` enters this seam through `spawn_blocking`, so no axum worker is
+//! at the call site — `ingress::invoke` enters this seam through `spawn_blocking`, so no axum worker is
 //! held for a backend agent's think time. The CLIENT PER HOP is not: every relayed submission builds
 //! a fresh `reqwest::Client` and therefore a fresh TLS session, with no connection reuse. That is a
 //! real per-request cost and it is recorded here rather than hidden, because the fix — a client

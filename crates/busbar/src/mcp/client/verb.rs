@@ -54,7 +54,7 @@
 //! a verb to an argument vector.
 
 use super::jsonrpc::{envelope, OutboundRequest};
-use crate::mcp::ingress::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
+use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
 
 /// THE PROTOCOL REVISION BUSBAR OFFERS A CHILD IN ITS HANDSHAKE.
 ///

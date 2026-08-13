@@ -6,7 +6,7 @@
 //!
 //! ## Symmetry with the ingress, deliberately
 //!
-//! `crate::mcp::ingress` enforces this revision's transport MUSTs on requests busbar RECEIVES:
+//! `crate::mcp::envelope` enforces this revision's transport MUSTs on requests busbar RECEIVES:
 //! `_meta` at `params._meta`, `Mcp-Method` mirroring the body's method, `Mcp-Name` mirroring the
 //! target, `MCP-Protocol-Version` mirroring `_meta`. This module produces requests that SATISFY the
 //! same MUSTs, and every one of the five shared wire words — the two `_meta` keys and the three
@@ -50,8 +50,8 @@
 //! behalf, an ask busbar itself declined.
 
 use super::identity::ToolKey;
-use crate::mcp::ingress::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
-pub(crate) use crate::mcp::ingress::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
+use crate::mcp::envelope::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
+pub(crate) use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
 
 /// The `_meta` key a progress token travels under, both directions. Serialised as `null` when
 /// absent, which `serde_json` omits from the object rather than sending — so a caller that asked for
@@ -59,7 +59,7 @@ pub(crate) use crate::mcp::ingress::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VER
 const META_PROGRESS_TOKEN: &str = "progressToken";
 
 // The `_meta` keys and the header names are NOT declared here. They are `use`d from
-// `crate::mcp::ingress`, which owns the single spelling of each — see the wire-words block there.
+// `crate::mcp::envelope`, which owns the single spelling of each — see the wire-words block there.
 // A re-export keeps this module's existing callers (`super::*` users, the test suite) working
 // against one definition rather than two, and the re-export is deliberately not a second `const`:
 // there is nothing here for a divergence to live in.

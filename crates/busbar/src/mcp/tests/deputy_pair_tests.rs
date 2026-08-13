@@ -300,7 +300,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let version = crate::mcp::ingress::PROTOCOL_VERSION;
+    let version = crate::mcp::envelope::PROTOCOL_VERSION;
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 42, "method": "tools/call",
         "params": {

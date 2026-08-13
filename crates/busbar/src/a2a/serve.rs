@@ -203,7 +203,7 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// `servable_bindings` answers for the PLANE'S mount, which is where busbar's own card points and
 /// where `a2a::rest` hangs the HTTP+JSON paths: `/a2a/message:send`, `/a2a/tasks/{id}` and the rest.
 /// A fronted agent's card is rewritten to [`agent_endpoint`] — `/a2a/agents/{id}` — and the only
-/// thing mounted there is `ingress::rpc`, which reads a JSON-RPC envelope. The HTTP+JSON binding
+/// thing mounted there is `ingress::invoke`, which reads a JSON-RPC envelope. The HTTP+JSON binding
 /// spells its operation in the REQUEST LINE, and under that prefix there is no request line that
 /// names one.
 ///
@@ -219,7 +219,7 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// means "this one fronted agent", so publishing it on an agent's card would name an endpoint that
 /// answers a different question from the one the card was fetched to answer.
 ///
-/// IT IS DERIVED FROM THE HANDLER, not spelled: the transport `ingress::rpc` labels its requests
+/// IT IS DERIVED FROM THE HANDLER, not spelled: the transport `ingress::invoke` labels its requests
 /// with is the binding it reads, so this answers that transport's name and cannot drift from what
 /// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
 fn agent_address_bindings() -> Vec<String> {
@@ -241,12 +241,12 @@ fn can_serve_binding_for_agent(binding: &str) -> bool {
 /// `0.3.0`, which is BOTH the wrong version (busbar admits `1.0` as well) and the wrong spelling
 /// (SPEC 3.6: patch numbers "SHOULD NOT be used in requests, responses and Agent Cards").
 ///
-/// Read from [`super::ingress::SUPPORTED_A2A_VERSIONS`] rather than written down here, for the same
+/// Read from [`super::receive::SUPPORTED_A2A_VERSIONS`] rather than written down here, for the same
 /// reason [`servable_bindings`] is read off the plane: the card is a claim about what the endpoint
 /// admits, and a second list is a second answer to one question. The day the ingress stops speaking
 /// a version, the card stops advertising it without anyone remembering this function exists.
 fn served_protocol_versions() -> &'static [&'static str] {
-    super::ingress::SUPPORTED_A2A_VERSIONS
+    super::receive::SUPPORTED_A2A_VERSIONS
 }
 
 /// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a

@@ -6,7 +6,7 @@
 //! ## What revision `2026-07-28` removed, and what it did not
 //!
 //! The revision deleted the standalone GET stream, `Mcp-Session-Id`, and `Last-Event-ID`
-//! resumability — [`super::ingress::legacy_verb`] answers `405` for exactly that reason. It did NOT
+//! resumability — [`super::envelope::legacy_verb`] answers `405` for exactly that reason. It did NOT
 //! delete Server-Sent Events: SSE survives as a RESPONSE CONTENT TYPE on the POST. One request, one
 //! response, still stateless — the only thing that changes is that the response arrives as a
 //! sequence of framed events instead of one JSON document, which is what gives a server somewhere to
@@ -31,7 +31,7 @@
 //! ## ONLY A `200` BECOMES A STREAM
 //!
 //! An error response is terminal: there is no result to follow, nothing to notify about, and the
-//! status/code pair ([`super::ingress::error_response`]) is the whole content of the answer. Framing
+//! status/code pair ([`super::envelope::error_response`]) is the whole content of the answer. Framing
 //! it as a stream would add a stream that is over before it starts and would put a second reading of
 //! the same failure on the wire. Errors stay JSON, whatever the client asked for.
 //!
@@ -206,7 +206,7 @@ pub(crate) fn prefers_event_stream(headers: &HeaderMap) -> bool {
 /// the time it is told what happened during it.
 ///
 /// A non-`200` is returned untouched — see the module header. So is a body that is not JSON, which
-/// cannot happen from [`super::ingress::error_response`] or `method::result` and is passed through
+/// cannot happen from [`super::envelope::error_response`] or `method::result` and is passed through
 /// rather than guessed at, because a stream framing a body this function did not understand would be
 /// this function inventing content.
 pub(crate) async fn as_event_stream(

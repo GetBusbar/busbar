@@ -186,6 +186,9 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::SigV4,
+    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
+    // operation through the `RequestHandler` and serves it on the universal ingress.
+    path_ingress: None,
     stream_usage_requires_opt_in: false,
 };
 

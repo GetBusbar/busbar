@@ -31,7 +31,7 @@
 // [`registry::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
-// AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::rpc` makes to the registered backend
+// AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::invoke` makes to the registered backend
 // agent: it guards and pins the target through the SAME `fetch::guard_hop` — and therefore the
 // same `crate::net_guard` resolve-then-pin — the card fetch
 // uses, RE-ASKS the trust question against the live registry immediately before the socket so a
@@ -71,7 +71,6 @@ pub(crate) mod fetch;
 pub(crate) mod grpc;
 pub(crate) mod idmap;
 pub(crate) mod inbound;
-pub(crate) mod ingress;
 pub(crate) mod jws;
 pub(crate) mod local;
 pub(crate) mod meter;
@@ -80,11 +79,20 @@ pub(crate) mod plane;
 pub(crate) mod provenance;
 pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
+/// THE RECEIVING HOT PATH. Not `ingress` any more, and the rename is the statement: the ingress
+/// SEQUENCE is `crate::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
+/// was left when it moved out — this plane's method vocabulary, its verb dispatch and its refusal
+/// wording.
+pub(crate) mod receive;
 pub(crate) mod registry;
 pub(crate) mod relay;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
 pub(crate) mod rest;
 pub(crate) mod rpcerror;
+/// THIS PLANE'S REFUSAL VOCABULARY: `A2aWords`, the total match that gives every refusal
+/// `crate::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
+/// of its RFC 9728 document.
+pub(crate) mod words;
 // THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no
 // call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate

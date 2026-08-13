@@ -9,7 +9,7 @@
 //! meaningful against a real header map — a unit test could assert the preference function agrees
 //! with itself while the handler never called it.
 
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::envelope::PROTOCOL_VERSION;
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 

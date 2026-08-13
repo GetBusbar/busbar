@@ -785,7 +785,7 @@ fn every_published_interface_declares_a_version_the_ingress_actually_admits() {
     for iface in ifaces {
         let v = iface["protocolVersion"].as_str().unwrap_or_default();
         assert!(
-            crate::a2a::ingress::SUPPORTED_A2A_VERSIONS.contains(&v),
+            crate::a2a::receive::SUPPORTED_A2A_VERSIONS.contains(&v),
             "the card advertises `{v}`, which this endpoint does not admit: {iface}"
         );
         assert!(
@@ -799,7 +799,7 @@ fn every_published_interface_declares_a_version_the_ingress_actually_admits() {
     assert_eq!(ifaces[0]["protocolVersion"], "1.0", "{ifaces:?}");
     // AND EVERY VERSION THE INGRESS ADMITS IS PUBLISHED. A version admitted and not advertised is a
     // capability no client can discover.
-    for want in crate::a2a::ingress::SUPPORTED_A2A_VERSIONS {
+    for want in crate::a2a::receive::SUPPORTED_A2A_VERSIONS {
         assert!(
             ifaces.iter().any(|i| i["protocolVersion"] == *want),
             "the ingress admits `{want}` and the card does not advertise it: {ifaces:?}"

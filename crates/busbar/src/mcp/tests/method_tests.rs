@@ -360,7 +360,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
     assert_eq!(ba.pointer("/result/counts/tools").unwrap(), 1);
     assert_eq!(
         ba.pointer("/result/protocolVersion").unwrap(),
-        crate::mcp::ingress::PROTOCOL_VERSION
+        crate::mcp::envelope::PROTOCOL_VERSION
     );
 
     let (_, bb) = call(&app, &both, "server/discover", serde_json::json!({})).await;
@@ -456,7 +456,7 @@ async fn the_method_table_is_reachable_through_the_real_mounted_route() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let version = crate::mcp::ingress::PROTOCOL_VERSION;
+    let version = crate::mcp::envelope::PROTOCOL_VERSION;
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,

@@ -22,7 +22,7 @@
 //! What B2 and B4 claim is that a CLIENT receives a `blob` / an `image` block. That is a statement
 //! about the wire, and `method::resources_read` returning a `Response` is not the wire.
 
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::envelope::PROTOCOL_VERSION;
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 

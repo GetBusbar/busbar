@@ -46,9 +46,10 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use std::sync::Arc;
 
 use super::sse;
-use crate::ingress::jsonrpc::Envelope;
+use crate::ingress::protocol::CoreRefusal;
 
 /// The single MCP protocol revision busbar implements.
 ///
@@ -136,6 +137,99 @@ pub(super) mod code {
     pub(super) const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 }
 
+/// THIS PROTOCOL'S WORDS FOR A REFUSAL CORE DECIDED.
+///
+/// A unit type, because a refusal's wording is a fact about the MCP revision and not about this
+/// deployment's configuration of it. The match is TOTAL over `CoreRefusal` and there is no `_`
+/// arm: a refusal core grows later stops this file compiling until somebody has written the
+/// sentence MCP owes for it, which is exactly the property that stops a new refusal being folded
+/// into a neighbouring arm because the neighbour was close enough.
+///
+/// Every message below is BYTE-IDENTICAL to the one this plane sent before the sequence moved to
+/// core. That is the whole contract of the move: a caller cannot tell it happened.
+#[derive(Default)]
+pub(crate) struct McpWords;
+
+impl crate::ingress::protocol::Words for McpWords {
+    fn refuse(&self, refusal: CoreRefusal<'_>) -> Response {
+        match refusal {
+            // Unreachable while the mount and the config are created in one act; still answered
+            // rather than unwrapped, because this is a request path.
+            CoreRefusal::PlaneAbsent => error_response(
+                StatusCode::NOT_FOUND,
+                None,
+                code::METHOD_NOT_FOUND,
+                "MCP is not enabled on this deployment.",
+                None,
+            ),
+            // The RFC 9728 endpoint is NOT a JSON-RPC endpoint, so its refusal is not a JSON-RPC
+            // envelope. Separate arm, separate sentence — see `CoreRefusal::MetadataUnavailable`.
+            CoreRefusal::MetadataUnavailable => crate::ingress::protocol::json_refusal(
+                StatusCode::NOT_FOUND,
+                serde_json::json!({ "error": "not_found" }),
+            ),
+            // `403`, which `HTTP.ORIGIN-VALIDATION` names for exactly this: "If the `Origin`
+            // header is present and invalid, servers MUST respond with HTTP 403 Forbidden."
+            CoreRefusal::ForbiddenOrigin => crate::ingress::protocol::json_refusal(
+                StatusCode::FORBIDDEN,
+                serde_json::json!({
+                    "error": "invalid_origin",
+                    "error_description":
+                        "This Origin is not allowed. Browser origins must be listed in mcp.allowed_origins.",
+                }),
+            ),
+            // Both of these are the BASE PROTOCOL's own codes, so both are rendered by the base
+            // protocol's own reader rather than restated here — that is the arrangement `code`
+            // above records, and it is why `-32700` and `-32600` are not in it.
+            CoreRefusal::NotJson => crate::ingress::jsonrpc::parse_error(),
+            CoreRefusal::InvalidEnvelope(invalid) => crate::ingress::jsonrpc::refused(invalid),
+            // `404` + `-32601`: what this revision requires of a server that does not implement a
+            // method, and the answer that stays correct for every method still unimplemented.
+            // A caller that may not see a tool and a caller naming one that does not exist get the
+            // SAME answer, so the catalogue does not leak what it hides. The `reason` in `data` is
+            // for the OPERATOR, who is entitled to the distinction, and the audit row the call
+            // site writes carries it too.
+            CoreRefusal::Admission {
+                id,
+                status,
+                message,
+                reason,
+            } => error_response(
+                status,
+                Some(id),
+                super::method::CODE_REFUSED,
+                &message,
+                reason.map(|r| serde_json::json!({ "reason": r })),
+            ),
+            CoreRefusal::MethodNotFound { id, method } => error_response(
+                StatusCode::NOT_FOUND,
+                Some(id),
+                code::METHOD_NOT_FOUND,
+                &format!("Method `{method}` is not implemented by this server."),
+                None,
+            ),
+        }
+    }
+}
+
+/// THE RFC 9728 FACTS THIS PLANE PUBLISHES. The document itself — its member order, its two
+/// headers and its `bearer_methods_supported` rule — is `crate::ingress::protocol`'s, once. This
+/// states only what differs between deployments.
+///
+/// `resource` is the audience a client must ask its authorization server to mint for, and it is
+/// compared byte-for-byte against the `aud` of every token presented here. Both sides read it from
+/// the same validated config object, so there is no second spelling of it anywhere.
+impl crate::ingress::protocol::ResourceMetadata for McpWords {
+    fn document(app: &crate::state::App) -> Option<crate::ingress::protocol::Metadata<'_>> {
+        let resource = app.mcp.as_ref()?;
+        Some(crate::ingress::protocol::Metadata {
+            resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
+            authorization_servers: resource.authorization_servers(),
+            scopes_supported: resource.scopes_supported(),
+        })
+    }
+}
+
 /// `GET` and `DELETE` on the MCP endpoint.
 ///
 /// Under earlier revisions `GET` opened the server-to-client SSE stream and `DELETE` terminated a
@@ -179,92 +273,80 @@ pub(crate) async fn rpc(
     // same value could never fail.
     let app = handle.load();
     // The resource is present whenever this route is mounted — the mount is what creates it. The
-    // fallback exists only so a future refactor that mounts the route without the config produces a
-    // clean refusal instead of a panic on a request path.
-    let Some(resource) = app.mcp.as_ref() else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            None,
-            code::METHOD_NOT_FOUND,
-            "MCP is not enabled on this deployment.",
-            None,
-        );
-    };
+    // `Option` survives only so a future refactor that mounts the route without the config produces
+    // a clean refusal instead of a panic on a request path; `serve` answers it as `PlaneAbsent`.
+    let resource = app.mcp.clone();
+    // Borrowed rather than moved into the closure so the `Origin` read below and the mirrored
+    // header reads inside it are two immutable borrows of one map rather than a clone of it.
+    let headers = &headers;
+    // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S, and this plane no longer states any of them.
+    // What follows the call is steps 9 to 12: `params._meta`, the mirrored routing headers, the
+    // method vocabulary and the verb dispatch — the four the measurement in
+    // `crate::ingress::protocol` found are genuinely this protocol's.
+    crate::ingress::protocol::serve(
+        &McpWords,
+        crate::ingress::protocol::Request {
+            present: resource.is_some(),
+            origin: header_str(headers, "origin"),
+            allowed_origins: resource.as_ref().map_or(&[][..], |r| r.allowed_origins()),
+            // This revision's request-line rules are all COMPARISONS AGAINST THE BODY (the
+            // mirrored headers), so there is nothing this plane can judge before the parse. A2A's
+            // media type and `A2A-Version` gates are the other answer to the same question.
+            wire_refusal: None,
+            body: &body,
+        },
+        |value, id, method| async move {
+            rpc_dispatch(&app, &handle, &gov, &principal, headers, value, id, method).await
+        },
+    )
+    .await
+}
 
-    // (1) ORIGIN. A MUST, and the DNS-rebinding defence: a page on an attacker's origin resolves a
-    // hostname to busbar's address and drives the tool plane with whatever ambient credential the
-    // browser attaches. A request with NO `Origin` is not a browser request and is unaffected —
-    // refusing those would refuse every agent, which is every real client.
-    if let Some(origin) = header_str(&headers, "origin") {
-        if !is_loopback_origin(origin) && !resource.origin_allowed(origin) {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({
-                    "error": "invalid_origin",
-                    "error_description":
-                        "This Origin is not allowed. Browser origins must be listed in mcp.allowed_origins.",
-                })),
-            )
-                .into_response();
-        }
-    }
-
-    // (2) PARSE.
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return crate::ingress::jsonrpc::parse_error();
-    };
-
-    // (3) ENVELOPE SHAPE — `jsonrpc`, `method`, and above all `id`, read by the ONE reader both
-    // JSON-RPC planes share (`crate::ingress::jsonrpc`). This plane used to decide the envelope's
-    // three cases itself, and so did the A2A receiving plane, and they disagreed: both served a
-    // `200` and a SUCCESS result for `"id": null`, which MCP `basic#requests` forbids outright
-    // ("Unlike base JSON-RPC, the ID MUST NOT be `null`"), and both answered a NOTIFICATION, which
-    // section 4.1 forbids outright. See that module's header for the full clause list and for why the two
-    // readers became one rather than being fixed twice.
-    let envelope = match crate::ingress::jsonrpc::read(&value) {
-        Ok(e) => e,
-        Err(invalid) => return crate::ingress::jsonrpc::refused(&invalid),
-    };
-    // section 4.1 and MCP `basic#notifications`: "The receiver MUST NOT send a response." FIRST, ahead of
-    // every check below, because the rule has no exception for a notification that is ALSO wrong
-    // about something else — a `-32602` for a missing `params._meta` is still a response, and one
-    // arriving against no outstanding id is exactly what corrupts a client's bookkeeping.
-    let Envelope::Request {
-        id,
-        method: method_name,
-    } = envelope
-    else {
-        return crate::ingress::jsonrpc::accepted();
-    };
+/// STEPS 9 TO 12 — everything after the envelope, and everything this protocol genuinely owns.
+///
+/// `None` means step 13: the method vocabulary does not carry this method, which is
+/// `crate::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
+/// for an unimplemented method and did not have to change when the table gained entries.
+#[allow(clippy::too_many_arguments)]
+async fn rpc_dispatch(
+    app: &Arc<crate::state::App>,
+    handle: &std::sync::Arc<crate::state::AppHandle>,
+    gov: &crate::governance::GovCtx,
+    principal: &crate::auth::AuthPrincipal,
+    headers: &HeaderMap,
+    value: serde_json::Value,
+    id: serde_json::Value,
+    method_name: String,
+) -> Option<Response> {
     // From here `id` is a string or a number. It is carried as `Option` only because the method
     // table's constructors take one; it is never `None` on this path, and never `Null` at all.
     let id = Some(id);
     let method = method_name.as_str();
     // The envelope's members are read off the `Value` directly from here. There is no `as_object()`
-    // rebinding: `read` has already refused everything that is not a message object, so a second
-    // check would be a second opinion on a question that is already settled.
+    // rebinding: the shared reader has already refused everything that is not a message object, so
+    // a second check would be a second opinion on a question that is already settled.
 
-    // (4) `params._meta` AND ITS REQUIRED MEMBERS. A body defect, answered in the body's own
+    // (9) `params._meta` AND ITS REQUIRED MEMBERS. A body defect, answered in the body's own
     // vocabulary: `-32602`, `400`. See the module header for why this precedes the header checks.
     //
     // `params._meta`, per the schema. See META_PROTOCOL_VERSION for why this is not the top level.
     let Some(meta) = value.get("params").and_then(|p| p.get("_meta")) else {
-        return invalid_params(
+        return Some(invalid_params(
             id,
             "`params._meta` is required on every request. This revision has no handshake, so each \
              request states its own protocol version and client capabilities there.",
-        );
+        ));
     };
     let body_version = meta
         .get(META_PROTOCOL_VERSION)
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty());
     let Some(body_version) = body_version else {
-        return invalid_params(
+        return Some(invalid_params(
             id,
             "`params._meta` must carry `io.modelcontextprotocol/protocolVersion`; this revision \
              negotiates per request, so the version cannot be inferred.",
-        );
+        ));
     };
     // Bound here rather than at the point of use so the one place capabilities enter the server is
     // visible in the envelope check, next to the version they are negotiated alongside. Its
@@ -276,44 +358,47 @@ pub(crate) async fn rpc(
     // its capabilities." A server that refused the field's absence and then ignored its contents
     // would be insisting the client answer a question it never read.
     let Some(capabilities) = meta.get(META_CLIENT_CAPABILITIES) else {
-        return invalid_params(
+        return Some(invalid_params(
             id,
             "`params._meta` must carry `io.modelcontextprotocol/clientCapabilities`. With no \
              handshake there is no earlier message it could have been declared in, and this server \
              will not decide on a client's behalf what that client can do; send `{}` to declare \
              none.",
-        );
+        ));
     };
     let capabilities = capabilities.clone();
 
-    // (5) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
+    // (10) MIRRORED HEADERS. All four failures below are one class — an intermediary and the executor
     // disagreeing about what this request is — so they share one code and one status.
     //
     // Header NAMES are case-insensitive (axum lower-cases them for us); header VALUES, including
     // method names, are case-sensitive. Comparing values case-insensitively here would let
     // `Mcp-Method: TOOLS/CALL` mirror `tools/call`, which is precisely a disagreement dressed as a
     // match.
-    let Some(header_version) = header_str(&headers, H_PROTOCOL_VERSION) else {
-        return header_mismatch(
+    let Some(header_version) = header_str(headers, H_PROTOCOL_VERSION) else {
+        return Some(header_mismatch(
             id,
             "Every POST to the MCP endpoint must carry an `MCP-Protocol-Version` header.",
-        );
+        ));
     };
     if header_version != body_version {
-        return header_mismatch(
+        return Some(header_mismatch(
             id,
             "The `MCP-Protocol-Version` header does not match the body's \
              `_meta.io.modelcontextprotocol/protocolVersion`.",
-        );
+        ));
     }
-    let Some(header_method) = header_str(&headers, H_MCP_METHOD) else {
-        return header_mismatch(id, "The `Mcp-Method` header is required on every request.");
+    let Some(header_method) = header_str(headers, H_MCP_METHOD) else {
+        return Some(header_mismatch(
+            id,
+            "The `Mcp-Method` header is required on every request.",
+        ));
     };
     if decode_sentinel(header_method).as_deref() != Some(method) {
-        return header_mismatch(
+        return Some(header_mismatch(
             id,
             "The `Mcp-Method` header does not match the body's `method`.",
-        );
+        ));
     }
     // `Mcp-Name` mirrors `params.name` (`tools/call`, `prompts/get`) or `params.uri`
     // (`resources/read`). It is REQUIRED on exactly those three and meaningless elsewhere.
@@ -322,35 +407,35 @@ pub(crate) async fn rpc(
             .get("params")
             .and_then(|p| p.get(source))
             .and_then(|v| v.as_str());
-        let Some(header_name) = header_str(&headers, H_MCP_NAME) else {
-            return header_mismatch(
+        let Some(header_name) = header_str(headers, H_MCP_NAME) else {
+            return Some(header_mismatch(
                 id,
                 "The `Mcp-Name` header is required on tools/call, resources/read and prompts/get.",
-            );
+            ));
         };
         // The sentinel is decoded BEFORE comparison, which is its own MUST. A server that compared
         // the encoded form would reject every client that legitimately encoded a name containing a
         // character no header value may carry — and, worse, a server that decoded only sometimes
         // would give two different answers to one request depending on the name.
         let Some(decoded) = decode_sentinel(header_name) else {
-            return header_mismatch(
+            return Some(header_mismatch(
                 id,
                 "The `Mcp-Name` header carries a `=?base64?…?=` sentinel that is not valid Base64.",
-            );
+            ));
         };
         if body_name != Some(decoded.as_str()) {
-            return header_mismatch(
+            return Some(header_mismatch(
                 id,
                 "The `Mcp-Name` header does not match the body's target name.",
-            );
+            ));
         }
     }
 
-    // (6) VERSION SUPPORT. Only now, with a well-formed request in hand: `data.supported` is an
+    // (11) VERSION SUPPORT. Only now, with a well-formed request in hand: `data.supported` is an
     // invitation to retry, and inviting a malformed request to retry teaches a client the wrong
     // lesson about why it failed.
     if !SUPPORTED_PROTOCOL_VERSIONS.contains(&body_version) {
-        return error_response(
+        return Some(error_response(
             StatusCode::BAD_REQUEST,
             id,
             code::UNSUPPORTED_PROTOCOL_VERSION,
@@ -359,20 +444,20 @@ pub(crate) async fn rpc(
                 "requested": body_version,
                 "supported": SUPPORTED_PROTOCOL_VERSIONS,
             })),
-        );
+        ));
     }
 
-    // (7) DISPATCH. The method table owns everything from here: the CATALOGUE reads and the
+    // (12) DISPATCH. The method table owns everything from here: the CATALOGUE reads and the
     // DISPATCH path, both computed under the caller's grant. A method the table does not carry falls
     // through to `404` + `-32601`, which was always the correct answer for an unimplemented method
     // and did not have to change when the table gained entries.
     let ctx = crate::mcp::method::Ctx {
-        app: &app,
-        handle: &handle,
-        gov: &gov,
+        app,
+        handle,
+        gov,
         actor: principal.actor_id(),
         capabilities: &capabilities,
-        headers: &headers,
+        headers,
     };
     let params = value.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
@@ -401,7 +486,7 @@ pub(crate) async fn rpc(
         ),
     };
 
-    // (8) THE RESPONSE FRAMING, and the log records that ride it.
+    // THE RESPONSE FRAMING, and the log records that ride it.
     //
     // Last, and it has to be last: what is framed is the ANSWER, so the answer has to exist. This is
     // also the only ordering under which a `notifications/message` record can describe the outcome
@@ -435,11 +520,11 @@ pub(crate) async fn rpc(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/event-stream"))
     {
-        return response;
+        return Some(response);
     }
     let asked_for_progress = meta.get("progressToken").is_some_and(|v| !v.is_null());
-    if !sse::prefers_event_stream(&headers) && !asked_for_progress {
-        return response;
+    if !sse::prefers_event_stream(headers) && !asked_for_progress {
+        return Some(response);
     }
     let level = sse::requested_level(Some(meta));
     let logs: Vec<sse::LogRecord> = request_log(method, &value, &response)
@@ -465,7 +550,7 @@ pub(crate) async fn rpc(
         }
         ch.frames
     };
-    sse::as_event_stream(response, &logs, &progress).await
+    Some(sse::as_event_stream(response, &logs, &progress).await)
 }
 
 /// The `notifications/message` records busbar produces about ITS OWN handling of one request.
@@ -512,41 +597,6 @@ fn request_log(
             }),
         },
     ]
-}
-
-/// Whether `origin` is a LOOPBACK origin, which is always accepted regardless of the operator's
-/// allowlist.
-///
-/// This is safe, and it is worth being precise about why, because "allow localhost" reads like a
-/// weakening. The DNS-rebinding attack is a page served from an ATTACKER's origin —
-/// `http://evil.example` — whose hostname the attacker has made resolve to the loopback address.
-/// That page's `Origin` header is `http://evil.example`, never `http://localhost`. A browser will
-/// only send a loopback `Origin` for a document that was itself served from loopback, which is a
-/// document already inside the trust boundary. So loopback origins carry no rebinding risk, and
-/// refusing them refuses the local inspector and the local agent — the two clients an operator is
-/// most likely to try first — for no security gain.
-///
-/// The port is deliberately not constrained: any local port is the same trust boundary.
-fn is_loopback_origin(origin: &str) -> bool {
-    let host = match origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    {
-        Some(rest) => rest.split('/').next().unwrap_or(""),
-        // `null` and every non-http scheme. `Origin: null` is what a sandboxed iframe and a
-        // `file://` document send, and treating it as local would admit exactly the contexts that
-        // deliberately have no origin.
-        None => return false,
-    };
-    let host = host.rsplit_once(':').map_or(host, |(h, port)| {
-        // Only strip a trailing `:port`; `[::1]` has colons of its own and must survive intact.
-        if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
-            h
-        } else {
-            host
-        }
-    });
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
 /// Which `params` member `Mcp-Name` mirrors for `method`, or `None` when the header is not required.

@@ -511,3 +511,88 @@ fn a_request_with_no_callback_has_none() {
         assert_eq!(super::callback_of(&envelope), None, "{envelope}");
     }
 }
+
+/// THE DNS-REBINDING REFUSAL, ON THIS PLANE, THROUGH THE REAL ROUTER.
+///
+/// This plane had NO `Origin` check at all. The sibling plane refused a non-loopback origin and
+/// named DNS-rebinding in its comment, and this one — same shape of endpoint, same ambient-credential
+/// exposure, same browser reachability — had nothing. That is the exact failure mode the
+/// plane-coherence ledger exists to name: one concern implemented twice, one copy hardened, the
+/// other not. It is not fixed here; it ARRIVED here, because the check is
+/// `crate::ingress::protocol::serve`'s and this plane now runs that sequence.
+///
+/// The refusal is in THIS plane's envelope — A2A section 5.4 binds a JSON-RPC code and a ProtoJSON
+/// body to every refusal, and a body in the sibling's shape is one the official TCK rejects by
+/// schema — which is the whole point of `Words`: core decided, the plane spoke.
+///
+/// NO CREDENTIAL IS PRESENTED and none is needed: the rebinding defence is about who may SPEAK, and
+/// a refusal that waited for authentication would have already let the browser attach the ambient
+/// credential this is defending. The 403 therefore precedes the 401, deliberately.
+#[tokio::test]
+async fn a_foreign_origin_cannot_drive_this_plane() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example")
+        .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let submission = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "message/send", "params": {}
+    })
+    .to_string();
+
+    // THE ATTACKER'S PAGE. Its `Origin` is its own, never busbar's, whatever the hostname resolves
+    // to — which is what makes the header the defence.
+    let resp = client
+        .post(format!("http://{addr}/a2a/agents/planner"))
+        .header("content-type", "application/json")
+        .header("origin", "https://evil.example")
+        .body(submission.clone())
+        .send()
+        .await
+        .unwrap();
+    let st = resp.status().as_u16();
+    let doc: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        st, 403,
+        "a browser origin this deployment never listed drove the agent plane: {doc}"
+    );
+    assert_eq!(
+        doc["jsonrpc"], "2.0",
+        "the refusal is in A2A's envelope: {doc}"
+    );
+    assert_eq!(doc["error"]["code"], -32004, "{doc}");
+
+    // A LOCAL PAGE IS UNAFFECTED. A browser sends a loopback `Origin` only for a document served
+    // from loopback, which is already inside the trust boundary — so this reaches the ordinary
+    // admission chain and is refused for want of a credential, not for its origin.
+    let resp = client
+        .post(format!("http://{addr}/a2a/agents/planner"))
+        .header("content-type", "application/json")
+        .header("origin", "http://localhost:5173")
+        .body(submission.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status().as_u16(),
+        403,
+        "a loopback origin carries no rebinding risk and must not be refused for its origin"
+    );
+
+    // AND A REQUEST WITH NO `Origin` AT ALL is not a browser request. Refusing those would refuse
+    // every agent, which is every real client of this plane.
+    let resp = client
+        .post(format!("http://{addr}/a2a/agents/planner"))
+        .header("content-type", "application/json")
+        .body(submission)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status().as_u16(), 403, "an agent sends no Origin");
+    handle.abort();
+}

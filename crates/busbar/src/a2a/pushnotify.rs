@@ -37,7 +37,7 @@
 //! other exists.
 
 // FULLY MOUNTED, and the last function to get a caller was the most important one. `host_of` and
-// `validate` guard registration in `ingress::rpc`; `structural_refusal` is the floor inside
+// `validate` guard registration in `ingress::invoke`; `structural_refusal` is the floor inside
 // `taskstore::set_push_callback`; and `revalidate` — which had NO caller anywhere in the tree while
 // this plane accepted, validated, pinned and persisted callbacks that nothing ever delivered to —
 // is `pushdeliver`'s, run against a fresh resolution before every single delivery. A durable

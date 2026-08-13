@@ -279,6 +279,24 @@ pub(crate) async fn operation_resolved(
 // (The per-operation axum wrappers are gone: the protocol catch-all `protocol_dispatch` resolves the
 // operation via the RequestHandler and calls `operation_ingress` directly.)
 
+/// ONE ARRIVAL, as a PATH-MODEL PROTOCOL RECEIVES IT.
+///
+/// Everything the catch-all had already extracted, handed to the protocol that declared it can
+/// serve this path. It is a struct rather than eight arguments because it crosses a FUNCTION
+/// POINTER: a declaration cannot name a signature that grows, and this is the shape the ABI's
+/// `Wire` becomes when the protocols leave core (`design/protocol-plugin-abi.md` §1).
+pub(crate) struct Arrival {
+    pub(crate) app: Arc<App>,
+    /// The request path, already `to_string`ed by the catch-all. The protocol parses ITS OWN model
+    /// out of this; core does not know how, and that is the point of the seam.
+    pub(crate) path: String,
+    pub(crate) uri: axum::http::Uri,
+    pub(crate) gov: crate::governance::GovCtx,
+    pub(crate) caller: crate::auth::CallerToken,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Bytes,
+}
+
 /// THE PROTOCOL CATCH-ALL (design: web server listens for anything). One axum fallback replaces the
 /// per-path protocol routes: the Router does DUMB protocol identification from (path, headers); the
 /// identified protocol's RequestHandler reads path+body and decides the operation; the operation's
@@ -338,97 +356,52 @@ pub(crate) async fn protocol_dispatch(
             }
         }
     }
-    match proto {
-        // Path-model protocols keep their full arms (streaming variants, native action errors).
-        // Their ingress futures are Box::pin'd: in a match every arm's future is inlined into the
-        // dispatch coroutine's union, so the gemini/bedrock arms (~5.7 KB each) inflate the future
-        // EVERY request carries even when the traffic is another dialect. Boxing moves that weight
-        // behind one allocation paid only by requests that actually take the arm.
-        PROTO_GEMINI => {
-            // axum's {*rest} wildcard percent-decoded the tail before the collapse; match it.
-            let rest =
-                crate::observability::percent_decode(path.split("/models/").nth(1).unwrap_or(""));
-            Box::pin(gemini_ingress(
-                crate::state::CurrentApp(app),
-                Path(rest),
-                OriginalUri(uri),
-                axum::extract::Extension(gov),
-                axum::extract::Extension(caller),
-                headers,
-                body,
-            ))
-            .await
-        }
-        PROTO_BEDROCK => {
-            // axum's Path extractor percent-decoded {model_id} before the collapse; match it.
-            let model = crate::handlers::request_handler(PROTO_BEDROCK)
-                .and_then(|rh| rh.path_model(&path))
-                .map(|m| crate::observability::percent_decode(&m))
-                .unwrap_or_default();
-            if path.ends_with("/converse") {
-                Box::pin(bedrock_converse(
-                    crate::state::CurrentApp(app),
-                    Path(model),
-                    axum::extract::Extension(gov),
-                    axum::extract::Extension(caller),
-                    headers,
-                    body,
-                ))
-                .await
-            } else if path.ends_with("/converse-stream") {
-                Box::pin(bedrock_converse_stream(
-                    crate::state::CurrentApp(app),
-                    Path(model),
-                    axum::extract::Extension(gov),
-                    axum::extract::Extension(caller),
-                    headers,
-                    body,
-                ))
-                .await
-            } else if path.ends_with("/invoke") {
-                Box::pin(bedrock_invoke(
-                    crate::state::CurrentApp(app),
-                    Path(model),
-                    OriginalUri(uri),
-                    axum::extract::Extension(gov),
-                    axum::extract::Extension(caller),
-                    headers,
-                    body,
-                ))
-                .await
-            } else {
-                crate::fallback_error_response(
-                    &app.planes,
-                    &path,
-                    StatusCode::NOT_FOUND,
-                    crate::admin::ERR_TYPE_NOT_FOUND,
-                    "the requested resource was not found",
-                )
-            }
-        }
-        // Body-model protocols: the RequestHandler names the operation; every operation →
-        // the generic operation ingress. (`anthropic` bare `/v1/messages` is served here — an
-        // Anthropic SDK pointed at busbar root works like every other dialect; the named/adhoc
-        // prefix routes remain for URL-pinned model selection.)
-        _ => {
-            let op = crate::handlers::request_handler(proto)
-                .and_then(|rh| rh.resolve_operation(&path, &body));
-            match op {
-                // EVERY operation — chat included — takes the same universal ingress. No chat
-                // match, no chat cores: body-model dialects resolve the model from the body inside
-                // `operation_ingress`, exactly like embeddings or speech.
-                Some(op) => {
-                    operation_ingress(&app, &gov, &caller, &headers, body, proto, op, None).await
-                }
-                None => crate::fallback_error_response(
-                    &app.planes,
-                    &path,
-                    StatusCode::NOT_FOUND,
-                    crate::admin::ERR_TYPE_NOT_FOUND,
-                    "the requested resource was not found",
-                ),
-            }
-        }
+    // THE PATH-MODEL ARRIVAL, RESOLVED FROM THE DECLARATION rather than from the protocol's NAME.
+    //
+    // This was `match proto { PROTO_GEMINI => …, PROTO_BEDROCK => … }` — the last two protocol-name
+    // comparisons left in core after `proto::registry` turned the protocol axis into data. They
+    // survived the registry unit because removing them needs an INGRESS on the declaration, which
+    // is a mount-table question, and the mount table is what `crate::ingress::protocol` settled.
+    // A protocol that parses its model out of the URL now DECLARES the function that does it; core
+    // reads `path_ingress` and calls it, and a seventh dialect with a path model joins by
+    // declaring one.
+    //
+    // THE FUTURE IS STILL BOXED, and for the reason the arms were: in a `match`, every arm's future
+    // is inlined into the dispatch coroutine's union, so the gemini/bedrock arms (~5.7 KB each)
+    // inflated the future EVERY request carried even when the traffic was another dialect. A
+    // function pointer returning a boxed future keeps that allocation on the requests that take it
+    // and nowhere else — and it is now the DECLARATION's boxing rather than this function's.
+    if let Some(path_ingress) = crate::proto::registry::decl_for(proto).and_then(|d| d.path_ingress)
+    {
+        return path_ingress(Arrival {
+            app,
+            path,
+            uri,
+            gov,
+            caller,
+            headers,
+            body,
+        })
+        .await;
+    }
+    // Body-model protocols: the RequestHandler names the operation; every operation → the generic
+    // operation ingress. (`anthropic` bare `/v1/messages` is served here — an Anthropic SDK pointed
+    // at busbar root works like every other dialect; the named/adhoc prefix routes remain for
+    // URL-pinned model selection.)
+    let op =
+        crate::handlers::request_handler(proto).and_then(|rh| rh.resolve_operation(&path, &body));
+    match op {
+        // EVERY operation — chat included — takes the same universal ingress. No chat match, no
+        // chat cores: body-model dialects resolve the model from the body inside
+        // `operation_ingress`, exactly like embeddings or speech.
+        Some(op) => operation_ingress(&app, &gov, &caller, &headers, body, proto, op, None).await,
+        None => crate::fallback_error_response(
+            &app.planes,
+            &path,
+            StatusCode::NOT_FOUND,
+            crate::admin::ERR_TYPE_NOT_FOUND,
+            "the requested resource was not found",
+        ),
     }
 }
 

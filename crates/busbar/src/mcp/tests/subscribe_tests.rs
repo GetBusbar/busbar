@@ -20,7 +20,7 @@
 //! poked a change-notification helper directly would pass on a build where nothing on the real
 //! mutation path ever reaches it, which is the failure mode a notification surface has by default.
 
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::envelope::PROTOCOL_VERSION;
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 use futures::StreamExt as _;

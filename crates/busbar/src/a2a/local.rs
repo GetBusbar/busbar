@@ -95,7 +95,7 @@ use super::task::{Task, TaskState};
 /// A2A v0.3 nests the configuration under `pushNotificationConfig`; v1.0 flattens its members into
 /// the request and the response. Answering a v0.3 caller in the v1.0 shape would be a well-formed
 /// document its client cannot read, so the dialect travels with the verb and decides the envelope.
-/// Both are handled for the reason `super::ingress::shape_of` handles both streaming spellings:
+/// Both are handled for the reason `super::receive::shape_of` handles both streaming spellings:
 /// this plane speaks two protocol versions, and reading one vocabulary means the other version's
 /// callers silently get a different behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,7 +385,7 @@ fn config_params(params: &serde_json::Value) -> &serde_json::Value {
 /// ONE READER FOR BOTH SPELLINGS. A2A's `AuthenticationInfo` is `{scheme, credentials}`; the 0.3-era
 /// documents and several SDKs still emit `{schemes: [...], credentials}` with the scheme list
 /// pluralised. Reading only one means a caller using the other is silently unauthenticated, which is
-/// exactly the class of bug `super::ingress::callback_of` was written to close one member up.
+/// exactly the class of bug `super::receive::callback_of` was written to close one member up.
 pub(crate) fn delivery_auth(
     cfg: &serde_json::Value,
 ) -> Result<Option<super::pushdeliver::DeliveryAuth>, String> {
@@ -542,7 +542,7 @@ pub(crate) async fn create_push_config(
     // THE SAME GUARD, AT THE SAME MOMENT, AS THE INLINE PATH. A callback registered by this verb and
     // a callback registered on a submission must be judged by one rule; two rules is how one of them
     // ends up being the way around the other.
-    let pinned = match super::ingress::validate_callback(url.to_string(), seam).await {
+    let pinned = match super::receive::validate_callback(url.to_string(), seam).await {
         Ok(p) => p,
         Err(message) => return err(rpc_id, A2aError::InvalidParams, message),
     };

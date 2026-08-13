@@ -4323,7 +4323,7 @@ fn base_data_router(
                 resource.metadata_path().to_string(),
                 RouteMethod::Get,
                 RouteAuth::None,
-                crate::mcp::resource::metadata,
+                crate::ingress::protocol::metadata_handler::<crate::mcp::envelope::McpWords>,
             )
             // The endpoint itself. `RouteAuth::Key` sends it through the normal chain, where the
             // plane's admission facts make the verifier require this deployment's canonical URI as
@@ -4333,7 +4333,7 @@ fn base_data_router(
                 resource.mount_path().to_string(),
                 RouteMethod::Post,
                 RouteAuth::Key,
-                crate::mcp::ingress::rpc,
+                crate::mcp::envelope::rpc,
             )
             // GET and DELETE answer 405: this revision has no GET stream and no sessions. They are
             // `RouteAuth::Key` like the POST, so an anonymous caller gets the 401 challenge and the
@@ -4343,20 +4343,20 @@ fn base_data_router(
                 resource.mount_path().to_string(),
                 RouteMethod::Get,
                 RouteAuth::Key,
-                crate::mcp::ingress::legacy_verb,
+                crate::mcp::envelope::legacy_verb,
             )
             .route(
                 resource.mount_path().to_string(),
                 RouteMethod::Delete,
                 RouteAuth::Key,
-                crate::mcp::ingress::legacy_verb,
+                crate::mcp::envelope::legacy_verb,
             ),
     };
 
     // THE A2A PLANE, mounted on exactly the same terms and by the plane's own module: no `agents:`
     // (or no `public_url`, so no receiving side) means no route in the table at all, which is what
     // keeps "is this deployment an A2A server?" a question the mounted surface answers.
-    let router = crate::a2a::ingress::mount(router, a2a);
+    let router = crate::a2a::receive::mount(router, a2a);
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
     // metadata document and nothing in the route table.
