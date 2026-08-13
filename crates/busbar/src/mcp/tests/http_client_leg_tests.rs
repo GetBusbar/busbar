@@ -255,14 +255,14 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
         );
         assert_eq!(
             header(&sent, "mcp-protocol-version").as_deref(),
-            Some(crate::mcp::ingress::PROTOCOL_VERSION),
+            Some(crate::mcp::envelope::PROTOCOL_VERSION),
             "busbar must satisfy the same transport MUSTs it enforces on its own ingress"
         );
         // `Mcp-Name` on EXACTLY the methods the ingress's own table names, and with the value the
         // body carries. This is the assertion that caught the real divergence: the builder had its
         // own copy of this rule, that copy omitted the three tasks methods, and a `tasks/get` was
         // going out with no `Mcp-Name` at all — which busbar's own front door answers `-32020` to.
-        match crate::mcp::ingress::name_source_of(verb.method()) {
+        match crate::mcp::envelope::name_source_of(verb.method()) {
             Some(source) => {
                 let expected = body
                     .pointer(&format!("/params/{source}"))

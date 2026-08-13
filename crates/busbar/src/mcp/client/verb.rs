@@ -306,7 +306,7 @@ impl UpstreamVerb {
     /// value the body does not carry would be a header busbar's own ingress answers `-32020` to.
     /// WHICH member of this verb's `params` the `Mcp-Name` header mirrors, and its value.
     ///
-    /// The RULE is `crate::mcp::ingress::name_source_of`'s and is not restated here. This function
+    /// The RULE is `crate::mcp::envelope::name_source_of`'s and is not restated here. This function
     /// once carried its own copy and the two disagreed about the three tasks methods, so a
     /// `tasks/get` issued over streamable HTTP went out with no `Mcp-Name` — the exact header
     /// busbar's own ingress answers `-32020` to. Reading the ingress's table means the requests
@@ -318,7 +318,7 @@ impl UpstreamVerb {
     /// looking it up by name is what keeps the two in step. A per-variant `match` would be the
     /// second copy again, wearing a different shape.
     fn target(&self) -> Option<String> {
-        let source = crate::mcp::ingress::name_source_of(self.method())?;
+        let source = crate::mcp::envelope::name_source_of(self.method())?;
         self.params()
             .get(source)
             .and_then(|v| v.as_str())
