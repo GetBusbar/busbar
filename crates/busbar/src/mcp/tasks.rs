@@ -509,6 +509,27 @@ impl Registry {
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
     pub(crate) handle: Arc<crate::state::AppHandle>,
+    /// THE CALLER'S PRINCIPAL IS FROZEN IN HERE, AND THAT IS BOUNDED RATHER THAN CLOSED. SAY SO.
+    ///
+    /// `Authorised::caller` is a `VirtualKey` resolved at ingress. `upstream::call` re-plans the
+    /// outbound credential from it on every round — so a NARROWED grant is re-read per round — but
+    /// it is re-read from THIS COPY, so the key being deleted, disabled or re-scoped underneath a
+    /// running task is not seen at all. The sibling surface with the same shape,
+    /// `subscriptions/listen`, does not have this hole: it holds a
+    /// [`crate::trust::validate::Standing`] and re-resolves the principal from the live registry on
+    /// every poll.
+    ///
+    /// WHY THIS ONE IS BOUNDED INSTEAD, stated rather than left to be discovered: the task path's
+    /// budget is charged ONCE at creation (see the runner's own note below), so re-resolving the
+    /// principal here would re-derive a grant against a charge that has already been settled and
+    /// against a caller that has already been answered. Making that coherent is a change to when a
+    /// task path charges, not a change to how it resolves a key, and it belongs with that decision.
+    ///
+    /// WHAT MAKES IT SURVIVABLE, and it is a real property rather than an accident: [`TASK_TTL_MS`]
+    /// is 300 000. Nothing on this path can outlive a revocation by more than five minutes, and that
+    /// bound is enforced by the registry's own sweep rather than by anything a runner remembers.
+    /// The bound is what this field is trading on, so removing or raising `TASK_TTL_MS` is a
+    /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
     pub(crate) server_id: String,

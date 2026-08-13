@@ -786,7 +786,11 @@ fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
 /// property. Named so that a test using it is visibly not testing the gate.
 struct AlwaysDelegable;
 impl crate::a2a::relay::DelegationGate for AlwaysDelegable {
-    fn still_delegable(&self, _agent_id: &str) -> Result<(), crate::a2a::relay::NotDelegable> {
+    fn still_delegable(
+        &self,
+        _agent_id: &str,
+        _admitted: u64,
+    ) -> Result<(), crate::a2a::relay::NotDelegable> {
         Ok(())
     }
 }
@@ -838,6 +842,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
 
     let out = crate::a2a::relay::relay(
         &crate::a2a::relay::RelayCall {
+            admitted_generation: 0,
             agent_id: "planner",
             backend_url: BACKEND,
             lease: None,
@@ -1023,6 +1028,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
 
     let out = crate::a2a::relay::relay(
         &crate::a2a::relay::RelayCall {
+            admitted_generation: 0,
             agent_id: "conformance",
             backend_url: "http://127.0.0.1:9110/",
             lease: None,
@@ -1045,6 +1051,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
     // that has stopped guarding altogether.
     let out = crate::a2a::relay::relay(
         &crate::a2a::relay::RelayCall {
+            admitted_generation: 0,
             agent_id: "conformance",
             backend_url: "http://127.0.0.1:9110/",
             lease: None,

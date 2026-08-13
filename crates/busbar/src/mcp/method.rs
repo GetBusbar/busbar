@@ -1149,8 +1149,6 @@ async fn tools_call(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let grant = ctx.grant();
-
     // THE LIVE TOOL-LIST SIGHTINGS as of admission. This is the right-hand side of the rug-pull
     // comparison: with one, the gate below compares the operator's approved digest against what the
     // upstream is CURRENTLY serving, so a schema changed under a live cache refuses the call.
@@ -1158,17 +1156,18 @@ async fn tools_call(
     // before.
     let admitted_sightings = ctx.app.mcp_sightings.load();
     // (1) ADMISSION on the snapshot this request arrived on.
-    let selected =
-        match ctx
-            .app
-            .mcp_catalogue
-            .resolve(&grant, LiveSightings::of(&admitted_sightings), name)
-        {
-            Ok(entry) => entry.clone(),
-            Err(refusal) => {
-                return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id))
-            }
-        };
+    let selected = match ctx.app.mcp_catalogue.resolve(
+        ctx.gov.key.as_deref(),
+        LiveSightings::of(&admitted_sightings),
+        name,
+        crate::trust::validate::Generations::at_admission(selected_gen),
+        crate::store::now(),
+    ) {
+        Ok(entry) => entry.clone(),
+        Err(refusal) => {
+            return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id))
+        }
+    };
     log.resolved(&selected, selected_gen);
 
     // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot. Re-read, not
@@ -1180,10 +1179,11 @@ async fn tools_call(
     // would leave a window exactly as wide as the check it replaced.
     let live_sightings = live.mcp_sightings.load();
     if let Err(refusal) = live.mcp_catalogue.revalidate(
-        &grant,
+        ctx.gov.key.as_deref(),
         LiveSightings::of(&live_sightings),
         &selected,
         selected_gen,
+        crate::store::now(),
     ) {
         return log.refused(refusal.audit_reason(), refuse(ctx, name, &refusal, id));
     }
@@ -1998,6 +1998,10 @@ fn refuse(
     let status = match refusal {
         DispatchRefusal::GenerationMoved { .. } => StatusCode::CONFLICT,
         DispatchRefusal::UnknownTool(_) | DispatchRefusal::NotGranted(_) => StatusCode::NOT_FOUND,
+        // A PRINCIPAL THAT WENT STALE BETWEEN INGRESS AND DISPATCH is `401`: the caller is not being
+        // told anything about the tool, it is being told to authenticate again. Folding it into the
+        // `404` above would send a client re-checking its scopes when its credential is what expired.
+        DispatchRefusal::IdentityNotLive(_) => StatusCode::UNAUTHORIZED,
         // A QUARANTINE is `403` and not `404`: the tool exists and this caller may see it, and what
         // changed is the upstream. Answering `404` would tell an operator debugging a rug-pull that
         // their registration had vanished.

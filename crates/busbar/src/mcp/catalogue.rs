@@ -14,8 +14,10 @@
 //! it contributes the immutable value that rides in it, plus the monotonic generation that makes a
 //! swap DETECTABLE from inside a request.
 //!
-//! [`PIN_GENERATION`] is process-global and monotonic rather than a field derived from config
-//! content. That is deliberate: a content hash would compare equal after a change-and-revert, and
+//! The generation source is [`crate::trust::validate::next_generation`] — process-global, monotonic,
+//! and shared with every other snapshot in the process rather than a counter per plane. It is a
+//! counter rather than a field derived from config content, and that is deliberate: a content hash
+//! would compare equal after a change-and-revert, and
 //! the rule is about whether the operator's approval was REPLACED, not about whether it happens
 //! to look the same. A counter cannot compare equal to a previous value, so a call resolved under
 //! generation N is refused under N+1 whatever the new snapshot says.
@@ -60,19 +62,12 @@
 //! [`ToolEntry::description`] is the only place it appears and nothing in [`Catalogue`] calls it.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{
     McpPinMechanism, McpServerDefCfg, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
 };
 use crate::trust::Approval;
-
-/// THE PIN GENERATION SOURCE. Monotonic, process-global, bumped once per snapshot BUILD.
-///
-/// Starts at 1 so that `0` is never a live generation and can therefore be used by a test (or a
-/// future caller with nothing selected yet) as an unambiguous "no generation".
-static PIN_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// ONE approved capability — the bound identity in full, plus the inert display fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,7 +322,7 @@ impl Default for Catalogue {
     /// and not a return to some timeless zero state.
     fn default() -> Self {
         Self {
-            generation: PIN_GENERATION.fetch_add(1, Ordering::Relaxed),
+            generation: crate::trust::validate::next_generation(),
             servers: BTreeMap::new(),
             tools: BTreeMap::new(),
             prompts: BTreeMap::new(),
@@ -362,6 +357,13 @@ pub(crate) enum DispatchRefusal {
     /// gets the same shape of answer either way — but the AUDIT record must be able to tell the
     /// operator which of the two happened.
     NotGranted(String),
+    /// The caller's PRINCIPAL is no longer live: deleted, disabled or expired. Its own arm rather
+    /// than folded into `NotGranted`, for the same reason `NotGranted` is not folded into
+    /// `UnknownTool`: the wire answer is deliberately identical and the AUDIT record must not be.
+    /// "grant this key a scope" and "this key is gone" are two different things for an operator to
+    /// do, and an ingress that had already authenticated is exactly where a stale principal is least
+    /// expected and therefore worst to mislabel.
+    IdentityNotLive(String),
 }
 
 impl std::fmt::Display for DispatchRefusal {
@@ -391,7 +393,7 @@ impl std::fmt::Display for DispatchRefusal {
                 "`{tool}` is not served: {why}. The upstream's current tool list no longer matches \
                  what an operator approved, so this server is demoted until the change is reviewed."
             ),
-            DispatchRefusal::NotGranted(t) => {
+            DispatchRefusal::NotGranted(t) | DispatchRefusal::IdentityNotLive(t) => {
                 write!(f, "`{t}` is not a tool this server exposes")
             }
         }
@@ -401,17 +403,25 @@ impl std::fmt::Display for DispatchRefusal {
 impl DispatchRefusal {
     /// The AUDIT outcome word. Every arm is a rejection; the constant is named once so a new arm
     /// cannot quietly become an `applied` row.
+    ///
+    /// THE SHARED WORDS ARE CORE'S, from [`crate::audit::vocab`]: the refusal vocabulary is shared
+    /// across every stream of evidence, so a second stream cannot spell the same refusal
+    /// differently.
+    ///
+    /// The rest are this plane's own renderings of ONE core arm — `not_pinned`, `not_approved` and
+    /// `quarantined` are three operator actions behind one `not_serving`, and keeping them apart is
+    /// the opposite of flattening: core decides, and the plane says which of its shapes the decision
+    /// took.
     pub(crate) fn audit_reason(&self) -> &'static str {
+        use crate::audit::vocab;
         match self {
-            DispatchRefusal::GenerationMoved { .. } => "generation_moved",
+            DispatchRefusal::GenerationMoved { .. } => vocab::REASON_GENERATION_MOVED,
             DispatchRefusal::UnknownTool(_) => "unknown_tool",
             DispatchRefusal::NotApproved(_) => "not_approved",
             DispatchRefusal::NotPinned(_) => "not_pinned",
             DispatchRefusal::Quarantined { .. } => "quarantined",
-            // The word is core's (`crate::audit::vocab`), not this plane's: the refusal
-            // vocabulary is shared across every stream of evidence, so a second stream cannot
-            // spell the same refusal differently.
-            DispatchRefusal::NotGranted(_) => crate::audit::vocab::REASON_NOT_GRANTED,
+            DispatchRefusal::NotGranted(_) => vocab::REASON_NOT_GRANTED,
+            DispatchRefusal::IdentityNotLive(_) => vocab::REASON_IDENTITY_NOT_LIVE,
         }
     }
 }
@@ -507,7 +517,7 @@ impl Catalogue {
             }
         }
         Self {
-            generation: PIN_GENERATION.fetch_add(1, Ordering::Relaxed),
+            generation: crate::trust::validate::next_generation(),
             servers,
             tools,
             prompts,
@@ -695,42 +705,64 @@ impl Catalogue {
     /// under, and the pair is what [`Catalogue::revalidate`] is handed later.
     pub(crate) fn resolve(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        principal: Option<&busbar_api::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
+        generation: crate::trust::validate::Generations,
+        now: u64,
     ) -> Result<&ToolEntry, DispatchRefusal> {
         let Some(entry) = self.tools.get(namespaced_name) else {
             return Err(DispatchRefusal::UnknownTool(namespaced_name.to_string()));
         };
-        if !granted(grant, &entry.server, &entry.namespaced) {
-            return Err(DispatchRefusal::NotGranted(namespaced_name.to_string()));
-        }
         let server = self
             .servers
             .get(&entry.server)
             .ok_or_else(|| DispatchRefusal::UnknownTool(namespaced_name.to_string()))?;
-        // THE DIGEST BEING DISPATCHED AGAINST. When a live tool list has been taken it is what the
-        // UPSTREAM is serving right now; with no sighting it is the hash the operator wrote. That
-        // choice is the whole rug-pull defence: comparing the approved hash against the configured
-        // hash is comparing the operator's intent with itself and cannot, by construction, notice
-        // an upstream changing its schema underneath.
-        let observed = match live.digest_for(&entry.server, &entry.tool, &server.approval) {
-            LiveDigest::Unsighted => entry.dispatch_digest().to_string(),
-            LiveDigest::At(digest) => digest,
-            LiveDigest::Quarantined(why) => {
-                return Err(DispatchRefusal::Quarantined {
-                    tool: entry.namespaced.clone(),
-                    why,
-                })
+        // THE LAST SIGHTING, so the registration-level half of the artifact question is the
+        // lifecycle's own derivation rather than a second one written here.
+        let sighting = live.sighting_for(&entry.server);
+        // THE FINGERPRINT, AND IT IS THIS PLANE'S ONLY CONTRIBUTION TO THE GATE. A closure, not a
+        // value: the validator runs it at the artifact step and never before, which is what keeps a
+        // caller with no grant from learning what the upstream is currently serving.
+        //
+        // With a live tool list it is what the UPSTREAM is serving right now; with no sighting it is
+        // the hash the operator wrote. That choice is the whole rug-pull defence: comparing the
+        // approved hash against the configured hash is comparing the operator's intent with itself
+        // and cannot, by construction, notice an upstream changing its schema underneath.
+        let observe = || match live.digest_for(&entry.server, &entry.tool, &server.approval) {
+            LiveDigest::Unsighted => {
+                crate::trust::validate::Observed::At(entry.dispatch_digest().to_string())
             }
+            LiveDigest::At(digest) => crate::trust::validate::Observed::At(digest),
+            LiveDigest::Quarantined(why) => crate::trust::validate::Observed::Drifted(why),
         };
-        // THE GATE, and the only one. It is not "is the registration pinned, and is a hash
-        // configured" restated here; it is the shared lifecycle's own comparison, so the answer
-        // dispatch gets is by construction the answer the operator's trust surfaces are computed
-        // from.
-        if !server.approval.serves(&entry.tool, &observed) {
-            return Err(refusal_reason(server, entry));
-        }
+        // THE ONE ORDERED GATE, in core, reached identically by every plane. `Approval::serves` is
+        // still the comparison it makes — the same one the operator's changes queue is rendered
+        // from — but the ORDER around it is no longer this file's to decide.
+        crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+            principal,
+            now,
+            // GRANT BEFORE DIGEST is now a property of the validator rather than of the order these
+            // lines happen to be written in.
+            grants: &[
+                crate::trust::validate::Grant::Scope {
+                    kind: "mcp_server",
+                    name: &entry.server,
+                },
+                crate::trust::validate::Grant::Scope {
+                    kind: "mcp_tool",
+                    name: &entry.namespaced,
+                },
+            ],
+            approval: &server.approval,
+            sighting: &sighting,
+            capability: Some(crate::trust::validate::Fingerprint {
+                capability: &entry.tool,
+                observe: &observe,
+            }),
+            generation,
+        })
+        .map_err(|refusal| as_dispatch_refusal(refusal, server, entry, &sighting))?;
         Ok(entry)
     }
 
@@ -781,22 +813,60 @@ impl Catalogue {
     /// rather than on the next one.
     pub(crate) fn revalidate(
         &self,
-        grant: &dyn Fn(&str, &str) -> bool,
+        principal: Option<&busbar_api::VirtualKey>,
         sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,
+        now: u64,
     ) -> Result<(), DispatchRefusal> {
-        if selected_generation != self.generation {
-            return Err(DispatchRefusal::GenerationMoved {
-                selected: selected_generation,
-                live: self.generation,
-            });
-        }
-        let live = self.resolve(grant, sightings, &selected.namespaced)?;
+        // THE GENERATION IS PART OF THE ONE CALL, not a check in front of it. It is compared LAST,
+        // after identity, grant and artifact, because "something moved, retry" is a worse message
+        // than any of the three and should only be reached when none of them applies.
+        let live = self.resolve(
+            principal,
+            sightings,
+            &selected.namespaced,
+            crate::trust::validate::Generations::since(selected_generation, self.generation),
+            now,
+        )?;
         if live.schema_hash != selected.schema_hash {
             return Err(DispatchRefusal::NotApproved(selected.namespaced.clone()));
         }
         Ok(())
+    }
+}
+
+/// ADMISSION AND RE-VALIDATION AS THE UNIT BATTERIES DRIVE THEM: a fixed clock and, for admission,
+/// a snapshot that is its own live one.
+///
+/// `cfg(test)` and nothing else — a production caller has a real clock and a real pair of
+/// generations, and a shorthand that supplied either for it would be a shorthand for skipping a
+/// step.
+#[cfg(test)]
+impl Catalogue {
+    pub(crate) fn resolve_now(
+        &self,
+        principal: Option<&busbar_api::VirtualKey>,
+        live: LiveSightings<'_>,
+        namespaced_name: &str,
+    ) -> Result<&ToolEntry, DispatchRefusal> {
+        self.resolve(
+            principal,
+            live,
+            namespaced_name,
+            crate::trust::validate::Generations::at_admission(self.generation),
+            0,
+        )
+    }
+
+    pub(crate) fn revalidate_now(
+        &self,
+        principal: Option<&busbar_api::VirtualKey>,
+        sightings: LiveSightings<'_>,
+        selected: &ToolEntry,
+        selected_generation: u64,
+    ) -> Result<(), DispatchRefusal> {
+        self.revalidate(principal, sightings, selected, selected_generation, 0)
     }
 }
 
@@ -879,6 +949,58 @@ fn refusal_reason(server: &ServerEntry, entry: &ToolEntry) -> DispatchRefusal {
     match server.approval.pin() {
         None => DispatchRefusal::NotPinned(server.id.clone()),
         Some(_) => DispatchRefusal::NotApproved(entry.namespaced.clone()),
+    }
+}
+
+/// RENDER the core refusal as this plane's own wire refusal.
+///
+/// The DECISION is core's and only the wording is this plane's, which is why every arm maps rather
+/// than re-derives: a second derivation here could disagree with the gate at exactly the moment a
+/// call races a quarantine. The words themselves are unchanged and stay PLURAL — `not_granted`,
+/// `not_pinned`, `not_approved`, `quarantined` and `generation_moved` are five different things for
+/// an operator to go and do.
+fn as_dispatch_refusal(
+    refusal: crate::trust::validate::Refusal,
+    server: &ServerEntry,
+    entry: &ToolEntry,
+    sighting: &crate::trust::Sighting<TransportPin>,
+) -> DispatchRefusal {
+    use crate::trust::validate::Refusal;
+    match refusal {
+        // THE CATALOGUE HIDES WHAT A CALLER MAY NOT SEE, so this renders identically to
+        // `UnknownTool` on the wire; the audit word is what keeps the two apart for an operator.
+        Refusal::NotGranted { .. } => DispatchRefusal::NotGranted(entry.namespaced.clone()),
+        // THE PRINCIPAL WENT STALE BETWEEN INGRESS AND DISPATCH. The wire answer is the same one an
+        // ungranted caller gets; the audit word is not.
+        Refusal::IdentityNotLive { .. } => {
+            DispatchRefusal::IdentityNotLive(entry.namespaced.clone())
+        }
+        // No egress list is consulted on this path. Answered rather than unwrapped because this is a
+        // request path and "unreachable" is a claim about today's arguments.
+        Refusal::EgressDenied { .. } => DispatchRefusal::NotGranted(entry.namespaced.clone()),
+        // `Pending` IS "no locked identity pin" — the state's own definition — so this is a
+        // rendering of the state rather than a second test of the approval's fields.
+        Refusal::NotServing {
+            state: crate::trust::TrustState::Pending,
+            ..
+        } => DispatchRefusal::NotPinned(server.id.clone()),
+        Refusal::NotServing { state, .. } => DispatchRefusal::Quarantined {
+            tool: entry.namespaced.clone(),
+            // THE SAME WORD THE ADVERTISEMENT PATH USES, asked of the sighting as well as the state
+            // so a demotion replayed at boot says so here too rather than being re-described as
+            // ordinary drift.
+            why: super::client::catalogue::quarantine_word_for(sighting, state)
+                .unwrap_or("this server is not serving"),
+        },
+        Refusal::Unobservable { why, .. } => DispatchRefusal::Quarantined {
+            tool: entry.namespaced.clone(),
+            why,
+        },
+        Refusal::ArtifactDrifted { .. } => refusal_reason(server, entry),
+        Refusal::GenerationMoved { admitted, live } => DispatchRefusal::GenerationMoved {
+            selected: admitted,
+            live,
+        },
     }
 }
 

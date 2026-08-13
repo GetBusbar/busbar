@@ -468,6 +468,15 @@ pub(crate) mod reverify;
 /// plane supplies one method — the fetch — and nothing above that method knows which plane it is on.
 pub(crate) mod sweep;
 
+/// THE ORDERED REQUEST VALIDATOR — *"is this still what the operator approved?"*, asked once, in one
+/// order, for every protocol.
+///
+/// It lives here rather than on either plane for the reason [`sweep`] and [`reverify`] do: the
+/// lifecycle owns WHAT HAPPENS when a fingerprint changes, and a plane that also owned the ORDER in
+/// which that question is asked would be a second half of one machine kept in a different file. A
+/// protocol supplies the fingerprint through [`PinnedArtifact`] and nothing else.
+pub(crate) mod validate;
+
 #[cfg(test)]
 #[path = "tests/lifecycle_tests.rs"]
 mod lifecycle_tests;

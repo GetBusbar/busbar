@@ -37,6 +37,17 @@ fn a_key(scopes: Option<Vec<&str>>) -> VirtualKey {
     }
 }
 
+/// THE ASK, wrapped. The catalogue judges a caller rather than a bare key now: the ordered
+/// validator's first and fourth steps need a clock and a generation, and carrying all three together
+/// is what stops a call site pairing this caller's key with another request's snapshot.
+fn as_caller(key: &VirtualKey) -> crate::a2a::catalogue::Caller<'_> {
+    crate::a2a::catalogue::Caller {
+        key,
+        now: 0,
+        generation: crate::trust::validate::Generations::at_admission(1),
+    }
+}
+
 fn a_card(skills: serde_json::Value, capabilities: serde_json::Value) -> serde_json::Value {
     json!({
         "protocolVersion": "0.3.0",
@@ -96,7 +107,7 @@ fn an_unconstrained_caller_sees_every_approved_agent_in_registry_order() {
     // Insertion order, not hash order: an operator-facing listing that reshuffles between reads is
     // one nobody can diff.
     let regs = vec![planner(), researcher()];
-    let cat = inbound_catalogue(&a_key(None), &regs, &TaskShape::default());
+    let cat = inbound_catalogue(&as_caller(&a_key(None)), &regs, &TaskShape::default());
     assert_eq!(ids(&cat), vec!["planner", "researcher"]);
     assert!(
         cat.iter().all(|c| c.matched_skill.is_none()),
@@ -109,7 +120,7 @@ fn scope_decides_visibility_and_a_pool_only_key_sees_nothing() {
     let regs = vec![planner(), researcher()];
     assert_eq!(
         ids(&inbound_catalogue(
-            &a_key(Some(vec!["planner"])),
+            &as_caller(&a_key(Some(vec!["planner"]))),
             &regs,
             &TaskShape::default()
         )),
@@ -118,7 +129,7 @@ fn scope_decides_visibility_and_a_pool_only_key_sees_nothing() {
     let mut pool_only = a_key(Some(vec![]));
     pool_only.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
     assert!(
-        inbound_catalogue(&pool_only, &regs, &TaskShape::default()).is_empty(),
+        inbound_catalogue(&as_caller(&pool_only), &regs, &TaskShape::default()).is_empty(),
         "cross-kind admission is fail-closed"
     );
 }
@@ -157,11 +168,11 @@ fn only_an_approved_registration_is_ever_a_candidate() {
         ("errored", errored, TrustState::Error),
     ] {
         assert!(
-            inbound_catalogue(&key, std::slice::from_ref(&reg), &shape).is_empty(),
+            inbound_catalogue(&as_caller(&key), std::slice::from_ref(&reg), &shape).is_empty(),
             "a {what} registration must not be a candidate"
         );
         assert_eq!(
-            explain(&reg, &key, &shape, None).expect_err(what),
+            explain(&reg, &as_caller(&key), &shape, None).expect_err(what),
             Excluded::NotTrusted(expected),
             "{what}"
         );
@@ -177,7 +188,7 @@ fn capability_matching_is_structural_and_names_the_skill_it_matched() {
         skill: Some("plan".to_string()),
         ..Default::default()
     };
-    let cat = inbound_catalogue(&key, &regs, &want_plan);
+    let cat = inbound_catalogue(&as_caller(&key), &regs, &want_plan);
     assert_eq!(ids(&cat), vec!["planner"]);
     assert_eq!(cat[0].matched_skill.as_deref(), Some("plan"));
 
@@ -187,9 +198,9 @@ fn capability_matching_is_structural_and_names_the_skill_it_matched() {
         skill: Some("translate".to_string()),
         ..Default::default()
     };
-    assert!(inbound_catalogue(&key, &regs, &want_nothing).is_empty());
+    assert!(inbound_catalogue(&as_caller(&key), &regs, &want_nothing).is_empty());
     assert_eq!(
-        explain(&regs[0], &key, &want_nothing, None).expect_err("no such skill"),
+        explain(&regs[0], &as_caller(&key), &want_nothing, None).expect_err("no such skill"),
         Excluded::SkillNotDeclared("translate".to_string())
     );
 }
@@ -204,11 +215,11 @@ fn a_required_protocol_capability_the_card_does_not_declare_excludes_the_agent()
         ..Default::default()
     };
     assert_eq!(
-        ids(&inbound_catalogue(&key, &regs, &streaming)),
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &streaming)),
         vec!["planner"]
     );
     assert_eq!(
-        explain(&regs[1], &key, &streaming, None).expect_err("no streaming"),
+        explain(&regs[1], &as_caller(&key), &streaming, None).expect_err("no streaming"),
         Excluded::CapabilityNotDeclared("streaming")
     );
 
@@ -217,11 +228,11 @@ fn a_required_protocol_capability_the_card_does_not_declare_excludes_the_agent()
         ..Default::default()
     };
     assert_eq!(
-        ids(&inbound_catalogue(&key, &regs, &push)),
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &push)),
         vec!["researcher"]
     );
     assert_eq!(
-        explain(&regs[0], &key, &push, None).expect_err("no push"),
+        explain(&regs[0], &as_caller(&key), &push, None).expect_err("no push"),
         Excluded::CapabilityNotDeclared("pushNotifications")
     );
 }
@@ -238,7 +249,7 @@ fn modes_must_be_compatible_in_both_directions() {
         ..Default::default()
     };
     assert_eq!(
-        explain(&regs[0], &key, &sends_audio, None).expect_err("incompatible input"),
+        explain(&regs[0], &as_caller(&key), &sends_audio, None).expect_err("incompatible input"),
         Excluded::ModesIncompatible
     );
 
@@ -247,7 +258,7 @@ fn modes_must_be_compatible_in_both_directions() {
         ..Default::default()
     };
     assert_eq!(
-        explain(&regs[0], &key, &wants_pdf, None).expect_err("incompatible output"),
+        explain(&regs[0], &as_caller(&key), &wants_pdf, None).expect_err("incompatible output"),
         Excluded::ModesIncompatible
     );
 
@@ -256,7 +267,10 @@ fn modes_must_be_compatible_in_both_directions() {
         output_modes: vec!["application/json".to_string()],
         ..Default::default()
     };
-    assert_eq!(ids(&inbound_catalogue(&key, &regs, &json)), vec!["planner"]);
+    assert_eq!(
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &json)),
+        vec!["planner"]
+    );
 }
 
 #[test]
@@ -266,7 +280,11 @@ fn a_caller_that_names_no_modes_is_not_constraining_the_match() {
     let key = a_key(None);
     let regs = vec![planner()];
     assert_eq!(
-        ids(&inbound_catalogue(&key, &regs, &TaskShape::default())),
+        ids(&inbound_catalogue(
+            &as_caller(&key),
+            &regs,
+            &TaskShape::default()
+        )),
         vec!["planner"]
     );
 }
@@ -294,7 +312,10 @@ fn a_skills_own_modes_override_the_card_defaults_and_fall_back_to_them() {
         output_modes: vec!["text/plain".to_string()],
         ..Default::default()
     };
-    assert_eq!(ids(&inbound_catalogue(&key, &regs, &audio)), vec!["multi"]);
+    assert_eq!(
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &audio)),
+        vec!["multi"]
+    );
 
     let json_to_transcribe = TaskShape {
         skill: Some("transcribe".to_string()),
@@ -302,7 +323,8 @@ fn a_skills_own_modes_override_the_card_defaults_and_fall_back_to_them() {
         ..Default::default()
     };
     assert_eq!(
-        explain(&regs[0], &key, &json_to_transcribe, None).expect_err("the skill overrides"),
+        explain(&regs[0], &as_caller(&key), &json_to_transcribe, None)
+            .expect_err("the skill overrides"),
         Excluded::ModesIncompatible
     );
 
@@ -314,7 +336,7 @@ fn a_skills_own_modes_override_the_card_defaults_and_fall_back_to_them() {
         ..Default::default()
     };
     assert_eq!(
-        ids(&inbound_catalogue(&key, &regs, &plan_json)),
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &plan_json)),
         vec!["multi"]
     );
 }
@@ -325,9 +347,14 @@ fn an_agent_with_no_cached_card_is_not_a_candidate_whatever_its_approval_says() 
     let key = a_key(None);
     let mut reg = planner();
     reg.cached_card = None;
-    assert!(inbound_catalogue(&key, std::slice::from_ref(&reg), &TaskShape::default()).is_empty());
+    assert!(inbound_catalogue(
+        &as_caller(&key),
+        std::slice::from_ref(&reg),
+        &TaskShape::default()
+    )
+    .is_empty());
     assert_eq!(
-        explain(&reg, &key, &TaskShape::default(), None).expect_err("no card"),
+        explain(&reg, &as_caller(&key), &TaskShape::default(), None).expect_err("no card"),
         Excluded::NoCachedCard
     );
 }
@@ -343,21 +370,26 @@ fn a_delegation_target_needs_an_explicit_egress_grant_and_empty_means_nobody() {
     let mut regs = vec![planner(), researcher()];
 
     assert!(
-        delegation_catalogue("orchestrator", &key, &regs, &shape).is_empty(),
+        delegation_catalogue("orchestrator", &as_caller(&key), &regs, &shape).is_empty(),
         "no egress grant, no delegation target"
     );
     assert_eq!(
-        explain(&regs[0], &key, &shape, Some("orchestrator")).expect_err("no grant"),
+        explain(&regs[0], &as_caller(&key), &shape, Some("orchestrator")).expect_err("no grant"),
         Excluded::NoEgressGrant
     );
 
     regs[0].egress_scopes = vec!["orchestrator".to_string()];
     assert_eq!(
-        ids(&delegation_catalogue("orchestrator", &key, &regs, &shape)),
+        ids(&delegation_catalogue(
+            "orchestrator",
+            &as_caller(&key),
+            &regs,
+            &shape
+        )),
         vec!["planner"]
     );
     // And the grant is per fronted agent: a DIFFERENT one is still refused.
-    assert!(delegation_catalogue("intern", &key, &regs, &shape).is_empty());
+    assert!(delegation_catalogue("intern", &as_caller(&key), &regs, &shape).is_empty());
 }
 
 #[test]
@@ -374,8 +406,13 @@ fn the_egress_grant_is_the_only_structural_difference_between_the_two_catalogues
         r.egress_scopes = vec!["orchestrator".to_string()];
     }
     assert_eq!(
-        ids(&inbound_catalogue(&key, &regs, &shape)),
-        ids(&delegation_catalogue("orchestrator", &key, &regs, &shape))
+        ids(&inbound_catalogue(&as_caller(&key), &regs, &shape)),
+        ids(&delegation_catalogue(
+            "orchestrator",
+            &as_caller(&key),
+            &regs,
+            &shape
+        ))
     );
 }
 
@@ -399,7 +436,7 @@ fn every_filter_is_load_bearing_in_the_conjunction() {
     assert_eq!(
         ids(&delegation_catalogue(
             "orchestrator",
-            &scoped,
+            &as_caller(&scoped),
             &[ok.clone()],
             &shape
         )),
@@ -433,7 +470,7 @@ fn every_filter_is_load_bearing_in_the_conjunction() {
         ("capability", no_streaming),
     ] {
         assert!(
-            delegation_catalogue("orchestrator", &scoped, &[reg], &shape).is_empty(),
+            delegation_catalogue("orchestrator", &as_caller(&scoped), &[reg], &shape).is_empty(),
             "the `{what}` filter stopped being applied"
         );
     }

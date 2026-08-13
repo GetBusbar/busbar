@@ -68,6 +68,7 @@ fn a_scoped_live_key_of_the_right_kind_reaches_the_backend() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "planner",
         &registrations(),
+        1,
         1_000,
     )
     .expect("authorized");
@@ -85,7 +86,7 @@ fn a_scoped_live_key_of_the_right_kind_reaches_the_backend() {
 fn a_credential_of_another_kind_is_refused_with_401_and_never_names_a_backend() {
     let key = a_key("k1", None);
     for kind in ["sigv4", "bearer", "", "a2a-inbound", "A2A_INBOUND"] {
-        let err = authorize(&key, kind, "planner", &registrations(), 1_000)
+        let err = authorize(&key, kind, "planner", &registrations(), 1, 1_000)
             .expect_err("only `a2a_inbound` admits here");
         assert_eq!(
             err,
@@ -109,6 +110,7 @@ fn an_out_of_scope_key_is_refused_403_before_any_backend_is_named() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "planner",
         &registrations(),
+        1,
         1_000,
     )
     .expect_err("out of scope");
@@ -135,6 +137,7 @@ fn a_key_scoped_only_to_pools_acquires_no_agents_on_upgrade() {
             CREDENTIAL_KIND_A2A_INBOUND,
             agent,
             &registrations(),
+            1,
             1_000,
         )
         .expect_err("a pool-only key grants NO agents");
@@ -147,6 +150,7 @@ fn a_key_scoped_only_to_pools_acquires_no_agents_on_upgrade() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "planner",
         &registrations(),
+        1,
         1_000
     )
     .is_ok());
@@ -158,6 +162,7 @@ fn a_key_scoped_only_to_pools_acquires_no_agents_on_upgrade() {
             CREDENTIAL_KIND_A2A_INBOUND,
             "planner",
             &registrations(),
+            1,
             1_000
         )
         .expect_err("an empty list is NO scopes")
@@ -194,6 +199,7 @@ fn a_key_that_is_not_live_is_refused_401_however_it_is_not_live() {
             CREDENTIAL_KIND_A2A_INBOUND,
             "planner",
             &registrations(),
+            1,
             1_000,
         )
         .expect_err(what);
@@ -214,6 +220,7 @@ fn a_key_that_is_not_live_is_refused_401_however_it_is_not_live() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "planner",
         &registrations(),
+        1,
         1_000
     )
     .is_ok());
@@ -230,8 +237,15 @@ fn a_suspended_fronted_agent_refuses_inbound_as_well_as_outbound() {
         .approval
         .suspend("anomaly breaker: terminal_failure_rate observed 0.900");
 
-    let err = authorize(&key, CREDENTIAL_KIND_A2A_INBOUND, "planner", &regs, 1_000)
-        .expect_err("a suspended agent is not serving");
+    let err = authorize(
+        &key,
+        CREDENTIAL_KIND_A2A_INBOUND,
+        "planner",
+        &regs,
+        1,
+        1_000,
+    )
+    .expect_err("a suspended agent is not serving");
     assert!(
         matches!(
             err,
@@ -254,6 +268,7 @@ fn a_suspended_fronted_agent_refuses_inbound_as_well_as_outbound() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "summarizer",
         &regs,
+        1,
         1_000
     )
     .is_ok());
@@ -286,8 +301,15 @@ fn a_quarantined_or_pending_agent_is_not_serving_either() {
             r
         }),
     ] {
-        let err =
-            authorize(&key, CREDENTIAL_KIND_A2A_INBOUND, "planner", &[reg], 1_000).expect_err(what);
+        let err = authorize(
+            &key,
+            CREDENTIAL_KIND_A2A_INBOUND,
+            "planner",
+            &[reg],
+            1,
+            1_000,
+        )
+        .expect_err(what);
         assert_eq!(err.status(), 503, "{what}");
     }
 }
@@ -303,6 +325,7 @@ fn an_unknown_agent_is_a_404_and_an_out_of_scope_one_says_so() {
         CREDENTIAL_KIND_A2A_INBOUND,
         "nonexistent",
         &registrations(),
+        1,
         1_000,
     )
     .expect_err("no such agent");

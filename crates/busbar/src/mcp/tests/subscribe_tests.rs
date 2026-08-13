@@ -67,6 +67,30 @@ prompts_allow:
     template: "hello"
 "#;
 
+/// The same fixture as [`app_with`], plus a GOVERNANCE RUNTIME on the snapshot.
+///
+/// A separate builder rather than a parameter on `app_with` because governance is what the
+/// re-resolution reads, and a swapped-in snapshot that quietly lost it would make the stream
+/// fail closed for the right reason at the wrong moment — which is exactly the confusion that cost
+/// this test its first run.
+fn governed_app_with(
+    yaml: &str,
+    gov: &std::sync::Arc<crate::governance::GovState>,
+) -> std::sync::Arc<crate::state::App> {
+    let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(yaml)
+        .unwrap_or_else(|e| panic!("the `tools:` registration was refused by the grammar: {e}"));
+    TestApp::new()
+        .mcp(&McpCfg {
+            canonical_uri: CANONICAL.to_string(),
+            authorization_servers: vec!["https://login.example.com".to_string()],
+            scopes_supported: Vec::new(),
+            allowed_origins: Vec::new(),
+        })
+        .mcp_server("tools", def)
+        .governance(std::sync::Arc::clone(gov))
+        .build()
+}
+
 fn app_with(yaml: &str) -> std::sync::Arc<crate::state::App> {
     let def: crate::mcp::config::McpServerDefCfg = serde_yaml::from_str(yaml)
         .unwrap_or_else(|e| panic!("the `tools:` registration was refused by the grammar: {e}"));
@@ -388,63 +412,73 @@ async fn discover_advertises_the_method_that_dispatch_accepts() {
     );
 }
 
-/// CHARACTERISATION — **THIS PINS A KNOWN-WRONG BEHAVIOUR, NOT A DESIRED ONE.**
+/// **THE FREEZE IS LIFTED, AND THIS IS THE CASE THAT PROVED IT.**
 ///
-/// The two halves of a subscription's authorisation do not age alike, and this case exists to make
-/// that asymmetry impossible to rediscover by accident:
+/// This was `a_revoked_key_keeps_being_served_until_the_lifetime_bound`, a CHARACTERISATION test
+/// that pinned a known-wrong behaviour: the catalogue half of a subscription's authorisation was
+/// re-read live while the KEY half was an `Arc<VirtualKey>` cloned into the stream at open, so a key
+/// deleted, disabled or re-scoped mid-stream kept being served for the rest of the stream's life.
+/// Its own doc said a change making revocation bite is a FIX and must REPLACE it rather than be
+/// blocked by it, and its `Arc::ptr_eq` assertion carried the trigger in as many words: *"if this
+/// now fails, the freeze is FIXED and this whole test should be replaced by one asserting revocation
+/// bites"*. [`crate::trust::validate::Standing`] is that fix, and this is that replacement. Renamed
+/// from the negative to the positive; same subject, opposite polarity.
 ///
-/// * The CATALOGUE is re-read live. A registration that appears mid-stream is reflected within
-///   [`crate::mcp::subscribe::POLL_INTERVAL`], which is what
-///   [`a_catalogue_change_wakes_an_open_stream`] already proves over a socket.
-/// * The KEY is FROZEN AT OPEN. `GovCtx` is cloned into the long-lived stream as an
-///   `Arc<VirtualKey>` resolved once by the auth middleware, and nothing in the poll loop
-///   re-resolves it. A key that is deleted, disabled or re-scoped while the stream is held
-///   therefore keeps being served for the rest of the stream's life.
+/// **THE PLACEBO FINDING IS PRESERVED, because it is the reason the fix had to be a core primitive.**
+/// The tempting local patch was to teach `grant_of` to consult `enabled`/`is_live()` beside
+/// [`busbar_api::VirtualKey::scope_allowed`], which reads `allowed_scopes` alone and looks at
+/// neither. That would have changed nothing: those fields sat on the SAME frozen snapshot and
+/// reported "live" whatever the store row said. `the_placebo_fix_would_still_have_been_a_placebo`
+/// below keeps that finding executable rather than remembered.
 ///
-/// **THE TEMPTING LOCAL FIX IS A PLACEBO, AND THE TEST SAYS SO IN AN ASSERTION.** It looks as
-/// though `grant_of` could simply consult `enabled`/`is_live()` alongside
-/// [`busbar_api::VirtualKey::scope_allowed`] (which reads `allowed_scopes` alone). It cannot: those
-/// fields live on the SAME frozen snapshot, so they still read "live" long after the store row
-/// says otherwise. Only re-reading the key from the store closes this, and that needs a standing-
-/// permission primitive rather than a local patch — the auth chain that produced the key is async
-/// and consumes the presented credential, which the stream deliberately does not retain.
+/// **AND THE BOUND IS STILL PINNED.** `MAX_LIFETIME` is no longer the only thing standing between a
+/// revoked credential and a served stream, but it is still the bound on everything a poll cannot
+/// re-derive, so the closing assertions keep it under test.
 ///
-/// The assertions below are written the way they are BECAUSE THEY ARE WRONG: a change that makes a
-/// revoked key stop being served mid-stream is a FIX, and it must REPLACE this test rather than be
-/// blocked by it. What must never happen silently is the reverse — this behaviour surviving a
-/// change to [`crate::mcp::subscribe::MAX_LIFETIME`], which is the only bound on how long a dead
-/// credential is honoured. The closing assertion pins that bound for exactly that reason.
+/// Driven against a REAL `GovState` with a REAL `delete_key` — the call the admin DELETE handler
+/// makes — rather than a double that answers "gone" on cue. A double would pass on a `Standing` that
+/// never looked anything up, which is the exact defect.
 #[test]
-fn a_revoked_key_keeps_being_served_until_the_lifetime_bound() {
-    use std::time::{Duration, Instant};
+fn a_revoked_key_stops_being_served_on_the_next_poll() {
+    use std::time::Duration;
 
-    // A LIVE, admitted key — exactly what the auth middleware resolves and attaches at ingress.
-    // The fixture must start live, because the defect is about what happens to a key AFTER it was
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("a memory-backed registry constructs"),
+    );
+    // A LIVE, ADMITTED key — exactly what the auth middleware resolves and attaches at ingress. The
+    // fixture must start live, because the defect is about what happens to a key AFTER it was
     // legitimately admitted; a key already dead at open is one the auth chain would have refused.
-    let admitted = std::sync::Arc::new(busbar_api::VirtualKey {
-        id: "k-live".to_string(),
-        name: "k-live".to_string(),
-        generation_hash: String::new(),
-        enabled: true,
-        allowed_scopes: None,
-        group: None,
-        labels: Default::default(),
-        expires_at: None,
-        deleted_at: None,
-        created_at: 0,
-        revision: 0,
-    });
+    let (admitted, _secret) = gov
+        .create_key(
+            crate::governance::NewKeySpec {
+                name: "k-live".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .expect("mint");
     assert!(admitted.is_live() && admitted.enabled, "admitted at open");
 
-    let gov = crate::governance::GovCtx {
-        key: Some(admitted.clone()),
-    };
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app_with(ONE_TOOL)));
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(governed_app_with(
+        ONE_TOOL, &gov,
+    )));
     let id = serde_json::json!(7);
-    let now = Instant::now();
     let mut state = crate::mcp::subscribe::Listen {
         handle: handle.clone(),
-        gov,
+        // THE ID AND THE BOUND, never the principal. `Snapshot::Watching` because a generation move
+        // is what this response exists to REPORT — pinning it would end the stream on the first
+        // change it was opened to hear about.
+        standing: crate::trust::validate::Standing::opened(
+            Some(&admitted),
+            crate::trust::validate::Snapshot::Watching,
+            crate::mcp::subscribe::MAX_LIFETIME,
+        ),
         // Through the production narrowing rather than hand-built, so this fixture cannot ask for a
         // category the served endpoint would have refused.
         accepted: crate::mcp::subscribe::accept(
@@ -454,8 +488,7 @@ fn a_revoked_key_keeps_being_served_until_the_lifetime_bound() {
         meta: crate::mcp::subscribe::subscription_meta(&id),
         id,
         phase: crate::mcp::subscribe::Phase::Acknowledge,
-        deadline: now + crate::mcp::subscribe::MAX_LIFETIME,
-        last_write: now,
+        last_write: std::time::Instant::now(),
     };
 
     let ack = state.step().expect("the acknowledgement is owed first");
@@ -464,58 +497,97 @@ fn a_revoked_key_keeps_being_served_until_the_lifetime_bound() {
         "the first frame is the acknowledgement: {ack}"
     );
 
-    // GOVERNANCE MOVES UNDER THE STREAM. The catalogue half IS live — swapping a second `App` onto
-    // the handle is the same seam an admin apply, a config reload and a key revocation all go
-    // through, and the stream sees the catalogue half of it on the very next poll.
-    handle.swap(app_with(TWO_TOOLS));
-
-    // WRONG-BY-DESIGN #1 — THE SNAPSHOT NEVER MOVES. Whatever governance now says about this key,
-    // the stream's authorisation input is still the very `Arc` handed to it at open: not an equal
-    // value, the SAME ALLOCATION. Nothing in the poll loop re-resolves the key against the store,
-    // so there is no code path by which a revocation could reach this decision.
+    // THE CONTROL. Nothing has been revoked, so a catalogue change is delivered exactly as
+    // `a_catalogue_change_wakes_an_open_stream` proves over a socket. Without this half the refusal
+    // below would be indistinguishable from a stream that refuses everything.
+    handle.swap(governed_app_with(TWO_TOOLS, &gov));
+    let served = state.step().expect("the stream is open");
     assert!(
-        std::sync::Arc::ptr_eq(
-            state.gov.key.as_ref().expect("the stream holds a key"),
-            &admitted
-        ),
-        "characterisation: the stream re-resolved its key — if this now fails, the freeze is FIXED \
-         and this whole test should be replaced by one asserting revocation bites"
+        served.contains("notifications/tools/list_changed"),
+        "a live key is still served: {served}"
     );
 
-    // WRONG-BY-DESIGN #2 — AND NO FIELD CHECK COULD RESCUE IT. Because the snapshot is frozen, the
-    // `enabled` and `deleted_at` fields the stream can see are also frozen at their open-time
-    // values, so they still read "live" no matter what the store now holds. Tightening `grant_of`
-    // to consult `is_live()`/`enabled` would therefore change NOTHING in production — it is a
-    // placebo, and this assertion exists so nobody lands one believing it closed the hole. The only
-    // real fix re-reads the key.
-    let seen = state.gov.key.as_ref().expect("the stream holds a key");
-    assert!(
-        seen.is_live() && seen.enabled,
-        "characterisation: the frozen snapshot still reports itself live, whatever the store says"
-    );
+    // REVOCATION, through the call the admin DELETE handler makes.
+    gov.delete_key(&admitted.id).expect("revoke");
 
-    // WRONG-BY-DESIGN #3 — the caller is still served. If the key were re-resolved per poll this
-    // stream would have been closed or starved instead.
-    let after = state.step().expect("the stream is still open");
-    assert!(
-        after.contains("notifications/tools/list_changed"),
-        "characterisation: the stream is still served under a key nobody re-checked: {after}"
-    );
-
-    // THE ONLY THING THAT STOPS IT. Move the deadline into the past — the same transition
-    // `MAX_LIFETIME` produces after 300s — and the stream closes gracefully. That bound, and
-    // nothing else, is what caps how long the revoked key above is honoured, so a change raising
-    // `MAX_LIFETIME` widens a credential-revocation window and must be argued for as such.
-    state.deadline = Instant::now() - Duration::from_secs(1);
+    // AND IT BITES ON THE VERY NEXT POLL — not at `MAX_LIFETIME`, which is what it used to do.
     let closing = state
         .step()
-        .expect("the lifetime bound writes a graceful result");
+        .expect("the stream writes a closing frame rather than going quiet");
     assert!(
-        closing.contains("\"result\""),
-        "the bound ends the stream with the revision's graceful result: {closing}"
+        closing.contains("\"error\""),
+        "a revoked key must END the stream with a refusal, not keep it open: {closing}"
     );
     assert!(
-        state.step().is_none(),
-        "and the stream is then closed, which is the whole of the bound on a frozen key"
+        closing.contains(crate::audit::vocab::REASON_IDENTITY_NOT_LIVE),
+        "and the refusal must name WHICH lapse it was, in the shared vocabulary: {closing}"
+    );
+    assert!(state.step().is_none(), "and the stream is then closed");
+
+    // THE BOUND IS STILL LOAD-BEARING and still under test. It no longer caps how long a revoked
+    // credential is honoured — that is now one poll — but it is still the cap on everything a poll
+    // cannot re-derive, so a change raising it still has to be argued for.
+    assert_eq!(
+        crate::mcp::subscribe::MAX_LIFETIME,
+        Duration::from_secs(300),
+        "MAX_LIFETIME is the bound on what a poll cannot re-check; raising it widens that window"
+    );
+    let expired = crate::trust::validate::Standing::opened(
+        Some(&admitted),
+        crate::trust::validate::Snapshot::Watching,
+        Duration::ZERO,
+    );
+    assert_eq!(
+        expired.still_permitted(Some(&gov), 1, 0),
+        Err(crate::trust::validate::Lapsed::Expired),
+        "the bound still ends a standing permission on its own"
+    );
+}
+
+/// THE PLACEBO, KEPT EXECUTABLE. The sibling unit's most useful finding was not the hole itself but
+/// that the obvious local patch would not have closed it, and a finding that survives only in prose
+/// is one the next author re-discovers the hard way.
+///
+/// `scope_allowed` reads `allowed_scopes` alone — it consults neither `enabled` nor `is_live()`. So
+/// teaching the stream's grant closure to check those fields would have changed nothing while the
+/// key was a frozen snapshot: the snapshot's own fields report "live" for ever. Both halves are
+/// asserted, because either alone is a different claim.
+#[test]
+fn the_placebo_fix_would_still_have_been_a_placebo() {
+    let mut frozen = busbar_api::VirtualKey {
+        id: "k".to_string(),
+        name: "k".to_string(),
+        generation_hash: String::new(),
+        enabled: true,
+        allowed_scopes: None,
+        group: None,
+        labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        created_at: 0,
+        revision: 0,
+    };
+
+    // HALF ONE: the grant predicate does not read liveness at all, so a dead key answers a grant
+    // question exactly as a live one does.
+    frozen.enabled = false;
+    frozen.deleted_at = Some(1);
+    assert!(
+        frozen.scope_allowed("mcp_tool", "tools_alpha"),
+        "scope_allowed consults `allowed_scopes` alone; a field check beside it is a SEPARATE check"
+    );
+
+    // HALF TWO: and a field check beside it would have read the FROZEN copy, which is why it was a
+    // placebo rather than merely insufficient. A snapshot taken while the key was live reports live
+    // for as long as the snapshot is held, whatever the store now says.
+    let snapshot_taken_at_open = busbar_api::VirtualKey {
+        enabled: true,
+        deleted_at: None,
+        ..frozen.clone()
+    };
+    assert!(
+        snapshot_taken_at_open.is_live() && snapshot_taken_at_open.enabled,
+        "the copy taken at open still reports itself live — the fix has to RE-RESOLVE, not re-read \
+         the same value more carefully"
     );
 }

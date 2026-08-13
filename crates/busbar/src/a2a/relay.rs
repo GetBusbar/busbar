@@ -168,9 +168,13 @@ pub(crate) trait RelaySeam: Send + Sync {
 /// asked, so a re-verification sweep that demoted the registration a microsecond ago is visible
 /// here.
 pub(crate) trait DelegationGate: Send + Sync {
-    /// `Ok(())` only while the named registration is still `Approved`. Any other answer names the
-    /// state it is in now, so the refusal an operator reads says what changed.
-    fn still_delegable(&self, agent_id: &str) -> Result<(), NotDelegable>;
+    /// `Ok(())` only while the named registration is still `Approved` **and** the registry is still
+    /// at the generation the request was admitted under. Any other answer names the state it is in
+    /// now, so the refusal an operator reads says what changed.
+    ///
+    /// `admitted` is carried in rather than read here for the reason the whole gate exists: a
+    /// generation read at this moment would be the live one compared against itself.
+    fn still_delegable(&self, agent_id: &str, admitted: u64) -> Result<(), NotDelegable>;
 }
 
 /// The registration is no longer a legal delegation target. Carries what it is NOW.
@@ -210,6 +214,13 @@ pub(crate) struct RelayCall<'a> {
     pub(crate) lease: Option<&'a Lease>,
     /// THE LIVE TRUST DECISION, re-asked after the guard and before the socket. See the module note.
     pub(crate) gate: &'a dyn DelegationGate,
+    /// THE REGISTRY GENERATION THIS SUBMISSION WAS ADMITTED UNDER.
+    ///
+    /// Carried on the CALL rather than re-read at the gate, and that is the whole of what it buys: a
+    /// value re-read at the gate is the live one compared against itself. Recorded at admission, so
+    /// a config apply, a re-verification sweep or a breaker trip that lands between admission and
+    /// the socket refuses THIS hop rather than the next one.
+    pub(crate) admitted_generation: u64,
     /// THE GUARD POLICY FOR THIS REGISTRATION — `A2aPlane::fetch_policy_for(agent_id)`, never the
     /// plane-wide default.
     ///
@@ -474,7 +485,7 @@ fn prepare<'a>(
 
     // ── THE LIVE TRUST DECISION, after the guard and before the socket. See the module note. ──
     call.gate
-        .still_delegable(call.agent_id)
+        .still_delegable(call.agent_id, call.admitted_generation)
         .map_err(RelayRefusal::Demoted)?;
 
     let request = build_request(
