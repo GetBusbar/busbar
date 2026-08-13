@@ -10,6 +10,21 @@ use super::openai_family::{
 };
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
+/// second surface) and declares its own name, because a metric label is a protocol's own.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_RESPONSES,
+    codec: Some(Protocol::responses),
+    handler: Some(&crate::handlers::responses::ResponsesRequestHandler),
+    verbs: &["chat"],
+    head_keys: LLM_HEAD_KEYS,
+    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    array_stream_shim_key: None,
+    native_tool_id_prefix: Some("call_"),
+    ingress_auth: IngressAuth::Bearer,
+    stream_usage_requires_opt_in: false,
+};
 use std::sync::OnceLock;
 
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The

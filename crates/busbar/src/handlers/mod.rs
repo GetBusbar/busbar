@@ -35,28 +35,16 @@ pub(crate) mod mcp;
 pub(crate) mod openai;
 pub(crate) mod responses;
 
-static OPENAI: openai::OpenAiRequestHandler = openai::OpenAiRequestHandler;
-static BEDROCK: bedrock::BedrockRequestHandler = bedrock::BedrockRequestHandler;
-static COHERE: cohere::CohereRequestHandler = cohere::CohereRequestHandler;
-static GEMINI: gemini::GeminiRequestHandler = gemini::GeminiRequestHandler;
-static ANTHROPIC: anthropic::AnthropicRequestHandler = anthropic::AnthropicRequestHandler;
-static RESPONSES: responses::ResponsesRequestHandler = responses::ResponsesRequestHandler;
-static MCP: mcp::McpRequestHandler = mcp::McpRequestHandler;
-
-/// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). All six
-/// protocols are registered (every one speaks chat); a registered handler may still return `None`
-/// from `operation_handler` for an op it lacks — that IS the no-handler 404.
+/// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
+/// registered handler may still return `None` from `operation_handler` for an op it lacks — that IS
+/// the no-handler 404.
+///
+/// THIS WAS THE SECOND MATCH ON A PROTOCOL NAME IN CORE, and it was the one on the DISPATCH path:
+/// `match protocol { "openai" => …, "mcp" => … }`, seven arms, each naming a protocol core had to
+/// have been edited to know about. It is now a read of `ProtocolDecl::handler` — the cell a protocol
+/// DECLARES, beside the codec, the verbs and the head keys it declares in the same struct.
 pub(crate) fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
-    match protocol {
-        "openai" => Some(&OPENAI),
-        "bedrock" => Some(&BEDROCK),
-        "cohere" => Some(&COHERE),
-        "gemini" => Some(&GEMINI),
-        "anthropic" => Some(&ANTHROPIC),
-        "responses" => Some(&RESPONSES),
-        "mcp" => Some(&MCP),
-        _ => None,
-    }
+    crate::proto::decl_for(protocol).and_then(|d| d.handler)
 }
 
 #[cfg(test)]
@@ -460,12 +448,24 @@ pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op
 /// This is what a site holding an upstream RESPONSE reaches for. The engine and the health prober
 /// both use it to find the codec that will read what came back, so neither has to know that a `Lane`
 /// is where an LLM upstream's protocol happens to be recorded.
+/// A verb a protocol did NOT declare is refused here, and that is the registry's rule rather than a
+/// new one: `ProtocolDecl::verbs` is what the protocol advertises (bounded at load, enumerable at
+/// boot, and therefore safe as a metric label), so a cell reachable through a verb the declaration
+/// does not name would be a capability core could not have known about from the declaration alone.
+/// It is not a second answer to "does this protocol serve this operation" — the declaration and the
+/// handler are pinned EQUAL in both directions by
+/// `registry_tests::the_declared_verbs_are_the_verbs_the_handler_serves`, so this check can only
+/// ever fire on a decl that is lying, never on a legitimate route.
 pub(crate) fn op_for(
     protocol: &str,
     operation: Operation,
     transport: crate::transport::Transport,
 ) -> Option<Op> {
-    request_handler(protocol)
+    let decl = crate::proto::decl_for(protocol)?;
+    if !decl.verbs.contains(&operation.name()) {
+        return None;
+    }
+    decl.handler
         .and_then(|rh| rh.operation_handler(operation))
         .map(|op_handler| transport.frame(operation, op_handler))
 }

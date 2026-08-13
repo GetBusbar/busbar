@@ -730,7 +730,7 @@ fn size_signal_and_projection_agree_on_tool_role_content() {
 /// IR, so a seventh protocol is covered by REGISTERING rather than by an arm added here.
 #[test]
 fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
-    for &proto in crate::proto::KNOWN_PROTOCOLS {
+    for &proto in crate::proto::known_protocols() {
         let p = crate::proto::protocol_for(proto)
             .unwrap_or_else(|| panic!("'{proto}' is in KNOWN_PROTOCOLS but is not registered"));
         // A minimal, universally-legal body for the dialect's conversation container: whichever key

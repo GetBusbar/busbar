@@ -6,6 +6,24 @@
 use super::*;
 use std::sync::OnceLock;
 
+/// COHERE'S DECLARATION.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_COHERE,
+    codec: Some(Protocol::cohere),
+    handler: Some(&crate::handlers::cohere::CohereRequestHandler),
+    verbs: &["chat", "embeddings", "rerank"],
+    head_keys: LLM_HEAD_KEYS,
+    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    array_stream_shim_key: None,
+    // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
+    // reversibility marker itself the only distinguishing signal, which collides with a legitimate
+    // client-authored id and corrupts tool_use/tool_result correlation on a cross-protocol hop; so
+    // Cohere ids pass through verbatim and there is nothing to mis-decode on the echo.
+    native_tool_id_prefix: None,
+    ingress_auth: IngressAuth::Bearer,
+    stream_usage_requires_opt_in: false,
+};
+
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by
 /// openai_chat.rs and anthropic.rs — single source of truth for the string that was previously
 /// hard-coded in `upstream_path()`.

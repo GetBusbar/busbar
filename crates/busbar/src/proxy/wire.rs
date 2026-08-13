@@ -406,11 +406,11 @@ pub(crate) fn translate_request_cross_protocol(
                     .protocol
                     .writer()
                     .max_cache_control_breakpoints(),
-                // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
-                // Vertex (`path_base.is_some()` marks a Vertex-style URL-model lane; Vertex is not
-                // confirmed to honor the sentinel bypass and has real reports of rejecting it).
-                // Mirrors the `path_base` check used for the Claude-on-Vertex body shape below.
-                thought_signature_fill: app.lanes[i].protocol.name() == crate::proto::PROTO_GEMINI
+                // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
+                // (`ProtocolWriter::fills_thought_signature`), and this path ANDs it with the LANE's
+                // URL shape: NEVER a Vertex-style path-model lane (`path_base.is_some()`), which is
+                // not confirmed to honor the sentinel bypass and has real reports of rejecting it.
+                thought_signature_fill: app.lanes[i].protocol.writer().fills_thought_signature()
                     && app.lanes[i].path_base.is_none(),
             });
             ir_req.set_model(app.lanes[i].wire_model());
@@ -477,10 +477,12 @@ pub(crate) fn translate_request_cross_protocol(
                         .protocol
                         .writer()
                         .max_cache_control_breakpoints(),
-                    // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
-                    // Vertex. See the sibling `EgressPrep` construction above for the full rationale.
-                    thought_signature_fill: app.lanes[i].protocol.name()
-                        == crate::proto::PROTO_GEMINI
+                    // thoughtSignature sentinel fill — the dialect's own declaration, ANDed with
+                    // the lane's URL shape. See the sibling `EgressPrep` construction above.
+                    thought_signature_fill: app.lanes[i]
+                        .protocol
+                        .writer()
+                        .fills_thought_signature()
                         && app.lanes[i].path_base.is_none(),
                 });
                 let Some(eh) = egress_handler else {
@@ -527,22 +529,18 @@ pub(crate) fn translate_request_cross_protocol(
         .protocol
         .writer()
         .rewrite_model_if_needed(&mut body, app.lanes[i].wire_model()); // invalidator #3
-                                                                        // Claude-on-Vertex: an Anthropic-protocol lane at a Vertex `path_base` carries the model in the URL
-                                                                        // (`:rawPredict`, see the anthropic handler), so the body must OMIT `model` and instead carry
-                                                                        // `anthropic_version` (Vertex's required discriminator). Applied here, where the lane and its
-                                                                        // `path_base` are in scope. It necessarily mutates the body, so a same-protocol passthrough to a
-                                                                        // Vertex Anthropic lane is (correctly) no longer pristine.
+                                                                        // PATH-BASE BODY RESHAPE. A lane with a `path_base` carries the model in the URL, and some
+                                                                        // dialects must reshape the body for that form (Claude-on-Vertex drops `model` and adds
+                                                                        // `anthropic_version`). WHICH reshape, and whether there is one at all, is the writer's;
+                                                                        // this path only knows the lane's URL shape. A reshape necessarily mutates the body, so such
+                                                                        // a same-protocol passthrough is (correctly) no longer pristine.
     if app.lanes[i].path_base.is_some()
-        && app.lanes[i].protocol.name() == crate::proto::PROTO_ANTHROPIC
+        && app.lanes[i]
+            .protocol
+            .writer()
+            .reshape_for_path_base(&mut body)
     {
-        if let Some(obj) = body.as_object_mut() {
-            obj.remove("model");
-            obj.insert(
-                "anthropic_version".to_string(),
-                serde_json::json!("vertex-2023-10-16"),
-            );
-            pristine = false;
-        }
+        pristine = false;
     }
     if ingress_protocol == egress_name {
         pristine &= !strip_same_protocol_model_shim(&mut body, ingress_protocol);

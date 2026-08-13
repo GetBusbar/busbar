@@ -1,13 +1,6 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
-    fn uses_sigv4_ingress_auth(&self) -> bool {
-        // A Bedrock-SDK client signs inbound requests with AWS SigV4 (access-key-id + secret tied to
-        // a busbar virtual key), not a bearer token — so the auth middleware runs the SigV4 verify
-        // path for bedrock ingress. Every other protocol uses the default (bearer / api-key).
-        true
-    }
-
     fn extract_error(&self, status: StatusCode, body: &[u8]) -> crate::breaker::RawUpstreamError {
         // Parse the body once. Bedrock error responses carry the human-readable
         // text in `message` and the machine-readable error type in `__type`

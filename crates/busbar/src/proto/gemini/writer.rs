@@ -1302,6 +1302,12 @@ impl ProtocolWriter for GeminiWriter {
         Some(Box::new(GeminiJsonArrayFramer::new()))
     }
 
+    fn fills_thought_signature(&self) -> bool {
+        // Gemini 3 emits a `thoughtSignature` on reasoning parts and rejects a follow-up turn that
+        // drops it; the sentinel fill is this dialect's own request shaping.
+        true
+    }
+
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool {
         // The gemini ingress route injects `GEMINI_JSON_ARRAY_SHIM_KEY: true` when the client sent a
         // streaming `:streamGenerateContent` request WITHOUT `?alt=sse`. Read it here (the only site
@@ -1309,10 +1315,6 @@ impl ProtocolWriter for GeminiWriter {
         body.get(GEMINI_JSON_ARRAY_SHIM_KEY)
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
-    }
-
-    fn array_stream_shim_key(&self) -> Option<&'static str> {
-        Some(GEMINI_JSON_ARRAY_SHIM_KEY)
     }
 
     fn has_native_path_not_found(&self) -> bool {

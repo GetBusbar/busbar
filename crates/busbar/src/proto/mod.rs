@@ -303,17 +303,6 @@ pub(crate) trait ProtocolReader: Send + Sync {
     /// Read a whole (non-streaming) response from wire JSON.
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError>;
 
-    /// True when THIS protocol authenticates INBOUND requests with AWS SigV4 (an access-key-id +
-    /// secret signature) rather than a bearer / api-key token — the Bedrock ingress shape. The
-    /// front-door auth middleware consults this through the reader vtable to decide whether to run
-    /// the SigV4 verification path for a request, instead of branching on the protocol NAME. The
-    /// SigV4 verification itself stays in the auth layer (it needs the governance key lookup and the
-    /// shared signing helpers, exactly like the bearer path) — only the "which protocol uses SigV4"
-    /// metadata lives here. Default `false` (bearer / api-key protocols); BedrockReader overrides.
-    fn uses_sigv4_ingress_auth(&self) -> bool {
-        false
-    }
-
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
 }
@@ -493,6 +482,45 @@ pub(crate) trait ProtocolWriter: Send + Sync {
         false
     }
 
+    /// Whether this protocol's egress fills the Gemini 3 `thoughtSignature` SENTINEL on a
+    /// translated request. A writer-vtable fact, not a `name == "gemini"` comparison in the
+    /// agnostic forward path: the shaping is this dialect's, so the answer is this dialect's.
+    /// The lane's URL shape stays the CALLER's question — the sentinel bypass is not confirmed to
+    /// be honoured by Vertex-style path-model deployments — so the call site ANDs this with
+    /// `path_base.is_none()`. Default `false`; `GeminiWriter` overrides.
+    fn fills_thought_signature(&self) -> bool {
+        false
+    }
+
+    /// A framed wire frame this dialect emits IMMEDIATELY AFTER `message_start` on a TRANSLATED
+    /// stream, or `None` (the default) for a dialect that emits none. A native Anthropic stream
+    /// sends `event: ping` there and a translated one did not, which is both a fingerprintable proxy
+    /// tell and closes part of the idle-timeout gap a native stream survives. The frame is the
+    /// dialect's own wire, so it lives with the writer rather than as a `name == "anthropic"` branch
+    /// in the cross-protocol translator. Same-protocol passthrough is byte-verbatim and already
+    /// carries the upstream's own frames, so this is never consulted there.
+    fn frame_after_message_start(&self) -> Option<&'static [u8]> {
+        None
+    }
+
+    /// Whether this protocol's body must be RESHAPED when the lane carries a `path_base` (a
+    /// Vertex-style URL that names the model in the path). Claude-on-Vertex is the one case: the
+    /// body must OMIT `model` and instead carry Vertex's required `anthropic_version`
+    /// discriminator. Predicted here — [`crate::proxy::lazy_body`] asks BEFORE materializing a DOM,
+    /// to know that such a body can never be a pristine passthrough — and performed by
+    /// [`Self::reshape_for_path_base`]. Default `false`; `AnthropicWriter` overrides.
+    fn reshapes_body_at_path_base(&self) -> bool {
+        false
+    }
+
+    /// PERFORM the `path_base` body reshape [`Self::reshapes_body_at_path_base`] promised, returning
+    /// whether the body changed. The mutation is the protocol's own wire knowledge and lives with
+    /// the writer, so the agnostic forward path applies "whatever this dialect needs at a path-model
+    /// URL" without knowing that anything named `anthropic_version` exists. Default: no-op, `false`.
+    fn reshape_for_path_base(&self, _body: &mut serde_json::Value) -> bool {
+        false
+    }
+
     /// The maximum number of `cache_control` breakpoints this writer's dialect accepts on a single
     /// request, or `None` when the vendor publishes no fixed cap (Bedrock's cap is model-specific,
     /// not protocol-wide, so it is deliberately left `None` here rather than guessed). Anthropic
@@ -613,19 +641,6 @@ pub(crate) trait ProtocolWriter: Send + Sync {
     /// `ingress == "anthropic"` name-branch for this wire constraint.
     fn max_citations_per_delta(&self) -> Option<usize> {
         None
-    }
-
-    /// The streaming `Content-Type` this protocol's INGRESS client expects when receiving a
-    /// cross-protocol reframed stream. On a cross-protocol reframe the streamed body is re-encoded
-    /// into the client's framing, so the response header must describe the CLIENT's wire format —
-    /// copying the upstream CT verbatim would mislabel the body (e.g. a Bedrock-egress
-    /// `application/vnd.amazon.eventstream` reaching an SSE client, or vice versa).
-    ///
-    /// Default: `"text/event-stream"` (openai/anthropic/gemini/cohere/responses). `BedrockWriter`
-    /// overrides to `"application/vnd.amazon.eventstream"`. The agnostic forward path calls this
-    /// through the writer vtable so `ingress_stream_content_type` carries no `"bedrock"` branch.
-    fn streaming_content_type(&self) -> &'static str {
-        crate::proxy::TEXT_EVENT_STREAM
     }
 
     /// Plausible native-SDK `User-Agent` for THIS EGRESS protocol. reqwest sends NO default
@@ -900,15 +915,6 @@ pub(crate) trait ProtocolWriter: Send + Sync {
     /// from the body.
     fn wants_array_stream(&self, _body: &serde_json::Value) -> bool {
         false
-    }
-
-    /// The router-internal array-stream shim key this protocol injects into a request body (the key
-    /// `wants_array_stream` reads), or `None` for protocols with no such shim. It is never native to
-    /// any backend wire, so the forward path strips it from every outbound body; iterating the registry
-    /// and removing each protocol's key lets the agnostic strip name no shim-key literal. Default
-    /// `None`; `GeminiWriter` overrides → `Some(GEMINI_JSON_ARRAY_SHIM_KEY)`.
-    fn array_stream_shim_key(&self) -> Option<&'static str> {
-        None
     }
 
     /// Clone this writer as a trait object.
@@ -1212,110 +1218,56 @@ impl Protocol {
     }
 }
 
-/// Resolve a built-in Protocol by name (for ingress translation). Each call allocates two vtable
-/// boxes (`Box<dyn ProtocolReader>` + `Box<dyn ProtocolWriter>`). Most reader/writer structs are
-/// zero-sized, but a fresh instance is REQUIRED per request regardless: `GeminiWriter`,
-/// `CohereWriter`, and `ResponsesWriter` carry per-STREAM mutable state (e.g. `Mutex<Vec<…>>`,
-/// `AtomicU64`) seeded from their const constructors, so they must not be shared/cached across
-/// concurrent requests. The allocations are small (empty collections) and happen only on
-/// request/response SETUP paths — a handful of times per request as each layer resolves the
-/// protocol it needs from a name string, never inside a per-chunk loop. Callers that hold a
-/// resolution for the life of a stream resolve it once and keep it (see `FirstByteBody::new`);
-/// callers that need only a pure by-name vtable fact go through the memoized registry sweeps below
-/// (`streaming_content_types`, `array_stream_shim_keys`) rather than resolving here.
+/// BUILD this protocol's wire CODEC, by name — a `Protocol` INSTANCE, for the paths that translate.
+///
+/// The name resolution is the registry's ([`registry::decl_for`], which allocates nothing); what
+/// still allocates here, and must, is the codec itself: a fresh instance is REQUIRED per resolution
+/// because `GeminiWriter`, `CohereWriter` and `ResponsesWriter` carry per-STREAM mutable state
+/// (`Mutex<Vec<…>>`, `AtomicU64`) and must not be shared across concurrent requests. Callers that
+/// hold a resolution for the life of a stream resolve once and keep it (see `FirstByteBody::new`).
+///
+/// **A caller that wants a by-name CONSTANT must not come here.** Every such fact — the streaming
+/// content type, the shim key, the tool-id prefix, the ingress auth scheme — is a field on
+/// [`ProtocolDecl`], read through `decl_for` with no allocation at all. That distinction is the
+/// whole of what the registry bought: this function used to be the only way to ask, and asking it a
+/// `&'static` question cost two `Box`es.
+///
+/// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP).
 pub(crate) fn protocol_for(name: &str) -> Option<Protocol> {
-    match name {
-        PROTO_ANTHROPIC => Some(Protocol::anthropic()),
-        PROTO_BEDROCK => Some(Protocol::bedrock()),
-        PROTO_COHERE => Some(Protocol::cohere()),
-        PROTO_GEMINI => Some(Protocol::gemini()),
-        PROTO_OPENAI => Some(Protocol::openai()),
-        PROTO_RESPONSES => Some(Protocol::responses()),
-        _ => None,
-    }
+    registry::decl_for(name)
+        .and_then(|d| d.codec)
+        .map(|new| new())
 }
 
-/// The set of streaming `Content-Type` values across all registered protocols' writers, cached once.
-///
-/// Sweeps `KNOWN_PROTOCOLS`, reading each writer's `streaming_content_type()` from the vtable (this is
-/// the registry layer aggregating the writers — it names no MIME literal of its own), then sorts and
-/// dedups into a stable `&'static [&'static str]`. The one-time `OnceLock` init pays the
-/// `protocol_for` Box allocations; callers (e.g. `proxy::is_streaming_content_type`) then read the
-/// cached slice with zero per-request allocation. The aggregated set is IDENTICAL to what the
-/// per-request sweep produced — the cache only memoizes it.
+/// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
+/// folded once at boot from `ProtocolDecl::streaming_content_type` — where it used to be an
+/// `OnceLock` sweep that built a `Protocol` per known name to read one `&'static` off its writer.
 pub(crate) fn streaming_content_types() -> &'static [&'static str] {
-    static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let mut v: Vec<&'static str> = KNOWN_PROTOCOLS
-                .iter()
-                .filter_map(|n| protocol_for(n).map(|p| p.writer().streaming_content_type()))
-                .collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        })
-        .as_slice()
+    registry::registry().streaming_content_types()
 }
 
-/// The set of array-stream shim keys across all registered protocols' writers, cached once.
-///
-/// Sweeps `KNOWN_PROTOCOLS`, reading each writer's `array_stream_shim_key()` (most return `None`;
-/// only Gemini overrides → `GEMINI_JSON_ARRAY_SHIM_KEY`). Like `streaming_content_types`, the
-/// `OnceLock` init pays the one-time `protocol_for` allocations so callers (e.g.
-/// `proxy::strip_router_shim_keys`) iterate the cached slice with zero per-request allocation, and
-/// the collected slice is sorted + deduped (mirroring `streaming_content_types`) so the set is stable
-/// and unique regardless of registry order even if a second protocol ever overrides this key. The
-/// collected set is IDENTICAL to the per-request sweep — the cache only memoizes it.
+/// The set of array-stream shim keys across every declared protocol (only Gemini declares one).
+/// The same aggregate, from `ProtocolDecl::array_stream_shim_key`, and the reason
+/// `proxy::strip_router_shim_keys` can remove every protocol's marker while naming none of them.
 pub(crate) fn array_stream_shim_keys() -> &'static [&'static str] {
-    static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let mut v: Vec<&'static str> = KNOWN_PROTOCOLS
-                .iter()
-                .filter_map(|n| protocol_for(n).and_then(|p| p.writer().array_stream_shim_key()))
-                .collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        })
-        .as_slice()
+    registry::registry().array_stream_shim_keys()
 }
 
-/// The array-stream shim key for the NAMED protocol's writer, or `None` if that protocol has no
-/// shim key (most don't) or is not registered. Routes through the writer vtable so the INJECTION
-/// site (`ingress::ingress_path_model`, which sets the marker on a non-`alt=sse` Gemini request body)
-/// names no protocol submodule — preserving "delete proto/X → app is X-free": if `proto/gemini.rs`
-/// were removed, this returns `None` and the marker is simply never injected, with no compile-time
-/// dependency on the submodule. Dispatch by protocol NAME string is the sanctioned registry boundary.
+/// The array-stream shim key the NAMED protocol declares, or `None` if it declares none (most
+/// don't) or is not registered. The INJECTION site (`ingress::ingress_path_model`) reads it by name
+/// so it names no protocol submodule: delete a protocol and the marker is simply never injected.
 pub(crate) fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
-    protocol_for(protocol_name).and_then(|p| p.writer().array_stream_shim_key())
+    registry::decl_for(protocol_name).and_then(|d| d.array_stream_shim_key)
 }
 
 /// The INGRESS protocol's NATIVE tool-call id prefix, used by [`ToolIdRemap`] to reshape a foreign
 /// egress tool id into the ingress client's expected form. `None` means the protocol either carries
-/// no tool id on the wire (Gemini correlates `functionCall`s by name; its writer ignores the IR
-/// `ToolUse.id`) so no remap is meaningful, OR uses a free-form id with NO canonical prefix — for the
-/// latter the foreign egress id passes through verbatim (no reshape on the response, no decode on the
-/// request), the correct no-op.
+/// no tool id on the wire (Gemini correlates `functionCall`s by name) or uses a free-form id with NO
+/// canonical prefix (Cohere) — for both, the foreign egress id passes through verbatim, which is the
+/// correct no-op. DECLARED by each protocol; this was the last `match` on a protocol name left in
+/// `proto/mod.rs` after `protocol_for` became a lookup.
 fn native_tool_id_prefix(protocol_name: &str) -> Option<&'static str> {
-    match protocol_name {
-        // Anthropic `toolu_…`, OpenAI/Responses `call_…`, Bedrock `tooluse_…` are the documented
-        // native shapes — each is a stable prefix the encode can prepend and the decode can gate on.
-        PROTO_ANTHROPIC => Some("toolu_"),
-        PROTO_OPENAI | PROTO_RESPONSES => Some("call_"),
-        PROTO_BEDROCK => Some("tooluse_"),
-        // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
-        // reversibility marker (`bb1`) itself the only distinguishing signal, which collides with a
-        // legitimate client-authored id of shape `bb1<even-len-hex-UTF8>` (e.g. `bb161626364` → the
-        // decode silently rewrites it to `abcd`) — corrupting tool_use/tool_result correlation on a
-        // Cohere-ingress cross-protocol hop. Return `None` (like Gemini) so Cohere ids pass through
-        // verbatim: the egress id is never reshaped, so there is nothing to mis-decode on the echo.
-        PROTO_COHERE => None,
-        // Gemini carries no tool id on the wire — its writer drops `ToolUse.id` entirely — so there is
-        // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
-        _ => None,
-    }
+    registry::decl_for(protocol_name).and_then(|d| d.native_tool_id_prefix)
 }
 
 /// Marker segment embedded in a busbar-minted tool id so the reverse (request) translation can tell a
@@ -1809,6 +1761,9 @@ pub(crate) mod gemini;
 pub(crate) mod openai_chat;
 pub(crate) mod openai_family;
 pub(crate) mod openai_responses;
+/// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
+/// replaced `protocol_for`'s match.
+pub(crate) mod registry;
 
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other
@@ -1829,6 +1784,9 @@ use gemini::{GeminiReader, GeminiWriter};
 use gemini::GeminiJsonArrayFramer;
 use openai_chat::{OpenAiReader, OpenAiWriter};
 use openai_responses::{ResponsesReader, ResponsesWriter};
+// The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
+// which does `use super::*`) can state its `DECL` without importing the registry by path.
+pub(crate) use registry::{decl_for, IngressAuth, ProtocolDecl};
 
 /// Canonical protocol-id vocabulary. Every PRODUCTION comparison / match arm / registry insertion on
 /// a protocol name goes through these consts so the router, dispatch, projections, and registry
@@ -1840,68 +1798,60 @@ pub(crate) const PROTO_BEDROCK: &str = "bedrock";
 pub(crate) const PROTO_COHERE: &str = "cohere";
 pub(crate) const PROTO_RESPONSES: &str = "responses";
 
-/// Every protocol name busbar ships a built-in `Protocol` for. SINGLE SOURCE OF TRUTH shared by
-/// `ProtocolRegistry::with_builtins` (which builds its map from these names) and the config validator
-/// (`config_validate.rs`, which rejects a provider whose `protocol` is not in this set so an unknown
-/// protocol is COLLECTED with every other config error rather than escaping to a lone `die()` at lane
-/// construction in `main.rs`). Keeping the list here, co-located with `with_builtins` and
-/// `debug_assert`-checked against the registry it builds, guarantees the registry and validator cannot
-/// drift: adding a protocol to `with_builtins` without listing it here (or vice versa) trips the
-/// assertion in any debug/test build.
-pub(crate) const KNOWN_PROTOCOLS: &[&str] = &[
-    "anthropic",
-    PROTO_OPENAI,
-    PROTO_GEMINI,
-    PROTO_BEDROCK,
-    PROTO_RESPONSES,
-    PROTO_COHERE,
-];
+/// The TOP-LEVEL body keys the six LLM dialects point-read on the pre-materialized path: `model`
+/// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
+/// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
+/// (chat's body affinity key). Declared ONCE and referenced by all six `ProtocolDecl`s rather than
+/// spelled six times: they are one shared fact about the chat body shape, and a protocol that reads
+/// a different set (MCP reads none) declares its own.
+pub(crate) const LLM_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
 
-/// String-keyed registry mapping a provider's protocol name to its `Protocol`.
-/// `with_builtins` registers every protocol busbar ships with.
+/// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
+/// and what the config validator rejects against so an unknown protocol is COLLECTED with every
+/// other config error rather than escaping to a lone `die()` at lane construction.
+///
+/// DERIVED from the declarations (`ProtocolDecl::codec`), not maintained beside them. It used to be
+/// a hand-written const that a `debug_assert` compared against the constructor match it had to agree
+/// with — two lists and an assertion to keep them equal, where there is now one list and nothing to
+/// drift from.
+///
+/// DECLARATION ORDER IS PRESERVED, AND IT IS LOAD-BEARING: `telemetry` indexes its per-protocol
+/// metric families by POSITION in this slice — `AppSlots::build` banks one family per entry in
+/// order, and `request_family` finds it again with `.position()`. That stays sound for the reason it
+/// always did, now stated rather than assumed: the slice is folded ONCE, from a `&'static`
+/// declaration table, inside a `OnceLock`, and no path appends to it afterwards — so the list a
+/// family was banked against and the list an index is computed from are the same list. A name that
+/// is not in it MISSES and falls through to `metrics.rs`'s cached-handle path, which renders a
+/// byte-identical series, so even a miss is not an operator-visible change.
+///
+/// THE EMPTY ANSWER IS A REAL ANSWER and `config_validate` has an arm for it: this was a
+/// compile-time const that could not be empty, and a derived list can be, so the site that refuses
+/// operator config on it names that cause once rather than refusing every provider with an empty
+/// "must be one of:" tail. `registry_tests::the_derived_protocol_list_is_not_empty` pins the other
+/// half.
+pub(crate) fn known_protocols() -> &'static [&'static str] {
+    registry::registry().codec_protocols()
+}
+
+/// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built
+/// once at boot. Distinct from the declaration registry (`proto::registry`): this holds constructed
+/// codecs for the config/lane-build path, which wants one instance per protocol rather than a fresh
+/// one per request. It no longer knows any protocol's name — it builds whatever declared a codec.
 #[derive(Default)]
 pub(crate) struct ProtocolRegistry {
     map: std::collections::HashMap<String, Arc<Protocol>>,
 }
 
 impl ProtocolRegistry {
-    /// Create a new registry with built-in protocols.
+    /// Create a new registry holding every protocol that DECLARED a codec.
     pub(crate) fn with_builtins() -> Self {
-        let mut map = std::collections::HashMap::new();
-        for &name in KNOWN_PROTOCOLS {
-            // Build the registry from the single-source-of-truth name list so the registry and the
-            // config validator (which validates against `KNOWN_PROTOCOLS`) cannot drift.
-            let protocol = match name {
-                PROTO_ANTHROPIC => Protocol::anthropic(),
-                PROTO_OPENAI => Protocol::openai(),
-                PROTO_GEMINI => Protocol::gemini(),
-                PROTO_BEDROCK => Protocol::bedrock(),
-                PROTO_RESPONSES => Protocol::responses(),
-                PROTO_COHERE => Protocol::cohere(),
-                // Startup-only construction: if a name is added to `KNOWN_PROTOCOLS` without a
-                // matching constructor arm here, fail loud in debug/test builds. In release this
-                // skips the unmapped name (it simply will not be registered), and the lane-build
-                // `die()` in main.rs remains the defensive backstop.
-                other => {
-                    debug_assert!(
-                        false,
-                        "KNOWN_PROTOCOLS lists '{other}' but with_builtins has no constructor for it"
-                    );
-                    continue;
-                }
-            };
-            map.insert(name.to_string(), Arc::new(protocol));
+        Self {
+            map: registry::registry()
+                .decls()
+                .iter()
+                .filter_map(|d| Some((d.name.to_string(), Arc::new((d.codec?)()))))
+                .collect(),
         }
-        // Belt-and-suspenders: the registry must contain exactly the KNOWN_PROTOCOLS set, so a
-        // constructor arm added WITHOUT listing the name in KNOWN_PROTOCOLS (or vice versa) is caught.
-        debug_assert_eq!(
-            map.len(),
-            KNOWN_PROTOCOLS.len(),
-            "ProtocolRegistry built {} protocols but KNOWN_PROTOCOLS lists {}",
-            map.len(),
-            KNOWN_PROTOCOLS.len()
-        );
-        Self { map }
     }
 
     /// Get a protocol by name.
@@ -1923,6 +1873,12 @@ pub(crate) fn convert_headers(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+/// THE REGISTRY'S OWN TESTS, including the acceptance test for the whole step: a protocol nobody
+/// wrote resolves, dispatches and is observable with no edit to core.
+#[cfg(test)]
+#[path = "tests/registry_tests.rs"]
+mod registry_tests;
 
 #[cfg(test)]
 #[path = "tests/stream_fanout_tests.rs"]

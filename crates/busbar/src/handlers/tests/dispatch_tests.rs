@@ -143,7 +143,7 @@ fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
     ];
     const STATUSES: [u16; 12] = [400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 529];
 
-    for protocol in crate::proto::KNOWN_PROTOCOLS {
+    for protocol in crate::proto::known_protocols() {
         let p = crate::proto::protocol_for(protocol)
             .unwrap_or_else(|| panic!("{protocol} is a registered protocol"));
         for operation in ALL_OPERATIONS {

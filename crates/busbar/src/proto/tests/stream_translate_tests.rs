@@ -2256,15 +2256,15 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
 #[test]
 fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
     assert_eq!(
-        KNOWN_PROTOCOLS.len(),
+        known_protocols().len(),
         6,
         "a 7th protocol was added — extend this table's expectations, then bump this count"
     );
 
-    for &name in KNOWN_PROTOCOLS {
+    for &name in known_protocols() {
         assert!(
             protocol_for(name).is_some(),
-            "KNOWN_PROTOCOLS lists {name} but protocol_for has no arm for it"
+            "known_protocols() lists {name} but it declares no codec"
         );
 
         for meta in all_block_metas() {

@@ -642,7 +642,7 @@ impl AppSlots {
 
         let mut request = HashMap::with_capacity(ingress_labels.len());
         for pool in &ingress_labels {
-            let families: Box<[RequestFamily]> = crate::proto::KNOWN_PROTOCOLS
+            let families: Box<[RequestFamily]> = crate::proto::known_protocols()
                 .iter()
                 .map(|proto| RequestFamily {
                     requests: std::array::from_fn(|oi| {
@@ -738,7 +738,7 @@ impl AppSlots {
         if plane != self.banked_plane {
             return None;
         }
-        let proto_idx = crate::proto::KNOWN_PROTOCOLS
+        let proto_idx = crate::proto::known_protocols()
             .iter()
             .position(|p| *p == ingress_protocol)?;
         self.request.get(pool).map(|fams| &fams[proto_idx])
@@ -855,8 +855,8 @@ pub(crate) fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();
-        for f in crate::proto::KNOWN_PROTOCOLS {
-            for t in crate::proto::KNOWN_PROTOCOLS {
+        for f in crate::proto::known_protocols() {
+            for t in crate::proto::known_protocols() {
                 if f != t {
                     v.push((
                         *f,

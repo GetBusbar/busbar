@@ -255,19 +255,33 @@ pub(crate) fn validate_with_unset(
     // circuit breaker), exactly like the shipped `anthropic` catalog entry. Only the entries that
     // ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a built-in `Protocol` from the registry at lane
+        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
         // construction. An unknown protocol used to escape this multi-error collection entirely and
         // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of truth
-        // (`proto::KNOWN_PROTOCOLS`, the same list `ProtocolRegistry::with_builtins` builds from) so a
-        // bad protocol is collected alongside every other error. `main.rs`'s `die()` remains a
-        // defensive (now unreachable) backstop.
-        if !crate::proto::KNOWN_PROTOCOLS.contains(&provider_cfg.protocol.as_str()) {
+        // config mistakes saw only the first one. Validate it HERE against the single source of
+        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
+        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
+        //
+        // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time
+        // const that could not be empty; it is now derived, and a build with no protocol compiled in
+        // would otherwise reject EVERY provider with "must be one of: " and an empty tail — one
+        // confusing error per provider, none of them naming the actual cause. It is still a refusal
+        // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
+        // the fail-OPEN answer), but it refuses ONCE and says why.
+        let known = crate::proto::known_protocols();
+        if known.is_empty() {
+            errors.push(format!(
+                "provider '{provider_name}' names protocol '{}', but this build has NO protocol \
+                 with a wire codec compiled in, so no provider lane can be served",
+                provider_cfg.protocol
+            ));
+        } else if !known.contains(&provider_cfg.protocol.as_str()) {
             errors.push(format!(
                 "provider '{}' has unknown protocol '{}': must be one of: {}",
                 provider_name,
                 provider_cfg.protocol,
-                crate::proto::KNOWN_PROTOCOLS.join(", ")
+                known.join(", ")
             ));
         }
 

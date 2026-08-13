@@ -101,6 +101,32 @@ impl ProtocolWriter for AnthropicWriter {
             .map(|id| (HDR_REQUEST_ID, id))
     }
 
+    fn frame_after_message_start(&self) -> Option<&'static [u8]> {
+        Some(crate::proto::ANTHROPIC_PING_SSE_FRAME)
+    }
+
+    fn reshapes_body_at_path_base(&self) -> bool {
+        true
+    }
+
+    fn reshape_for_path_base(&self, body: &mut serde_json::Value) -> bool {
+        // CLAUDE-ON-VERTEX. An Anthropic-protocol lane at a Vertex `path_base` carries the model in
+        // the URL (`:rawPredict`), so the body must OMIT `model` and instead carry
+        // `anthropic_version`, Vertex's required discriminator. It necessarily mutates the body, so
+        // a same-protocol passthrough to such a lane is (correctly) never pristine.
+        match body.as_object_mut() {
+            Some(obj) => {
+                obj.remove("model");
+                obj.insert(
+                    "anthropic_version".to_string(),
+                    serde_json::json!("vertex-2023-10-16"),
+                );
+                true
+            }
+            None => false,
+        }
+    }
+
     fn ingress_relayed_response_header_names(&self) -> &'static [&'static str] {
         // Forwarded VERBATIM on a same-protocol anthropic passthrough: `request-id`.
         &[HDR_REQUEST_ID]

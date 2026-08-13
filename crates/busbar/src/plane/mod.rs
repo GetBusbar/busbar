@@ -202,7 +202,7 @@ impl Plane {
         match self {
             // Read off the real registry: the dialects busbar actually speaks are what earn this
             // plane its IR, so adding one cannot silently leave the rule behind.
-            Plane::Llm => crate::proto::KNOWN_PROTOCOLS,
+            Plane::Llm => crate::proto::known_protocols(),
             // JSON-RPC 2.0, over any of three transports.
             Plane::Mcp => &[WIRE_JSONRPC],
             // THREE BINDINGS OF ONE AGENT, which is how the specification itself models them
