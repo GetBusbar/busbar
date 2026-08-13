@@ -93,6 +93,45 @@ a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
 # permission to claim the three either.
 a2a|http+json|server|server|PushNotificationDelivery = implemented
 
+# tools/call, busbar as CLIENT, over streamable-HTTP -- the outbound call to a registered upstream.
+# `obligation: issue`: busbar originates this one, so the evidence has to be what busbar PUT ON THE
+# WIRE, not what it accepted.
+#
+# THE INSTRUMENT, AND WHY IT IS A NEW ONE. `testing/mcp-conformance/src/suites/client-role.mjs` has
+# fourteen CLI.* scenarios and every one of them skipped whenever `ctx.target.hasClientRole` was
+# false, which `src/core/target.mjs` derives from whether a `clientLaunch` was configured. Nothing
+# configured one, so THOSE FOURTEEN HAD NEVER RUN AGAINST BUSBAR -- while `187 passed, 0 failed`
+# read as a verdict on "busbar implements MCP". It was a verdict on the SERVER role and silent about
+# the other half, which is the same shape of false green as a disarmed leg. The leg is armed in
+# `scripts/mcp-conformance.sh` by `scripts/mcp-subject/client-arm.sh`, against a busbar booted from
+# THIS COMMIT -- never a deployment, for the settled reason that a gate depending on one produces a
+# green meaning "the deployment was fine yesterday" and a red meaning "somebody redeployed".
+#
+# WHAT THE INSTRUMENT SHOWED, read off the fake server's own transcript of busbar's bytes:
+#
+#   client.methodsUsed        ["tools/call"]        -- the one method busbar issues, see below
+#   client.protocolVersions   ["2026-07-28"]        -- on every request, in params._meta
+#   client.declaredCapabilities []                  -- the honest empty set: busbar answers nothing
+#   client.idType             "number", reusedIds [] -- non-null, unique while in flight
+#
+# and twelve of the thirteen push/pr scenarios PASS, plus CLI.HOSTILE.GIANT-RESULT at prerelease.
+# The nine hostile ones are the load-bearing half: against a peer that opens an unsolicited
+# server-initiated request, closes stdout mid-frame, never answers at all, answers with an id nobody
+# asked for, asks for a password in a form-mode elicitation, asks for a capability busbar never
+# declared, swaps a schema between discovery and invocation, lies about its own outputSchema, or
+# advertises a `javascript:` icon URI, busbar answers none of it, leaks none of it, and gives up on
+# its own deadline rather than hanging.
+#
+# THE ONE THAT IS RED IS NOT THIS CELL, AND IT IS NOT LAUNDERED HERE.
+# `CLI.CACHE.TOLERATES-ABSENT-HINTS` fails, by name, because it needs the client to have called
+# `tools/list` and busbar did not call it inside any window this rig can drive: busbar's outbound
+# `tools/list` lives on the trust-refresh path (`mcp/connect.rs`), fired by a scheduled tick or an
+# operator verb, not by the front-door dispatch the driver triggers. The client-side `tools/list`
+# cell therefore stays MISSING and stays in the work queue. It was NOT moved to a waiver to make a
+# number go green, and the rig was NOT taught to poke the admin refresh verb to manufacture the
+# request -- a driver arranged to produce the observation the test wants is not an observation.
+mcp|streamable-http|client|client|tools/call = implemented
+
 # AND ONE THING THAT LANDED WITHOUT CLAIMING A CELL, RECORDED SO THAT ITS ABSENCE HERE IS NOT READ
 # AS AN OVERSIGHT. `resources/subscribe`, `resources/unsubscribe`,
 # `notifications/tools/list_changed` and `notifications/resources/updated` now exist as real code on

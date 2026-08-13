@@ -55,7 +55,13 @@
 #                                 has no stdio MCP surface — so it was never once armed.
 #   MCP_SUBJECT_SERVER_CMD        a command that starts an MCP server on stdio. Still honoured, and
 #                                 it takes precedence, for judging something that is not this build.
-#   MCP_SUBJECT_CLIENT_CMD        ... or as an MCP client
+#   MCP_SUBJECT_CLIENT_CMD        ... or as an MCP client. Also still honoured and still takes
+#                                 precedence, and it is likewise no longer how the release gate gets
+#                                 armed: `--battery-subject` builds this command itself out of the
+#                                 busbar it just booted (see `client-arm.sh`), because the fourteen
+#                                 CLI.* scenarios skipped on `hasClientRole` for as long as nobody
+#                                 set it — i.e. always — while the headline number read as a verdict
+#                                 on both roles and was one about the server role only.
 #   MCP_BATTERY_DIR               the in-house battery. Defaults to testing/mcp-conformance IN THIS
 #                                 REPOSITORY and is not expected to be set: the battery was moved
 #                                 here (DECISION 2) precisely so no leg depends on a private host.
@@ -424,6 +430,30 @@ battery_subject() {
     # door is the same busbar the rest of the battery has been driving all run.
     MCP_SUBJECT_UPSTREAM_CONFIG_CMD="bash $(pwd)/scripts/mcp-subject/seam-arm.sh $seam_control $SUBJECT_URL"
     export MCP_SUBJECT_UPSTREAM_CONFIG_CMD
+
+    # ── THE CLIENT ROLE, ARMED ───────────────────────────────────────────────────────────────────
+    #
+    # THE HOLE THIS CLOSES. `src/suites/client-role.mjs` skips every one of its tests when
+    # `ctx.target.hasClientRole` is false, and `src/core/target.mjs` derives that from whether a
+    # `clientLaunch` was configured. Nothing configured one, so the fourteen CLI.* scenarios had
+    # NEVER been run against busbar — while the whole architectural claim is that busbar is an MCP
+    # server AND an MCP client. `187 passed, 0 failed` was a true statement about the SERVER role
+    # and silent about the other half, which is the same shape of false green as a disarmed leg.
+    #
+    # It is armed HERE and not out of `vars.MCP_SUBJECT_CLIENT_CMD` for the settled reason: a
+    # release gate that depends on a live deployment produces two unreadable verdicts, a green that
+    # means "the deployment was fine yesterday" and a red that means "somebody redeployed". The
+    # subject is the busbar booted above, from THIS COMMIT. The repository variable still takes
+    # precedence, for an operator judging something that is not this build.
+    #
+    # SAME PEER, SAME CONTROL FILE, SAME BUSBAR as the seam leg. The battery runs its tests
+    # sequentially (`runAll` is a `for` loop), so one control file cannot be armed for two tests at
+    # once, and reusing the one long-lived hostile upstream is what keeps a single busbar serving
+    # the whole run. See scripts/mcp-subject/client-arm.sh for what it does and, more importantly,
+    # for the half of the suite's contract busbar cannot satisfy and why substituting the HTTP
+    # mirror of the same fake server is a fact about the subject rather than a loosened test.
+    MCP_SUBJECT_CLIENT_CMD="bash $(pwd)/scripts/mcp-subject/client-arm.sh $seam_control $SUBJECT_URL"
+    export MCP_SUBJECT_CLIENT_CMD
 
     # THE ALWAYS-FAILING TOOL, named here for the same reason `run-control.sh` names
     # `always_fails` for the python control: the harness contains no knowledge of any subject, so the
