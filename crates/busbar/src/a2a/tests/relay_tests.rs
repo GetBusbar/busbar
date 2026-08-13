@@ -488,7 +488,7 @@ fn the_egress_gate_refuses_a_caller_that_holds_no_grant_on_the_target() {
     assert!(
         matches!(
             denied,
-            Err(crate::a2a::creds::EgressDenied::NoAgentGrant { .. })
+            Err(crate::a2a::creds::AgentEgressDenied::NoAgentGrant { .. })
         ),
         "a caller with no `agent:payments` grant must not obtain an egress grant for it: {denied:?}"
     );
@@ -514,7 +514,7 @@ fn a_key_that_is_not_live_obtains_no_egress_grant() {
     assert!(
         matches!(
             denied,
-            Err(crate::a2a::creds::EgressDenied::KeyNotLive { .. })
+            Err(crate::a2a::creds::AgentEgressDenied::KeyNotLive { .. })
         ),
         "a disabled key must obtain no egress grant even as a wildcard principal: {denied:?}"
     );

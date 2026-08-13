@@ -19,6 +19,11 @@ use axum::http::{HeaderName, HeaderValue};
 use std::sync::Arc;
 
 pub(crate) mod bearer_token;
+/// THE EGRESS GATE: whether an outbound credential may be leased AT ALL, for a given inbound
+/// principal. The sibling of everything else in this module — the rest answers "which headers does
+/// busbar present", this answers "may busbar spend its own authority here on this caller's behalf" —
+/// and it is core because it was written once per plane and the copies had already diverged.
+pub(crate) mod gate;
 pub(crate) mod jwt_bearer;
 pub(crate) mod oauth_client_credentials;
 

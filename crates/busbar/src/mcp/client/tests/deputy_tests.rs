@@ -27,7 +27,7 @@
 //! proven end to end until the two halves land together, and that is stated rather than implied.
 
 use crate::mcp::client::egress::{
-    authorise_egress, downscope, plan_credential, CredentialPlan, EgressDenied, ExchangeCfg,
+    authorise_tool_egress, downscope, plan_credential, CredentialPlan, EgressDenied, ExchangeCfg,
     UpstreamCredential,
 };
 use crate::mcp::client::support::{key_wildcard, key_with_scopes, sid, tkey};
@@ -102,7 +102,7 @@ fn a_server_grant_alone_does_not_authorise_a_tool() {
 fn a_tool_grant_alone_does_not_authorise_the_server() {
     let caller = key_with_scopes("agent-1", vec![ScopeRef::mcp_tool("payments_refund")]);
     assert_eq!(
-        authorise_egress(&caller, &tkey("payments", "refund")),
+        authorise_tool_egress(&caller, &tkey("payments", "refund")),
         Err(EgressDenied::NoServerGrant {
             caller: "agent-1".into(),
             server: "payments".into()
@@ -199,7 +199,7 @@ fn a_wildcard_principal_is_still_down_scoped_to_the_one_tool_it_called() {
         "payments_refund"
     );
     // ...and it is authorised, because a wildcard IS a grant. The point is the scope, not the gate.
-    assert!(authorise_egress(&caller, &tkey("payments", "refund")).is_ok());
+    assert!(authorise_tool_egress(&caller, &tkey("payments", "refund")).is_ok());
 }
 
 /// An EMPTY scope list is the empty set, never "all" — the frozen 1.5.3 semantics, re-asserted here
@@ -207,7 +207,7 @@ fn a_wildcard_principal_is_still_down_scoped_to_the_one_tool_it_called() {
 #[test]
 fn an_empty_scope_list_grants_nothing_on_the_egress_path() {
     let caller = key_with_scopes("locked-down", vec![]);
-    assert!(authorise_egress(&caller, &tkey("payments", "refund")).is_err());
+    assert!(authorise_tool_egress(&caller, &tkey("payments", "refund")).is_err());
 }
 
 /// PASSTHROUGH FAILS CLOSED. A server configured to forward the caller's own upstream credential

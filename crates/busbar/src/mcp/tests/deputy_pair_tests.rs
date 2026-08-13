@@ -458,7 +458,7 @@ async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
 
 // ─── The gate is the one the client direction owns ───────────────────────────────────────────────
 
-/// The dispatch path's gate IS `client::egress::authorise_egress`, consulted with the real inbound
+/// The dispatch path's gate IS `client::egress::authorise_tool_egress`, consulted with the real inbound
 /// principal — not a second predicate that happens to agree with it today.
 ///
 /// Asserted by agreement over a MATRIX: for every (grant shape × tool) pair, the answer the HTTP
@@ -503,7 +503,7 @@ async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
     for (label, pairs) in &shapes {
         for tool in ["fs_read", "fs_write"] {
             let key = key_with_scopes("matrix", pairs);
-            let gate = crate::mcp::client::egress::authorise_egress(
+            let gate = crate::mcp::client::egress::authorise_tool_egress(
                 &key,
                 &crate::mcp::client::identity::ToolKey::parse(tool).unwrap(),
             )
@@ -516,7 +516,7 @@ async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
             assert_eq!(
                 dispatched, gate,
                 "`{label}` calling `{tool}`: the HTTP surface said {dispatched} and \
-                 `authorise_egress` said {gate}. Two answers to one rule is the divergence this \
+                 `authorise_tool_egress` said {gate}. Two answers to one rule is the divergence this \
                  test exists to catch. Body: {body}"
             );
             if dispatched {

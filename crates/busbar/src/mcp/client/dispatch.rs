@@ -158,7 +158,7 @@ pub(crate) fn resolve(
         });
     }
     // GRANT BEFORE DIGEST: an ungranted caller learns that it is ungranted and nothing else.
-    super::egress::authorise_egress(caller, &key).map_err(DispatchRefusal::Egress)?;
+    super::egress::authorise_tool_egress(caller, &key).map_err(DispatchRefusal::Egress)?;
     let identity = server
         .bound_identity(key.tool())
         .ok_or_else(|| DispatchRefusal::UnknownTool(key.tool().to_string()))?;
@@ -281,7 +281,7 @@ pub(crate) fn visible_catalogue(
     snapshot
         .served_tools()
         .into_iter()
-        .filter(|bi| super::egress::authorise_egress(caller, &bi.key).is_ok())
+        .filter(|bi| super::egress::authorise_tool_egress(caller, &bi.key).is_ok())
         .collect()
 }
 

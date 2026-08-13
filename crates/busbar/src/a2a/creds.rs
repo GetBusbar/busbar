@@ -39,16 +39,21 @@
 //!
 //! **The outbound credential is bound to the inbound principal's grant**, and the binding is a TYPE
 //! rather than a call-ordering convention. [`authorise_egress`] is the only way to obtain an
-//! [`EgressGrant`], [`EgressGrant`]'s field is private to this module so no other module can build
-//! one, and [`mint`] and [`mint_from`] both REQUIRE one. Forgetting the check is therefore a
-//! COMPILE error at the call site rather than a review comment — which matters because the caller
-//! that will forget is the one that does not exist yet.
+//! [`EgressGrant`], the witness's field is private to core's gate module so NO module can build one
+//! — this one included — and [`mint`] and [`mint_from`] both REQUIRE one. Forgetting the check is
+//! therefore a COMPILE error at the call site rather than a review comment — which matters because
+//! the caller that will forget is the one that does not exist yet.
+//!
+//! THE GATE ITSELF IS CORE'S ([`crate::egress_auth::gate`]). It was written twice — here and at
+//! `mcp/client/egress.rs` — and one copy checked key liveness while the other did not. What is left
+//! here is what is genuinely this plane's: the GRANT KIND ([`AgentGrant`]) and the refusal WORDING
+//! ([`AgentEgressDenied`]).
 //!
 //! The agent id the lease is minted FOR is read off the grant rather than passed beside it. A
 //! signature that took both would admit the one combination that defeats the whole gate: authorise
 //! against `planner`, mint against `payments`.
 //!
-//! Fail-closed, and never a fallback: a caller with no grant gets [`EgressDenied::NoAgentGrant`] and
+//! Fail-closed, and never a fallback: a caller with no grant gets [`AgentEgressDenied::NoAgentGrant`] and
 //! NO credential. Falling back to the registration's own credential is precisely the deputy.
 //!
 //! ## The record holds a HANDLE, never the secret
@@ -70,14 +75,56 @@ use busbar_api::VirtualKey;
 
 use crate::config::secret::SecretResolver;
 use crate::config::SecretRef;
+use crate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
+
+/// WHICH OF THIS PLANE'S GRANTS a refusal is about. ONE variant, because this plane requires one
+/// grant — and it is an enum rather than nothing so that a second A2A requirement would be a compile
+/// error at the wording below rather than a silent reuse of the agent sentence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentGrant {
+    /// `agent:<id>`: the caller may cause busbar to reach this backend agent.
+    Agent,
+}
+
+/// THE SUBJECT OF AN A2A EGRESS: one backend agent, BORROWED.
+///
+/// It borrows the agent id rather than copying it so that the id the check was made against and the
+/// id the lease is minted for are the same bytes, not two strings that agree today.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AgentEgress<'a> {
+    agent_id: &'a str,
+}
+
+/// WHAT THIS PLANE SUPPLIES TO THE CORE GATE: one grant, and the key-liveness rule.
+impl EgressSubject for AgentEgress<'_> {
+    type Grant = AgentGrant;
+
+    /// TRUE, and it stays true: a key that may not authenticate may certainly not cause a credential
+    /// to be minted, and a LEASE outliving the key that occasioned it is a hop nobody's grant covers.
+    /// The sibling MCP plane sets this FALSE, which is the divergence the unification wrote down
+    /// rather than introduced — see `mcp/client/egress.rs`.
+    const REQUIRE_LIVE_KEY: bool = true;
+
+    fn grants_required(&self) -> Vec<Requirement<AgentGrant>> {
+        vec![Requirement {
+            grant: AgentGrant::Agent,
+            scope_kind: super::inbound::SCOPE_KIND_AGENT,
+            value: self.agent_id.to_string(),
+        }]
+    }
+}
 
 /// WHY NO OUTBOUND CREDENTIAL MAY BE SELECTED FOR THIS CALLER.
 ///
 /// Named rather than folded into [`LeaseError`], because these are refusals about the CALLER's
 /// authority and the rest are refusals about the CONFIGURATION. An operator reading "the caller
 /// holds no grant" acts differently from one reading "the secret did not resolve".
+///
+/// THE WORDING IS THIS PLANE'S and the DECISION is core's: these are core's
+/// [`crate::egress_auth::gate::EgressRefusal`] wearing A2A's sentences, produced by the total
+/// conversion below.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum EgressDenied {
+pub(crate) enum AgentEgressDenied {
     /// The inbound principal holds no `agent:<id>` grant for the target. FAIL CLOSED: busbar does
     /// not spend its own credential on behalf of a caller that is not itself authorised for the
     /// backend agent.
@@ -88,17 +135,37 @@ pub(crate) enum EgressDenied {
     KeyNotLive { caller: String },
 }
 
-impl std::fmt::Display for EgressDenied {
+/// THE PLANE'S WORDING, TOTAL over core's refusal. Byte-identical to what this module printed when
+/// it owned its own gate; `match` with no wildcard, so a refusal core grows later cannot arrive here
+/// silently.
+impl From<EgressRefusal<AgentGrant>> for AgentEgressDenied {
+    fn from(refusal: EgressRefusal<AgentGrant>) -> Self {
+        match refusal {
+            EgressRefusal::KeyNotLive { caller } => AgentEgressDenied::KeyNotLive { caller },
+            EgressRefusal::NoGrant {
+                caller,
+                grant: AgentGrant::Agent,
+                value,
+                ..
+            } => AgentEgressDenied::NoAgentGrant {
+                caller,
+                agent_id: value,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for AgentEgressDenied {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EgressDenied::NoAgentGrant { caller, agent_id } => write!(
+            AgentEgressDenied::NoAgentGrant { caller, agent_id } => write!(
                 f,
                 "key `{caller}` holds no `{}:{agent_id}` grant, so NO outbound credential is \
                  selected for it: busbar does not spend its own credential on behalf of a caller \
                  that is not itself authorised for the backend agent",
                 super::inbound::SCOPE_KIND_AGENT
             ),
-            EgressDenied::KeyNotLive { caller } => write!(
+            AgentEgressDenied::KeyNotLive { caller } => write!(
                 f,
                 "key `{caller}` is not live, so no outbound credential is leased for it"
             ),
@@ -108,52 +175,36 @@ impl std::fmt::Display for EgressDenied {
 
 /// PROOF THAT THE INBOUND PRINCIPAL IS ITSELF AUTHORISED FOR THIS BACKEND AGENT.
 ///
-/// The whole value of this type is that it cannot be built anywhere but [`authorise_egress`]: the
-/// field is private to this module, so no other module in the crate can construct one, and the mint
-/// functions take one by reference. A future delegating call site that forgot the grant check does
-/// not compile.
-///
-/// It borrows the agent id rather than copying it so that the id the check was made against and the
-/// id the lease is minted for are the same bytes, not two strings that agree today.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct EgressGrant<'a> {
-    agent_id: &'a str,
-}
+/// Core's witness, carrying this plane's subject. The whole value of the type is that it cannot be
+/// built anywhere but [`crate::egress_auth::gate::authorise`] — its field is private to core's gate
+/// module, so NO module in the crate (this one included) can construct one — and the mint functions
+/// take one by reference. A future delegating call site that forgot the grant check does not compile.
+pub(crate) type EgressGrant<'a> = crate::egress_auth::gate::EgressGrant<AgentEgress<'a>>;
 
 impl EgressGrant<'_> {
     /// The agent this grant is for. Read by the mint rather than passed beside it; see the module
     /// note on why a second parameter would defeat the gate.
     pub(crate) fn agent_id(&self) -> &str {
-        self.agent_id
+        self.subject().agent_id
     }
 }
 
-/// THE EGRESS GATE: may busbar spend a credential on this backend agent ON BEHALF OF THIS CALLER?
+/// THE EGRESS GATE FOR THIS PLANE: [`crate::egress_auth::gate::authorise`] with A2A's grant kind and
+/// A2A's wording, and nothing else.
 ///
-/// `VirtualKey::scope_allowed` is reused verbatim rather than reimplemented: its cross-kind
-/// fail-closed semantics are frozen at 1.5.3 and a second implementation of a frozen rule is a
-/// second chance to get it wrong. It is the SAME predicate [`super::inbound::authorize`] and
-/// [`super::catalogue`] ask, and asking it again here is not redundancy — those two answer "what may
-/// this caller SEE and INVOKE", and this one answers "what may busbar's own credentials be spent
-/// on", which is a different question asked at a different moment by a function that may one day
-/// have a call site the other two never reach.
+/// The question it asks — may busbar spend a credential on this backend agent ON BEHALF OF THIS
+/// CALLER? — is the SAME predicate [`super::inbound::authorize`] and [`super::catalogue`] ask, and
+/// asking it again here is not redundancy: those two answer "what may this caller SEE and INVOKE",
+/// and this one answers "what may busbar's own credentials be spent on", which is a different
+/// question asked at a different moment by a function that may one day have a call site the other
+/// two never reach.
 pub(crate) fn authorise_egress<'a>(
     caller: &VirtualKey,
     agent_id: &'a str,
     now: u64,
-) -> Result<EgressGrant<'a>, EgressDenied> {
-    if !caller.is_live() || !caller.enabled || caller.expires_at.is_some_and(|exp| now >= exp) {
-        return Err(EgressDenied::KeyNotLive {
-            caller: caller.id.clone(),
-        });
-    }
-    if !caller.scope_allowed(super::inbound::SCOPE_KIND_AGENT, agent_id) {
-        return Err(EgressDenied::NoAgentGrant {
-            caller: caller.id.clone(),
-            agent_id: agent_id.to_string(),
-        });
-    }
-    Ok(EgressGrant { agent_id })
+) -> Result<EgressGrant<'a>, AgentEgressDenied> {
+    crate::egress_auth::gate::authorise(caller, AgentEgress { agent_id }, now)
+        .map_err(AgentEgressDenied::from)
 }
 
 /// Where a leased credential is placed on the outbound request.

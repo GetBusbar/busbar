@@ -23,7 +23,8 @@
 //! property is the one that only exists in the pair: the bundle creates the deputy, so the bundle
 //! has to close it.
 //!
-//! The gate is [`authorise_egress`], and it runs at the CREDENTIAL SELECTION SITE rather than at the
+//! The gate is [`crate::egress_auth::gate::authorise`], reached here through
+//! [`authorise_tool_egress`], and it runs at the CREDENTIAL SELECTION SITE rather than at the
 //! catalogue. That placement is the point: a catalogue filter answers "what may this caller SEE",
 //! and the confused deputy is about what busbar's own credentials may be spent on, which is a
 //! different question asked at a different moment. Both checks exist; this module owns the second.
@@ -45,6 +46,7 @@
 //! boundary rather than a habit.
 
 use super::identity::{ServerId, ToolKey};
+use crate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 use busbar_api::{Redacted, VirtualKey};
 
 /// How ONE upstream server is authenticated to. Per server, never a plane-wide default: every MCP
@@ -97,7 +99,7 @@ pub(crate) struct ExchangeCfg {
 ///   `passthrough`. This is the only caller-supplied value that may leave.
 ///
 /// Built by the CONNECT path, which has no verb yet: `mcp::upstream` passes the caller's
-/// `VirtualKey` straight to `authorise_egress` instead of assembling one of these.
+/// `VirtualKey` straight to `authorise_tool_egress` instead of assembling one of these.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct CallerContext {
@@ -109,17 +111,105 @@ pub(crate) struct CallerContext {
     pub(crate) upstream_credential: Option<Redacted<String>>,
 }
 
+/// WHICH OF THIS PLANE'S TWO GRANTS a refusal is about. One variant per check the gate makes, which
+/// is what lets [`EgressDenied`]'s conversion give each check its own sentence exhaustively: a third
+/// MCP requirement would be a compile error at the wording rather than a silent reuse of a nearby
+/// arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolGrant {
+    /// `mcp_server`: the caller may reach this upstream at all.
+    Server,
+    /// `mcp_tool`: which of the upstream's tools the caller may reach.
+    Tool,
+}
+
+/// WHAT THIS PLANE SUPPLIES TO THE CORE GATE: two grants, in the order they are checked, and no key
+/// liveness rule.
+///
+/// Two grants and not one, because they answer different questions and a deployment may legitimately
+/// grant one without the other: `mcp_server` says the caller may reach this upstream at all,
+/// `mcp_tool` says which of its tools. Requiring BOTH is what keeps a server-wide grant from
+/// silently becoming a tool-wide one, and SERVER FIRST is what makes an ungranted caller learn that
+/// it is ungranted for the server rather than for a tool it was never going to reach.
+impl EgressSubject for &ToolKey {
+    type Grant = ToolGrant;
+
+    /// FALSE, and this is the divergence the unification found rather than introduced: the A2A lease
+    /// mint refuses a dead key and this path never has. It is left FALSE because a gate that started
+    /// refusing more on this plane during a refactor is a behaviour change nobody asked for; the
+    /// const is where the difference is now written down instead of being a fact about which file a
+    /// reader opened. The inbound authentication chain is what rejects a dead key on this path.
+    const REQUIRE_LIVE_KEY: bool = false;
+
+    fn grants_required(&self) -> Vec<Requirement<ToolGrant>> {
+        vec![
+            Requirement {
+                grant: ToolGrant::Server,
+                scope_kind: "mcp_server",
+                value: self.server().to_string(),
+            },
+            Requirement {
+                grant: ToolGrant::Tool,
+                scope_kind: "mcp_tool",
+                value: self.namespaced(),
+            },
+        ]
+    }
+}
+
 /// Why an egress credential was refused. Each arm is a case where minting would hand the caller
 /// authority it does not hold.
+///
+/// THE WORDING IS THIS PLANE'S and the DECISION is core's: the two grant arms are core's
+/// [`EgressRefusal`] wearing MCP's sentences, produced by the total conversion below, so an operator
+/// reads about `mcp_server` and `mcp_tool` rather than about an abstract requirement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EgressDenied {
     /// The inbound principal has no `mcp_server` grant for this upstream.
     NoServerGrant { caller: String, server: String },
     /// The inbound principal has no `mcp_tool` grant for this namespaced tool.
     NoToolGrant { caller: String, tool: String },
+    /// The caller's key is disabled, tombstoned or expired.
+    ///
+    /// UNREACHABLE ON THIS PLANE TODAY, and present anyway because the conversion from core's
+    /// refusal is TOTAL: a refusal core can produce must have a sentence here rather than being
+    /// folded into a nearby arm. The day `REQUIRE_LIVE_KEY` above is turned on, the operator gets a
+    /// sentence that says what happened instead of a denial blaming a grant the caller holds.
+    KeyNotLive { caller: String },
     /// `passthrough` was configured and the caller supplied no upstream credential. Fail closed:
     /// falling back to busbar's ambient credential is exactly the deputy this gate exists to close.
     PassthroughWithoutCallerCredential { server: String },
+}
+
+/// THE PLANE'S WORDING, TOTAL over core's refusal.
+///
+/// Every sentence below is byte-identical to the one this module printed when it owned its own gate;
+/// the tests that assert them are the reason it must stay that way. Total on purpose: `match` with no
+/// wildcard, so a refusal core grows later cannot arrive here silently.
+impl From<EgressRefusal<ToolGrant>> for EgressDenied {
+    fn from(refusal: EgressRefusal<ToolGrant>) -> Self {
+        match refusal {
+            EgressRefusal::KeyNotLive { caller } => EgressDenied::KeyNotLive { caller },
+            EgressRefusal::NoGrant {
+                caller,
+                grant: ToolGrant::Server,
+                value,
+                ..
+            } => EgressDenied::NoServerGrant {
+                caller,
+                server: value,
+            },
+            EgressRefusal::NoGrant {
+                caller,
+                grant: ToolGrant::Tool,
+                value,
+                ..
+            } => EgressDenied::NoToolGrant {
+                caller,
+                tool: value,
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for EgressDenied {
@@ -136,6 +226,10 @@ impl std::fmt::Display for EgressDenied {
                 "key `{caller}` holds no `mcp_tool` grant for `{tool}`, so no upstream credential \
                  is selected for it"
             ),
+            EgressDenied::KeyNotLive { caller } => write!(
+                f,
+                "key `{caller}` is not live, so no upstream credential is selected for it"
+            ),
             EgressDenied::PassthroughWithoutCallerCredential { server } => write!(
                 f,
                 "server `{server}` is configured `upstream_credentials: passthrough` and the caller \
@@ -145,30 +239,22 @@ impl std::fmt::Display for EgressDenied {
     }
 }
 
-/// THE EGRESS GATE. Both grants must pass before any credential is selected.
+/// THE EGRESS GATE FOR THIS PLANE: [`crate::egress_auth::gate::authorise`] with MCP's grant kind and
+/// MCP's wording, and nothing else.
 ///
-/// Two checks and not one, because the two grants answer different questions and a deployment may
-/// legitimately grant one without the other: `mcp_server` says the caller may reach this upstream at
-/// all, `mcp_tool` says which of its tools. Requiring BOTH is what keeps a server-wide grant from
-/// silently becoming a tool-wide one.
-///
-/// `VirtualKey::scope_allowed` is reused verbatim rather than reimplemented: its cross-kind
-/// fail-closed semantics are frozen at 1.5.3 and a second implementation of a frozen rule is a
-/// second chance to get it wrong.
-pub(crate) fn authorise_egress(caller: &VirtualKey, key: &ToolKey) -> Result<(), EgressDenied> {
-    if !caller.scope_allowed("mcp_server", key.server().as_str()) {
-        return Err(EgressDenied::NoServerGrant {
-            caller: caller.id.clone(),
-            server: key.server().to_string(),
-        });
-    }
-    if !caller.scope_allowed("mcp_tool", &key.namespaced()) {
-        return Err(EgressDenied::NoToolGrant {
-            caller: caller.id.clone(),
-            tool: key.namespaced(),
-        });
-    }
-    Ok(())
+/// The witness is discarded because this plane's credential planner reads the tool key it already
+/// holds; the A2A plane keeps its witness because its mint reads the destination off it. Both are the
+/// same gate.
+pub(crate) fn authorise_tool_egress(
+    caller: &VirtualKey,
+    key: &ToolKey,
+) -> Result<(), EgressDenied> {
+    // `now` is unused on this plane: `REQUIRE_LIVE_KEY` is false, so no expiry is consulted. Passing
+    // 0 rather than plumbing a clock says that plainly — a clock argument this plane never reads
+    // would be a parameter a future edit could believe was doing something.
+    crate::egress_auth::gate::authorise(caller, key, 0)
+        .map(|_witness| ())
+        .map_err(EgressDenied::from)
 }
 
 /// The DOWN-SCOPE for an RFC 8693 exchange: the space-delimited scope string to request.
@@ -267,7 +353,7 @@ pub(crate) fn plan_credential(
 ) -> Result<CredentialPlan, EgressDenied> {
     // THE GATE FIRST. Nothing below runs for a caller that is not authorised, so an unauthorised
     // caller cannot even cause a token-endpoint round trip on busbar's credentials.
-    authorise_egress(caller_key, called)?;
+    authorise_tool_egress(caller_key, called)?;
     match credential {
         UpstreamCredential::None => Ok(CredentialPlan::None),
         UpstreamCredential::Static(secret) => Ok(CredentialPlan::Bearer(secret.clone())),

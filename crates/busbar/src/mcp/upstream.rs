@@ -166,7 +166,7 @@ pub(crate) fn authorise(
         None => ungoverned_principal(),
     };
     let credential = credential_mode(server).map_err(SetupRefusal::Credential)?;
-    // THE TRANSITIVE-DEPUTY CALL. `plan_credential` runs `authorise_egress` first and returns nothing to a caller
+    // THE TRANSITIVE-DEPUTY CALL. `plan_credential` runs `authorise_tool_egress` first and returns nothing to a caller
     // that fails it, so the plan below is not reachable without the grant. It is called here — where
     // there is no network — precisely so the refusal costs no round trip.
     plan_credential(&server_id, &credential, &caller, None, &key).map_err(SetupRefusal::Egress)?;
