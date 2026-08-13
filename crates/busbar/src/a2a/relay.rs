@@ -1119,3 +1119,14 @@ mod wire_headers_tests;
 #[cfg(test)]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
+
+// THE SERVED HALF OF THE COVERAGE MATRIX — one test per `busbar-as-server` cell of
+// `qa/method-inventory.json`, on the binding whose cell it claims. Mounted here for the reason every
+// block above is: it needs `relay_harness`, and a second harness is a second thing that can stop
+// matching what the production router does. The cells it claims were previously established only by
+// the official TCK's stdout — a real instrument, and the right one, but one that lives outside this
+// repository and that `cargo test` cannot run; the eleven JSON-RPC cells had no in-tree instrument
+// at all.
+#[cfg(test)]
+#[path = "tests/served_methods_tests.rs"]
+mod served_methods_tests;

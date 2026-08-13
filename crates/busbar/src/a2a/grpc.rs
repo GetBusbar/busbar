@@ -292,6 +292,48 @@ fn from_result<N: protojson_conv::ProtoJsonPayload>(result: Value) -> Result<N, 
         .map_err(|e| Status::internal(format!("the answer could not be rendered: {e}")))
 }
 
+/// THE MEMBERS OF BUSBAR'S OWN AGENT CARD THAT THE NORMATIVE `a2a.proto` DOES NOT MODEL, as
+/// `(object path, member)` pairs.
+///
+/// One entry today: `capabilities.stateTransitionHistory`. It is an A2A v0.3 member, it is declared
+/// by the specification's own sample card in section 8.5, and `a2a.proto`'s `AgentCapabilities` —
+/// which SPEC 1.4 makes the normative definition — has no such field. The generated ProtoJSON type
+/// is `deny_unknown_fields`, so the transcode below did not drop it: it FAILED, and this rpc
+/// answered `Internal` with a serde message for every caller. A mounted path that answers nothing is
+/// not an implemented method, and it was invisible to the official suite because `CARD-EXT-002`
+/// skips itself the moment a card is configured.
+const UNMODELLED_CARD_MEMBERS: &[(&str, &str)] = &[("capabilities", "stateTransitionHistory")];
+
+/// BUSBAR'S CARD, NARROWED TO WHAT A PROTOBUF `AgentCard` CAN CARRY — and NOT reshaped.
+///
+/// This is deliberately not the thing `testing/a2a-tck/WAIVERS.md` refuses to do. That decision,
+/// dated and recorded, is that **busbar does not change the card it PUBLISHES** to satisfy a
+/// generated schema the specification's own sample card contradicts; the document every A2A client
+/// reads over the two HTTP bindings is untouched by this function and keeps every member it has.
+///
+/// What is decided here is different and is not a choice at all: this binding's answer IS a
+/// protobuf `AgentCard`, and a member the message has no field for cannot be put on this wire in any
+/// shape. The only two available answers are "the card, minus what protobuf cannot represent" and
+/// "no card". Dropping the member costs a gRPC caller that member; failing the transcode costs it
+/// the whole card — and the module note above already states the rule this follows: *what a proto
+/// field the SDK's own conversions do not carry costs a field dropped on this binding and only this
+/// one*.
+///
+/// LISTED, never guessed, and never a blanket "ignore what does not parse". A generic leniency here
+/// would silently swallow the next real divergence between busbar's card and the specification's
+/// message; a named list makes each drop a line somebody wrote down, with the reason attached.
+fn narrowed_to_the_proto(mut card: Value) -> Value {
+    let Some(root) = card.as_object_mut() else {
+        return card;
+    };
+    for (parent, member) in UNMODELLED_CARD_MEMBERS {
+        if let Some(obj) = root.get_mut(*parent).and_then(Value::as_object_mut) {
+            obj.remove(*member);
+        }
+    }
+    card
+}
+
 /// The stream a server-streaming RPC answers with. Boxed because both streaming RPCs produce it
 /// from the same function and a named opaque type per RPC would be two names for one thing.
 type EventStream =
@@ -443,7 +485,7 @@ impl A2aService for Busbar {
         let result = self
             .call("GetExtendedAgentCard", to_params(&native)?, version)
             .await?;
-        let card: a2a::AgentCard = from_result(result)?;
+        let card: a2a::AgentCard = from_result(narrowed_to_the_proto(result))?;
         Ok(tonic::Response::new(pbconv::to_proto_agent_card(&card)))
     }
 
