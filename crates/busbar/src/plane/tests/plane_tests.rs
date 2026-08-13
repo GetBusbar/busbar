@@ -87,15 +87,24 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
     }
 }
 
-/// Today, and only as a consequence of the rule above: LLM has one because it translates between
-/// the six dialects busbar speaks; MCP and A2A have exactly one wire format each, so a "superset"
-/// there would be a representation with one protocol on each side, which is a data model and not an
-/// intermediate representation.
+/// Today, and only as a consequence of the rule above. LLM has one because it translates between
+/// the six dialects busbar speaks. MCP has exactly one wire format, so a "superset" there would be a
+/// representation with one protocol on each side, which is a data model and not an intermediate
+/// representation.
+///
+/// **A2A EARNED ONE WHEN ITS SECOND BINDING ARMED, and this line moving is the rule working rather
+/// than a test being relaxed.** The threshold was written down before the binding existed, derived
+/// from a list rather than from a `matches!`, precisely so that the promotion would fire MECHANICALLY
+/// on the day the list grew and nobody would have to remember it was owed. HTTP+JSON is that day.
+/// The promotion is not suppressed: it is what `Plane::A2a => &[WIRE_JSONRPC, WIRE_HTTP_JSON]` means.
 #[test]
-fn only_the_llm_plane_has_earned_an_ir_today() {
+fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
     assert!(Plane::Llm.has_superset_ir());
     assert!(!Plane::Mcp.has_superset_ir());
-    assert!(!Plane::A2a.has_superset_ir());
+    assert!(
+        Plane::A2a.has_superset_ir(),
+        "A2A serves two bindings of one agent, which is the threshold, stated once and derived"
+    );
 }
 
 /// The LLM plane's wire-format count is DERIVED from the real protocol registry, never a literal.
@@ -256,22 +265,37 @@ fn a_plane_is_labellable_at_its_door_exactly_when_it_speaks_one_wire_format() {
     // that has no door.
     assert_eq!(Plane::Llm.sole_wire_format(), None);
     assert_eq!(Plane::Mcp.sole_wire_format(), Some("jsonrpc"));
-    assert_eq!(Plane::A2a.sole_wire_format(), Some("jsonrpc"));
+    // AND A2A IS NOW THE SECOND PLANE THAT CANNOT BE LABELLED AT ITS DOOR. It has a door, and it
+    // speaks two bindings through it, so `plane::observe` passes its traffic through unlabelled and
+    // `a2a::ingress::invoke` emits the label itself with the leg the request actually arrived on.
+    // That is the rule above doing what it was written for, not a plane losing its metrics.
+    assert_eq!(Plane::A2a.sole_wire_format(), None);
 }
 
-/// EVERY MOUNTABLE PLANE SPEAKS JSON-RPC 2.0. `ingress::native` refuses on a mounted plane with a
-/// JSON-RPC error object without asking WHICH plane, and this is the fact that makes that correct.
-/// Pinned rather than assumed: the day a plane mounts something else, this test fails and the
-/// shaping seam is told to grow an arm, instead of quietly answering that plane's client in a
-/// dialect it does not speak — which is the whole failure this unit exists to close.
+/// EVERY MOUNTABLE PLANE'S DOOR SPEAKS JSON-RPC 2.0. `ingress::native` refuses on a mounted plane
+/// with a JSON-RPC error object without asking WHICH plane, and this is the fact that makes that
+/// correct. Pinned rather than assumed: the day a plane's door speaks something else, this test
+/// fails and the shaping seam is told to grow an arm, instead of quietly answering that plane's
+/// client in a dialect it does not speak — which is the whole failure this unit exists to close.
+///
+/// IT ASKS `shaping_wire_format`, NOT `sole_wire_format`, and the difference is the point. A2A now
+/// speaks two bindings, so "which dialect DID speak" has no answer at the door — but an error body
+/// still has to be some shape, and the shape is the plane's FIRST binding. The two questions were
+/// answered by one function until the second binding armed, and reading the labelling question here
+/// would have made every mounted refusal fall through to OpenAI's envelope.
 #[test]
-fn every_mounted_planes_dialect_is_jsonrpc() {
+fn every_mounted_planes_door_dialect_is_jsonrpc() {
     for p in Plane::ALL.iter().copied().filter(|p| *p != Plane::Llm) {
         assert_eq!(
-            p.sole_wire_format(),
+            Ingress::Mounted(p).shaping_wire_format(),
             Some(WIRE_JSONRPC),
-            "{p:?} is mountable but does not speak JSON-RPC — `ingress::native`'s mounted arm \
-             would mis-shape its refusals"
+            "{p:?} is mountable but its door does not speak JSON-RPC — `ingress::native`'s mounted \
+             arm would mis-shape its refusals"
+        );
+        assert_eq!(
+            crate::ingress::native::envelope_dialect(Ingress::Mounted(p)),
+            WIRE_JSONRPC,
+            "{p:?}'s door refusals must not fall through to a vendor envelope"
         );
     }
 }

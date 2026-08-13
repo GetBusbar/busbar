@@ -335,7 +335,16 @@ pub(crate) async fn plane_rpc(
     wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
-    invoke(app, gov, principal, FromCatalogue, wire, body).await
+    invoke(
+        app,
+        gov,
+        principal,
+        FromCatalogue,
+        wire,
+        crate::transport::Transport::JsonRpc,
+        body,
+    )
+    .await
 }
 
 /// The A2A protocol versions THIS ENDPOINT SPEAKS, in the `Major.Minor` spelling the specification
@@ -627,26 +636,82 @@ pub(crate) async fn rpc(
     wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
-    invoke(app, gov, principal, Named(agent_id), wire, body).await
+    invoke(
+        app,
+        gov,
+        principal,
+        Named(agent_id),
+        wire,
+        crate::transport::Transport::JsonRpc,
+        body,
+    )
+    .await
 }
 
 /// WHICH FRONTED AGENT A SUBMISSION IS FOR, and the two ways a caller can say it.
 ///
-/// The two mounted endpoints differ in this and in NOTHING else — same admission, same catalogue,
+/// The mounted endpoints differ in this and in NOTHING else — same admission, same catalogue,
 /// same meter, same audit, same relay — which is why the difference is a two-variant value passed
-/// into one function rather than two handlers that happen to look alike. A second copy of the
+/// into one function rather than handlers that happen to look alike. A second copy of the
 /// sequence is a second place for the egress gate or the push-callback guard to go missing.
-enum Target {
+pub(super) enum Target {
     /// `POST /a2a/agents/{id}` — the caller named the agent in the path.
     Named(String),
-    /// `POST /a2a` — the plane's own endpoint, the one busbar's Agent Card publishes. The agent is
-    /// resolved from THIS CALLER'S CATALOGUE for the shape of work asked for. See [`select`].
+    /// `POST /a2a`, and every HTTP+JSON path under it — the plane's own endpoint, the one busbar's
+    /// Agent Card publishes. The agent is resolved from THIS CALLER'S CATALOGUE for the shape of
+    /// work asked for. See [`select`].
     FromCatalogue,
 }
 use Target::{FromCatalogue, Named};
 
-/// THE INBOUND CALL, both endpoints, one sequence.
-async fn invoke(
+/// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
+///
+/// `transport` is the leg the request arrived on ([`crate::transport::Transport::JsonRpc`] or
+/// [`crate::transport::Transport::HttpJson`]) and it is carried as a VALUE, never compared. It is
+/// read in exactly one place — the metric label at the end of this function — and the reason it has
+/// to be carried at all is a consequence the second binding's arrival made unavoidable: the plane
+/// ingress boundary (`plane::observe`) labels a request only for a plane with ONE dialect, because
+/// which dialect spoke is a fact only the plane's own reader knows. This plane now has two, so it
+/// labels its own requests from inside, with the leg they came in on, which is what makes a
+/// per-binding number readable from busbar's own telemetry rather than only from a conformance
+/// suite's stdout.
+pub(super) async fn invoke(
+    app: Arc<App>,
+    gov: crate::governance::GovCtx,
+    principal: crate::auth::AuthPrincipal,
+    target: Target,
+    wire: Wire,
+    transport: crate::transport::Transport,
+    body: axum::body::Bytes,
+) -> Response {
+    let started = std::time::Instant::now();
+    let observed = Arc::clone(&app);
+    let mut answered = invoke_inner(app, gov, principal, target, wire, body).await;
+    crate::telemetry::request_finished(
+        &observed,
+        crate::plane::Plane::A2a.key(),
+        transport.name(),
+        // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
+        // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
+        // one valid credential can drive.
+        crate::proxy::POOL_LABEL_UNRESOLVED,
+        crate::telemetry::outcome_of(answered.status().as_u16()),
+        started.elapsed().as_secs_f64(),
+    );
+    // AND THE BOUNDARY IS TOLD, so it does not count this request a second time under the plane's
+    // first binding. Everything the boundary still covers — the audience-bound `401`, a `413`, a
+    // `404` — reached no handler and therefore carries no marker, which is exactly the set it is
+    // there for.
+    answered
+        .extensions_mut()
+        .insert(crate::plane::observe::Counted);
+    answered
+}
+
+/// The sequence itself. Split from [`invoke`] only so the label above is emitted on EVERY exit —
+/// there are a dozen early returns below, and a metric emitted at each of them is a metric that
+/// will one day be missing from the thirteenth.
+async fn invoke_inner(
     app: Arc<App>,
     gov: crate::governance::GovCtx,
     principal: crate::auth::AuthPrincipal,
@@ -1864,6 +1929,11 @@ pub(crate) fn mount(
     if plane.admission().is_none() {
         return router;
     }
+    // AND THE SECOND BINDING, at the same mount and behind the same gate. `serve::self_card`
+    // advertises HTTP+JSON because `Plane::A2a` names it as a wire format, and a card advertising
+    // an interface nothing serves is the exact defect `serve` refuses one member down — so the card
+    // entry and these routes arm together, or a deployment with no receiving side has neither.
+    let router = super::rest::mount(router);
     router
         .route(
             super::serve::METADATA_PATH,

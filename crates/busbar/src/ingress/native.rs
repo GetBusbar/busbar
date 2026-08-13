@@ -24,8 +24,15 @@ use crate::plane::Ingress;
 /// and OpenAI's is the most widely understood of the six — what a generic HTTP client probing `/` is
 /// most likely to parse. Stated here so the status/message lookups and the envelope builder cannot
 /// answer it two different ways, which is precisely how `/mcp` acquired an OpenAI 413.
+///
+/// IT IS [`Ingress::shaping_wire_format`] THAT IS READ HERE, NOT `wire_format`. The two ask
+/// different questions and only one of them is answerable at a door: see the note on
+/// `shaping_wire_format` for why a MOUNTED plane with several dialects must still name one for an
+/// error body, and for what reading `wire_format` here did the day the A2A plane grew a second.
 pub(crate) fn envelope_dialect(ingress: Ingress) -> &'static str {
-    ingress.wire_format().unwrap_or(crate::proto::PROTO_OPENAI)
+    ingress
+        .shaping_wire_format()
+        .unwrap_or(crate::proto::PROTO_OPENAI)
 }
 
 /// Render `status`/`kind`/`message` in the dialect the resolved `ingress` is spoken in.

@@ -23,11 +23,23 @@
 //! card advertising an address its own router does not serve, one member down.
 //!
 //! So an entry whose binding busbar cannot serve is DROPPED, and which bindings those are is read
-//! off [`crate::plane::Plane`]'s wire formats ([`servable_bindings`]) rather than named here: the
-//! day this plane speaks HTTP+JSON or gRPC, these cards advertise them without anyone editing this
-//! file. A card left with NO interface at all is refused ([`ServeError::NoServableBinding`]) rather
-//! than served with an empty list, because that member is the only thing that tells a client how to
-//! reach the agent.
+//! off what busbar MOUNTS rather than named here. A card left with NO interface at all is refused
+//! ([`ServeError::NoServableBinding`]) rather than served with an empty list, because that member is
+//! the only thing that tells a client how to reach the agent.
+//!
+//! ## "WHAT BUSBAR SERVES" IS A QUESTION ABOUT AN ADDRESS, and there are two of them
+//!
+//! Two cards leave this file and they point at different places. [`self_card`] points at the plane's
+//! own mount, where both the JSON-RPC envelope and `a2a::rest`'s HTTP+JSON paths are served, so it
+//! publishes [`servable_bindings`] — the plane's whole wire-format list, which is why arming a
+//! binding on the plane publishes it here with nobody editing this file. [`rewrite_card`] points at
+//! ONE fronted agent, `/a2a/agents/{id}`, where the only thing mounted is the JSON-RPC handler, so it
+//! publishes [`agent_address_bindings`].
+//!
+//! Those were the same list while the plane spoke one dialect, and asking one of them for the other's
+//! answer is a live defect the moment it grows a second: it publishes an interface at busbar's own
+//! address for a binding busbar does not answer THERE, which is the defect this whole section is
+//! about, one address down.
 //!
 //! ## The vendor's signature is REMOVED, and BUSBAR'S REPLACES IT
 //!
@@ -102,7 +114,8 @@ pub(crate) enum ServeError {
         agent_id: String,
         /// The bindings the backend offered, in the order the card listed them.
         offered: Vec<String>,
-        /// The bindings busbar can serve, as [`servable_bindings`] reads them off the plane.
+        /// The bindings busbar serves AT THIS AGENT'S ADDRESS, as [`agent_address_bindings`]
+        /// reads them off the route mounted there.
         served: Vec<String>,
     },
 }
@@ -139,7 +152,8 @@ impl std::fmt::Display for ServeError {
     }
 }
 
-/// THE BINDINGS BUSBAR CAN SERVE, read off the A2A plane rather than written down here.
+/// THE BINDINGS BUSBAR SERVES AT THE PLANE'S OWN MOUNT, read off the A2A plane rather than written
+/// down here.
 ///
 /// A card busbar serves points every interface at BUSBAR'S OWN ADDRESS, so the `protocolBinding` on
 /// that interface is a claim about what BUSBAR speaks, not about what the backend speaks. The set of
@@ -153,7 +167,7 @@ impl std::fmt::Display for ServeError {
 /// gRPC interface at busbar's address in the first place.
 ///
 /// The A2A card spelling of a binding is the plane's wire-format name upper-cased (`jsonrpc` →
-/// `JSONRPC`, `http+json` → `HTTP+JSON`, `grpc` → `GRPC`), so [`can_serve_binding`] compares
+/// `JSONRPC`, `http+json` → `HTTP+JSON`, `grpc` → `GRPC`), so the servability checks compare
 /// case-insensitively and exactly, never by prefix.
 pub(crate) fn servable_bindings() -> Vec<String> {
     crate::plane::Plane::A2a
@@ -163,10 +177,33 @@ pub(crate) fn servable_bindings() -> Vec<String> {
         .collect()
 }
 
-/// Whether busbar can serve `binding` at its own address. See [`servable_bindings`].
-fn can_serve_binding(binding: &str) -> bool {
-    crate::plane::Plane::A2a
-        .wire_format_names()
+/// THE BINDINGS BUSBAR SERVES AT ONE FRONTED AGENT'S ADDRESS, which is a SMALLER set than
+/// [`servable_bindings`] — and the two being one answer was a live defect for as long as the plane
+/// spoke one dialect.
+///
+/// `servable_bindings` answers for the PLANE'S mount, which is where busbar's own card points and
+/// where `a2a::rest` hangs the HTTP+JSON paths: `/a2a/message:send`, `/a2a/tasks/{id}` and the rest.
+/// A fronted agent's card is rewritten to [`agent_endpoint`] — `/a2a/agents/{id}` — and the only
+/// thing mounted there is `ingress::rpc`, which reads a JSON-RPC envelope. The HTTP+JSON binding
+/// spells its operation in the REQUEST LINE, and under that prefix there is no request line that
+/// names one.
+///
+/// Answering the plane's list here would publish `{"url": "<busbar>/a2a/agents/x",
+/// "protocolBinding": "HTTP+JSON"}` — an interface at busbar's own address for a binding busbar does
+/// not answer THERE. That is the same defect as the gRPC entry this filter was written to drop, one
+/// address down, and it re-entered the moment the plane armed its second binding. See
+/// `a_binding_the_plane_serves_only_at_its_own_mount_is_not_published_at_an_agents_address`.
+///
+/// IT IS DERIVED FROM THE HANDLER, not spelled: the transport `ingress::rpc` labels its requests
+/// with is the binding it reads, so this answers that transport's name and cannot drift from what
+/// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
+fn agent_address_bindings() -> Vec<String> {
+    vec![crate::transport::Transport::JsonRpc.name().to_uppercase()]
+}
+
+/// Whether busbar can serve `binding` at ONE AGENT'S address. See [`agent_address_bindings`].
+fn can_serve_binding_for_agent(binding: &str) -> bool {
+    agent_address_bindings()
         .iter()
         .any(|f| f.eq_ignore_ascii_case(binding))
 }
@@ -262,7 +299,12 @@ pub(crate) fn rewrite_card(
     // interface at an address busbar does not serve gRPC on, and does not implement at all.
     // `supportedInterfaces` is an ORDERED list a client selects from, so that is not a cosmetic
     // surplus: a conformant client picking it is directed at busbar for a protocol nothing there
-    // answers. Which bindings survive is [`servable_bindings`], read off the plane.
+    // answers.
+    //
+    // Which bindings survive is [`agent_address_bindings`] — what busbar answers at THIS address —
+    // and NOT [`servable_bindings`], which answers for the plane's own mount. The two were the same
+    // list while the plane spoke one dialect; see `agent_address_bindings` for what reading the
+    // wider one here would publish.
     if let Some(Value::Array(interfaces)) = out.get_mut("supportedInterfaces") {
         let offered: Vec<String> = interfaces
             .iter()
@@ -271,7 +313,7 @@ pub(crate) fn rewrite_card(
         let offered_any = !interfaces.is_empty();
         interfaces.retain(|iface| match iface.get("protocolBinding") {
             // A named binding busbar cannot serve is dropped: see above.
-            Some(Value::String(b)) => can_serve_binding(b),
+            Some(Value::String(b)) => can_serve_binding_for_agent(b),
             // An entry naming NO binding makes no claim busbar would be making falsely — the
             // specification's default reading is JSON-RPC, which is what busbar answers at the
             // rewritten address. Kept rather than dropped, so the filter removes false claims only.
@@ -281,7 +323,10 @@ pub(crate) fn rewrite_card(
             return Err(ServeError::NoServableBinding {
                 agent_id: agent_id.to_string(),
                 offered,
-                served: servable_bindings(),
+                // What busbar serves AT THE ADDRESS this card would have pointed at. Reporting the
+                // plane's wider list would tell an operator busbar speaks HTTP+JSON here and leave
+                // them looking for a configuration mistake that does not exist.
+                served: agent_address_bindings(),
             });
         }
         for iface in interfaces.iter_mut() {

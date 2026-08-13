@@ -89,6 +89,30 @@ All notable changes to Busbar are documented here. The format is based on
   With the default `store: memory` nothing is persisted and nothing is claimed: the log keeps chain
   positions in RAM, the boot restore reports zero, and that zero is the truth being reported.
 
+- **Busbar's A2A endpoint now speaks the HTTP+JSON binding as well as JSON-RPC, and the agent card
+  says so.** A2A defines the same agent as several bindings of one endpoint, and a client picks one
+  from the card. Busbar previously advertised and served only JSON-RPC, so a client built against the
+  REST binding could not reach it at all. The same endpoint now also answers `POST /message:send`,
+  `POST /message:stream`, `GET /tasks`, `GET /tasks/{id}`, `POST /tasks/{id}:cancel`,
+  `POST /tasks/{id}:subscribe`, the `pushNotificationConfigs` collection and `GET /extendedAgentCard`,
+  and the `HTTP+JSON` interface is published on the card busbar serves for itself. Errors come back
+  in the REST binding's own representation: the HTTP status in `error.code`, the canonical status
+  name, and the structured `details` a conformant client reads.
+
+  These paths hang off the plane's own endpoint, and the card busbar serves for an individual fronted
+  agent still advertises `JSONRPC` alone — because that per-agent address answers the JSON-RPC
+  envelope and nothing else. Busbar advertises what it serves at the address it is advertising, never
+  what it serves somewhere else; a card entry sending a conformant client to an address that does not
+  answer that binding is worse than no entry.
+
+  Nothing about a request changes except how it is spelled. Both bindings run one admission, one
+  budget check, one outbound-credential decision, one callback guard and one audit record, and both
+  require the same audience-bound credential. A binding is a way of writing a request down, never a
+  way around what busbar does with it.
+
+  Agent traffic on `/metrics` gains a second value for the dialect label: `http+json` beside
+  `jsonrpc`. Existing agent-plane series are unchanged and JSON-RPC traffic keeps reading `jsonrpc`.
+
 ### Changed
 
 - **The `operation` label reads `invoke`, not `tool_call`.** The operation that carries "a caller

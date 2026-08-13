@@ -34,14 +34,29 @@
 //! Two questions could have been answered by comparing planes, and both are answered by the spine
 //! instead:
 //!
-//! * *Does this plane emit here, or from inside its own handler?* — [`super::Plane::sole_wire_format`].
-//!   A plane with one dialect can be labelled before the body is read; a plane with several cannot,
-//!   because which dialect spoke is a fact only its reader knows. That is why the LLM plane is not
-//!   observed here: not "it is the LLM plane", but "it speaks six dialects".
+//! * *Did this request's own handler already label it?* — [`Counted`], a marker the handler puts on
+//!   the response it is labelling. See below for why this replaced asking the plane how many
+//!   dialects it speaks.
 //! * *Which plane is this?* — [`super::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
 //!
-//! Add a fourth plane with one wire format and it is observed by this file without an edit.
+//! Add a fourth plane and it is observed by this file without an edit.
+//!
+//! ## THE ONE-DIALECT TEST WAS THE WRONG QUESTION, AND A SECOND BINDING SHOWED WHY
+//!
+//! This layer used to skip any plane whose `sole_wire_format` was `None`, on the reasoning that a
+//! plane with several dialects cannot be labelled before its reader has decided which one spoke.
+//! That reasoning is right about the LABEL and wrong about the SKIP, and the difference only became
+//! visible when the A2A plane armed its second binding: the plane's handler could then label the
+//! requests it handles, but a refusal issued BEFORE any handler — the audience-bound `401`, the
+//! `413` reshape, a `404` — reaches no reader at all, so skipping the plane here meant those stopped
+//! being counted entirely. That is precisely the hole this whole file was written to close, re-opened
+//! by a rule that fired correctly.
+//!
+//! So the question is now *did the handler already count this one*, answered by a marker the handler
+//! sets, and a request that reached no handler is counted HERE under the plane's FIRST binding —
+//! the same answer `ingress::native` shapes its body in, so a door refusal's metric label and its
+//! envelope name the same binding rather than disagreeing.
 
 use crate::state::AppHandle;
 use axum::extract::{Request, State};
@@ -49,6 +64,18 @@ use axum::middleware::Next;
 use axum::response::Response;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
+///
+/// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to
+/// pass its labels up through, which would put the emit back in one place and the label vocabulary
+/// in another. The handler emits its own series with the binding only it knows, and this says so, so
+/// [`observe`] can cover exactly the requests no handler saw without counting anything twice.
+///
+/// A response extension rather than a request one, because the answer is what carries the fact and
+/// the boundary reads it after the handler has run.
+#[derive(Clone, Copy)]
+pub(crate) struct Counted;
 
 /// Emit `busbar_requests_total` + `busbar_request_duration_seconds` for one request served by a
 /// MOUNTED plane, labelled with the plane it arrived on.
@@ -74,13 +101,26 @@ pub(crate) async fn observe(
     // grants are inadmissible everywhere else.
     let plane = app.planes.mounted_plane_of(req.uri().path());
     // Resolved BEFORE the request is consumed, and both facts together, so the emit below needs no
-    // second decision: either this boundary can label the request or it cannot.
-    let labels = plane.and_then(|p| p.sole_wire_format().map(|wire| (p, wire)));
+    // second decision: either this boundary knows which plane and binding to name, or it does not.
+    // The binding is the plane's FIRST — see the header — because a request refused before any
+    // handler never told anybody which of the plane's bindings it meant to speak.
+    let labels = plane.and_then(|p| {
+        super::Ingress::Mounted(p)
+            .shaping_wire_format()
+            .map(|w| (p, w))
+    });
     let Some((plane, wire)) = labels else {
         return next.run(req).await;
     };
     let started = Instant::now();
     let resp = next.run(req).await;
+    // THE HANDLER'S OWN LABEL WINS, and this is the only thing that keeps the two emits from
+    // double-counting. A plane whose handler knows which binding spoke says so itself, with the
+    // right binding; this layer then stands down for that request and covers only what never
+    // reached a handler.
+    if resp.extensions().get::<Counted>().is_some() {
+        return resp;
+    }
     crate::telemetry::request_finished(
         &app,
         plane.key(),

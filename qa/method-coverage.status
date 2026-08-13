@@ -32,19 +32,57 @@
 # legitimate waiver. "We ran out of time" is ALSO a legitimate waiver -- but only if it is written
 # down here, dated, with the customer-visible consequence spelled out.
 #
-# WHY THIS FILE IS EMPTY OF `implemented` LINES TODAY, and that is not an oversight.
+# WHY THIS FILE STARTED EMPTY OF `implemented` LINES, and why it no longer is.
 # `crates/busbar/src/mcp/` and `crates/busbar/src/a2a/` are being deleted whole (goal D10) and
 # rebuilt cell by cell on the Protocol x Operation x Transport axes. Claiming a cell here on the
 # strength of code that is scheduled for deletion would be claiming coverage the release does not
-# have. Every cell is therefore MISSING, the full list is pinned in qa/method-coverage.missing,
-# and THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has
-# been watched green on an instrument -- read the output, not the tick.
+# have, so every cell began MISSING, the full list is pinned in qa/method-coverage.missing, and
+# THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has been
+# watched green on an instrument -- read the output, not the tick. The first cells to leave the
+# queue are the A2A plane's HTTP+JSON server side, below, and each one names the requirement the
+# publisher's own suite passed on the `[http_json]` parameterisation.
 
 # ---------------------------------------------------------------------------
 # implemented
 # ---------------------------------------------------------------------------
 
-# (none yet -- see the paragraph above)
+# A2A's HTTP+JSON BINDING, SERVER SIDE. busbar receives these over `POST /a2a/message:send`,
+# `POST /a2a/message:stream`, `GET /a2a/tasks`, `GET /a2a/tasks/{id}`, `POST /a2a/tasks/{id}:cancel`,
+# `POST /a2a/tasks/{id}:subscribe` and the `pushNotificationConfigs` collection, and the card busbar
+# serves advertises the `HTTP+JSON` interface beside `JSONRPC`.
+#
+# THE INSTRUMENT IS THE PUBLISHER'S OWN SUITE, watched, not inferred. `scripts/a2a-subject/boot.sh
+# --tck` boots a busbar built from this commit and runs a2aproject/a2a-tck at its pinned ref against
+# it; the `http_json` transport row went from `3/83 (80 skipped)` to `84/96 (6 skipped)` and every
+# one of these operations has a named requirement passing on the `[http_json]` parameterisation:
+#
+#   SendMessage / SendStreamingMessage  CORE-HIST-001..004, CORE-STREAM-001..003
+#   GetTask                             CORE-HIST-002, CORE-HIST-004
+#   ListTasks                           CORE-LIST-001..005
+#   CancelTask                          CORE-CANCEL-001..003
+#   SubscribeToTask                     STREAM-SUB-002..004, STREAM-ORDER-001..004
+#   Create/Get/List/DeleteTaskPushNotificationConfig
+#                                       PUSH-CREATE-001/002, PUSH-GET-001/002, PUSH-LIST-001,
+#                                       PUSH-DEL-001/002
+#
+# WHAT IS DELIBERATELY NOT CLAIMED HERE, though its route exists:
+#   * `GetExtendedAgentCard` -- the route is mounted and relays like every other operation, but
+#     busbar does not implement the verb (its own card says `extendedAgentCard: false`) and the
+#     TCK's CARD-EXT-001/002 SKIPPED. A mounted path is not an implemented method.
+#   * `PushNotificationDelivery` -- PUSH-DELIVER-001/002/003 still FAIL on BOTH bindings, for the
+#     documented SSRF reason. Arming a second binding does not change a security decision.
+#   * every `client` role cell -- busbar speaks JSON-RPC to the backends it fronts. This unit armed
+#     the SERVER side of the binding and nothing else.
+a2a|http+json|server|client|CancelTask = implemented
+a2a|http+json|server|client|CreateTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|DeleteTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|GetTask = implemented
+a2a|http+json|server|client|GetTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|ListTaskPushNotificationConfigs = implemented
+a2a|http+json|server|client|ListTasks = implemented
+a2a|http+json|server|client|SendMessage = implemented
+a2a|http+json|server|client|SendStreamingMessage = implemented
+a2a|http+json|server|client|SubscribeToTask = implemented
 
 # ---------------------------------------------------------------------------
 # waived
