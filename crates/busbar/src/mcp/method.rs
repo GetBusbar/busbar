@@ -79,6 +79,11 @@ pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
     "tasks/get",
     "tasks/update",
     "tasks/cancel",
+    // SEP-2575's replacement for the GET stream. It is a METHOD in this revision, so it belongs in
+    // this list rather than in the route table — which is the whole difference the revision made,
+    // and the reason `super::ingress::legacy_verb` can go on answering `405` without that being a
+    // statement that busbar cannot notify a client. See `super::subscribe`.
+    super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN,
 ];
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
@@ -209,6 +214,12 @@ pub(crate) async fn dispatch(
         "tasks/get" => Some(tasks_get(ctx, params, id)),
         "tasks/update" => Some(tasks_update(ctx, params, id)),
         "tasks/cancel" => Some(tasks_cancel(ctx, params, id)),
+        // The one method whose answer is a STREAM rather than a document. It returns through the
+        // same `Response` as every other arm — what makes it different is the `content-type`, which
+        // is also what tells `super::ingress` not to re-frame it.
+        super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN => {
+            Some(super::subscribe::listen(ctx, params, id))
+        }
         _ => None,
     }
 }

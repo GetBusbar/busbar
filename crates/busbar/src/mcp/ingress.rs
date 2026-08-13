@@ -128,7 +128,7 @@ pub(super) mod code {
     /// `params`, so its absence is the ordinary "invalid params" the base protocol already has a
     /// code for. Reaching for `-32020` here (as this module once did) borrowed the HEADER
     /// vocabulary for a body defect.
-    pub(super) const INVALID_PARAMS: i64 = -32602;
+    pub(in crate::mcp) const INVALID_PARAMS: i64 = -32602;
     /// MCP `HeaderMismatchError`: an HTTP header disagreed with the body. Always `400`.
     pub(in crate::mcp) const HEADER_MISMATCH: i64 = -32020;
     /// MCP `UnsupportedProtocolVersionError`: carries `data.requested` and `data.supported`. Always
@@ -421,6 +421,22 @@ pub(crate) async fn rpc(
     // `prefers_event_stream` still decides that, unchanged. What is added is one narrow, explicit
     // ask: a client that named a token cannot be answered without a stream, and silently dropping
     // the progress it asked for would be the wrong half of the trade.
+    //
+    // A RESPONSE THAT IS ALREADY A STREAM IS RETURNED UNTOUCHED, and that check comes first. This
+    // step re-frames ONE buffered document as a sequence of events, so it has to read the whole body
+    // to do it; a body that never ends — `subscriptions/listen`'s, which is open for as long as the
+    // subscription is — would be buffered until the deadline and delivered as one lump at the end,
+    // which is the exact opposite of what a subscription is. The content type is the discriminator
+    // rather than the method name because it is a property of the ANSWER: any future method whose
+    // answer is a live stream gets this right without editing a list.
+    if response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"))
+    {
+        return response;
+    }
     let asked_for_progress = meta.get("progressToken").is_some_and(|v| !v.is_null());
     if !sse::prefers_event_stream(&headers) && !asked_for_progress {
         return response;
