@@ -20,6 +20,7 @@ fn resp(reason: IrStopReason) -> IrResponse {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,

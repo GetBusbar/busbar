@@ -1138,6 +1138,17 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
             ),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
+        // The thinking tokens are ALSO recorded as the reasoning sub-bucket. They are already folded
+        // into `output_tokens` above (Google bills them at the output rate and every other family
+        // counts reasoning inside its output total), so this is pure ATTRIBUTION and changes no
+        // total: it is what lets a Gemini-backed request answer "how many of those output tokens
+        // were thinking?" on an OpenAI-dialect egress, which previously returned a hard 0.
+        detail: crate::ir::IrUsageDetail {
+            reasoning_tokens: u
+                .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
+                .and_then(|v| v.as_u64()),
+            ..Default::default()
+        },
     }
 }
 

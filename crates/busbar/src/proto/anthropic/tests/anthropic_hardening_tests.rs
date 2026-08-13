@@ -680,6 +680,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: None,
@@ -724,6 +725,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         // The Bedrock egress → Anthropic ingress non-stream path: both None.
@@ -1376,30 +1378,53 @@ fn read_block_base64_image_source_unchanged() {
     }
 }
 
-/// Completeness: a valid native Anthropic content-block type the IR does not model
-/// (e.g. `document`) must NOT hard-error the whole request with a ClientError 400. Mirroring the
-/// OpenAI reader, `read_block` now degrades an unmodeled block to an empty Text block, preserving
-/// the turn. Against the old `_ => Err(ClientError)` catch-all this asserted `Err`, so this test
-/// fails on old code and passes after the named graceful-degradation arm.
+/// A valid native Anthropic content-block type the IR does not model must NOT hard-error the whole
+/// request with a ClientError 400 — it degrades to an empty Text block, preserving the turn's shape.
+///
+/// `document` is NO LONGER such a block: it is modelled as [`crate::ir::IrBlock::Media`], because
+/// degrading a PDF to an empty text block destroyed the caller's attachment on every cross-protocol
+/// hop with no warn. What still degrades is a document with NO `source` (nothing to carry) and any
+/// genuinely unmodeled type — asserted here so the graceful-degradation arm keeps its coverage.
 #[test]
 fn read_block_unmodeled_document_type_degrades_not_400() {
-    let block_json = serde_json::json!({
+    let with_source = serde_json::json!({
         "type": "document",
         "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0=" }
     });
-    let ir = read_block(&block_json)
-        .expect("unmodeled native block (document) must degrade, not 400 a valid request");
-    match ir {
-        crate::ir::IrBlock::Text {
-            text,
-            cache_control,
-            citations,
+    match read_block(&with_source).expect("a document block must not 400") {
+        crate::ir::IrBlock::Media {
+            kind,
+            source: crate::ir::IrImageSource::Base64 { media_type, data },
+            ..
         } => {
-            assert_eq!(text, "", "unmodeled block degrades to an empty text block");
-            assert!(cache_control.is_none());
-            assert!(citations.is_empty());
+            assert_eq!(kind, crate::ir::IrMediaKind::Document);
+            assert_eq!(media_type, "application/pdf");
+            assert_eq!(
+                data, "JVBERi0=",
+                "the attachment bytes must survive the read"
+            );
         }
-        other => panic!("expected graceful IrBlock::Text degradation, got {other:?}"),
+        other => panic!("a document must reach the IR as a Media block, got {other:?}"),
+    }
+
+    // The degrade arm itself, on the two shapes that still take it: a sourceless document and a
+    // future/unknown block type. Neither may 400, and neither may invent content.
+    for degenerate in [
+        serde_json::json!({"type": "document", "title": "x"}),
+        serde_json::json!({"type": "some_future_block", "whatever": 1}),
+    ] {
+        match read_block(&degenerate).expect("an unmodeled block must degrade, not 400") {
+            crate::ir::IrBlock::Text {
+                text,
+                cache_control,
+                citations,
+            } => {
+                assert_eq!(text, "", "unmodeled block degrades to an empty text block");
+                assert!(cache_control.is_none());
+                assert!(citations.is_empty());
+            }
+            other => panic!("expected graceful IrBlock::Text degradation, got {other:?}"),
+        }
     }
 
     // A `redacted_thinking` block (a valid native type the IR does not model directly)
@@ -1422,13 +1447,13 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     }
 }
 
-/// The empty-Text degrade above holds the TURN's shape (so message/block ordering
-/// survives), but it also DESTROYS the block on its own protocol's round-trip — the corollary the
-/// Bedrock reader upholds (its unmodeled `document`/`video` blocks park verbatim under a
-/// positional `extra` sentinel) but the Anthropic reader did not. This drives a FULL
-/// `read_request` -> `write_request` round trip (not just `read_block` in isolation) and asserts
-/// the ORIGINAL `document` block reaches the Anthropic writer's output, verbatim, at its original
-/// position — not the empty-Text placeholder.
+/// A `document` block survives a FULL `read_request` -> `write_request` round trip at its original
+/// position — and now does so through the MODELLED path rather than the positional `extra` stash.
+///
+/// The distinction is the whole point of modelling it. The stash only ever came back on an
+/// Anthropic→Anthropic hop, because `prepare_for_egress` clears `extra` at the cross-protocol seam;
+/// so on all five foreign egresses the caller's PDF was destroyed and replaced with an empty text
+/// block, silently. Modelled, it survives BOTH, and this test pins the same-protocol half.
 #[test]
 fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
     let body = serde_json::json!({
@@ -1447,10 +1472,22 @@ fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
     });
     let ir = AnthropicReader.read_request(&body).expect("read_request");
     assert!(
-        ir.extra
+        !ir.extra
             .contains_key(super::ANTHROPIC_UNMODELED_BLOCKS_SENTINEL),
-        "the unmodeled document block must be parked in extra: {:?}",
+        "a MODELLED document must not also be parked in the unmodeled stash — parking it would \
+         double-emit it on a same-protocol write: {:?}",
         ir.extra
+    );
+    assert!(
+        matches!(
+            &ir.messages[0].content[1],
+            crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Document,
+                ..
+            }
+        ),
+        "the document must be modelled, so it survives a CROSS-protocol hop too: {:?}",
+        ir.messages[0].content[1]
     );
 
     let out = AnthropicWriter.write_request(&ir);
@@ -1801,6 +1838,7 @@ fn write_response_keeps_unsigned_thinking_block() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-3-5-sonnet".to_string()),
         id: Some("msg_123".to_string()),
@@ -1865,6 +1903,7 @@ fn message_start_emits_present_usage_with_cache_fields() {
             output_tokens: 0,
             cache_creation_input_tokens: Some(5),
             cache_read_input_tokens: Some(7),
+            detail: crate::ir::IrUsageDetail::default(),
         }),
         id: Some("msg_x".to_string()),
         created: None,
@@ -1968,6 +2007,7 @@ fn write_response_emits_model_even_when_none() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("msg_x".to_string()),
@@ -1996,6 +2036,7 @@ fn write_response_preserves_present_model() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_x".to_string()),
@@ -2067,6 +2108,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
                 output_tokens: 1,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         },
         IrStreamEvent::MessageStop,
@@ -2110,6 +2152,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_01abc".to_string()),
@@ -2144,6 +2187,7 @@ fn write_response_emits_matched_stop_sequence_string() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("msg_01abc".to_string()),
@@ -2836,6 +2880,7 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-x".to_string()),
         id: Some("msg_01abc".to_string()),
@@ -2872,6 +2917,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (event, data) = AnthropicWriter
@@ -2894,6 +2940,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_event2, data2) = AnthropicWriter
@@ -3232,6 +3279,7 @@ fn thinking_block_with_signature_survives_response_egress() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_01abc".to_string()),

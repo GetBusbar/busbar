@@ -434,6 +434,191 @@ fn bedrock_image_block(source: &crate::ir::IrImageSource) -> Option<serde_json::
     }
 }
 
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
+/// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
+/// and is meaningless to any other backend.
+const VENDOR_NAME: &str = crate::proto::PROTO_BEDROCK;
+
+/// Read a native Converse `document` / `video` block body into an [`crate::ir::IrBlock::Media`].
+///
+/// Converse spells both the same way — `{"format": "pdf", "name": "…", "source": {…}}` — with a
+/// `source` union of inline `bytes` or an `s3Location`. `format` is a bare container token, so it is
+/// normalized to a real mime type here (the neutral IR speaks mime; every other dialect does too)
+/// and the writer reverses it exactly.
+fn bedrock_media_block(
+    kind: crate::ir::IrMediaKind,
+    value: &serde_json::Value,
+) -> crate::ir::IrBlock {
+    let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let source = value.get("source");
+    let ir_source = match source.and_then(|s| s.get("bytes")).and_then(|b| b.as_str()) {
+        Some(bytes) => crate::ir::IrImageSource::Base64 {
+            media_type: bedrock_media_type_for_format(kind, format),
+            data: bytes.to_string(),
+        },
+        // An `s3Location` names an object in the caller's own AWS account: no other backend can
+        // fetch it, so it rides the opaque `Vendor` escape and only this writer re-emits it.
+        None => crate::ir::IrImageSource::Vendor {
+            vendor: VENDOR_NAME,
+            value: source.cloned().unwrap_or_else(|| serde_json::json!({})),
+        },
+    };
+    crate::ir::IrBlock::Media {
+        kind,
+        source: ir_source,
+        name,
+        cache_control: None,
+    }
+}
+
+/// Converse's bare container token (`pdf`, `csv`, `mp4`) → a real mime type for the neutral IR.
+/// Unknown tokens fall back to the kind's generic type rather than fabricating `application/<token>`,
+/// which would be a mime type that does not exist.
+fn bedrock_media_type_for_format(kind: crate::ir::IrMediaKind, format: &str) -> String {
+    match format.to_ascii_lowercase().as_str() {
+        "pdf" => "application/pdf".to_string(),
+        "csv" => "text/csv".to_string(),
+        "txt" => "text/plain".to_string(),
+        "md" => "text/markdown".to_string(),
+        "html" => "text/html".to_string(),
+        "doc" => "application/msword".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        "xls" => "application/vnd.ms-excel".to_string(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+        "mp4" | "mov" | "webm" | "flv" | "mpeg" | "mpg" | "wmv" | "mkv" => {
+            format!("video/{format}")
+        }
+        "three_gp" => "video/3gpp".to_string(),
+        _ => match kind {
+            crate::ir::IrMediaKind::Document => "application/octet-stream".to_string(),
+            crate::ir::IrMediaKind::Audio => "audio/mpeg".to_string(),
+            crate::ir::IrMediaKind::Video => "video/mp4".to_string(),
+        },
+    }
+}
+
+/// Project an [`crate::ir::IrBlock::Media`] into the native Converse content block that carries it,
+/// or `None` when Converse has no slot (the caller emits nothing, having warned).
+///
+/// Converse has a `document` block and a `video` block and NO audio block, and each has a CLOSED
+/// format union AWS validates — so an unmappable format is coerced/dropped here rather than sent
+/// upstream to be rejected, which is the pattern this writer already applied to images.
+fn bedrock_media_content_block(
+    kind: crate::ir::IrMediaKind,
+    source: &crate::ir::IrImageSource,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    let (wire_key, format) = match kind {
+        crate::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
+        crate::ir::IrMediaKind::Video => ("video", bedrock_video_format(source)?),
+        crate::ir::IrMediaKind::Audio => {
+            tracing::warn!(
+                "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
+                 content blocks and NO audio block, so there is no native slot; the block is NOT \
+                 emitted"
+            );
+            return None;
+        }
+    };
+    let wire_source = match source {
+        crate::ir::IrImageSource::Base64 { data, .. } => serde_json::json!({ "bytes": data }),
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
+            value.clone()
+        }
+        crate::ir::IrImageSource::Url(_) | crate::ir::IrImageSource::Vendor { .. } => {
+            tracing::warn!(
+                media_kind = kind.as_str(),
+                "dropping attachment on Bedrock egress: Converse has no arbitrary-URL source and \
+                 cannot resolve a foreign vendor file handle; the block is NOT emitted"
+            );
+            return None;
+        }
+    };
+    let mut block = serde_json::Map::new();
+    block.insert("format".to_string(), serde_json::json!(format));
+    // Converse REQUIRES `name` on a document block. A cross-protocol attachment often has none
+    // (Gemini `inlineData` carries no filename), so synthesize one rather than emit a block AWS
+    // rejects for a missing required field.
+    if kind == crate::ir::IrMediaKind::Document {
+        block.insert(
+            "name".to_string(),
+            serde_json::json!(name.unwrap_or("attachment")),
+        );
+    } else if let Some(n) = name {
+        block.insert("name".to_string(), serde_json::json!(n));
+    }
+    block.insert("source".to_string(), wire_source);
+    Some(serde_json::json!({ wire_key: serde_json::Value::Object(block) }))
+}
+
+/// Mime type → a member of Converse's closed `DocumentFormat` union, or `None` (drop with a warn)
+/// when the attachment is not something Converse will accept as a document.
+fn bedrock_document_format(source: &crate::ir::IrImageSource) -> Option<&'static str> {
+    // A vendor (s3Location) source carries no mime; Converse still requires a format, and `pdf` is
+    // the overwhelmingly common document a caller puts in S3 for a model to read.
+    let crate::ir::IrImageSource::Base64 { media_type, .. } = source else {
+        return Some("pdf");
+    };
+    let f = match media_type.to_ascii_lowercase().as_str() {
+        "application/pdf" => "pdf",
+        "text/csv" => "csv",
+        "text/plain" => "txt",
+        "text/markdown" | "text/x-markdown" => "md",
+        "text/html" => "html",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        other => {
+            tracing::warn!(
+                media_type = %other,
+                "dropping document attachment on Bedrock egress: the mime type is not a member of \
+                 Converse's DocumentFormat union {{pdf,csv,doc,docx,xls,xlsx,html,txt,md}} and AWS \
+                 rejects anything else; the block is NOT emitted"
+            );
+            return None;
+        }
+    };
+    Some(f)
+}
+
+/// Mime type → a member of Converse's closed `VideoFormat` union, or `None` (drop with a warn).
+fn bedrock_video_format(source: &crate::ir::IrImageSource) -> Option<&'static str> {
+    let crate::ir::IrImageSource::Base64 { media_type, .. } = source else {
+        return Some("mp4");
+    };
+    let subtype = media_type
+        .to_ascii_lowercase()
+        .strip_prefix("video/")
+        .map(String::from);
+    let f = match subtype.as_deref() {
+        Some("mp4") => "mp4",
+        Some("quicktime") | Some("mov") => "mov",
+        Some("webm") => "webm",
+        Some("x-flv") | Some("flv") => "flv",
+        Some("mpeg") | Some("mpg") => "mpeg",
+        Some("x-ms-wmv") | Some("wmv") => "wmv",
+        Some("x-matroska") | Some("mkv") => "mkv",
+        Some("3gpp") => "three_gp",
+        _ => {
+            tracing::warn!(
+                media_type = %media_type,
+                "dropping video attachment on Bedrock egress: the mime type is not a member of \
+                 Converse's VideoFormat union; the block is NOT emitted"
+            );
+            return None;
+        }
+    };
+    Some(f)
+}
+
 /// Build a native Bedrock Converse prompt-cache marker block (`{"cachePoint": {"type": "default"}}`).
 ///
 /// This is the Converse content-block / tool-list element AWS uses to mark a prompt-cache boundary:
@@ -471,6 +656,7 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::ir::IrBlock]) {
             // Thinking / Image have no `cache_control` field; the positional stash carries the marker.
             crate::ir::IrBlock::Thinking { .. }
             | crate::ir::IrBlock::Image { .. }
+            | crate::ir::IrBlock::Media { .. }
             | crate::ir::IrBlock::Json(_) => {}
         }
     }
@@ -879,6 +1065,7 @@ impl super::StreamFraming for BedrockStreamFraming {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         }];
         // Frame 2: `metadata` carrying the token usage — but a native ConverseStream emits EXACTLY ONE
@@ -953,6 +1140,7 @@ impl super::StreamFraming for BedrockStreamFraming {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         })
     }
@@ -1185,7 +1373,10 @@ pub(crate) fn bedrock_response_to_eventstream(
             // synthesized path; skip them WITHOUT advancing `index` — no frame emitted, no index
             // spent. Enumerated EXPLICITLY (no `_` catch-all) so a future `IrBlock` variant is a
             // COMPILE error here rather than silent data loss.
-            IrBlock::ToolResult { .. } | IrBlock::Image { .. } | IrBlock::Json(_) => {}
+            IrBlock::ToolResult { .. }
+            | IrBlock::Image { .. }
+            | IrBlock::Media { .. }
+            | IrBlock::Json(_) => {}
         }
     }
 
@@ -1215,6 +1406,7 @@ pub(crate) fn bedrock_response_to_eventstream(
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
             stop_sequence: None,
         },

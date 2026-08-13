@@ -783,6 +783,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -818,6 +819,7 @@ fn write_response_content_null_when_no_text() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -946,6 +948,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -989,6 +992,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1020,6 +1024,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o-mini".to_string()),
         id: None,
@@ -1161,6 +1166,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1658,6 +1664,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -1688,6 +1695,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let (_, chunk) = OpenAiWriter
@@ -2018,6 +2026,7 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2061,6 +2070,7 @@ fn write_response_maps_finish_reason_enum_values() {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
             model: None,
             id: None,
@@ -2773,6 +2783,7 @@ fn stream_message_delta_emits_usage_when_counts_nonzero() {
             output_tokens: 34,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -2801,6 +2812,7 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -3021,6 +3033,7 @@ fn write_response_safety_round_trips_to_content_filter() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -3045,6 +3058,7 @@ fn stream_message_delta_safety_round_trips_to_content_filter() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -3271,6 +3285,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -4277,6 +4292,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(80),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-abc".to_string()),
@@ -4312,6 +4328,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
             output_tokens: 3,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -4606,6 +4623,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -4695,6 +4713,7 @@ fn url_annotation_base_accumulates_in_characters() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -4762,6 +4781,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };

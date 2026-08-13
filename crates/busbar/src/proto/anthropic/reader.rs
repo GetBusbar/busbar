@@ -381,6 +381,7 @@ impl ProtocolReader for AnthropicReader {
                         cache_read_input_tokens: u
                             .get("cache_read_input_tokens")
                             .and_then(|v| v.as_u64()),
+                        detail: crate::ir::IrUsageDetail::default(),
                     });
                 // Capture the stream's native identity so an anthropic→anthropic passthrough
                 // re-emits the exact `message_start.message` an SDK expects (it reads
@@ -514,6 +515,7 @@ impl ProtocolReader for AnthropicReader {
                     cache_read_input_tokens: usage_val
                         .and_then(|u| u.get("cache_read_input_tokens"))
                         .and_then(|v| v.as_u64()),
+                    detail: crate::ir::IrUsageDetail::default(),
                 };
                 Some(IrStreamEvent::MessageDelta {
                     stop_reason,
@@ -654,6 +656,21 @@ impl ProtocolReader for AnthropicReader {
             cache_read_input_tokens: usage_val
                 .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(|v| v.as_u64()),
+            // The 5m/1h cache-creation TIER SPLIT. These are SLICES of
+            // `cache_creation_input_tokens`, never additions to it — but the two tiers are PRICED
+            // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in
+            // aggregate and cannot be reconciled per line.
+            detail: crate::ir::IrUsageDetail {
+                cache_creation_5m_input_tokens: usage_val
+                    .and_then(|u| u.get("cache_creation"))
+                    .and_then(|c| c.get("ephemeral_5m_input_tokens"))
+                    .and_then(|v| v.as_u64()),
+                cache_creation_1h_input_tokens: usage_val
+                    .and_then(|u| u.get("cache_creation"))
+                    .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+                    .and_then(|v| v.as_u64()),
+                ..Default::default()
+            },
         };
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the

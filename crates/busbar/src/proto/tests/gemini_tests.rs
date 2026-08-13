@@ -321,6 +321,7 @@ fn test_gemini_write_response_event_message_delta() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
 
@@ -860,6 +861,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gemini-1.5-pro".into()),
         id: None,

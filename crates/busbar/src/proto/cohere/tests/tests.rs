@@ -432,6 +432,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -900,6 +901,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1095,6 +1097,7 @@ fn test_safety_finish_reason_writes_error_non_stream() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("r1".to_string()),
@@ -1128,6 +1131,7 @@ fn test_safety_finish_reason_writes_error_stream() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -1196,6 +1200,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("e1".to_string()),
@@ -1527,6 +1532,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
             output_tokens: 6,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("resp-1".to_string()),
@@ -1904,7 +1910,9 @@ fn test_stream_text_not_reopened_after_close() {
     let reader = CohereReader;
     let mut state = crate::ir::StreamDecodeState::default();
 
-    // Leading tool-plan opens a text block at index 0 (BlockStart + BlockDelta).
+    // Leading tool-plan opens a REASONING block at index 0 (BlockStart + BlockDelta). It claims the
+    // same index a leading text block would; what changed is the block KIND, because a tool_plan is
+    // the model's internal plan and must not reach the user as visible content.
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -1918,10 +1926,10 @@ fn test_stream_text_not_reopened_after_close() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Thinking
             }
         ),
-        "tool-plan opens the leading text block at index 0, got {evs:?}"
+        "tool-plan opens the leading reasoning block at index 0, got {evs:?}"
     );
 
     // tool-call-start closes the still-open text block (BlockStop{0}) and opens the tool at index 1.
@@ -1980,7 +1988,8 @@ fn test_stream_message_end_closes_dangling_text_block() {
     let reader = CohereReader;
     let mut state = crate::ir::StreamDecodeState::default();
 
-    // tool-plan opens a text block at index 0 (BlockStart + BlockDelta), then the stream ends abruptly.
+    // tool-plan opens a reasoning block at index 0 (BlockStart + BlockDelta), then the stream ends
+    // abruptly. The dangling-block close below is index-based and kind-independent.
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -1994,10 +2003,10 @@ fn test_stream_message_end_closes_dangling_text_block() {
             evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Thinking
             }
         ),
-        "tool-plan opens the text block, got {evs:?}"
+        "tool-plan opens the reasoning block, got {evs:?}"
     );
 
     // message-end (no content-end, no tool-call-start) must emit BlockStop{0} BEFORE MessageStop.
@@ -2257,6 +2266,7 @@ fn test_write_response_event_message_end_carries_usage() {
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -2294,6 +2304,7 @@ fn test_write_response_event_message_end_zero_usage_present() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -2321,6 +2332,7 @@ fn test_message_end_usage_stream_roundtrip() {
         output_tokens: 3,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -2649,9 +2661,24 @@ fn test_read_request_tool_content_object_array_preserved() {
         text.contains("second part"),
         "all text blocks must be joined: {text}"
     );
+    // A `document` part is NO LONGER folded into this text join. Serializing it there is what put a
+    // literal JSON string (`{"document":{"data":…}}`) in the message body, so the model read escaped
+    // JSON syntax instead of a document. It is carried STRUCTURALLY beside the text instead — still
+    // not dropped, which is what this assertion was protecting.
     assert!(
-        text.contains("doc body"),
-        "non-text typed (document) block must be serialized, not dropped: {text}"
+        !text.contains("doc body"),
+        "the document must not be stringified into the tool-result text: {text}"
+    );
+    assert!(
+        tool_result.iter().any(|b| matches!(
+            b,
+            crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Document,
+                source: crate::ir::IrImageSource::Vendor { value, .. },
+                ..
+            } if crate::json::to_string(value).unwrap_or_default().contains("doc body")
+        )),
+        "the document must be preserved as a structured Media block: {tool_result:?}"
     );
 }
 
@@ -3199,8 +3226,12 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     }
 }
 
-/// Thinking/Image stream blocks have no native Cohere v2 frame shape, so the writer suppresses
-/// them (returns None) rather than emitting a fabricated non-native frame.
+/// A Thinking/Image stream BLOCK-START has no native Cohere v2 opening frame, so the writer
+/// suppresses it rather than emitting a fabricated non-native frame.
+///
+/// A reasoning DELTA is a different matter and is NOT suppressed: Cohere v2 has a native
+/// `tool-plan-delta` frame — the one this protocol's own reader consumes — so suppressing it made a
+/// streamed plan reach a Cohere-ingress client as nothing while the same turn non-streamed arrived.
 #[test]
 fn test_write_response_event_thinking_and_image_blocks_suppressed() {
     let writer = CohereWriter;
@@ -3216,12 +3247,15 @@ fn test_write_response_event_thinking_and_image_blocks_suppressed() {
             block: crate::ir::IrBlockMeta::Image,
         })
         .is_none());
-    assert!(writer
+    // The reasoning DELTA, by contrast, MUST emit — into Cohere's native `tool-plan-delta` frame.
+    let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::ir::IrDelta::ThinkingDelta("x".to_string()),
         })
-        .is_none());
+        .expect("a reasoning delta has a native Cohere frame (`tool-plan-delta`)");
+    assert_eq!(frame["type"], ET_TOOL_PLAN_DELTA);
+    assert_eq!(frame["delta"]["message"]["tool_plan"], "x");
 }
 
 /// A Cohere `tool`-role message's `content` must be decoded
@@ -3767,6 +3801,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("c14c80c3-18eb-4519-9460-6c92edd8cfb4".to_string()),
@@ -3801,6 +3836,7 @@ fn test_write_response_end_turn_maps_to_complete() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("c14c80c3-18eb-4519-9460-6c92edd8cfb4".to_string()),
@@ -3830,6 +3866,7 @@ fn test_stream_message_delta_stop_sequence_maps_to_stop_sequence() {
                 output_tokens: 3,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         })
         .expect("message-end frame");
@@ -4638,12 +4675,16 @@ fn n_candidate_count_never_emitted_on_cohere() {
     assert_eq!(ir.n, None, "the Cohere reader must never populate n");
 }
 
-/// Streaming symmetry: the STREAMING Cohere reader must preserve
-/// `tool-plan-delta` the same way the non-stream `read_response` folds `message.tool_plan` — as a
-/// LEADING Text block ahead of the tool call. Without it a STREAMING Cohere→X hop lost the
-/// assistant's pre-tool-call reasoning while the non-stream hop preserved it.
+/// Streaming symmetry: the STREAMING Cohere reader must carry `tool-plan-delta` the same way the
+/// non-stream `read_response` carries `message.tool_plan` — as a LEADING REASONING block ahead of
+/// the tool call.
+///
+/// BOTH halves matter and both were wrong at different times. Unread, a STREAMING Cohere→X hop lost
+/// the plan while the non-stream hop kept it. Read as visible TEXT, both hops showed the user the
+/// model's internal plan. A stream and a non-stream of the same turn must agree, and what they must
+/// agree on is "reasoning".
 #[test]
-fn test_stream_tool_plan_delta_becomes_leading_text_before_tool_call() {
+fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
     let mut state = crate::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
@@ -4654,8 +4695,8 @@ fn test_stream_tool_plan_delta_becomes_leading_text_before_tool_call() {
         &mut state,
     );
 
-    // tool-plan-delta x2 — opens the leading Text block at index 0 on first appearance, then a
-    // TextDelta per token.
+    // tool-plan-delta x2 — opens the leading reasoning block at index 0 on first appearance, then a
+    // ThinkingDelta per token.
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({"type": ET_TOOL_PLAN_DELTA, "delta": {"message": {"tool_plan": "I will "}}}),
@@ -4666,20 +4707,20 @@ fn test_stream_tool_plan_delta_becomes_leading_text_before_tool_call() {
             &evs[0],
             crate::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Thinking
             }
         ),
-        "first tool-plan-delta must open a leading Text block at index 0, got {evs:?}"
+        "first tool-plan-delta must open a leading reasoning block at index 0, got {evs:?}"
     );
     assert!(
         matches!(
             &evs[1],
             crate::ir::IrStreamEvent::BlockDelta {
                 index: 0,
-                delta: crate::ir::IrDelta::TextDelta(t)
+                delta: crate::ir::IrDelta::ThinkingDelta(t)
             } if t == "I will "
         ),
-        "the plan token must be a TextDelta, got {evs:?}"
+        "the plan token must be a ThinkingDelta, got {evs:?}"
     );
 
     let evs = reader.read_response_events(
@@ -4687,12 +4728,16 @@ fn test_stream_tool_plan_delta_becomes_leading_text_before_tool_call() {
         &serde_json::json!({"type": ET_TOOL_PLAN_DELTA, "delta": {"message": {"tool_plan": "check the weather."}}}),
         &mut state,
     );
-    assert_eq!(evs.len(), 1, "a subsequent token emits only a TextDelta");
+    assert_eq!(
+        evs.len(),
+        1,
+        "a subsequent token emits only a ThinkingDelta"
+    );
     assert!(matches!(
         &evs[0],
         crate::ir::IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta(t)
+            delta: crate::ir::IrDelta::ThinkingDelta(t)
         } if t == "check the weather."
     ));
 
@@ -4754,6 +4799,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,

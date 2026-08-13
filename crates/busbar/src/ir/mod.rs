@@ -508,6 +508,45 @@ pub(crate) enum IrBlock {
         /// and only the Anthropic writer emits it; other protocols leave it `None`.
         cache_control: Option<CacheControl>,
     },
+    /// A non-image ATTACHMENT the caller sent for the model to reason over: a document (PDF, CSV,
+    /// DOCX, …), an audio clip, or a video clip.
+    ///
+    /// # Why this variant exists
+    ///
+    /// Before it, `IrBlock` modelled `Text / Thinking / ToolUse / ToolResult / Image / Json` and
+    /// nothing else, so every non-image attachment was destroyed on a cross-protocol hop and
+    /// replaced with `{"type":"text","text":""}` — SILENTLY. An OpenAI caller's `input_audio` or
+    /// `file` part, an Anthropic `document`, a Bedrock `document`/`video`, a Responses `input_file`
+    /// all landed as an empty text block, so the model answered "transcribe what?" and nothing in
+    /// the logs said why. That was not an untranslatable-concept problem: the targets have native
+    /// slots for exactly these (Gemini `inlineData`/`fileData` carries ANY mime type, Bedrock has
+    /// `document`/`video`, Anthropic has `document`). It was an unmodelled IR gap.
+    ///
+    /// The contract every writer honors: project the attachment into the target's native slot when
+    /// the target HAS one, and when it genuinely does not, DROP IT WITH A `warn!` NAMING THE FIELD —
+    /// never as an empty text block, which is indistinguishable from the caller having sent nothing.
+    ///
+    /// Deliberately NOT widened to hook/sidecar visibility: like [`IrBlock::Image`], a `Media` block
+    /// contributes no item to `ir::facts` projections, so attachment bytes and filenames are not
+    /// disclosed to a content hook. That is the same disclosure decision `ir/facts.rs` records for
+    /// image provenance, kept rather than quietly reversed.
+    Media {
+        /// Which attachment class this is. Decides the target slot (a Bedrock `document` block vs a
+        /// `video` block) and which targets can express it at all.
+        kind: IrMediaKind,
+        /// The attachment source, typed — the SAME carrier `Image` uses (inline base64 with a real
+        /// mime type, a remote URL, or an opaque vendor-scoped reference re-emitted only by its own
+        /// protocol). One type rather than a near-duplicate `IrMediaSource`, because the three ways
+        /// a wire references bytes do not differ between an image and a PDF.
+        source: IrImageSource,
+        /// Filename / title where the wire carries one (OpenAI `file.filename`, Anthropic
+        /// `document.title`, Bedrock `document.name`, Responses `input_file.filename`). Bedrock
+        /// REQUIRES a name on a document block, so this is load-bearing on that egress, not cosmetic.
+        name: Option<String>,
+        /// Anthropic cache breakpoint (`cache_control`) placed on a `document` block — same rationale
+        /// as the `Image` field; documents are the largest thing anyone caches.
+        cache_control: Option<CacheControl>,
+    },
     /// Structured JSON content — a Bedrock Converse `{"json": <value>}` tool-result content block (an
     /// arbitrary-structured-data member of the `ToolResultContentBlock` union). It is NOT an image;
     /// it previously rode inside an `Image` behind a `tool_result_json` media_type sentinel (the
@@ -589,8 +628,84 @@ impl IrBlock {
             | IrBlock::ToolUse { .. }
             | IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
+            | IrBlock::Media { .. }
             | IrBlock::Json(_) => false,
         }
+    }
+}
+
+/// Which class of non-image attachment an [`IrBlock::Media`] carries.
+///
+/// Three variants and not one, because the TARGET SLOT differs per class and a writer must be able
+/// to say "I can express a document but not a video" without sniffing mime-type strings at every
+/// egress. Bedrock Converse, for instance, has a `document` block and a `video` block and NO audio
+/// block; OpenAI Chat has `input_audio` and `file` and no video part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IrMediaKind {
+    /// PDF / CSV / DOCX / TXT / MD / HTML — something the model reads.
+    Document,
+    /// An audio clip (OpenAI `input_audio`, Gemini `inlineData` with an `audio/*` mime).
+    Audio,
+    /// A video clip (Bedrock `video`, Gemini `inlineData`/`fileData` with a `video/*` mime).
+    Video,
+}
+
+impl IrMediaKind {
+    /// Classify a mime type into a media kind — the ONE place the `audio/*` / `video/*` prefix
+    /// convention lives, so a reader that only has a mime type (Gemini `inlineData`, a `data:` URI)
+    /// does not hand-roll the same three-way match. `image/*` is NOT a `Media` kind (it is
+    /// [`IrBlock::Image`]), so callers must check for it first; anything else is a Document, which is
+    /// the correct default for `application/pdf`, `text/csv` and every future document mime.
+    pub(crate) fn from_media_type(media_type: &str) -> Self {
+        let lower = media_type.to_ascii_lowercase();
+        if lower.starts_with("audio/") {
+            IrMediaKind::Audio
+        } else if lower.starts_with("video/") {
+            IrMediaKind::Video
+        } else {
+            IrMediaKind::Document
+        }
+    }
+
+    /// The field name to put in a drop `warn!`, so a log line names the caller's construct in the
+    /// caller's own vocabulary rather than saying "media".
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            IrMediaKind::Document => "document",
+            IrMediaKind::Audio => "audio",
+            IrMediaKind::Video => "video",
+        }
+    }
+}
+
+/// The image media types EVERY protocol in the matrix accepts on an `image` block.
+///
+/// Anthropic documents `image/{jpeg,png,gif,webp}` and 400s anything else; OpenAI's data-URI image
+/// part is the same set; Bedrock's `ImageFormat` union is `{png, jpeg, gif, webp}`. Bedrock's writer
+/// already validated against its union and coerced the rest — the OTHER writers emitted `media_type`
+/// verbatim, so a Gemini `inlineData` of `audio/mp3` (which the Gemini reader mapped onto an `Image`
+/// block regardless of mime) reached Anthropic as
+/// `{"type":"image","source":{"type":"base64","media_type":"audio/mp3"}}` and 400'd the backend —
+/// breaking the half of the losslessness definition that says the backend never rejects the request.
+///
+/// Returns `None` for a media type that is not a well-formed image mime or not in the accepted set,
+/// so the caller drops the block with a warn; `Some(subtype)` (lowercased, `jpg` normalized to
+/// `jpeg`) otherwise, which is also exactly what a writer needs to build a format token.
+pub(crate) fn image_subtype_if_supported(media_type: &str) -> Option<&'static str> {
+    let subtype = media_type.strip_prefix("image/").or_else(|| {
+        // Tolerate a casing variant on the type half ("Image/PNG") without allocating in the
+        // overwhelmingly common already-lowercase case.
+        media_type
+            .get(..6)
+            .filter(|p| p.eq_ignore_ascii_case("image/"))
+            .map(|_| &media_type[6..])
+    })?;
+    match subtype.to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => Some("jpeg"),
+        "png" => Some("png"),
+        "gif" => Some("gif"),
+        "webp" => Some("webp"),
+        _ => None,
     }
 }
 
@@ -751,6 +866,45 @@ pub(crate) struct IrUsage {
     pub(crate) output_tokens: u64,
     pub(crate) cache_creation_input_tokens: Option<u64>,
     pub(crate) cache_read_input_tokens: Option<u64>,
+    /// Per-bucket ATTRIBUTION of the totals above. Grouped into its own `Default`-able struct rather
+    /// than four more fields on `IrUsage`, because a sub-bucket is by construction optional
+    /// (`None` = "this provider did not report it", which is NOT the same as `Some(0)`) and every
+    /// existing construction site should keep saying nothing about buckets it knows nothing about.
+    pub(crate) detail: IrUsageDetail,
+}
+
+/// Sub-bucket attribution for [`IrUsage`]. Every field is a SLICE OF a total in `IrUsage`, never an
+/// addition to one — [`IrUsage::billable_tokens`] deliberately ignores this struct, so carrying a
+/// bucket can never change what busbar bills.
+///
+/// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
+/// what a customer reconciles a bill against.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct IrUsageDetail {
+    /// Reasoning / thinking tokens, a SUB-BUCKET of `output_tokens` (never added to it — that would
+    /// double-count and inflate the bill).
+    ///
+    /// Present on the wire as OpenAI `completion_tokens_details.reasoning_tokens`, Responses
+    /// `output_tokens_details.reasoning_tokens`, Gemini `usageMetadata.thoughtsTokenCount`. Before
+    /// this field the totals were right and the ATTRIBUTION was not: a customer reconciling a bill
+    /// against `reasoning_tokens` got a hard `0` back from any cross-protocol reasoning call, which
+    /// reads as "this model did no thinking" rather than "busbar did not carry the number".
+    pub(crate) reasoning_tokens: Option<u64>,
+    /// Anthropic's 5-minute-TTL slice of `cache_creation_input_tokens`
+    /// (`usage.cache_creation.ephemeral_5m_input_tokens`).
+    ///
+    /// A SUB-BUCKET of `cache_creation_input_tokens`, not an addition to it. Split out because the
+    /// two TTL tiers are PRICED DIFFERENTLY — collapsing them into one number makes a cache-write
+    /// line item impossible to reconcile even though the total is correct.
+    pub(crate) cache_creation_5m_input_tokens: Option<u64>,
+    /// Anthropic's 1-hour-TTL slice of `cache_creation_input_tokens`
+    /// (`usage.cache_creation.ephemeral_1h_input_tokens`). See the 5m field for why the split is
+    /// carried.
+    pub(crate) cache_creation_1h_input_tokens: Option<u64>,
+    /// Cohere `usage.billed_units.search_units` — a SEPARATELY BILLED unit that is not a token count
+    /// at all, so no token field can carry it and its loss is invisible in a token total that
+    /// reconciles perfectly.
+    pub(crate) search_units: Option<u64>,
 }
 
 impl IrUsage {

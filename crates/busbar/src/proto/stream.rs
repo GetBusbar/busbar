@@ -268,6 +268,7 @@ impl StreamTranslate {
                     output_tokens: 0,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    detail: crate::ir::IrUsageDetail::default(),
                 });
                 if usage.input_tokens != 0 {
                     acc.input_tokens = usage.input_tokens;
@@ -532,6 +533,7 @@ impl StreamTranslate {
                     output_tokens: 0,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    detail: crate::ir::IrUsageDetail::default(),
                 });
                 if input != 0 {
                     acc.input_tokens = input;

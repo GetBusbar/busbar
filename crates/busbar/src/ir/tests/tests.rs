@@ -46,6 +46,7 @@ fn test_ir_usage_zero_baseline_bills_zero() {
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     assert_eq!(u.billable_tokens(), 0);
 }
@@ -61,6 +62,7 @@ fn test_billable_tokens_sum_and_saturation() {
         output_tokens: 5,
         cache_read_input_tokens: Some(3),
         cache_creation_input_tokens: Some(2),
+        detail: crate::ir::IrUsageDetail::default(),
     };
     assert_eq!(u.billable_tokens(), 20);
 
@@ -70,6 +72,7 @@ fn test_billable_tokens_sum_and_saturation() {
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     assert_eq!(z.billable_tokens(), 0);
 
@@ -79,6 +82,7 @@ fn test_billable_tokens_sum_and_saturation() {
         output_tokens: 1,
         cache_read_input_tokens: Some(1),
         cache_creation_input_tokens: Some(1),
+        detail: crate::ir::IrUsageDetail::default(),
     };
     assert_eq!(big.billable_tokens(), u64::MAX);
 }

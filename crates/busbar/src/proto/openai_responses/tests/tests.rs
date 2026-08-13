@@ -36,10 +36,47 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
         "the unmodeled block must not vanish — it must degrade in place: {:?}",
         ir.messages[0].content
     );
+    // `input_file` is now MODELLED (`IrBlock::Media`) rather than degraded, so there is no drop to
+    // log — the attachment survives instead, which is strictly better than a well-logged
+    // destruction. The degrade-with-warn path it used to take is still asserted, on a block type
+    // that genuinely IS unmodeled.
     assert!(
-        cap.contains("input_file"),
-        "the drop must be logged, naming the unmodeled type: {:?}",
-        cap.messages()
+        matches!(
+            &ir.messages[0].content[1],
+            crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Document,
+                source: crate::ir::IrImageSource::Vendor { value, .. },
+                ..
+            } if value["file_id"] == "file-x"
+        ),
+        "an input_file must be carried, not degraded: {:?}",
+        ir.messages[0].content[1]
+    );
+
+    let cap2 = WarnCapture::default();
+    let sub2 = tracing_subscriber::registry().with(cap2.clone());
+    let ir2 = tracing::subscriber::with_default(sub2, || {
+        ResponsesReader
+            .read_request(&serde_json::json!({
+                "model": "gpt-4.1",
+                "input": [{"role": "user", "content": [
+                    {"type": "input_text", "text": "before"},
+                    {"type": "some_future_part", "whatever": 1},
+                    {"type": "input_text", "text": "after"}
+                ]}]
+            }))
+            .expect("read_request")
+    });
+    assert_eq!(
+        ir2.messages[0].content.len(),
+        3,
+        "a genuinely unmodeled block must degrade IN PLACE, not vanish: {:?}",
+        ir2.messages[0].content
+    );
+    assert!(
+        cap2.contains("some_future_part"),
+        "the degrade must be logged, naming the unmodeled type: {:?}",
+        cap2.messages()
     );
 }
 
@@ -615,6 +652,7 @@ fn test_write_response_function_call_item_has_native_id() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -759,6 +797,7 @@ fn test_write_response_preserves_text_after_tool_order() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -933,6 +972,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1143,6 +1183,7 @@ fn test_write_response_event_blockdelta() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (etype2, payload2) = writer.write_response_event(&ev2).expect("should emit");
@@ -2110,6 +2151,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
@@ -2138,6 +2180,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("resp_x".to_string()),
@@ -2853,6 +2896,7 @@ fn test_every_stream_event_carries_top_level_type() {
         output_tokens: 1,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let events = vec![
         IrStreamEvent::MessageStart {
@@ -2910,6 +2954,7 @@ fn usage_fixture() -> crate::ir::IrUsage {
         output_tokens: 1,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     }
 }
 
@@ -4659,6 +4704,7 @@ fn test_write_response_emits_model_fallback() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model,
         id: Some("resp_x".to_string()),
@@ -4720,6 +4766,7 @@ fn test_stream_terminal_events_carry_model_fallback() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (ename, completed) = writer.write_response_event(&delta).expect("terminal event");
@@ -5962,6 +6009,7 @@ fn test_streaming_cached_tokens_round_trip() {
                 output_tokens: 5,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: Some(32),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         })
         .expect("MessageDelta emits a terminal frame");
@@ -6024,6 +6072,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(100),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("resp_abc".to_string()),
@@ -6398,6 +6447,7 @@ fn test_responses_usage_carries_all_required_fields() {
         output_tokens: 5,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let u = super::build_responses_usage(&no_cache);
     assert_eq!(u["input_tokens"], 10);
@@ -6421,6 +6471,7 @@ fn test_responses_usage_carries_all_required_fields() {
         output_tokens: 5,
         cache_creation_input_tokens: Some(3),
         cache_read_input_tokens: Some(7),
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let uc = super::build_responses_usage(&cached);
     assert_eq!(
@@ -6526,6 +6577,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };

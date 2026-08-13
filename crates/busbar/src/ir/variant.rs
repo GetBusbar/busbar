@@ -162,7 +162,8 @@ impl IrReq {
                                 | crate::ir::IrBlock::Thinking { cache_control, .. }
                                 | crate::ir::IrBlock::ToolUse { cache_control, .. }
                                 | crate::ir::IrBlock::ToolResult { cache_control, .. }
-                                | crate::ir::IrBlock::Image { cache_control, .. } => cache_control,
+                                | crate::ir::IrBlock::Image { cache_control, .. }
+                                | crate::ir::IrBlock::Media { cache_control, .. } => cache_control,
                                 // A raw JSON tool-result block carries no cache breakpoint.
                                 crate::ir::IrBlock::Json(_) => continue,
                             };
@@ -203,7 +204,8 @@ impl IrReq {
                                 | crate::ir::IrBlock::Thinking { cache_control, .. }
                                 | crate::ir::IrBlock::ToolUse { cache_control, .. }
                                 | crate::ir::IrBlock::ToolResult { cache_control, .. }
-                                | crate::ir::IrBlock::Image { cache_control, .. } => cache_control,
+                                | crate::ir::IrBlock::Image { cache_control, .. }
+                                | crate::ir::IrBlock::Media { cache_control, .. } => cache_control,
                                 crate::ir::IrBlock::Json(_) => continue,
                             };
                             if cc.is_some() {
@@ -311,6 +313,39 @@ impl IrReq {
                          cached turns are absent, not summarized — and (2) the caller is billed FULL \
                          UNCACHED input for this request. Route cachedContent requests to a Gemini \
                          lane."
+                    );
+                }
+                // EVERY remaining unmodeled request key dies here, and until this warn existed it
+                // died SILENTLY: exactly two keys (Gemini `cachedContent` above, Cohere `documents`
+                // at its reader) named themselves, and the other ~40 — OpenAI `logit_bias` /
+                // `store` / `metadata` / `service_tier` / `stream_options` / `prediction` /
+                // `modalities` / `audio` / `web_search_options`, Anthropic `metadata` / `container` /
+                // `mcp_servers` / `betas`, Gemini `safetySettings` / `labels`, Bedrock
+                // `guardrailConfig` / `promptVariables` / `requestMetadata` / `performanceConfig`,
+                // Cohere `citation_options` / `safety_mode` / `strict_tools` / `logprobs`, Responses
+                // `previous_response_id` / `conversation` / `truncation` / `include` / `prompt` /
+                // `prompt_cache_key` / `safety_identifier` / `background` — vanished with nothing in
+                // the logs. Most of them are correctly untranslatable (they name machinery that
+                // exists at exactly one vendor); the DEFECT was the silence, not the drop. Naming the
+                // actual key set of THIS request moves the whole class from "dropped silently" to
+                // "dropped with a signal" without guessing at an inventory that would go stale.
+                //
+                // Emitted only when there is something to clear, and the keys are sorted so the line
+                // is stable/greppable across requests. `extra` is a flat map of the SOURCE dialect's
+                // unmodeled top-level keys, so the key names alone are the diagnostic — values are
+                // deliberately NOT logged (they carry caller payload).
+                if !ir.extra.is_empty() {
+                    let mut cleared: Vec<&str> = ir.extra.keys().map(String::as_str).collect();
+                    cleared.sort_unstable();
+                    tracing::warn!(
+                        ingress = %prep.ingress_protocol,
+                        keys = %cleared.join(","),
+                        count = cleared.len(),
+                        "dropping unmodeled request keys on the cross-protocol seam: `extra` carries \
+                         the SOURCE dialect's unmodeled top-level fields and no target writer can \
+                         re-emit a foreign dialect's key, so every key named here is NOT forwarded \
+                         to the backend. Route these requests to a same-protocol lane (which \
+                         forwards the caller's original bytes verbatim) if the field is load-bearing."
                     );
                 }
                 ir.extra.clear();
@@ -537,6 +572,7 @@ impl IrResp {
                 output_tokens: t.output,
                 cache_read_input_tokens: t.cache_read,
                 cache_creation_input_tokens: t.cache_creation,
+                detail: crate::ir::IrUsageDetail::default(),
             }),
             _ => None,
         }

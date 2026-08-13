@@ -276,7 +276,19 @@ impl ProtocolWriter for BedrockWriter {
             };
 
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
-            for block in &msg.content {
+            for (block_idx, block) in msg.content.iter().enumerate() {
+                // A `document` / `video` block the READER also parked verbatim under
+                // `DOC_VIDEO_SENTINEL` at this exact (message, block) position. The stash is spliced
+                // back below, so writing the modelled `Media` projection here TOO would emit the
+                // attachment twice. Suppress the modelled emit and let the verbatim raw block win —
+                // that is what keeps a Bedrock->Bedrock round-trip byte-identical (every document
+                // sub-field, `citations`/`context` included, survives) while a CROSS-protocol IR,
+                // whose `extra` the seam cleared, has no stash and so takes the modelled path.
+                let raw_doc_video_stashed =
+                    message_doc_video.iter().flat_map(|v| v.iter()).any(|e| {
+                        e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64)
+                            && e.get("i").and_then(|v| v.as_u64()) == Some(block_idx as u64)
+                    });
                 // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
                 // Suppressed when the positional stash owns placement (same-protocol passthrough).
@@ -288,6 +300,7 @@ impl ProtocolWriter for BedrockWriter {
                     }
                     crate::ir::IrBlock::Thinking { .. }
                     | crate::ir::IrBlock::Image { .. }
+                    | crate::ir::IrBlock::Media { .. }
                     | crate::ir::IrBlock::Json(_) => None,
                 };
                 match block {
@@ -357,6 +370,19 @@ impl ProtocolWriter for BedrockWriter {
                                         "dropping non-representable Thinking block inside a Bedrock toolResult"
                                     );
                                 }
+                                // Converse's `ToolResultContentBlock` union is
+                                // {json, text, image, document, video} — the SAME document/video
+                                // members the top-level content block has, so an attachment returned
+                                // BY a tool projects natively here too.
+                                crate::ir::IrBlock::Media {
+                                    kind, source, name, ..
+                                } => {
+                                    if let Some(b) =
+                                        bedrock_media_content_block(*kind, source, name.as_deref())
+                                    {
+                                        inner_content.push(b);
+                                    }
+                                }
                             }
                         }
 
@@ -381,6 +407,17 @@ impl ProtocolWriter for BedrockWriter {
                         // echoed back on a follow-up turn. The redacted-signature sentinel re-emits
                         // `redactedContent`; any other Thinking re-emits `reasoningText`.
                         content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
+                    }
+                    crate::ir::IrBlock::Media {
+                        kind, source, name, ..
+                    } => {
+                        if !raw_doc_video_stashed {
+                            if let Some(b) =
+                                bedrock_media_content_block(*kind, source, name.as_deref())
+                            {
+                                content_arr.push(b);
+                            }
+                        }
                     }
                     crate::ir::IrBlock::Json(_) => {
                         // Structured-json content is only a tool-result content member; it has no
@@ -926,6 +963,9 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ "text": text }));
                     }
                 }
+
+                // A model does not emit an attachment back on the Converse response surface.
+                crate::ir::IrBlock::Media { .. } => {}
 
                 crate::ir::IrBlock::ToolUse {
                     id, name, input, ..

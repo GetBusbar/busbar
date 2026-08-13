@@ -655,6 +655,7 @@ fn test_write_response_event() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
 
@@ -1006,6 +1007,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1044,6 +1046,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (et2, payload2) = writer
@@ -1864,6 +1867,7 @@ fn test_write_response_event_metadata_no_fabricated_metrics() {
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1900,6 +1904,7 @@ fn test_write_response_event_total_tokens_saturates() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1983,6 +1988,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2035,6 +2041,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2112,6 +2119,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2166,6 +2174,7 @@ fn test_write_response_total_tokens_saturates() {
             output_tokens: 100,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2186,6 +2195,7 @@ fn test_write_response_total_tokens_saturates() {
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         ..resp
     };
@@ -2226,6 +2236,7 @@ fn test_write_response_projects_image_block() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2285,6 +2296,7 @@ fn test_write_response_empty_content_emits_placeholder() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3626,6 +3638,7 @@ fn test_write_response_omits_absent_cache_tokens() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3657,6 +3670,7 @@ fn test_write_stream_metadata_emits_cache_tokens() {
             output_tokens: 7,
             cache_creation_input_tokens: Some(40),
             cache_read_input_tokens: Some(20),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -5667,6 +5681,7 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
         output_tokens: 2,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let mut framing = BedrockStreamFraming::default();
 
@@ -5730,6 +5745,7 @@ fn cache_only_usage_emits_metadata_inline() {
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: Some(4096), // full cache hit
+        detail: crate::ir::IrUsageDetail::default(),
     };
     let mut framing = BedrockStreamFraming::default();
     let evs = framing

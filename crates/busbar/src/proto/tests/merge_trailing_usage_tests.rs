@@ -12,6 +12,7 @@ fn usage(i: u64, o: u64, cc: Option<u64>, cr: Option<u64>) -> IrUsage {
         output_tokens: o,
         cache_creation_input_tokens: cc,
         cache_read_input_tokens: cr,
+        detail: crate::ir::IrUsageDetail::default(),
     }
 }
 

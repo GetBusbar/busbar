@@ -287,6 +287,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         output_tokens: 400,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     record_ir_usage(&usage, &sink, Some(&lane));
 
@@ -371,6 +372,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         output_tokens: 5,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     // Must NOT panic (the assertion is reaching this line at all under a debug-overflow build).
     record_ir_usage(&usage, &sink, Some(&lane));
@@ -483,6 +485,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
             output_tokens: 400,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         &sink,
         Some(&lane),

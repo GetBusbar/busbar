@@ -692,6 +692,7 @@ impl ProtocolReader for OpenAiReader {
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
+                detail: crate::ir::IrUsageDetail::default(),
             }
         });
 
@@ -739,6 +740,7 @@ impl ProtocolReader for OpenAiReader {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             });
             out.push(IrStreamEvent::MessageDelta {
                 stop_reason,
@@ -965,6 +967,18 @@ impl ProtocolReader for OpenAiReader {
                 .unwrap_or(0),
             cache_creation_input_tokens: None, // OpenAI doesn't provide this split
             cache_read_input_tokens,
+            // `completion_tokens_details.reasoning_tokens` is a SUB-BUCKET of `completion_tokens`
+            // (never added to it). Unread, every cross-protocol reasoning call reported a hard `0`
+            // for it — which reads as "this model did no thinking", not as "busbar did not carry the
+            // number". Totals were always right; ATTRIBUTION is what a customer reconciles a bill
+            // against.
+            detail: crate::ir::IrUsageDetail {
+                reasoning_tokens: usage_val
+                    .and_then(|u| u.get("completion_tokens_details"))
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64()),
+                ..Default::default()
+            },
         };
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);

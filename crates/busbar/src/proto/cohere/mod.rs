@@ -11,6 +11,122 @@ use std::sync::OnceLock;
 /// hard-coded in `upstream_path()`.
 const PATH_UPSTREAM: &str = "/v2/chat";
 
+/// Read a Cohere v2 `message.citations[]` array into neutral IR citations.
+///
+/// Cohere spells a citation `{"start": <char>, "end": <char>, "text": "<quoted span>", "type":
+/// "TEXT_CONTENT", "sources": [{"type": "document", "id": "…", "document": {…}}]}`. The offsets are
+/// CHARACTER offsets into the assembled content text, which is exactly the IR contract
+/// ([`crate::ir::IrCitation::start_index`]), so they carry across with no unit conversion — unlike
+/// the OpenAI-family `annotations`, whose byte-vs-character unit is undocumented and therefore
+/// deliberately not asserted.
+///
+/// This reader is why a Cohere backend's RAG grounding now survives a hop. Every construction site
+/// in the Cohere reader used to hardcode `citations: Vec::new()`, while the Cohere WRITER emitted
+/// citations — so a citation INTO Cohere worked and a citation OUT of Cohere vanished. That
+/// asymmetry is the tell that it was a missing reader, not a translation limit: `IrCitation`
+/// already existed and both sides' writers already spoke it.
+///
+/// The source object is kept VERBATIM in `raw` so a same-protocol path can re-emit it unchanged,
+/// the same no-regression guarantee the Anthropic reader gives.
+pub(crate) fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+    let mut out = Vec::new();
+    let Some(arr) = citations.as_array() else {
+        return out;
+    };
+    for entry in arr {
+        // A citation with neither a quoted span nor offsets carries no locatable claim; skip it
+        // rather than synthesize one (never invent a fact).
+        let start = entry.get("start").and_then(|v| v.as_i64());
+        let end = entry.get("end").and_then(|v| v.as_i64());
+        let cited_text = entry
+            .get("text")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        if start.is_none() && end.is_none() && cited_text.is_none() {
+            continue;
+        }
+        // The first source supplies the neutral title/url/document-index coordinates; the WHOLE
+        // entry (all sources included) is preserved in `raw`.
+        let first_source = entry
+            .get("sources")
+            .and_then(|s| s.as_array())
+            .and_then(|a| a.first());
+        let doc = first_source.and_then(|s| s.get("document"));
+        out.push(crate::ir::IrCitation {
+            // Cohere citations are character spans into the answer text — the same thing
+            // Anthropic calls a `char_location`, which is the vocabulary the neutral `kind` uses.
+            kind: Some("char_location".to_string()),
+            cited_text,
+            title: doc
+                .and_then(|d| d.get("title"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            url: doc
+                .and_then(|d| d.get("url"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            document_index: None,
+            start_index: start,
+            end_index: end,
+            encrypted_index: None,
+            raw: Some(entry.clone()),
+        });
+    }
+    out
+}
+
+/// Project a neutral [`crate::ir::IrCitation`] into Cohere v2's native citation object — the
+/// inverse of [`read_cohere_citations`].
+///
+/// A citation this protocol itself READ carries the source object verbatim in `raw`; re-emitting
+/// that unchanged is the same byte-exact same-protocol guarantee the Anthropic writer gives, and it
+/// is strictly better than a field-by-field reconstruction that could only lose Cohere-specific
+/// members. Only a citation with no `raw` (one synthesized on a cross-protocol hop) is built from
+/// the neutral fields.
+fn write_cohere_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
+    if let Some(raw) = &c.raw {
+        // Only re-emit `raw` when it IS a Cohere citation: a foreign raw (an Anthropic
+        // `web_search_result_location`) would put a foreign shape on the Cohere wire, which is the
+        // exact defect typed IR fields exist to prevent.
+        if raw.get("start").is_some() || raw.get("sources").is_some() {
+            return raw.clone();
+        }
+    }
+    let mut obj = serde_json::Map::new();
+    if let Some(s) = c.start_index {
+        obj.insert("start".to_string(), serde_json::json!(s));
+    }
+    if let Some(e) = c.end_index {
+        obj.insert("end".to_string(), serde_json::json!(e));
+    }
+    if let Some(t) = &c.cited_text {
+        obj.insert("text".to_string(), serde_json::json!(t));
+    }
+    let mut source = serde_json::Map::new();
+    if let Some(u) = &c.url {
+        source.insert("url".to_string(), serde_json::json!(u));
+    }
+    if let Some(t) = &c.title {
+        source.insert("title".to_string(), serde_json::json!(t));
+    }
+    if !source.is_empty() {
+        obj.insert(
+            "sources".to_string(),
+            serde_json::json!([{ "type": "document", "document": serde_json::Value::Object(source) }]),
+        );
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — a Cohere v2
+/// tool-result `document` object, whose `data` is an arbitrary map of string fields rather than
+/// bytes with a mime type, so it has NO neutral base64/url form. Only this protocol's writer
+/// re-emits it; a foreign writer, which could only mangle it, drops it with a warn.
+const VENDOR_NAME: &str = crate::proto::PROTO_COHERE;
+
 /// Hard cap on the number of distinct tool-call frame indices recorded in `state.open_tools` for a
 /// single stream. The set is intentionally never shrunk (so each tool's IR block index stays stable
 /// for its lifetime — see `cohere_lookup_tool_ir_index`), which means a malicious or buggy upstream
@@ -59,6 +175,11 @@ const ET_CONTENT_DELTA: &str = "content-delta";
 /// per frame, ahead of the `tool-call-start` frames; the token text rides at
 /// `delta.message.tool_plan`.
 const ET_TOOL_PLAN_DELTA: &str = "tool-plan-delta";
+
+/// Cohere v2's streamed-citation frame. Its EXISTENCE is the point: the writer used to suppress
+/// every streamed citation on the belief that Cohere v2 had no citation frame, which made a
+/// grounded answer arrive with sources when not streaming and without them when streaming.
+const ET_CITATION_START: &str = "citation-start";
 /// Cohere v2 stream `type` field value for the content-end event.
 const ET_CONTENT_END: &str = "content-end";
 /// Cohere v2 stream `type` field value for the tool-call-start event.

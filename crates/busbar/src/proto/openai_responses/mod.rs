@@ -232,9 +232,11 @@ fn now_unix_secs() -> u64 {
 ///
 /// The IR stores UNCACHED input, but the Responses `input_tokens` is a TOTAL that includes the cached
 /// prefix, so `cache_read` (+ `cache_creation`) are added back. `cached_tokens` mirrors the cache-read
-/// count (`0` when absent - not omitted, matching the required-field contract). The IR does not model
-/// reasoning tokens separately, so `reasoning_tokens` is `0` (the correct value for the non-reasoning
-/// case and the SDK-required default otherwise). `total_tokens` = `input_total` + `output_tokens`.
+/// count (`0` when absent - not omitted, matching the required-field contract). `reasoning_tokens`
+/// is the carried sub-bucket ([`crate::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
+/// ONLY when the source reported none - the SDK models the field as required and non-nullable, so it
+/// must be present; what changed is that a reasoning backend's real count now reaches it instead of
+/// every response asserting `0`. `total_tokens` = `input_total` + `output_tokens`.
 fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
     let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
@@ -250,7 +252,7 @@ fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
         },
         "output_tokens": usage.output_tokens,
         "output_tokens_details": {
-            "reasoning_tokens": 0,
+            "reasoning_tokens": usage.detail.reasoning_tokens.unwrap_or(0),
         },
         "total_tokens": total,
     })
@@ -511,8 +513,53 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 retry_after: None,
             })
         }
+        // A file ATTACHMENT: `{"type":"input_file","file_data":"data:application/pdf;base64,…",
+        // "filename":"x.pdf"}`, or `{"file_url":"https://…"}`, or `{"file_id":"file-1"}`. It used to
+        // fall into the degrade arm below and reach the backend as `{"type":"input_text","text":""}`
+        // — the caller's PDF replaced by an empty turn on every cross-protocol hop, even though
+        // Gemini, Bedrock and Anthropic all have a native slot for it.
+        "input_file" => {
+            let name = obj
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let source = if let Some(data_uri) = obj
+                .get("file_data")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                super::parse_image_url(data_uri)
+            } else if let Some(url) = obj
+                .get("file_url")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                crate::ir::IrImageSource::Url(url.to_string())
+            } else {
+                // An OpenAI-hosted uploads handle: no neutral form, so the opaque `Vendor` escape.
+                crate::ir::IrImageSource::Vendor {
+                    vendor: VENDOR_NAME,
+                    value: serde_json::json!({
+                        "file_id": obj.get("file_id").and_then(|v| v.as_str()).unwrap_or("")
+                    }),
+                }
+            };
+            let kind = match &source {
+                crate::ir::IrImageSource::Base64 { media_type, .. } => {
+                    crate::ir::IrMediaKind::from_media_type(media_type)
+                }
+                _ => crate::ir::IrMediaKind::Document,
+            };
+            Ok(crate::ir::IrBlock::Media {
+                kind,
+                source,
+                name,
+                cache_control: None,
+            })
+        }
         // Forward-compatibility: a valid native Responses content-block type the IR does not model
-        // (e.g. `input_file`, or a future type OpenAI adds after this build). The prior bare `Err`
+        // (a future type OpenAI adds after this build). The prior bare `Err`
         // here was swallowed with ZERO log by every caller's `filter_map(..ok())`
         // (`message_content_blocks` above, and the `function_call_output` content-array reader) —
         // not just `input_file` but EVERY unknown future Responses content type vanished silently.

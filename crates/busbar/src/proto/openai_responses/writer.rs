@@ -111,6 +111,82 @@ impl ProtocolWriter for ResponsesWriter {
                                     }
                                 }
                             },
+                            // The Responses input surface has ONE attachment part, `input_file`, and
+                            // no audio or video part — so a document projects natively (this is the
+                            // slot an Anthropic `document` or a Bedrock `document` lands in) and the
+                            // other kinds are dropped DELIBERATELY with a warn naming the construct,
+                            // never as the empty text part they used to become.
+                            crate::ir::IrBlock::Media {
+                                kind, source, name, ..
+                            } => {
+                                if *kind != crate::ir::IrMediaKind::Document {
+                                    tracing::warn!(
+                                        media_kind = kind.as_str(),
+                                        "dropping attachment on Responses egress: the input surface \
+                                         has an `input_file` part and no audio or video part; the \
+                                         block is NOT emitted"
+                                    );
+                                } else {
+                                    let mut part = serde_json::Map::new();
+                                    part.insert(
+                                        "type".to_string(),
+                                        serde_json::json!("input_file"),
+                                    );
+                                    let representable = match source {
+                                        crate::ir::IrImageSource::Base64 { media_type, data } => {
+                                            part.insert(
+                                                "file_data".to_string(),
+                                                serde_json::json!(format!(
+                                                    "data:{media_type};base64,{data}"
+                                                )),
+                                            );
+                                            true
+                                        }
+                                        crate::ir::IrImageSource::Url(url) => {
+                                            part.insert(
+                                                "file_url".to_string(),
+                                                serde_json::json!(url),
+                                            );
+                                            true
+                                        }
+                                        // This protocol's OWN uploads handle round-trips verbatim;
+                                        // a FOREIGN handle (a Bedrock s3Location, an Anthropic
+                                        // Files-API id) is unresolvable here.
+                                        crate::ir::IrImageSource::Vendor { vendor, value }
+                                            if *vendor == VENDOR_NAME =>
+                                        {
+                                            match value.get("file_id").and_then(|i| i.as_str()) {
+                                                Some(id) => {
+                                                    part.insert(
+                                                        "file_id".to_string(),
+                                                        serde_json::json!(id),
+                                                    );
+                                                    true
+                                                }
+                                                None => false,
+                                            }
+                                        }
+                                        crate::ir::IrImageSource::Vendor { vendor, .. } => {
+                                            tracing::warn!(
+                                                vendor = %vendor,
+                                                "dropping document attachment on Responses egress: \
+                                                 the source is a foreign vendor file handle this \
+                                                 backend cannot resolve; the block is NOT emitted"
+                                            );
+                                            false
+                                        }
+                                    };
+                                    if representable {
+                                        if let Some(n) = name {
+                                            part.insert(
+                                                "filename".to_string(),
+                                                serde_json::json!(n),
+                                            );
+                                        }
+                                        content_arr.push(serde_json::Value::Object(part));
+                                    }
+                                }
+                            }
                             crate::ir::IrBlock::Json(_) => {
                                 // Structured-json (Bedrock tool-result content) has no Responses
                                 // input-content shape; dropped here.
@@ -1129,7 +1205,11 @@ impl ProtocolWriter for ResponsesWriter {
                 // catch-all so a future IrBlock variant forces a compile error instead of silently
                 // vanishing from Responses output.
                 crate::ir::IrBlock::ToolResult { .. } => {}
-                crate::ir::IrBlock::Image { .. } | crate::ir::IrBlock::Json(_) => {}
+                // A model does not emit an attachment back on the response surface, so there is
+                // nothing to project here and nothing is lost by omitting these.
+                crate::ir::IrBlock::Image { .. }
+                | crate::ir::IrBlock::Media { .. }
+                | crate::ir::IrBlock::Json(_) => {}
             }
         }
 

@@ -1,0 +1,172 @@
+# FIELD COVERAGE STATUS -- the only place a field of qa/field-inventory.json may be declared
+# anything other than MISSING.
+#
+# Owner's ruling, 2026-08-13: "good fix it all. IR completion is key. we say we dont leave things
+# on floor, its our differentiator. needs to be solid"
+#
+# THREE STATES PER FIELD, and there is no fourth:
+#
+#   <field-id> = carried <test_fn>          the field survives the hop, and THIS TEST FAILS IF IT
+#                                           STOPS. The gate checks the function exists.
+#   <field-id> = waived <YYYY-MM-DD> <why>  deliberately not carried, with a reason a customer
+#                                           could read
+#   (absent from this file)                 MISSING -- and MISSING is pinned in
+#                                           qa/field-coverage.missing, which fails the build when
+#                                           it changes in EITHER direction
+#
+# WHY `carried` MUST NAME A TEST.
+# Because "the IR has a member for it" is not coverage. The audit ran a mutation pass over all six
+# writers -- renamed eight emitted keys -- and every single one was caught, while audio
+# attachments, usage sub-buckets and citation offsets were being dropped in silence. You cannot
+# mutate a field that is never read and never emitted. So the claim that a field survives is only
+# admissible with an instrument attached to it, and the gate refuses a `carried` line whose named
+# test does not exist.
+#
+# WHY A WHOLE-BODY ROUND TRIP MAY BACK MANY FIELDS.
+# `roundtrip_fidelity_tests` asserts an EXACT divergence set on a rich body: every field present in
+# that body is proven to survive read -> write, and any new divergence fails. So one test name
+# legitimately backs every field its fixture carries. It does NOT back a field the fixture omits --
+# adding a field to a status line without adding it to a fixture is the way to lie here, and the
+# reviewer's job is to check the fixture.
+#
+# FORMAT, following qa/method-coverage.status, which is this file's precedent:
+#   - One entry per line. EXACT field ids only. No globs -- a wildcard is how a whole surface
+#     disappears in one line.
+#   - `#` comments and blank lines ignored.
+
+# ---------------------------------------------------------------------------
+# ANTHROPIC -- request. Backed by `roundtrip_anthropic_request`, whose fixture carries text,
+# image, document, tool_use and tool_result blocks plus every sampling knob below, and asserts the
+# divergence set is EXACTLY {model}.
+# ---------------------------------------------------------------------------
+anthropic/request/model = waived 2026-08-13 set by the engine from the routing lane (proxy/wire.rs set_model), not by the reader/writer pair
+anthropic/request/messages[].role = carried roundtrip_anthropic_request
+anthropic/request/messages[].content = carried roundtrip_anthropic_request
+anthropic/request/system = carried roundtrip_anthropic_request
+anthropic/request/max_tokens = carried roundtrip_anthropic_request
+anthropic/request/stop_sequences = carried roundtrip_anthropic_request
+anthropic/request/stream = carried roundtrip_anthropic_request
+anthropic/request/temperature = carried roundtrip_anthropic_request
+anthropic/request/top_p = carried roundtrip_anthropic_request
+anthropic/request/content[].type=text.text = carried roundtrip_anthropic_request
+anthropic/request/content[].type=image.source.type = carried roundtrip_anthropic_request
+anthropic/request/content[].type=image.source.media_type = carried roundtrip_anthropic_request
+anthropic/request/content[].type=image.source.data = carried roundtrip_anthropic_request
+anthropic/request/content[].type=document.source.type = carried roundtrip_anthropic_request
+anthropic/request/content[].type=document.source.media_type = carried roundtrip_anthropic_request
+anthropic/request/content[].type=document.source.data = carried roundtrip_anthropic_request
+anthropic/request/content[].type=document.title = carried roundtrip_anthropic_request
+anthropic/request/content[].type=tool_use.id = carried roundtrip_anthropic_request
+anthropic/request/content[].type=tool_use.name = carried roundtrip_anthropic_request
+anthropic/request/content[].type=tool_use.input = carried roundtrip_anthropic_request
+anthropic/request/content[].type=tool_result.tool_use_id = carried roundtrip_anthropic_request
+anthropic/request/content[].type=tool_result.content = carried roundtrip_anthropic_request
+anthropic/request/content[].type=document.source.file_id = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
+anthropic/request/content[].type=document.source.content = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
+anthropic/request/content[].type=redacted_thinking.data = carried read_block_unmodeled_document_type_degrades_not_400
+
+# ---------------------------------------------------------------------------
+# ANTHROPIC -- response. Backed by `roundtrip_anthropic_response` (exact divergence set: empty)
+# and the dedicated cache-tier test.
+# ---------------------------------------------------------------------------
+anthropic/response/id = carried roundtrip_anthropic_response
+anthropic/response/type = carried roundtrip_anthropic_response
+anthropic/response/role = carried roundtrip_anthropic_response
+anthropic/response/model = carried roundtrip_anthropic_response
+anthropic/response/content = carried roundtrip_anthropic_response
+anthropic/response/stop_reason = carried roundtrip_anthropic_response
+anthropic/response/stop_sequence = carried roundtrip_anthropic_response
+anthropic/response/usage.input_tokens = carried roundtrip_anthropic_response
+anthropic/response/usage.output_tokens = carried roundtrip_anthropic_response
+anthropic/response/usage.cache_creation_input_tokens = carried roundtrip_anthropic_response
+anthropic/response/usage.cache_read_input_tokens = carried roundtrip_anthropic_response
+anthropic/response/usage.cache_creation.ephemeral_5m_input_tokens = carried anthropic_cache_tier_split_survives_the_ir
+anthropic/response/usage.cache_creation.ephemeral_1h_input_tokens = carried anthropic_cache_tier_split_survives_the_ir
+
+# ---------------------------------------------------------------------------
+# OPENAI CHAT
+# ---------------------------------------------------------------------------
+openai/request/model = waived 2026-08-13 set by the engine from the routing lane, not by the reader/writer pair
+openai/request/messages[].role = carried roundtrip_openai_request
+openai/request/messages[].content = carried roundtrip_openai_request
+openai/request/max_tokens = carried roundtrip_openai_request
+openai/request/temperature = carried roundtrip_openai_request
+openai/request/stream = carried roundtrip_openai_request
+openai/request/content[].type=text.text = carried roundtrip_openai_request
+openai/request/content[].type=input_audio.input_audio.data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/content[].type=input_audio.input_audio.format = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/content[].type=file.file.file_data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/content[].type=file.file.filename = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/content[].type=file.file.file_id = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/content[].type=image_url.image_url.detail = waived 2026-08-13 a cost/latency hint ONE vendor models; dropped with a warn at openai_chat/mod.rs, no cross-protocol carrier exists
+openai/response/usage.completion_tokens_details.reasoning_tokens = carried openai_reasoning_tokens_reach_the_ir
+openai/response/usage.prompt_tokens = carried openai_reasoning_tokens_reach_the_ir
+openai/response/usage.completion_tokens = carried openai_reasoning_tokens_reach_the_ir
+openai/response/usage.total_tokens = carried openai_reasoning_tokens_reach_the_ir
+
+# ---------------------------------------------------------------------------
+# GEMINI
+# ---------------------------------------------------------------------------
+gemini/request/parts[].inlineData.mimeType = carried gemini_non_image_inline_data_is_not_an_image_block
+gemini/request/parts[].inlineData.data = carried gemini_non_image_inline_data_is_not_an_image_block
+gemini/request/contents[].role = carried attachments_reach_gemini_as_inline_data
+gemini/request/contents[].parts = carried attachments_reach_gemini_as_inline_data
+gemini/response/usageMetadata.thoughtsTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
+gemini/request/cachedContent = waived 2026-08-13 the referenced cache lives server-side at Google and cannot be projected into contents; dropped with a warn naming both consequences at ir/variant.rs
+
+# ---------------------------------------------------------------------------
+# BEDROCK -- request. `roundtrip_bedrock_request` asserts an EMPTY divergence set on a body
+# carrying text, image, document AND video blocks plus the full inferenceConfig.
+# ---------------------------------------------------------------------------
+bedrock/request/messages[].role = carried roundtrip_bedrock_request
+bedrock/request/messages[].content = carried roundtrip_bedrock_request
+bedrock/request/system = carried roundtrip_bedrock_request
+bedrock/request/inferenceConfig.maxTokens = carried roundtrip_bedrock_request
+bedrock/request/inferenceConfig.temperature = carried roundtrip_bedrock_request
+bedrock/request/inferenceConfig.topP = carried roundtrip_bedrock_request
+bedrock/request/content[].text = carried roundtrip_bedrock_request
+bedrock/request/content[].image.format = carried roundtrip_bedrock_request
+bedrock/request/content[].image.source.bytes = carried roundtrip_bedrock_request
+bedrock/request/content[].document.format = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/content[].document.name = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/content[].document.source.bytes = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/content[].video.format = carried roundtrip_bedrock_request
+bedrock/request/content[].video.source.bytes = carried roundtrip_bedrock_request
+bedrock/request/guardrailConfig = waived 2026-08-13 names an AWS account resource that exists at exactly one vendor; no cross-protocol projection
+
+# ---------------------------------------------------------------------------
+# COHERE
+# ---------------------------------------------------------------------------
+cohere/response/message.tool_plan = carried cohere_tool_plan_is_reasoning_not_visible_text
+cohere/response/message.role = carried cohere_tool_plan_is_reasoning_not_visible_text
+cohere/response/message.content = carried cohere_tool_plan_is_reasoning_not_visible_text
+cohere/response/usage.billed_units.search_units = carried cohere_search_units_reach_the_ir
+cohere/response/usage.tokens.input_tokens = carried cohere_search_units_reach_the_ir
+cohere/response/usage.tokens.output_tokens = carried cohere_search_units_reach_the_ir
+cohere/request/content[].type=document.document.id = carried cohere_tool_result_document_is_not_stringified
+cohere/request/content[].type=document.document.data = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].tool_call_id = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].tool_calls = carried cohere_tool_result_document_is_not_stringified
+cohere/request/documents = waived 2026-08-13 Cohere-native RAG grounding with no faithful target mapping; warned at the reader before the seam clears it
+cohere/response/stream:tool-plan-delta = carried test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call
+cohere/response/stream:citation-start = carried streamed_citations_reach_openai_and_cohere_clients
+cohere/response/message.citations = carried cohere_response_citations_reach_a_foreign_client
+openai/response/stream:choices[].delta.annotations = carried streamed_citations_reach_openai_and_cohere_clients
+gemini/response/usageMetadata.promptTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
+gemini/response/usageMetadata.candidatesTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
+gemini/response/usageMetadata.totalTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
+
+# ---------------------------------------------------------------------------
+# RESPONSES
+# ---------------------------------------------------------------------------
+responses/request/content[].type=input_file.file_data = carried responses_input_file_survives_the_ir
+responses/request/content[].type=input_file.filename = carried responses_input_file_survives_the_ir
+responses/request/content[].type=input_file.file_url = carried responses_input_file_survives_the_ir
+responses/request/content[].type=input_file.file_id = carried responses_input_file_degrades_with_warn_not_silent_drop
+responses/request/content[].type=input_text.text = carried responses_input_file_survives_the_ir
+responses/response/usage.output_tokens_details.reasoning_tokens = carried responses_reasoning_tokens_are_not_zeroed
+responses/response/usage.input_tokens = carried responses_reasoning_tokens_are_not_zeroed
+responses/response/usage.output_tokens = carried responses_reasoning_tokens_are_not_zeroed
+responses/response/usage.total_tokens = carried responses_reasoning_tokens_are_not_zeroed
+responses/request/previous_response_id = waived 2026-08-13 conversation state lives at OpenAI; a foreign backend has no handle to continue from
+responses/request/conversation = waived 2026-08-13 same as previous_response_id: server-side state at exactly one vendor

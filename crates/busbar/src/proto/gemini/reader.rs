@@ -399,13 +399,35 @@ impl ProtocolReader for GeminiReader {
                                 .and_then(|d| d.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            msg_content.push(crate::ir::IrBlock::Image {
-                                source: crate::ir::IrImageSource::Base64 {
-                                    media_type: mime_type,
-                                    data,
-                                },
-                                cache_control: None,
-                            });
+                            // Gemini's `inlineData` carries ANY mime type — `audio/mp3`,
+                            // `application/pdf`, `video/mp4` as readily as `image/png`. Mapping ALL
+                            // of them onto `IrBlock::Image` (the prior behaviour) was wrong twice
+                            // over: the Anthropic writer then emitted
+                            // `{"type":"image","source":{"media_type":"audio/mp3"}}`, which that API
+                            // rejects with a 400, and a caller's PDF was described to every other
+                            // dialect as an image. Route on the mime prefix instead: images to
+                            // `Image`, everything else to the typed `Media` block whose writers know
+                            // which target has a native slot for it.
+                            let block = if mime_type.to_ascii_lowercase().starts_with("image/") {
+                                crate::ir::IrBlock::Image {
+                                    source: crate::ir::IrImageSource::Base64 {
+                                        media_type: mime_type,
+                                        data,
+                                    },
+                                    cache_control: None,
+                                }
+                            } else {
+                                crate::ir::IrBlock::Media {
+                                    kind: crate::ir::IrMediaKind::from_media_type(&mime_type),
+                                    source: crate::ir::IrImageSource::Base64 {
+                                        media_type: mime_type,
+                                        data,
+                                    },
+                                    name: None,
+                                    cache_control: None,
+                                }
+                            };
+                            msg_content.push(block);
                         }
                         // FileData (Image by URI) → a remote URL reference, carried as the typed
                         // `Url` source so it survives into the IR exactly as the OpenAI/Responses
@@ -416,10 +438,33 @@ impl ProtocolReader for GeminiReader {
                                 .and_then(|u| u.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            msg_content.push(crate::ir::IrBlock::Image {
-                                source: crate::ir::IrImageSource::Url(uri),
-                                cache_control: None,
-                            });
+                            // `fileData` carries an OPTIONAL `mimeType` beside the uri, and it is
+                            // the only thing that says whether this reference is an image, a PDF or
+                            // a video. Reading it routes the block to the right IR variant (and its
+                            // `kind` is what the Gemini writer re-emits `mimeType` from, so it
+                            // survives the round-trip instead of being dropped). Absent mimeType
+                            // keeps the historical behaviour: an unqualified URL reads as an image,
+                            // the shape every dialect's `image_url` can carry.
+                            let mime = file_data
+                                .get("mimeType")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("");
+                            let block = if mime.is_empty()
+                                || mime.to_ascii_lowercase().starts_with("image/")
+                            {
+                                crate::ir::IrBlock::Image {
+                                    source: crate::ir::IrImageSource::Url(uri),
+                                    cache_control: None,
+                                }
+                            } else {
+                                crate::ir::IrBlock::Media {
+                                    kind: crate::ir::IrMediaKind::from_media_type(mime),
+                                    source: crate::ir::IrImageSource::Url(uri),
+                                    name: None,
+                                    cache_control: None,
+                                }
+                            };
+                            msg_content.push(block);
                         }
                     }
                 }

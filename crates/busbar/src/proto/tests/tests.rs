@@ -1053,6 +1053,7 @@ fn test_split_usage_never_collapses() {
             output_tokens: 50,
             cache_creation_input_tokens: Some(30),
             cache_read_input_tokens: Some(200),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     });
     assert!(roundtrip.is_some());
@@ -1344,10 +1345,15 @@ fn test_protocol_clone_works() {
     let _cloned_writer = openai_writer.clone();
 }
 
-/// Cohere v2 carries the assistant's pre-tool reasoning in `message.tool_plan`. It must be
-/// read as a LEADING Text block (ahead of the tool call) or it vanishes on any Cohere→X hop.
+/// Cohere v2 carries the assistant's INTERNAL pre-tool plan in `message.tool_plan`. It must reach
+/// the IR — unread, it vanishes on any Cohere→X hop — but as REASONING, not as visible text.
+///
+/// Reading it as a leading `Text` (the previous behaviour this test asserted) was CONTENT
+/// INJECTION rather than loss: every cross-protocol client then rendered the model's internal plan
+/// as the answer's first paragraph, text the model never intended to show, and no writer could tell
+/// it apart from a genuine leading assistant message to put it back in its native slot.
 #[test]
-fn cohere_read_response_surfaces_tool_plan_as_leading_text() {
+fn cohere_read_response_surfaces_tool_plan_as_reasoning_not_visible_text() {
     let body = serde_json::json!({
         "message": {
             "tool_plan": "First I will check the weather.",
@@ -1359,8 +1365,15 @@ fn cohere_read_response_surfaces_tool_plan_as_leading_text() {
         .read_response(&body)
         .expect("cohere read_response");
     assert!(
-        matches!(ir.content.first(), Some(crate::ir::IrBlock::Text { text, .. }) if text == "First I will check the weather."),
-        "tool_plan must be the leading Text block, got: {:?}",
+        matches!(ir.content.first(), Some(crate::ir::IrBlock::Thinking { text, .. }) if text == "First I will check the weather."),
+        "tool_plan must be the leading REASONING block, got: {:?}",
+        ir.content
+    );
+    assert!(
+        !ir.content.iter().any(|b| matches!(
+            b, crate::ir::IrBlock::Text { text, .. } if text.contains("First I will check")
+        )),
+        "the plan must not ALSO appear as visible text: {:?}",
         ir.content
     );
     assert!(
@@ -1393,6 +1406,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2430,6 +2444,7 @@ mod ir_property_tests {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let result1 = writer.write_response_event(&ev1);
@@ -2450,6 +2465,7 @@ mod ir_property_tests {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let result2 = writer.write_response_event(&ev2);
@@ -2470,6 +2486,7 @@ mod ir_property_tests {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let result3 = writer.write_response_event(&ev3);

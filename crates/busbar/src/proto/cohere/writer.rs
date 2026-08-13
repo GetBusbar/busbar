@@ -188,14 +188,54 @@ impl ProtocolWriter for CohereWriter {
                                 text_parts.insert(0, (*t).clone());
                             }
                         }
-                        tool_result_obj.insert(
-                            "content".to_string(),
+                        // Native `document` parts, re-emitted STRUCTURALLY. The reader captures a
+                        // Cohere tool-result document as a `Media` block on the opaque `Vendor`
+                        // escape precisely so it can come back here as an object rather than as the
+                        // JSON STRING the old text-join produced (which the model read as escaped
+                        // syntax). A FOREIGN vendor handle cannot be re-emitted and is dropped with
+                        // a warn.
+                        let mut doc_parts: Vec<serde_json::Value> = Vec::new();
+                        for b in content {
+                            let crate::ir::IrBlock::Media { kind, source, .. } = b else {
+                                continue;
+                            };
+                            match source {
+                                crate::ir::IrImageSource::Vendor { vendor, value }
+                                    if *vendor == VENDOR_NAME =>
+                                {
+                                    doc_parts.push(serde_json::json!({
+                                        "type": "document",
+                                        "document": value
+                                    }));
+                                }
+                                _ => tracing::warn!(
+                                    media_kind = kind.as_str(),
+                                    "dropping attachment inside a tool result on Cohere egress: \
+                                     Cohere v2 tool content carries text and native `document` \
+                                     parts only, and this source has no Cohere document form"
+                                ),
+                            }
+                        }
+                        // Cohere accepts a bare string OR a typed-part array. Keep the bare string
+                        // when there is no document (the historical shape, and what the reader's
+                        // `.join("")` inverts); switch to the array form only when a document part
+                        // has to be carried structurally.
+                        let joined = text_parts.join("");
+                        let content_value = if doc_parts.is_empty() {
                             // Concatenate with NO separator, matching `read_request`'s `.join("")`:
                             // a block boundary is not a semantic space, and a " " here inserts a
-                            // phantom space at each former boundary on a Cohere->X->Cohere round-trip
-                            // (corrupting base64 / split-JSON tool-result payloads).
-                            serde_json::Value::String(text_parts.join("")),
-                        );
+                            // phantom space at each former boundary on a Cohere->X->Cohere
+                            // round-trip (corrupting base64 / split-JSON tool-result payloads).
+                            serde_json::Value::String(joined)
+                        } else {
+                            let mut parts: Vec<serde_json::Value> = Vec::new();
+                            if !joined.is_empty() {
+                                parts.push(serde_json::json!({"type": "text", "text": joined}));
+                            }
+                            parts.extend(doc_parts);
+                            serde_json::Value::Array(parts)
+                        };
+                        tool_result_obj.insert("content".to_string(), content_value);
                         messages_arr.push(serde_json::Value::Object(tool_result_obj));
                         emitted_tool_result = true;
                     }
@@ -540,14 +580,39 @@ impl ProtocolWriter for CohereWriter {
                         }
                     }),
                 )),
-                // Cohere v2 streams carry no thinking/signature delta shape; suppress rather than
-                // emit a non-native frame.
-                crate::ir::IrDelta::ThinkingDelta(_) => None,
+                // Cohere v2 DOES have a native streamed reasoning frame — `tool-plan-delta`, the
+                // one this file's own reader consumes — so a reasoning delta re-emits into it
+                // rather than being suppressed. Without this arm the streamed plan reached a
+                // Cohere-ingress client as nothing while the same turn non-streamed arrived, which
+                // is the stream/non-stream asymmetry this pass exists to remove.
+                crate::ir::IrDelta::ThinkingDelta(text) => Some((
+                    "".to_string(),
+                    serde_json::json!({
+                        "type": ET_TOOL_PLAN_DELTA,
+                        "index": index,
+                        "delta": { "message": { "tool_plan": text } }
+                    }),
+                )),
                 crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // Cohere v2 streams carry no citation delta shape; suppress rather than emit
-                // a non-native frame. The citation is preserved in the IR for protocols that model
-                // streaming citations.
+                // Cohere v2's SSE vocabulary DOES include `citation-start` (paired with
+                // `citation-end`), so a streamed citation re-emits natively instead of being
+                // suppressed. Suppressing it made the SAME request against the SAME backend return
+                // sources at `stream:false` and no sources at `stream:true` — the worst shape of a
+                // loss, because nothing about the request explains the difference. One frame per
+                // event carrying the whole batch; an empty batch emits nothing.
+                crate::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => Some((
+                    "".to_string(),
+                    serde_json::json!({
+                        "type": ET_CITATION_START,
+                        "index": index,
+                        "delta": {
+                            "message": {
+                                "citations": cits.iter().map(write_cohere_citation).collect::<Vec<_>>()
+                            }
+                        }
+                    }),
+                )),
                 crate::ir::IrDelta::CitationsDelta(_) => None,
                 // Cohere v2 has no cross-protocol logprobs shape (token IDs only); dropped.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
@@ -675,6 +740,7 @@ impl ProtocolWriter for CohereWriter {
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
+        let mut tool_plan: Option<String> = None;
 
         for block in &resp.content {
             match block {
@@ -701,8 +767,23 @@ impl ProtocolWriter for CohereWriter {
                     // key and silently drop all but the last call on parallel tool use.
                     tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                 }
+                // A reasoning block re-emits into Cohere's NATIVE `message.tool_plan` slot — the
+                // round trip the IR could not express while `tool_plan` was read as a plain leading
+                // Text (there was no marker to tell it apart from genuine content, so it came back
+                // as `content` and the model's internal plan was shown to the user). A REDACTED
+                // block is opaque ciphertext with no Cohere analog and is dropped.
+                crate::ir::IrBlock::Thinking {
+                    text,
+                    redacted: false,
+                    ..
+                } => {
+                    if !text.is_empty() {
+                        tool_plan.get_or_insert_with(String::new).push_str(text);
+                    }
+                }
                 crate::ir::IrBlock::Thinking { .. } => {}
                 crate::ir::IrBlock::Image { .. }
+                | crate::ir::IrBlock::Media { .. }
                 | crate::ir::IrBlock::ToolResult { .. }
                 | crate::ir::IrBlock::Json(_) => {}
             }
@@ -744,7 +825,31 @@ impl ProtocolWriter for CohereWriter {
         // a Cohere -> Cohere passthrough round-trip every parallel tool call.
         let mut message_obj = serde_json::Map::new();
         message_obj.insert("role".to_string(), serde_json::json!("assistant"));
+        if let Some(plan) = tool_plan {
+            message_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
+        }
         message_obj.insert("content".to_string(), serde_json::Value::Array(content_arr));
+        // Grounding citations, in Cohere's native `message.citations` slot. A citation READ from a
+        // Cohere response carries the source object verbatim in `raw`, so a same-protocol path
+        // re-emits it unchanged; a cross-protocol citation is synthesized from the neutral fields.
+        // Emitted only when non-empty — an absent key is what Cohere returns for an ungrounded
+        // answer, so a hardcoded `[]` would be a proxy tell in the other direction.
+        let citations_arr: Vec<serde_json::Value> = resp
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+                _ => None,
+            })
+            .flatten()
+            .map(write_cohere_citation)
+            .collect();
+        if !citations_arr.is_empty() {
+            message_obj.insert(
+                "citations".to_string(),
+                serde_json::Value::Array(citations_arr),
+            );
+        }
         if !tool_calls_arr.is_empty() {
             message_obj.insert(
                 "tool_calls".to_string(),
@@ -758,6 +863,15 @@ impl ProtocolWriter for CohereWriter {
         // Wrap tokens under "tokens" key per Cohere API spec
         let mut usage_map = serde_json::Map::new();
         usage_map.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
+        // The separately-billed search units, in Cohere's native `billed_units` slot. Emitted only
+        // when the source actually reported them, so a plain chat response does not acquire a
+        // fabricated `billed_units` object.
+        if let Some(su) = resp.usage.detail.search_units {
+            usage_map.insert(
+                "billed_units".to_string(),
+                serde_json::json!({ "search_units": su }),
+            );
+        }
         out.insert("usage".to_string(), serde_json::Value::Object(usage_map));
 
         serde_json::Value::Object(out)
