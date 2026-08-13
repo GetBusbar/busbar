@@ -373,6 +373,98 @@ mcp|streamable-http|server|server|sampling/createMessage = implemented
 mcp|streamable-http|client|client|tools/call = implemented
 mcp|streamable-http|client|client|tools/list = implemented
 
+# ── THE STREAMABLE-HTTP CLIENT COLUMN, ISSUED (1.6.0) ───────────────────────────────────────────
+#
+# ONE verb enum and ONE governed send site serve BOTH client transports. `mcp/client/verb.rs`'s
+# `UpstreamVerb` and `mcp/client/issue.rs`'s `issue` landed with the stdio leg; this transport adds
+# no second copy of either, which is the point — `Transport::mcp_wire()` is the only place in the
+# tree that asks the axis which variant it is, and from there down the leg is bytes out and bytes
+# back identically for an HTTPS POST and a write to a child's stdin.
+#
+# WHAT THIS TRANSPORT ADDED, because a child process has no analogue for any of it:
+#   * `upstream::authorise_verb` — the SERVER-SCOPED gate. `Authorised` now carries its own `server`
+#     and an OPTIONAL `key`, because a verb names no tool. Before that the only constructor of the
+#     value the send site needs resolved a TOOL, so issuing a `prompts/list` required an `mcp_tool`
+#     grant while `egress::ServerVerb`, the subject it is actually gated on, correctly requires one.
+#     A deployment fronting an upstream for its prompts and no tools could not reach it.
+#   * The ordered validator on that path: identity, the `mcp_server` grant, whether the registration
+#     is serving at all, then the snapshot generation. `capability: None` is a statement — a verb has
+#     no per-capability fingerprint — and the REGISTRATION-level half still runs, so a quarantined
+#     upstream serves no `prompts/list` either.
+#   * `client::argguard` on the verb's OWN params, inside `issue`, for every verb however the leg was
+#     authorised. A `resources/read` carries a caller-chosen URI, and the routing rule makes the
+#     DESTINATION immune to attacker-chosen text and does nothing whatever for the PAYLOAD.
+#   * The `Mcp-Name` rule unified with `mcp::ingress::name_source_of`. The builder had its own copy
+#     and the two DISAGREED about the three tasks methods, so a `tasks/get` went out with no
+#     `Mcp-Name` — the exact header busbar's own front door answers `-32020` to. Invisible on stdio,
+#     which has no headers.
+#
+# EVIDENCE: `mcp/tests/http_client_leg_tests.rs`. THE DENOMINATOR IS DERIVED — it reads this column
+# out of qa/method-inventory.json, subtracts the waivers out of this file, and fails if the set it
+# drives is not equal in both directions. No count is written down anywhere in it. Every owed method
+# is issued at a real peer on a real loopback socket and asserted at the RECEIVING end: the method,
+# `id` present exactly when there is an answer to correlate, the three mirrored headers, the RFC 8693
+# EXCHANGED bearer, and one per-call record each. Controls: an ungranted caller leaves the upstream's
+# AND the authorization server's own hit counters at zero; a link-local URI in a verb's params is
+# refused before the exchange; an unpinned registration issues nothing; an upstream's ask terminates
+# and its text never reaches busbar's caller; a wildcard principal's exchange asks for no tool scope.
+mcp|streamable-http|client|client|server/discover = implemented
+mcp|streamable-http|client|client|prompts/list = implemented
+mcp|streamable-http|client|client|prompts/get = implemented
+mcp|streamable-http|client|client|resources/list = implemented
+mcp|streamable-http|client|client|resources/read = implemented
+mcp|streamable-http|client|client|resources/templates/list = implemented
+mcp|streamable-http|client|client|completion/complete = implemented
+mcp|streamable-http|client|client|tasks/get = implemented
+mcp|streamable-http|client|client|tasks/update = implemented
+mcp|streamable-http|client|client|tasks/cancel = implemented
+mcp|streamable-http|client|client|subscriptions/listen = implemented
+mcp|streamable-http|client|client|notifications/cancelled = implemented
+mcp|streamable-http|client|client|notifications/progress = implemented
+mcp|streamable-http|client|client|notifications/roots/list_changed = implemented
+mcp|streamable-http|client|client|notifications/elicitation/response = implemented
+
+# ── WHAT AN UPSTREAM SAYS BACK OVER STREAMABLE HTTP, HANDLED (1.6.0) ────────────────────────────
+#
+# SEP-2575 removed the standalone GET stream; it did not remove server-to-client messages. They ride
+# the SSE response of a POST busbar made, and that response is this leg's whole inbound surface.
+# Everything on it except `notifications/progress` was DROPPED by `last_sse_data`, and a dropped
+# frame is not a handled frame: a `…/list_changed` nobody saw is a rug-pull signal nobody acted on.
+#
+# THE CLASSIFIER IS `mcp/client/peer.rs`'s, shared with the stdio leg, which reads the same messages
+# off a child's stdout. Two carriers, one meaning — `peer::classify` decides what a message IS and
+# `ServerNotification::effect` decides what busbar DOES, and this transport supplies only the SSE
+# reader and the effect application. A second table here would be a second answer to "may this
+# notification move busbar's catalogue", and the copy that got fixed would not be the one that was
+# wrong. The four catalogue triggers bring a re-pull FORWARD through the `RefreshGate` already on the
+# pool; the notification's CONTENTS are never read.
+#
+# THE ONE GENUINE CARRIER DIFFERENCE, and it is why `ping` is claimed here rather than waived: stdio
+# ANSWERS a peer's request, because a child's stdin is a channel and a child left waiting hangs. An
+# SSE response body is not a channel — it is the answer to a POST already sent — so a request
+# arriving here CANNOT be answered. It is recognised, recorded and dropped, and never adopted as the
+# answer to what busbar actually asked. Over this carrier the three authority asks are refused by the
+# absence of any way to satisfy them, which is stronger than the grant gate: busbar cannot say yes
+# even where an operator granted it.
+#
+# EVIDENCE: `mcp/client/tests/http_peer_tests.rs`. All nine notifications, all four peer requests and
+# two unrecognised frames arrive on ONE real SSE stream from a real loopback socket. The returned
+# body is asserted to be the POST's own answer, to carry no `method`, and to contain none of a
+# notification's attacker-chosen payload; the progress channel is asserted to have received exactly
+# one frame; a flood of twenty-five `…/list_changed` brings exactly one re-pull forward and a second
+# flood inside the floor brings none; and every notification is asserted to move the catalogue
+# exactly when `peer`'s own effect table says it does. All three authority grants are GRANTED on the
+# leg under test, so the request refusals are not the grant gate answering.
+mcp|streamable-http|client|server|notifications/message = implemented
+mcp|streamable-http|client|server|notifications/cancelled = implemented
+mcp|streamable-http|client|server|notifications/prompts/list_changed = implemented
+mcp|streamable-http|client|server|notifications/resources/list_changed = implemented
+mcp|streamable-http|client|server|notifications/resources/updated = implemented
+mcp|streamable-http|client|server|notifications/subscriptions/acknowledged = implemented
+mcp|streamable-http|client|server|notifications/tasks = implemented
+mcp|streamable-http|client|server|notifications/tools/list_changed = implemented
+mcp|streamable-http|client|server|ping = implemented
+
 # The upstream's progress, relayed to busbar's own caller. ONLY that method is taken off the
 # upstream's stream — a stream may carry anything, and relaying whatever happened to be on it would
 # put an upstream's messages in front of busbar's caller under busbar's name. The frames are

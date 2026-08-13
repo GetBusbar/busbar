@@ -225,6 +225,15 @@ impl UpstreamVerb {
         )
     }
 
+    /// The `params` object as the ARGUMENT GUARD sees it, before `_meta` is added.
+    ///
+    /// Exposed for exactly one caller, `super::issue::issue`, which walks it for URL and host
+    /// fields. `_meta` is deliberately absent: it is BUSBAR's block, not the caller's, so judging it
+    /// would be judging busbar's own protocol declaration as though a caller had chosen it.
+    pub(super) fn params_for_guard(&self) -> serde_json::Value {
+        self.params()
+    }
+
     /// The `params` object, WITHOUT `_meta` — which [`Self::build`] adds, once, for every verb.
     ///
     /// Split that way so no variant can forget the revision's required `_meta`: a per-variant
@@ -295,16 +304,25 @@ impl UpstreamVerb {
     ///
     /// `Some` only where the request NAMES a target the header can mirror. A header that mirrored a
     /// value the body does not carry would be a header busbar's own ingress answers `-32020` to.
-    fn target(&self) -> Option<&str> {
-        match self {
-            UpstreamVerb::ToolsCall { name, .. } | UpstreamVerb::PromptsGet { name, .. } => {
-                Some(name)
-            }
-            UpstreamVerb::ResourcesRead { uri }
-            | UpstreamVerb::ResourcesSubscribe { uri }
-            | UpstreamVerb::ResourcesUnsubscribe { uri } => Some(uri),
-            _ => None,
-        }
+    /// WHICH member of this verb's `params` the `Mcp-Name` header mirrors, and its value.
+    ///
+    /// The RULE is `crate::mcp::ingress::name_source_of`'s and is not restated here. This function
+    /// once carried its own copy and the two disagreed about the three tasks methods, so a
+    /// `tasks/get` issued over streamable HTTP went out with no `Mcp-Name` — the exact header
+    /// busbar's own ingress answers `-32020` to. Reading the ingress's table means the requests
+    /// busbar SENDS satisfy the MUSTs busbar ENFORCES, by construction rather than by two authors
+    /// agreeing.
+    ///
+    /// It returns an owned `String` because the value is read back out of the serialised `params`
+    /// rather than off the variant: the member the header mirrors is decided by the wire method, so
+    /// looking it up by name is what keeps the two in step. A per-variant `match` would be the
+    /// second copy again, wearing a different shape.
+    fn target(&self) -> Option<String> {
+        let source = crate::mcp::ingress::name_source_of(self.method())?;
+        self.params()
+            .get(source)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     }
 
     /// BUILD the request. One envelope function, shared with `tools/call`, so the mirrored headers
@@ -339,7 +357,7 @@ impl UpstreamVerb {
                 "params": params,
             })
         };
-        envelope(url, method, self.target(), body, authorization)
+        envelope(url, method, self.target().as_deref(), body, authorization)
     }
 }
 

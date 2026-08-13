@@ -33,10 +33,7 @@
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
 use super::jsonrpc::OutboundRequest;
-use super::pool::McpConnectionPool;
-use super::ssrf::SsrfPolicy;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
-use std::time::Duration;
 
 /// The streamable-HTTP transport. Holds no per-upstream state: the pool holds the sockets and the
 /// catalogue holds the trust, so this is a function with a pool attached.
@@ -45,9 +42,11 @@ pub(crate) struct HttpTransport;
 
 /// The vtable arm [`crate::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
 /// the leg an HTTP send needs and forwards to the inherent [`HttpTransport::send`], which the
-/// refresh path in `mcp::connect` calls directly — that path knows it is fetching over HTTP because
-/// it is the HTTP revision's `tools/list`, and threading a transport through it would be modelling a
-/// choice nothing makes.
+/// refresh path in `mcp::connect` reaches through the same vtable.
+///
+/// The leg is forwarded WHOLE rather than unpacked into the three fields an HTTP POST needs,
+/// because the INBOUND half of this wire — the server-originated frames on an SSE answer — needs
+/// the registration they arrived from and the pool's refresh triggers to put an accepted one in.
 #[async_trait::async_trait]
 impl McpWire for HttpTransport {
     async fn send(
@@ -55,7 +54,7 @@ impl McpWire for HttpTransport {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError> {
-        HttpTransport::send(leg.pool, req, leg.policy, leg.timeout).await
+        HttpTransport::send(leg, req).await
     }
 
     /// A NOTIFICATION over streamable HTTP is an ordinary POST whose response body is discarded.
@@ -65,7 +64,7 @@ impl McpWire for HttpTransport {
     /// here would make "busbar told the upstream" a claim with no evidence behind it — which is the
     /// shape of a notification path that silently does nothing.
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError> {
-        let response = HttpTransport::send(leg.pool, req, leg.policy, leg.timeout).await?;
+        let response = HttpTransport::send(leg, req).await?;
         if !(200..300).contains(&response.status) {
             return Err(TransportError::Io(format!(
                 "the upstream refused a JSON-RPC notification with HTTP {}; a notification has no \
@@ -80,13 +79,12 @@ impl McpWire for HttpTransport {
 impl HttpTransport {
     /// Send one JSON-RPC message and read the answer.
     pub(crate) async fn send(
-        pool: &McpConnectionPool,
+        leg: &WireLeg<'_>,
         req: &OutboundRequest,
-        policy: SsrfPolicy,
-        timeout: Duration,
     ) -> Result<TransportResponse, TransportError> {
-        let (client, _target) = pool
-            .client_for(&req.url, policy, timeout)
+        let (client, _target) = leg
+            .pool
+            .client_for(&req.url, leg.policy, leg.timeout)
             .await
             .map_err(TransportError::Refused)?;
         let mut builder = client.post(&req.url);
@@ -133,21 +131,10 @@ impl HttpTransport {
             }
         }
         let body = if is_sse {
-            // CAPTURE THE PROGRESS BEFORE DISCARDING THE REST. Everything ahead of the final frame
-            // used to be dropped here, progress included — and the loss was documented rather than
-            // fixed (`last_sse_data`'s own comment). Progress is the one non-final frame busbar's
-            // caller is entitled to, so it is lifted into the per-request slot on the way past.
-            //
-            // Silent when there is no slot: a request outside `ingress`'s scope simply has nowhere
-            // to put them, which is the correct answer rather than an error.
-            let progress = progress_frames(&raw);
-            if !progress.is_empty() {
-                let _ = super::super::UPSTREAM_PROGRESS.try_with(|slot| {
-                    if let Ok(mut ch) = slot.lock() {
-                        ch.frames.extend(progress);
-                    }
-                });
-            }
+            // EVERY SERVER-ORIGINATED FRAME IS CLASSIFIED AND HANDLED BEFORE THE REST IS DISCARDED.
+            // Everything ahead of the final frame used to be dropped here — and a dropped frame is
+            // not a handled frame. See [`read_server_frames`].
+            read_server_frames(leg, &raw);
             last_sse_data(&raw)
         } else {
             raw.to_vec()
@@ -156,17 +143,136 @@ impl HttpTransport {
     }
 }
 
-/// Every `notifications/progress` frame in an SSE body, in arrival order.
+// ── WHAT AN UPSTREAM SAYS BACK, ON THIS CARRIER ─────────────────────────────────────────────────
+//
+// Revision `2026-07-28` removed the standalone GET stream; it did not remove server-to-client
+// messages. They ride the SSE response of a POST busbar made, and that response is this leg's whole
+// inbound surface.
+//
+// THE CLASSIFIER IS NOT HERE. `super::peer::classify` is the one table that decides what a peer's
+// message IS, and `super::peer::ServerNotification::effect` is the one table that decides what
+// busbar DOES about it — both shared with the stdio leg, which reads the same messages off a
+// child's stdout. Two carriers, one meaning. A second table here would be a second answer to "may
+// this notification move busbar's catalogue", and the one that got fixed would not be the one that
+// was wrong.
+//
+// WHAT DIFFERS BETWEEN THE CARRIERS, and it is exactly one thing: stdio ANSWERS a peer's request,
+// because a child's stdin is a channel busbar can write a reply on and a child left waiting on one
+// is a child that hangs. An SSE response body is not a channel — it is the answer to a POST that has
+// already been sent — so a request arriving here CANNOT be answered, and it is refused by being
+// recorded and dropped. That is a transport fact, and it lives in the transport rather than as a
+// branch on the axis somewhere that can see both.
+
+/// Classify and handle every server-originated frame in an SSE body, in arrival order.
 ///
-/// Only that method: a stream may carry other notifications, and relaying whatever happened to be
-/// there would let an upstream inject arbitrary JSON-RPC into busbar's answer to its own caller.
-/// This is an allowlist of exactly one method for exactly that reason.
-pub(crate) fn progress_frames(raw: &[u8]) -> Vec<serde_json::Value> {
+/// Returns what it classified, so a test can read exactly what the transport read from exactly the
+/// bytes the transport read it from. The return value is unused on the dispatch path: the EFFECTS
+/// are the point, and they are observable where they land — the progress channel, and the pool's
+/// refresh triggers.
+pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::peer::ServerMessage> {
+    use super::peer::{NotificationEffect, ServerMessage};
+    let mut seen = Vec::new();
+    for frame in sse_frames(raw) {
+        // `None` is the RESPONSE this POST was made for. It is not a server message and it is not
+        // consumed here — `last_sse_data` returns it to the caller, which correlates it against the
+        // id it sent. Making a response consumable in this loop would create a second place one can
+        // be taken, which is the desynchronisation `super::peer`'s header exists to prevent.
+        let Some(message) = super::peer::classify(&frame) else {
+            continue;
+        };
+        match &message {
+            ServerMessage::Notification(n) => match n.effect() {
+                // THE TIMING, NEVER THE CONTENT. The frame's body is not read: an accepted trigger
+                // records the SERVER'S NAME and the authoritative `tools/list` is re-fetched and
+                // re-hashed by the sweep exactly as a scheduled refresh would do it.
+                NotificationEffect::BringRefreshForward => {
+                    let accepted = leg.pool.triggers.signal(leg.server, crate::store::now_ms());
+                    tracing::debug!(
+                        server = %leg.server,
+                        notification = ?n,
+                        accepted,
+                        "mcp http: peer signalled a catalogue change"
+                    );
+                }
+                // THE WHOLE FRAME, and it is safe to relay verbatim for one reason only: this arm
+                // is reached ONLY for `notifications/progress`, which `super::peer`'s closed table
+                // decides. An arm that relayed whatever notification arrived would let an upstream
+                // inject arbitrary JSON-RPC into busbar's answer to its own caller.
+                //
+                // Silent when there is no slot: a leg outside `ingress`'s scope simply has nowhere
+                // to put a progress frame, which is the correct answer rather than an error.
+                NotificationEffect::RelayProgress => {
+                    let _ = super::super::UPSTREAM_PROGRESS.try_with(|slot| {
+                        if let Ok(mut ch) = slot.lock() {
+                            ch.frames.push(frame.clone());
+                        }
+                    });
+                }
+                NotificationEffect::Log => tracing::debug!(
+                    server = %leg.server,
+                    notification = ?n,
+                    "mcp http: peer notification recorded"
+                ),
+            },
+            ServerMessage::UnknownNotification(method) => tracing::debug!(
+                server = %leg.server,
+                method = %method,
+                "mcp http: peer sent a notification busbar does not implement; dropped"
+            ),
+            // A REQUEST, ON A CARRIER WITH NO REPLY CHANNEL. Recorded and dropped — and, critically,
+            // never adopted as the answer to what busbar actually asked, which is what a reader that
+            // took the first frame of the stream would do. The three authority asks are refused here
+            // by the absence of any way to satisfy them, which is a stronger refusal than the grant
+            // gate stdio applies: over this carrier busbar cannot say yes even if an operator
+            // granted it.
+            ServerMessage::Request { verb, .. } => tracing::debug!(
+                server = %leg.server,
+                verb = ?verb,
+                "mcp http: peer sent a request on an SSE response body, which carries no reply \
+                 channel; recorded and not answered"
+            ),
+            ServerMessage::UnknownRequest { method, .. } => tracing::debug!(
+                server = %leg.server,
+                method = %method,
+                "mcp http: peer sent an unknown request on an SSE response body; recorded and not \
+                 answered"
+            ),
+        }
+        seen.push(message);
+    }
+    seen
+}
+
+/// Every `data:` payload in an SSE body, parsed, in arrival order.
+///
+/// Multi-line `data:` fields are NOT joined here — `last_sse_data` owns that rule for the frame it
+/// returns. A frame this cannot parse is skipped rather than reported: a peer that writes a
+/// non-JSON `data:` line has said nothing busbar can act on, and the RESPONSE is judged separately
+/// by the JSON-RPC reader, which is the right layer for that complaint.
+fn sse_frames(raw: &[u8]) -> Vec<serde_json::Value> {
     String::from_utf8_lossy(raw)
         .lines()
         .filter_map(|l| l.strip_prefix("data:"))
         .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
-        .filter(|v| v.get("method").and_then(|m| m.as_str()) == Some("notifications/progress"))
+        .collect()
+}
+
+/// Every `notifications/progress` frame in an SSE body, in arrival order.
+///
+/// Expressed over the SHARED classifier rather than over a method-name test of its own, so "which
+/// frames may reach busbar's caller" is decided in exactly one place — `super::peer`'s effect table
+/// — and this function cannot come to disagree with the transport about it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn progress_frames(raw: &[u8]) -> Vec<serde_json::Value> {
+    use super::peer::{NotificationEffect, ServerMessage};
+    sse_frames(raw)
+        .into_iter()
+        .filter(|frame| {
+            matches!(
+                super::peer::classify(frame),
+                Some(ServerMessage::Notification(n)) if n.effect() == NotificationEffect::RelayProgress
+            )
+        })
         .collect()
 }
 
@@ -204,3 +310,11 @@ fn last_sse_data(raw: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
+
+// THE INBOUND HALF of this wire: what an upstream says back on the SSE answer, and what busbar does
+// about it. It hangs off the transport rather than off `super::peer` because the CLASSIFIER is
+// proven there, shared with stdio — what is proven here is the CARRIER: that the frames are found on
+// an SSE body, that the effects land, and that the answer to the POST survives them all intact.
+#[cfg(test)]
+#[path = "tests/http_peer_tests.rs"]
+mod http_peer_tests;

@@ -77,8 +77,22 @@ pub(crate) const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 /// value rather than a call somebody remembers to make.
 #[derive(Debug)]
 pub(crate) struct Authorised {
-    /// The routing key — the bound identity, never a description.
-    pub(crate) key: ToolKey,
+    /// THE REGISTRATION this leg reaches. Present on BOTH shapes of ask, because both reach one.
+    ///
+    /// It rides here rather than being read off [`Authorised::key`] so that a SERVER-SCOPED verb —
+    /// which names no tool and therefore has no key — still has a registration to name. Deriving it
+    /// from the key was what made an `mcp_tool` grant a prerequisite for issuing a `prompts/list`:
+    /// `super::client::egress::ServerVerb` correctly requires one grant, and the only constructor
+    /// of the value the send site needs demanded two.
+    pub(crate) server: ServerId,
+    /// The routing key — the bound identity, never a description — for an ask that NAMES A TOOL.
+    ///
+    /// `None` on a server-scoped verb. An `Option` rather than a synthetic key, because every
+    /// available synthetic value is one this plane has already refused elsewhere: a literal
+    /// `fs_prompts/list` invents a grant no operator can write, and reusing an unrelated tool's key
+    /// authorises one thing against a grant for another. The absence is the honest representation
+    /// and `super::client::issue` never needs it.
+    pub(crate) key: Option<ToolKey>,
     /// The upstream endpoint, as the operator registered it. Empty for a transport that reaches no
     /// address; the wire that needs it is the wire that has one.
     pub(crate) url: String,
@@ -125,6 +139,15 @@ pub(crate) enum SetupRefusal {
     /// the destination does. The routing rule makes the DESTINATION immune to attacker-chosen text;
     /// it does not make the PAYLOAD immune, and this is the arm that says so.
     Argument(String),
+    /// THE ORDERED VALIDATOR REFUSED. Carried whole rather than flattened to a string, because its
+    /// arms are four different operator remedies and its `reason()` is already an audit word — see
+    /// `crate::trust::validate`, whose header is explicit that collapsing them is the cheap
+    /// unification and the wrong one.
+    ///
+    /// Reached only by [`authorise_verb`]. A `tools/call` meets the same validator one layer up, in
+    /// the catalogue's `resolve`, and renders its refusal in that path's own vocabulary.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Trust(crate::trust::validate::Refusal),
 }
 
 impl std::fmt::Display for SetupRefusal {
@@ -134,6 +157,7 @@ impl std::fmt::Display for SetupRefusal {
             SetupRefusal::Egress(e) => write!(f, "{e}"),
             SetupRefusal::Credential(m) => write!(f, "{m}"),
             SetupRefusal::Argument(m) => write!(f, "{m}"),
+            SetupRefusal::Trust(r) => write!(f, "{r}"),
         }
     }
 }
@@ -148,6 +172,10 @@ impl SetupRefusal {
             SetupRefusal::Egress(_) => crate::audit::vocab::REASON_EGRESS_DENIED,
             SetupRefusal::Credential(_) => "credential_unavailable",
             SetupRefusal::Argument(_) => "tool_argument_refused",
+            // The validator's OWN word, not a fifth one invented here. It is already an
+            // `audit::vocab` token, and re-spelling it would be the two-streams-one-decision defect
+            // the audit unification closed.
+            SetupRefusal::Trust(r) => r.reason(),
         }
     }
 }
@@ -194,11 +222,86 @@ pub(crate) fn authorise(
     super::client::argguard::guard(&schema, arguments, policy)
         .map_err(|e| SetupRefusal::Argument(e.to_string()))?;
     Ok(Authorised {
-        key,
+        server: server_id,
+        key: Some(key),
         url: server.url.clone(),
         transport: server.transport,
         stdio: server.stdio.clone(),
         policy,
+        grants: server.grants,
+        credential,
+        caller,
+        timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
+    })
+}
+
+/// THE GATE FOR A SERVER-SCOPED VERB — an ask that names the REGISTRATION and no tool.
+///
+/// ## Why this is not [`authorise`] with a tool left out
+///
+/// `authorise` resolves a `ToolKey` and then runs `plan_credential`, whose subject requires BOTH
+/// `mcp_server` and `mcp_tool`. Every verb in `super::client::verb::UpstreamVerb` except
+/// `tools/call` names no tool, so routing one through that constructor made an `mcp_tool` grant a
+/// prerequisite for `prompts/list` — while `super::client::egress::ServerVerb`, the subject the
+/// send site actually gates on, correctly requires one grant. A deployment fronting an upstream for
+/// its prompts and no tools at all could not reach it.
+///
+/// ## It is the ORDERED VALIDATOR, not a fourth sequence
+///
+/// A `tools/call` meets `crate::trust::validate::validate_request` one layer up, inside the
+/// catalogue's `resolve`, which owns the tool half of the question. A server-scoped verb never
+/// touches the catalogue's tool index, so it asks the validator DIRECTLY — identity, then the
+/// `mcp_server` grant, then whether the registration is serving at all, then whether the snapshot
+/// it was admitted under is still live. Writing those four steps out here instead would have been
+/// the fourth call site that module's own header says drifts.
+///
+/// `capability: None` is a statement rather than an omission: an ask addressed to the registration
+/// has no per-capability fingerprint to compare, and inventing one would be inventing an approval.
+/// The REGISTRATION-level half still runs, so a quarantined or suspended upstream serves no
+/// `prompts/list` either — which is the assertion that stops "no capability to check" quietly
+/// becoming "nothing to check".
+///
+/// The verb's own params are NOT judged here. They are judged in `super::client::issue::issue`,
+/// once, for every verb however the leg was authorised — a guard on the constructor is a guard a
+/// second constructor can skip.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn authorise_verb(
+    server: &ServerEntry,
+    sighting: &crate::trust::Sighting<super::client::catalogue::TransportPin>,
+    caller: Option<&VirtualKey>,
+    generation: crate::trust::validate::Generations,
+    now: u64,
+) -> Result<Authorised, SetupRefusal> {
+    let server_id =
+        ServerId::new(&server.id).map_err(|e| SetupRefusal::Malformed(e.to_string()))?;
+    let caller = match caller {
+        Some(k) => k.clone(),
+        None => ungoverned_principal(),
+    };
+    crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+        principal: Some(&caller),
+        now,
+        grants: &[crate::trust::validate::Grant::Scope {
+            kind: "mcp_server",
+            name: &server.id,
+        }],
+        approval: &server.approval,
+        sighting,
+        capability: None,
+        generation,
+    })
+    .map_err(SetupRefusal::Trust)?;
+    let credential = credential_mode(server).map_err(SetupRefusal::Credential)?;
+    Ok(Authorised {
+        server: server_id,
+        // NAMES NO TOOL, and says so. See the field.
+        key: None,
+        url: server.url.clone(),
+        transport: server.transport,
+        stdio: server.stdio.clone(),
+        policy: SsrfPolicy {
+            allow_private: server.upstream.allow_private,
+        },
         grants: server.grants,
         credential,
         caller,
@@ -275,14 +378,17 @@ pub(crate) async fn call(
     arguments: &serde_json::Value,
     request_id: u64,
 ) -> Result<Round, String> {
-    let plan = plan_credential(
-        auth.key.server(),
-        &auth.credential,
-        &auth.caller,
-        None,
-        &auth.key,
-    )
-    .map_err(|e| e.to_string())?;
+    // A `tools/call` NAMES A TOOL, so this leg must carry one. The refusal is a `String` and not a
+    // panic because `Authorised` is constructible for a server-scoped verb too, and the type cannot
+    // yet say which shape a given value is — what it can say is that this path does not proceed
+    // without a routing key, rather than inventing one.
+    let key = auth.key.as_ref().ok_or_else(|| {
+        "a `tools/call` needs the tool's bound identity and this leg was authorised for a \
+         server-scoped verb, which names none"
+            .to_string()
+    })?;
+    let plan = plan_credential(&auth.server, &auth.credential, &auth.caller, None, key)
+        .map_err(|e| e.to_string())?;
     let bearer = match plan {
         CredentialPlan::None => None,
         CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
@@ -292,13 +398,7 @@ pub(crate) async fn call(
     };
     // The namespaced name is stripped to the bare tool inside the builder — the upstream has never
     // heard of busbar's namespacing and would answer `-32602` to it.
-    let outbound = jsonrpc::tools_call(
-        &auth.url,
-        &auth.key,
-        arguments,
-        request_id,
-        bearer.as_deref(),
-    );
+    let outbound = jsonrpc::tools_call(&auth.url, key, arguments, request_id, bearer.as_deref());
     // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
     // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
     // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.
@@ -306,7 +406,7 @@ pub(crate) async fn call(
         pool,
         policy: auth.policy,
         timeout: auth.timeout,
-        server: auth.key.server().as_str(),
+        server: auth.server.as_str(),
         command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
@@ -419,6 +519,14 @@ mod upstream_join_tests;
 #[cfg(test)]
 #[path = "tests/stdio_dispatch_tests.rs"]
 mod stdio_dispatch_tests;
+
+// THE STREAMABLE-HTTP CLIENT COLUMN, the sibling of `stdio_client_leg_tests.rs`. It hangs here for
+// the same reason that one does: the claim is about the JOIN — a verb reaching a real peer through
+// the real gate — and it asserts the half a child process has no analogue for, which is the mirrored
+// headers and the exchanged credential.
+#[cfg(test)]
+#[path = "tests/http_client_leg_tests.rs"]
+mod http_client_leg_tests;
 
 // THE WHOLE STDIO CLIENT COLUMN — every method busbar ISSUES and every message a child SENDS,
 // against a real child process. It hangs here for the same reason its neighbour does: the claim is
