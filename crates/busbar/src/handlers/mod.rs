@@ -159,21 +159,13 @@ pub(crate) trait OperationHandler: Send + Sync {
     /// `retry_after_secs` stays `None` here for the same reason it always has: this sees only the
     /// body, and the forwarding layer — which holds the response headers — fills it in afterwards.
     ///
-    /// NO PRODUCTION CALLER YET, and that is deliberate rather than unfinished. The breaker still
-    /// reaches the chat vtable directly (`health.rs`: `lane.protocol.reader().extract_error(…)`),
-    /// because its call site holds a `Lane` — an LLM-upstream concept — and re-pointing it is the
-    /// unit that follows this one. Landing the capability first is what makes that re-point a
-    /// change of ONE call site rather than a redesign, and the chat override below proves the
-    /// delegation is behaviour-preserving before anything depends on it. The same posture
-    /// `plane/mod.rs` took, for the same reason.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// EVERY NON-2XX THE TREE ATTRIBUTES ARRIVES HERE. Both sites that classify an upstream failure
+    /// — the forward engine and the active health prober — resolve the cell that spoke to the
+    /// upstream ([`op_for`]) and ask it, rather than reaching a chat vtable through a `Lane`. An
+    /// outbound attempt with no `Lane` behind it therefore attributes its failures exactly as a
+    /// lane's does, which is what lets the breaker span the tool and agent paths at all.
     fn extract_error(&self, status: u16, _body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::breaker::RawUpstreamError {
-            http_status: status,
-            provider_code: None,
-            structured_type: None,
-            retry_after_secs: None,
-        }
+        crate::breaker::RawUpstreamError::from_status(status)
     }
 
     /// Can this operation produce a client-facing incremental stream?
@@ -335,6 +327,16 @@ impl OpDispatch {
     pub(crate) fn transport(&self) -> crate::transport::Transport {
         self.transport
     }
+    /// WHAT THIS ATTEMPT'S FAILURE MEANT — the attributed outcome the breaker classifies, read by
+    /// THIS cell's own codec ([`OperationHandler::extract_error`]). It needs nothing but the cell,
+    /// so a caller that holds no `Lane` attributes a failure the same way the lane path does.
+    pub(crate) fn extract_error(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> crate::breaker::RawUpstreamError {
+        self.op_handler.extract_error(status, body)
+    }
     pub(crate) fn streaming(&self) -> bool {
         self.op_handler.streaming()
     }
@@ -391,10 +393,50 @@ pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
 pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    crate::handlers::request_handler(protocol)
-        .and_then(|rh| rh.operation_handler(Operation::Chat))
-        .map(|op_handler| transport.frame(Operation::Chat, op_handler))
-        .unwrap_or(CHAT)
+    op_for(protocol, Operation::Chat, transport).unwrap_or(CHAT)
+}
+
+/// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and
+/// framed by the channel it rides. `None` when the protocol does not serve the operation: on the
+/// ingress side that is the no-handler 404, and on the egress side it is a pair that never dispatched.
+///
+/// This is what a site holding an upstream RESPONSE reaches for. The engine and the health prober
+/// both use it to find the codec that will read what came back, so neither has to know that a `Lane`
+/// is where an LLM upstream's protocol happens to be recorded.
+pub(crate) fn op_for(
+    protocol: &str,
+    operation: Operation,
+    transport: crate::transport::Transport,
+) -> Option<Op> {
+    request_handler(protocol)
+        .and_then(|rh| rh.operation_handler(operation))
+        .map(|op_handler| transport.frame(operation, op_handler))
+}
+
+/// ONE HTTP LLM PROTOCOL'S ERROR ENVELOPE, SHARED BY EVERY OPERATION IT SERVES.
+///
+/// The six LLM protocols wrap every operation's failure in the same provider envelope — an OpenAI
+/// 429 on `/v1/embeddings` carries the `{"error": {…}}` shape it carries on `/v1/chat/completions`
+/// — so that vocabulary is a fact about the PROTOCOL, stated once in its `proto::ProtocolReader`,
+/// and each of that protocol's cells answers [`OperationHandler::extract_error`] through here. A
+/// protocol whose operations do NOT share one envelope never calls this and keeps the status-only
+/// default, which is why the capability belongs to the cell even though these six answer it alike.
+///
+/// Falls back to the status alone when the name resolves to no protocol: claiming a provider
+/// vocabulary busbar could not read would be worse than saying only what is known.
+pub(crate) fn protocol_error(
+    protocol: &str,
+    status: u16,
+    body: &[u8],
+) -> crate::breaker::RawUpstreamError {
+    let Some(p) = crate::proto::protocol_for(protocol) else {
+        return crate::breaker::RawUpstreamError::from_status(status);
+    };
+    p.reader().extract_error(
+        axum::http::StatusCode::from_u16(status)
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+        body,
+    )
 }
 
 #[cfg(test)]

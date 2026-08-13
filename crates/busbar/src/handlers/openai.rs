@@ -248,6 +248,11 @@ fn parse_multipart_segment(seg: &[u8]) -> Option<MultipartField<'_>> {
 struct OpenAiTranscription;
 
 impl OperationHandler for OpenAiTranscription {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("openai", status, body)
+    }
     fn egress_request_content_type(&self) -> &'static str {
         // write_request rebuilds the multipart form with this FIXED boundary.
         "multipart/form-data; boundary=----busbaraudioMIME"
@@ -395,6 +400,11 @@ fn parse_transcription_usage(u: &Value) -> Option<Billing> {
 struct OpenAiSpeech;
 
 impl OperationHandler for OpenAiSpeech {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("openai", status, body)
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
@@ -473,6 +483,11 @@ use crate::ir::embeddings::{
 struct OpenAiEmbeddings;
 
 impl OperationHandler for OpenAiEmbeddings {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("openai", status, body)
+    }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
@@ -649,6 +664,11 @@ use crate::media::ImageOutput;
 struct OpenAiImage;
 
 impl OperationHandler for OpenAiImage {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("openai", status, body)
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
@@ -805,6 +825,11 @@ impl OperationHandler for OpenAiImage {
 struct OpenAiModeration;
 
 impl OperationHandler for OpenAiModeration {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("openai", status, body)
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;

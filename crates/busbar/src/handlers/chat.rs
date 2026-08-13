@@ -37,28 +37,12 @@ impl OperationHandler for ChatOperation {
     // ---- capabilities (verbatim from the former shared handler / OpSpec) ----
 
     /// DELEGATED, so no behaviour moves. Chat's error vocabulary is per-protocol and already lives
-    /// on `proto::ProtocolReader` — six implementations that know their upstream's error shape.
-    /// This override is the whole of chat's participation in making the attributed outcome a
-    /// property of every operation rather than of chat alone: the capability moved to the operation
-    /// codec, and chat keeps answering it exactly as it always did.
-    ///
-    /// The fallback is the trait default (status only) if the protocol name resolves to nothing,
-    /// which cannot happen for a registered instance — but silently claiming a provider vocabulary
-    /// busbar could not read would be worse than saying only what is known.
+    /// on `proto::ProtocolReader` — six implementations that know their upstream's error shape —
+    /// and the envelope is the PROTOCOL's, read the same way by every operation it serves. So this
+    /// and its protocol's non-chat cells all answer through `crate::handlers::protocol_error`, and
+    /// chat keeps reporting exactly what it always did now that the breaker asks the cell.
     fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        let Some(p) = self.proto() else {
-            return crate::breaker::RawUpstreamError {
-                http_status: status,
-                provider_code: None,
-                structured_type: None,
-                retry_after_secs: None,
-            };
-        };
-        p.reader().extract_error(
-            axum::http::StatusCode::from_u16(status)
-                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-            body,
-        )
+        crate::handlers::protocol_error(self.0, status, body)
     }
 
     fn streaming(&self) -> bool {

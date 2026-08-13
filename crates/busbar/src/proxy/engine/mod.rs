@@ -1884,10 +1884,24 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             .unwrap_or_else(|_| status.into_response());
                     }
 
-                    // Two-stage pipeline: Stage 1a (proto.extract_error) → RawUpstreamError
+                    // Two-stage pipeline: Stage 1a (the cell's `extract_error`) → RawUpstreamError
                     //                     Stage 1b (normalize_raw_error + error_map) → CanonicalSignal
                     //                     Stage 2 (breaker::classify_disposition) → Disposition
-                    let mut raw = app.lanes[i].protocol.reader().extract_error(status, &bytes);
+                    //
+                    // Stage 1a asks the CELL that spoke to this upstream — the EGRESS protocol's
+                    // codec for the operation being served, framed by the channel the attempt rode —
+                    // rather than the lane's chat vtable. For the six LLM protocols the answer is
+                    // identical (their cells all read the one envelope their protocol defines), and
+                    // an operation whose upstream is not a lane at all is attributed the same way.
+                    let mut raw = crate::handlers::op_for(
+                        egress_name,
+                        op.operation,
+                        crate::transport::Transport::Http,
+                    )
+                    .map(|cell| cell.extract_error(status.as_u16(), &bytes))
+                    .unwrap_or_else(|| {
+                        crate::breaker::RawUpstreamError::from_status(status.as_u16())
+                    });
                     // Inject the Retry-After header (which the body-only extract_error can't see) so
                     // normalize_raw_error propagates it into CanonicalSignal.retry_after and the
                     // store honors it as a cooldown floor.
