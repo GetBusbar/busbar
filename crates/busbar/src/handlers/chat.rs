@@ -5,7 +5,7 @@
 //!
 //! [`ChatOperation`] is one TYPE with six per-protocol INSTANCES: each protocol's handler file holds
 //! its own `static CHAT: ChatOperation = ChatOperation("<proto>")` and returns it from
-//! `operation_handler(Operation::Chat)`. The deletion test is literal: remove a protocol's instance
+//! `operation_handler(Operation::CHAT)`. The deletion test is literal: remove a protocol's instance
 //! (its registry line) and that protocol's chat 404s through the SAME no-handler path as any missing
 //! operation, while its other operations — and every other protocol — keep working.
 //!

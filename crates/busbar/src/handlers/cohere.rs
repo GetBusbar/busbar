@@ -25,56 +25,43 @@ static CHAT: crate::handlers::chat::ChatOperation = crate::handlers::chat::ChatO
 static EMB: CohereEmbeddings = CohereEmbeddings;
 static RERANK: CohereRerank = CohereRerank;
 
+/// COHERE'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
+/// it is the standard no-handler 404: Cohere has no moderation/image/audio surface, and the
+/// protocol-surface verbs are MCP's and A2A's.
+static CELLS: &[crate::handlers::Cell] = &[
+    (Operation::CHAT, &CHAT),
+    (Operation::EMBEDDINGS, &EMB),
+    (Operation::RERANK, &RERANK),
+];
+
+/// The egress half of the path constants above; `resolve_operation` reads the same ones inbound.
+static PATHS: &[(Operation, &str)] = &[
+    (Operation::CHAT, PATH_CHAT),
+    (Operation::RERANK, PATH_RERANK),
+    (Operation::EMBEDDINGS, PATH_EMBED),
+];
+
 impl RequestHandler for CohereRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "cohere"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Embeddings => Some(&EMB),
-            Operation::Rerank => Some(&RERANK),
-            Operation::Chat => Some(&CHAT),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate. Cohere has no moderation/image/audio surface.
-            Operation::Moderation
-            | Operation::Image
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
-        match ctx.operation {
-            Operation::Chat => PATH_CHAT.into(),
-            Operation::Rerank => PATH_RERANK.into(),
-            Operation::Embeddings => PATH_EMBED.into(),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the same
-            // removability/symmetry gate operation_handler enforces. Unreachable: operation_handler
-            // returns None for these, so egress path resolution is never reached.
-            Operation::Moderation
-            | Operation::Image
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => PATH_EMBED.into(),
-        }
+        // Unreachable: `operation_handler` returns `None` for a verb absent from the table, so
+        // egress path resolution is never reached for one. The fallback is the pre-1.6.0 answer.
+        crate::handlers::path_of(PATHS, ctx.operation)
+            .unwrap_or(PATH_EMBED)
+            .into()
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
         if path.ends_with(PATH_CHAT) {
-            Some(Operation::Chat)
+            Some(Operation::CHAT)
         } else if path.ends_with(PATH_EMBED) {
-            Some(Operation::Embeddings)
+            Some(Operation::EMBEDDINGS)
         } else if path.ends_with(PATH_RERANK) {
-            Some(Operation::Rerank)
+            Some(Operation::RERANK)
         } else {
             None
         }

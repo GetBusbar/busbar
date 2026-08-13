@@ -10,8 +10,8 @@ fn no_cell_lookup() {
     let h = OpenAiRequestHandler;
     // OpenAI serves every operation (chat now via its OperationHandler too). The no-handler 404 is exercised on a
     // protocol that lacks an op — e.g. anthropic embeddings — in the OperationHandlers registry tests.
-    assert!(h.operation_handler(Operation::Moderation).is_some());
-    assert!(h.operation_handler(Operation::Chat).is_some());
+    assert!(h.operation_handler(Operation::MODERATION).is_some());
+    assert!(h.operation_handler(Operation::CHAT).is_some());
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn image_read_request_parses_auto_size() {
 
 #[test]
 fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
-    // `/v1/images/edits` and `/v1/images/generations` both resolve to `Operation::Image`
+    // `/v1/images/edits` and `/v1/images/generations` both resolve to `Operation::IMAGE`
     // (handlers/openai.rs:79); read_request sees only body+content-type, so the edit/variation
     // sub-op is distinguished by the body naming an `image` to edit, not by the path. No 1.5.0
     // egress writer emits anything but generations, so this must be the second 404, not a
@@ -468,7 +468,7 @@ fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
     assert_eq!(
         err,
         IngressReject::UnsupportedSubOp {
-            op: Operation::Image,
+            op: Operation::IMAGE,
             model: "dall-e-2".into(),
         }
     );

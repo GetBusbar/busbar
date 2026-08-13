@@ -345,7 +345,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
         &headers,
         Bytes::from_static(b"{ this is not valid json"),
         "openai",
-        crate::operation::Operation::Chat,
+        crate::operation::Operation::CHAT,
         None,
     ));
     assert_eq!(

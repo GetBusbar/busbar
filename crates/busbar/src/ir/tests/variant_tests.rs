@@ -66,11 +66,11 @@ fn token_usage_maps_token_meter_and_none_for_flat() {
 fn operation_tag_matches_variant_both_directions() {
     assert_eq!(
         IrReq::Image(Default::default()).operation(),
-        Operation::Image
+        Operation::IMAGE
     );
     assert_eq!(
         IrResp::Transcription(Default::default()).operation(),
-        Operation::Transcription
+        Operation::TRANSCRIPTION
     );
 }
 
@@ -95,7 +95,7 @@ fn a_tool_call_answers_the_operation_blind_surface() {
         arguments: serde_json::json!({ "path": "/etc/hosts" }),
         extra: Default::default(),
     });
-    assert_eq!(req.operation(), Operation::Invoke);
+    assert_eq!(req.operation(), Operation::INVOKE);
     assert!(
         !req.wants_stream(),
         "a tool call is one exchange: the tool runs and answers. Progress notifications are a \
@@ -108,7 +108,7 @@ fn a_tool_call_answers_the_operation_blind_surface() {
         structured: None,
         extra: Default::default(),
     });
-    assert_eq!(resp.operation(), Operation::Invoke);
+    assert_eq!(resp.operation(), Operation::INVOKE);
     assert!(
         matches!(resp.usage(), Some(crate::billing::Billing::Flat)),
         "a tool server reports no tokens, so a tool call is FLAT-metered — one call, one unit. \

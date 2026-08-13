@@ -314,7 +314,7 @@ async fn no_attached_gate_builds_no_projection() {
     }
     impl crate::ir::facts::IrFacts for Counting {
         fn verb(&self) -> crate::operation::Operation {
-            crate::operation::Operation::Invoke
+            crate::operation::Operation::INVOKE
         }
         fn wants_stream(&self) -> bool {
             false

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUBSCRIBE IR — the `Operation::Subscribe` subclass of the parent
+//! THE SUBSCRIBE IR — the `Operation::SUBSCRIBE` subclass of the parent
 //! [`crate::ir::variant::IrReq`] / [`crate::ir::variant::IrResp`] enums.
 //!
 //! ## WHAT A SUBSCRIPTION REQUEST IS, REDUCED TO ITS INVARIANTS

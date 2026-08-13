@@ -82,7 +82,7 @@ fn engine_never_branches_on_operation_identity() {
 /// breaker to classify the attempt as a transient upstream failure.
 #[test]
 fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
-    let cell = crate::handlers::op_for("mcp", Operation::Invoke, crate::transport::Transport::Http)
+    let cell = crate::handlers::op_for("mcp", Operation::INVOKE, crate::transport::Transport::Http)
         .expect("the (mcp, Invoke) cell is registered");
 
     let raw = cell.extract_error(503, br#"{"jsonrpc":"2.0","error":{"code":-32000}}"#);
@@ -115,19 +115,19 @@ fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
     /// Every variant, listed once — the same written-out sweep `operation.rs`'s tests use, so a new
     /// operation is not silently skipped by this matrix.
     const ALL_OPERATIONS: [Operation; 13] = [
-        Operation::Chat,
-        Operation::Embeddings,
-        Operation::Moderation,
-        Operation::Image,
-        Operation::Transcription,
-        Operation::Speech,
-        Operation::Rerank,
-        Operation::Invoke,
-        Operation::Catalogue,
-        Operation::Fetch,
-        Operation::Task,
-        Operation::Subscribe,
-        Operation::Control,
+        Operation::CHAT,
+        Operation::EMBEDDINGS,
+        Operation::MODERATION,
+        Operation::IMAGE,
+        Operation::TRANSCRIPTION,
+        Operation::SPEECH,
+        Operation::RERANK,
+        Operation::INVOKE,
+        Operation::CATALOGUE,
+        Operation::FETCH,
+        Operation::TASK,
+        Operation::SUBSCRIBE,
+        Operation::CONTROL,
     ];
     // Real envelopes from each family, plus the two shapes that exercise the readers' edges: a body
     // that is not JSON at all, and one whose prose alone signals context length.

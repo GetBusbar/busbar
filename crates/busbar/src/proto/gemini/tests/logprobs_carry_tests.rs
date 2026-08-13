@@ -94,7 +94,7 @@ fn tts_instructions_prefix_the_prompt_not_language_code() {
         ..Default::default()
     });
     let out = crate::handlers::request_handler("gemini")
-        .and_then(|rh| rh.operation_handler(crate::operation::Operation::Speech))
+        .and_then(|rh| rh.operation_handler(crate::operation::Operation::SPEECH))
         .unwrap()
         .write_request(&ir);
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

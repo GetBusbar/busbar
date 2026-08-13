@@ -1528,7 +1528,17 @@ if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
 #                 axis's own module, the `proto/` arms, and the handlers that hold the codecs.
 #   6. remedy   — the one-line instruction printed with every violation.
 #   7. why      — one line: why the core may not ask this question.
+#
+# THE OPERATION AXIS ARMS IN 1.6.0, and it could only arm once the axis was SPLIT. It was thirteen
+# flat variants, seven of them named for one protocol family's endpoints, and every `RequestHandler`
+# carried a thirteen-arm `match` on it — so a rule banning "a match on the operation axis" outside
+# the axis's own arms would have needed an allowlist the length of `handlers/`, which is an amnesty
+# rather than a lint. `Operation` is now `Verb { op: OpShape, name }`: a protocol's verbs are rows in
+# its OWN table (`handlers::Cell`) and the core decides on the SHAPE, which has exactly one
+# comparison left in the whole tree and it is inside a protocol arm. So the row costs no exemptions,
+# which is the bar the transport row set for itself.
 AXIS_BRANCH=(
+  'operation|OPERATION-BRANCH|crates/busbar/src/|[Oo]peration(\(\))?[[:space:]]*==>>a comparison against an operation;[Oo]peration(\(\))?[[:space:]]*!=>>a comparison against an operation;match[[:space:]]+[A-Za-z0-9_.:]*[Oo]peration(\(\))?[[:space:]]*\{>>a match on the operation axis;match[[:space:]]+[A-Za-z0-9_.:]*shape\(\)[[:space:]]*\{>>a match on the operation axis'"'"'s shape;matches!\([^)]*OpShape::>>a matches! on an operation shape;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*OpShape::>>an if-let on an operation shape;matches!\([^)]*Operation::>>a matches! on an operation verb|crates/busbar/src/operation.rs,crates/busbar/src/proto/,crates/busbar/src/handlers/|put the decision on the OperationHandler vtable, or ask the SHAPE a named question on `OpShape` (as `OpDispatch::wants_stream` asks `may_stream`); never ask an operation its identity in the agnostic core|`Operation` is the vocabulary the plugin ABI carries across a dlopen boundary, so a core that can compare one has learned a protocol'"'"'s method names and the deletion test fails on line one'
   'transport|TRANSPORT-BRANCH|crates/busbar/src/|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|crates/busbar/src/transport.rs,crates/busbar/src/proto/,crates/busbar/src/handlers/|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
 )
 

@@ -25,16 +25,16 @@ fn cohere_request_reaches_bedrock() {
     let rh = CohereRequestHandler;
     assert_eq!(
         rh.resolve_operation("/v2/rerank", b"{}"),
-        Some(Operation::Rerank)
+        Some(Operation::RERANK)
     );
     let ir = rh
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .read_request(&cohere_wire(), "application/json")
         .expect("parses");
     let bh = BedrockRequestHandler;
     let out = bh
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .write_request(&ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
@@ -54,16 +54,16 @@ fn bedrock_request_and_response_round_trip() {
     .unwrap();
     assert_eq!(
         bh.resolve_operation("/model/cohere.rerank-v3-5:0/invoke", &body),
-        Some(Operation::Rerank)
+        Some(Operation::RERANK)
     );
     let ir = bh
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .read_request(&body, "application/json")
         .expect("parses");
     let ch = CohereRequestHandler;
     let out = ch
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .write_request(&ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
@@ -81,12 +81,12 @@ fn bedrock_request_and_response_round_trip() {
     }))
     .unwrap();
     let ir_resp = ch
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .read_response(&resp)
         .expect("parses");
     let wire = bh
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .write_response(&ir_resp);
     let v: Value = serde_json::from_slice(&wire.bytes).unwrap();
@@ -355,7 +355,7 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
     }))
     .unwrap();
     let ir = CohereRequestHandler
-        .operation_handler(Operation::Rerank)
+        .operation_handler(Operation::RERANK)
         .unwrap()
         .read_request(&body, "application/json")
         .expect("parses");
@@ -375,7 +375,7 @@ fn no_rerank_handler_on_the_other_four() {
     for proto in ["openai", "anthropic", "gemini", "responses"] {
         let rh = crate::handlers::request_handler(proto).expect(proto);
         assert!(
-            rh.operation_handler(Operation::Rerank).is_none(),
+            rh.operation_handler(Operation::RERANK).is_none(),
             "{proto} must have no rerank handler"
         );
     }

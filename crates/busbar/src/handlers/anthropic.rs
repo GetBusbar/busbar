@@ -18,33 +18,18 @@ pub(crate) struct AnthropicRequestHandler;
 static CHAT: crate::handlers::chat::ChatOperation =
     crate::handlers::chat::ChatOperation("anthropic");
 
+/// ANTHROPIC'S ROW OF THE SUPPORT MATRIX — one verb. Every other verb is the standard no-handler
+/// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
+/// verbs that are MCP's and A2A's rather than a special case: a protocol that does not speak a verb
+/// has no cell, so the pair is unrepresentable rather than refused at runtime.
+static CELLS: &[crate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+
 impl RequestHandler for AnthropicRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "anthropic"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        match op {
-            Operation::Chat => Some(&CHAT),
-            // Enumerated (not `_`) so adding an operation is a compile error here — the documented
-            // removability/symmetry gate. Anthropic serves only chat → no-handler 404 for the rest.
-            //
-            // The protocol-surface six (Invoke..Control) are `None` for the same reason as the
-            // LLM operations Anthropic lacks, and it is the SAME answer rather than a special case:
-            // a protocol that does not speak an operation has no cell, so the pair is
-            // unrepresentable rather than refused at runtime.
-            Operation::Embeddings
-            | Operation::Moderation
-            | Operation::Image
-            | Operation::Transcription
-            | Operation::Speech
-            | Operation::Rerank
-            | Operation::Invoke
-            | Operation::Catalogue
-            | Operation::Fetch
-            | Operation::Task
-            | Operation::Subscribe
-            | Operation::Control => None,
-        }
+        crate::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.path_base {
@@ -64,7 +49,7 @@ impl RequestHandler for AnthropicRequestHandler {
         }
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
-        path.ends_with(PATH_MESSAGES).then_some(Operation::Chat)
+        path.ends_with(PATH_MESSAGES).then_some(Operation::CHAT)
     }
 }
 

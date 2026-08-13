@@ -5,7 +5,7 @@ use crate::operation::Operation;
 fn registry_resolves_openai_and_its_moderation_handler() {
     let h = request_handler("openai").expect("openai handler registered");
     assert_eq!(h.protocol_name(), "openai");
-    assert!(h.operation_handler(Operation::Moderation).is_some());
+    assert!(h.operation_handler(Operation::MODERATION).is_some());
     assert!(
         request_handler("zzz-unknown").is_none(),
         "unknown protocol → None"
@@ -26,7 +26,7 @@ fn every_protocol_serves_chat_via_its_request_handler() {
     ] {
         let h = request_handler(proto).expect("protocol registered");
         assert!(
-            h.operation_handler(Operation::Chat).is_some(),
+            h.operation_handler(Operation::CHAT).is_some(),
             "{proto} must serve chat via operation_handler(Chat)"
         );
     }
