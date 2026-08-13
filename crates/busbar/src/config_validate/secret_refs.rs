@@ -175,8 +175,19 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     for (name, server) in &tool_defs.servers {
         let crate::mcp::config::McpServerDefCfg {
             token_exchange,
+            // A STDIO CHILD'S ENVIRONMENT, and it is the second place on this plane a credential can
+            // be written. A pipe has no header block, so `token_exchange:` is refused on that
+            // transport and `env:` is the only channel a child gets a credential through — which
+            // makes it exactly as owed a `--validate` resolution as the subject token above.
+            env,
             // Not credentials, each for the reason recorded at the destructure above.
             url: _,
+            // The binary busbar spawns, its argv, and its working directory. Operator-authored
+            // paths and arguments; the SECRETS in a spawn are in `env` and nowhere else, which is
+            // deliberate — an argv is world-readable on every platform busbar runs on.
+            command: _,
+            args: _,
+            cwd: _,
             pin: _,
             // A duration string driving the refresh timer's cadence. Not a credential.
             refresh_ttl: _,
@@ -213,6 +224,13 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
                 format!("tools.{name}.token_exchange.subject_token"),
                 subject_token,
             ));
+        }
+        for (var, value) in env {
+            // The PLAIN arm is a literal the operator typed; there is nothing to resolve and nothing
+            // that can fail at runtime. Only the reference arm is owed a `--validate`.
+            if let crate::mcp::config::ChildEnvValue::Secret(r) = value {
+                refs.push((format!("tools.{name}.env.{var}"), r));
+            }
         }
     }
     for (name, p) in providers {

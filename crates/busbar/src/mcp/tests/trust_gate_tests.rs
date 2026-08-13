@@ -83,6 +83,11 @@ fn cfg_with(
     c.servers.insert(
         "fs".to_string(),
         McpServerDefCfg {
+            // This registration is reached over the network, so it carries none of the spawn keys.
+            command: None,
+            args: Vec::new(),
+            env: Default::default(),
+            cwd: None,
             refresh_ttl: None,
             timeout: None,
             url: "https://fs.internal/mcp".to_string(),

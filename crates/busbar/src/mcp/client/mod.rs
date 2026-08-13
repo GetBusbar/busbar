@@ -16,7 +16,9 @@
 //! | [`identity`] | `{server}_{tool}` as THE routing key — bound identity, never the description |
 //! | [`catalogue`] | the versioned tool-list snapshot, per-tool hash-pinning, drift detection |
 //! | [`jsonrpc`] | the `2026-07-28` outbound wire, and the rules for answering an upstream's ask |
+//! | [`wire`] | the vtable one built JSON-RPC message rides, and the two channels' shared types |
 //! | [`transport`] | the streamable-HTTP stateless transport — the primary target |
+//! | [`stdio`] | the child-process transport: spawn, supervise, backoff, crash-loop quarantine |
 //! | [`pool`] | engine-owned connection pooling, keyed by the PINNED address |
 //! | [`ssrf`] | dispatch-time resolve-then-pin |
 //! | [`argguard`] | the schema-aware walk of nested tool arguments for URL and host fields |
@@ -53,17 +55,16 @@
 //! authenticated to busbar's own resource server — in `crate::mcp::tests/deputy_pair_tests.rs`,
 //! rather than against a principal a test constructed.
 //!
+//! **stdio IS A TRANSPORT THIS BUILD HAS, OUTBOUND.** A `tools:` entry carrying `transport: stdio`
+//! and a `command:` spawns a supervised child and dispatches `tools/call` down its stdin; the arm is
+//! [`crate::transport::Transport::mcp_wire`] and the supervisor is [`stdio`]. It was DELETED once,
+//! as unreachable security-relevant code that read as shipped, and it is back with a caller rather
+//! than with an `#![allow(dead_code)]` — which is the only difference that ever mattered. The
+//! INBOUND direction (busbar itself launched as a child by an agent, serving MCP on its own stdin)
+//! is deliberately not built; `qa/method-coverage.status` carries the waiver and the reason.
+//!
 //! What is still NOT wired, and is stated rather than softened:
 //!
-//! - **stdio is NOT A TRANSPORT THIS BUILD HAS.** There is no child supervisor, no `Endpoint` arm
-//!   for one, and no dispatch path — and `transport: stdio` is refused at config validation, so a
-//!   deployment finds out at boot rather than at first dispatch. A complete supervisor (spawn, reap,
-//!   `spawning → ready → draining → dead`, capped backoff, a five-crashes-in-a-window breaker) used
-//!   to live here under a module-wide `#![allow(dead_code)]` with nothing calling it. It was
-//!   DELETED, not wired: this release ships exactly one MCP transport, and unreachable
-//!   security-relevant code that reads as shipped is a false green. The `process` tokio feature was
-//!   dropped with it, so re-introducing an unreachable supervisor now fails to COMPILE rather than
-//!   passing review.
 //! - **[`catalogue`]'s live cache and the background refresh that would feed it.** The dispatch path
 //!   validates against the SERVER direction's config-built snapshot, which carries the operator's
 //!   approved digests; nothing in this build polls an upstream's `tools/list` to detect a rug-pull in
@@ -80,7 +81,9 @@ pub(crate) mod identity;
 pub(crate) mod jsonrpc;
 pub(crate) mod pool;
 pub(crate) mod ssrf;
+pub(crate) mod stdio;
 pub(crate) mod transport;
+pub(crate) mod wire;
 
 use catalogue::{CatalogueCache, ServerCatalogue, TransportPin};
 use egress::UpstreamCredential;
@@ -103,18 +106,18 @@ use ssrf::SsrfPolicy;
 // its caller the build says so. That is the point: the gap stays visible in the code rather than in
 // a tracking document nobody reads.
 #[allow(dead_code)]
-/// How busbar reaches one upstream. ONE ARM, because this build speaks one transport.
+/// How busbar reaches one upstream. TWO ARMS, because this build speaks two transports.
 ///
-/// Kept as an enum rather than collapsed into the bare URL it currently holds: the type is the
-/// place a second transport would be ADDED, and every match on it is a place that would then be
-/// forced to decide. A `String` would let a second transport be bolted on with no such prompt.
+/// An enum rather than the bare URL it once held: the type is the place a transport is ADDED, and
+/// every match on it is a place that is then forced to decide. A `String` would have let stdio be
+/// bolted on with no such prompt — and stdio has no URL to put in one.
 #[derive(Clone, Debug)]
 pub(crate) enum Endpoint {
     /// Streamable HTTP, stateless. THE primary target of this revision.
     Http { url: String },
-    // NO `Stdio` ARM. It existed, carried a program and args, and nothing could ever dispatch over
-    // it — see the header. A variant that models a transport the build refuses at config validation
-    // is the same false green as the supervisor that was deleted with it, one level down.
+    /// A supervised child process. Carries the operator's spawn recipe verbatim; see
+    /// [`stdio::StdioCommand`] for why every field of it is operator-only.
+    Stdio { command: stdio::StdioCommand },
 }
 
 #[allow(dead_code)]

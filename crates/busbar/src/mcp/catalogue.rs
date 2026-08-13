@@ -222,7 +222,19 @@ pub(crate) struct ResourceTemplateEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServerEntry {
     pub(crate) id: String,
+    /// The endpoint, for a registration reached over the network. EMPTY on a stdio registration,
+    /// which reaches no address — `mcp::config::validate_endpoint` refuses a `url:` on one, so the
+    /// emptiness is a boot-time guarantee rather than a hope.
     pub(crate) url: String,
+    /// THE CHANNEL this registration's calls ride, lifted from the operator's `transport:` key.
+    ///
+    /// It rides on the snapshot rather than being re-read from `ToolsCfg` at dispatch for the same
+    /// reason every other field here does: the snapshot is what the engine holds, and a second
+    /// reader of the operator's intent is a second answer that can disagree with the first.
+    pub(crate) transport: crate::transport::Transport,
+    /// The spawn recipe, present exactly when [`ServerEntry::transport`] is the child-process one.
+    /// `None` otherwise, and the wire refuses rather than guesses if the two ever disagree.
+    pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
     /// The mechanism NAME. Operator-facing and audit-facing only; never interpreted, exactly as
     /// [`crate::trust::PinnedArtifact::mechanism`] is never interpreted.
     pub(crate) pin_mechanism: &'static str,
@@ -900,9 +912,25 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         ),
         None => Approval::registered(),
     };
+    // `validate_endpoint` has already refused every mixture of the two halves, so this is a lift and
+    // not a second decision: a registration that spawns carries a command and no url, and one that
+    // does not carries a url and no command.
+    let transport = def
+        .transport
+        .unwrap_or(super::config::Transport::StreamableHttp);
+    let stdio = transport
+        .spawns_child()
+        .then(|| super::client::stdio::StdioCommand {
+            program: def.command.clone().unwrap_or_default(),
+            args: def.args.clone(),
+            env: def.env.clone(),
+            cwd: def.cwd.clone(),
+        });
     ServerEntry {
         id: id.to_string(),
         url: def.url.clone(),
+        transport: transport.axis(),
+        stdio,
         pin_mechanism: def.pin.mechanism.token(),
         approval,
         grants: def.grants,

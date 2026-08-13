@@ -59,23 +59,27 @@ tower = { workspace = true }
 # flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
 # src/ — so it is NOT used; the slice below is hand-picked instead.
 #
-# `process` IS DELIBERATELY ABSENT, AND ITS ABSENCE IS A GATE.
+# `process` IS BACK, AND THE ARGUMENT FOR IT IS THE ONE THIS COMMENT USED TO DEMAND.
 #
-# It was enabled for `mcp/client/stdio.rs`, a complete child-process supervisor — spawn, reap, the
-# `spawning → ready → draining → dead` machine, capped backoff and a five-crashes-in-a-window
-# breaker — that NOTHING EVER CALLED, because a `tools:` entry carrying a stdio transport has no
-# dispatch arm and `transport: stdio` is refused at config validation. Unreachable security-relevant
-# code that reads as shipped is a false green, and this release ships one MCP transport
-# (streamable HTTP, revision `2026-07-28`), so the supervisor was DELETED rather than wired.
+# It was enabled once for `mcp/client/stdio.rs`, a complete child-process supervisor that NOTHING
+# EVER CALLED — a `tools:` entry carrying a stdio transport had no dispatch arm, and
+# `transport: stdio` was refused at config validation. Unreachable security-relevant code that reads
+# as shipped is a false green, so the supervisor was DELETED and the feature went with it, precisely
+# so that re-introducing an unreachable one would fail to BUILD rather than pass review as another
+# quiet `#![allow(dead_code)]`.
 #
-# Leaving the feature off is what keeps that decision enforced by the COMPILER instead of by memory:
-# re-introducing a child-process supervisor that nothing dispatches to now fails to build here, at
-# the dependency, rather than passing review as another quiet `#![allow(dead_code)]`. Turning it back
-# on is a deliberate act that has to be argued for in this comment.
+# That gate did its job and is now satisfied rather than bypassed. `transport: stdio` is ACCEPTED at
+# config validation, `crate::transport::Transport::Stdio` is a real arm of the transport axis, and
+# `mcp/upstream.rs` dispatches `tools/call` down it through the wire vtable. The supervisor has a
+# production caller; the module carries no `allow(dead_code)`; and a test kills a child and watches
+# the backoff and the quarantine fire THROUGH that caller. If any of those three stops being true,
+# the honest move is the one this comment recorded last time: delete it and take the feature out
+# again.
 #
-# `io-util` stays: the TLS and transport batteries read and write sockets with `AsyncReadExt` /
-# `AsyncWriteExt`, which is unrelated to child processes.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
+# `io-util` stays for the reason it always did: the TLS and transport batteries read and write
+# sockets with `AsyncReadExt` / `AsyncWriteExt`, which is unrelated to child processes — though the
+# stdio wire now uses those traits on pipes as well.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

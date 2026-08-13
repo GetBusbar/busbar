@@ -27,13 +27,21 @@
 //! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
 //! it a codec's property (it is not — the codec must never learn it).
 //!
-//! ## FOUR VARIANTS. THE THREE NEW ONES WERE BOUGHT, NOT GUESSED.
+//! ## FIVE VARIANTS. THE FOUR NEW ONES WERE BOUGHT, NOT GUESSED.
+//!
+//! The paragraph below is kept as written because it recorded a decision, and the decision held:
+//! the axis landed with one variant, the shape was proven by the one that existed, and every later
+//! variant was added by driving a real request down it rather than by anticipating one. A2A's three
+//! bindings arrived on the commits that armed them. `Stdio` arrived the same way, and what it bought
+//! is [`Transport::mcp_wire`] — the ONE match on this axis in the tree — and the deleted
+//! `mcp/client/stdio.rs` supervisor coming back with a caller instead of an `#![allow(dead_code)]`.
+//!
+//! ## ONE VARIANT, ON PURPOSE
 //!
 //! The axis landed with ONE variant for what existed and nothing else, on the argument that an enum
 //! with speculative variants nobody has driven a request through is a design nobody has tested.
-//! `Stdio` is still absent for exactly that reason: no request rides it. A2A's three served bindings
-//! do, which is the whole of why they are here — and each arrived on the commit that armed it, not
-//! ahead of it.
+//! A2A's three served bindings ride requests, which is the whole of why they are here — and each
+//! arrived on the commit that armed it, not ahead of it.
 //!
 //! What the extra variants BUY is the thing the one-variant step could only claim. A2A is one
 //! dialect over several channels, and the channels differ in ways no codec can be asked to know: an
@@ -116,6 +124,17 @@ pub(crate) enum Transport {
     /// must be transcoded back and terminated with a `grpc-status` trailer rather than an HTTP
     /// status. Nothing below this line knows that, which is the property being bought.
     Grpc,
+    /// A CHILD PROCESS with a pipe on each side of it: newline-delimited JSON-RPC on its stdin and
+    /// stdout, which is what MCP's stdio transport is. OUTBOUND ONLY in this build — busbar is the
+    /// parent and the MCP server is the child; busbar is never itself launched as one. See
+    /// `mcp/client/stdio.rs` for why that direction and not the other.
+    ///
+    /// The variant that makes the axis earn its keep. Everything [`Transport::Http`] gets for free
+    /// from the shared `reqwest` pool — a destination, a connection, a resolver to SSRF-check, a
+    /// peer that was already running — is absent here, and a channel with none of those properties
+    /// is precisely the thing that would have become a second dispatch path if it had nowhere to
+    /// hang.
+    Stdio,
 }
 
 impl Transport {
@@ -134,6 +153,7 @@ impl Transport {
         Transport::JsonRpc,
         Transport::HttpJson,
         Transport::Grpc,
+        Transport::Stdio,
     ];
 
     /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
@@ -153,6 +173,40 @@ impl Transport {
             // name is `grpc`; one lower-case spelling, so a per-transport conformance number read
             // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
             Transport::Grpc => crate::plane::WIRE_GRPC,
+            Transport::Stdio => "stdio",
+        }
+    }
+
+    /// THE MCP CLIENT LEG'S ARM — the one and only place the transport's identity is asked on the
+    /// path that calls an upstream MCP server, and the reason there is no second one.
+    ///
+    /// `structure-lint.sh` bans the agnostic core from comparing a transport, and this is what
+    /// replaces the comparison it bans: the axis answers "which channel" ONCE and hands back a
+    /// vtable, so `mcp/upstream.rs` sends bytes and cannot tell an HTTP POST from a write to a
+    /// child's stdin. A `match` in the dispatcher instead would have forked selection, credential
+    /// planning, timeout handling and error reporting the moment the second arm landed — which is
+    /// the shape the header above calls "a second dispatch path beside the matrix".
+    ///
+    /// The returned wire is ZERO-SIZED and `'static`: everything per-upstream (sockets, children,
+    /// deadlines) rides on `WireLeg`, so this is a table lookup and not a construction.
+    pub(crate) fn mcp_wire(self) -> &'static dyn crate::mcp::client::wire::McpWire {
+        match self {
+            Transport::Http => &crate::mcp::client::transport::HttpTransport,
+            Transport::Stdio => &crate::mcp::client::stdio::StdioWire,
+            // The three A2A bindings. They are legs of the AGENT plane's own ingress and no
+            // `tools:` entry can be configured onto one — `mcp/config.rs` accepts
+            // `streamable_http` and `stdio` and nothing else, so a value that would reach here is
+            // refused at boot with a named error rather than at first dispatch. The arm is loud
+            // rather than falling back to `HttpTransport`, because a silent fallback would turn a
+            // future config-grammar mistake into an MCP call quietly dispatched over the wrong
+            // channel, which is the exact failure this vtable exists to make impossible.
+            Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => {
+                unreachable!(
+                    "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
+                     mcp/config.rs refuses any other `transport:` value at boot",
+                    self.name()
+                )
+            }
         }
     }
 

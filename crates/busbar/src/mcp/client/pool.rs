@@ -47,10 +47,18 @@ use std::time::Duration;
 /// answered with. Eviction is whole-entry: dropping a `reqwest::Client` closes its idle sockets.
 const MAX_PINNED_CLIENTS: usize = 64;
 
-/// One upstream's pooled clients, keyed by pinned address.
+/// One upstream's pooled clients, keyed by pinned address — and the live stdio children.
+///
+/// The children ride here rather than on a second field of `AppState` because they are the same
+/// thing at the same lifetime: busbar's live connections to registered MCP upstreams, owned by the
+/// engine, threaded to every send site already. A separate handle would be a second thing to
+/// remember to pass, and the site that forgot would be the one that could not reach a stdio server.
 #[derive(Default)]
 pub(crate) struct McpConnectionPool {
     clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
+    /// The supervised child processes. Empty on every deployment that registers no stdio server,
+    /// and it costs a `BTreeMap` to be so.
+    pub(crate) children: super::stdio::StdioPool,
 }
 
 impl std::fmt::Debug for McpConnectionPool {
@@ -60,6 +68,7 @@ impl std::fmt::Debug for McpConnectionPool {
         let n = self.clients.lock().map(|m| m.len()).unwrap_or(0);
         f.debug_struct("McpConnectionPool")
             .field("pinned_clients", &n)
+            .field("stdio_children", &self.children.len())
             .finish()
     }
 }

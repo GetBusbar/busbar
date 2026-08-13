@@ -34,40 +34,30 @@
 
 use super::jsonrpc::OutboundRequest;
 use super::pool::McpConnectionPool;
-use super::ssrf::{SsrfPolicy, SsrfRefusal};
+use super::ssrf::SsrfPolicy;
+use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 use std::time::Duration;
-
-/// What came back from an upstream, before JSON-RPC parsing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TransportResponse {
-    pub(crate) status: u16,
-    pub(crate) body: Vec<u8>,
-}
-
-/// Why a transport-level send failed. Kept distinct from a JSON-RPC error: an upstream that answered
-/// `-32601` is reachable and healthy, and an upstream that could not be reached is neither. Folding
-/// them would make a breaker count protocol disagreements as outages.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TransportError {
-    /// The destination failed the dispatch-time SSRF check, or a redirect was refused.
-    Refused(SsrfRefusal),
-    /// The connection failed, timed out, or the body could not be read whole.
-    Io(String),
-}
-
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransportError::Refused(r) => write!(f, "{r}"),
-            TransportError::Io(m) => write!(f, "MCP upstream transport error: {m}"),
-        }
-    }
-}
 
 /// The streamable-HTTP transport. Holds no per-upstream state: the pool holds the sockets and the
 /// catalogue holds the trust, so this is a function with a pool attached.
 #[derive(Debug, Default)]
 pub(crate) struct HttpTransport;
+
+/// The vtable arm [`crate::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
+/// the leg an HTTP send needs and forwards to the inherent [`HttpTransport::send`], which the
+/// refresh path in `mcp::connect` calls directly — that path knows it is fetching over HTTP because
+/// it is the HTTP revision's `tools/list`, and threading a transport through it would be modelling a
+/// choice nothing makes.
+#[async_trait::async_trait]
+impl McpWire for HttpTransport {
+    async fn send(
+        &self,
+        leg: &WireLeg<'_>,
+        req: &OutboundRequest,
+    ) -> Result<TransportResponse, TransportError> {
+        HttpTransport::send(leg.pool, req, leg.policy, leg.timeout).await
+    }
+}
 
 impl HttpTransport {
     /// Send one JSON-RPC message and read the answer.
