@@ -591,6 +591,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
         &next.hook_env,
         next.config_version,
     );
+    reresolve_plane_gates(&mut next);
     Ok(next)
 }
 
@@ -648,6 +649,7 @@ pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, Admin
         &next.hook_env,
         next.config_version,
     );
+    reresolve_plane_gates(&mut next);
     Ok(next)
 }
 
@@ -872,6 +874,7 @@ pub(crate) fn build_with_registry(
         &next.hook_env,
         next.config_version,
     );
+    reresolve_plane_gates(&mut next);
     Ok(next)
 }
 
@@ -2450,6 +2453,39 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             groups: cfg.groups.clone(),
         }
     }
+}
+
+/// RE-RESOLVE THE OTHER TWO PLANES' PER-CONTAINER GATES after a hook-registry mutation.
+///
+/// The registry is what a `tools.<server>.hooks:` / `agents.<agent>.hooks:` NAME resolves against,
+/// so a definition registered (or deleted, or re-pointed) through this API changes what those
+/// attaches resolve to — and a snapshot that carried the old resolution forward would answer `200
+/// OK` to registering a gate that never fires, or keep firing one the operator just deleted. That is
+/// the same fail-open the three `resolve_*` calls above exist to close on the pool plane, and the
+/// registrations themselves are untouched here: only the attach's RESOLUTION is recomputed.
+fn reresolve_plane_gates(next: &mut crate::state::App) {
+    let servers = std::sync::Arc::clone(&next.mcp_servers);
+    next.mcp_server_gates = crate::hooks::resolve_container_gates(
+        servers
+            .servers
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+        &servers.all_server_hooks,
+        &next.hook_registry,
+        &next.hook_env,
+        next.config_version,
+    );
+    let agents = next.agent_defs.clone();
+    next.a2a_agent_gates = crate::hooks::resolve_container_gates(
+        agents
+            .agents
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+        &agents.all_agent_hooks,
+        &next.hook_registry,
+        &next.hook_env,
+        next.config_version,
+    );
 }
 
 #[cfg(test)]

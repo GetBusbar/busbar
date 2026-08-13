@@ -92,6 +92,66 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
     );
 }
 
+/// A hook registered through the ADMIN API must become live on the OTHER TWO PLANES too, not only
+/// on the pool plane.
+///
+/// The failure this pins is specific and silent: an operator writes `tools.<server>.hooks: [screen]`
+/// in the file and registers the `screen` DEFINITION later through the API. At boot the name
+/// resolved to nothing (no definition yet), so the server's gate chain was empty — and without
+/// `reresolve_plane_gates` the register would answer `200 OK` while that chain stayed empty
+/// forever, leaving the operator believing a control is attached that is not. The pool plane's own
+/// three `resolve_*` calls exist for exactly this reason; this is the same fail-open on the two
+/// planes that gained firing sites in 1.6.0.
+#[test]
+fn build_with_hook_makes_an_mcp_attach_live() {
+    let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default()) else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let server = crate::mcp::config::McpServerDefCfg {
+        url: "https://mcp.internal/fs".to_string(),
+        pin: crate::mcp::config::ServerPinCfg {
+            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
+            key: Some("sha256/PIN==".to_string()),
+        },
+        refresh_ttl: None,
+        timeout: None,
+        tools_allow: Default::default(),
+        prompts_allow: Default::default(),
+        resources_allow: Default::default(),
+        resource_templates_allow: Default::default(),
+        transport: None,
+        aud: None,
+        grants: Default::default(),
+        max_input_required_rounds: None,
+        max_caller_ask_rounds: None,
+        allow_private: false,
+        token_exchange: None,
+        upstream_credentials: None,
+        hooks: vec!["screen".to_string()],
+    };
+    let app = TestApp::new()
+        .hook_env(env)
+        .mcp_server("fs", server)
+        .build();
+    assert!(
+        !app.mcp_server_gates.contains_key("fs"),
+        "the attach names a hook no registry entry defines yet, so it resolves to nothing"
+    );
+
+    let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
+        .expect("a valid gate registers");
+    assert_eq!(
+        next.mcp_server_gates
+            .get("fs")
+            .map(|g| g.len())
+            .unwrap_or_default(),
+        1,
+        "registering the DEFINITION must make the server's existing attach resolve — a 200 OK that \
+         leaves the chain empty is an operator told a control is attached when it is not"
+    );
+}
+
 /// The `settings` map size cap enforced by PATCH must ALSO gate
 /// register/PUT (both funnel through `build_with_hook`) — else an unbounded map could be
 /// registered/replaced, bloating the durable state and the reconnect path the cap protects.

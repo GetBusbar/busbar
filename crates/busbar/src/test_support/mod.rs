@@ -1036,6 +1036,20 @@ impl TestApp {
         self
     }
 
+    /// The reserved SECTION-level `tools.hooks:` attach — the all-MCP hook list, which combines
+    /// ADDITIVELY with each server's own `hooks:`. The twin of [`TestApp::agents_hooks`].
+    pub(crate) fn tools_hooks(mut self, names: &[&str]) -> Self {
+        self.tool_defs.all_server_hooks = names.iter().map(|n| (*n).to_string()).collect();
+        self
+    }
+
+    /// The reserved SECTION-level `agents.hooks:` attach — the all-A2A hook list. Same combine rule,
+    /// same spelling, on the sibling plane, because it is one operator concept.
+    pub(crate) fn agents_hooks(mut self, names: &[&str]) -> Self {
+        self.agent_defs.all_agent_hooks = names.iter().map(|n| (*n).to_string()).collect();
+        self
+    }
+
     /// Dispatch against these LIVE sightings — the cache a `connect`/refresh has published into.
     pub(crate) fn with_mcp_sightings(
         mut self,
@@ -1199,6 +1213,38 @@ impl TestApp {
         // configures and the dispatch table that mounts it must come from one reading.
         let a2a_plane =
             crate::a2a::plane::A2aPlane::from_config(&self.agent_defs, self.public_url.as_deref());
+        // THE HOOK ENVIRONMENT, bound BEFORE the snapshot because two things read it: the App's own
+        // control-plane surface, and the per-container gate resolution below.
+        let hook_env = self.hook_env.clone().unwrap_or_else(|| {
+            crate::hooks::HookEnv::new(
+                std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+            )
+        });
+        // THE MCP AND A2A GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry and
+        // env this fixture was given. A test that hand-assembled a gate chain could attach a hook
+        // the real resolver would have skipped (wrong kind, a rewrite gate, an absent plugin) and
+        // would then be asserting against a deployment that cannot exist.
+        let mcp_server_gates = crate::hooks::resolve_container_gates(
+            self.tool_defs
+                .servers
+                .iter()
+                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+            &self.tool_defs.all_server_hooks,
+            &self.hook_registry,
+            &hook_env,
+            0,
+        );
+        let a2a_agent_gates = crate::hooks::resolve_container_gates(
+            self.agent_defs
+                .agents
+                .iter()
+                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+            &self.agent_defs.all_agent_hooks,
+            &self.hook_registry,
+            &hook_env,
+            0,
+        );
         let app = std::sync::Arc::new(crate::state::App {
             // Built from the SAME lowering production uses, so a test that configures agents gets
             // the same registry a deployment would and one that configures none gets no plane.
@@ -1225,12 +1271,9 @@ impl TestApp {
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
-            hook_env: self.hook_env.unwrap_or_else(|| {
-                crate::hooks::HookEnv::new(
-                    std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-                    std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-                )
-            }),
+            mcp_server_gates,
+            a2a_agent_gates,
+            hook_env,
             hook_registry: self.hook_registry,
             requested_signals,
             export_projections: Default::default(),

@@ -1096,3 +1096,12 @@ mod response_id_tests;
 #[cfg(test)]
 #[path = "tests/wire_headers_tests.rs"]
 mod wire_headers_tests;
+
+// THE OPERATOR'S HOOK GATE ON THIS PLANE — `agents.hooks:` — and it is mounted here for the reason
+// every block above is: the claim is that the refusal happens BEFORE ANY HOP, and the shared
+// harness's recording seam is the only thing that can see whether one was composed. A test that
+// asserted only on the status code would pass just as happily against a gate that fires after the
+// backend has already been asked.
+#[cfg(test)]
+#[path = "tests/hook_gate_tests.rs"]
+mod hook_gate_tests;

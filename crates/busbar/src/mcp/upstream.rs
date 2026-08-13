@@ -394,3 +394,11 @@ mod deputy_pair_tests;
 #[cfg(test)]
 #[path = "tests/calllog_dispatch_tests.rs"]
 mod calllog_dispatch_tests;
+
+// THE HOOK GATE ON THIS PLANE, proven the only way the claim can be made honestly: against the same
+// real fake peer. "The call was rejected" is evidence only next to a control that REACHES the peer
+// and is served, and only a real upstream can supply that control — which is why this battery sits
+// here with the other upstream-leg files rather than beside the dispatcher it exercises.
+#[cfg(test)]
+#[path = "tests/hook_gate_tests.rs"]
+mod hook_gate_tests;

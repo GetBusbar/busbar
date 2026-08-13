@@ -56,6 +56,8 @@ fn minimal_app() -> Arc<App> {
         tap_hooks_routing: Vec::new(),
         tap_hooks_response: Vec::new(),
         global_gates: Vec::new(),
+        mcp_server_gates: Default::default(),
+        a2a_agent_gates: Default::default(),
         hook_env: crate::hooks::HookEnv::new(
             std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
             std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),

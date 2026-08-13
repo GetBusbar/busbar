@@ -89,6 +89,32 @@ All notable changes to Busbar are documented here. The format is based on
   With the default `store: memory` nothing is persisted and nothing is claimed: the log keeps chain
   positions in RAM, the boot restore reports zero, and that zero is the truth being reported.
 
+- **Hooks fire on MCP tool calls and on A2A submissions.** `tools.hooks:` /
+  `tools.<server>.hooks:` and `agents.hooks:` / `agents.<agent>.hooks:` have parsed and validated
+  since 1.5.3 and did nothing: the grammar was there, the firing site was not. Now the same
+  `hooks:` definitions you attach to a pool attach to a registered MCP server and to a registered
+  A2A agent, with the same additive combine, and a `kind: gate` hook can **reject** a `tools/call`
+  or a `message/send` before anything is dispatched.
+
+  A hook receives the ordinary hook wire, projected from the request's IR rather than from a chat
+  body: `pool` names the container (a pool, an MCP server, an A2A agent), `ingress_protocol` names
+  the dialect, and — behind the same `prompt:` grant as always — `messages` carries the real
+  payload: an MCP tool call's `arguments`, an A2A submission's `params` (a message's `parts`
+  included). A gate written for the model plane screens a tool call with no change.
+
+  `candidates` is empty on both planes, because these protocols route to the one registered upstream
+  the caller's grant already selected: only `reject` applies, an `order`/`restrict` reply is ignored
+  (logged at `debug`), and a gate that fails applies its own `on_error` exactly as it does on a pool.
+
+  The gate runs on the DISPATCH path, never the catalogue — what a caller may SEE stays a question
+  answered by its key grants alone. On MCP it runs after any `ask_caller` answers are merged, so a
+  screen sees the arguments that would actually reach the upstream, and before the outbound
+  credential is leased; on A2A before the meter, the egress gate and the task row. A refusal
+  therefore costs no token exchange, no durable state and no hop, and it is recorded: the MCP
+  per-call log carries the new reason token `hook_rejected`, distinct from `not_granted`.
+
+  Deployments that attach no hook are unchanged and pay one hash lookup that misses.
+
 ### Changed
 
 - **The `operation` label reads `invoke`, not `tool_call`.** The operation that carries "a caller

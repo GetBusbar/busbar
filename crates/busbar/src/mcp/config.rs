@@ -754,28 +754,30 @@ pub(crate) struct ToolsCfg {
 }
 
 impl ToolsCfg {
-    // The two combine rules below have NO PRODUCTION CALLER YET, and that is a statement about what
-    // this release builds rather than about the rules. Hooks attach on the DISPATCH path (owner
-    // ruling 2 puts them nowhere else — the catalogue is authorization, not routing) and no hook
-    // runs on it yet; the effective upstream-credential MODE is read off the catalogue snapshot's
-    // `UpstreamPosture` rather than through `effective_upstream_credentials`, because the snapshot is
-    // what dispatch holds and reaching back into `ToolsCfg` from a request path would be a second
-    // reader of the operator's intent. They are written and pinned here because the ADDITIVE-list /
-    // OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule discovered
-    // at the moment its first caller lands is a grammar rule decided by that caller.
+    // THE HOOK COMBINE NOW HAS A PRODUCTION CALLER, and that is what 1.6.0's hook unit is: the
+    // effective attach is resolved once per config generation into `App::mcp_server_gates` and fired
+    // on the DISPATCH path (owner ruling 2 puts it nowhere else — the catalogue is authorization,
+    // not routing). The rule below is still stated here, and still delegates to the one grammar
+    // rule in `hooks::attach_list`, because the combine belongs to the section it describes.
+    //
+    // The UPSTREAM-CREDENTIAL combine below still has none: the effective mode is read off the
+    // catalogue snapshot's `UpstreamPosture` rather than through `effective_upstream_credentials`,
+    // because the snapshot is what dispatch holds and reaching back into `ToolsCfg` from a request
+    // path would be a second reader of the operator's intent. It is written and pinned here because
+    // the OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule
+    // discovered at the moment its first caller lands is a grammar rule decided by that caller.
     #![cfg_attr(not(test), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
     /// declaration order (`hooks` is a LIST, and a LIST combines ADDITIVELY).
     pub(crate) fn effective_hooks(&self, server: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        let own = self.servers.get(server).map(|d| d.hooks.as_slice());
-        for h in self.all_server_hooks.iter().chain(own.unwrap_or(&[])) {
-            if !out.iter().any(|e| e == h) {
-                out.push(h.clone());
-            }
-        }
-        out
+        // The rule itself lives in `hooks::attach_list`, which is where the sibling plane reads it
+        // too: the combine is a property of the config GRAMMAR, and a second copy here is how the
+        // two planes come to dedupe differently.
+        crate::hooks::attach_list(
+            &self.all_server_hooks,
+            self.servers.get(server).map_or(&[], |d| d.hooks.as_slice()),
+        )
     }
 
     /// The effective upstream-credential mode for one server (SCALAR ⇒ OVERRIDE).

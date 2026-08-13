@@ -773,6 +773,84 @@ async fn invoke(
     let actor = principal.actor_id().to_string();
     let resource = format!("agent:{}", admitted.dispatch.agent_id);
 
+    // ── THE OPERATOR'S HOOK GATE — `agents.hooks:` and `agents.<agent>.hooks:`. ─────────────────
+    //
+    // The twin of the MCP plane's dispatch gate, through the SAME seam
+    // (`crate::hooks::gate::decide`) with the same projection and the same verdict type. Not a
+    // second implementation of hooks for a second plane: a hook is a decision about one request,
+    // and the only thing this arm supplies that the seam cannot work out is the pair of facts only
+    // this plane knows — which agent the submission resolved to, and what its dialect is called.
+    //
+    // PLACED AFTER admission (the agent is what the attach is keyed on, so there is nothing to look
+    // up before it) and BEFORE the meter, the egress gate, the callback guard and the task row.
+    // Everything after this line either spends the caller's budget, leases busbar's own credential,
+    // or mints durable state; a refusal must cost none of them.
+    //
+    // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
+    // about that agent, and a plane that fired it for submissions but not for the task verbs would
+    // be a plane where the control's scope depends on which method a caller happened to use.
+    if let Some(gates) = app.a2a_agent_gates.get(&admitted.dispatch.agent_id) {
+        // THE A2A SUBMISSION AS THE INVOKE IR: a caller names a target and hands it arguments,
+        // which is what `ir::invoke` says it carries (`it carries A2A message/send alongside MCP
+        // tools/call`). The target is the METHOD and the arguments are `params` — which is where a
+        // message's `parts` live, so the prose a screening gate exists to read is inside the
+        // projection rather than summarised beside it.
+        let facts = crate::ir::invoke::InvokeReq {
+            tool: super::local::method_of(&envelope).to_string(),
+            arguments: envelope
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            extra: Default::default(),
+        };
+        let verdict = crate::hooks::gate::decide(
+            gates,
+            &crate::hooks::gate::GateSubject {
+                facts: &facts,
+                container: &admitted.dispatch.agent_id,
+                ingress_protocol: crate::plane::Plane::A2a.key(),
+                request_id: app.next_request_id(),
+                key: Some(key.as_ref()),
+            },
+        )
+        .await;
+        if let crate::hooks::gate::GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        } = verdict
+        {
+            crate::admin::audit::AUDIT.record_by(
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            tracing::info!(
+                agent = %admitted.dispatch.agent_id,
+                hook,
+                status,
+                "a2a submission refused by a hook gate"
+            );
+            // THE HOOK'S STATUS, IN THIS PLANE'S ERROR VOCABULARY. A2A section 5.4 binds a JSON-RPC
+            // code and a ProtoJSON body to every refusal, and a body in another plane's shape is a
+            // body the TCK rejects by schema — so the code stays `UnsupportedOperation` (this
+            // plane's binding for "busbar will not do this for you") and carries the hook's own
+            // message, while the HTTP status is the gate's clamped one. Exactly what the egress
+            // gate below already does with its own refusal.
+            return (
+                axum::http::StatusCode::from_u16(status)
+                    .unwrap_or(axum::http::StatusCode::FORBIDDEN),
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::UnsupportedOperation,
+                    message,
+                )),
+            )
+                .into_response();
+        }
+    }
+
     // 5. METER, before the work rather than after: an over-budget caller is refused instead of
     //    served and billed. The pool name is this plane's own resource spelling, so an `agent`
     //    line is distinguishable from a pool line in the same ledger.

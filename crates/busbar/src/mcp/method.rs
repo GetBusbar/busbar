@@ -1341,6 +1341,76 @@ async fn tools_call(
         }
     }
 
+    // (2b-i) THE OPERATOR'S HOOK GATE — `tools.hooks:` and `tools.<server>.hooks:`, fired here.
+    //
+    // ## Why HERE, and not three lines earlier or four lines later
+    //
+    // AFTER the ask answers are merged, because the gate must see the arguments THAT GO UPSTREAM.
+    // Firing before the merge would screen the arguments the caller first sent and dispatch the
+    // ones it supplied afterwards through `inputResponses` — a screen that inspects one payload
+    // while a different one travels is the policy-enforcement-point bypass this release exists to
+    // close, not a placement preference.
+    //
+    // BEFORE the task path, the egress gate and the loop, because a refusal must cost nothing: no
+    // durable task row minted for work that will not happen, no token exchange, no socket. The same
+    // ordering argument `authorise` makes about itself, one step earlier.
+    //
+    // AND ON THE DISPATCH PATH, never the catalogue — owner ruling 2. What a caller may SEE is
+    // decided by its grants and by nothing else; a hook decides what a caller may DO.
+    //
+    // ZERO COST when nothing is attached: one hash lookup that misses.
+    if let Some(gates) = ctx.app.mcp_server_gates.get(&selected.server) {
+        // The IR this plane produces for an invocation, which is the ONLY thing the seam learns
+        // about the request. The `arguments` clone is paid strictly behind an attached hook.
+        let facts = crate::ir::invoke::InvokeReq {
+            tool: selected.namespaced.clone(),
+            arguments: arguments.clone(),
+            extra: Default::default(),
+        };
+        let verdict = crate::hooks::gate::decide(
+            gates,
+            &crate::hooks::gate::GateSubject {
+                facts: &facts,
+                container: &selected.server,
+                ingress_protocol: crate::plane::Plane::Mcp.key(),
+                // The SAME id the per-call record carries, re-read rather than re-minted: a second
+                // `next_request_id()` would hand the hook a number that joins to nothing.
+                request_id: log.request_id.parse().unwrap_or_default(),
+                key: ctx.gov.key.as_deref(),
+            },
+        )
+        .await;
+        if let crate::hooks::gate::GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        } = verdict
+        {
+            crate::admin::audit::AUDIT.record_by(
+                "mcp_tool.call",
+                &format!("mcp_tool:{}", selected.namespaced),
+                crate::admin::audit::OUTCOME_REJECTED,
+                ctx.actor,
+            );
+            tracing::info!(
+                tool = %selected.namespaced,
+                hook,
+                status,
+                "mcp tools/call refused by a hook gate"
+            );
+            return log.refused(
+                super::calllog::REASON_HOOK_REJECTED,
+                error(
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
+                    id,
+                    CODE_REFUSED,
+                    &message,
+                    Some(serde_json::json!({ "reason": super::calllog::REASON_HOOK_REJECTED, "hook": hook })),
+                ),
+            );
+        }
+    }
+
     // (2c) THE TASK PATH. Everything above has already decided that this call is admitted, current,
     // authorised to ask, and answered — so the only remaining question is whether the answer is a
     // RESULT or a TASK, and that is the operator's declaration crossed with the caller's.
