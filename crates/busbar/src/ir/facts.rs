@@ -43,20 +43,22 @@
 //! result. A consumer reads `slot`; it never reads a protocol name. The protocol determined the slot
 //! at parse time — in exactly one `proto/` arm — and never appears again.
 //!
-//! # Scope of this unit: the LLM family, and NO CALLER
+//! # Scope: the LLM family's walk, behind a seam two families now implement
 //!
-//! [`project`] is the LLM family's walk. [`IrFacts`] is the family-blind seam the pipeline will read
-//! through, so a second family (the MCP `tools/call` IR; see [`crate::ir::toolcall`]) implements the
-//! trait with its own walk rather than being folded into a superset — one IR per family is a
-//! standing rule, because a shared superset across families is a lossless-translation surface
-//! between things that never translate.
+//! [`project`] is the LLM family's walk. [`IrFacts`] is the family-blind seam the pipeline reads
+//! through, so a second family (the invocation IR; see [`crate::ir::invoke`]) implements the trait
+//! with its own walk rather than being folded into a superset — one IR per family is a standing
+//! rule, because a shared superset across families is a lossless-translation surface between things
+//! that never translate.
 //!
-//! Nothing calls any of this yet. `decide_policy_order`, `build_rewrite_request`,
-//! `capture_stage_shape` and `fire_stage_taps` still read the raw-body projection; re-pointing them
-//! and deleting it is a later, separate unit, so that this one can land with the entire existing
-//! suite green and the divergence merely *measured*. Hence the module-level dead-code allowance
-//! below: it comes off in the same commit that wires the first caller, and its removal is that
-//! commit's proof.
+//! **THE SEAM HAS PRODUCTION CALLERS, AND THAT IS WHY THERE IS NO DEAD-CODE ALLOWANCE HERE.** This
+//! header used to say "nothing calls any of this yet" and to carry a module-level
+//! `allow(dead_code)`, on the promise that the allowance "comes off in the same commit that wires
+//! the first caller, and its removal is that commit's proof". The callers landed — `proxy/hooks.rs`
+//! reads requests through this trait, `hooks/gate.rs` takes it as the only thing a gate is shown,
+//! and `ir/invoke.rs` is the second family implementing it — but the promise was not kept and the
+//! allowance outlived the condition it was written for. Taking it off IS the proof, one unit late:
+//! the compiler now has to agree that every item here is reachable.
 //!
 //! # What this projection does NOT widen, deliberately
 //!
@@ -66,7 +68,6 @@
 //! CHANGELOG line, and smuggling it inside a refactor is exactly how a project loses the right to
 //! say "refactor" and be believed. The turn itself is never lost — see [`project`]'s empty-turn
 //! rule.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::ir::{IrBlock, IrRequest, IrRole};
 use crate::operation::Operation;
@@ -272,6 +273,14 @@ impl Shape {
 pub(crate) trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
     /// key use, so a consumer that switches on it is switching on something already enumerated.
+    ///
+    /// **THE ONE ITEM ON THIS SEAM WITH NO CALLER, AND IT IS NAMED RATHER THAN COVERED.** Dropping
+    /// the module-wide `allow(dead_code)` left exactly this behind, which is what that allowance was
+    /// hiding. It stays because it is the seam's DECLARED surface — both implementers answer it, and
+    /// a family-blind consumer that needs to know which operation it is holding has no other way to
+    /// ask — but the allowance is now ONE NAMED EXCEPTION instead of a blindfold over the module, so
+    /// the next unreachable item here is a warning rather than a silence.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn verb(&self) -> Operation;
 
     /// Did the caller ask to stream?
