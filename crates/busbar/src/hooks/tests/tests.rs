@@ -2497,3 +2497,61 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
         assert!(rt.block_on(async { t.await.expect("task") }).is_err());
     }
 }
+
+/// THE IR COMPUTE GATE. `any_content_hook` is true iff SOME registered hook holds a prompt-content
+/// grant. An empty registry and a registry of shape-only (`prompt: no`) hooks both read false — the
+/// zero-cost default every deployment that runs no content hook lands on — and a single `ro` or `rw`
+/// grant anywhere flips it, whatever kind of hook holds it.
+#[test]
+fn any_content_hook_is_true_iff_some_hook_is_granted_prompt_content() {
+    assert!(
+        !any_content_hook(&HashMap::new()),
+        "no hooks at all ⇒ the IR is never built"
+    );
+
+    let shape_only = |kind: HookKind| HookCfg {
+        kind,
+        prompt: PromptAccess::No,
+        ..base_gate()
+    };
+    let mut shape_registry = registry("gate", shape_only(HookKind::Gate));
+    shape_registry.insert("tap".to_string(), shape_only(HookKind::Tap));
+    assert!(
+        !any_content_hook(&shape_registry),
+        "every hook shape-only ⇒ still the zero-cost path"
+    );
+
+    for (kind, prompt) in [
+        (HookKind::Gate, PromptAccess::Ro),
+        (HookKind::Gate, PromptAccess::Rw),
+        (HookKind::Tap, PromptAccess::Ro),
+    ] {
+        let granted = HookCfg {
+            kind,
+            prompt,
+            ..base_gate()
+        };
+        assert!(
+            any_content_hook(&registry("granted", granted.clone())),
+            "a {kind:?} holding {prompt:?} must open the gate"
+        );
+        // One granted hook among shape-only siblings is still one granted hook.
+        let mut mixed = shape_registry.clone();
+        mixed.insert("granted".to_string(), granted);
+        assert!(any_content_hook(&mixed));
+    }
+}
+
+/// The gate reads the DEFINITION registry, so it does not depend on a hook being WIRED into a pool
+/// or into `global_hooks`. The one-sided direction is deliberate: over-reporting costs an unused IR
+/// build, under-reporting would hand a content-granted hook a view the request was never parsed
+/// into.
+#[test]
+fn any_content_hook_ignores_whether_the_granted_hook_is_wired() {
+    let granted = HookCfg {
+        prompt: PromptAccess::Ro,
+        global: false,
+        ..base_gate()
+    };
+    assert!(any_content_hook(&registry("unwired", granted)));
+}

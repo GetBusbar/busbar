@@ -198,3 +198,113 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
         &json!("b")
     );
 }
+
+/// The first user-turn text in a chat IR — the read these tests use to tell one parse of a body
+/// from another.
+fn first_user_text(ir: &crate::ir::variant::IrReq) -> String {
+    let crate::ir::variant::IrReq::Chat(req) = ir else {
+        panic!("a chat operation must read into the chat IR");
+    };
+    match req.messages.first().map(|m| &m.content) {
+        Some(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect(),
+        None => String::new(),
+    }
+}
+
+/// `ensure_ir` reads the body through the INGRESS operation's own handler, so the hook seam's view
+/// and the cross-protocol translate path's view come from one parse. The in-band system turn is
+/// hoisted into the IR's system slot, which is the IR's reading and not the raw body's.
+#[test]
+fn ensure_ir_reads_the_body_through_the_ingress_reader() {
+    let bytes = Bytes::from(
+        r#"{"model":"gpt-4o","messages":[{"role":"system","content":"be terse"},{"role":"user","content":"hi"}]}"#,
+    );
+    let mut lazy = LazyBody::parse(&bytes).unwrap();
+    let ir = lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .expect("a well-formed openai chat body must read into the IR");
+    let crate::ir::variant::IrReq::Chat(req) = ir else {
+        panic!("a chat operation must read into the chat IR");
+    };
+    assert_eq!(
+        req.messages.len(),
+        1,
+        "the system turn is hoisted out of `messages`"
+    );
+    assert!(
+        !req.system.is_empty(),
+        "the system turn is hoisted into the system slot"
+    );
+    assert_eq!(first_user_text(ir), "hi");
+}
+
+/// One request costs one read: the memo is installed on the first call and returned on the second.
+/// Pinned by MUTATING the materialized DOM behind the memo's back — a second read of the body would
+/// see the mutation, a memo hit cannot.
+#[test]
+fn ensure_ir_is_memoized_within_one_request() {
+    let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let mut lazy = LazyBody::parse(&bytes).unwrap();
+    assert!(lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .is_some());
+    // Reach past `ensure_dom` (which would legitimately drop the memo) straight to the tree.
+    match &mut lazy.body {
+        Body::Dom(v) => {
+            v["messages"][0]["content"] = json!("mutated");
+        }
+        Body::Head { .. } => panic!("ensure_ir must have materialized the DOM"),
+    }
+    let ir = lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .expect("the memo must still be present");
+    assert_eq!(
+        first_user_text(ir),
+        "hi",
+        "the second call must be a memo hit, not a re-read"
+    );
+}
+
+/// Handing out a MUTABLE body drops the memo. This is the invariant that stops the two views of one
+/// request from disagreeing: after a rewrite hook mutates the tree, the next IR read must see the
+/// request as it now stands, never as it arrived.
+#[test]
+fn ensure_dom_invalidates_the_memoized_ir() {
+    let bytes = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let mut lazy = LazyBody::parse(&bytes).unwrap();
+    assert!(lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .is_some());
+    lazy.ensure_dom().unwrap()["messages"][0]["content"] = json!("rewritten");
+    let ir = lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .expect("the IR must be re-readable after a rewrite");
+    assert_eq!(
+        first_user_text(ir),
+        "rewritten",
+        "an IR read after a mutation must reflect the mutation"
+    );
+}
+
+/// A body the ingress reader REJECTS, and an unregistered ingress protocol, both yield `None` — the
+/// caller falls back to what it does today rather than to a guess. Neither poisons the memo.
+#[test]
+fn ensure_ir_is_none_when_the_body_or_the_protocol_has_no_reading() {
+    let unreadable = Bytes::from(r#"{"model":"gpt-4o","messages":"not an array"}"#);
+    let mut lazy = LazyBody::parse(&unreadable).unwrap();
+    assert!(lazy
+        .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
+        .is_none());
+
+    let ok = Bytes::from(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let mut lazy = LazyBody::parse(&ok).unwrap();
+    assert!(lazy
+        .ensure_ir("no-such-protocol", crate::handlers::CHAT)
+        .is_none());
+}

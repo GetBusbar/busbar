@@ -312,6 +312,15 @@ pub(crate) struct App {
     /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
     /// check downstream short-circuits on.
     pub(crate) requested_signals: crate::hooks::RequestedSignals,
+    /// Does this config generation grant ANY hook access to prompt CONTENT (`prompt: ro` / `rw`)?
+    /// Built ONCE alongside `requested_signals` above by `hooks::any_content_hook`, and recomputed
+    /// on every snapshot that rewrites `hook_registry` — never per request.
+    ///
+    /// This is the gate on building the request IR for the hook seam: `false` (the default, and
+    /// every deployment that runs no content hook) means the IR is never built and the request path
+    /// pays nothing at all. See `hooks::any_content_hook` for why the gate keys on the deployment's
+    /// grants rather than on the request's protocols.
+    pub(crate) any_content_hook: bool,
     /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
     /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
     /// from the resolved `export:` block, never per request.
