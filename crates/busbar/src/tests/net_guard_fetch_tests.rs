@@ -83,7 +83,7 @@ impl Resolver for NeverAsked {
 
 // ══ THE REBINDING PROOFS ═════════════════════════════════════════════════════════════════════════
 
-/// **THE RED-BEFORE-GREEN CASE.** The name answers a PUBLIC address on the first lookup and a
+/// **THE DNS-REBINDING CASE.** The name answers a PUBLIC address on the first lookup and a
 /// LOOPBACK address on the second. A guard that checks the name and then lets the client resolve
 /// again connects to the second answer; a guard that resolves once and pins connects to the first.
 ///
