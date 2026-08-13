@@ -3,11 +3,18 @@
 
 //! Tests for `crates/busbar/src/a2a/provenance.rs`.
 //!
-//! The point of every test below: a hash chain whose links are never recomputed proves nothing,
-//! because nobody ever finds out that it does not. So each of the four ways a chain can be broken is
-//! produced HERE, by actually breaking one, and the verifier is required to name it.
+//! The MECHANISM is `crate::audit`'s and is tested there, including against a throwaway fourth
+//! record type. What is tested HERE is this plane's RECORD: that `TaskEventRow` is wired into the
+//! one chain correctly — the right scope, the right fields in the digest, the join key outside it.
+//!
+//! The four tampers are still produced here rather than assumed from the core tests, because a
+//! record type that fed the wrong fields to the digest would pass every core test and still be
+//! forgeable in exactly the field it forgot. So each break is made by actually breaking one, through
+//! the A2A record, and the one verifier is required to name it.
 
 use super::*;
+
+use crate::audit::{digest, verify_chain, ChainBreakKind};
 
 const T: &str = "task-1";
 
@@ -66,7 +73,7 @@ fn editing_one_events_fields_is_detected_and_located() {
     let brk = verify_chain(&events).expect_err("an edited event must break the chain");
     assert_eq!(brk.at_index, 2, "the break is located at the edited event");
     assert_eq!(brk.seq, 2);
-    assert_eq!(brk.task_id, T);
+    assert_eq!(brk.scope, T);
     match &brk.kind {
         ChainBreakKind::DigestMismatch { stored, recomputed } => {
             assert_eq!(stored, &original_hash, "the stored digest is the old one");
@@ -149,7 +156,8 @@ fn a_forged_event_with_a_self_consistent_digest_is_detected_by_its_link() {
 }
 
 /// A chain is scoped to ONE task. Another task's event appearing in it is refused, so one caller's
-/// provenance can never be made to depend on another caller's rows.
+/// provenance can never be made to depend on another caller's rows. The scope is `task_id` because
+/// `ChainedRecord::scope_of` says so for this record type — one mechanism, still three streams.
 #[test]
 fn another_tasks_event_cannot_hide_inside_this_tasks_chain() {
     let mut events = a_chain();
@@ -157,7 +165,7 @@ fn another_tasks_event_cannot_hide_inside_this_tasks_chain() {
     let brk = verify_chain(&events).expect_err("a foreign task's event must be refused");
     assert_eq!(
         brk.kind,
-        ChainBreakKind::ForeignTask {
+        ChainBreakKind::ForeignScope {
             expected: T.to_string(),
             found: "task-2".to_string()
         }
@@ -185,7 +193,7 @@ fn truncating_the_tail_leaves_a_chain_that_verifies_which_is_why_the_task_row_is
 /// "every event deleted" are indistinguishable from the events alone.
 #[test]
 fn an_empty_chain_verifies_and_the_limit_is_deliberate() {
-    assert_eq!(verify_chain(&[]), Ok(()));
+    assert_eq!(verify_chain::<TaskEventRow>(&[]), Ok(()));
 }
 
 /// RESUME across a restart continues the SAME chain: the next sequence follows the persisted tail
@@ -266,7 +274,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_join_key(
         let mut m = ev.clone();
         perturb(&mut m);
         assert_ne!(
-            compute_hash(&m),
+            digest(&m),
             ev.hash,
             "`{field}` is a chained field: changing it must change the digest"
         );
@@ -277,7 +285,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_join_key(
     let mut join_only = ev.clone();
     join_only.request_id = "a-completely-different-request".to_string();
     assert_eq!(
-        compute_hash(&join_only),
+        digest(&join_only),
         ev.hash,
         "`request_id` is a join key, not a chained field: a missing one must not make an intact \
          chain unverifiable"

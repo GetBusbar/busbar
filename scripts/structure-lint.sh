@@ -1354,7 +1354,6 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 PLANE_CONCERNS=(
   'catalogue|-|one catalogue generic over the plane, keyed by plane::Plane; the entry type is the plane-specific part'
   'guarded-fetch|crates/busbar/src/net_guard.rs|route every attacker-influenced fetch through net_guard: one resolver, one pin, one redirect refusal'
-  'hash-chain-audit|-|one append-only hash chain generic over the record type; admin/audit.rs is the oldest of the three and the natural donor'
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
   'ingress|crates/busbar/src/ingress|one plane-neutral admission in ingress/, with the plane supplying its wire reader'
   'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
@@ -1364,10 +1363,6 @@ PLANE_CONCERNS=(
 )
 
 PLANE_LEDGER="
-compute_hash|DEBT|hash-chain-audit|mcp/calllog.rs and a2a/provenance.rs are line-for-line the same chain, plus a third in admin/audit.rs
-verify_chain|DEBT|hash-chain-audit|the same verifier written twice; a fix to one has already had to be hand-copied to the other
-ChainBreak|DEBT|hash-chain-audit|two identical error types for one failure mode
-ChainBreakKind|DEBT|hash-chain-audit|two identical kind enums for one failure mode
 resolve_and_pin|DEBT|guarded-fetch|mcp/client/ssrf.rs and a2a/fetch.rs each resolve-and-pin their own way; net_guard is the shared home
 PinnedTarget|DEBT|guarded-fetch|two pinned-target types for one DNS-rebinding defence
 split_url|DEBT|guarded-fetch|two hand-rolled URL splitters (mcp/client/ssrf.rs, a2a/pushnotify.rs) that must agree with the HTTP client and with each other

@@ -4,13 +4,28 @@
 //! The admin AUDIT log — every admin MUTATION is recorded, success AND failure, so a credential
 //! probing the surface or an operator asking "who changed what" leaves a trail.
 //!
+//! ## ONE STREAM, on the CORE chain
+//!
+//! The hash chain here is [`crate::audit`]'s: one append, one digest, one verifier, shared with the
+//! MCP per-call log and the A2A task provenance chain. This file used to own a third copy of that
+//! machinery. What it owns now is the STREAM — the bounded ring, the durable write-through, the
+//! restore and the rebase — and the RECORD, via `impl ChainedRecord for AuditEntry`.
+//!
+//! **Sharing the mechanism is not sharing the buffer, and the difference is load-bearing.** This log
+//! is admin-MUTATION-ONLY and its working set is a bounded ring of [`MAX_AUDIT_ENTRIES`]. An admin
+//! mutation is operator-rate; a tool call is REQUEST-rate. Pouring one into the other means a busy
+//! afternoon of tool calls evicts every admin row, so "who changed this registration" stops being
+//! answerable at exactly the moment an incident makes somebody ask — and the loss is silent, because
+//! a ring that pruned looks identical to a ring that was never written to. Two populations that
+//! churn at different rates do not share one bounded buffer, and they still do not.
+//!
 //! This is the in-memory MVP: a bounded ring of entries behind a process-global. Audit is process-wide
 //! state (NOT config-derived), so it lives as a global rather than on the swappable `App` snapshot —
-//! it survives a config apply naturally. The DURABLE + hash-chained store (SQLite now, SIEM via a
-//! `kind: tap` later) is an additive follow-up behind an `AuditStore` trait; the record/read shape here
-//! is the stable seam it will implement.
+//! it survives a config apply naturally.
 
 use serde::Serialize;
+
+use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
@@ -56,26 +71,93 @@ pub(crate) struct AuditEntry {
     pub(crate) recorded_here: bool,
 }
 
-impl AuditEntry {
-    /// Recompute this entry's digest from its fields — the verification primitive.
-    fn compute_hash(&self) -> String {
-        let canonical = format!(
-            "{}|{}|{}|{}|{}|{}|{}",
-            self.prev_hash,
-            self.seq,
-            self.ts,
-            self.action,
-            self.resource,
-            self.outcome,
-            self.principal
-        );
-        crate::sigv4::sha256_hex(canonical.as_bytes())
+/// The fields a caller supplies for one admin audit entry. `seq`, `prev_hash` and `hash` are NOT
+/// here: they are the chain's own business, allocated under the ring lock and sealed by
+/// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
+/// choosing.
+pub(crate) struct AuditInput {
+    pub(crate) ts: u64,
+    pub(crate) action: String,
+    pub(crate) resource: String,
+    pub(crate) outcome: String,
+    pub(crate) principal: String,
+}
+
+/// THE SCOPE OF THIS CHAIN: the whole log. The MCP call log chains per PRINCIPAL and the A2A
+/// provenance chain per TASK, because those streams are request-rate and multi-tenant; the admin
+/// mutation log is one operator-rate sequence for the whole process, so its scope is a constant and
+/// the mechanism's foreign-scope check can never fire on it. Naming it anyway is what lets ONE
+/// verifier walk all three.
+const ADMIN_LOG: &str = "admin";
+
+impl ChainedRecord for AuditEntry {
+    type Input = AuditInput;
+
+    const LABELS: &'static ChainLabels = &ChainLabels {
+        chain: "the admin audit chain",
+        scope: "log",
+    };
+    /// PIPE-SEPARATED because that is how the entries already on disk were written, and
+    /// `busbar_api::AuditRecord`'s own doc publishes the formula. A new record type takes
+    /// [`Framing::LengthPrefixed`] instead — see [`crate::audit::Framing`].
+    const FRAMING: Framing = Framing::PipeSeparated;
+
+    fn scope_of(&self) -> &str {
+        ADMIN_LOG
+    }
+
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    fn prev_hash(&self) -> &str {
+        &self.prev_hash
+    }
+
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    fn link(_scope: &str, seq: u64, prev_hash: String, input: AuditInput) -> Self {
+        AuditEntry {
+            seq,
+            ts: input.ts,
+            action: input.action,
+            resource: input.resource,
+            outcome: input.outcome,
+            principal: input.principal,
+            prev_hash,
+            hash: String::new(),
+            // Reached only from `record_by`: THIS process is appending it right now. The
+            // store-seeding path is `from_record`, which sets this false — the one ground-truth
+            // distinction `rebase_nondurable_suffix` depends on.
+            recorded_here: true,
+        }
+    }
+
+    fn set_hash(&mut self, hash: String) {
+        self.hash = hash;
+    }
+
+    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the formula
+    /// `busbar_api::AuditRecord` publishes, fed field by field instead of being formatted here.
+    /// Note there is no scope field: this chain has exactly one scope, so nothing distinguishes it.
+    fn digest_fields(&self, d: &mut Digest) {
+        d.text(&self.prev_hash)
+            .num(self.seq)
+            .num(self.ts)
+            .text(&self.action)
+            .text(&self.resource)
+            .text(&self.outcome)
+            .text(&self.principal);
     }
 }
 
-/// Outcome tokens (kept small + stable).
-pub(crate) const OUTCOME_APPLIED: &str = "applied";
-pub(crate) const OUTCOME_REJECTED: &str = "rejected";
+/// The outcome tokens this stream uses, re-exported from the ONE audit vocabulary in
+/// [`crate::audit::vocab`]. They are core's, not the admin surface's: the ruling put the whole
+/// vocabulary in core so a fourth stream inherits it instead of inventing a fourth spelling. The
+/// re-export keeps the existing import path for the hundred-odd call sites that name them.
+pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_REJECTED};
 
 /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
 /// full log. `pub(crate)` so a test asking for "every matching row that can exist" names this rather
@@ -246,35 +328,19 @@ impl AuditLog {
         // `durable_max`, so the write-through backfill starts appending at `durable_max + 1`.
         self.durable_high
             .fetch_max(durable_max, std::sync::atomic::Ordering::Relaxed);
-        // Verify the full restored chain BEFORE trusting it (tamper-evidence across restart): every
-        // entry's digest recomputes, and each links to its predecessor. The first restored entry's
-        // predecessor may pre-date what we hold, so only its self-digest is checked.
-        let mut prev: Option<&str> = None;
-        for e in &entries {
-            if e.hash != e.compute_hash() {
-                // The floor above is trustworthy (the read succeeded), but the TAIL is not — a
-                // digest mismatch means the caller cannot rely on this entry's hash as the anchor
-                // for `rebase_nondurable_suffix`. Seal until a later read confirms a verifying tail.
-                self.durable_unreconciled
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                return Err(format!(
-                    "restored audit entry seq {} fails its digest",
-                    e.seq
-                ));
-            }
-            if let Some(p) = prev {
-                if e.prev_hash != p {
-                    // Same reasoning: the chain doesn't LINK, so the tail cannot anchor a rebase
-                    // either. Seal until the write-through's retried read finds a verifying tail.
-                    self.durable_unreconciled
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    return Err(format!(
-                        "restored audit chain breaks at seq {} (prev_hash mismatch)",
-                        e.seq
-                    ));
-                }
-            }
-            prev = Some(&e.hash);
+        // Verify the full restored chain BEFORE trusting it (tamper-evidence across restart), with
+        // the ONE verifier in `crate::audit`. A WINDOW rather than a whole chain: this is the most
+        // recent `MAX_AUDIT_ENTRIES` of a durable log that is never pruned, so the oldest restored
+        // entry's predecessor legitimately pre-dates what we hold and only its own digest can be
+        // checked. Everything after it is checked in full — digest, link AND sequence contiguity,
+        // which the hand-rolled walk this replaced did not check at all.
+        if let Err(brk) = crate::audit::verify_window(&entries) {
+            // The floor above is trustworthy (the read succeeded), but the TAIL is not — the caller
+            // cannot rely on this entry's hash as the anchor for `rebase_nondurable_suffix`. Seal
+            // until a later read confirms a verifying tail.
+            self.durable_unreconciled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err(format!("restored {brk}"));
         }
         let total = entries.len();
         // Seed the ring with the most-recent MAX_AUDIT_ENTRIES (the durable store keeps the rest).
@@ -307,19 +373,22 @@ impl AuditLog {
             let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Chain to the most recent entry (the back), before any prune.
             let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
-            let mut entry = AuditEntry {
+            // The ring allocates the POSITION (it must, under this lock, to match insertion order);
+            // `crate::audit::seal` builds and digests the record. The caller's payload and the
+            // chain's position arrive through different arguments, so no call site can supply a seq
+            // or a link of its own choosing.
+            let entry: AuditEntry = crate::audit::seal(
+                ADMIN_LOG,
                 seq,
-                ts: crate::store::now(),
-                action: action.to_string(),
-                resource: resource.to_string(),
-                outcome: outcome.to_string(),
-                principal: principal.to_string(),
                 prev_hash,
-                hash: String::new(),
-                // THIS process is appending it right now — the one ground-truth site for provenance.
-                recorded_here: true,
-            };
-            entry.hash = entry.compute_hash();
+                AuditInput {
+                    ts: crate::store::now(),
+                    action: action.to_string(),
+                    resource: resource.to_string(),
+                    outcome: outcome.to_string(),
+                    principal: principal.to_string(),
+                },
+            );
             while q.len() >= MAX_AUDIT_ENTRIES {
                 q.pop_front();
             }
@@ -440,7 +509,7 @@ impl AuditLog {
         for entry in q.iter_mut().skip(first) {
             entry.seq = next_seq;
             entry.prev_hash = prev.clone();
-            entry.hash = entry.compute_hash();
+            entry.hash = crate::audit::digest(&*entry);
             prev = entry.hash.clone();
             next_seq += 1;
         }
@@ -667,27 +736,16 @@ impl AuditLog {
             .fetch_max(backfill_floor, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Verify the tamper-evidence chain over the RETAINED entries: every entry's `hash` recomputes
-    /// from its fields, and each entry links to its predecessor (`prev_hash == predecessor.hash`). The
-    /// oldest retained entry's `prev_hash` may point to a pruned digest, so its link is not checked —
-    /// only its self-digest. Returns `true` if intact. Used by the tamper test; a live tamper-alert
-    /// endpoint is a follow-up.
+    /// Verify the tamper-evidence chain over the RETAINED entries, through the ONE verifier in
+    /// [`crate::audit`]. A WINDOW, not a whole chain: the ring is bounded, so the oldest retained
+    /// entry's `prev_hash` may point at a digest that has been pruned and only its self-digest can
+    /// be checked. Returns `true` if intact. Used by the tamper test; a live tamper-alert endpoint
+    /// is a follow-up.
     #[cfg(test)]
     pub(crate) fn verify(&self) -> bool {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let mut prev: Option<&str> = None;
-        for e in q.iter() {
-            if e.hash != e.compute_hash() {
-                return false;
-            }
-            if let Some(p) = prev {
-                if e.prev_hash != p {
-                    return false;
-                }
-            }
-            prev = Some(&e.hash);
-        }
-        true
+        let window: Vec<AuditEntry> = q.iter().cloned().collect();
+        crate::audit::verify_window(&window).is_ok()
     }
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:

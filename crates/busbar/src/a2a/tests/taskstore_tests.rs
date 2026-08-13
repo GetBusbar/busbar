@@ -306,7 +306,7 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
         "resuming from an interrupt is its own event kind, not a plain `working`"
     );
     assert_eq!(
-        crate::a2a::provenance::verify_chain(&events),
+        crate::audit::verify_chain(&events),
         Ok(()),
         "the chain verifies across the restart boundary"
     );
@@ -343,7 +343,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     assert!(
         matches!(
             brk.kind,
-            crate::a2a::provenance::ChainBreakKind::DigestMismatch { .. }
+            crate::audit::ChainBreakKind::DigestMismatch { .. }
         ),
         "an in-place edit is a digest mismatch, got {:?}",
         brk.kind
@@ -367,7 +367,7 @@ fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
 
     assert_eq!(out.active, 2, "both tasks are still restored");
     assert_eq!(out.chain_breaks.len(), 1, "exactly one chain failed");
-    assert_eq!(out.chain_breaks[0].task_id, "t-paused");
+    assert_eq!(out.chain_breaks[0].scope, "t-paused");
     assert_eq!(out.chain_breaks[0].seq, 1);
     assert!(
         reg2.get_scoped("key-2", "t-paused").is_ok(),

@@ -18,9 +18,11 @@
 //!    proven nothing at all.
 
 use super::super::calllog::{
-    verify_chain, CallChain, CallInput, ChainBreakKind, McpCallLog, OUTCOME_DISPATCHED,
-    OUTCOME_REFUSED,
+    CallChain, CallInput, McpCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
+// The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
+// type — so the tests reach for them where they live rather than through a plane re-export.
+use crate::audit::{verify_chain, ChainBreakKind};
 use busbar_api::{McpCallRecord, Store};
 use std::sync::Arc;
 
@@ -473,7 +475,7 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
         .expect_err("the edited row is detected");
     assert_eq!(brk.at_index, 2, "the break is reported AT the edited row");
     assert_eq!(brk.seq, 2);
-    assert_eq!(brk.principal, P);
+    assert_eq!(brk.scope, P);
     assert!(
         matches!(brk.kind, ChainBreakKind::DigestMismatch { .. }),
         "an in-place edit is a DIGEST mismatch, not a link one: {:?}",
@@ -584,7 +586,7 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
     let brk = verify_chain(&chain).expect_err("the foreign row is detected");
     assert_eq!(
         brk.kind,
-        ChainBreakKind::ForeignPrincipal {
+        ChainBreakKind::ForeignScope {
             expected: P.to_string(),
             found: "key_beta".to_string(),
         }
@@ -945,7 +947,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 /// closed by `list_mcp_call_principals` naming the principal, which is why the restore counts it.
 #[test]
 fn an_empty_chain_verifies_because_the_records_alone_cannot_say_otherwise() {
-    assert!(verify_chain(&[]).is_ok());
+    assert!(verify_chain::<McpCallRecord>(&[]).is_ok());
 }
 
 /// THE PROCESS-GLOBAL is the seam a call site actually uses, so it is exercised here rather than

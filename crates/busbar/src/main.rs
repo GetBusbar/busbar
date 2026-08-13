@@ -54,6 +54,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod a2a;
 mod admin;
+/// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
+/// evidence busbar keeps — a plane supplies the record type and nothing else. `admin::audit` is the
+/// admin-mutation STREAM that runs on it, not a second mechanism.
+mod audit;
 mod auth;
 mod auth_cache;
 mod billing;
@@ -1004,7 +1008,7 @@ async fn run() {
                 // it is logged at ERROR and names the task rather than being folded into a count.
                 for brk in &r.chain_breaks {
                     tracing::error!(
-                        task_id = %brk.task_id,
+                        task_id = %brk.scope,
                         break_detail = %brk,
                         "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
                     );

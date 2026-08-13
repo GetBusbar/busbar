@@ -4,6 +4,19 @@
 //! THE DURABLE PER-CALL LOG: one hash-chained record per MCP tool call, written through to the
 //! configured governance store, read back at boot, and verifiable.
 //!
+//! ## The CHAIN is not this file's, and that is the point
+//!
+//! This module used to carry its own `compute_hash`, `CallChain`, `ChainBreak`, `ChainBreakKind` and
+//! `verify_chain` — a second copy of what `a2a/provenance.rs` had and a third of what
+//! `admin/audit.rs` had. Owner's ruling, 2026-08-13: *"auditing is core. nothing auditing wise
+//! should be mcp a2a or llm specific. thats how audits break."* Three chains give three answers to
+//! "what happened", and an auditor reads whichever was wired last.
+//!
+//! So the mechanism is [`crate::audit`]'s: one append, one digest, one verifier. What stays here is
+//! the RECORD (which fields a call carries and which of them the digest covers — see
+//! `impl ChainedRecord for McpCallRecord`) and the SINK (attaching the store, rehydrating at boot,
+//! writing through). MCP supplies a record; it does not supply a second chain.
+//!
 //! ## Why this is not the admin audit log
 //!
 //! The per-call event used to ride [`crate::admin::audit::AUDIT`]. That log is admin-MUTATION-only
@@ -100,45 +113,26 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_api::{McpCallRecord, Store, StoreResult};
 
-/// Outcome tokens. Small, stable, greppable — tooling branches on these strings.
-pub(crate) const OUTCOME_DISPATCHED: &str = "dispatched";
-pub(crate) const OUTCOME_REFUSED: &str = "refused";
+use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
 
-/// The reason token for a `tools/call` that WENT OUT and whose upstream then failed.
-///
-/// It rides `dispatched`, NOT `refused`, and the distinction is the point: `refused` means the call
-/// did not go out, and this one did. It carried `refused`/`upstream_failed` until the outcome split
-/// (`mcp::inputreq::Outcome::UpstreamFailed`), which made an upstream outage indistinguishable from
-/// a policy refusal to everything reading this field. The word itself is unchanged so that any
-/// tooling already grepping for it keeps finding the same event.
-pub(crate) const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
+/// The outcome and reason tokens THIS stream uses, re-exported from the ONE audit vocabulary in
+/// [`crate::audit::vocab`]. They are core's, not MCP's: the ruling promoted the richer set of words
+/// this plane got right (`not_granted` / `egress_denied` / `upstream_failed`, distinguishable where
+/// the admin log has a single "refused") to the shared vocabulary rather than flattening to the
+/// weakest of the three. The re-export exists so the call sites keep one import path; the
+/// definitions, and the reasoning about each word, live in core.
+pub(crate) use crate::audit::vocab::{
+    OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_MALFORMED,
+    REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
+};
 
-/// The reason token for a `tools/call` answered with an unsatisfied caller-ask round.
-///
-/// It is `refused`, not a third outcome, and that is the honest reading of the two tokens the store
-/// contract documents: `dispatched` means THE CALL WENT OUT, and this one did not. The caller's
-/// retry is a fresh inbound request and gets its own record, so the exchange is reconstructable from
-/// the chain without a token that means "neither".
-pub(crate) const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
-
-/// The reason token for a `tools/call` answered with a task rather than a result.
-///
-/// Also `refused` for the same reason: at the moment the request is answered nothing has gone out.
-/// What happens next belongs to the task's own provenance, and this record's job is to say that the
-/// request existed, who made it, which tool and digest it named, and that it became task work.
-pub(crate) const REASON_TASK_CREATED: &str = "task_created";
-
-/// The reason token for a request whose `params.name` was missing or not a string.
-///
-/// Recorded rather than dropped: the caller is already AUTHENTICATED at this point, and a chain that
-/// silently omits every malformed request from a principal is a chain with a hole an attacker can
-/// choose. The `tool` and `server` fields are empty, which the store contract already documents as
-/// "a refusal that matched no registration".
-pub(crate) const REASON_MALFORMED: &str = "malformed_params";
+/// This stream's chain: one per PRINCIPAL. A type alias over the core mechanism — there is no second
+/// implementation behind it.
+pub(crate) type CallChain = crate::audit::Chain<McpCallRecord>;
 
 /// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
-/// they are the chain's own business and are computed by [`CallChain::append`], so no call site can
-/// supply a sequence number or a link of its own choosing.
+/// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
+/// site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CallInput {
     pub(crate) ts: u64,
@@ -151,107 +145,41 @@ pub(crate) struct CallInput {
     pub(crate) request_id: String,
 }
 
-/// The digest over a record's CHAINED fields.
-///
-/// `request_id` is deliberately EXCLUDED. It is a join key handed in by the request spine, it is
-/// absent on any path with no inbound request, and a field that is sometimes absent must not be able
-/// to make an otherwise-intact chain unverifiable.
-///
-/// Every field IS length-prefixed rather than separator-joined. `tool` carries a caller-supplied
-/// name and `reason`/`server` are engine-controlled tokens, but relying on that split is the classic
-/// digest-collision-by-framing bug: a caller who can choose one field's bytes can otherwise forge
-/// the same byte stream under a different split. Length prefixes make the split unforgeable
-/// regardless of what any field contains, so this stays correct if a future field becomes
-/// caller-influenced.
-fn compute_hash(record: &McpCallRecord) -> String {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut field = |bytes: &[u8]| {
-        buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        buf.extend_from_slice(bytes);
+impl ChainedRecord for McpCallRecord {
+    type Input = CallInput;
+
+    const LABELS: &'static ChainLabels = &ChainLabels {
+        chain: "the MCP per-call chain",
+        scope: "principal",
     };
-    field(record.prev_hash.as_bytes());
-    field(record.principal.as_bytes());
-    field(&record.seq.to_be_bytes());
-    field(&record.ts.to_be_bytes());
-    field(record.server.as_bytes());
-    field(record.tool.as_bytes());
-    field(record.outcome.as_bytes());
-    field(record.reason.as_bytes());
-    field(record.tool_digest.as_bytes());
-    field(&record.pin_generation.to_be_bytes());
-    busbar_api::sha256_hex(&buf)
-}
+    /// LENGTH-PREFIXED, and this is the framing a NEW record type must copy. `tool` carries a
+    /// caller-supplied name and `reason`/`server` are engine-controlled tokens, but relying on that
+    /// split is the classic digest-collision-by-framing bug: a caller who can choose one field's
+    /// bytes can otherwise forge the same byte stream under a different split. Length prefixes make
+    /// the split unforgeable regardless of what any field contains, so this stays correct if a
+    /// future field becomes caller-influenced.
+    const FRAMING: Framing = Framing::LengthPrefixed;
 
-/// ONE PRINCIPAL'S CHAIN, in memory: the tail link and the next sequence number. Small on purpose —
-/// the records themselves live in the store, and holding every call of every caller in RAM is the
-/// thing this durable path exists to avoid.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CallChain {
-    /// The `hash` of the most recent record, or empty when the chain is empty.
-    tail_hash: String,
-    /// The sequence the NEXT appended record gets.
-    next_seq: u64,
-}
-
-/// HAND-WRITTEN, and it must stay that way: a DERIVED `Default` gives `next_seq: 0`, which is not a
-/// valid sequence — the first record of a chain is `seq` 1 — and the derive would hand a silently
-/// zero-based chain to every `entry().or_default()` in the file. That is not hypothetical: it is
-/// exactly what a clippy suggestion to replace `or_insert_with(CallChain::new)` with `or_default()`
-/// produced, and it went undetected by the module's own focused run because the two constructors
-/// were only distinguishable through the SUITE. Pinned by
-/// `the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`.
-impl Default for CallChain {
-    fn default() -> Self {
-        CallChain::new()
-    }
-}
-
-impl CallChain {
-    /// A chain with nothing in it. The first record gets `seq` 1 and an empty `prev_hash`.
-    pub(crate) fn new() -> Self {
-        CallChain {
-            tail_hash: String::new(),
-            next_seq: 1,
-        }
+    fn scope_of(&self) -> &str {
+        &self.principal
     }
 
-    /// Continue a chain from what is already PERSISTED, so a restart continues the same chain rather
-    /// than opening a second one under the same principal.
-    ///
-    /// The records are VERIFIED before they are trusted to position the chain. Resuming from an
-    /// unverified tail would append a valid-looking link onto a forged one and launder the forgery:
-    /// every subsequent verification would pass and the break would sit permanently behind the point
-    /// anybody looks. On a broken chain this returns the break and the CALLER decides — the engine's
-    /// answer is [`CallChain::from_persisted_unverified`], because refusing to record anything
-    /// further would mean a detected tamper silently stops all further evidence.
-    pub(crate) fn from_persisted(records: &[McpCallRecord]) -> Result<Self, ChainBreak> {
-        verify_chain(records)?;
-        Ok(Self::from_persisted_unverified(records))
+    fn seq(&self) -> u64 {
+        self.seq
     }
 
-    /// Position a chain on the tail of `records` WITHOUT verifying them. Only for the
-    /// tamper-detected path, where the break has already been reported and the alternative is to
-    /// stop recording evidence entirely.
-    pub(crate) fn from_persisted_unverified(records: &[McpCallRecord]) -> Self {
-        match records.last() {
-            None => CallChain::new(),
-            Some(last) => CallChain {
-                tail_hash: last.hash.clone(),
-                next_seq: last.seq.saturating_add(1),
-            },
-        }
+    fn prev_hash(&self) -> &str {
+        &self.prev_hash
     }
 
-    /// The sequence the next appended record will carry.
-    pub(crate) fn next_seq(&self) -> u64 {
-        self.next_seq
+    fn hash(&self) -> &str {
+        &self.hash
     }
 
-    /// Append one record, linking it to the tail and advancing the chain.
-    pub(crate) fn append(&mut self, principal: &str, input: CallInput) -> McpCallRecord {
-        let mut record = McpCallRecord {
-            principal: principal.to_string(),
-            seq: self.next_seq,
+    fn link(scope: &str, seq: u64, prev_hash: String, input: CallInput) -> Self {
+        McpCallRecord {
+            principal: scope.to_string(),
+            seq,
             ts: input.ts,
             server: input.server,
             tool: input.tool,
@@ -260,136 +188,32 @@ impl CallChain {
             tool_digest: input.tool_digest,
             pin_generation: input.pin_generation,
             request_id: input.request_id,
-            prev_hash: self.tail_hash.clone(),
+            prev_hash,
             hash: String::new(),
-        };
-        record.hash = compute_hash(&record);
-        self.tail_hash = record.hash.clone();
-        self.next_seq = self.next_seq.saturating_add(1);
-        record
-    }
-}
-
-/// WHY a chain failed to verify. Four distinguishable causes, because the operator's response to
-/// each is different — a verifier that returns `bool` tells an operator that something is wrong and
-/// nothing else, which in practice means it is run once and then ignored.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChainBreakKind {
-    /// This record's stored `hash` is not the digest of its own fields: a field was edited in place.
-    DigestMismatch { stored: String, recomputed: String },
-    /// This record's `prev_hash` is not the previous record's `hash`: something was inserted,
-    /// removed, or reordered around here.
-    LinkMismatch { expected: String, found: String },
-    /// The sequence is not `1, 2, 3, …`: a gap (records removed) or a duplicate/regression. A link
-    /// check alone misses this when a whole contiguous run is removed from the TAIL.
-    SequenceBreak { expected: u64, found: u64 },
-    /// A different principal's record is present in this chain. A chain is scoped to ONE principal;
-    /// mixing them would make one caller's evidence depend on another caller's rows.
-    ForeignPrincipal { expected: String, found: String },
-}
-
-/// A verification failure: WHERE it is and WHAT it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChainBreak {
-    /// The 1-based index INTO THE SLICE at which the break was found. Distinct from `seq`, which is
-    /// itself untrustworthy on a `SequenceBreak` — reporting only `seq` would report the tampered
-    /// value as if it were a position.
-    pub(crate) at_index: usize,
-    /// The record's claimed sequence number.
-    pub(crate) seq: u64,
-    /// The principal the chain is scoped to.
-    pub(crate) principal: String,
-    pub(crate) kind: ChainBreakKind,
-}
-
-impl std::fmt::Display for ChainBreak {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "MCP call chain for principal `{}` BROKEN at index {} (seq {}): ",
-            self.principal, self.at_index, self.seq
-        )?;
-        match &self.kind {
-            ChainBreakKind::DigestMismatch { stored, recomputed } => write!(
-                f,
-                "the record's own fields do not hash to its stored digest (stored {stored}, \
-                 recomputed {recomputed}) — this record was EDITED"
-            ),
-            ChainBreakKind::LinkMismatch { expected, found } => write!(
-                f,
-                "prev_hash does not match the preceding record's hash (expected {expected}, found \
-                 {found}) — a record was INSERTED, REMOVED or REORDERED here"
-            ),
-            ChainBreakKind::SequenceBreak { expected, found } => write!(
-                f,
-                "sequence is not contiguous (expected {expected}, found {found}) — records were \
-                 REMOVED or DUPLICATED"
-            ),
-            ChainBreakKind::ForeignPrincipal { expected, found } => write!(
-                f,
-                "a record belonging to principal `{found}` appears in principal `{expected}`'s chain"
-            ),
         }
     }
-}
 
-/// VERIFY one principal's chain. `records` must be the store's oldest-first list for a single
-/// principal.
-///
-/// An EMPTY list verifies. That is not a loophole waved through: "this principal made no calls" is
-/// indistinguishable from "every record was deleted" using the records alone, and pretending
-/// otherwise would make the verifier claim a guarantee it cannot provide. What DOES narrow it is
-/// held elsewhere — [`Store::list_mcp_call_principals`] names a principal the store has rows for, so
-/// an enumerated principal with an empty chain is detectable by the caller that holds both, which is
-/// what [`McpCallLog::restore_from_store`] does.
-pub(crate) fn verify_chain(records: &[McpCallRecord]) -> Result<(), ChainBreak> {
-    let Some(first) = records.first() else {
-        return Ok(());
-    };
-    let principal = first.principal.clone();
-    let mut expected_prev = String::new();
-    let mut expected_seq = 1u64;
-
-    for (i, rec) in records.iter().enumerate() {
-        let at_index = i + 1;
-        let brk = |kind| ChainBreak {
-            at_index,
-            seq: rec.seq,
-            principal: principal.clone(),
-            kind,
-        };
-        if rec.principal != principal {
-            return Err(brk(ChainBreakKind::ForeignPrincipal {
-                expected: principal.clone(),
-                found: rec.principal.clone(),
-            }));
-        }
-        if rec.seq != expected_seq {
-            return Err(brk(ChainBreakKind::SequenceBreak {
-                expected: expected_seq,
-                found: rec.seq,
-            }));
-        }
-        // The LINK is checked before the DIGEST. Both are wrong when a record is spliced out, and
-        // the link is the one that names the real defect ("something is missing here") while the
-        // digest would report the innocent successor as edited.
-        if rec.prev_hash != expected_prev {
-            return Err(brk(ChainBreakKind::LinkMismatch {
-                expected: expected_prev.clone(),
-                found: rec.prev_hash.clone(),
-            }));
-        }
-        let recomputed = compute_hash(rec);
-        if recomputed != rec.hash {
-            return Err(brk(ChainBreakKind::DigestMismatch {
-                stored: rec.hash.clone(),
-                recomputed,
-            }));
-        }
-        expected_prev = rec.hash.clone();
-        expected_seq = expected_seq.saturating_add(1);
+    fn set_hash(&mut self, hash: String) {
+        self.hash = hash;
     }
-    Ok(())
+
+    /// The chained fields, in the order the records already on disk were written with.
+    ///
+    /// `request_id` is deliberately EXCLUDED. It is a join key handed in by the request spine, it is
+    /// absent on any path with no inbound request, and a field that is sometimes absent must not be
+    /// able to make an otherwise-intact chain unverifiable.
+    fn digest_fields(&self, d: &mut Digest) {
+        d.text(&self.prev_hash)
+            .text(&self.principal)
+            .num(self.seq)
+            .num(self.ts)
+            .text(&self.server)
+            .text(&self.tool)
+            .text(&self.outcome)
+            .text(&self.reason)
+            .text(&self.tool_digest)
+            .num(self.pin_generation);
+    }
 }
 
 /// What a boot rehydrate actually found. Every number is reported rather than summed into one
