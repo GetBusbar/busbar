@@ -1379,7 +1379,7 @@ PLANE_CONCERNS=(
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
   'ingress|crates/busbar/src/ingress|one plane-neutral admission in ingress/, with the plane supplying its wire reader'
   'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
-  'plane-config|-|one sections container keyed by plane::Plane::config_section — the spine already exists at crates/busbar/src/plane/mod.rs'
+  'plane-config|crates/busbar/src/plane/config.rs|the parse-time plane-boundary rule now lives here once, with its section list DERIVED; what is left is the per-plane config MODULE, whose value rules are genuinely plane-specific'
   'plane-admin-verbs|crates/busbar/src/admin|one admin verb surface parameterised by plane, not one handler set per plane'
   'trust-pinning|crates/busbar/src/trust|GOAL §A2.2: resolve the bare-name collision, then parameterise the one trust lifecycle'
 )
@@ -1390,8 +1390,6 @@ refuse|DEBT|ingress|two per-plane refusal shapers; the wire shape of a refusal i
 not_found|DEBT|ingress|two per-plane 404 shapers
 metadata|DEBT|ingress|the RFC 9728 protected-resource metadata document, written once per plane, verified 2026-08-11 to be the same document with the same audience rule
 declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
-validate_section_hooks|DEBT|plane-config|per-plane config-section validation, twice
-refuse_cross_plane_reference|DEBT|plane-config|the cross-plane reference refusal written once per plane — the one rule that most needs to be identical on both
 catalogue.rs|DEBT|catalogue|the catalogue module exists once per plane
 config.rs|DEBT|plane-config|the config module exists once per plane
 ingress.rs|DEBT|ingress|the ingress module exists once per plane
@@ -1773,6 +1771,21 @@ DECLARATION_CENSUS=(
   'the-one-generation-source|GENERATION-SOURCE-FORKED|fn[[:space:]]+next_generation[^a-zA-Z0-9_]|1|crates/busbar/src/|every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned'
 
   'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|crates/busbar/src/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
+
+  # ── THE ONE PARSE-TIME PLANE-BOUNDARY RULE. `refuse_cross_plane_reference` decides whether a hook
+  #    reference reaches onto another config section, and `validate_section_hooks` applies it to a
+  #    whole attach list. Both lived TWICE — `a2a/config.rs` and `mcp/config.rs` each carried a
+  #    byte-identical copy, each with its own hardcoded `["pools", "tools", "agents", "export",
+  #    "identity-providers"]` in a protocol-local file no compiler links to the other. They agreed
+  #    because one was pasted from the other, which is not a mechanism. One copy now lives in
+  #    `plane/config.rs` and takes its section list as a DERIVED parameter. These rows are what
+  #    stops a third copy appearing on the next plane, and what catches the rule being deleted.
+  #
+  #    NOT the same as `PlaneSections::resolve`'s `RefError::CrossPlane`, which is a SECOND,
+  #    STRUCTURAL cross-plane refusal at RESOLVE time on a name that exists. Two checks, two
+  #    moments; merging them would delete one rather than deduplicate it.
+  'one-parse-time-plane-boundary|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+refuse_cross_plane_reference[[:space:]]*\(|1|crates/busbar/src/|there is exactly ONE parse-time answer to "does this hook reference reach onto another plane"; a second is two answers that drift the first time either is fixed, and zero means the rule left the tree and every dotted reference is now silently accepted'
+  'one-section-attach-validator|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+validate_section_hooks[[:space:]]*\(|1|crates/busbar/src/|the SECTION-level attach list must be judged by the same rule one entry is; a second copy is the place a looser rule grows, and it is the list an operator uses to attach a control to everything'
 )
 
 hdr "declaration census (a shared decision, and each shared wire word, exists EXACTLY once)"
