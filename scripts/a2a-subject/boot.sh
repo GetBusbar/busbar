@@ -741,6 +741,16 @@ leg_battery() {
   # (see the header's finding 2), so a `--client-drive` command would be a lie. The client-role
   # tests report NOT_CONFIGURED and are RED without it, which is the correct answer and is why they
   # are excluded by ROLE here rather than silenced.
+  #
+  # AND THE NARROWING IS SAID OUT LOUD, HERE AND IN THE BATTERY'S OWN SUMMARY. This is the same
+  # shape of hole the MCP battery had: a role-filtered run produces a count with no direction
+  # attached to it, and a count with no direction attached gets quoted as if it covered both. The
+  # battery now prints `ROLE NOT RUN client -- N scenario(s) ... NOT selected` immediately above its
+  # own totals (`a2aht/runner.py::role_audit`), and records it under `meta.role_audit` in the JSON,
+  # so no reader and no downstream script can pick up the number without the direction.
+  say "   ROLE-NARROWED: --role server. busbar's A2A CLIENT direction is NOT measured by this leg."
+  say "   Whatever number the battery prints below is a SERVER-ROLE number. It is not a verdict on"
+  say "   the delegating direction, and it must never be quoted as one."
   local rc=0
   ( cd testing/a2a-harness && python3 -m a2aht run \
       --endpoint "$SUBJECT_URL" \

@@ -51,7 +51,11 @@ run options
   --failing-tool NAME    a tool that always fails            (env MCP_SUBJECT_FAILING_TOOL)
   --tier TIER            push | pr | prerelease  (default: push,pr)
   --area AREAS           comma list: conformance,adversarial,hostile,concurrency,seam
-  --role ROLES           comma list: server,client,seam
+  --role ROLES           comma list: server,client,seam. A role you leave out is a DELIBERATE,
+                         PRINTED narrowing: the result line then names the roles it measured.
+  --allow-unarmed-role R comma list of roles that are requested but have no launch command. Without
+                         it, a requested-but-unarmed role EXITS 2 rather than quietly leaving the
+                         denominator. Never set this to keep a gate green.
   --only SUBSTR          run only tests whose id contains SUBSTR
   --out FILE             write the result JSON here
   --quiet                summary only
@@ -69,7 +73,15 @@ function summarise(results) {
   return by;
 }
 
-function renderRun(results, target, quiet) {
+// WHICH ROLES THIS RUN ACTUALLY MEASURED, named, next to the number it produced.
+//
+// A count with no role next to it is the thing that let the client-role hole hide: `50 pass, 0
+// fail` was a true sentence about the SERVER role and read as a sentence about both. Every result
+// line this file prints now carries the roles the run selected and the roles it did not, so the
+// number cannot be quoted without the direction it measured coming along with it.
+const ALL_ROLES = ['server', 'client', 'seam'];
+
+function renderRun(results, target, quiet, roleAudit) {
   const L = [];
   const by = summarise(results);
   if (!quiet) {
@@ -91,7 +103,19 @@ function renderRun(results, target, quiet) {
   L.push(`revision    : ${REVISION}`);
   L.push(`server role : ${target.hasServerRole ? target.serverLaunch : 'NOT CONFIGURED'}`);
   L.push(`client role : ${target.hasClientRole ? target.clientLaunch : 'NOT CONFIGURED'}`);
-  L.push(`results     : ${by.PASS} pass, ${by.FAIL} fail, ${by.ERROR} error, ${by.SKIP} skip`);
+  if (roleAudit) {
+    L.push(`roles run   : ${roleAudit.selected.join(',') || '<none>'}`);
+    const notRun = ALL_ROLES.filter((r) => !roleAudit.selected.includes(r));
+    for (const r of notRun) {
+      const n = roleAudit.counts[r] || 0;
+      const why = roleAudit.unarmed.includes(r)
+        ? 'NOT ARMED (no launch command)'
+        : 'not requested by --role';
+      L.push(`roles NOT run: ${r} — ${why}; ${n} registered scenario(s) were not selected`);
+    }
+  }
+  L.push(`results     : ${by.PASS} pass, ${by.FAIL} fail, ${by.ERROR} error, ${by.SKIP} skip`
+    + (roleAudit ? `  [roles: ${roleAudit.selected.join(',') || 'none'}]` : ''));
   return L.join('\n');
 }
 
@@ -125,11 +149,76 @@ or set MCP_SUBJECT_SERVER_CMD / MCP_SUBJECT_CLIENT_CMD.
   if (args.area) filter.areas = String(args.area).split(',');
   if (args.role) filter.roles = String(args.role).split(',');
   if (args.only) filter.only = String(args.only).split(',');
-  if (!target.hasServerRole) {
-    filter.roles = (filter.roles || ['server', 'client', 'seam']).filter((r) => r !== 'server');
-  }
-  if (!target.hasClientRole) {
-    filter.roles = (filter.roles || ['server', 'client', 'seam']).filter((r) => r !== 'client');
+
+  // ── AN UNARMED ROLE IS A LOUD, NAMED CONDITION — NEVER A QUIET SMALLER DENOMINATOR ────────────
+  //
+  // THE DEFECT THIS REPLACES. These six lines used to silently DELETE the unarmed role from the
+  // filter. Nothing was skipped, because nothing was selected: the fourteen `CLI.*` scenarios
+  // simply left the denominator, and the run printed `50 pass, 0 fail` and exited 0. That is worse
+  // than a skip — a skip at least prints `SKIP` and is countable, and `MCP_NO_SKIPS=1` can turn it
+  // red. A deselected role leaves NO trace in the numbers at all, so `50/50 scenarios` reads as
+  // total coverage of a battery that has 64 scenarios in it.
+  //
+  // THE RULE NOW. Every role the run does not measure must be said OUT LOUD by the caller, in the
+  // command line, before the run starts:
+  //
+  //   * a role you did not request (`--role server`) is a deliberate, visible narrowing. It is
+  //     allowed, it is printed, and it is recorded in the report.
+  //   * a role you DID request (explicitly, or by not passing `--role` at all) but did not ARM is
+  //     a MISCONFIGURATION. The run refuses with exit 2 — the same "nothing was tested" code the
+  //     no-target-at-all case uses — unless the caller names it in `--allow-unarmed-role`.
+  //
+  // `--allow-unarmed-role client` is the escape hatch, and it is deliberately ugly and deliberately
+  // per-role: it appears in the command line, in the log, and in the report, so "we never armed the
+  // client role" can never again be indistinguishable from "the client role passed".
+  const requestedRoles = filter.roles ? [...filter.roles] : [...ALL_ROLES];
+  const roleIsArmed = {
+    server: target.hasServerRole,
+    client: target.hasClientRole,
+    // The seam is observed THROUGH the server role: the suite spawns the subject as a server and
+    // watches what it emits at its back door. No server launch, no seam.
+    seam: target.hasServerRole,
+  };
+  const unarmed = requestedRoles.filter((r) => roleIsArmed[r] === false);
+  const allowedUnarmed = new Set(
+    String(args['allow-unarmed-role'] === true ? '' : (args['allow-unarmed-role']
+      || process.env.MCP_ALLOW_UNARMED_ROLES || ''))
+      .split(',').map((s) => s.trim()).filter(Boolean),
+  );
+  const refused = unarmed.filter((r) => !allowedUnarmed.has(r));
+  filter.roles = requestedRoles.filter((r) => !unarmed.includes(r));
+
+  const roleCounts = {};
+  for (const t of allTests()) roleCounts[t.role] = (roleCounts[t.role] || 0) + 1;
+  const roleAudit = {
+    requested: requestedRoles,
+    selected: filter.roles,
+    unarmed,
+    allowedUnarmed: [...allowedUnarmed],
+    counts: roleCounts,
+  };
+
+  if (refused.length) {
+    console.error(`
+FATAL: ROLE(S) REQUESTED BUT NOT ARMED: ${refused.join(', ')}
+
+MCP is a two-directional protocol and this battery has scenarios for both directions. A role that
+is requested and not armed used to be DESELECTED SILENTLY, so its scenarios vanished from the
+denominator and the run reported a clean green over a direction nobody tested. This gate refuses
+that.
+
+${refused.map((r) => `  ${r}: ${roleCounts[r] || 0} registered scenario(s) would not have run`).join('\n')}
+
+Do ONE of these, and either way the choice is now visible in the log and in the report:
+
+  ARM IT      ${refused.includes('client') ? '--client-cmd "<command that makes the subject act as an MCP client>"' : '--server-cmd "<command that starts the subject as an MCP server on stdio>"'}
+  NARROW IT   --role ${(filter.roles.length ? filter.roles : ['<roles you can arm>']).join(',')}
+              (a deliberate, printed narrowing: the number then says which roles it measured)
+  DECLARE IT  --allow-unarmed-role ${refused.join(',')}
+              (the escape hatch. It names the untested direction in the command line and in the
+               report, so "never armed" can never again render as "passed".)
+`);
+    process.exit(2);
   }
 
   const started = new Date().toISOString();
@@ -140,6 +229,9 @@ or set MCP_SUBJECT_SERVER_CMD / MCP_SUBJECT_CLIENT_CMD.
     target: target.toJSON(),
     startedAt: started,
     filter,
+    // Persisted so a READER OF THE REPORT, and the differential, can see which directions this
+    // number covers without re-deriving it from the target's launch commands.
+    roleAudit,
     results,
   };
 
@@ -149,7 +241,7 @@ or set MCP_SUBJECT_SERVER_CMD / MCP_SUBJECT_CLIENT_CMD.
     writeFileSync(outPath, JSON.stringify(payload, null, 2));
   }
 
-  console.log(renderRun(results, target, Boolean(args.quiet)));
+  console.log(renderRun(results, target, Boolean(args.quiet), roleAudit));
   if (outPath) console.log(`written     : ${outPath}`);
 
   const by = summarise(results);

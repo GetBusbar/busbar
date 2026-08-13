@@ -374,7 +374,9 @@ async fn upstream_progress_is_captured_and_emitted_before_the_result() {
 
 // A1.4, STILL OWED: a dedicated test that the upstream never sees the CALLER'S token.
 //
-// The conformance battery proves progress reaches the caller end to end (37/37), and the unit test
+// The conformance battery proves progress reaches the caller end to end (37/37 required scenarios,
+// official suite, SERVER ROLE — that suite has no client mode; the in-house battery is the
+// instrument armed in both directions), and the unit test
 // above proves capture, the one-method allowlist and the ordering. Neither proves the MINT/MAP
 // property — that `busbar-<request_id>` goes out and the caller's own value comes back — which is
 // the SECURITY half: a caller-chosen opaque value forwarded upstream is a correlator for that caller

@@ -125,7 +125,13 @@ def cmd_run(args):
     rep = runner.report(results, target.label,
                         meta={"tier": args.tier,
                               "client_drive_configured":
-                                  bool(config["client_drive"])})
+                                  bool(config["client_drive"]),
+                              # WHICH DIRECTIONS THIS RUN MEASURED. `--role server`
+                              # is a legitimate narrowing and it stays legitimate;
+                              # what it must never be is INVISIBLE in the number it
+                              # produces.
+                              "role_audit": runner.role_audit(
+                                  tests, selected, tier=args.tier)})
 
     if getattr(args, "known_deviations", None):
         from . import deviations

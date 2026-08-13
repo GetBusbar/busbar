@@ -88,6 +88,7 @@ if [ -n "${MCP_SUBJECT_SERVER_CMD:-}" ]; then
         --name preflight \
         --server-cmd "$MCP_SUBJECT_SERVER_CMD" \
         --only SRV.DISCOVER.IMPLEMENTED \
+        --role server \
         --tier push --quiet \
         --out reports/preflight.json >/dev/null 2>&1; then
     cat >&2 <<MSG
@@ -111,9 +112,23 @@ node bin/mcp-battery.mjs run \
   ${MCP_SUBJECT_SERVER_CMD:+--server-cmd "$MCP_SUBJECT_SERVER_CMD"} \
   ${MCP_SUBJECT_CLIENT_CMD:+--client-cmd "$MCP_SUBJECT_CLIENT_CMD"} \
   ${MCP_SUBJECT_FAILING_TOOL:+--failing-tool "$MCP_SUBJECT_FAILING_TOOL"} \
+  ${MCP_ALLOW_UNARMED_ROLES:+--allow-unarmed-role "$MCP_ALLOW_UNARMED_ROLES"} \
   --tier "$TIER" \
   --out "reports/subject.json"
 RUN_STATUS=$?
+
+# BOTH DIRECTIONS OR SAY SO. No `--role` is passed above, deliberately: the default request is
+# EVERY role, so a subject armed in only one direction now hits the battery's own
+# `ROLE(S) REQUESTED BUT NOT ARMED` refusal (exit 2) instead of quietly shrinking the denominator.
+# That refusal has already printed a message naming the roles and the scenario counts, and this
+# branch exists so the ARMED GUARD below does not overwrite it with `no report was produced`, which
+# names the symptom rather than the cause.
+if [ "$RUN_STATUS" -eq 2 ] && [ ! -f reports/subject.json ]; then
+  echo "the battery refused to run: see its message above. This is a CONFIGURATION fault in this" >&2
+  echo "gate, not a verdict about the subject. Arm the missing role, narrow the run with --role," >&2
+  echo "or declare it with MCP_ALLOW_UNARMED_ROLES." >&2
+  exit 1
+fi
 
 # ARMED GUARD: a configured subject that tested nothing is a failure, not a
 # pass. This is what stops the job rotting into a vacuous green once the
