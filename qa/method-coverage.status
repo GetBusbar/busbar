@@ -146,12 +146,308 @@ mcp|streamable-http|client|client|tools/call = implemented
 #     customer than refusing it, because a client would wait rather than fall back;
 #   * so a customer cannot yet do this, and a cell says a customer can.
 #
-# The cell is therefore still MISSING and its line is still in qa/method-coverage.missing, which is
-# the correct state. What changed is that the wire half is built and proven, so the remaining work is
-# the channel and the admission, not the vocabulary.
+# The cell was therefore MISSING and its line stayed in qa/method-coverage.missing, which was the
+# correct state. What was left was the channel and the admission, not the vocabulary.
+#
+# ALL FOUR OF THOSE NAMES ARE NOW DECIDED, and the note above is kept rather than deleted because
+# what it describes -- a codec that reads and writes the right bytes over an endpoint that answers
+# -32601 -- is the exact shape a reader has to be able to recognise, and the shape this file exists
+# to stop being mistaken for coverage. The four went four different ways, which is itself the point:
+#
+#   * `resources/subscribe` and `resources/unsubscribe` are WAIVED. The revision removed them and
+#     the official suite asserts they answer -32601, so serving them is the defect;
+#   * `notifications/tools/list_changed` is IMPLEMENTED, because the channel it needed --
+#     `subscriptions/listen` -- is now served and the notification reaches a client over it;
+#   * `notifications/resources/updated` is WAIVED, and NOT because nobody got to it. It is the one
+#     category `subscriptions/listen` narrows away in its acknowledgement, because a resource's
+#     contents change at the upstream that owns it and busbar is told nothing when they do.
+#
+# Each of the four carries its own reasoning below, at the cell it decides.
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+# MCP, busbar as SERVER, over STREAMABLE-HTTP — the whole column, decided cell by cell.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# THE ONE FACT THAT DECIDES HALF OF THIS COLUMN, and it is not a matter of taste: revision
+# `2026-07-28` (SEP-2575) is STATELESS. It deleted the `initialize` handshake, protocol sessions,
+# the standalone GET stream and `Last-Event-ID` resumability, and it deleted the methods that only
+# meant anything inside a session. The official suite does not merely tolerate their absence — it
+# REQUIRES it. `server-stateless` posts `initialize`, `ping`, `logging/setLevel`,
+# `resources/subscribe` and `resources/unsubscribe` and asserts each answers HTTP 404 with JSON-RPC
+# `-32601`, and `logging-set-level` and `ping` are scenarios marked `removedIn: 2026-07-28` and are
+# not run at this revision at all.
+#
+# So for those methods, on this transport, IMPLEMENTING THEM IS THE DEFECT. A busbar that answered
+# `initialize` would fail the conformance gate for doing it. They are waived below with that as the
+# reason, because "we chose not to build it" and "the specification removed it and the referee
+# checks that we did not build it" are different facts and only one of them is a gap.
+#
+# WHAT REPLACED THE CHANNEL, because "no GET stream" is not "no server-to-client messages" and
+# reading it that way is what left four notification names in the tree as a codec with nothing to
+# carry them. The revision MOVED the channel from a transport verb onto a method:
+# `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications.
+# That method is now built (`crates/busbar/src/mcp/subscribe.rs`), and it is what makes the
+# list-changed notifications below claimable rather than merely spellable.
+#
+# AND THE OTHER HALF OF THE SERVER-ORIGINATED SURFACE travels a second way that is also not a
+# stream: `elicitation/create`, `sampling/createMessage` and `roots/list` are asked by RETURNING an
+# `InputRequiredResult` whose `inputRequests` name them, which the caller answers by re-issuing the
+# request with `inputResponses`. busbar composes those from OPERATOR configuration alone
+# (`ask_caller:`), filters them by the capabilities the caller declared, and seals them with a
+# `requestState` busbar mints — see `crates/busbar/src/mcp/callerask.rs` for why an upstream's ask
+# can never become one of these.
+
+# ── THE CATALOGUE AND DISPATCH READS ───────────────────────────────────────────────────────────
+#
+# INSTRUMENT for all twelve: the official conformance suite, `--official-subject`, against a busbar
+# built from this commit and booted on loopback by `scripts/mcp-subject/boot.sh` with a real
+# audience-bound credential. Every one of these is the subject of at least one REQUIRED scenario of
+# revision `2026-07-28` — `tools-list`, the seven `tools-call-*`, `prompts-list`, the four
+# `prompts-get-*`, `resources-list`, `resources-read-text`, `resources-read-binary`,
+# `resources-templates-read`, `sep-2164-resource-not-found`, `completion-complete`,
+# `server-stateless` — and the leg is ARMED-OR-RED with set equality on the required scenario set,
+# so a run that quietly exercised fewer of them is a hard failure rather than a smaller number.
+mcp|streamable-http|server|client|server/discover = implemented
+mcp|streamable-http|server|client|tools/list = implemented
+mcp|streamable-http|server|client|tools/call = implemented
+mcp|streamable-http|server|client|prompts/list = implemented
+mcp|streamable-http|server|client|prompts/get = implemented
+mcp|streamable-http|server|client|resources/list = implemented
+mcp|streamable-http|server|client|resources/read = implemented
+mcp|streamable-http|server|client|resources/templates/list = implemented
+mcp|streamable-http|server|client|completion/complete = implemented
+
+# SEP-2663, the tasks extension: `tools/call` answered with a task, then polled and steered. THREE
+# methods and only three — `tasks/result` and `tasks/list` were REMOVED by the extension's v2 wire,
+# so their absence is what makes them answer `-32601`, which is conformant rather than a gap.
+# Advertised under `capabilities.extensions`, gated on the caller's own declaration (`-32021`, not
+# `-32601`: the surface exists, this caller has not asked for it).
+mcp|streamable-http|server|client|tasks/get = implemented
+mcp|streamable-http|server|client|tasks/update = implemented
+mcp|streamable-http|server|client|tasks/cancel = implemented
+
+# ── THE SERVER-TO-CLIENT CHANNEL ───────────────────────────────────────────────────────────────
+#
+# `subscriptions/listen`, and the four notifications that make it worth opening.
+#
+# WHAT THE VOCABULARY ALONE DOES NOT BUY. The wire types for these notifications existed while the
+# served endpoint answered `-32601` to every subscription verb, and that combination is worth naming
+# because it looks like coverage and is not: a subscription with no channel to be notified over is a
+# promise that would never be kept, and a client told it is subscribed will wait rather than fall
+# back. What makes these cells claimable is the CHANNEL and the ADMISSION, not the vocabulary.
+#
+# HOW IT WORKS, and the two properties that are security properties rather than features:
+#
+#   * THE ACKNOWLEDGEMENT IS A NARROWING. `notifications/subscriptions/acknowledged` carries the
+#     ACCEPTED subset of the requested filter, not a receipt for it. A client that asked for
+#     something busbar cannot deliver learns so on the first frame instead of waiting.
+#   * A CHANGE IS SCOPED TO THE CALLER WHO IS WATCHING. The pin generation moving is the cheap gate;
+#     what decides whether a stream is woken is a comparison of the catalogue THIS CALLER CAN SEE,
+#     under the same grant predicate that scopes `tools/list`. A registration this caller may not
+#     reach must not wake this caller's stream, because that leaks the existence of another tenant's
+#     inventory through timing.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/subscribe_tests.rs`, every case driven over a real socket
+# against a real router — the acknowledgement arriving first and carrying the subscription id, the
+# narrowing, the refusal of a subscription that could deliver nothing, a REAL catalogue change made
+# through `AppHandle::swap` (the same seam an admin apply and a config reload go through) waking an
+# OPEN stream, and a stream filtered to prompts not leaking a tool notification. Plus the official
+# suite's `server-stateless`, whose `ServerSendsSubscriptionAck`, `ServerTagsSubscriptionId` and
+# `ServerHonorsNotificationFilter` checks judge exactly these three properties and, before this
+# landed, could only skip themselves over a surface that answered `-32601`.
+mcp|streamable-http|server|client|subscriptions/listen = implemented
+mcp|streamable-http|server|server|notifications/subscriptions/acknowledged = implemented
+mcp|streamable-http|server|server|notifications/tools/list_changed = implemented
+mcp|streamable-http|server|server|notifications/prompts/list_changed = implemented
+mcp|streamable-http|server|server|notifications/resources/list_changed = implemented
+
+# ── THE NOTIFICATIONS THAT RIDE A REQUEST'S OWN RESPONSE STREAM ────────────────────────────────
+#
+# Neither of these needs a subscription, and that is the revision's design rather than a shortcut:
+# with no session there is nowhere for a logging LEVEL to live and nowhere for a standing stream to
+# push over, so both became per-request. The level is named in the request's own `_meta` and the
+# records ride the response stream of the request they describe.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/sse_tests.rs` over a real socket, and the official
+# suite's `server-stateless` (`ServerNoLogWithoutLogLevel` asserts busbar emits NO
+# `notifications/message` for a request that named no level — the filter observed working rather
+# than asserted) and `tools-call-with-progress` (REQUIRED), which drives an upstream that reports
+# progress and reads what reached the caller. The progress frames are mapped back to the CALLER's
+# own token: busbar mints its own for the upstream leg, so relaying the upstream's spelling would be
+# uncorrelatable and relaying busbar's would leak an internal identifier.
+mcp|streamable-http|server|server|notifications/message = implemented
+mcp|streamable-http|server|server|notifications/progress = implemented
+
+# ── THE THREE ASKS BUSBAR MAKES OF ITS CALLER ──────────────────────────────────────────────────
+#
+# `elicitation/create`, `roots/list` and `sampling/createMessage`, issued as `inputRequests` on an
+# `InputRequiredResult`. Under a stateless revision that is HOW a server originates a request: there
+# is no standing stream to push one over, so the ask travels as a result and the answer travels as a
+# fresh request carrying `inputResponses` and the sealed `requestState`.
+#
+# `sampling/createMessage` IN THIS DIRECTION IS DELIBERATE AND IS NOT THE SAME QUESTION AS THE
+# CLIENT-DIRECTION ONE, which is waived below. Here busbar asks the CALLER's model to run a
+# completion on the CALLER's budget, in busbar's own name, from text an OPERATOR wrote — absent
+# unless the operator opted in, per capability, literal, and refused outright if filtering by the
+# caller's declared capabilities would empty the round (an ask that a caller could strip by
+# declaring no capabilities is a gate its own subject controls).
+#
+# INSTRUMENT: the official suite's `input-required-result-basic-elicitation`,
+# `-basic-sampling`, `-basic-list-roots` and the nine other `input-required-result-*` scenarios, all
+# REQUIRED at this revision and all driven against the `ask_caller:` registrations in
+# `scripts/mcp-subject/boot.sh`; plus `crates/busbar/src/mcp/tests/callerask_tests.rs`.
+mcp|streamable-http|server|server|elicitation/create = implemented
+mcp|streamable-http|server|server|roots/list = implemented
+mcp|streamable-http|server|server|sampling/createMessage = implemented
+
+# ── MCP, busbar as CLIENT, over STREAMABLE-HTTP — the legs that are built ──────────────────────
+#
+# The rest of this column is still MISSING and is still in the work queue; what is claimed here is
+# only what a customer can do today. busbar's outbound MCP leg exists to FRONT a registered tool
+# server, so `tools/call` and `tools/list` are the two verbs it issues, and progress is the one
+# message it accepts back and relays.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/upstream_join_tests.rs` and `deputy_pair_tests.rs` drive
+# a REAL fake MCP peer and a REAL fake RFC 8693 token endpoint and read every byte that reached
+# them — including that the outbound credential was selected under the INBOUND caller's grant, which
+# is the confused-deputy defence for this direction and is only provable with both directions
+# mounted. `connect_tests.rs` and `drift_dispatch_tests.rs` drive the catalogue read. The in-house
+# conformance battery's six `pr`-tier seam tests drive the same leg against a HOSTILE HTTP peer
+# through the same front door, with `MCP_NO_SKIPS=1` so a skipped seam is red.
+mcp|streamable-http|client|client|tools/call = implemented
+mcp|streamable-http|client|client|tools/list = implemented
+
+# The upstream's progress, relayed to busbar's own caller. ONLY that method is taken off the
+# upstream's stream — a stream may carry anything, and relaying whatever happened to be on it would
+# put an upstream's messages in front of busbar's caller under busbar's name. The frames are
+# re-tokened on the way out: busbar mints its own progress token for the upstream leg, so relaying
+# the upstream's spelling would be uncorrelatable to the caller and relaying busbar's would leak an
+# internal identifier. Instrument: the official suite's `tools-call-with-progress`, REQUIRED at this
+# revision, which drives an upstream that reports progress and reads what reached the caller.
+mcp|streamable-http|client|server|notifications/progress = implemented
 
 # ---------------------------------------------------------------------------
 # waived
 # ---------------------------------------------------------------------------
 
 # (none yet)
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+# MCP, busbar as SERVER, over STREAMABLE-HTTP — the cells the REVISION removed.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# READ THE `implemented` BLOCK ABOVE FIRST. These are not "we ran out of time" waivers and they are
+# not "we decided against it" waivers. Revision `2026-07-28` (SEP-2575) deleted the `initialize`
+# handshake, protocol sessions, the standalone GET stream and `Last-Event-ID` resumability, and with
+# them the methods that only meant anything inside a session. The official conformance suite's
+# `server-stateless` scenario POSTS five of these method names and asserts that each answers HTTP
+# 404 with JSON-RPC `-32601`. BUILDING THEM WOULD FAIL THE GATE.
+#
+# The customer-visible consequence, stated once for the whole block: a client written against
+# `2025-11-25` or earlier will not interoperate with busbar's MCP endpoint. That is the revision's
+# consequence rather than busbar's — busbar advertises exactly one revision in
+# `server/discover.supportedVersions` and answers `-32022 UnsupportedProtocolVersionError` with that
+# list to anything else, so such a client is told which version to speak rather than left guessing.
+
+mcp|streamable-http|server|client|initialize = waived 2026-08-12 Removed by SEP-2575: revision 2026-07-28 has no handshake, and every request carries its own protocol version and client capabilities in `params._meta` instead. The official suite's `server-stateless` scenario asserts this method answers HTTP 404 / -32601, so implementing it would fail conformance. A client that sends it is told, by the code it gets back, that this server implements no such method rather than being handed a session that does not exist.
+mcp|streamable-http|server|client|notifications/initialized = waived 2026-08-12 Removed by SEP-2575 with the handshake it acknowledged: there is no `initialize` for it to follow. It is a notification, so JSON-RPC 2.0 section 4.1 forbids answering it at all — busbar returns 202 with no body to every notification, which is the conformant answer and is not coverage of this cell.
+mcp|streamable-http|server|client|ping = waived 2026-08-12 Removed by SEP-2575 and asserted absent by the official suite's `server-stateless` scenario (HTTP 404 / -32601). The suite's own `ping` scenario is marked `removedIn: 2026-07-28` and is not run at this revision. Liveness on a stateless transport is the HTTP request itself; a keepalive for a session there is no session to keep alive is a round trip that proves nothing.
+mcp|streamable-http|server|client|logging/setLevel = waived 2026-08-12 Removed by SEP-2575, and there is no state for it to set: with no session there is nowhere for a level to live between requests. The level moved INTO the request — `params._meta`'s `io.busbar/loggingLevel` — and the `notifications/message` records ride that request's own response stream, which IS built and claimed above. The suite asserts this method answers HTTP 404 / -32601 and its `logging-set-level` scenario is `removedIn: 2026-07-28`.
+mcp|streamable-http|server|client|resources/subscribe = waived 2026-08-12 Removed by SEP-2575 and replaced by `subscriptions/listen`, which IS built and claimed above. rmcp's own type carries a deprecation note saying exactly this: "resources/subscribe is legacy-only; use subscriptions/listen for protocol version 2026-07-28". The official suite asserts this method answers HTTP 404 / -32601, so serving it would fail conformance. A customer subscribing to change notifications does so through the replacement, on the same transport, in the same deployment.
+mcp|streamable-http|server|client|resources/unsubscribe = waived 2026-08-12 Removed by SEP-2575 alongside `resources/subscribe`; rmcp's deprecation note says a client cancels by closing the `subscriptions/listen` request. The official suite asserts HTTP 404 / -32601. Closing the stream is the withdrawal, and it cannot get out of step with the subscription the way a separate verb can.
+
+# ── THE TWO TRANSPORT VERBS ────────────────────────────────────────────────────────────────────
+#
+# These are the two cells the inventory flags as not derivable from rmcp's model, and both are
+# answered by the same fact. This revision has no standalone GET stream and no sessions, so there is
+# no stream for GET to open and no session for DELETE to terminate. busbar answers `405` with
+# `Allow: POST` to both — which is what the specification says a server SHOULD do, and is the
+# INFORMATIVE answer rather than `404`: it tells a client built against an older revision that it
+# found the right endpoint and used the wrong verb, which is a fixable diagnosis.
+#
+# THE INVENTORY'S OWN NOTE ON `GET /mcp` SAYS "Without it NO server-originated request or
+# notification can reach the client over HTTP", and that was true of every earlier revision and is
+# the reason the cell is called out. It is NOT true of this one, and the `implemented` block above
+# is the evidence: notifications reach a client over `subscriptions/listen`, server-originated
+# requests reach a client as `inputRequests` on an `InputRequiredResult`, and both are exercised by
+# REQUIRED scenarios of the official suite. The channel was moved, not deleted, so what is waived
+# here is a VERB and not a capability.
+mcp|streamable-http|server|client|GET /mcp (open SSE stream) = waived 2026-08-12 Removed by SEP-2575: revision 2026-07-28 has no standalone GET stream and no `Last-Event-ID` resumability. busbar answers 405 with `Allow: POST`, which is the answer the specification names. The capability this verb used to carry — server-to-client notifications — is served by `subscriptions/listen`, which is implemented and claimed above, so no customer loses a capability to this waiver. The suite's `server-sse-polling` scenario, the one that drove this verb, is marked `removedIn: 2026-07-28`.
+mcp|streamable-http|server|client|DELETE /mcp (terminate session) = waived 2026-08-12 Removed by SEP-2575: there are no sessions, so there is no server-side state a client could be billed for and no session id to delete. busbar answers 405 with `Allow: POST`. The concern the verb existed for — a client telling a gateway to drop state it is paying for — is answered by there being none: a `subscriptions/listen` stream ends when the client closes the request, and every other request is complete when it is answered.
+
+# ── THE NOTIFICATIONS WITH NOWHERE TO ARRIVE, AND NOWHERE TO GO ────────────────────────────────
+#
+# Each of these is a real message in rmcp's model that this revision left without a carrier on this
+# transport, in one direction or the other. They are waived individually rather than as a block
+# because the reasons differ and a reason that reads the same as its neighbour is the one that gets
+# quietly changed.
+mcp|streamable-http|server|client|notifications/cancelled = waived 2026-08-12 A client cancels an in-flight request on a stateless HTTP transport by closing the connection, which busbar observes directly; and it cancels a long-running one with `tasks/cancel`, which IS implemented and claimed above. A separate cancellation notification would need a second channel from the client to correlate against a request busbar is still holding, and this revision gives a client no such channel: every client-to-server message is a POST that is itself the request.
+mcp|streamable-http|server|server|notifications/cancelled = waived 2026-08-12 busbar as server has nothing to cancel in this direction: the only requests it originates at its caller are the `inputRequests` on an `InputRequiredResult`, and those are withdrawn by the `requestState` seal expiring — a bounded TTL busbar mints — rather than by a message. A cancellation notification would need the `subscriptions/listen` stream to carry a message about a request that stream knows nothing about.
+mcp|streamable-http|server|client|notifications/progress = waived 2026-08-12 Progress in this direction reports a CLIENT's work on a request the SERVER made, and the only requests busbar makes of its caller are the `inputRequests` on an `InputRequiredResult` — which the caller answers by re-issuing the request, not by working on it over time. There is no long-running client-side operation for busbar to be told about. The server-originated direction of this same method IS implemented and claimed above.
+mcp|streamable-http|server|client|notifications/roots/list_changed = waived 2026-08-12 A client telling a server its filesystem roots changed presupposes the server is holding that list between requests, and this revision holds nothing between requests. busbar asks for roots when it needs them, as an `inputRequest` on the request that needs them, so the answer is never stale enough to need invalidating.
+mcp|streamable-http|server|client|notifications/elicitation/response = waived 2026-08-12 SEP-1036's out-of-band elicitation reply. rmcp declares the method and lists it in no union, which is the inventory's own note on this cell. On the 2026-07-28 wire an elicitation is answered IN BAND: the caller re-issues its request carrying `inputResponses` and the sealed `requestState`, which busbar verifies against the principal, the method, the arguments digest, the catalogue generation and a TTL. Accepting the same answer as an unsolicited notification would be accepting it with none of that binding — it would arrive on no request, so there would be nothing to bind it to.
+mcp|streamable-http|server|server|notifications/tasks = waived 2026-08-12 SEP-2663's task status notification. The three tasks METHODS are implemented and claimed above, so a customer can create, poll, steer and cancel a task; what is absent is being PUSHED its status changes. The revision's only server-to-client carrier is `subscriptions/listen`, and its `SubscriptionFilter` has no task category — a client cannot subscribe to task status, so busbar has no stream it may put one on. The customer-visible consequence is that a task's progress is polled with `tasks/get` rather than pushed. The suite's `tasks-status-notifications` scenario is `not_scored` at this revision, under `reason: extension`.
+mcp|streamable-http|server|server|notifications/resources/updated = waived 2026-08-12 The delivery half of a resource subscription, and the one category `subscriptions/listen` NARROWS AWAY in its acknowledgement rather than silently failing to deliver. A resource's contents change at the upstream that owns it; busbar fronts that upstream and is told nothing when it happens, so the only way to emit this truthfully would be to poll every subscribed resource on every registered upstream — a load busbar would be imposing on somebody else's server on a client's say-so, on a schedule that server never agreed to. A client that asks for `resourceSubscriptions` is told on the FIRST frame of its stream that the category was not accepted, so it can fall back to re-reading rather than wait for a notification that was never coming. The codec for this message exists (`crate::handlers::mcp::McpNotification`) and is deliberately not claimed as a capability.
+mcp|streamable-http|server|server|ping = waived 2026-08-12 A server pinging its client needs a channel to send an unsolicited request on and a client obliged to answer it. `subscriptions/listen` carries NOTIFICATIONS — the `server-stateless` scenario asserts a response stream contains no independent top-level JSON-RPC requests, and a ping is one — so the only channel busbar has may not carry this. Liveness of the stream itself is served by the SSE comment keepalive busbar writes on an idle subscription, which needs no reply and cannot be confused with a request.
+
+# ── MCP, busbar as CLIENT — THE THREE ASKS AN UPSTREAM MAKES OF BUSBAR ─────────────────────────
+#
+# THE DECISION THIS BLOCK RECORDS, because it is a budget and authorisation question before it is a
+# method, and because leaving it unwritten would be the silence this file exists to refuse.
+#
+# An upstream tool server can answer busbar's `tools/call` with an `InputRequiredResult` asking
+# busbar to sample a model, elicit from a human, or list filesystem roots. busbar IS an LLM gateway,
+# so `sampling/createMessage` is the one it could obviously answer — and that is exactly what makes
+# it dangerous rather than easy. Satisfying it means:
+#
+#   * A TOOL SERVER AUTHORS A PROMPT THAT RUNS ON THE OPERATOR'S MODEL POOL. Everything an upstream
+#     says is untrusted here — busbar already markup-normalises an upstream's tool DESCRIPTION and
+#     its RESULT before either re-enters model context, on the reasoning that an upstream can rewrite
+#     its own text at will. An upstream-authored sampling prompt is that same untrusted text, except
+#     it is not being shown to a model, it IS the model's instructions.
+#   * ON A BUDGET THAT HAS NOBODY TO CHARGE. Every other spend on this plane is charged to the
+#     INBOUND caller's own per-key budget, which is what makes a runaway loop stop — see
+#     `Refusal::BudgetExhausted`. An upstream's ask arrives inside a call busbar is already making,
+#     so there is no second principal to bill; the completion lands on the operator. There is no
+#     per-upstream sampling budget in 1.6.0 and therefore no cap an operator could set.
+#
+# So the answer for 1.6.0 is NO, deliberately, and it is a WAIVER rather than an omission. What is
+# already built and stays built is the whole apparatus around the decision: the ask is recognised,
+# the per-server grant is deny-by-default and re-read LIVE on every round, the round count is hard-
+# capped, and the refusal is busbar-attributed and names the grant an operator would have to set.
+# The ask TERMINATES at busbar in every case — it is never proxied to busbar's own caller, because
+# that would ask the caller to grant, on the upstream's behalf, authority busbar has just declined
+# to spend.
+#
+# CUSTOMER-VISIBLE CONSEQUENCE, the same for all three: an MCP tool server that cannot complete a
+# call without a server-initiated round trip cannot be fronted by busbar. The caller gets a refusal
+# that names the server, the ask kind and the configuration key, not a hang and not a silent wrong
+# answer.
+#
+# WHAT WOULD HAVE TO EXIST TO LIFT THIS: a per-upstream sampling budget an operator can cap, and a
+# decision about whose model and whose context an upstream-authored prompt may run in. Both are
+# design work, not plumbing, which is why this is dated rather than left as a `TODO`.
+mcp|streamable-http|client|server|sampling/createMessage = waived 2026-08-12 busbar recognises this ask from an upstream, gates it on a deny-by-default per-server grant re-read live on every round, and refuses it with a busbar-attributed error naming the grant. It does not SATISFY it, and that is deliberate for 1.6.0: satisfying it would run an untrusted upstream's prompt on the operator's model pool, charged to the operator, with no per-upstream budget an operator could cap — every other spend on this plane is charged to the inbound caller's own budget, and an upstream's ask has no inbound caller to charge. A customer whose tool server requires server-initiated sampling cannot front it through busbar and is told so by name. Lifting this needs a per-upstream sampling budget and a decision about whose context an upstream-authored prompt runs in, which is design work rather than plumbing.
+mcp|streamable-http|client|server|elicitation/create = waived 2026-08-12 Recognised, grant-gated and refused, on the same machinery as the sampling ask above. Not satisfied, for a different reason: an elicitation needs a HUMAN, and busbar is a gateway with no user in front of it at the moment an upstream asks. The two answers that would be available — invent one, or forward the upstream's demand to busbar's caller — are respectively fabricating consent and asking the caller to grant, on the upstream's behalf, authority busbar itself declined to spend. `Refusal::Unsatisfiable` says exactly this and is kept distinct from `Refusal::Ungranted` because the operator's remedy is completely different. A customer whose tool server requires interactive elicitation cannot front it through busbar.
+mcp|streamable-http|client|server|roots/list = waived 2026-08-12 Recognised, grant-gated and refused, on the same machinery as the two asks above. Not satisfied because busbar has no filesystem to describe: it is a network gateway, its container's filesystem is not the caller's workspace, and answering with it would tell an upstream about busbar's own deployment rather than about anything the customer meant. There is no roots policy in 1.6.0 for an operator to declare one from. A customer whose tool server needs workspace roots cannot front it through busbar; the refusal names the server and the grant.
+
+# ── MCP, busbar as CLIENT — THE SAME METHODS, REMOVED IN THE SAME REVISION ─────────────────────
+#
+# The eight cells below are the mirror image of the server-direction block above, decided by the
+# identical fact and no other. busbar's outbound MCP leg speaks exactly one revision — the same
+# `2026-07-28` its inbound surface serves, off the same constants, so the two directions cannot come
+# to disagree about what the wire is. SEP-2575 removed these methods and the two transport verbs, so
+# a busbar that SENT one would be sending a message no conformant peer implements, and would get
+# back the same `404` / `-32601` its own front door gives.
+#
+# CUSTOMER-VISIBLE CONSEQUENCE, once for the block: busbar cannot front an MCP tool server that only
+# speaks `2025-11-25` or earlier. Registering one fails at the first catalogue read with the peer's
+# own refusal, rather than half-working.
+mcp|streamable-http|client|client|initialize = waived 2026-08-12 Removed by SEP-2575. busbar's outbound leg speaks the same revision its front door serves, and that revision has no handshake: every outbound request carries its own protocol version and busbar's declared capabilities in `params._meta`, which is what `crate::mcp::client::jsonrpc` builds off the same constants the ingress requires. Sending `initialize` would be sending a method no conformant peer of this revision implements.
+mcp|streamable-http|client|client|notifications/initialized = waived 2026-08-12 Removed by SEP-2575 with the handshake it acknowledged. There is no `initialize` for busbar to follow, and a notification announcing the completion of a handshake that did not happen is a message with no referent.
+mcp|streamable-http|client|client|ping = waived 2026-08-12 Removed by SEP-2575, and busbar has no session to keep alive: each outbound call is a POST that either completes or fails on its own deadline, which is a stronger liveness signal than a keepalive because it is the actual work. Upstream health on this plane is judged by the calls busbar is already making.
+mcp|streamable-http|client|client|logging/setLevel = waived 2026-08-12 Removed by SEP-2575, and there is no upstream state for busbar to set: the level moved into each request's own `_meta`. busbar does not relay an upstream's log records to its caller in any case — they would arrive under busbar's name, which is the same laundering an upstream's `InputRequiredResult` is refused for — so there is no level for busbar to want.
+mcp|streamable-http|client|client|resources/subscribe = waived 2026-08-12 Removed by SEP-2575 and replaced by `subscriptions/listen`; rmcp's own type carries a deprecation note saying so. busbar does not subscribe to upstream resources at all: the resources it publishes are declared by the OPERATOR in `resources_allow`, not discovered from the upstream, so there is nothing upstream whose change busbar would be waiting on.
+mcp|streamable-http|client|client|resources/unsubscribe = waived 2026-08-12 Removed by SEP-2575 alongside `resources/subscribe`, and withdrawn by the same fact: busbar holds no upstream resource subscription to withdraw.
+mcp|streamable-http|client|client|GET /mcp (open SSE stream) = waived 2026-08-12 Removed by SEP-2575: this revision has no standalone GET stream to open and no `Last-Event-ID` to resume it with. busbar reads an upstream's notifications off the SSE response of the POST it made — that is where `notifications/progress` arrives from, which is implemented and claimed above — so no capability is lost with the verb.
+mcp|streamable-http|client|client|DELETE /mcp (terminate session) = waived 2026-08-12 Removed by SEP-2575: there is no session for busbar to terminate at an upstream, so there is no upstream state busbar could be leaving behind. Each outbound call is complete when it is answered.

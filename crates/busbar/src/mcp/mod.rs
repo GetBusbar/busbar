@@ -176,6 +176,10 @@ pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;
+/// `subscriptions/listen` — THE SERVER-TO-CLIENT CHANNEL of this revision. The GET stream was
+/// removed and the channel MOVED onto a method; see the module header for why that is not the same
+/// thing as the channel being deleted.
+pub(crate) mod subscribe;
 /// SEP-2663 — the TASKS EXTENSION: `tools/call` answered with a task, then `tasks/get` /
 /// `tasks/update` / `tasks/cancel`. See the module header for what is and is not claimed about
 /// durability.
