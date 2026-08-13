@@ -482,6 +482,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
         output_tokens: 22,
         cache_read_input_tokens: Some(5),
         cache_creation_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     gov.record_metering("vk_m", "claude-z", "anthropic", Some(&usage), now);
     gov.record_metering("vk_m", "claude-z", "anthropic", None, now); // flat-fee op
@@ -3191,6 +3192,7 @@ mod metering_fanout {
                     output_tokens: 1,
                     cache_read_input_tokens: None,
                     cache_creation_input_tokens: None,
+                    detail: crate::ir::IrUsageDetail::default(),
                 };
                 gov.record_metering(&format!("vk_{i}"), "m", "p", Some(&usage), now);
             }));
@@ -3230,6 +3232,7 @@ mod metering_fanout {
             output_tokens: 5,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
         };
         gov.record_metering("vk_err", "m", "p", Some(&usage), now);
 

@@ -114,6 +114,12 @@ const PATH_UPSTREAM: &str = "/v1/chat/completions";
 /// that key on the message string still fire.
 const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
+/// `file.file_id`, an uploads-API handle with no neutral (base64/url) form. Only an OpenAI-family
+/// writer recognizes the tag and re-emits the reference; every other writer drops it with a warn
+/// rather than emitting a handle its own backend cannot resolve.
+const VENDOR_NAME: &str = crate::proto::PROTO_OPENAI;
+
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Resolve the `model` to emit on an OpenAI response: the upstream-supplied value when present,
@@ -572,6 +578,69 @@ pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     }
 }
 
+/// Project an [`crate::ir::IrBlock::Media`] into the OpenAI Chat Completions content part that can
+/// express it, or `None` when this dialect has no slot for it (the caller emits nothing).
+///
+/// OpenAI Chat has exactly TWO attachment parts — `input_audio` (inline base64 + a bare format
+/// token) and `file` (a data-URI `file_data` + `filename`, or an uploads-API `file_id`) — and NO
+/// video part. So:
+///
+/// * Audio with inline bytes → `input_audio`, the format token recovered from the mime subtype.
+/// * Document → `file`, as a data URI (round-tripping what the reader parsed) or the native
+///   `file_id` when the source is this protocol's own vendor reference.
+/// * Video, and audio that is only a URL/foreign reference → NOTHING is emitted, with a `warn!`
+///   naming the construct. That is the deliberate, logged drop; the empty text block it replaces was
+///   the silent one — indistinguishable, to the model and to the operator, from the caller having
+///   attached nothing at all.
+fn media_part_from_ir(
+    kind: crate::ir::IrMediaKind,
+    source: &crate::ir::IrImageSource,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    use crate::ir::{IrImageSource as S, IrMediaKind as K};
+    match (kind, source) {
+        (K::Audio, S::Base64 { media_type, data }) => {
+            // OpenAI wants the bare container token (`wav`, `mp3`), not the mime type.
+            let format = media_type.rsplit('/').next().unwrap_or("wav");
+            Some(serde_json::json!({
+                "type": "input_audio",
+                "input_audio": { "data": data, "format": format }
+            }))
+        }
+        (K::Document, S::Base64 { media_type, data }) => {
+            let mut file = serde_json::Map::new();
+            file.insert(
+                "file_data".to_string(),
+                serde_json::json!(format!("data:{media_type};base64,{data}")),
+            );
+            if let Some(n) = name {
+                file.insert("filename".to_string(), serde_json::json!(n));
+            }
+            Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
+        }
+        // This protocol's OWN uploads handle: re-emit the native `file_id` form verbatim.
+        (K::Document, S::Vendor { vendor, value }) if *vendor == VENDOR_NAME => {
+            let id = value.get("file_id").and_then(|i| i.as_str())?;
+            let mut file = serde_json::Map::new();
+            file.insert("file_id".to_string(), serde_json::json!(id));
+            if let Some(n) = name {
+                file.insert("filename".to_string(), serde_json::json!(n));
+            }
+            Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
+        }
+        _ => {
+            tracing::warn!(
+                media_kind = kind.as_str(),
+                "dropping attachment on OpenAI Chat egress: this dialect has content parts for \
+                 inline audio (`input_audio`) and files (`file`) only — a video block, or an \
+                 attachment carried as a bare URL or a foreign vendor handle, has no part to go in. \
+                 The block is NOT emitted (it is deliberately absent, not replaced by empty text)"
+            );
+            None
+        }
+    }
+}
+
 /// Read an OpenAI-format block from JSON.
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
@@ -623,6 +692,90 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             }
             Ok(crate::ir::IrBlock::Image {
                 source: super::parse_image_url(url),
+                cache_control: None,
+            })
+        }
+        // An audio ATTACHMENT the caller sent for the model to listen to:
+        // `{"type":"input_audio","input_audio":{"data":"<b64>","format":"wav"|"mp3"}}`. Before
+        // `IrBlock::Media` existed this fell through to the unknown-part arm below and became
+        // `{"type":"text","text":""}` with no warn — the audio never reached the model, the model
+        // answered "transcribe what?", and nothing in the logs said why, even though a Gemini lane
+        // would have accepted it natively as `inlineData`. OpenAI carries the format as a bare token
+        // (`wav`), so normalize it to the real mime type the neutral IR (and every other dialect)
+        // speaks; the writer reverses this exactly.
+        "input_audio" => {
+            let audio_obj = obj.get("input_audio").ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
+            let data = audio_obj
+                .get("data")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let format = audio_obj
+                .get("format")
+                .and_then(|v| v.as_str())
+                .unwrap_or("wav");
+            Ok(crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Audio,
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: format!("audio/{format}"),
+                    data,
+                },
+                name: None,
+                cache_control: None,
+            })
+        }
+        // A file ATTACHMENT: `{"type":"file","file":{"file_data":"data:application/pdf;base64,…",
+        // "filename":"x.pdf"}}` or `{"type":"file","file":{"file_id":"file-1"}}`. Same story as
+        // `input_audio` — it used to become an empty text block. `file_data` is a data URI, so the
+        // shared `parse_image_url` seam (protocol-neutral despite the name: it splits
+        // `data:<mime>;base64,<payload>` and otherwise keeps a URL verbatim) yields the same typed
+        // source an image gets. A `file_id` is an OpenAI-hosted reference with NO neutral form, so it
+        // rides the opaque `Vendor` escape and only an OpenAI-family writer re-emits it.
+        "file" => {
+            let file_obj = obj.get("file").ok_or(IrError {
+                class: StatusClass::ClientError,
+                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                retry_after: None,
+            })?;
+            let name = file_obj
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let source = match file_obj
+                .get("file_data")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                Some(data_uri) => super::parse_image_url(data_uri),
+                None => {
+                    let file_id = file_obj
+                        .get("file_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    crate::ir::IrImageSource::Vendor {
+                        vendor: VENDOR_NAME,
+                        value: serde_json::json!({ "file_id": file_id }),
+                    }
+                }
+            };
+            // The mime type, when the data URI carried one, is the ONLY signal of what kind of
+            // attachment this is — an OpenAI `file` part is used for PDFs today but the mime decides.
+            let kind = match &source {
+                crate::ir::IrImageSource::Base64 { media_type, .. } => {
+                    crate::ir::IrMediaKind::from_media_type(media_type)
+                }
+                _ => crate::ir::IrMediaKind::Document,
+            };
+            Ok(crate::ir::IrBlock::Media {
+                kind,
+                source,
+                name,
                 cache_control: None,
             })
         }

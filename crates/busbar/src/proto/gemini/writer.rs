@@ -1,5 +1,21 @@
 use super::*;
 
+/// A representative `mimeType` for a media kind whose source is a bare URL and therefore carries no
+/// mime of its own (an Anthropic `document.source.url`, an OpenAI `image_url`-style file URL).
+///
+/// Gemini's `fileData` requires a `mimeType` to decode the referenced file, so omitting it is worse
+/// than a well-formed generic: `application/pdf` is the document form Gemini's own docs use in the
+/// `fileData` example, and the audio/video generics are the standard container-agnostic types. This
+/// is a WRITE-side default, never a claim about the referenced bytes — a source that knows its real
+/// mime (every `Base64` one) never routes through here.
+fn gemini_mime_for_kind(kind: crate::ir::IrMediaKind) -> &'static str {
+    match kind {
+        crate::ir::IrMediaKind::Document => "application/pdf",
+        crate::ir::IrMediaKind::Audio => "audio/mpeg",
+        crate::ir::IrMediaKind::Video => "video/mp4",
+    }
+}
+
 impl ProtocolWriter for GeminiWriter {
     fn upstream_path(&self) -> &str {
         // Model-independent fallback; the real per-request path comes from upstream_path_for().
@@ -248,6 +264,34 @@ impl ProtocolWriter for GeminiWriter {
                             tracing::warn!(
                                 "dropping unresolvable vendor-scoped image reference on Gemini \
                                  egress: a file_id / s3Location has no cross-vendor analog"
+                            );
+                        }
+                    },
+                    // Gemini is the ONE dialect in the matrix whose attachment slots are
+                    // mime-generic: `inlineData{mimeType,data}` and `fileData{fileUri,mimeType}`
+                    // carry a PDF, an audio clip and a video with no per-kind wire shape. So every
+                    // `Media` kind projects natively here — this writer is why the attachment gap
+                    // was never an untranslatable-concept problem, only an unmodelled-IR one.
+                    crate::ir::IrBlock::Media { kind, source, .. } => match source {
+                        crate::ir::IrImageSource::Url(uri) => {
+                            // Re-emit the `mimeType` the reader used to route this block. A bare
+                            // container guess is better than omitting it: Gemini uses `mimeType` to
+                            // decide how to decode the referenced file.
+                            parts_arr.push(serde_json::json!({
+                                "fileData": { "fileUri": uri, "mimeType": gemini_mime_for_kind(*kind) }
+                            }))
+                        }
+                        crate::ir::IrImageSource::Base64 { media_type, data } => {
+                            parts_arr.push(serde_json::json!({
+                                "inlineData": { "mimeType": media_type, "data": data }
+                            }))
+                        }
+                        crate::ir::IrImageSource::Vendor { .. } => {
+                            tracing::warn!(
+                                media_kind = kind.as_str(),
+                                "dropping attachment on Gemini egress: the source is a vendor-scoped \
+                                 file handle (an OpenAI/Anthropic file_id, a Bedrock s3Location) that \
+                                 Gemini's backend cannot resolve; the block is NOT emitted"
                             );
                         }
                     },
@@ -1127,8 +1171,10 @@ impl ProtocolWriter for GeminiWriter {
                     parts_arr.push(serde_json::Value::Object(part));
                 }
 
-                // Image/ToolResult not supported in response output (lossy)
+                // Image/Media/ToolResult not supported in response OUTPUT (a model does not emit
+                // an attachment back on this surface), so nothing is lost by omitting them here.
                 crate::ir::IrBlock::Image { .. }
+                | crate::ir::IrBlock::Media { .. }
                 | crate::ir::IrBlock::ToolResult { .. }
                 | crate::ir::IrBlock::Json(_) => {}
             }

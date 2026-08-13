@@ -97,9 +97,19 @@ fn is_modeled_anthropic_block_type(t: &str) -> bool {
             | STOP_TOOL_USE
             | "tool_result"
             | "image"
+            | BLOCK_TYPE_DOCUMENT
             | BLOCK_TYPE_REDACTED_THINKING
     )
 }
+
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — an Anthropic
+/// Files-API `{"type":"file","file_id":…}` document source, or a `{"type":"content"}` document whose
+/// body is a block array. Neither has a neutral (base64/url) form, so only this protocol's writer
+/// re-emits it; any other writer drops it with a warn.
+const VENDOR_NAME: &str = crate::proto::PROTO_ANTHROPIC;
+
+/// Native Anthropic `document` content block type — a PDF/text attachment the model reads.
+const BLOCK_TYPE_DOCUMENT: &str = "document";
 
 /// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
 /// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
@@ -514,6 +524,79 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                     retry_after: None,
                 })
             }
+        }
+        // A native `document` block — the PDF/CSV/text attachment the model reads. Until
+        // `IrBlock::Media` existed this fell into `read_block`'s degrade-to-empty-Text arm and the
+        // ORIGINAL block was parked under `ANTHROPIC_UNMODELED_BLOCKS_SENTINEL` — which only ever
+        // came back on an Anthropic→Anthropic hop, because the seam clears `extra`. So on all five
+        // cross-protocol egresses the caller's document was destroyed and replaced with an empty text
+        // block, even though Gemini and Bedrock both have a native slot for it. Now it is modelled,
+        // which ALSO takes it out of the sentinel (see `is_modeled_anthropic_block_type`).
+        //
+        // Anthropic's `document.source` has four shapes; the two with a neutral form map onto the
+        // neutral IR sources, and the two that are Anthropic-hosted/Anthropic-shaped
+        // (`{"type":"file","file_id":…}`, `{"type":"content","content":[…]}`) ride the opaque
+        // `Vendor` escape so this protocol re-emits them verbatim and no other protocol can emit a
+        // handle its backend cannot resolve.
+        BLOCK_TYPE_DOCUMENT => {
+            // A `document` with NO `source` carries no payload at all. It must NOT be a 400: a
+            // reader that hard-errors on a degenerate-but-parseable block turns forward-compatible
+            // conversation history into a rejected request. Degrade to the empty-Text placeholder
+            // (holding the block's POSITION in the turn) with a warn naming it, which is what every
+            // other unmodeled Anthropic block does.
+            let Some(source) = obj.get("source") else {
+                tracing::warn!(
+                    "degrading anthropic `document` block with no `source` to an empty text \
+                     placeholder: the block carries no payload to translate"
+                );
+                return Ok(crate::ir::IrBlock::Text {
+                    text: String::new(),
+                    cache_control: None,
+                    citations: Vec::new(),
+                });
+            };
+            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let name = obj
+                .get("title")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            let src_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let ir_source = match src_type {
+                "url" => crate::ir::IrImageSource::Url(
+                    source
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                // Both `base64` and `text` carry inline bytes plus a real mime type
+                // (`application/pdf`, `text/plain`) — the same neutral shape.
+                "base64" | "text" => crate::ir::IrImageSource::Base64 {
+                    media_type: source
+                        .get("media_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/pdf")
+                        .to_string(),
+                    data: source
+                        .get("data")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                },
+                _ => crate::ir::IrImageSource::Vendor {
+                    vendor: VENDOR_NAME,
+                    value: source.clone(),
+                },
+            };
+            Ok(crate::ir::IrBlock::Media {
+                // A `document` is a document whatever its mime says — Anthropic has no audio/video
+                // content block, so there is no other kind this can be.
+                kind: crate::ir::IrMediaKind::Document,
+                source: ir_source,
+                name,
+                cache_control,
+            })
         }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
         // reasoning). Map it onto the same typed IR carrier Bedrock's `redactedContent` uses: a
@@ -1015,7 +1098,32 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
                     serde_json::json!({ "type": "image", "source": { "type": "url", "url": url } })
                 }
                 crate::ir::IrImageSource::Base64 { media_type, data } => {
-                    serde_json::json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": data } })
+                    // VALIDATE the media type before putting it on the wire. Anthropic accepts only
+                    // `image/{jpeg,png,gif,webp}` and 400s anything else — and a non-image mime CAN
+                    // reach here: the Gemini reader used to map EVERY `inlineData` (including
+                    // `audio/mp3`, `application/pdf`) onto an `IrBlock::Image`, so
+                    // `{"type":"image","source":{"media_type":"audio/mp3"}}` went upstream and was
+                    // rejected. That breaks the half of the losslessness promise that says the
+                    // backend never rejects the request, which is the one thing translation must
+                    // never do. Bedrock's writer already validated against its own `ImageFormat`
+                    // union; this is that same pattern, not a new one. Emit the empty placeholder
+                    // (unreachable in practice — `write_message` filters first) rather than a block
+                    // Anthropic rejects.
+                    match crate::ir::image_subtype_if_supported(media_type) {
+                        Some(subtype) => serde_json::json!({
+                            "type": "image",
+                            "source": { "type": "base64", "media_type": format!("image/{subtype}"), "data": data }
+                        }),
+                        None => {
+                            tracing::warn!(
+                                media_type = %media_type,
+                                "dropping image block on Anthropic egress: media_type is not one of \
+                                 image/{{jpeg,png,gif,webp}}, the only set Anthropic accepts — \
+                                 emitting it verbatim would 400 the backend"
+                            );
+                            serde_json::json!({ "type": "text", "text": "" })
+                        }
+                    }
                 }
                 crate::ir::IrImageSource::Vendor { .. } => {
                     serde_json::json!({ "type": "text", "text": "" })
@@ -1027,6 +1135,57 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
                 }
             }
             img
+        }
+        crate::ir::IrBlock::Media {
+            kind,
+            source,
+            name,
+            cache_control,
+        } => {
+            // Anthropic has exactly ONE attachment block — `document` — and no audio or video block
+            // at all. So a Document projects natively (this is the slot an OpenAI `file` part or a
+            // Bedrock `document` lands in on an Anthropic egress), and Audio/Video are dropped
+            // DELIBERATELY with a warn naming the construct. `write_message` filters those before
+            // they get here so nothing is emitted for them; the placeholder below is defensive for a
+            // direct `write_block` call.
+            if *kind != crate::ir::IrMediaKind::Document {
+                tracing::warn!(
+                    media_kind = kind.as_str(),
+                    "dropping attachment on Anthropic egress: the Messages API has a `document` \
+                     content block and NO audio or video block, so this attachment has no native \
+                     slot; it is NOT emitted"
+                );
+                return serde_json::json!({ "type": "text", "text": "" });
+            }
+            let src = match source {
+                crate::ir::IrImageSource::Url(url) => {
+                    serde_json::json!({ "type": "url", "url": url })
+                }
+                crate::ir::IrImageSource::Base64 { media_type, data } => {
+                    // Anthropic splits inline document bytes across two source types by mime:
+                    // `text/plain` is the `text` source (raw, not base64), everything else is the
+                    // `base64` source. Reading the mime here keeps the reader's round-trip exact.
+                    let source_type = if media_type.eq_ignore_ascii_case("text/plain") {
+                        "text"
+                    } else {
+                        "base64"
+                    };
+                    serde_json::json!({ "type": source_type, "media_type": media_type, "data": data })
+                }
+                // This protocol's OWN opaque source (a Files-API `file_id` or a `content` document):
+                // re-emit verbatim. A FOREIGN vendor reference is filtered in `write_message`.
+                crate::ir::IrImageSource::Vendor { value, .. } => value.clone(),
+            };
+            let mut doc = serde_json::json!({ "type": BLOCK_TYPE_DOCUMENT, "source": src });
+            if let Some(obj) = doc.as_object_mut() {
+                if let Some(n) = name {
+                    obj.insert("title".to_string(), serde_json::json!(n));
+                }
+                if let Some(cc) = cache_control {
+                    obj.insert("cache_control".to_string(), write_cache_control(cc));
+                }
+            }
+            doc
         }
         crate::ir::IrBlock::Json(_) => {
             // A structured-json tool-result block has no top-level Anthropic content shape; it is
@@ -1095,6 +1254,41 @@ fn write_message(
                 if super::is_unresolvable_image_ref(source) {
                     dropped_file_id_image += 1;
                     return None;
+                }
+                // A base64 image whose media_type is not one Anthropic accepts (the `audio/mp3`
+                // arriving from a Gemini `inlineData`) would 400 the backend. Drop it here — the
+                // write_block arm warns and emits a placeholder only for a direct call.
+                if let crate::ir::IrImageSource::Base64 { media_type, .. } = source {
+                    if crate::ir::image_subtype_if_supported(media_type).is_none() {
+                        tracing::warn!(
+                            media_type = %media_type,
+                            "dropping image block from anthropic request egress: media_type is not \
+                             one of image/{{jpeg,png,gif,webp}} and anthropic 400s anything else"
+                        );
+                        return None;
+                    }
+                }
+            }
+            if let crate::ir::IrBlock::Media { kind, source, .. } = block {
+                // Anthropic models documents only, and cannot resolve a FOREIGN vendor handle (an
+                // OpenAI `file_id`, a Bedrock `s3Location`). Both are deliberate, warned drops.
+                if *kind != crate::ir::IrMediaKind::Document {
+                    tracing::warn!(
+                        media_kind = kind.as_str(),
+                        "dropping attachment from anthropic request egress: the Messages API has no \
+                         audio or video content block"
+                    );
+                    return None;
+                }
+                if let crate::ir::IrImageSource::Vendor { vendor, .. } = source {
+                    if *vendor != VENDOR_NAME {
+                        tracing::warn!(
+                            vendor = %vendor,
+                            "dropping document attachment from anthropic request egress: the source \
+                             is a foreign vendor file handle anthropic's backend cannot resolve"
+                        );
+                        return None;
+                    }
                 }
             }
             // A parked unmodeled block (e.g. `document`) at this exact position: splice the

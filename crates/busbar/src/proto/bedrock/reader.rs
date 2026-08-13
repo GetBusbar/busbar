@@ -452,6 +452,18 @@ impl ProtocolReader for BedrockReader {
                                 "i": block_idx,
                                 "block": { "document": document.clone() },
                             }));
+                            // ALSO model it (cross-protocol), the same additive pattern
+                            // `set_preceding_block_cache_control` uses for `cachePoint`: the stash
+                            // above only ever comes back on a Bedrock→Bedrock hop, because the seam
+                            // clears `extra` — so on the five cross-protocol egresses the caller's
+                            // PDF used to disappear entirely, with no block and no warn, even though
+                            // Gemini and Anthropic both have a native slot for it. The writer
+                            // SUPPRESSES this modelled block whenever the stash is present, so the
+                            // same-protocol round-trip stays byte-identical (no double emission).
+                            msg_content.push(bedrock_media_block(
+                                crate::ir::IrMediaKind::Document,
+                                document,
+                            ));
                         } else if let Some(video) = content_val.get("video") {
                             // A native Converse `video` block likewise has no IR counterpart; stash it
                             // verbatim so the writer re-emits it at the same position on a same-protocol
@@ -461,6 +473,9 @@ impl ProtocolReader for BedrockReader {
                                 "i": block_idx,
                                 "block": { "video": video.clone() },
                             }));
+                            // Modelled for the cross-protocol hop as well — see the `document` arm.
+                            msg_content
+                                .push(bedrock_media_block(crate::ir::IrMediaKind::Video, video));
                         }
                     }
                 }
@@ -1025,6 +1040,7 @@ impl ProtocolReader for BedrockReader {
                         .unwrap_or(0),
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
+                    detail: crate::ir::IrUsageDetail::default(),
                 };
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -1212,6 +1228,7 @@ impl ProtocolReader for BedrockReader {
                 .unwrap_or(0),
             cache_creation_input_tokens,
             cache_read_input_tokens,
+            detail: crate::ir::IrUsageDetail::default(),
         };
 
         Ok(crate::ir::IrResponse {

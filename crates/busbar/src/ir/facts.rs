@@ -434,7 +434,13 @@ fn walk<'a>(
                 out,
             ),
             // Structurally text-less and DELIBERATELY not widened here — see the module header.
-            IrBlock::Image { .. } => {}
+            // `Media` (a document/audio/video attachment) joins `Image` on the SAME decision, made
+            // explicitly rather than inherited: widening it would newly disclose attachment bytes,
+            // mime types and filenames to every operator content hook and sidecar. That is a real
+            // disclosure change, not a mechanical consequence of adding an IR variant, so it stays
+            // closed until it is decided on its own terms in its own diff — exactly the reasoning
+            // the module header records for image provenance.
+            IrBlock::Image { .. } | IrBlock::Media { .. } => {}
             IrBlock::Json(v) => out.push(ContentItem::Data {
                 role,
                 slot,

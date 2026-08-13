@@ -1355,6 +1355,7 @@ impl ToolIdRemap {
             crate::ir::IrBlock::Text { .. }
             | crate::ir::IrBlock::Thinking { .. }
             | crate::ir::IrBlock::Image { .. }
+            | crate::ir::IrBlock::Media { .. }
             | crate::ir::IrBlock::Json(_) => {}
         }
     }
@@ -1422,6 +1423,7 @@ pub(crate) fn decode_request_tool_ids(
             crate::ir::IrBlock::Text { .. }
             | crate::ir::IrBlock::Thinking { .. }
             | crate::ir::IrBlock::Image { .. }
+            | crate::ir::IrBlock::Media { .. }
             | crate::ir::IrBlock::Json(_) => {}
         }
     }
@@ -1926,3 +1928,10 @@ mod image_source_matrix_tests;
 #[cfg(test)]
 #[path = "tests/translate_parity_golden_tests.rs"]
 mod translate_parity_golden_tests;
+
+/// READ → WRITE round-trip fidelity per protocol, with an EXACT allow-list of accepted divergences.
+/// The complement to `same_proto_fidelity_tests` (which covers the byte-verbatim short-circuit that
+/// never enters the IR at all); this one drives the readers and writers that CAN lose.
+#[cfg(test)]
+#[path = "tests/roundtrip_fidelity_tests.rs"]
+mod roundtrip_fidelity_tests;

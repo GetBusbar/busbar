@@ -381,6 +381,15 @@ impl ProtocolWriter for AnthropicWriter {
             out.insert("metadata".to_string(), serde_json::json!({"user_id": user}));
         }
         for (key, value) in &req.extra {
+            // SKIP busbar's own positional-stash sentinel. It is CONSUMED above (spliced back into
+            // the message content by `write_message`), so re-emitting it here put a top-level
+            // `__busbar_anthropic_unmodeled_blocks` key on the Anthropic wire — a body key the API
+            // does not define, a latent 400, and a protocol-indistinguishability tell that names the
+            // proxy. The OpenAI writer already skipped its equivalent sentinel and the Bedrock
+            // sentinels are documented as consumed; this was the one writer that did not.
+            if key == ANTHROPIC_UNMODELED_BLOCKS_SENTINEL {
+                continue;
+            }
             out.insert(key.clone(), value.clone());
         }
         serde_json::Value::Object(out)
@@ -782,6 +791,28 @@ impl ProtocolWriter for AnthropicWriter {
             usage_map.insert(
                 "cache_read_input_tokens".to_string(),
                 serde_json::json!(crit),
+            );
+        }
+        // The differently-priced 5m/1h cache-creation tiers, in Anthropic's native nested spelling.
+        // Emitted only when a tier was actually reported, so a response that never had the split
+        // does not acquire an invented one.
+        let mut tiers = serde_json::Map::new();
+        if let Some(t5) = resp.usage.detail.cache_creation_5m_input_tokens {
+            tiers.insert(
+                "ephemeral_5m_input_tokens".to_string(),
+                serde_json::json!(t5),
+            );
+        }
+        if let Some(t1h) = resp.usage.detail.cache_creation_1h_input_tokens {
+            tiers.insert(
+                "ephemeral_1h_input_tokens".to_string(),
+                serde_json::json!(t1h),
+            );
+        }
+        if !tiers.is_empty() {
+            usage_map.insert(
+                "cache_creation".to_string(),
+                serde_json::Value::Object(tiers),
             );
         }
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));

@@ -8,6 +8,110 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Added
 
+- **Attachments cross protocols now: documents, audio and video reach the backend instead of being
+  destroyed.** Until this release the IR modelled `Text / Thinking / ToolUse / ToolResult / Image /
+  Json` and nothing else, so on a **cross-protocol** route an OpenAI caller's `input_audio` or
+  `file` part, an Anthropic `document`, a Bedrock `document`/`video` and a Responses `input_file`
+  were all converted to an **empty text block, with no warning**. The user's audio never reached the
+  model, the model answered "transcribe what?", and nothing in the logs said why — even though
+  Gemini would have accepted the audio natively as `inlineData` and Bedrock has a `document` block
+  of its own.
+
+  The IR now has a first-class attachment block, and every reader fills it and every writer projects
+  it into its dialect's native slot:
+
+  | dialect | reads | writes |
+  |---|---|---|
+  | OpenAI Chat | `input_audio`, `file` (`file_data`/`filename`/`file_id`) | same |
+  | Responses | `input_file` (`file_data`/`file_url`/`file_id`/`filename`) | same |
+  | Anthropic | `document` (base64/text/url/file_id/content sources, `title`) | same |
+  | Bedrock | `document`, `video` (inline bytes and `s3Location`) | same |
+  | Gemini | `inlineData`/`fileData` of any mime type | same |
+  | Cohere | tool-result `document` parts | same |
+
+  **Where a target genuinely cannot express an attachment it is now dropped deliberately and
+  logged, naming the construct** — Anthropic has no audio or video content block, Converse has no
+  audio block, OpenAI Chat has no video part. A `warn!` says which attachment went and why. It is
+  never replaced by an empty text block again, because an empty block is indistinguishable, to the
+  model and to you, from the caller having attached nothing at all.
+
+  **Deliberately NOT widened: attachment bytes, mime types and filenames are not disclosed to
+  content hooks or sidecars.** They contribute no item to the hook-visible projection, which is the
+  same decision `ir/facts.rs` records for image provenance. Widening it would be a real disclosure
+  change and it will be made on its own terms, in its own release note, not as a side effect of the
+  IR gaining a variant.
+
+- **Usage sub-buckets survive the hop, so a bill can be reconciled line by line.** Totals were
+  always right; the ATTRIBUTION was not. `reasoning_tokens` arrived at a client as a hard `0` from
+  any cross-protocol reasoning call — which reads as "this model did no thinking" rather than "the
+  number was not carried". Now carried: OpenAI `completion_tokens_details.reasoning_tokens`,
+  Responses `output_tokens_details.reasoning_tokens`, Gemini `usageMetadata.thoughtsTokenCount`,
+  Anthropic's **5-minute vs 1-hour cache-creation tier split** (the two tiers are priced
+  differently, so collapsing them made a cache-write line item impossible to reconcile), and Cohere
+  `billed_units.search_units` (a separately billed unit that no token field could hold, so its loss
+  was invisible in a total that reconciled perfectly). Every one is a SLICE of a total, never an
+  addition — what busbar bills is unchanged.
+
+- **`qa/field-inventory.json` + a field-coverage gate.** 412 request/response fields across the six
+  chat dialects, enumerated from vendored schemas in `qa/field-schemas/` (each with a source URL and
+  a retrieval date) rather than from busbar's own readers, which are the thing under test.
+  `crates/busbar/tests/field_coverage.rs` fails the build for any field that is neither `carried`
+  — **naming a test that fails if it stops being carried** — nor `waived` with a dated reason. The
+  unbacked remainder is pinned in `qa/field-coverage.missing` and is the visible work queue.
+  Regenerate with `scripts/field-inventory.py --write`.
+
+### Fixed
+
+- **A non-image attachment no longer reaches Anthropic as an `image` and gets the request
+  rejected.** The Gemini reader mapped **every** `inlineData` onto an image block regardless of mime
+  type, and the Anthropic writer emitted `media_type` verbatim and unvalidated — so a Gemini→
+  Anthropic hop carrying an `audio/mp3` clip sent
+  `{"type":"image","source":{"type":"base64","media_type":"audio/mp3"}}` upstream, which Anthropic
+  rejects (it accepts only `image/{jpeg,png,gif,webp}`). The Gemini reader now routes on the mime
+  prefix, and the Anthropic writer validates the media type and drops with a `warn!` rather than
+  sending a block the backend will refuse — the pattern the Bedrock writer already applied to its
+  own `ImageFormat` union.
+
+- **Cohere's `tool_plan` is no longer shown to the user as the answer's first paragraph.** The
+  model's INTERNAL pre-tool-call plan was read into a leading visible text block, so on every
+  cross-protocol hop it was rendered to the end user as content the model never intended to show —
+  content injection, not loss. It now travels in the IR's reasoning carrier, which also lets the
+  Cohere writer put it back in its native `message.tool_plan` slot instead of merging it into
+  `content`. Streaming and non-streaming agree.
+
+- **A Cohere tool-result `document` keeps its structure instead of becoming a JSON string.** It was
+  serialized into the tool message's text, so the model saw escaped JSON syntax
+  (`{"document":{"data":…}}`) where a document should have been. It is now carried structurally and
+  re-emitted as a native `document` part.
+
+- **Grounding citations survive out of a Cohere backend, and survive streaming.** The Cohere reader
+  never read `message.citations` while the Cohere writer emitted them, so a citation INTO Cohere
+  worked and a citation OUT of Cohere vanished — a customer running Cohere RAG behind an
+  Anthropic-dialect client got an ungrounded answer with the sources stripped. Separately, streamed
+  citations were suppressed on the OpenAI and Cohere egress writers, so the **same request against
+  the same backend returned sources at `stream:false` and no sources at `stream:true`**, with
+  nothing in the request to explain the difference. Both dialects now emit their native streamed
+  citation frame (`delta.annotations`, `citation-start`).
+
+- **Unmodeled request fields dropped at the cross-protocol seam are now named in the log.** `extra`
+  was cleared wholesale with exactly two keys warning about themselves; the other ~40 — OpenAI
+  `logit_bias`/`store`/`service_tier`/`stream_options`, Anthropic `metadata`/`container`/
+  `mcp_servers`, Gemini `safetySettings`/`labels`, Bedrock `guardrailConfig`/`promptVariables`,
+  Cohere `citation_options`/`safety_mode`, Responses `previous_response_id`/`truncation`/`include`
+  and more — went silently. Most are correctly untranslatable; the silence was the defect. One
+  `warn!` now names the exact key set of the request being cleared.
+
+- **The `__busbar_anthropic_unmodeled_blocks` marker can no longer reach the Anthropic wire.** The
+  Anthropic writer consumed the positional stash but did not remove it before the trailing `extra`
+  overlay, so it could be emitted as a top-level body key — a latent 400 and a tell that names the
+  proxy. The OpenAI writer already skipped its equivalent; this was the one writer that did not.
+
+- **A read → write round-trip test now exists, per protocol.** `same_proto_fidelity_tests` covers
+  the byte-verbatim short-circuit, which by construction cannot lose anything because it never calls
+  a reader or a writer. `roundtrip_fidelity_tests` drives the parts that CAN lose and asserts an
+  EXACT set of accepted divergences, failing both when a new one appears and when a listed one
+  disappears — so the allow-list stays a reviewed inventory rather than a stale comment.
+
 - **Busbar can front a local MCP server that has no URL — `transport: stdio`.** Most of the MCP
   server estate is not on a network: a filesystem server, a database server, a git server, the
   reference servers the SDKs ship. They are programs an agent LAUNCHES, and they speak JSON-RPC on

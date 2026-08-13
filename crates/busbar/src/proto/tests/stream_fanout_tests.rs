@@ -47,7 +47,8 @@ fn test_openai_read_fanout_text() {
                     input_tokens: 10,
                     output_tokens: 5,
                     cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None
+                    cache_read_input_tokens: None,
+                    detail: crate::ir::IrUsageDetail::default(),
                 },
             },
             IrStreamEvent::MessageStop,
@@ -102,7 +103,8 @@ fn test_openai_read_fanout_tool_call() {
                     input_tokens: 0,
                     output_tokens: 0,
                     cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None
+                    cache_read_input_tokens: None,
+                    detail: crate::ir::IrUsageDetail::default(),
                 },
             },
             IrStreamEvent::MessageStop,

@@ -315,9 +315,17 @@ impl ProtocolReader for CohereReader {
                                             bo.get("text")
                                                 .and_then(|t| t.as_str())
                                                 .map(String::from)
+                                        } else if bo.contains_key("document") {
+                                            // A `document` part is captured STRUCTURALLY below (see
+                                            // `doc_blocks`); serializing it into this text join is
+                                            // what turned the document into a literal JSON string in
+                                            // the message body, so the model saw escaped JSON syntax
+                                            // (`{\"document\":{\"data\":…}}`) instead of the
+                                            // document. Contribute nothing to the text here.
+                                            None
                                         } else {
-                                            // Preserve non-text typed blocks (document, etc.)
-                                            // verbatim rather than dropping them.
+                                            // Preserve any OTHER non-text typed block verbatim
+                                            // rather than dropping it.
                                             crate::json::to_string(b).ok()
                                         }
                                     } else {
@@ -341,13 +349,56 @@ impl ProtocolReader for CohereReader {
                     } else {
                         String::new()
                     };
-                    msg_content.push(crate::ir::IrBlock::ToolResult {
-                        tool_use_id: tool_call_id,
-                        content: vec![crate::ir::IrBlock::Text {
+                    // The `document` parts, captured STRUCTURALLY. A Cohere v2 tool result may
+                    // carry `{"type":"document","document":{"id":…,"data":{…}}}` parts; folding
+                    // them into the text join above turned the structured document into a literal
+                    // JSON STRING in the message body — the model saw escaped JSON syntax instead
+                    // of a document. They ride the opaque `Vendor` escape because a Cohere document
+                    // (`data` is an object of arbitrary string fields, not bytes and not a mime
+                    // type) has no neutral base64/url form: this protocol re-emits its own
+                    // reference verbatim, and a foreign writer, which could only mangle it, drops
+                    // it with a warn.
+                    let mut result_content: Vec<crate::ir::IrBlock> = Vec::new();
+                    if !content_text.is_empty() {
+                        result_content.push(crate::ir::IrBlock::Text {
                             text: content_text,
                             cache_control: None,
                             citations: Vec::new(),
-                        }],
+                        });
+                    }
+                    if let Some(arr) = msg_val.get("content").and_then(|c| c.as_array()) {
+                        for b in arr {
+                            let Some(doc) = b.get("document") else {
+                                continue;
+                            };
+                            result_content.push(crate::ir::IrBlock::Media {
+                                kind: crate::ir::IrMediaKind::Document,
+                                source: crate::ir::IrImageSource::Vendor {
+                                    vendor: VENDOR_NAME,
+                                    value: doc.clone(),
+                                },
+                                name: doc
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(String::from),
+                                cache_control: None,
+                            });
+                        }
+                    }
+                    // A tool result with NO parts at all still needs one (empty) text block: the
+                    // downstream writers project a tool result's content, and an empty vec would
+                    // emit a result with no content where the old code emitted an empty string.
+                    if result_content.is_empty() {
+                        result_content.push(crate::ir::IrBlock::Text {
+                            text: String::new(),
+                            cache_control: None,
+                            citations: Vec::new(),
+                        });
+                    }
+                    msg_content.push(crate::ir::IrBlock::ToolResult {
+                        tool_use_id: tool_call_id,
+                        content: result_content,
                         is_error: false,
                         cache_control: None,
                     });
@@ -634,20 +685,23 @@ impl ProtocolReader for CohereReader {
             // `message.tool_plan` fold. Reading it here is what keeps a STREAMING Cohere→X hop
             // symmetric with the non-stream hop: without it the streaming path drops the reasoning
             // the buffered path preserves.
-            // Map the plan onto the SAME leading Text block a `content-delta` would open (via the
-            // dynamic `cohere_text_ir_index` seam): it claims IR index 0 by first appearance, and the
-            // following `tool-call-start` offsets to 1+, mirroring the non-stream case where the plan
-            // is a leading Text ahead of the tool calls. Like a normal streamed Text this Text carries
-            // no marker distinguishing it FROM a plain content Text — the IR has no tool_plan flag — so
-            // a downstream Cohere writer re-emits it as `content`, not `tool_plan` (documented in the
-            // writer; the reasoning survives, its native `tool_plan` slot does not).
+            // The plan opens a THINKING block, matching what the non-stream reader does with
+            // `message.tool_plan` — a stream and a non-stream of the SAME turn must not disagree
+            // about whether the model's internal plan is user-visible content. It claims the index
+            // via the same `cohere_text_ir_index` seam a `content-delta` would (index 0 by first
+            // appearance, tool calls offsetting to 1+), because Cohere v2 puts `tool_plan` and
+            // `content` in MUTUALLY EXCLUSIVE turns — a tool-calling turn streams a plan then tool
+            // calls, a text turn streams content — so the one pre-tool slot serves both. (The prior
+            // code relied on exactly the same exclusivity, merging plan and content into ONE text
+            // block; the only thing that changes here is which kind of block the plan opens.)
             ET_TOOL_PLAN_DELTA if !state.text_block_closed => {
-                let text_idx = cohere_text_ir_index(state);
+                let plan_idx = cohere_text_ir_index(state);
                 if !state.text_block_open {
                     state.text_block_open = true;
+                    state.thinking_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
-                        index: text_idx,
-                        block: crate::ir::IrBlockMeta::Text,
+                        index: plan_idx,
+                        block: crate::ir::IrBlockMeta::Thinking,
                     });
                 }
                 if let Some(text) = data
@@ -658,8 +712,8 @@ impl ProtocolReader for CohereReader {
                     .filter(|s| !s.is_empty())
                 {
                     out.push(IrStreamEvent::BlockDelta {
-                        index: text_idx,
-                        delta: crate::ir::IrDelta::TextDelta(text.to_string()),
+                        index: plan_idx,
+                        delta: crate::ir::IrDelta::ThinkingDelta(text.to_string()),
                     });
                 }
             }
@@ -726,6 +780,7 @@ impl ProtocolReader for CohereReader {
                                 .unwrap_or(0),
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
+                            detail: crate::ir::IrUsageDetail::default(),
                         }
                     })
                     .unwrap_or(crate::ir::IrUsage {
@@ -733,6 +788,7 @@ impl ProtocolReader for CohereReader {
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        detail: crate::ir::IrUsageDetail::default(),
                     });
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -886,19 +942,37 @@ impl ProtocolReader for CohereReader {
         })?;
 
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();
-        // Cohere v2 carries the assistant's textual plan that PRECEDES its tool calls in
-        // `message.tool_plan` (a string, distinct from `content[]`). Without reading it, that reasoning
-        // vanishes on any Cohere→X cross-protocol hop. Emit it as a LEADING Text block so it keeps its
-        // native position ahead of the tool calls.
+        // Cohere v2 carries the assistant's INTERNAL plan that precedes its tool calls in
+        // `message.tool_plan` (a string, distinct from `content[]`).
+        //
+        // It lands in the IR's REASONING carrier, not in a Text block. Reading it as a leading Text
+        // was CONTENT INJECTION, not loss: on every cross-protocol hop the model's internal plan was
+        // emitted to the end user as the answer's first paragraph — text the model never intended to
+        // show — and no downstream writer could tell it apart from a genuine leading assistant
+        // message to put it back. `Thinking` is what a pre-answer plan IS, and it fixes both halves:
+        // the plan stops being visible content, and the Cohere writer can now reshape it back into
+        // the native `tool_plan` slot on a Cohere egress because the IR finally distinguishes it.
+        // Writers with no reasoning slot drop it, which is the correct outcome for text the model
+        // did not intend the user to see.
         if let Some(plan) = message_val.get("tool_plan").and_then(|p| p.as_str()) {
             if !plan.is_empty() {
-                content.push(crate::ir::IrBlock::Text {
+                content.push(crate::ir::IrBlock::Thinking {
                     text: plan.to_string(),
+                    signature: None,
+                    redacted: false,
                     cache_control: None,
-                    citations: Vec::new(),
                 });
             }
         }
+        // Grounding citations. Cohere's offsets are CHARACTER offsets into the ASSEMBLED content
+        // text, so they belong on the FIRST text block (which is where every writer's join starts
+        // from — see the base-offset accumulation in `openai_chat::url_annotations`). Attaching them
+        // to each block instead would multiply them.
+        let response_citations = message_val
+            .get("citations")
+            .map(super::read_cohere_citations)
+            .unwrap_or_default();
+        let mut citations_pending = response_citations;
         if let Some(content_arr) = message_val.get("content").and_then(|c| c.as_array()) {
             for block_val in content_arr {
                 if let Some(block_obj) = block_val.as_object() {
@@ -907,7 +981,7 @@ impl ProtocolReader for CohereReader {
                             content.push(crate::ir::IrBlock::Text {
                                 text: text.to_string(),
                                 cache_control: None,
-                                citations: Vec::new(),
+                                citations: std::mem::take(&mut citations_pending),
                             });
                         }
                     }
@@ -976,6 +1050,16 @@ impl ProtocolReader for CohereReader {
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            // `billed_units.search_units` is a SEPARATELY BILLED unit that is not a token count at
+            // all, so no token field can carry it — and its loss is invisible in a token total that
+            // reconciles perfectly, which is exactly why it went unnoticed.
+            detail: crate::ir::IrUsageDetail {
+                search_units: usage_val
+                    .and_then(|u| u.get("billed_units"))
+                    .and_then(|b| b.get("search_units"))
+                    .and_then(|v| v.as_u64()),
+                ..Default::default()
+            },
         };
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);

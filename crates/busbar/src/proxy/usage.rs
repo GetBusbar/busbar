@@ -24,6 +24,7 @@ pub(crate) fn record_resp_usage(
             output_tokens: t.output,
             cache_creation_input_tokens: t.cache_creation,
             cache_read_input_tokens: t.cache_read,
+            detail: crate::ir::IrUsageDetail::default(),
         };
         record_ir_usage(&usage, usage_sink, lane);
     } else if let Some(sink) = usage_sink {

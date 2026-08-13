@@ -22,6 +22,7 @@ impl ProtocolWriter for OpenAiWriter {
                 crate::ir::IrBlock::ToolUse { .. }
                 | crate::ir::IrBlock::ToolResult { .. }
                 | crate::ir::IrBlock::Image { .. }
+                | crate::ir::IrBlock::Media { .. }
                 | crate::ir::IrBlock::Json(_) => "",
             };
             messages_array.push(serde_json::json!({
@@ -64,6 +65,15 @@ impl ProtocolWriter for OpenAiWriter {
                                      egress: a Responses input_image.file_id or a Bedrock s3Location \
                                      has no cross-vendor analog; the block is NOT emitted"
                                 ),
+                            }
+                        }
+                        crate::ir::IrBlock::Media {
+                            kind, source, name, ..
+                        } => {
+                            if let Some(part) =
+                                super::media_part_from_ir(*kind, source, name.as_deref())
+                            {
+                                content_arr.push(part);
                             }
                         }
                         crate::ir::IrBlock::ToolUse { .. } => {
@@ -535,11 +545,58 @@ impl ProtocolWriter for OpenAiWriter {
                     // Lossy-by-necessity: OpenAI has no signature/redacted-reasoning stream analog.
                     None
                 }
-                crate::ir::IrDelta::CitationsDelta(_) => {
-                    // OpenAI chat-completions streaming has no citation delta shape; suppress
-                    // rather than emit a non-native frame. The citation is preserved in the IR and
-                    // re-emitted by any protocol that models streaming citations.
-                    None
+                crate::ir::IrDelta::CitationsDelta(cits) => {
+                    // A `chat.completion.chunk` DOES carry `choices[].delta.annotations` — it is the
+                    // same `url_citation` shape the NON-stream writer builds at `message.annotations`
+                    // (see `write_response`), which is the proof the shape exists: this arm used to
+                    // decline it, so the SAME request against the SAME backend returned sources at
+                    // `stream:false` and no sources at `stream:true`. Nothing about the request
+                    // explains that difference to the caller, which is what made it the worst shape
+                    // of this loss rather than merely the largest.
+                    //
+                    // Offsets: the streamed text is not yet assembled here, so a citation whose
+                    // span cannot be resolved is emitted WITHOUT one rather than with a fabricated
+                    // one — `url_annotations`' span requirement is a non-stream, whole-text rule.
+                    let annotations: Vec<serde_json::Value> = cits
+                        .iter()
+                        .filter_map(|c| {
+                            let url = c.url.as_deref().filter(|u| !u.is_empty())?;
+                            let mut uc = serde_json::Map::new();
+                            uc.insert("url".to_string(), serde_json::json!(url));
+                            uc.insert(
+                                "title".to_string(),
+                                serde_json::json!(c
+                                    .title
+                                    .as_deref()
+                                    .filter(|t| !t.is_empty())
+                                    .unwrap_or(url)),
+                            );
+                            if let (Some(s), Some(e)) = (c.start_index, c.end_index) {
+                                if s >= 0 && e >= s {
+                                    uc.insert("start_index".to_string(), serde_json::json!(s));
+                                    uc.insert("end_index".to_string(), serde_json::json!(e));
+                                }
+                            }
+                            Some(serde_json::json!({
+                                "type": "url_citation",
+                                "url_citation": serde_json::Value::Object(uc)
+                            }))
+                        })
+                        .collect();
+                    if annotations.is_empty() {
+                        return None;
+                    }
+                    Some((
+                        "".to_string(),
+                        serde_json::json!({
+                            "object": OBJ_CHUNK,
+                            "choices": [{
+                                "index": 0,
+                                "delta": { "annotations": annotations },
+                                "finish_reason": null
+                            }]
+                        }),
+                    ))
                 }
                 crate::ir::IrDelta::LogprobsDelta(lps) => {
                     // Streamed logprobs (e.g. a Gemini backend's per-chunk `logprobsResult`) in
@@ -948,6 +1005,15 @@ impl ProtocolWriter for OpenAiWriter {
             usage_map.insert(
                 "prompt_tokens_details".to_string(),
                 serde_json::json!({ "cached_tokens": cache_read }),
+            );
+        }
+        // Reasoning attribution, in OpenAI's native spelling. Emitted only when the backend actually
+        // reported it: a hardcoded `0` is a CLAIM that the model did no thinking, and inventing that
+        // claim on a non-reasoning response is exactly the failure this field exists to end.
+        if let Some(rt) = resp.usage.detail.reasoning_tokens {
+            usage_map.insert(
+                "completion_tokens_details".to_string(),
+                serde_json::json!({ "reasoning_tokens": rt }),
             );
         }
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));

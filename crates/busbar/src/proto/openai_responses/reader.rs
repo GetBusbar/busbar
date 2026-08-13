@@ -1025,6 +1025,7 @@ impl ProtocolReader for ResponsesReader {
                                 // read-side cache field so a streaming Responses terminal preserves
                                 // the cache saving.
                                 cache_read_input_tokens: cached,
+                                detail: crate::ir::IrUsageDetail::default(),
                             }
                         })
                         .unwrap_or(crate::ir::IrUsage {
@@ -1032,6 +1033,7 @@ impl ProtocolReader for ResponsesReader {
                             output_tokens: 0,
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
+                            detail: crate::ir::IrUsageDetail::default(),
                         });
 
                     // Close any still-open content blocks BEFORE the MessageDelta so the emitted
@@ -1089,6 +1091,7 @@ impl ProtocolReader for ResponsesReader {
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        detail: crate::ir::IrUsageDetail::default(),
                     };
                     close_open_blocks(&mut out, state);
                     out.push(IrStreamEvent::MessageDelta {
@@ -1344,6 +1347,17 @@ impl ProtocolReader for ResponsesReader {
             // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
             // saving survives a cross-protocol hop instead of being dropped. No new IR field is added.
             cache_read_input_tokens: cached,
+            // `output_tokens_details.reasoning_tokens` is a SUB-BUCKET of `output_tokens`. It was
+            // previously unread, and the writer hardcoded `0` — so every cross-protocol reasoning
+            // call CLAIMED the model did no thinking rather than admitting the number was not
+            // carried.
+            detail: crate::ir::IrUsageDetail {
+                reasoning_tokens: usage_val
+                    .and_then(|u| u.get("output_tokens_details"))
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64()),
+                ..Default::default()
+            },
         };
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);

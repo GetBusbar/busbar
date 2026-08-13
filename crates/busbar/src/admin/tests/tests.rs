@@ -634,6 +634,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         output_tokens: 200,
         cache_read_input_tokens: Some(100),
         cache_creation_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
     };
     // `record_metering` only accumulates into `pending_metering` (write-behind); an explicit
     // `flush_metering()` is required so the GET below deterministically sees them in the store.
