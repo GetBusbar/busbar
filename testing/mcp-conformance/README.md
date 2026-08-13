@@ -36,11 +36,17 @@ every `ctx.skip()` becomes a **FAILURE** naming what was not tested and why.
 `scripts/mcp-conformance.sh --battery-subject` sets it; the control and
 negative-control legs do not.
 
-Concretely, today: the six `pr`-tier **SEAM** tests need busbar's MCP *client*
-direction (to mount the battery's fake server as an upstream). That direction
-does not exist yet, so under the gate those six are **RED** — which is correct,
-because the seam is precisely the property that is meaningless with only one
-direction built.
+Concretely, and this is the mechanism earning its keep rather than a hypothetical:
+the fourteen `CLI.*` **client-role** tests skip on `target.hasClientRole`, which
+`src/core/target.mjs` derives from whether a `clientLaunch` was configured.
+Nothing configured one, so for as long as this battery has existed **those
+fourteen had never run against busbar** — while the headline number read as a
+verdict on an implementation that claims both roles. Armed (below), the very
+first run went red on four of them naming *"client sent no requests"*, and the
+cause was a malformed request in the **driver**, not a defect in busbar: an empty
+transcript satisfies half the hostile clauses vacuously, because each is looking
+for something that must *not* be in it. `MCP_NO_SKIPS=1` is what refused to
+render that as a clean pass.
 
 ## Quick start
 
@@ -99,6 +105,18 @@ judge. They stay in the run — a filter is a knob, and the moment there is a kn
 the number is negotiable — and are read as adapter checks. Everything else
 (error codes, catalogue shape, survival under hostile input, concurrency,
 statelessness) is busbar.
+
+The **client role** is armed from the same boot, by
+`scripts/mcp-subject/client-arm.sh`. The suite's contract is *a command that
+connects to a stdio MCP server given as the final argv element*; busbar's client
+direction speaks streamable HTTP and deliberately nothing else, so that argument
+is read and ignored and the **same** `fakepeer/fake-server.mjs` is reached
+through `fakepeer/http-fake-server.mjs` — the mirror of the adapter above. One
+source of hostility, two transports; every assertion is still read off the same
+transcript of the bytes busbar put on the wire. The script boots nothing itself:
+it writes the per-test attack into the hostile peer's control file and then
+drives the *front* door, because busbar is an MCP client only when a caller asks
+it to be one.
 
 The two arming variables still work and still take precedence, for anyone
 pointing this battery at something that is not this build. Nothing in CI depends

@@ -177,7 +177,6 @@ mcp|streamable-http|client|client|subscriptions/listen
 mcp|streamable-http|client|client|tasks/cancel
 mcp|streamable-http|client|client|tasks/get
 mcp|streamable-http|client|client|tasks/update
-mcp|streamable-http|client|client|tools/call
 mcp|streamable-http|client|client|tools/list
 mcp|streamable-http|client|server|elicitation/create
 mcp|streamable-http|client|server|notifications/cancelled
