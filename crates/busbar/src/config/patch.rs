@@ -132,6 +132,7 @@ section_patch!(
         max_inbound_concurrent: usize,
         max_keys_per_principal: usize,
         max_auto_provisioned_groups: usize,
+        hook_content_max_bytes: usize,
         hard_down_cooldown_secs: u64,
         upstream_error_body_max_bytes: usize,
         tls_handshake_timeout_secs: u64,

@@ -5,6 +5,29 @@ impl ProtocolWriter for ResponsesWriter {
         "/v1/responses"
     }
 
+    /// The Responses API carries turns in `input`, which may be a LIST of items or a bare string
+    /// (one implicit user turn). Either is replaced by the EasyInputMessage list the reply renders
+    /// to; only an absent `input` is fail-safe-untouched.
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        _tools: &[serde_json::Value],
+    ) -> bool {
+        if obj.get("input").is_none() {
+            return false;
+        }
+        let Some(pairs) = crate::proto::rewrite_text_pairs(messages) else {
+            return false;
+        };
+        let framed: Vec<serde_json::Value> = pairs
+            .into_iter()
+            .map(|(role, text)| serde_json::json!({ "role": role, "content": text }))
+            .collect();
+        obj.insert("input".to_string(), serde_json::Value::Array(framed));
+        true
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
 

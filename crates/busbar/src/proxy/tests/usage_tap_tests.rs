@@ -107,7 +107,8 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
             {"role": "model", "parts": [{"text": "hello"}]}
         ]
     });
-    let p = super::build_prompt_projection(&g_body, "gemini");
+    let f = super::read_hook_facts(&g_body, "gemini").expect("the gemini reader accepts this body");
+    let p = f.prompt();
     assert_eq!(
         p.messages[1].0, "assistant",
         "a gemini `model` turn must project as canonical `assistant`, not leak `model`"

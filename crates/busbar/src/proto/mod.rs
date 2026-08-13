@@ -341,6 +341,28 @@ pub(crate) struct SigningContext<'a> {
 }
 
 /// ProtocolWriter rewrites intents for the upstream wire format.
+/// Extract `(role, text)` pairs from a hook's rewrite reply for a dialect that must RE-FRAME the
+/// turns rather than insert them verbatim. `None` means at least one reply message does not carry
+/// plain-string content — the re-framing dialects cannot render that faithfully, so their
+/// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
+/// than shipping a half-applied rewrite.
+pub(crate) fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
+    messages
+        .iter()
+        .map(|m| {
+            let role = m
+                .get("role")
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            let text = m
+                .get("content")
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            Some((role, text))
+        })
+        .collect()
+}
+
 pub(crate) trait ProtocolWriter: Send + Sync {
     /// Returns the upstream path suffix (e.g., "/v1/messages").
     fn upstream_path(&self) -> &str;
@@ -391,6 +413,60 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 
     /// Write an IR request to wire JSON.
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value;
+
+    /// Apply a hook's `rewrite` reply to an INGRESS body of THIS dialect, in place. Returns whether
+    /// the body actually changed; `false` leaves it untouched (fail-safe — never a corrupted
+    /// request).
+    ///
+    /// # Why this is a writer method
+    ///
+    /// A rewrite reply carries `{role, content}` messages in the canonical vocabulary the hook was
+    /// projected in, and each dialect frames conversation content differently. That framing is
+    /// WRITE-SIDE dialect knowledge, so it belongs to the writer that already owns every other
+    /// write-side framing decision — not to a `match ingress_protocol` on the hook seam, where it
+    /// lived until this method existed and where a seventh protocol would have needed a new arm.
+    /// With the framing here, a protocol gets a correct write-back by REGISTERING.
+    ///
+    /// The default is the shape three dialects share: the reply IS their message shape, so its
+    /// `messages` array is inserted verbatim (nothing is re-derived, so nothing can be lost), and
+    /// abstract `tools` definitions are appended. A dialect whose conversation container is spelled
+    /// differently, or whose turns are not `{role, content}`, overrides this and re-frames.
+    ///
+    /// LOSSY WRITE-BACK (pre-existing, unchanged by the move, and out of scope to fix here): a
+    /// re-framing dialect renders each reply message into a single text turn, so a hook that echoes
+    /// a projection verbatim promotes non-prose content — including the opaque-content marker — into
+    /// a visible text turn shipped upstream. The behaviour is pinned by
+    /// `apply_rewrite_to_body_echoes_redacted_marker_as_visible_text` so a future change cannot
+    /// regress this note into a stale claim.
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> bool {
+        if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
+            return false;
+        }
+        obj.insert(
+            "messages".to_string(),
+            serde_json::Value::Array(messages.to_vec()),
+        );
+        if !tools.is_empty() {
+            match obj
+                .get_mut("tools")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                Some(existing) => existing.extend(tools.iter().cloned()),
+                None => {
+                    obj.insert(
+                        "tools".to_string(),
+                        serde_json::Value::Array(tools.to_vec()),
+                    );
+                }
+            }
+        }
+        true
+    }
 
     /// Whether this protocol REQUIRES `max_tokens` on every request. The Anthropic Messages API
     /// hard-rejects (400 `max_tokens: Field required`) a request without it, whereas OpenAI Chat

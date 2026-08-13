@@ -36,23 +36,13 @@ pub(crate) enum PolicyOutcome {
     },
 }
 
-/// Apply a hook's `rewrite` reply to the INGRESS body, rendered PER DIALECT (the reply carries
-/// `{role, content}` messages in body form; each ingress protocol frames conversation content
-/// differently). Fail-safe throughout: a body without the dialect's conversation container, or a
-/// rewrite message whose content isn't plain text where the dialect needs re-framing, leaves the
-/// body untouched and returns `false` — never a corrupted request.
-///
-/// Dialect rendering:
-/// - openai / anthropic / cohere: `messages: [{role, content}]` — inserted verbatim (all three
-///   accept string content). Abstract `tools` injection applies here only (their tool shapes are
-///   compatible enough to append; the other dialects' tool framings differ — deferred, fail-safe).
-/// - bedrock (Converse): `messages: [{role, content: [{text}]}]` — each rewrite message is
-///   RE-FRAMED into a one-block text content list (a verbatim insert would corrupt the block
-///   shape — bedrock also has a `messages` key, so this arm is load-bearing, not cosmetic).
-/// - gemini: `contents: [{role, parts: [{text}]}]` — re-framed, with the role mapping gemini
-///   requires (`assistant` → `model`; everything else → `user`).
-/// - responses: `input: [{role, content}]` — re-framed into the EasyInputMessage list (string
-///   content is accepted); a string `input` is replaced by the list.
+/// Apply a hook's `rewrite` reply to the INGRESS body. The reply carries `{role, content}` messages
+/// in the canonical vocabulary the hook was projected in; each dialect frames conversation content
+/// differently, and that framing belongs to the PROTOCOL WRITER — this seam names no dialect and
+/// holds no per-protocol arm, so a newly registered protocol gets a correct write-back with no work
+/// here. Fail-safe throughout: a body without the dialect's conversation container, an unregistered
+/// ingress protocol, or a rewrite message whose content isn't plain text where the dialect needs
+/// re-framing, leaves the body untouched and returns `false` — never a corrupted request.
 pub(crate) fn apply_rewrite_to_body(
     v: &mut Value,
     rewrite: &crate::hooks::wire::RewriteReply,
@@ -64,133 +54,284 @@ pub(crate) fn apply_rewrite_to_body(
     let Some(obj) = v.as_object_mut() else {
         return false;
     };
-    // Extract (role, text) pairs when a dialect needs re-framing. `None` = a message without
-    // plain-string content — abort untouched (fail-safe).
-    let as_text_pairs = || -> Option<Vec<(String, String)>> {
-        rewrite
-            .messages
-            .iter()
-            .map(|m| {
-                let role = m.get("role").and_then(Value::as_str)?.to_string();
-                let text = m.get("content").and_then(Value::as_str)?.to_string();
-                Some((role, text))
-            })
-            .collect()
+    let Some(protocol) = crate::proto::protocol_for(ingress_protocol) else {
+        return false;
     };
-    match ingress_protocol {
-        PROTO_BEDROCK => {
-            if !obj.get("messages").is_some_and(Value::is_array) {
-                return false;
+    protocol
+        .writer()
+        .apply_rewrite_to_ingress_body(obj, &rewrite.messages, &rewrite.tools)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE HOOK SEAM READS THE IR — AND NOTHING ELSE
+//
+// Everything below replaces a second implementation of "what is the text in this request". The
+// projection used to be re-derived from the raw ingress body with its own content flattening and
+// its own per-dialect dispatch, so a `prompt: ro` gate could be handed a different payload than the
+// one that went upstream. There is now ONE answer: the protocol's own reader produces the IR, and
+// `ir::facts` projects it. No `PROTO_*` comparison survives on this seam.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What the hook seam knows about a request, read from the IR.
+// The variants differ in size by the width of a whole `IrRequest`, and boxing to even them out
+// would be the wrong trade: `Chat` is the overwhelmingly common case, this value is a per-request
+// LOCAL that is never stored in a collection and never moved after it is built, and a `Box` here
+// would add one heap allocation to every hooked request to shrink a stack temporary. The lint is
+// right about the shape and wrong about the cost.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum HookFacts {
+    /// A conversation request the ingress protocol's reader understood.
+    Chat(crate::ir::IrRequest),
+    /// The body carries no readable conversation facts because it is not a JSON object at all — a
+    /// multipart/binary request, or the engine's absent-body sentinel. Projects as the zeroed shape
+    /// with no content, which is exactly what the seam projected for such a body before the cutover.
+    /// This is NOT the parse-failure case: a body the reader REFUSES is [`HookIrRejected`].
+    Absent,
+}
+
+/// The ingress protocol's reader refused the body.
+///
+/// The old raw-body projection could not fail: it screened a malformed request as best it could and
+/// the request went upstream anyway. On the IR a read is a `Result`, and the ruling is that **the
+/// parse failure is the request's failure**. If a reader cannot read a body, busbar cannot claim to
+/// understand it, and forwarding it upstream while telling a guardrail it saw `role: ""` is the
+/// fail-OPEN shape. Callers turn this into a 400.
+#[derive(Debug)]
+pub(crate) struct HookIrRejected;
+
+/// Read the request facts the hook seam projects from — the ONE read, through the protocol's own
+/// reader.
+///
+/// A non-object body is [`HookFacts::Absent`] rather than a rejection: it is a request whose payload
+/// this seam never claimed to understand (a multipart upload, or the engine's `Value::Null`
+/// stand-in), and rejecting it would fail requests that have nothing to do with hooks. An
+/// unregistered protocol name is `Absent` for the same reason — there is no reader to ask.
+///
+/// # ONE READ PER SEAM TODAY, ONE READ PER REQUEST NEXT
+///
+/// Each seam that projects — the gate chain, the rewrite chain, the request-stage taps — calls this
+/// once. A deployment that configures several of them therefore reads the body more than once per
+/// request, which is correct but not yet cheap. Memoizing the read on the body handle, so the whole
+/// request pays exactly one, is the lazy-IR seam's job and lands beside `ensure_dom`; nothing here
+/// has to change for it, because every caller already goes through this one function. A deployment
+/// with no hook configured pays nothing either way: no projection is built, so this is never called.
+pub(crate) fn read_hook_facts(
+    v: &Value,
+    ingress_protocol: &str,
+) -> Result<HookFacts, HookIrRejected> {
+    if !v.is_object() {
+        return Ok(HookFacts::Absent);
+    }
+    let Some(protocol) = crate::proto::protocol_for(ingress_protocol) else {
+        return Ok(HookFacts::Absent);
+    };
+    match protocol.reader().read_request(v) {
+        Ok(ir) => Ok(HookFacts::Chat(ir)),
+        Err(_) => Err(HookIrRejected),
+    }
+}
+
+impl HookFacts {
+    /// The shape/size signal bucket every hook gets, granted or not.
+    pub(crate) fn shape(&self) -> crate::ir::facts::Shape {
+        match self {
+            HookFacts::Chat(ir) => {
+                use crate::ir::facts::IrFacts;
+                ir.shape()
             }
-            let Some(pairs) = as_text_pairs() else {
-                return false;
-            };
-            let framed: Vec<Value> = pairs
-                .into_iter()
-                .map(|(role, text)| {
-                    serde_json::json!({ "role": role, "content": [{ "text": text }] })
-                })
-                .collect();
-            obj.insert("messages".to_string(), Value::Array(framed));
-            true
+            HookFacts::Absent => crate::ir::facts::Shape::EMPTY,
         }
-        PROTO_GEMINI => {
-            if !obj.get("contents").is_some_and(Value::is_array) {
-                return false;
+    }
+
+    /// The end-user identifier for the `user: ro` identity projection, normalized by the reader from
+    /// whichever field its dialect spells it in.
+    pub(crate) fn end_user(&self) -> Option<String> {
+        match self {
+            HookFacts::Chat(ir) => {
+                use crate::ir::facts::IrFacts;
+                ir.end_user().map(str::to_string)
             }
-            let Some(pairs) = as_text_pairs() else {
-                return false;
-            };
-            let framed: Vec<Value> = pairs
-                .into_iter()
-                .map(|(role, text)| {
-                    // Accept BOTH the canonical `assistant` AND the gemini-native `model` on the
-                    // hook's reply — a hook that echoes the role it was PROJECTED (see the
-                    // gemini-role canonicalization in build_prompt_projection) or one written to the
-                    // gemini vocabulary must both round-trip to `model`, not silently fall through to
-                    // `user` and corrupt every assistant turn.
-                    let g_role = if role == "assistant" || role == "model" {
-                        "model"
-                    } else {
-                        "user"
-                    };
-                    serde_json::json!({ "role": g_role, "parts": [{ "text": text }] })
-                })
-                .collect();
-            obj.insert("contents".to_string(), Value::Array(framed));
-            true
+            HookFacts::Absent => None,
         }
-        PROTO_RESPONSES => {
-            if obj.get("input").is_none() {
-                return false;
-            }
-            let Some(pairs) = as_text_pairs() else {
-                return false;
+    }
+
+    /// The content projection a `prompt: ro|rw` grant receives: the system slot's text, and one
+    /// `(role, text)` entry per conversation turn in request order.
+    ///
+    /// # The alignment contract, restated
+    ///
+    /// Entries index against `IrRequest::messages`, NOT against the wire `messages` array. Every
+    /// reader hoists system-role content into the system slot, so a body carrying its system prompt
+    /// in-band contributes to `system` here and not to a turn — which is the divergence being
+    /// closed, and is precisely what would have prevented a shipped hook from shredding operator
+    /// instructions on the dialects that carry the system prompt inside the turns array. A turn that
+    /// yields no items still yields an entry with empty text: a screening hook must never see fewer
+    /// turns than the provider does.
+    pub(crate) fn prompt(&self) -> crate::hooks::PromptProjection<'_> {
+        use crate::ir::facts::{ContentItem, Slot};
+        use std::borrow::Cow;
+        let HookFacts::Chat(ir) = self else {
+            return crate::hooks::PromptProjection {
+                system: None,
+                messages: Vec::new(),
             };
-            let framed: Vec<Value> = pairs
-                .into_iter()
-                .map(|(role, text)| serde_json::json!({ "role": role, "content": text }))
-                .collect();
-            obj.insert("input".to_string(), Value::Array(framed));
-            true
-        }
-        // openai / anthropic / cohere: the reply IS the dialect's message shape.
-        _ => {
-            if !obj.get("messages").is_some_and(Value::is_array) {
-                return false;
-            }
-            obj.insert(
-                "messages".to_string(),
-                Value::Array(rewrite.messages.clone()),
-            );
-            if !rewrite.tools.is_empty() {
-                match obj.get_mut("tools").and_then(Value::as_array_mut) {
-                    Some(existing) => existing.extend(rewrite.tools.iter().cloned()),
-                    None => {
-                        obj.insert("tools".to_string(), Value::Array(rewrite.tools.clone()));
+        };
+        // Group the flat item stream the way `ir::facts::project` documents: the system slot is its
+        // own bucket, every other item joins the turn it is attributed to. One piece borrows; two or
+        // more allocate the join, exactly as the flattening this replaces did.
+        let mut system: Vec<Cow<'_, str>> = Vec::new();
+        let mut turns: Vec<(&'static str, Vec<Cow<'_, str>>)> = Vec::new();
+        for item in crate::ir::facts::project(ir) {
+            let piece = match item {
+                ContentItem::Text { ref text, .. } => match text {
+                    Cow::Borrowed(t) => Cow::Borrowed(*t),
+                    Cow::Owned(t) => Cow::Owned(t.clone()),
+                },
+                ref other => Cow::Owned(other.screenable_text().into_owned()),
+            };
+            match item.slot() {
+                Slot::System => system.push(piece),
+                slot => {
+                    let i = slot.turn_index().unwrap_or(0);
+                    while turns.len() <= i {
+                        turns.push((role_name(ir.messages[turns.len()].role), Vec::new()));
                     }
+                    turns[i].1.push(piece);
                 }
             }
-            true
+        }
+        crate::hooks::PromptProjection {
+            system: join_pieces(system).filter(|s| !s.is_empty()),
+            messages: turns
+                .into_iter()
+                .map(|(role, pieces)| {
+                    (
+                        Cow::Borrowed(role),
+                        join_pieces(pieces).unwrap_or(Cow::Borrowed("")),
+                    )
+                })
+                .collect(),
         }
     }
 }
 
+/// The canonical role vocabulary the hook contract promises on EVERY dialect. It is the IR's own
+/// enum rendered as text, so a dialect's native spelling (an assistant turn spelled `model` on one
+/// wire) can never reach a hook and can never be echoed back into a corrupted turn.
+fn role_name(role: crate::ir::IrRole) -> &'static str {
+    match role {
+        crate::ir::IrRole::System => "system",
+        crate::ir::IrRole::User => "user",
+        crate::ir::IrRole::Assistant => "assistant",
+        crate::ir::IrRole::Tool => "tool",
+    }
+}
+
+/// Join one bucket's pieces with a newline, BORROWING the single-piece case (the common one). The
+/// separator is not counted by the size signal — a flattened rendering can therefore be longer than
+/// `total_chars` by one char per join, exactly as it was before the cutover.
+fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow::Cow<'_, str>> {
+    match pieces.len() {
+        0 => None,
+        1 => pieces.pop(),
+        _ => Some(std::borrow::Cow::Owned(pieces.join("\n"))),
+    }
+}
+
+/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection.
+///
+/// Informed by nothing measured, deliberately conservative, and paired with a counter
+/// (`busbar_hook_content_truncated_total`) so the number can be chosen by a metric rather than by a
+/// guess. It matters most for the largest untrusted blob in a modern agent request — a tool result —
+/// which is bounded by neither a context window nor a token count.
+pub(crate) const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 64 * 1024;
+
+/// The effective content ceiling for this config generation, resolved once at config apply
+/// (`limits.hook_content_max_bytes`) and read here with a single relaxed load — never recomputed per
+/// request, and never consulted at all on a deployment with no content-granted hook, because no
+/// content projection is built there.
+static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
+
+/// Install the generation's content ceiling. Called at boot and on every config apply.
+pub(crate) fn set_hook_content_max_bytes(bytes: usize) {
+    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Enforce the content ceiling on a built projection, on SERIALIZED BYTES and BEFORE the call.
+///
+/// Over-cap content is OMITTED WHOLE, never truncated mid-value: a guardrail that screens half a
+/// payload and passes it is worse than one that refuses.
+///
+/// # How the omission is visible to the hook, and why it must be
+///
+/// The grant is still honoured — the projection stays PRESENT and becomes EMPTY (`messages: []`),
+/// which the wire contract already distinguishes from an absent (ungranted) projection. Together
+/// with the always-present size bucket that is an explicit statement rather than a silence: a hook
+/// that is shown zero content for a request whose `total_chars` says otherwise has been told, in the
+/// payload, that there is content here it was not given. Silently handing a screening hook less
+/// content than exists is the fail-open shape this whole change closes, so the omission is never
+/// allowed to look like an empty request. `busbar_hook_content_truncated_total` counts it, so the
+/// default ceiling can be chosen by a metric rather than by a guess.
+pub(crate) fn enforce_content_cap(
+    prompt: Option<crate::hooks::PromptProjection<'_>>,
+) -> Option<crate::hooks::PromptProjection<'_>> {
+    let p = prompt?;
+    let cap = HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    if cap == 0 {
+        // Explicitly unlimited — the operator turned the ceiling off.
+        return Some(p);
+    }
+    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
+        + p.messages
+            .iter()
+            .map(|(role, text)| role.len() + text.len())
+            .sum::<usize>();
+    if bytes <= cap {
+        return Some(p);
+    }
+    metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    tracing::warn!(
+        content_bytes = bytes,
+        cap,
+        "hook content projection exceeded limits.hook_content_max_bytes; the content is OMITTED \
+         whole (never truncated mid-value) and the hook is sent an empty content projection"
+    );
+    Some(crate::hooks::PromptProjection {
+        system: None,
+        messages: Vec::new(),
+    })
+}
+
 /// Build the request projection a rewrite (`prompt: rw`) gate receives. The prompt is ALWAYS sent (a
 /// rewrite hook is a content hook); identity is omitted (rewrite operates on content, not caller
-/// identity — the `user` grant projection for rewrite hooks is a follow-up). Borrows from `v`.
+/// identity — the `user` grant projection for rewrite hooks is a follow-up). Borrows from `facts`.
 pub(crate) fn build_rewrite_request<'a>(
-    v: &'a Value,
+    facts: &'a HookFacts,
+    requested_model: Option<&'a str>,
     pool_name: &'a str,
     ingress_protocol: &'a str,
     wants_stream: bool,
     with_prompt: bool,
     request_id: u64,
 ) -> crate::hooks::RoutingRequest<'a> {
-    let system_chars = system_text_chars(v, ingress_protocol);
+    let shape = facts.shape();
     crate::hooks::RoutingRequest {
         request_id,
         pool: pool_name,
         ingress_protocol,
-        requested_model: v.get("model").and_then(|m| m.as_str()),
-        message_count: turn_count(v, ingress_protocol),
-        tool_count: v
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0),
-        has_tools: v
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .is_some_and(|a| !a.is_empty()),
-        total_chars: total_text_chars(v, ingress_protocol, system_chars),
-        system_chars,
-        max_tokens: max_tokens_for(v, ingress_protocol),
+        requested_model,
+        message_count: shape.turn_count,
+        tool_count: shape.tool_count,
+        has_tools: shape.has_tools,
+        total_chars: shape.text_chars,
+        system_chars: shape.system_chars,
+        max_tokens: shape.max_tokens,
         stream: wants_stream,
         // A `prompt: rw` rewrite gate needs the prompt content (`with_prompt`). A TAP gets the
         // shape-only default bucket (`with_prompt == false`) — a per-grant prompt projection for
         // `prompt: ro` taps is a follow-up; shape-only never OVER-shares, so the grant holds.
-        prompt: with_prompt.then(|| build_prompt_projection(v, ingress_protocol)),
+        prompt: enforce_content_cap(with_prompt.then(|| facts.prompt())),
         identity: None,
         // The rewrite (transform) pass is a content seam, not a decide seam — it has no candidate
         // set to read candidate-phase catalog signals from, and no request-phase compute fn is
@@ -224,12 +365,19 @@ pub(crate) async fn apply_global_rewrites(
 ) -> Result<bool, (u16, String)> {
     let mut applied = false;
     for (timeout, hook) in rewrite_hooks {
-        // Rebuild the projection from the current body so a later hook sees the earlier rewrite.
-        //
+        // Re-READ the IR from the current body so a later hook sees the earlier rewrite — a true
+        // transform chain. A body the reader refuses is the REQUEST's failure, not a best-effort
+        // projection: screening a request busbar cannot read, and forwarding it anyway, is the
+        // fail-open shape.
+        let facts = match read_hook_facts(v, ingress_protocol) {
+            Ok(f) => f,
+            Err(HookIrRejected) => return Err((400, unreadable_body_message().to_string())),
+        };
         // `with_prompt = true` is sound by construction: `hooks::admits_rewrite` gates membership of
         // this slice on effective `rw`, which implies read.
         let req = build_rewrite_request(
-            v,
+            &facts,
+            v.get("model").and_then(Value::as_str),
             pool_name,
             ingress_protocol,
             wants_stream,
@@ -252,406 +400,10 @@ pub(crate) async fn apply_global_rewrites(
     Ok(applied)
 }
 
-/// The ingress body's conversation-turn array, DIALECT-AWARE — the READ-side mirror of
-/// `apply_rewrite_to_body`'s write dialects: gemini carries turns in `contents`
-/// (`{role, parts: [{text}]}`), the Responses API in a list `input` (`{role, content}`), and
-/// every other protocol in `messages`. Reading only `messages` here made every projection
-/// (rewrite request, `send_prompt`, stage-tap shape) EMPTY on gemini/responses ingress — a
-/// rewrite gate saw `message_count: 0` and no prompt, so it abstained and silently no-oped.
-pub(crate) fn conversation_turns<'a>(
-    v: &'a Value,
-    ingress_protocol: &str,
-) -> Option<&'a Vec<Value>> {
-    let key = match ingress_protocol {
-        PROTO_GEMINI => "contents",
-        PROTO_RESPONSES => "input",
-        _ => "messages",
-    };
-    v.get(key).and_then(|m| m.as_array())
-}
-
-/// Dialect-aware conversation-turn count. The Responses API also allows a bare-string `input`
-/// (one implicit user turn) — counted as 1 so the SIZE signal matches what the hook projection
-/// yields for the same body.
-pub(crate) fn turn_count(v: &Value, ingress_protocol: &str) -> usize {
-    match conversation_turns(v, ingress_protocol) {
-        Some(turns) => turns.len(),
-        None => usize::from(
-            ingress_protocol == PROTO_RESPONSES && v.get("input").and_then(Value::as_str).is_some(),
-        ),
-    }
-}
-
-/// Dialect-aware max-output-tokens SIZE signal from the pristine ingress body. The OpenAI Responses
-/// API names this field `max_output_tokens` (see `proto::openai_responses`), NOT `max_tokens`, and a
-/// pure responses-ingress body never carries `max_tokens` — so reading `max_tokens` unconditionally
-/// projected `None` for EVERY responses request, silently blinding any routing policy or tap hook
-/// that keys on the size signal. Mirrors the other dialect-aware projections (`turn_count`,
-/// `system_text_chars`). Saturating narrow: an absurd cap (> u32::MAX) still signals "huge ask"
-/// rather than wrapping to a small number.
-pub(crate) fn max_tokens_for(v: &Value, ingress_protocol: &str) -> Option<u32> {
-    let key = if ingress_protocol == PROTO_RESPONSES {
-        "max_output_tokens"
-    } else {
-        "max_tokens"
-    };
-    v.get(key)
-        .and_then(|m| m.as_u64())
-        .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Fixed non-content marker projected in place of opaque provider-encrypted reasoning bytes
-/// (Anthropic `redacted_thinking`'s `data`, Bedrock `redactedContent`). Busbar cannot decrypt
-/// either, so handing a hook the raw bytes has zero screening value AND would be a new
-/// information disclosure: the `busbar-webrequest-hook` forwarder POSTs this projection to an
-/// operator-configured HTTPS sidecar that never received provider ciphertext before.
-///
-/// This is a PRESENCE signal, not a trust signal, and callers must not treat it as one: a client
-/// can send a literal `{type:"redacted_thinking", data:"…"}` block (opaque, IR-forgery-proof —
-/// see `anthropic/mod.rs`'s reader — so this direction is safe), but can equally send a plain
-/// `text` block whose text IS this exact string (that direction is NOT authenticated; the hook
-/// seam runs upstream of IR). A screening hook's correct read of the marker is "there is content
-/// here I cannot screen" (reject or escalate), never "this text is genuine ciphertext" or "this
-/// turn is empty".
-///
-/// LAUNDERING HAZARD (must not be silently reintroduced): `apply_rewrite_to_body` is NOT
-/// index-aligned — for bedrock/gemini/responses it re-frames a `prompt: rw` hook's reply into a
-/// literal `{text: "<content>"}` block per turn, and for openai/anthropic/cohere it inserts the
-/// reply's `messages` array verbatim. A hook that ECHOES this marker back (the common "pass
-/// through what I saw" rewrite shape) therefore writes the literal string
-/// `"[busbar:redacted_reasoning]"` into a REAL, VISIBLE text block that ships upstream as prompt
-/// content on every dialect — the exact same laundering shape this marker exists to avoid for
-/// raw ciphertext, just with the marker string standing in for the bytes. The marker does not
-/// corrupt the body (it is valid, harmless text, unlike raw ciphertext which could also break a
-/// dialect's encoding expectations) but it IS a real, if inert, hook-authored content injection.
-/// Out of scope to prevent here (fixing `apply_rewrite_to_body`'s lossy write-back is a separate
-/// defect, per that fn's own doc comment);
-/// `apply_rewrite_to_body_echoes_redacted_marker_as_visible_text` pins the current (documented,
-/// not silently worsened) behavior so a future change to the write-back path cannot regress this
-/// note into a stale claim.
-pub(crate) const REDACTED_REASONING_MARKER: &str = "[busbar:redacted_reasoning]";
-
-/// What a single content block contributes to the hook projection / SIZE signals. `Text` and
-/// `Redacted` are DELIBERATELY not collapsed into "no text": the whole point of this type is that
-/// a screening hook must be able to tell "nothing here" apart from "something here I cannot
-/// show you" — collapsing the two back into a bare `Option<&str>` reintroduces the silent-empty
-/// shape that made the original bug a bypass instead of a visible gap.
-pub(crate) enum BlockText<'a> {
-    /// Real, screenable content — project it, count its chars.
-    Text(std::borrow::Cow<'a, str>),
-    /// Opaque provider-encrypted reasoning; no plaintext exists to show a hook (Anthropic
-    /// `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only
-    /// `encrypted_content` with no `content[]`/`summary[]` text). Caller substitutes
-    /// [`REDACTED_REASONING_MARKER`].
-    ///
-    /// This is a HOOK-VISIBILITY category — "opaque content ships to the provider but there is no
-    /// screenable text for it" — keyed on THAT question, not a mirror of `IrBlock::Thinking`'s own
-    /// `redacted: bool` field (`ir/mod.rs`). The two do NOT coincide for Responses: a Responses
-    /// `reasoning` item with only `encrypted_content` still reads into `IrBlock::Thinking` with
-    /// `redacted: false` (Responses has no IR-level redacted-reasoning concept; `redacted` is an
-    /// Anthropic/Bedrock-only distinction — see `read_response`/the request-item reader in
-    /// `proto/openai_responses/reader.rs`), yet `block_text` must still report `Redacted` here
-    /// because there is no plaintext to show.
-    ///
-    /// # HARMONIZING THIS ONTO THE IR: the hazard, and the actual prerequisite
-    ///
-    /// This is NOT an argument against the harmonization. Moving the hook projection onto the IR
-    /// is the right direction and is planned work: a second implementation of "what is the text in
-    /// this request" is how a PII redactor gets handed a different payload than the one that goes
-    /// upstream, and that is the defect this whole dispatch table is a workaround for, not a
-    /// design.
-    ///
-    /// **The hazard is doing it in the wrong ORDER, and it is specific and checkable.** The naive
-    /// port — `if thinking.redacted { MARKER } else { thinking.text }` — reopens this exact bypass
-    /// for the Responses encrypted-content-only case, because that shape reads as
-    /// `Thinking { text: "", signature: Some(blob), redacted: false }` (see the `ITEM_TYPE_REASONING`
-    /// arms of `proto/openai_responses/reader.rs`). `redacted` is `false`, so the port takes the
-    /// `text` branch; `text` is EMPTY, because the blob is parked in `signature`. A screening hook
-    /// would see an empty turn for a request the provider receives in full — the original bypass,
-    /// restored, by a change described as a refactor. The mirror-image hazard: for the
-    /// Anthropic/Bedrock shapes `redacted` IS `true` and `text` holds the opaque bytes themselves
-    /// (`ir/mod.rs`), so a projection that reads `text` without first checking opacity is a NEW
-    /// disclosure of provider ciphertext to the operator's hook sidecar. Neither hazard is caught
-    /// by a single naive rule, which is why the order matters rather than the care taken.
-    ///
-    /// **The prerequisite is therefore: FIX THE IR FIRST, then key off it.** The IR is the half
-    /// that is wrong here — it models "this block is opaque to busbar" for Anthropic and Bedrock
-    /// and not for Responses, even though the Responses case is opaque for the same reason. Land
-    /// the IR-side fix on its own, ahead of and independent of any projection change: either set
-    /// `IrBlock::Thinking.redacted = true` for a Responses `encrypted_content`-only item, or — if
-    /// `redacted` must stay Anthropic/Bedrock-shaped because the writers key re-emission off it —
-    /// add an explicit `IrBlock::is_opaque()` that all three shapes answer true to. Check the
-    /// writer side before choosing; that check is the real work. The whole test is "all three
-    /// opaque shapes read as opaque FROM THE IR", which fails on Responses today and passes once
-    /// the reader is fixed — with this projection and the entire existing suite untouched.
-    ///
-    /// Until that lands, `block_text` keys on the WIRE SHAPE, deliberately. The divergence in both
-    /// directions is pinned by `characterise_responses_encrypted_content_only_reasoning_projection_vs_ir`
-    /// and `characterise_anthropic_ciphertext_projection_vs_ir`
-    /// (`proxy/tests/hook_ir_divergence_characterisation_tests.rs`), which assert today's behaviour
-    /// on BOTH sides including where it is wrong — so the harmonization has to update them
-    /// consciously rather than pass through them silently.
-    Redacted,
-    /// Structurally text-less (image, tool_use, tool_result) or a block/item this dialect has no
-    /// declared text field for.
-    None,
-}
-
-/// The ONE place in `hooks.rs` that knows how a content block stores its text, dispatched by
-/// INGRESS PROTOCOL — not by probing for an arbitrary field name and hoping it means "text".
-///
-/// This replaces a bug, not a style choice: every reasoning wire shape stores its plaintext under
-/// a DIFFERENT key per dialect (Anthropic `thinking`, Bedrock
-/// `reasoningContent.reasoningText.text`, Responses `content[]`/`summary[].text`), so the old
-/// `b.get("text")` probe silently dropped every one of them — a `prompt: ro` screening hook saw
-/// `{role, text: ""}` for a turn the provider received in full. That is a policy-enforcement-point
-/// bypass: the harmed party is the OPERATOR whose PII/DLP/guardrail gate silently passed content
-/// it was deployed to inspect (and, downstream, the data subjects whose content left the
-/// operator's network unscreened) — not "the client attacking itself" (the client controls the
-/// payload either way; the gate exists because the client is untrusted).
-///
-/// TWO of the three original bypasses need no forged/valid `signature` at all to reach the
-/// provider verbatim: Bedrock's writer re-emits `reasoningContent.reasoningText` with no
-/// unsigned-drop filter (unlike Anthropic's egress path, which drops an unsigned plaintext
-/// `Thinking` block), and the Responses reader admits a `reasoning` item on `!text.is_empty() ||
-/// signature.is_some()` — EITHER a real text part OR a non-empty `encrypted_content` blob is
-/// sufficient on its own (`proto/openai_responses/reader.rs`, both the input-item and
-/// output-item arms). The `encrypted_content`-only half of that OR was itself
-/// a fourth bypass: this fn's Responses arm called only `read_reasoning_text` and returned `None`
-/// (not `Redacted`) when it came back empty, so an item admitted purely on its opaque blob was
-/// invisible to a hook exactly like the other two. Fixed alongside the caller-dispatch gap that
-/// let it slip past even after the arm itself was fixed (a `reasoning` item with `content: []` —
-/// present but empty, not absent — took `total_text_chars`/`build_prompt_projection`'s
-/// content-shape branch instead of reaching this fn at all; both callers now check the item
-/// `type` before the `content`-shape match).
-///
-/// Dispatch is keyed on `ingress_protocol` (the PARSED, authenticated dialect this request was
-/// read as), never on "does this JSON object happen to have a `reasoningContent` key": an
-/// Anthropic body carrying a client-supplied field literally named `reasoningContent` must NOT be
-/// read as Bedrock reasoning. Keying on field-shape alone is the exact duck-typing bug this
-/// function exists to eliminate — dispatching on shape again, just with more field names to
-/// guess, would reproduce it.
-///
-/// Each dialect's reasoning arm is checked BEFORE the generic `text` probe (mirrors
-/// `gemini/reader.rs`, which checks `thought:true` first because a thought part also carries a
-/// `text` field).
-///
-/// EXHAUSTIVENESS: unlike `IrBlock` (a real Rust enum, so a no-catch-all `match` over it is a
-/// compiler-enforced guard — see `openai_chat/writer.rs`), `ingress_protocol` is a `&str`, and
-/// rustc cannot make an unmatched string a compile error. The guard for THIS function therefore
-/// lives in its test (`every_known_protocol_has_a_declared_reasoning_wire_shape`,
-/// `proxy/tests/hook_opt_in_projection_tests.rs`), keyed on `crate::proto::KNOWN_PROTOCOLS` —
-/// the same "one row per protocol, checked against the single source of truth" shape
-/// `ProtocolRegistry::with_builtins` uses (`proto/mod.rs`). That is deliberately the PROTOCOL
-/// axis, not the `IrBlock`-variant axis: all three bypasses this function fixes collapse onto the
-/// SAME existing `IrBlock::Thinking` variant (the IR is already unified across dialects), so a
-/// guard keyed on "does a new `IrBlock` variant compile" would add zero rows for any of them and
-/// would not catch a future protocol-specific reasoning wire shape either.
-pub(crate) fn block_text<'a>(b: &'a Value, ingress_protocol: &str) -> BlockText<'a> {
-    use std::borrow::Cow;
-    match ingress_protocol {
-        // Anthropic: `{type:"thinking", thinking:"…"}` — plaintext under `thinking`, NOT `text`
-        // (proto/anthropic/mod.rs reader). `{type:"redacted_thinking", data:"…"}` carries only
-        // opaque bytes; the IR's `Thinking.redacted` contract (ir/mod.rs) is never plaintext.
-        PROTO_ANTHROPIC => match b.get("type").and_then(Value::as_str) {
-            Some("thinking") => match b.get("thinking").and_then(Value::as_str) {
-                Some(t) => BlockText::Text(Cow::Borrowed(t)),
-                None => BlockText::None,
-            },
-            Some("redacted_thinking") => BlockText::Redacted,
-            _ => generic_block_text(b),
-        },
-        // Bedrock Converse: `{reasoningContent:{reasoningText:{text:"…"}}}` — no `text` key at
-        // the block root at all, so the generic probe always missed it. No unsigned-drop filter
-        // exists on this dialect's writer (see this fn's doc comment) — a client-fabricated,
-        // unsigned block ships to the provider verbatim, and this is the no-forgery bypass.
-        // `{reasoningContent:{redactedContent:"…"}}` is the redacted counterpart.
-        PROTO_BEDROCK => {
-            if let Some(t) = b
-                .pointer("/reasoningContent/reasoningText/text")
-                .and_then(Value::as_str)
-            {
-                BlockText::Text(Cow::Borrowed(t))
-            } else if b.pointer("/reasoningContent/redactedContent").is_some() {
-                BlockText::Redacted
-            } else {
-                generic_block_text(b)
-            }
-        }
-        // Responses `reasoning` items: text lives in `content[]`/`summary[].text`, never at the
-        // item root. A summary-only item (no `content` key at all) is the second no-signature
-        // bypass (see this fn's doc comment). Reuse the reader's own walk
-        // (`read_reasoning_text`) instead of a second hand-rolled copy of its accept/skip rules —
-        // two independent implementations of "where does Responses reasoning text live" is how
-        // this class of defect recurs.
-        PROTO_RESPONSES => match b.get("type").and_then(Value::as_str) {
-            Some(crate::proto::openai_responses::ITEM_TYPE_REASONING) => {
-                let text = crate::proto::openai_responses::read_reasoning_text(b);
-                if !text.is_empty() {
-                    // `text` is already a `Cow<'_, str>` borrowing from `b` in the common
-                    // (single-part) case — no `Cow::Owned` wrapping needed here any more.
-                    BlockText::Text(text)
-                } else if crate::proto::openai_responses::read_reasoning_encrypted_content(b)
-                    .is_some()
-                {
-                    // Opaque `encrypted_content`-only item (no `content[]`/`summary[]` text): the
-                    // reader admits this shape to the provider on the signature alone (see this
-                    // fn's doc comment), so it must not read as "nothing here" any more than the
-                    // Anthropic/Bedrock redacted shapes do. Never leak the raw blob to a hook.
-                    BlockText::Redacted
-                } else {
-                    BlockText::None
-                }
-            }
-            _ => generic_block_text(b),
-        },
-        // Gemini's thought part already carries a real `text` field (`{text, thought:true,
-        // thoughtSignature}`) — safe by accident, the generic probe covers it.
-        PROTO_GEMINI
-        // OpenAI Chat has no native request-path reasoning block; Cohere has none either — named
-        // explicitly (not folded into a bare `_`) so a 7th protocol added later does not silently
-        // inherit "no reasoning shape" without a reviewer choosing that on purpose.
-        | PROTO_OPENAI
-        | PROTO_COHERE => generic_block_text(b),
-        // Unregistered/test-only protocol name: no declared reasoning shape, fall through to the
-        // generic probe. `KNOWN_PROTOCOLS` is the source of truth for what busbar ships; this arm
-        // only matters for a `&str` that isn't one of the six above.
-        _ => generic_block_text(b),
-    }
-}
-
-/// The generic arm every dialect falls back to: a block carrying a plain `text` string —
-/// Anthropic `text` blocks, Bedrock `{text}` blocks, Responses `input_text`/`output_text`
-/// blocks/items, Gemini parts. Anything else (image, tool_use, tool_result, or a shape this
-/// dialect has no text field for) is structurally text-less.
-fn generic_block_text(b: &Value) -> BlockText<'_> {
-    match b.get("text").and_then(Value::as_str) {
-        Some(t) => BlockText::Text(std::borrow::Cow::Borrowed(t)),
-        None => BlockText::None,
-    }
-}
-
-/// Sum the chars of every `parts[].text` string in a gemini Content object (`systemInstruction`
-/// or a `contents[]` turn). Non-text parts (inlineData, functionCall, …) contribute 0.
-pub(crate) fn gemini_parts_chars(content: &Value) -> usize {
-    content
-        .get("parts")
-        .and_then(|p| p.as_array())
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                .map(|t| t.chars().count())
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-/// Chars of the request's system prompt, DIALECT-AWARE: `system` as a bare string or a block
-/// array (Anthropic allows both; blocks dispatched through [`block_text`] — keyed on `type`/
-/// dialect wire shape, not on the `text` field's presence), gemini's `systemInstruction`
-/// (`{parts: [{text}]}`), or the Responses API's bare-string `instructions`. The SAME shapes
-/// `build_prompt_projection` flattens, so the SIZE signal and the opt-in content projection
-/// never diverge. Cheap v1 SIZE signal (NOT a token count).
-pub(crate) fn system_text_chars(v: &Value, ingress_protocol: &str) -> usize {
-    match ingress_protocol {
-        PROTO_GEMINI => v
-            .get("systemInstruction")
-            .map(gemini_parts_chars)
-            .unwrap_or(0),
-        PROTO_RESPONSES => v
-            .get("instructions")
-            .and_then(|i| i.as_str())
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
-        _ => match v.get("system") {
-            Some(Value::String(s)) => s.chars().count(),
-            Some(Value::Array(blocks)) => blocks
-                .iter()
-                .map(|b| match block_text(b, ingress_protocol) {
-                    BlockText::Text(t) => t.chars().count(),
-                    BlockText::Redacted => REDACTED_REASONING_MARKER.chars().count(),
-                    BlockText::None => 0,
-                })
-                .sum(),
-            _ => 0,
-        },
-    }
-}
-
-/// Total chars across the system prompt + every conversation turn's text content, DIALECT-AWARE.
-/// `content` is a bare string or an array of blocks dispatched through [`block_text`] (Anthropic
-/// text/thinking blocks, Bedrock `[{text}]`/`reasoningContent`, or Responses `input_text` blocks
-/// NESTED inside a message's `content[]`); gemini turns carry `parts[].text` instead. The
-/// Responses API ALSO allows a TOP-LEVEL typed item directly in `input[]`
-/// (`{type: "input_text"/"output_text", …}`, no `content` key) — that text lives at the item
-/// root, so such an item is dispatched through [`block_text`] on itself (mirroring the proto
-/// reader). A `reasoning` item is dispatched through [`block_text`] on its item root
-/// UNCONDITIONALLY (checked before the `content`-shape match, not folded into the "no `content`
-/// key" fallback above): its text/opaque-blob can live under `summary[]`/`content[]`/
-/// `encrypted_content`, and `content` on a reasoning item may be ABSENT, an EMPTY array, or a
-/// populated array — an empty array must still reach `block_text`'s reasoning arm rather than
-/// being treated as "zero blocks to walk". A best-effort projection over the pristine ingress
-/// body — never fails.
-pub(crate) fn total_text_chars(v: &Value, ingress_protocol: &str, system_chars: usize) -> usize {
-    let mut total = system_chars;
-    if let Some(turns) = conversation_turns(v, ingress_protocol) {
-        for m in turns {
-            if ingress_protocol == PROTO_GEMINI {
-                total += gemini_parts_chars(m);
-                continue;
-            }
-            // A Responses `reasoning` item is dispatched through `block_text` on the ITEM ROOT
-            // regardless of whether `content` is absent, an empty array, or a populated array:
-            // `content: []` (present but empty) is a real, client-triggerable shape the reader
-            // still admits on `encrypted_content` alone (`ITEM_TYPE_REASONING` in
-            // `proto/openai_responses/reader.rs`), and matching on `m.get("content")` shape
-            // FIRST would route it through the (empty) array-walk below and never reach
-            // `block_text`'s reasoning arm at all — invisible to the SIZE signal even after that
-            // arm itself learned to recognize `encrypted_content`. Checked before the
-            // `content`-shape match so this can never fall through to it.
-            if ingress_protocol == PROTO_RESPONSES
-                && m.get("type").and_then(Value::as_str)
-                    == Some(crate::proto::openai_responses::ITEM_TYPE_REASONING)
-            {
-                total += match block_text(m, PROTO_RESPONSES) {
-                    BlockText::Text(t) => t.chars().count(),
-                    BlockText::Redacted => REDACTED_REASONING_MARKER.chars().count(),
-                    BlockText::None => 0,
-                };
-                continue;
-            }
-            match m.get("content") {
-                Some(Value::String(s)) => total += s.chars().count(),
-                Some(Value::Array(blocks)) => {
-                    for b in blocks {
-                        total += match block_text(b, ingress_protocol) {
-                            BlockText::Text(t) => t.chars().count(),
-                            BlockText::Redacted => REDACTED_REASONING_MARKER.chars().count(),
-                            BlockText::None => 0,
-                        };
-                    }
-                }
-                // A top-level Responses `input_text`/`output_text` item (non-reasoning; the
-                // reasoning case is handled above) carries its text at the item root, not under
-                // `content` — dispatch it through `block_text` too.
-                _ if ingress_protocol == PROTO_RESPONSES => {
-                    total += match block_text(m, PROTO_RESPONSES) {
-                        BlockText::Text(t) => t.chars().count(),
-                        BlockText::Redacted => REDACTED_REASONING_MARKER.chars().count(),
-                        BlockText::None => 0,
-                    };
-                }
-                _ => {}
-            }
-        }
-    } else if ingress_protocol == PROTO_RESPONSES {
-        // Bare-string `input` = one implicit user turn.
-        if let Some(s) = v.get("input").and_then(Value::as_str) {
-            total += s.chars().count();
-        }
-    }
-    total
+/// The client-facing message for a body the ingress protocol's reader refuses. Deliberately
+/// content-free: it names the failure, never the field or the value that caused it.
+pub(crate) fn unreadable_body_message() -> &'static str {
+    "request body could not be read as a valid request for this endpoint"
 }
 
 /// Map a hook-chosen reject status to the closest dialect error KIND, so an SDK caller catches the
@@ -667,207 +419,6 @@ pub(crate) fn reject_kind_for_status(status: u16) -> &'static str {
         429 => KIND_RATE_LIMIT,
         _ => KIND_INVALID_REQUEST,
     }
-}
-
-/// The request body's end-user identifier, dialect-aware: `user` (OpenAI) first, then
-/// `metadata.user_id` (Anthropic). An empty string means "no user id" in EITHER position — an
-/// empty `user: ""` falls through to a populated `metadata.user_id` rather than shadowing it,
-/// and empty-everywhere coalesces to `None`. Part of the `policy.send_user` identity projection.
-pub(crate) fn body_end_user(v: &Value) -> Option<String> {
-    v.get("user")
-        .and_then(|u| u.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            v.get("metadata")
-                .and_then(|m| m.get("user_id"))
-                .and_then(|u| u.as_str())
-                .filter(|s| !s.is_empty())
-        })
-        .map(str::to_string)
-}
-
-/// Flatten the ingress body's prompt content into the opt-in hook projection
-/// (`policy.send_prompt`). The same content shapes as the SIZE signals (`total_text_chars` /
-/// `system_text_chars`) — bare-string content and blocks dispatched through [`block_text`],
-/// keyed on `type`/dialect wire shape rather than on the `text` field's presence — but
-/// collecting the text instead of counting the chars. (The flattened text joins blocks with a
-/// newline, so its length can exceed the `total_chars` SIZE signal by one char per block
-/// boundary — the signal counts text, not separators.) Structurally text-less blocks (images,
-/// documents, tool results) contribute NO text; opaque provider-encrypted reasoning
-/// (`redacted_thinking`/`redactedContent`) contributes [`REDACTED_REASONING_MARKER`] instead of
-/// vanishing. The message ENTRY is kept either way (possibly with empty text and, for a malformed
-/// body, an empty role): entries stay index-aligned with the body's `messages` and with
-/// `message_count`, so a screening hook sees every turn — a media-only turn reads as
-/// `{role, text: ""}`, never silently vanishes. Bare-string content BORROWS from the parsed body
-/// (`Cow::Borrowed`, the common case); only block arrays allocate a joined string. Runs ONLY
-/// behind the per-pool opt-in, so even that cost never touches a default pool.
-///
-/// GUARANTEE: no content block can carry text to the provider that this projection does not
-/// either project or explicitly mark. As of this fix that includes reasoning/thinking text
-/// (Anthropic `thinking`, Bedrock `reasoningText`, Responses `reasoning` text under
-/// `content[]`/`summary[]`) AND opaque provider-encrypted reasoning that ships on the signature
-/// alone with no plaintext at all (Anthropic `redacted_thinking`, Bedrock `redactedContent`,
-/// Responses `reasoning` carrying only `encrypted_content` — including when `content` is present
-/// but an EMPTY array, not just absent, which still reaches `block_text`'s reasoning arm here) —
-/// a `prompt: ro`/`rw` grant now sees the SAME chain-of-thought content the provider receives
-/// when a client replays it into a multi-turn body, or the redacted-reasoning marker when it
-/// can't. This is a widened disclosure for an already-opt-in, `full`-scope-gated grant (see
-/// CHANGELOG), not a new grant. `apply_rewrite_to_body` is a SEPARATE, pre-existing,
-/// out-of-scope hazard: it is not index-aligned, so a `prompt: rw` hook that echoes this
-/// projection verbatim promotes reasoning text (or, for a redacted turn, the marker) into a
-/// visible assistant text block shipped upstream — see that function's doc comment.
-pub(crate) fn build_prompt_projection<'a>(
-    v: &'a Value,
-    ingress_protocol: &str,
-) -> crate::hooks::PromptProjection<'a> {
-    use std::borrow::Cow;
-    // A content value is a bare string (borrowed as-is) or an array of blocks (text/redacted-
-    // marker blocks joined by newline into an owned string; text-less blocks contribute nothing).
-    fn flatten_content<'a>(c: Option<&'a Value>, ingress_protocol: &str) -> Cow<'a, str> {
-        match c {
-            Some(Value::String(s)) => Cow::Borrowed(s.as_str()),
-            Some(Value::Array(blocks)) => {
-                let mut out = String::new();
-                for b in blocks {
-                    let piece: Option<Cow<'_, str>> = match block_text(b, ingress_protocol) {
-                        BlockText::Text(t) => Some(t),
-                        BlockText::Redacted => Some(Cow::Borrowed(REDACTED_REASONING_MARKER)),
-                        BlockText::None => None,
-                    };
-                    if let Some(t) = piece {
-                        if !out.is_empty() {
-                            out.push('\n');
-                        }
-                        out.push_str(&t);
-                    }
-                }
-                Cow::Owned(out)
-            }
-            _ => Cow::Borrowed(""),
-        }
-    }
-    // A gemini Content object: join `parts[].text` with newlines (mirrors `gemini_parts_chars`,
-    // which counts what this flattens). Borrows a lone text part (the common case).
-    fn flatten_gemini_parts(c: &Value) -> Cow<'_, str> {
-        match c.get("parts").and_then(|p| p.as_array()) {
-            Some(parts) => {
-                let mut texts = parts
-                    .iter()
-                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                    .peekable();
-                match texts.next() {
-                    Some(first) if texts.peek().is_none() => Cow::Borrowed(first),
-                    Some(first) => {
-                        let mut out = String::from(first);
-                        for t in texts {
-                            out.push('\n');
-                            out.push_str(t);
-                        }
-                        Cow::Owned(out)
-                    }
-                    None => Cow::Borrowed(""),
-                }
-            }
-            None => Cow::Borrowed(""),
-        }
-    }
-    let system = match ingress_protocol {
-        PROTO_GEMINI => v.get("systemInstruction").map(flatten_gemini_parts),
-        PROTO_RESPONSES => v
-            .get("instructions")
-            .and_then(|i| i.as_str())
-            .map(Cow::Borrowed),
-        _ => v
-            .get("system")
-            .map(|s| flatten_content(Some(s), ingress_protocol)),
-    }
-    .filter(|s| !s.is_empty());
-    let messages = match conversation_turns(v, ingress_protocol) {
-        Some(turns) => turns
-            .iter()
-            .map(|m| {
-                let text = if ingress_protocol == PROTO_GEMINI {
-                    flatten_gemini_parts(m)
-                } else if ingress_protocol == PROTO_RESPONSES
-                    && m.get("type").and_then(Value::as_str)
-                        == Some(crate::proto::openai_responses::ITEM_TYPE_REASONING)
-                {
-                    // A Responses `reasoning` item is dispatched through `block_text` on the ITEM
-                    // ROOT UNCONDITIONALLY — checked by `type` BEFORE looking at `content`'s
-                    // shape, not folded into the "no `content` key" branch below. Its text/opaque
-                    // blob can live under `summary[]`/`content[]`/`encrypted_content`, and
-                    // `content` on a reasoning item may be ABSENT, an EMPTY array, or a populated
-                    // array; `content: []` (present but empty, a real client-triggerable shape —
-                    // the reader still admits the item on `encrypted_content` alone) must still
-                    // reach `block_text`'s reasoning arm rather than falling into
-                    // `flatten_content`'s empty-array walk below, which would silently drop an
-                    // `encrypted_content`-only item instead of marking it `Redacted`.
-                    match block_text(m, PROTO_RESPONSES) {
-                        BlockText::Text(t) => t,
-                        BlockText::Redacted => Cow::Borrowed(REDACTED_REASONING_MARKER),
-                        BlockText::None => Cow::Borrowed(""),
-                    }
-                } else if ingress_protocol == PROTO_RESPONSES && m.get("content").is_none() {
-                    // A top-level Responses typed item — `{type: "input_text"/"output_text",
-                    // text}` — carries its text at the item root, not under a `content`
-                    // string/array (the `reasoning` case is handled above). Dispatch the ITEM
-                    // ITSELF through `block_text`.
-                    match block_text(m, PROTO_RESPONSES) {
-                        BlockText::Text(t) => t,
-                        BlockText::Redacted => Cow::Borrowed(REDACTED_REASONING_MARKER),
-                        BlockText::None => Cow::Borrowed(""),
-                    }
-                } else {
-                    flatten_content(m.get("content"), ingress_protocol)
-                };
-                let role: Cow<'_, str> = match m.get("role").and_then(|r| r.as_str()) {
-                    // CANONICALIZE the gemini-native assistant role `model` → `assistant` so a
-                    // `prompt: rw` hook sees the SAME canonical-IR vocabulary on every dialect (the
-                    // hook contract promises normalized IR). Without this a hook that echoes the role
-                    // it received emitted `model`, which the gemini write-back then mapped to `user`,
-                    // silently corrupting assistant turns. Mirrors the responses arm below.
-                    Some("model") if ingress_protocol == PROTO_GEMINI => Cow::Borrowed("assistant"),
-                    Some(r) => Cow::Borrowed(r),
-                    // Top-level typed item without a `role`: infer from its `type`, enumerated
-                    // against the reader's own `ITEM_TYPE_*`/`CONTENT_TYPE_*` vocabulary
-                    // (`proto/openai_responses/mod.rs`) rather than inventing string literals here
-                    // — reuse is what makes a future item type discoverable by grep. `reasoning`
-                    // is assistant-authored (the reader already maps it to a standalone assistant
-                    // `IrMessage`, `responses/reader.rs`); the old `_ => "user"` fallback
-                    // contradicted that on the same body.
-                    None if ingress_protocol == PROTO_RESPONSES => {
-                        use crate::proto::openai_responses::{
-                            CONTENT_TYPE_OUTPUT_TEXT, ITEM_TYPE_FUNCTION_CALL, ITEM_TYPE_REASONING,
-                        };
-                        match m.get("type").and_then(Value::as_str) {
-                            Some(CONTENT_TYPE_OUTPUT_TEXT)
-                            | Some(ITEM_TYPE_REASONING)
-                            | Some(ITEM_TYPE_FUNCTION_CALL) => Cow::Borrowed("assistant"),
-                            // `input_text`/`input_image`/`input_file`, or an unrecognized/absent
-                            // type: attribute to the caller — the conservative direction for
-                            // screening, since a screening hook is likelier to scrutinize caller
-                            // input than model output. NAMED fallback (not `_`) per the project's
-                            // no-catch-all convention — a new item type is visible in a diff here.
-                            unrecognized => {
-                                let _ = unrecognized;
-                                Cow::Borrowed("user")
-                            }
-                        }
-                    }
-                    None => Cow::Borrowed(""),
-                };
-                (role, text)
-            })
-            .collect(),
-        // The Responses API's bare-string `input` = one implicit user turn.
-        None if ingress_protocol == PROTO_RESPONSES => v
-            .get("input")
-            .and_then(Value::as_str)
-            .map(|s| vec![(Cow::Borrowed("user"), Cow::Borrowed(s))])
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
-    crate::hooks::PromptProjection { system, messages }
 }
 
 /// Build the routing projection (request + candidates + context) and run the resolved policy ONCE,
@@ -964,55 +515,58 @@ pub(crate) async fn decide_policy_order(
         _ => None,
     };
 
+    // THE ONE READ. Everything this seam projects — counts, sizes, the caller's cap, the end-user
+    // id, and the content itself — comes from the IR the ingress protocol's own reader produced. A
+    // body that reader REFUSES is the request's failure, surfaced as the gate's own first-class
+    // rejection rather than screened as best-effort and forwarded upstream anyway.
+    let facts = match read_hook_facts(v, ingress_protocol) {
+        Ok(f) => f,
+        Err(HookIrRejected) => {
+            return PolicyOutcome::RejectRequest {
+                status: 400,
+                message: unreadable_body_message().to_string(),
+                name: policy.name(),
+            }
+        }
+    };
+    let shape = facts.shape();
+
     // `policy.send_user` opt-in (default off): project the caller identity — the virtual key's
-    // id/name (from the resolved record, NEVER the token) plus the body's end-user field (`user` in
-    // the OpenAI dialect, `metadata.user_id` in the Anthropic dialect).
+    // id/name (from the resolved record, NEVER the token) plus the request's end-user field,
+    // normalized by the reader from whichever field its dialect spells it in.
     let identity = if send_user {
-        let body_user = body_end_user(v);
         Some(crate::hooks::CallerIdentity {
             key_id: gov_key.as_ref().map(|k| k.id.clone()),
             key_name: gov_key.as_ref().map(|k| k.name.clone()),
-            user: body_user,
+            user: facts.end_user(),
         })
     } else {
         None
     };
 
-    // `policy.send_prompt` opt-in (default off): flatten the prompt content for the hook. The
+    // `policy.send_prompt` opt-in (default off): project the prompt content for the hook. The
     // allocation cost lives entirely behind the flag — a shape-only pool never runs this.
-    let prompt = if send_prompt {
-        Some(build_prompt_projection(v, ingress_protocol))
-    } else {
-        None
-    };
+    let prompt = enforce_content_cap(send_prompt.then(|| facts.prompt()));
 
     let member_meta = app.pool_runtime.get(pool_name).map(|r| &r.members);
-
-    // Count the system prompt's chars ONCE: it feeds both `total_chars` (via `total_text_chars`) and
-    // `system_chars`, so computing it inline twice would run the O(n) UTF-8 scan over the system block
-    // twice. Off the zero-cost default path (only non-default route policies reach here).
-    let system_chars = system_text_chars(v, ingress_protocol);
 
     let req = RoutingRequest {
         request_id: request_ctx.request_id,
         pool: pool_name,
         ingress_protocol,
+        // The one scalar still read off the pristine body: the requested model is a ROUTING noun
+        // rather than a conversation fact, and the chat IR does not model it (a path-model dialect
+        // never carries it in the body at all, and reads `None` here exactly as it did before).
         requested_model: v.get("model").and_then(|m| m.as_str()),
-        message_count: turn_count(v, ingress_protocol),
-        tool_count: v
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0),
-        has_tools: v
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .is_some_and(|a| !a.is_empty()),
-        total_chars: total_text_chars(v, ingress_protocol, system_chars),
-        system_chars,
-        // Saturating narrow (in `max_tokens_for`): an absurd caller cap (> u32::MAX) still signals
-        // "huge ask" to the policy instead of wrapping to a small number. A SIZE signal, not a limit.
-        max_tokens: max_tokens_for(v, ingress_protocol),
+        message_count: shape.turn_count,
+        tool_count: shape.tool_count,
+        has_tools: shape.has_tools,
+        total_chars: shape.text_chars,
+        system_chars: shape.system_chars,
+        // Normalized by the reader from whichever field its dialect spells the cap in — including
+        // the nested config object one dialect uses, which the raw-body projection could not see.
+        // A SIZE signal, not a limit.
+        max_tokens: shape.max_tokens,
         stream: wants_stream,
         prompt,
         identity,
@@ -1327,28 +881,25 @@ pub(crate) fn capture_stage_shape<'a>(
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {
-    let (message_count, has_tools, total_chars, max_tokens) = match v {
-        Some(v) => {
-            let system_chars = system_text_chars(v, ingress_protocol);
-            (
-                turn_count(v, ingress_protocol),
-                v.get("tools")
-                    .and_then(|t| t.as_array())
-                    .is_some_and(|a| !a.is_empty()),
-                total_text_chars(v, ingress_protocol, system_chars),
-                max_tokens_for(v, ingress_protocol),
-            )
-        }
-        None => (0, false, 0, None),
+    // Read through the IR like every other hook projection. A body the reader REFUSES yields the
+    // zeroed shape rather than failing anything: a stage tap is fire-and-forget OBSERVATION and can
+    // never fail a request. The request itself is still rejected — by the gate/rewrite seams, which
+    // read the same IR and do surface the parse failure — so this is not a fail-open hole, it is an
+    // observation path declining to invent facts it does not have.
+    let shape = match v {
+        Some(v) => read_hook_facts(v, ingress_protocol)
+            .map(|f| f.shape())
+            .unwrap_or(crate::ir::facts::Shape::EMPTY),
+        None => crate::ir::facts::Shape::EMPTY,
     };
     StageShape {
         request_id,
         pool,
         ingress_protocol,
-        message_count,
-        has_tools,
-        total_chars,
-        max_tokens,
+        message_count: shape.turn_count,
+        has_tools: shape.has_tools,
+        total_chars: shape.text_chars,
+        max_tokens: shape.max_tokens,
         stream,
     }
 }

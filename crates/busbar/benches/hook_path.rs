@@ -80,6 +80,34 @@
 //! `String` per block is exactly the change this pair would show, most visibly in the 200-turn
 //! cells, where the per-turn term dominates the round trip's ~80µs fixed floor.
 //!
+//! # The reading AFTER the cutover
+//!
+//! Same harness, same four cells, one run, on a MUCH more loaded machine than the baseline above —
+//! so read the C1↔C2 PAIR within this run and ignore the absolute figures against the earlier ones
+//! (C1 measured 105µs, 163µs and 184µs on three runs of the SAME code minutes apart, which is the
+//! load, not the code):
+//!
+//! ```text
+//! C1_same_protocol_no_hook                  [163.7 µs  184.5 µs  208.7 µs]
+//! C2_same_protocol_prompt_ro_tap            [195.2 µs  208.7 µs  228.1 µs]
+//! C1_same_protocol_no_hook_200turns         [196.1 µs  224.7 µs  255.2 µs]
+//! C2_same_protocol_prompt_ro_tap_200turns   [307.2 µs  376.1 µs  457.7 µs]
+//! ```
+//!
+//! **C2 is now measurably above C1, which is the accepted cost arriving on the instrument rather
+//! than in an argument: ~+24 µs on the short body and ~+151 µs at 200 turns.** Before the cutover
+//! C2 sat inside C1's noise, because the projection it ran borrowed; it now reads the request
+//! through the protocol's reader, which OWNS a `String` per block. The 200-turn cell is where that
+//! shows, exactly as this file predicted it would, and the per-turn term is the whole of it.
+//!
+//! Neither stop condition fires. **C1 is untouched by the change** — a deployment with no content
+//! hook builds no projection and never reads, so nothing on that path is new; its movement across
+//! runs is this machine's load and is visible on unchanged code. And **the tail is not a cliff**:
+//! the upper-bound delta tracks the mean delta (+19 µs vs +24 µs on the short body, +202 µs vs
+//! +151 µs at 200 turns — 1.3×, well inside the ~3× that would mean an allocation cliff rather than
+//! a tax). The remaining cost is the known, fixable one: a borrowing IR block variant, which is a
+//! change to the IR rather than to this design.
+//!
 //! **Numbers are comparable within one run and much less so across runs** (an isolated C2 measured
 //! 153µs on the same tree minutes earlier, on a differently-loaded machine). Always read a delta
 //! from a saved baseline in the same session; never quote one of these figures against a number

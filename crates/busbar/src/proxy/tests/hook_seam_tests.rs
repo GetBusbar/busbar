@@ -123,10 +123,15 @@ async fn run(
 }
 
 fn body() -> Value {
+    // The end-user id is spelled the way THIS dialect spells it (`metadata.user_id` on Anthropic,
+    // which is what `run` sends as). The `user` key is kept alongside it because a client may send
+    // both — and because it is now the useful half of the fixture: the seam reads the dialect's own
+    // field through the reader, so a key this dialect does not model cannot masquerade as one.
     serde_json::json!({
         "model": "m0",
         "system": "sys prompt",
         "user": "alice",
+        "metadata": {"user_id": "alice"},
         "messages": [{"role": "user", "content": "hello"}]
     })
 }
@@ -1440,8 +1445,13 @@ fn outcome_kind(o: &PolicyOutcome) -> &'static str {
     }
 }
 
-/// An absurd caller `max_tokens` (> u32::MAX) SATURATES in the projection instead of wrapping
-/// to a small number — the SIZE signal must still read "huge ask" to the policy.
+/// An absurd caller `max_tokens` (> u32::MAX) must NEVER reach a policy as a small number.
+///
+/// The old raw-body projection saturated it to `u32::MAX`. The seam now reports the cap the READER
+/// resolved — the same value that governs what actually goes upstream — and every reader treats an
+/// out-of-range cap as no cap at all. So the signal is ABSENT rather than saturated: still not a
+/// small number, and now in agreement with the request the provider receives instead of describing
+/// a cap that was never applied. An operator-visible change; it is in the CHANGELOG.
 #[tokio::test]
 async fn max_tokens_saturates_not_wraps() {
     let v = serde_json::json!({
@@ -1451,7 +1461,12 @@ async fn max_tokens_saturates_not_wraps() {
     });
     let (_, captured) = run(false, false, None, v).await;
     let captured = captured.expect("policy must have been called");
-    assert_eq!(captured.max_tokens, Some(u32::MAX));
+    assert_eq!(captured.max_tokens, None);
+    assert_ne!(
+        captured.max_tokens,
+        Some(5_000_000_000u64 as u32),
+        "the one thing that must never happen is a wrap to a small number"
+    );
 }
 
 /// `send_user` with GOVERNANCE configured: the caller's secret resolves to its key record and

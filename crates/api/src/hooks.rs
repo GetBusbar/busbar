@@ -7,9 +7,9 @@
 //! decides, or transforms on them and can never touch the mutable IR or engine state.
 
 /// A read-only, cheaply-constructed projection of the request for routing decisions. Built ONCE per
-/// request from the pristine ingress `serde_json::Value` BEFORE the failover loop, and ONLY for
-/// non-default pools. Borrows where possible; owns only small derived scalars. A policy never
-/// touches the mutable IR or engine state.
+/// request from the NORMALIZED IR — the same representation the request that goes upstream is built
+/// from — BEFORE the failover loop, and ONLY for non-default pools. Borrows where possible; owns
+/// only small derived scalars. A policy never touches the mutable IR or engine state.
 #[derive(Debug, Clone)]
 pub struct RoutingRequest<'a> {
     /// This request's correlation id — a single `u64` stamped once at ingress (busbar core's
@@ -53,12 +53,29 @@ pub struct RoutingRequest<'a> {
     pub signals: crate::SignalBag,
 }
 
-/// The prompt content projection (the hook's `prompt: ro|rw` grant). Text only: string content and
-/// `{type:"text"}` blocks are flattened; non-text blocks (images, tool results) contribute no text
-/// (the payload carries text, not binary blobs), but their message entries remain — with empty
-/// text — so the projection stays index-aligned with the body's messages. `Cow`: bare-string
-/// content borrows straight from the parsed body (the common case, zero copies); only block
-/// arrays allocate a joined string.
+/// The prompt content projection (the hook's `prompt: ro|rw` grant), read from the normalized IR.
+///
+/// Text only: every content block that carries screenable text is flattened, including reasoning
+/// text, tool-call arguments and tool-result content. Content busbar cannot read (provider-encrypted
+/// reasoning, in any of the wire shapes that carry it) is replaced by a fixed non-content marker
+/// rather than shown or silently dropped — the correct read of that marker is *"there is content
+/// here I cannot screen"*, never *"this turn is empty"* and never *"this is genuine ciphertext"*.
+/// Structurally text-less blocks (images) contribute no text, but their message entries remain —
+/// with empty text — so a screening hook never sees fewer turns than the provider does.
+///
+/// # ALIGNMENT: entries index against the NORMALIZED turns, not against the wire array
+///
+/// This projection is built from the same normalized request the provider's bytes are built from,
+/// and normalization moves the system prompt to one place on every protocol. A body that sends its
+/// system prompt as an in-band turn therefore contributes to `system` here and NOT to a turn — and
+/// `message_count` is one lower than the wire array's length for such a body.
+///
+/// That is deliberate and is the reason this projection exists in this form: it is what makes a hook
+/// behave the same way whichever dialect the client happens to speak. A hook that looked for the
+/// system prompt in `messages[0]` finds it in `system`, on every protocol.
+///
+/// `Cow`: a single-block turn borrows straight from the normalized request (the common case, zero
+/// copies); only a multi-block turn allocates a joined string.
 #[derive(Clone)]
 pub struct PromptProjection<'a> {
     /// The system prompt's text, flattened (bare string, or text blocks concatenated).

@@ -3864,6 +3864,11 @@ pub(crate) fn build_app_from_config(
         }
     };
 
+    // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
+    // single relaxed load — never recomputed per request, and never consulted at all on a
+    // deployment with no content-granted hook, because no content projection is built there.
+    crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
+
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,

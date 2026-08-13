@@ -91,6 +91,65 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Changed
 
+- **Hooks now fire on the normalized IR — the same representation the request that goes upstream is
+  built from.** Busbar had two answers to "what is the text in this request": the one every protocol
+  reader produces, and a second one the hook seam re-derived from the raw ingress body with its own
+  content flattening and its own per-dialect branching. They could disagree, and the disagreement is
+  security-shaped rather than untidy: a PII/DLP gate wired as a `prompt: ro` hook screened the first
+  view while the provider received a request built from the second — **so a screening hook could
+  pass a request whose real payload it never saw.** One instance of that class had already shipped
+  and been fixed inside a single hook. The second implementation is now deleted, so that class of bug
+  cannot recur.
+
+  This is operator-visible, and each change below applies at `prompt: ro` and `prompt: rw` alike.
+
+  - **The system prompt reaches a hook in `system`, on every protocol.** A client that sends it as an
+    in-band `{role: "system"}` turn no longer has it arrive as an ordinary message. Consequently
+    **`message_count` is one lower** than the client's array length for such a body, and the
+    `messages` projection is aligned with the normalized turns rather than with the wire array.
+    A hook that guarded for an in-band system turn (Headroom carries such a guard) keeps working —
+    the guard simply never fires again. A hook keying a heuristic off `message_count` sees the lower
+    number. Media-only turns still keep their entry, so a hook never sees fewer turns than the
+    provider does.
+  - **A top-level `system` key on a dialect that does not define one is no longer projected as a
+    system prompt.** It was being shown to hooks as one while the provider never received it as one.
+  - **A conversation turn that omits its role is projected with the role that dialect defines for the
+    omission** (rather than as an empty string). A hook that switches on role — "screen user turns
+    strictly, trust assistant turns" is the common shape — no longer takes its default arm on
+    caller-supplied input.
+  - **An OpenAI `refusal` content part is now projected** and counts toward `total_chars`. A
+    guardrail could not previously screen a replayed refusal.
+  - **Tool-call ARGUMENTS are now projected**, attributed to the turn that made the call. They are
+    the most attacker-influenceable field in an agent request and went upstream verbatim while the
+    projection showed a gate nothing at all for that turn. Tool results were already projected and
+    still are. This is a widening of an already opt-in, `full`-scope-gated grant, in the same spirit
+    as the reasoning-text widening: if your hook logs or forwards the projection verbatim, it now
+    carries tool arguments too.
+  - **A request body Busbar cannot read is rejected with a 400 rather than forwarded.** Five protocol
+    readers hard-reject a turn whose role they do not recognise; such a body used to be forwarded
+    upstream while the hook was told the role was an empty string. That is the fail-open shape, and
+    the rejection is unconditional rather than keyed on whether a content hook happens to be
+    configured.
+  - **An out-of-range `max_tokens` is reported as absent rather than saturated.** The value a hook
+    sees is now the cap that actually governs the request.
+  - **A Bedrock Converse caller's `inferenceConfig.maxTokens` now reaches the `max_tokens` signal.**
+    This is a straight fix: the old projection read `max_tokens`, found nothing on that dialect, and
+    reported no cap — so a routing policy keyed on the size signal was blind to a Bedrock caller's
+    cap in exactly the way every Responses request used to be.
+  - **A Responses `reasoning` item carrying only an opaque `encrypted_content` blob projects the
+    `[busbar:redacted_reasoning]` marker**, as the Anthropic and Bedrock redacted shapes already did.
+    Provider ciphertext still never reaches a hook, on any of the three shapes.
+
+  `docs/hooks.md` said hooks fire on the normalized IR before they did. That sentence is now true.
+
+- **`limits.hook_content_max_bytes` bounds what a content-granted hook is shown** (default 65536;
+  `0` disables the ceiling). Over-cap content is omitted WHOLE — never truncated mid-value, because a
+  guardrail that screens half a payload and passes it is worse than one that refuses — and the hook
+  receives a present-but-empty content projection while the size fields still report the real totals,
+  so an omission is stated in the payload rather than hidden. `busbar_hook_content_truncated_total`
+  counts it. This bounds the tool-argument and tool-result widening above, which on an agent request
+  is limited by neither a context window nor a token count.
+
 - **The `operation` label reads `invoke`, not `tool_call`.** The operation that carries "a caller
   names a target, hands it arguments, and gets content or an error back" now also carries A2A
   `message/send`, so it is no longer named after one protocol's method. The same string is the

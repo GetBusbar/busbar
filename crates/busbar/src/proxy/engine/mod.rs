@@ -2493,9 +2493,16 @@ fn fire_global_taps(
         // (decide_policy_order), not a tap payload.
         budget: &[],
     };
+    // THE ONE READ for this seam, done once and shared by both projections. A body the reader
+    // refuses yields the zeroed shape here rather than failing anything: request-stage taps are
+    // fire-and-forget observation, and the gate/rewrite seams — which read the same IR — are where
+    // an unreadable request is actually rejected.
+    let facts = crate::proxy::hooks::read_hook_facts(body, ingress_protocol)
+        .unwrap_or(crate::proxy::hooks::HookFacts::Absent);
     let build_proj = |with_prompt: bool| {
         let req = build_rewrite_request(
-            body,
+            &facts,
+            body.get("model").and_then(serde_json::Value::as_str),
             pool_name,
             ingress_protocol,
             wants_stream,

@@ -224,15 +224,36 @@ pub(crate) struct Shape {
     pub(crate) turn_count: usize,
     /// Did the caller declare any tools?
     pub(crate) has_tools: bool,
+    /// How many tool definitions the caller declared, counted on the IR — so a dialect that spells
+    /// its tool list differently counts the same as every other.
+    pub(crate) tool_count: usize,
     /// Total chars of everything a content-granted hook would be shown, system slot included.
     /// Counts TEXT, never the separators a consumer joins items with — so a flattened rendering can
     /// be longer than this by one char per join, exactly as it is today.
     pub(crate) text_chars: usize,
+    /// Chars of the SYSTEM slot alone, wherever the dialect put the system prompt. A subset of
+    /// [`Shape::text_chars`] and summed in the SAME walk, so the two can never drift.
+    pub(crate) system_chars: usize,
     /// The caller's output cap, normalized by the reader from whichever field its dialect spells it
     /// in. Reading this from the IR is a FIX, not merely a move: the raw-body projection is
     /// dialect-aware for exactly one dialect's spelling and returns `None` for a body that spells
     /// the cap in a nested config object, silently blinding any routing policy keyed on it.
     pub(crate) max_tokens: Option<u32>,
+}
+
+impl Shape {
+    /// The shape of a request that carries no readable conversation facts at all — a multipart or
+    /// binary body, or one whose protocol has no reader registered. Named rather than
+    /// `Default::default()`d so a consumer reads "nothing here" as a decision rather than as a
+    /// zero-initialized accident.
+    pub(crate) const EMPTY: Shape = Shape {
+        turn_count: 0,
+        has_tools: false,
+        tool_count: 0,
+        text_chars: 0,
+        system_chars: 0,
+        max_tokens: None,
+    };
 }
 
 /// Everything the SHARED pipeline needs to know about any request on any protocol.
@@ -284,15 +305,24 @@ impl IrFacts for IrRequest {
     }
 
     fn shape(&self) -> Shape {
+        // ONE walk over the SAME items a content-granted hook is shown, so the total and the
+        // system-only subtotal cannot drift from each other or from the content. See
+        // `ContentItem::screenable_text` for why this is a sum and not a second walk.
+        let mut text_chars = 0usize;
+        let mut system_chars = 0usize;
+        for item in project(self) {
+            let n = item.screenable_text().chars().count();
+            text_chars += n;
+            if matches!(item.slot(), Slot::System) {
+                system_chars += n;
+            }
+        }
         Shape {
             turn_count: self.messages.len(),
             has_tools: !self.tools.is_empty(),
-            // Summed over the SAME items a content-granted hook is shown. See
-            // `ContentItem::screenable_text` for why this is a sum and not a second walk.
-            text_chars: project(self)
-                .iter()
-                .map(|i| i.screenable_text().chars().count())
-                .sum(),
+            tool_count: self.tools.len(),
+            text_chars,
+            system_chars,
             max_tokens: self.max_tokens,
         }
     }

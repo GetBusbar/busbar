@@ -182,6 +182,14 @@ pub(crate) const FILE_LOGS_DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total
 // tap endpoint). Unlabeled global backpressure. Alert on a non-zero rate.
 pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";
 
+// A hook content projection whose serialized size exceeded `limits.hook_content_max_bytes`, so the
+// content was OMITTED WHOLE (never truncated mid-value) and the hook was sent an empty content
+// projection. Unlabeled: the cap is a global ceiling, not a per-hook one. The default ceiling is
+// informed by nothing measured — this counter is how it gets chosen by a number instead. A steady
+// non-zero rate means a content-granted hook is being asked to screen requests it is not being
+// shown; raise the ceiling or narrow what reaches the hook.
+pub(crate) const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
+
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
 // saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/
 // `"request-log-file"` today — one
