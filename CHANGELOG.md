@@ -239,6 +239,20 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Changed
 
+- **The documentation now states exactly what "lossless" covers, and what it does not cover yet.**
+  An audit of the translation path (code read plus an executed read/write round trip per protocol,
+  against the 1.6.0 tree) found the word doing more work than the engine earns on a cross-protocol
+  hop, so the claim has been narrowed to what is checkable. Same-protocol routes are byte-for-byte
+  identical to calling the provider directly, and that is now stated as the stronger claim it is:
+  those routes never enter the IR at all, on the request side or the non-stream response side.
+  Cross-protocol, every modelled field arrives in the target's native shape, and
+  [Known gaps in 1.6.0](https://getbusbar.com/docs/protocols/#known-gaps-in-160) lists what does not
+  cross: non-image attachments, citations coming from a Cohere backend, streaming citation deltas,
+  usage sub-buckets such as `reasoning_tokens`, and the response-side safety and guardrail metadata. Two
+  in-repo statements were wrong rather than merely vague and are corrected: `extra` never survives a
+  cross-protocol hop for any writer (it is cleared unconditionally at the seam), and same-protocol
+  routes do not "use the IR path".
+
 - **Hooks now fire on the normalized IR — the same representation the request that goes upstream is
   built from.** Busbar had two answers to "what is the text in this request": the one every protocol
   reader produces, and a second one the hook seam re-derived from the raw ingress body with its own

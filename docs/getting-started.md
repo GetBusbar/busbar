@@ -318,7 +318,7 @@ With `weight: 2` on `claude-sonnet` and `weight: 1` on `gpt-4o`, Busbar distribu
 
 ### What "cross-protocol" means here
 
-`claude-sonnet` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet`, it translates the request from OpenAI to Anthropic format, and the response back, losslessly, through its intermediate representation. When it routes to `gpt-4o`, it passes through natively. Your client never needs to know.
+`claude-sonnet` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet`, it translates the request from OpenAI to Anthropic format, and the response back, through its intermediate representation: every modelled field arrives in the other protocol's native shape, and what has no place to go is dropped at the seam rather than forwarded in a shape either end would reject. What that does and does not cover, including what is still lost in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). When it routes to `gpt-4o`, it passes through natively, byte-for-byte. Your client never needs to know.
 
 ---
 

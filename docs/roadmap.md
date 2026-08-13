@@ -3,7 +3,7 @@
 ## Protocols, not providers
 
 Busbar's scope is defined by **wire protocols**, not by a hand-maintained list of
-vendor integrations. It implements a small set of protocols losslessly:
+vendor integrations. It implements a small set of protocols natively, on both sides:
 
 | Protocol | Surface | Auth shape |
 |---|---|---|

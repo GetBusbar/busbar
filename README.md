@@ -17,7 +17,7 @@
 📊 **Footprint:** a tiny `FROM scratch` image (see the image-size badge above) · sub-millisecond request handling — [live benchmarks](https://getbusbar.com/performance) carry the current throughput, latency, and memory figures for this release  
 🤖 **Agent-readable:** [getbusbar.com/llms.txt](https://getbusbar.com/llms.txt)
 
-Busbar sits between your application and every AI provider. Point any SDK at one URL (OpenAI, Anthropic, Gemini, Bedrock, Cohere, or the Responses API) and Busbar routes each request to the backends you chose, translating losslessly between protocols where they differ: chat, embeddings, images, audio, and moderations. When a provider fails, it keeps serving.
+Busbar sits between your application and every AI provider. Point any SDK at one URL (OpenAI, Anthropic, Gemini, Bedrock, Cohere, or the Responses API) and Busbar routes each request to the backends you chose, forwarding it byte-for-byte where the protocols match and translating it where they differ: chat, embeddings, images, audio, and moderations. When a provider fails, it keeps serving.
 
 > **Stable.** The SemVer-protected contract is the RUNTIME: the data-plane HTTP surface your application integrates against and the six wire-protocol contracts. Those do not break inside a major version. The `config.yaml` is an OPERATOR deployment artifact (like nginx or postgres config), explicitly outside the SemVer freeze: it MAY change between releases, always with a migration path (`busbar --migrate-config`) and a loud fail-closed boot on an outdated config, never a silent behavior change. The admin API carries its own contract version (`/api/v1/admin`); a break there is expressed by that contract version, not the binary version. Every release ships an SBOM and a build-provenance attestation. Apache-2.0. (Current version: the Release badge above, never hand-written, so it can't go stale.)
 
@@ -42,7 +42,7 @@ That request left your app as OpenAI. It may have been served by Anthropic, and 
 
 ## What's inside
 
-- **Six wire protocols**, lossless in both directions; any client protocol reaches any pool → [Protocols](https://getbusbar.com/docs/protocols/)
+- **Six wire protocols**, native on both sides and translated in both directions ([what survives the hop, and what does not yet](https://getbusbar.com/docs/protocols/#what-lossless-means-here)); any client protocol reaches any pool → [Protocols](https://getbusbar.com/docs/protocols/)
 - **Fault-attributed circuit breaking** and streaming-safe in-flight failover → [Reliability](https://getbusbar.com/docs/reliability/)
 - **Weighted pools** with smooth weighted round-robin, session affinity, and per-lane concurrency caps → [Reliability](https://getbusbar.com/docs/reliability/)
 - **Routing policies.** Five built-ins, your own `kind: hook` plugin, or an out-of-process sidecar (socket or webhook). A policy sees each member's cost, latency, live concurrency, budget, and rate headroom, and a failing policy falls back instead of blocking → [Routing](https://getbusbar.com/docs/routing/)
