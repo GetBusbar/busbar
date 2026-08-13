@@ -1099,6 +1099,28 @@ CHOKE_POINTS=(
   #         surfaces as a call that served after the operator quarantined the upstream.
   'I-trust-serve-derivation|TRUST-COMPARISON-BYPASS|crates/busbar/src/trust/mod.rs (Approval::serves)|crates/busbar/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered|ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields|schema_hash[[:space:]]*\.is_some>>an inline "is there an approved digest?" test;schema_hash[[:space:]]*\.is_none>>an inline "is there no approved digest?" test;\.pin[[:space:]]*\.is_some>>an inline "is this upstream pinned?" test>>crates/busbar/src/trust/mod.rs;\.pin[[:space:]]*\.is_none>>an inline "is this upstream unpinned?" test>>crates/busbar/src/trust/mod.rs|a second answer to "may this serve?" diverges from the first the moment either is fixed, and the divergence is discovered as an in-flight call that served after the operator revoked it'
 
+  # ── J ── A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN. Enforced differently, and the reason is
+  #         the reason F and G are: the hazard is a FIELD, not a call somebody hand-rolls. A
+  #         `GovCtx` — or the `Arc<VirtualKey>` inside one — carried into a `'static` future is an
+  #         identity resolved once and believed for the whole life of the response, and it looks
+  #         exactly like every other captured value at the call site.
+  #
+  #         MEASURED, and this is why the row exists: `subscriptions/listen` re-read the CATALOGUE
+  #         from the live handle on every 250ms poll and carried the KEY from open. So a revoked
+  #         approval bit within one poll and a key deleted for compromise did not bite at all — and
+  #         the module's own comment read as though it re-checked the grant, because it re-checked
+  #         the half it could see. `crate::trust::validate::Standing` is the owner: it holds the
+  #         principal's ID and re-resolves it from the live registry, which is an in-memory index
+  #         read and therefore affordable four times a second.
+  #
+  #         THE CLASS PERMITS TWO STATES, re-resolve or freeze-and-disclose, and the class test
+  #         requires every long-lived response to be in one of them. The second state is a judgement
+  #         rather than a loophole: the detached MCP task runner charges its caller once at creation,
+  #         so re-resolving mid-run would re-derive a grant against a settled charge. It therefore
+  #         freezes, and it names `TASK_TTL_MS` in the same doc comment — a bound nobody wrote down
+  #         is a bound the next edit raises.
+  'J-standing-permission|OPEN-AND-TRUSTED|crates/busbar/src/trust/validate.rs (Standing::opened / still_permitted)|crates/busbar/src/trust/tests/validate_tests.rs::the_long_lived_response_holds_no_principal_it_resolved_at_open|hold a trust::validate::Standing and re-resolve the principal per frame; if you must freeze it, disclose the freeze beside the bound it trades on|-|a principal resolved at open and carried into a long-lived response is an identity a revocation cannot reach, and the failure is silent because everything else about the response is re-derived correctly'
+
   'E-core-route-auth|ROUTE-AUTH-BYPASS|crates/busbar/src/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar/src/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 
@@ -1705,6 +1727,41 @@ DECLARATION_CENSUS=(
   #    read moved out of a test whose file is being deleted. Zero is the whole point: a sweep
   #    nothing spawns is a defence that does not run, which is exactly the state `mcp::connect::
   #    refresh` was in when its only caller was a human pressing an admin button.
+  # ── THE ONE ORDERED REQUEST VALIDATOR. `identity -> grant -> artifact -> generation` is asked of
+  #    every request on every plane, and before `trust::validate` it was asked in several places with
+  #    several coverages: one plane wrote the sequence down once and stamped a generation onto its
+  #    resolved candidate; the sibling plane repeated the trust half at THREE call sites and had no
+  #    generation check at all. A SECOND `fn validate_request` is that defect returning — two answers
+  #    to "may this proceed", diverging the first time either is fixed, discovered as a call that
+  #    served after the operator revoked it. ZERO is the false green this row exists for: the order is
+  #    a FUNCTION, so a rebuild that inlines it back into a plane leaves a ban that reads as a pass
+  #    because its subject vanished. This row says so out loud instead.
+  # ── THE VALIDATOR'S REFUSAL WORDS HAVE ONE HOME, and this row is here because this unit ALREADY
+  #    got it wrong once. `crate::trust::validate` defined its own `reason` module carrying the same
+  #    tokens `crate::audit::vocab` had just unified — two homes for one vocabulary, argued for in
+  #    almost identical words on both sides, and the merge is what surfaced it. Both arguments were
+  #    right about the principle, which is exactly why there cannot be two: a chain that answers an
+  #    operator differently depending on which module a plane imported from is the defect the audit
+  #    unification existed to end.
+  #
+  #    `audit::vocab` is the home — the words are the tokens a chained record carries, so they belong
+  #    to the evidence rather than to whichever gate produced them — and the validator RE-EXPORTS.
+  #    A string literal here is a definition wearing a re-export's clothes; zero means the word left
+  #    the tree and every query written against it silently stopped matching.
+  'refusal-word-identity-not-live|REFUSAL-WORD-RESPELT|"identity_not_live"|1|crates/busbar/src/|the ordered validator'"'"'s identity refusal has one spelling, defined in crate::audit::vocab and re-exported; a second definition is two homes for one vocabulary, which is what this unit'"'"'s own merge conflict was'
+  'refusal-word-not-serving|REFUSAL-WORD-RESPELT|"not_serving"|1|crates/busbar/src/|the registration-level refusal has one spelling; a plane may render it more finely under its own words, but it may not respell this one'
+  'refusal-word-artifact-drifted|REFUSAL-WORD-RESPELT|"artifact_drifted"|1|crates/busbar/src/|the rug-pull refusal has one spelling: it is the one word that indicts the UPSTREAM rather than the config or the grant, and a second copy is two answers to who is at fault'
+  'refusal-word-generation-moved|REFUSAL-WORD-RESPELT|"generation_moved"|1|crates/busbar/src/|the lifecycle-race refusal has one spelling across both planes; two copies is the in-flight-outliving-an-approval story told two ways'
+
+  'the-one-ordered-request-validator|VALIDATOR-RESPELT|fn[[:space:]]+validate_request[^a-zA-Z0-9_]|1|crates/busbar/src/|there is exactly ONE ordered request validator in busbar and every protocol reaches it; a second is a protocol that has acquired its own order, and zero means the order was inlined back into a plane where nothing owns it'
+
+  # ── THE ONE GENERATION SOURCE. A generation only has to be DIFFERENT after a change, so a second
+  #    counter buys nothing and adds a second thing to keep monotonic — and a plane that took its
+  #    generations from a private counter would compare its own numbers against a shared one the day
+  #    somebody unified them. Zero means no snapshot in the tree is versioned any more, which is the
+  #    in-flight-outliving-the-approval window standing wide open with every test still green.
+  'the-one-generation-source|GENERATION-SOURCE-FORKED|fn[[:space:]]+next_generation[^a-zA-Z0-9_]|1|crates/busbar/src/|every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned'
+
   'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|crates/busbar/src/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
 )
 

@@ -8,11 +8,10 @@
 //! ordinary pool machinery. Nothing here is a hook, nothing here is a score, and nothing here reads
 //! task content.
 //!
-//! ## Four conjunctive filters, and they are conjunctive
+//! ## Four conjunctive filters, and three of them are not this file's
 //!
 //! 1. **Trusted.** Only an `Approved` registration is ever a candidate. `Pending`, `Quarantined`,
-//!    `Suspended` and `Error` are not, and that is [`super::registry::AgentRegistration::is_delegable`],
-//!    which derives from the lifecycle rather than reading a stored flag.
+//!    `Suspended` and `Error` are not.
 //! 2. **Scope-granted.** `scope_allowed("agent", agent_id)`. No hook on this path, no filter verb,
 //!    no auto-tagging, no tag conventions. TAGS GROUP, IDENTITY IDENTIFIES.
 //! 3. **Capability-matched.** A2A agents are NOT FUNGIBLE: an arbitrary agent cannot serve an
@@ -22,6 +21,17 @@
 //! 4. **Not suspended.** Folded into (1) rather than checked twice: `Suspended` outranks every
 //!    other state in the lifecycle, so a suspended registration is not `Approved` and is already
 //!    out. Two checks would be two things to keep in agreement.
+//!
+//! FILTERS 1, 2 AND 4 ARE ONE CALL TO [`crate::trust::validate::validate_request`], the ordered gate
+//! every request on every plane passes through. They used to be three predicates written out here,
+//! and the invocation check and the pre-socket relay gate wrote their own copies of the same ones —
+//! three sites, no owner for the order, and a fourth path that forgot one would have been a silent
+//! hole with no failing test. Only filter 3 is this file's, because only filter 3 is about this
+//! wire format's document.
+//!
+//! What the shared gate also brings, and this file never had: the caller's key is checked for
+//! LIVENESS, and the registry generation is checked. A catalogue that listed agents for a deleted
+//! key was answering a principal that no longer exists.
 //!
 //! ## Structural matching reads TYPES, never prose
 //!
@@ -73,6 +83,10 @@ pub(crate) enum Excluded {
     NotTrusted(crate::trust::TrustState),
     /// The caller's key does not grant `agent:<id>`.
     NotInScope,
+    /// The caller's key is no longer live: deleted, disabled or expired. Its own arm rather than
+    /// folded into `NotInScope`, because "grant this key a scope" and "this key is gone" are two
+    /// different things for an operator to do.
+    CallerNotLive,
     /// The FRONTED agent asking is not on this registration's `egress_scopes`. Delegation only.
     NoEgressGrant,
     /// The card declares no skill with the requested id.
@@ -100,26 +114,53 @@ pub(crate) struct Candidate<'a> {
 /// applied, so the inbound catalogue, the delegation catalogue and the invocation check cannot
 /// drift apart.
 fn judge<'a>(
+    caller: &Caller<'_>,
     registration: &'a AgentRegistration,
-    key: &VirtualKey,
     shape: &TaskShape,
     delegating_from: Option<&str>,
 ) -> Result<Candidate<'a>, Excluded> {
-    // (1) and (4): trust, which already subsumes suspension.
-    if !registration.is_delegable() {
-        return Err(Excluded::NotTrusted(registration.trust_state()));
-    }
-    // (2) scope.
-    if !key.scope_allowed(SCOPE_KIND_AGENT, &registration.agent_id) {
-        return Err(Excluded::NotInScope);
-    }
-    // (2b) EGRESS, on the delegation side only: which fronted agents may delegate HERE. Empty is
-    // NONE, never everyone.
-    if let Some(from) = delegating_from {
-        if !registration.egress_scopes.iter().any(|s| s == from) {
-            return Err(Excluded::NoEgressGrant);
+    // FILTERS (1), (2), (2b) AND (4) ARE ONE CALL, and it is the same call the invocation check and
+    // the pre-socket gate make. They were three predicates written out here; a fourth path that
+    // forgot one would have been a silent hole, because nothing owned the sequence.
+    let egress;
+    let scope = crate::trust::validate::Grant::Scope {
+        kind: SCOPE_KIND_AGENT,
+        name: &registration.agent_id,
+    };
+    let grants: &[crate::trust::validate::Grant] = match delegating_from {
+        None => std::slice::from_ref(&scope),
+        Some(from) => {
+            egress = [
+                scope,
+                crate::trust::validate::Grant::Egress {
+                    from,
+                    allowed: &registration.egress_scopes,
+                },
+            ];
+            &egress
         }
-    }
+    };
+    crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+        principal: Some(caller.key),
+        now: caller.now,
+        grants,
+        approval: &registration.approval,
+        sighting: &registration.sighting,
+        // The card's SKILL is matched structurally below, against a declaration rather than against
+        // an approved digest: this plane approves a card, and the skill list is part of the document
+        // the fingerprint already covers.
+        capability: None,
+        generation: caller.generation,
+    })
+    .map_err(|refusal| match refusal {
+        crate::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
+        crate::trust::validate::Refusal::EgressDenied { .. } => Excluded::NoEgressGrant,
+        crate::trust::validate::Refusal::IdentityNotLive { .. } => Excluded::CallerNotLive,
+        crate::trust::validate::Refusal::NotServing { state, .. } => Excluded::NotTrusted(state),
+        // The catalogue asks at admission, where neither can fire; answered rather than unwrapped
+        // because this is a request path.
+        _ => Excluded::NotTrusted(registration.approval.state(&registration.sighting)),
+    })?;
     // (3) structural fitness against the CACHED card.
     let document = registration
         .cached_card
@@ -200,13 +241,13 @@ fn check_modes(
 /// Order follows the registry's own, which is insertion-ordered from config, so an operator-facing
 /// listing is deterministic rather than hash-ordered.
 pub(crate) fn inbound_catalogue<'a>(
-    key: &VirtualKey,
+    caller: &Caller<'_>,
     registrations: &'a [AgentRegistration],
     shape: &TaskShape,
 ) -> Vec<Candidate<'a>> {
     registrations
         .iter()
-        .filter_map(|r| judge(r, key, shape, None).ok())
+        .filter_map(|r| judge(caller, r, shape, None).ok())
         .collect()
 }
 
@@ -218,13 +259,13 @@ pub(crate) fn inbound_catalogue<'a>(
 /// minus the trust root, and this is where the subset relation is visible in code.
 pub(crate) fn delegation_catalogue<'a>(
     from_agent: &str,
-    key: &VirtualKey,
+    caller: &Caller<'_>,
     registrations: &'a [AgentRegistration],
     shape: &TaskShape,
 ) -> Vec<Candidate<'a>> {
     registrations
         .iter()
-        .filter_map(|r| judge(r, key, shape, Some(from_agent)).ok())
+        .filter_map(|r| judge(caller, r, shape, Some(from_agent)).ok())
         .collect()
 }
 
@@ -232,11 +273,26 @@ pub(crate) fn delegation_catalogue<'a>(
 /// kept — for the admin surface and for the operator asking "why can this key not see the planner".
 pub(crate) fn explain(
     registration: &AgentRegistration,
-    key: &VirtualKey,
+    caller: &Caller<'_>,
     shape: &TaskShape,
     delegating_from: Option<&str>,
 ) -> Result<(), Excluded> {
-    judge(registration, key, shape, delegating_from).map(|_| ())
+    judge(caller, registration, shape, delegating_from).map(|_| ())
+}
+
+/// WHO IS ASKING, AND WHEN — the three inputs the ordered gate's first, second and fourth steps
+/// need, carried together.
+///
+/// One value rather than three arguments so a call site cannot pair this caller's key with another
+/// request's clock or another apply's generation, which is the same reason
+/// [`super::relay::RelaySeam`] holds its own two seams together.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Caller<'a> {
+    pub(crate) key: &'a VirtualKey,
+    /// Seconds, for the key-expiry comparison.
+    pub(crate) now: u64,
+    /// The registry generation this ask is being judged under.
+    pub(crate) generation: crate::trust::validate::Generations,
 }
 
 #[cfg(test)]

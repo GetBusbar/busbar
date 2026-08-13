@@ -32,6 +32,7 @@
 //! formality.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
@@ -56,6 +57,20 @@ pub(crate) struct A2aPlane {
     /// them, and a reader that saw a half-applied sweep would be reading a registry state that
     /// never existed at any instant.
     registrations: RwLock<Vec<AgentRegistration>>,
+    /// THE GENERATION THIS REGISTRY IS AT, taken from the process-wide monotonic source in
+    /// [`crate::trust::validate`] and re-taken on every mutation.
+    ///
+    /// It is what makes an in-flight request unable to outlive the approval it was admitted under.
+    /// Admission records this value; the gate immediately before the socket re-reads it; a move is a
+    /// refusal. Without it a re-verification sweep, a breaker trip or an operator's `suspend` that
+    /// lands between admission and the socket takes effect on the NEXT request rather than on the
+    /// one in flight — the exact window the sibling plane closed and this one had left open.
+    ///
+    /// Bumped for ANY mutation rather than only for trust-relevant ones. Deciding whether a
+    /// particular change mattered means re-deriving the whole admission, and "did this specific
+    /// change affect me" is the reasoning that lets a revocation slip through. Movement is refusal;
+    /// the caller retries and is re-admitted under the new registry.
+    generation: AtomicU64,
     /// THE RELAY SEAM: the resolver, the POST transport and the fetch policy the hot path submits a
     /// task through, held as ONE object so a caller cannot pair a real transport with a fixture
     /// resolver — the same reason [`super::transport::LiveCardFetch`] exists.
@@ -74,26 +89,52 @@ pub(crate) struct A2aPlane {
 pub(crate) struct LiveGate(pub(crate) Arc<A2aPlane>);
 
 impl super::relay::DelegationGate for LiveGate {
-    fn still_delegable(&self, agent_id: &str) -> Result<(), super::relay::NotDelegable> {
+    /// `admitted` is the generation the request was ADMITTED under. It is carried down the hop
+    /// rather than re-read here, because a value re-read here would be the live one compared against
+    /// itself — a check that cannot fail.
+    ///
+    /// THE PRINCIPAL IS DELIBERATELY ABSENT. [`super::relay::RelayCall`] has no field a caller's
+    /// credential could arrive through and that absence is a security property of the hop, so the
+    /// identity step of the validator ran at admission and what stands in for it here is the
+    /// generation: a key change that reaches the registry moves it, and a key change that does not
+    /// is bounded by the life of one hop.
+    fn still_delegable(
+        &self,
+        agent_id: &str,
+        admitted: u64,
+    ) -> Result<(), super::relay::NotDelegable> {
+        let live = self.0.generation();
         self.0.with_registrations(|regs| {
-            match regs.iter().find(|r| r.agent_id == agent_id) {
-                // The SAME predicate `authorize` and the catalogue ask. This gate can only ever be
-                // more closed than they were, never differently closed.
-                Some(reg) if reg.is_delegable() => Ok(()),
-                Some(reg) => Err(super::relay::NotDelegable {
-                    agent_id: agent_id.to_string(),
-                    state: reg.trust_state(),
-                    reason: reg.suspension_reason().map(str::to_string),
-                }),
+            let Some(reg) = regs.iter().find(|r| r.agent_id == agent_id) else {
                 // The registration was REMOVED by a config apply between admission and the socket.
                 // Not a state the trust machine has a name for, so it is reported as the fail-closed
                 // floor a fresh registration starts at rather than invented as something else.
-                None => Err(super::relay::NotDelegable {
+                return Err(super::relay::NotDelegable {
                     agent_id: agent_id.to_string(),
                     state: crate::trust::TrustState::Pending,
                     reason: Some("the registration no longer exists on this plane".to_string()),
-                }),
-            }
+                });
+            };
+            // THE ONE ORDERED GATE, reached from the third of this plane's paths. It can only ever
+            // be more closed than admission was, never differently closed, because it is the same
+            // function admission called.
+            crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+                principal: None,
+                now: 0,
+                grants: &[],
+                approval: &reg.approval,
+                sighting: &reg.sighting,
+                capability: None,
+                generation: crate::trust::validate::Generations::since(admitted, live),
+            })
+            .map_err(|refusal| super::relay::NotDelegable {
+                agent_id: agent_id.to_string(),
+                state: reg.trust_state(),
+                reason: match &refusal {
+                    crate::trust::validate::Refusal::NotServing { reason, .. } => reason.clone(),
+                    other => Some(other.to_string()),
+                },
+            })
         })
     }
 }
@@ -148,6 +189,7 @@ impl A2aPlane {
             fetch_policy,
             pins,
             registrations: RwLock::new(registrations),
+            generation: AtomicU64::new(crate::trust::validate::next_generation()),
         }))
     }
 
@@ -223,7 +265,18 @@ impl A2aPlane {
             .registrations
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        f(&mut guard)
+        let out = f(&mut guard);
+        // TAKEN WHILE THE WRITE LOCK IS STILL HELD, so no reader can observe the new registrations
+        // under the old generation. A bump after the release would leave exactly the window this
+        // number exists to close.
+        self.generation
+            .store(crate::trust::validate::next_generation(), Ordering::Relaxed);
+        out
+    }
+
+    /// THE GENERATION THIS REGISTRY IS AT RIGHT NOW. Recorded at admission, re-read at the gate.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// How many agents this deployment fronts.

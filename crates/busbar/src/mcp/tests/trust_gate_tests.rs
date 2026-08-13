@@ -110,12 +110,34 @@ fn cfg_with(
     c
 }
 
-/// A grant that reaches the one tool, so the matrix isolates the TRUST decision from the grant one.
-fn full_grant(kind: &str, value: &str) -> bool {
-    matches!(
-        (kind, value),
-        ("mcp_server", "fs") | ("mcp_tool", "fs_read")
-    )
+/// A KEY that reaches the one tool, so the matrix isolates the TRUST decision from the grant one.
+fn full_grant() -> busbar_api::VirtualKey {
+    key_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
+}
+
+/// A principal carrying exactly the listed `(kind, value)` grants and nothing else.
+fn key_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: "k1".to_string(),
+        name: "k1".to_string(),
+        generation_hash: String::new(),
+        enabled: true,
+        allowed_scopes: Some(
+            pairs
+                .iter()
+                .map(|(k, v)| busbar_api::ScopeRef {
+                    kind: (*k).to_string(),
+                    value: (*v).to_string(),
+                })
+                .collect(),
+        ),
+        group: None,
+        labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        created_at: 0,
+        revision: 0,
+    }
 }
 
 /// THE ORACLE: the decision `Catalogue::resolve` used to make INLINE, restated verbatim.
@@ -152,7 +174,7 @@ fn the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered() {
             cases += 1;
             let cat = Catalogue::build(&cfg_of(mechanism, schema_hash));
             let got = cat
-                .resolve(&full_grant, LiveSightings::unsighted(), "fs_read")
+                .resolve_now(Some(&full_grant()), LiveSightings::unsighted(), "fs_read")
                 .map(|_| ());
             let oracle = deleted_inline_decision(mechanism, schema_hash);
             assert_eq!(
@@ -210,7 +232,11 @@ fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admi
     // And were it to reach the gate by any other route, the gate refuses it too — where the deleted
     // decision, reading the mechanism word alone, would have admitted it.
     assert_eq!(
-        Catalogue::build(&c).resolve(&full_grant, LiveSightings::unsighted(), "fs_read"),
+        Catalogue::build(&c).resolve_now(
+            Some(&full_grant()),
+            LiveSightings::unsighted(),
+            "fs_read"
+        ),
         Err(DispatchRefusal::NotPinned("fs".to_string())),
         "a mechanism word with nothing behind it is not an authenticity root"
     );
@@ -230,14 +256,14 @@ fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admi
 fn the_two_refusal_reasons_survive_the_reroute_and_stay_distinct() {
     let unpinned = Catalogue::build(&cfg_of(McpPinMechanism::Unpinned, Some("sha256:approved")));
     assert_eq!(
-        unpinned.resolve(&full_grant, LiveSightings::unsighted(), "fs_read"),
+        unpinned.resolve_now(Some(&full_grant()), LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotPinned("fs".to_string())),
         "no authenticity root ⇒ no locked pin ⇒ pending, whatever the tool's hash says"
     );
 
     let pending = Catalogue::build(&cfg_of(McpPinMechanism::CertSpki, None));
     assert_eq!(
-        pending.resolve(&full_grant, LiveSightings::unsighted(), "fs_read"),
+        pending.resolve_now(Some(&full_grant()), LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotApproved("fs_read".to_string())),
         "a locked pin with no approved digest for this capability is pending on the capability"
     );
@@ -262,17 +288,16 @@ fn approval_is_per_capability_on_one_pinned_server() {
         .tools_allow
         .insert("write".to_string(), ToolAllowCfg::default());
     let cat = Catalogue::build(&c);
-    let grant = |kind: &str, value: &str| {
-        matches!(
-            (kind, value),
-            ("mcp_server", "fs") | ("mcp_tool", "fs_read") | ("mcp_tool", "fs_write")
-        )
-    };
+    let grant = key_of(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_read"),
+        ("mcp_tool", "fs_write"),
+    ]);
     assert!(cat
-        .resolve(&grant, LiveSightings::unsighted(), "fs_read")
+        .resolve_now(Some(&grant), LiveSightings::unsighted(), "fs_read")
         .is_ok());
     assert_eq!(
-        cat.resolve(&grant, LiveSightings::unsighted(), "fs_write"),
+        cat.resolve_now(Some(&grant), LiveSightings::unsighted(), "fs_write"),
         Err(DispatchRefusal::NotApproved("fs_write".to_string())),
         "the pin is the server's; the approval is the capability's"
     );

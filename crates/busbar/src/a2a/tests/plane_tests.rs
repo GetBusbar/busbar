@@ -206,3 +206,104 @@ fn egress_scopes_and_the_leased_credential_travel_from_config_to_the_registratio
         assert_eq!(regs[0].egress_scopes, ["frontdesk"]);
     });
 }
+
+/// THE WINDOW THIS PLANE DID NOT CLOSE, and the test that says so.
+///
+/// The sibling plane stamps the snapshot GENERATION onto a resolved candidate and refuses a call
+/// resolved under *N* when the live generation is *N+1*. This plane had no equivalent at all: it
+/// re-asked the trust predicate at three separate sites and none of them knew which registry the
+/// request had been admitted against, so anything that changed the registry between admission and
+/// the socket took effect on the NEXT request and the in-flight one went out under an approval that
+/// had already been replaced.
+///
+/// `LiveGate` now reaches the one ordered validator in `crate::trust::validate` and hands it both
+/// generations. This drives the real gate through the real plane.
+///
+/// RED, WATCHED: with `LiveGate::still_delegable` passing `Generations::at_admission(live)` instead
+/// of `Generations::since(admitted, live)` — which is what "no generation check" looks like when
+/// written in the new vocabulary — the second assertion below returns `Ok(())`.
+#[test]
+fn an_in_flight_dispatch_admitted_under_generation_n_is_refused_at_n_plus_1() {
+    use crate::a2a::relay::DelegationGate;
+
+    let cfg = cfg_with(&[("planner", unpinned_agent("https://a2a.vendor/planner"))]);
+    let plane = A2aPlane::from_config(&cfg, None).expect("a plane");
+
+    // APPROVE IT, so the trust half of the gate is out of the way and the generation half is what
+    // this test is measuring. Without this the refusal below would be `not_serving` whatever the
+    // generation did, and the test would pass on a plane with no generation check at all.
+    plane.with_registrations_mut(|regs| {
+        regs[0].sighting = crate::trust::Sighting::Seen(crate::trust::Observation {
+            pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
+                issuer_key: "MCowBQYDK2VwAyEAKEY".to_string(),
+                card_fingerprint: "sha256/CARD".to_string(),
+            }),
+            capabilities: std::collections::BTreeMap::new(),
+        });
+        let sighting = regs[0].sighting.clone();
+        crate::a2a::pin::approve_registration(&mut regs[0].approval, &sighting, None)
+            .expect("approve");
+    });
+
+    // ADMISSION records the generation the decision was taken under.
+    let admitted = plane.generation();
+    let gate = LiveGate(std::sync::Arc::clone(&plane));
+    assert_eq!(
+        gate.still_delegable("planner", admitted),
+        Ok(()),
+        "the control: on the snapshot it was admitted under, the hop proceeds"
+    );
+
+    // ANYTHING THAT TOUCHES THE REGISTRY MOVES IT — a config apply, a re-verification sweep, an
+    // operator's suspend, a breaker trip. The mutation here is deliberately EMPTY: the claim is
+    // that movement alone refuses, not that this particular change was noticed.
+    plane.with_registrations_mut(|_| {});
+    let live = plane.generation();
+    assert_ne!(live, admitted, "the registry moved");
+
+    let refused = gate
+        .still_delegable("planner", admitted)
+        .expect_err("the in-flight hop must not outlive the registry it was admitted under");
+    assert_eq!(refused.agent_id, "planner");
+    assert_eq!(
+        refused.state,
+        TrustState::Approved,
+        "and it is refused while still APPROVED — which is the whole point: this is not the trust \
+         check saying no a second time, it is the generation check saying no for the first time"
+    );
+    let reason = refused.reason.expect("a refusal an operator can act on");
+    assert!(
+        reason.contains(&admitted.to_string()) && reason.contains(&live.to_string()),
+        "the refusal names both generations so an operator can see what moved: {reason}"
+    );
+}
+
+/// AND THE REGISTRY GENERATION IS TAKEN UNDER THE WRITE LOCK, so no reader can ever observe the new
+/// registrations under the old generation — which is the one window a bump-after-release would leave
+/// exactly where this number exists to close one.
+#[test]
+fn every_registry_mutation_moves_the_generation() {
+    let cfg = cfg_with(&[("planner", unpinned_agent("https://a2a.vendor/planner"))]);
+    let plane = A2aPlane::from_config(&cfg, None).expect("a plane");
+    let mut seen = vec![plane.generation()];
+    for _ in 0..3 {
+        plane.with_registrations_mut(|_| {});
+        seen.push(plane.generation());
+    }
+    let mut sorted = seen.clone();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        seen.len(),
+        "monotonic, never repeated: {seen:?}"
+    );
+    assert!(
+        seen.windows(2).all(|w| w[1] > w[0]),
+        "and increasing: {seen:?}"
+    );
+
+    // A READ does not move it. A generation that ticked on every read would refuse every hop.
+    let before = plane.generation();
+    plane.with_registrations(|regs| assert_eq!(regs.len(), 1));
+    assert_eq!(plane.generation(), before);
+}

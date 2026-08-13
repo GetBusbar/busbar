@@ -177,6 +177,9 @@ fn not_found() -> Response {
 struct Admitted {
     dispatch: Dispatch,
     matched_skill: Option<String>,
+    /// THE REGISTRY GENERATION THIS REQUEST WAS ADMITTED UNDER, read under the same lock the
+    /// admission was decided under. Carried to the relay gate, where a move is a refusal.
+    generation: u64,
     /// The registration's OUTBOUND CREDENTIAL HANDLE, cloned out under the same registry read that
     /// authorised the call. A handle and its lease policy, never a secret: the secret is resolved at
     /// relay time by [`super::creds::mint_from`], whose signature has no parameter an inbound
@@ -203,18 +206,26 @@ fn admit(
         return Err(Box::new(not_found()));
     };
     let kind = credential_kind_of(app);
+    // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
+    // the generation the decision below was actually taken on.
+    let generation = plane.generation();
+    let caller = super::catalogue::Caller {
+        key,
+        now: now_secs,
+        generation: crate::trust::validate::Generations::at_admission(generation),
+    };
     plane.with_registrations(|regs| {
         // 2. AUTHORISE. `Dispatch` is owned, so it escapes this closure; `Candidate` borrows the
         //    guard's slice and cannot, which is why the skill is cloned out below rather than
         //    returned.
-        let dispatch = super::inbound::authorize(key, kind, agent_id, regs, now_secs)
+        let dispatch = super::inbound::authorize(key, kind, agent_id, regs, generation, now_secs)
             .map_err(|r| Box::new(refuse(&r)))?;
 
         // 3. CATALOGUE. Authorisation says the caller may reach this agent AT ALL; the catalogue
         //    says whether it may reach it for the work it is actually asking for. Both run: a
         //    caller with a grant on an agent whose card declares none of the requested capability
         //    is refused here rather than dispatched into a backend that will not serve it.
-        let matched = super::catalogue::inbound_catalogue(key, regs, shape)
+        let matched = super::catalogue::inbound_catalogue(&caller, regs, shape)
             .into_iter()
             .find(|c| c.registration.agent_id == dispatch.agent_id)
             .map(|c| c.matched_skill.clone());
@@ -227,6 +238,7 @@ fn admit(
             Some(matched_skill) => Ok(Admitted {
                 dispatch,
                 matched_skill,
+                generation,
                 outbound_cred,
             }),
             None => {
@@ -235,7 +247,7 @@ fn admit(
                 let reason = regs
                     .iter()
                     .find(|r| r.agent_id == dispatch.agent_id)
-                    .and_then(|r| super::catalogue::explain(r, key, shape, None).err())
+                    .and_then(|r| super::catalogue::explain(r, &caller, shape, None).err())
                     .map_or_else(
                         || "the agent is not in this caller's catalogue".to_string(),
                         |e| format!("{e:?}"),
@@ -296,8 +308,13 @@ fn select(
     let Some(plane) = app.a2a.as_ref() else {
         return Err(Box::new(not_found()));
     };
+    let caller = super::catalogue::Caller {
+        key,
+        now: crate::store::now(),
+        generation: crate::trust::validate::Generations::at_admission(plane.generation()),
+    };
     let mut ids = plane.with_registrations(|regs| {
-        super::catalogue::inbound_catalogue(key, regs, shape)
+        super::catalogue::inbound_catalogue(&caller, regs, shape)
             .into_iter()
             .map(|c| c.registration.agent_id.clone())
             .collect::<Vec<_>>()
@@ -1315,6 +1332,7 @@ async fn invoke_inner(
         task_id: task_id.clone(),
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
+        admitted_generation: admitted.generation,
         request_id,
         a2a_version,
         now,
@@ -1363,6 +1381,9 @@ struct HopContext {
     /// `GetTask` that the backend refuses is a failed READ, and burning the caller's live task row
     /// for it would destroy work that is still running.
     addressed: bool,
+    /// THE REGISTRY GENERATION ADMISSION DECIDED UNDER, carried to the pre-socket gate. See
+    /// `relay::RelayCall::admitted_generation`.
+    admitted_generation: u64,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1409,13 +1430,18 @@ fn extended_agent_card(
     // A caller entitled to none of several configured agents DOES get the empty card, and the
     // distinction is deliberate: that is a statement about that caller's grants, which is exactly
     // what the caller is entitled to be told.
+    let caller = super::catalogue::Caller {
+        key,
+        now: crate::store::now(),
+        generation: crate::trust::validate::Generations::at_admission(plane.generation()),
+    };
     let card = plane.with_registrations(|regs| {
         if regs.is_empty() {
             return None;
         }
         let shape = super::catalogue::TaskShape::default();
         let entitled: Vec<super::serve::EntitledAgent<'_>> =
-            super::catalogue::inbound_catalogue(key, regs, &shape)
+            super::catalogue::inbound_catalogue(&caller, regs, &shape)
                 .into_iter()
                 .map(|c| super::serve::EntitledAgent {
                     agent_id: &c.registration.agent_id,
@@ -1478,6 +1504,7 @@ async fn unary_hop(
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
     let relay_policy = ctx.policy.clone();
+    let admitted_generation = ctx.admitted_generation;
     let now_ms = ctx.now_ms;
     // The id the hop's answer must name. `body` goes out verbatim, so the id busbar sends to the
     // backend IS this one — see `RelayCall::rpc_id`.
@@ -1490,6 +1517,7 @@ async fn unary_hop(
                 backend_url: &backend_url,
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
+                admitted_generation,
                 body: &body,
                 rpc_id: &rpc_id,
                 policy: &relay_policy,
@@ -1569,6 +1597,7 @@ async fn stream_hop(
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
     let relay_policy = ctx.policy.clone();
+    let admitted_generation = ctx.admitted_generation;
     let now = ctx.now;
     let now_ms = ctx.now_ms;
     // The same id the unary path answers under, and now the same id every STREAMED event is
@@ -1649,6 +1678,7 @@ async fn stream_hop(
                 backend_url: &backend_url,
                 lease: lease.as_ref(),
                 gate: gate.as_ref(),
+                admitted_generation,
                 body: &body,
                 rpc_id: &rpc_id,
                 policy: &relay_policy,

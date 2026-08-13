@@ -69,10 +69,38 @@ fn cfg(servers: Vec<(String, McpServerDefCfg)>) -> ToolsCfg {
     c
 }
 
-/// A grant predicate over an explicit allow-list, in the exact shape `VirtualKey::scope_allowed`
-/// answers: an entry is `(kind, value)`, and anything not listed is denied.
-fn grant_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str, &str) -> bool {
-    move |kind, value| pairs.iter().any(|(k, v)| *k == kind && *v == value)
+/// A KEY carrying an explicit allow-list. The gate asks a principal now rather than a predicate, so
+/// the fixture is a principal — which is the point: a test that hands the gate a closure can hand it
+/// one no real key could produce.
+fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: "k1".to_string(),
+        name: "k1".to_string(),
+        generation_hash: String::new(),
+        enabled: true,
+        allowed_scopes: Some(
+            pairs
+                .iter()
+                .map(|(k, v)| busbar_api::ScopeRef {
+                    kind: (*k).to_string(),
+                    value: (*v).to_string(),
+                })
+                .collect(),
+        ),
+        group: None,
+        labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        created_at: 0,
+        revision: 0,
+    }
+}
+
+/// The CATALOGUE LISTING still asks a predicate — it filters what a caller may SEE, which is a
+/// different question from what the gate answers — so the key is adapted here rather than the
+/// listing changed.
+fn seeing(key: &busbar_api::VirtualKey) -> impl Fn(&str, &str) -> bool + '_ {
+    move |kind: &str, value: &str| key.scope_allowed(kind, value)
 }
 
 /// THE HEADLINE PROPERTY (goal item 5): two grants see two DIFFERENT lists, and a third sees NONE.
@@ -97,9 +125,9 @@ fn two_grants_see_two_different_catalogues_and_a_third_sees_none() {
     // Grant C: a grant that names a pool and nothing else — the fail-closed cross-kind case.
     let c = grant_of(&[("pool", "fast")]);
 
-    let names = |g: &dyn Fn(&str, &str) -> bool| {
+    let names = |g: &busbar_api::VirtualKey| {
         let mut n: Vec<String> = cat
-            .tools_for(g)
+            .tools_for(&seeing(g))
             .iter()
             .map(|t| t.namespaced.clone())
             .collect();
@@ -130,19 +158,19 @@ fn the_server_grant_and_the_tool_grant_are_both_required() {
 
     let tool_only = grant_of(&[("mcp_tool", "fs_read")]);
     assert!(
-        cat.tools_for(&tool_only).is_empty(),
+        cat.tools_for(&seeing(&tool_only)).is_empty(),
         "a tool grant without the server grant reaches nothing"
     );
 
     let server_only = grant_of(&[("mcp_server", "fs")]);
     assert!(
-        cat.tools_for(&server_only).is_empty(),
+        cat.tools_for(&seeing(&server_only)).is_empty(),
         "a server grant without a tool grant reaches nothing"
     );
 
     let one_tool = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let got: Vec<String> = cat
-        .tools_for(&one_tool)
+        .tools_for(&seeing(&one_tool))
         .iter()
         .map(|t| t.namespaced.clone())
         .collect();
@@ -164,7 +192,7 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
         ("mcp_tool", "fs_pending"),
     ]);
     let mut names: Vec<String> = cat
-        .tools_for(&g)
+        .tools_for(&seeing(&g))
         .iter()
         .map(|t| t.namespaced.clone())
         .collect();
@@ -172,10 +200,10 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
     assert_eq!(names, vec!["fs_pending".to_string(), "fs_read".to_string()]);
 
     assert!(cat
-        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .resolve_now(Some(&g), LiveSightings::unsighted(), "fs_read")
         .is_ok());
     assert_eq!(
-        cat.resolve(&g, LiveSightings::unsighted(), "fs_pending"),
+        cat.resolve_now(Some(&g), LiveSightings::unsighted(), "fs_pending"),
         Err(DispatchRefusal::NotApproved("fs_pending".to_string()))
     );
 }
@@ -193,7 +221,7 @@ fn an_unpinned_server_never_dispatches() {
     let cat = Catalogue::build(&cfg(vec![(name, def)]));
     let g = grant_of(&[("mcp_server", "dev"), ("mcp_tool", "dev_read")]);
     assert_eq!(
-        cat.resolve(&g, LiveSightings::unsighted(), "dev_read"),
+        cat.resolve_now(Some(&g), LiveSightings::unsighted(), "dev_read"),
         Err(DispatchRefusal::NotPinned("dev".to_string())),
         "no locked pin ⇒ pending ⇒ never served, even to a fully granted caller"
     );
@@ -206,12 +234,12 @@ fn not_granted_and_unknown_are_distinct_internally() {
     let cat = Catalogue::build(&cfg(vec![server("fs", &["read"], &[])]));
     let none = grant_of(&[]);
     assert_eq!(
-        cat.resolve(&none, LiveSightings::unsighted(), "fs_read"),
+        cat.resolve_now(Some(&none), LiveSightings::unsighted(), "fs_read"),
         Err(DispatchRefusal::NotGranted("fs_read".to_string()))
     );
     let all = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_nope")]);
     assert_eq!(
-        cat.resolve(&all, LiveSightings::unsighted(), "fs_nope"),
+        cat.resolve_now(Some(&all), LiveSightings::unsighted(), "fs_nope"),
         Err(DispatchRefusal::UnknownTool("fs_nope".to_string()))
     );
     // The operator gets two reasons; the caller gets one message. That is the design.
@@ -260,7 +288,7 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
     let admitted = Catalogue::build(&c);
     let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let selected = admitted
-        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .resolve_now(Some(&g), LiveSightings::unsighted(), "fs_read")
         .unwrap()
         .clone();
     let selected_gen = admitted.generation();
@@ -268,7 +296,12 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
     // Same snapshot: the call goes through. Without this half, the refusal below would be
     // indistinguishable from a check that refuses everything.
     assert_eq!(
-        admitted.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
+        admitted.revalidate_now(
+            Some(&g),
+            LiveSightings::unsighted(),
+            &selected,
+            selected_gen
+        ),
         Ok(())
     );
 
@@ -283,12 +316,23 @@ fn a_call_resolved_under_generation_n_is_refused_when_the_live_generation_is_n_p
         .insert("read".to_string(), ToolAllowCfg::default());
     let live = Catalogue::build(&quarantined);
 
+    // THE CALL IS REFUSED, AND THE REFUSAL NAMES THE QUARANTINE RATHER THAN THE MOVE.
+    //
+    // It used to name the move, because the generation was compared before anything else. The one
+    // ordered validator in `crate::trust::validate` compares it LAST, deliberately: "something
+    // moved, retry" is a worse message than "this tool's approved digest was withdrawn", and an
+    // operator handed the first goes looking for a config apply they did not make. Nothing is
+    // admitted that was not admitted before — both steps refuse this call — and
+    // `a_revert_still_refuses_because_the_generation_is_not_content` below is the proof that the
+    // generation step still closes the case only it can close.
     assert_eq!(
-        live.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
-        Err(DispatchRefusal::GenerationMoved {
-            selected: selected_gen,
-            live: live.generation(),
-        }),
+        live.revalidate_now(
+            Some(&g),
+            LiveSightings::unsighted(),
+            &selected,
+            selected_gen
+        ),
+        Err(DispatchRefusal::NotApproved("fs_read".to_string())),
         "an in-flight call cannot outlive a quarantine"
     );
 }
@@ -301,7 +345,7 @@ fn a_revert_still_refuses_because_the_generation_is_not_content() {
     let admitted = Catalogue::build(&c);
     let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let selected = admitted
-        .resolve(&g, LiveSightings::unsighted(), "fs_read")
+        .resolve_now(Some(&g), LiveSightings::unsighted(), "fs_read")
         .unwrap()
         .clone();
     let selected_gen = admitted.generation();
@@ -310,7 +354,12 @@ fn a_revert_still_refuses_because_the_generation_is_not_content() {
     // admit the call; a counter cannot.
     let live = Catalogue::build(&c);
     assert!(matches!(
-        live.revalidate(&g, LiveSightings::unsighted(), &selected, selected_gen),
+        live.revalidate_now(
+            Some(&g),
+            LiveSightings::unsighted(),
+            &selected,
+            selected_gen
+        ),
         Err(DispatchRefusal::GenerationMoved { .. })
     ));
 }
@@ -324,14 +373,14 @@ fn revalidation_also_re_derives_the_identity_under_the_live_grant() {
     let cat = Catalogue::build(&cfg(vec![server("fs", &["read"], &[])]));
     let full = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let selected = cat
-        .resolve(&full, LiveSightings::unsighted(), "fs_read")
+        .resolve_now(Some(&full), LiveSightings::unsighted(), "fs_read")
         .unwrap()
         .clone();
     let gen = cat.generation();
 
     let revoked = grant_of(&[]);
     assert_eq!(
-        cat.revalidate(&revoked, LiveSightings::unsighted(), &selected, gen),
+        cat.revalidate_now(Some(&revoked), LiveSightings::unsighted(), &selected, gen),
         Err(DispatchRefusal::NotGranted("fs_read".to_string())),
         "same generation, revoked grant: still refused"
     );

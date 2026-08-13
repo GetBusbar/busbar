@@ -57,6 +57,23 @@
 //! only when that load says something moved. The cost of the poll is therefore one load per
 //! [`POLL_INTERVAL`], and the cost of the real work is paid only when there is real work.
 //!
+//! ## WHAT IS RE-CHECKED WHILE IT IS OPEN, AND WHAT THE BOUND IS FOR
+//!
+//! A subscription is a decision made at open and trusted while open, so the question that matters is
+//! what is re-asked per poll. All of it: the CATALOGUE is re-read from the live handle, and the
+//! PRINCIPAL is RE-RESOLVED from the live registry by id through [`crate::trust::validate::Standing`].
+//!
+//! Holding the resolved key instead would have been the natural shape and it is the defect this
+//! guards: a `GovCtx` cloned into the stream carries an `Arc<VirtualKey>` resolved at ingress, so an
+//! approval revoked underneath the stream would bite in one poll while the KEY being deleted,
+//! disabled or re-scoped would not bite at all. The stream now holds the ID and looks the principal
+//! up on every poll — an in-memory index read, which is what makes it affordable four times a
+//! second — and closes the stream the moment it stops resolving live.
+//!
+//! [`MAX_LIFETIME`] is still load-bearing and is not a consolation for that: it is the hard bound on
+//! everything a poll CANNOT re-derive, and it is passed to the `Standing` so the two numbers are
+//! provably one number.
+//!
 //! ## THE STREAM IS BOUNDED, AND IT ENDS BY SAYING SO
 //!
 //! A subscription with no end is a connection a client cannot tell from a hung one. At
@@ -262,57 +279,107 @@ enum Phase {
 
 struct Listen {
     handle: std::sync::Arc<crate::state::AppHandle>,
-    gov: crate::governance::GovCtx,
+    /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
+    /// carried into a `'static` stream is an identity believed for five minutes.
+    standing: crate::trust::validate::Standing,
     accepted: SubscriptionFilter,
     meta: serde_json::Value,
     id: serde_json::Value,
     phase: Phase,
-    deadline: Instant,
     last_write: Instant,
 }
 
-/// The grant predicate, rebuilt per poll from the key the stream was opened with.
+/// The grant predicate, rebuilt per poll from the key RE-RESOLVED for that poll.
 ///
-/// **WHAT IS RE-READ AND WHAT IS FROZEN — and the difference matters more than the rebuild does.**
-/// The CATALOGUE is genuinely live: [`Listen::step`] loads the handle every poll, so a registration
-/// that appears or disappears is reflected within [`POLL_INTERVAL`]. The KEY is NOT. `gov` is an
-/// `Arc<VirtualKey>` cloned into the stream at open — a SNAPSHOT resolved once at ingress by the
-/// auth middleware — and nothing below re-resolves it against the store.
+/// Neither the key nor the predicate is captured, which is stronger than the rule the input-required
+/// loop states: that loop re-derives the grant from a key read once, and this re-derives the key too.
 ///
-/// So rebuilding this closure per poll re-evaluates the grant against FRESH CATALOGUE ENTRIES but
-/// against a STALE KEY, and the two revocations behave differently:
-///
-/// * An APPROVAL withdrawn from the catalogue bites within [`POLL_INTERVAL`] — the entry stops
-///   being visible and the caller stops being woken for it.
-/// * The KEY ITSELF being deleted, disabled, tombstoned or re-scoped does NOT bite at all. Note
-///   that [`busbar_api::VirtualKey::scope_allowed`] consults `allowed_scopes` only: it does not
-///   look at `enabled` and does not call `is_live()`, so even a tombstoned key answers here exactly
-///   as it did at open.
-///
-/// The only thing bounding that is [`MAX_LIFETIME`], which is why that constant carries a warning
-/// against being raised. Closing this properly needs a standing-permission re-resolution primitive
-/// rather than a local patch — the auth chain that produced this key is async and consumes the
-/// presented credential, which the stream deliberately does not retain — so this comment states the
-/// gap rather than papering over it, and
-/// `a_revoked_key_keeps_being_served_until_the_lifetime_bound` pins it as a characterisation test.
+/// **AND A FIELD CHECK HERE WOULD HAVE BEEN A PLACEBO, which is why the fix is not one.** The
+/// tempting local patch was to have this closure consult `enabled`/`is_live()` alongside
+/// [`busbar_api::VirtualKey::scope_allowed`] — which reads `allowed_scopes` alone and looks at
+/// neither. It would have changed nothing: those fields lived on the SAME frozen snapshot, so they
+/// reported "live" for the whole life of the stream however long ago the store row said otherwise.
+/// Only re-reading the key closes it, which is what [`crate::trust::validate::Standing`] does and
+/// why the fix is a core primitive rather than an extra `&&` on this line.
 ///
 /// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
 /// this — two disjoint fields, which the borrow checker allows and a `&self` method does not.
-fn grant_of(gov: &crate::governance::GovCtx) -> impl Fn(&str, &str) -> bool + '_ {
-    move |kind: &str, value: &str| {
-        gov.key
-            .as_ref()
-            .is_none_or(|k| k.scope_allowed(kind, value))
-    }
+fn grant_of(
+    key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) -> impl Fn(&str, &str) -> bool + '_ {
+    move |kind: &str, value: &str| key.is_none_or(|k| k.scope_allowed(kind, value))
 }
 
 impl Listen {
+    /// THE LAST FRAME. A bound reached is a graceful end and says so; a lapsed permission is a
+    /// REFUSAL and says which one, in the core vocabulary, so a client and an operator reading the
+    /// same word mean the same thing.
+    ///
+    /// One function rather than a frame written at each exit, because a stream that ends by simply
+    /// closing the socket is one a client cannot tell from a dropped connection — which is the whole
+    /// reason anything is written at all.
+    fn closing_frame(&self, lapsed: &crate::trust::validate::Lapsed) -> String {
+        use crate::trust::validate::Lapsed;
+        match lapsed {
+            // The revision's own "this subscription ended gracefully" answer, correlated to the
+            // request that opened the stream.
+            Lapsed::Expired => {
+                let request_id: Option<rmcp::model::RequestId> =
+                    serde_json::from_value(self.id.clone()).ok();
+                let result = request_id
+                    .map(SubscriptionsListenResult::complete)
+                    .and_then(|r| serde_json::to_value(r).ok())
+                    .unwrap_or_else(|| serde_json::json!({ "resultType": "complete" }));
+                event(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": self.id,
+                    "result": result,
+                }))
+            }
+            Lapsed::Identity(refusal) | Lapsed::Generation(refusal) => event(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": self.id,
+                "error": {
+                    // The base protocol's own "invalid request", owned by the one envelope reader
+                    // for both planes rather than re-spelled here.
+                    "code": crate::ingress::jsonrpc::INVALID_REQUEST,
+                    "message": refusal.to_string(),
+                    "data": { "reason": refusal.reason() },
+                },
+            })),
+        }
+    }
+
     /// Produce the next chunk of the stream, `Some("")` for "nothing to say yet", or `None` to close
     /// it.
     fn step(&mut self) -> Option<String> {
+        // ENDED IS ENDED, and this is checked FIRST rather than in the phase match below.
+        //
+        // The re-check underneath it answers the same way every time it is asked, so a stream whose
+        // permission has lapsed would re-emit its closing frame on every poll for ever instead of
+        // closing — a refusal that never ends is a connection a client cannot tell from a working
+        // one, which is the exact failure the graceful close exists to avoid. Found by
+        // `a_revoked_key_stops_being_served_on_the_next_poll`'s final assertion, which is why that
+        // assertion is not decoration.
+        if matches!(self.phase, Phase::Ended) {
+            return None;
+        }
         let app = self.handle.load();
         let catalogue = &app.mcp_catalogue;
-        let grant = grant_of(&self.gov);
+        // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
+        // stream on THIS frame rather than at the bound, which is the whole of the fix.
+        let key = match self.standing.still_permitted(
+            app.governance.as_deref(),
+            catalogue.generation(),
+            crate::store::now(),
+        ) {
+            Ok(key) => key,
+            Err(lapsed) => {
+                self.phase = Phase::Ended;
+                return Some(self.closing_frame(&lapsed));
+            }
+        };
+        let grant = grant_of(key.as_ref());
         let now = Instant::now();
         match &mut self.phase {
             Phase::Acknowledge => {
@@ -334,25 +401,6 @@ impl Listen {
                 Some(frame)
             }
             Phase::Watch { generation, seen } => {
-                if now >= self.deadline {
-                    // The revision's own "this subscription ended gracefully" answer, correlated to
-                    // the request that opened the stream — so a client can tell a deliberate close
-                    // from a dropped connection, which is the only reason to write anything at all
-                    // rather than simply closing the socket.
-                    let request_id: Option<rmcp::model::RequestId> =
-                        serde_json::from_value(self.id.clone()).ok();
-                    let result = request_id
-                        .map(SubscriptionsListenResult::complete)
-                        .and_then(|r| serde_json::to_value(r).ok())
-                        .unwrap_or_else(|| serde_json::json!({ "resultType": "complete" }));
-                    let frame = event(&serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": self.id,
-                        "result": result,
-                    }));
-                    self.phase = Phase::Ended;
-                    return Some(frame);
-                }
                 let live = catalogue.generation();
                 let mut out = String::new();
                 if live != *generation {
@@ -442,12 +490,21 @@ pub(crate) fn listen(
     let now = Instant::now();
     let mut state = Listen {
         handle: ctx.handle.clone(),
-        gov: ctx.gov.clone(),
+        // THE ID AND THE BOUND. `MAX_LIFETIME` is handed to the standing permission as well as used
+        // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
+        // are provably the same number rather than two that agree today.
+        standing: crate::trust::validate::Standing::opened(
+            ctx.gov.key.as_deref(),
+            // WATCHING, not pinned: a generation move is what this response exists to report, and
+            // every frame it writes is re-derived from the live snapshot. Pinning it would make the
+            // subscription end on the first change it was opened to hear about.
+            crate::trust::validate::Snapshot::Watching,
+            MAX_LIFETIME,
+        ),
         accepted,
         meta: subscription_meta(&id),
         id,
         phase: Phase::Acknowledge,
-        deadline: now + MAX_LIFETIME,
         last_write: now,
     };
     // THE FIRST CHUNK IS PRODUCED BEFORE THE RESPONSE IS BUILT, so the acknowledgement is on the

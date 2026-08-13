@@ -73,3 +73,46 @@ pub(crate) const REASON_TASK_CREATED: &str = "task_created";
 /// already AUTHENTICATED at this point, and a chain that silently omits every malformed request from
 /// a principal is a chain with a hole an attacker can choose.
 pub(crate) const REASON_MALFORMED: &str = "malformed_params";
+
+// ── THE ORDERED REQUEST VALIDATOR'S REASONS ─────────────────────────────────────────────────────
+//
+// `crate::trust::validate` asks one ordered question before every dispatch on every plane —
+// identity, then grant, then whether the artifact still matches what was approved, then whether the
+// snapshot it was admitted under is still live. Its refusals are recorded, so its words are audit
+// words and they live here with the rest.
+//
+// THEY STAY PLURAL FOR THE SAME REASON THE THREE ABOVE DO. Each one sends an operator somewhere
+// different: re-issue a credential, grant a scope, edit the target's egress list, work a changes
+// queue, retry. A gate that answered "refused" to all five would be the admin log's single word
+// re-invented one layer down.
+
+/// The PRINCIPAL is no longer live: deleted, disabled, or past its expiry. Distinct from
+/// [`REASON_NOT_GRANTED`] because the remedies are different objects — a key that is gone is
+/// re-issued, a key that is merely unscoped is granted — and distinct from an authentication
+/// failure at the edge because this principal DID authenticate and then went stale underneath a
+/// request that was already in flight.
+pub(crate) const REASON_IDENTITY_NOT_LIVE: &str = "identity_not_live";
+
+/// The REGISTRATION serves nothing: pending, quarantined, suspended or in error. A statement about
+/// the upstream rather than about the caller, which is why it is not a grant word — the caller may
+/// be perfectly entitled and there is simply nothing here that may be dispatched to.
+///
+/// A plane may render this more finely (`not_pinned`, `not_approved`, `quarantined` are three
+/// operator actions behind this one decision) and doing so is the opposite of flattening: the gate
+/// decides, and the plane says which of its shapes the decision took.
+pub(crate) const REASON_NOT_SERVING: &str = "not_serving";
+
+/// THE RUG-PULL. The registration serves, and the capability being asked for is offered at a
+/// fingerprint nobody approved — a tool's schema changed under the cache, a card was re-signed.
+/// Its own word because it is the one refusal that indicts the UPSTREAM rather than the operator's
+/// configuration or the caller's grant.
+pub(crate) const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
+
+/// THE LIFECYCLE RACE. The registry moved between admission and dispatch, so the request is refused
+/// rather than sent against a snapshot the operator has already replaced.
+///
+/// The least specific of the refusals and deliberately the LAST one asked, because "something
+/// moved, retry" is a worse message than any of the others and an operator handed it goes looking
+/// for an apply they may not have made. Nothing is admitted by asking it last: a request that would
+/// fail an earlier step fails that step instead.
+pub(crate) const REASON_GENERATION_MOVED: &str = "generation_moved";

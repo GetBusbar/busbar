@@ -30,6 +30,18 @@
 //! list an agent it cannot invoke has learned that the agent exists, which is the first half of
 //! every targeted attack on it, and the two answers coming from one function is what stops them
 //! drifting apart.
+//!
+//! ## AND THE ORDER IS NOT THIS FILE'S ANY MORE
+//!
+//! Layer 2 above is one step of a four-step sequence — identity, grant, artifact, generation — that
+//! every request on every plane passes through, and that sequence is
+//! [`crate::trust::validate::validate_request`]. This file used to write three of those steps out by
+//! hand, as did the catalogue and the pre-socket relay gate, and nothing owned the order between
+//! them; a fourth path that forgot one would have been a silent hole with no failing test, because
+//! there was no site whose job the sequence was.
+//!
+//! What stays here is the AUTHENTICATION layer, the registration lookup, and the RENDERING — the
+//! statuses and the words this plane answers with. The decision is core's.
 
 use busbar_api::VirtualKey;
 
@@ -145,6 +157,7 @@ pub(crate) fn authorize(
     credential_kind: &str,
     agent_id: &str,
     registrations: &[AgentRegistration],
+    generation: u64,
     now: u64,
 ) -> Result<Dispatch, InboundRefusal> {
     if credential_kind != CREDENTIAL_KIND_A2A_INBOUND {
@@ -152,44 +165,96 @@ pub(crate) fn authorize(
             presented: credential_kind.to_string(),
         });
     }
-    // A tombstoned key's row survives forever so billing and audit keep resolving it, which means
-    // `is_live` is the check and a row's existence is not.
-    if !key.is_live() || !key.enabled || key.expires_at.is_some_and(|exp| now >= exp) {
-        return Err(InboundRefusal::KeyNotLive {
-            key_id: key.id.clone(),
-        });
+
+    let found = registrations.iter().find(|r| r.agent_id == agent_id);
+    // THE FAIL-CLOSED FLOOR stands in for a registration this deployment does not front, so the
+    // ordered gate below is reached on EVERY path rather than short-circuited on one of them. It is
+    // `Pending` and serves nothing, which is what the validator's artifact step then says — and this
+    // function turns that into the 404 an unknown id has always answered.
+    let floor = crate::trust::Approval::registered();
+    let never = crate::trust::Sighting::Never;
+
+    // AN UNKNOWN ID HAS NO SCOPE TO BE GRANTED ON, so the grant list for one is empty. That is not a
+    // skipped step: the step runs and finds nothing to check, and the artifact step below refuses
+    // the request a moment later. Keeping it empty is what preserves the 404-before-403 ordering
+    // `InboundRefusal::status` reasons about — an operator debugging a scope grant must not be shown
+    // "not in scope" for an agent that does not exist.
+    let agent_scope = [crate::trust::validate::Grant::Scope {
+        kind: SCOPE_KIND_AGENT,
+        name: agent_id,
+    }];
+    let grants: &[crate::trust::validate::Grant] = if found.is_some() { &agent_scope } else { &[] };
+
+    // THE ONE ORDERED GATE. Identity, then grant, then the agent's own state — including the
+    // suspension, because the breaker trips on how the agent BEHAVES and an agent behaving badly
+    // behaves badly for whoever reached it.
+    if let Err(refusal) = crate::trust::validate::validate_request(&crate::trust::validate::Ask {
+        principal: Some(key),
+        now,
+        grants,
+        approval: found.map_or(&floor, |r| &r.approval),
+        sighting: found.map_or(&never, |r| &r.sighting),
+        // The wire names no skill at this layer; the catalogue is what matches a task shape against
+        // one. An ask addressed to the registration itself has no capability to fingerprint.
+        capability: None,
+        // ADMISSION. There is no earlier snapshot for this request to have outlived, because this is
+        // the one it is arriving on. The value is recorded and re-compared at the relay gate.
+        generation: crate::trust::validate::Generations::at_admission(generation),
+    }) {
+        return Err(as_inbound_refusal(refusal, key, agent_id, found));
     }
 
-    let Some(reg) = registrations.iter().find(|r| r.agent_id == agent_id) else {
-        return Err(InboundRefusal::NoSuchAgent {
-            agent_id: agent_id.to_string(),
-        });
-    };
-
-    // AUTHORIZATION, BEFORE THE BACKEND. The same call the catalogue makes.
-    if !key.scope_allowed(SCOPE_KIND_AGENT, agent_id) {
-        return Err(InboundRefusal::NotInScope {
-            key_id: key.id.clone(),
-            agent_id: agent_id.to_string(),
-        });
-    }
-
-    // AND THE AGENT'S OWN STATE. A suspended fronted agent is refused inbound as well as outbound:
-    // the breaker trips on how the agent BEHAVES, and an agent behaving badly behaves badly for
-    // whoever reached it.
-    if !reg.is_delegable() {
-        return Err(InboundRefusal::NotServing {
-            agent_id: agent_id.to_string(),
-            state: reg.trust_state(),
-            reason: reg.suspension_reason().map(str::to_string),
-        });
-    }
-
+    let reg = found.expect("the floor registration refuses at the artifact step");
     Ok(Dispatch {
         agent_id: reg.agent_id.clone(),
         backend_url: reg.backend_url.clone(),
         billed_key_id: key.id.clone(),
     })
+}
+
+/// RENDER the core refusal as this plane's own wire refusal. and in its status codes.
+///
+/// The DECISION is core's; only the wording and the status are this plane's. That split is why the
+/// arms below map rather than re-derive: a second derivation here could disagree with the gate at
+/// exactly the moment a request races a suspension.
+fn as_inbound_refusal(
+    refusal: crate::trust::validate::Refusal,
+    key: &VirtualKey,
+    agent_id: &str,
+    found: Option<&AgentRegistration>,
+) -> InboundRefusal {
+    use crate::trust::validate::Refusal;
+    match refusal {
+        Refusal::IdentityNotLive { .. } => InboundRefusal::KeyNotLive {
+            key_id: key.id.clone(),
+        },
+        Refusal::NotGranted { .. } | Refusal::EgressDenied { .. } => InboundRefusal::NotInScope {
+            key_id: key.id.clone(),
+            agent_id: agent_id.to_string(),
+        },
+        // The floor registration is the "no such agent" case, and it is the ONLY way to reach this
+        // arm with nothing found.
+        Refusal::NotServing { state, reason } => match found {
+            None => InboundRefusal::NoSuchAgent {
+                agent_id: agent_id.to_string(),
+            },
+            Some(_) => InboundRefusal::NotServing {
+                agent_id: agent_id.to_string(),
+                state,
+                reason,
+            },
+        },
+        // Unreachable at admission — the capability is `None` and the generation is compared against
+        // itself — and answered rather than unwrapped, because "unreachable" is a claim about
+        // today's arguments and this is a request path.
+        Refusal::ArtifactDrifted { .. }
+        | Refusal::Unobservable { .. }
+        | Refusal::GenerationMoved { .. } => InboundRefusal::NotServing {
+            agent_id: agent_id.to_string(),
+            state: found.map_or(TrustState::Pending, AgentRegistration::trust_state),
+            reason: Some(refusal.to_string()),
+        },
+    }
 }
 
 #[cfg(test)]

@@ -458,6 +458,45 @@ pub(crate) enum LiveDigest {
     At(String),
 }
 
+/// THE OPERATOR'S WORD FOR A STATE THAT DOES NOT SERVE, or `None` for the one that does.
+///
+/// One definition, two readers: the ADVERTISEMENT path asks it through [`LiveDigest`], and the
+/// DISPATCH path asks it when the ordered validator refuses at the registration. Two spellings of
+/// "this server is suspended" is busbar hiding a tool for one stated reason and refusing it for
+/// another.
+fn quarantine_word(state: TrustState) -> Option<&'static str> {
+    match state {
+        TrustState::Approved => None,
+        TrustState::Quarantined => Some("the last refresh disagrees with what was approved"),
+        TrustState::Error => Some("the last refresh could not reach this server"),
+        TrustState::Suspended => Some("this server is suspended"),
+        TrustState::Pending => Some("this server has no locked identity pin"),
+    }
+}
+
+/// THE SAME QUESTION ASKED OF THE SIGHTING AS WELL AS THE STATE, which is what the two paths
+/// actually need.
+///
+/// A demotion replayed from the durable record at boot derives `Quarantined` like any other drift,
+/// but the operator reading it has a different question — the drift itself is not in hand, and the
+/// sweep that re-derives it is due immediately. That fact lives on the SIGHTING and no `TrustState`
+/// can carry it, so it is answered here rather than by inventing a state for the mapping to put it
+/// in.
+///
+/// Both the advertisement path and the dispatch path call this, so a tool hidden for one stated
+/// reason cannot be refused for another.
+pub(crate) fn quarantine_word_for(
+    sighting: &Sighting<TransportPin>,
+    state: TrustState,
+) -> Option<&'static str> {
+    if matches!(sighting, Sighting::Demoted(_)) {
+        return Some(
+            "this server was demoted before the last restart and the demotion has not been worked",
+        );
+    }
+    quarantine_word(state)
+}
+
 /// THE LIVE TOOL-LIST OBSERVATIONS, as a read-only view the dispatch gate can be handed.
 ///
 /// A borrowed wrapper rather than a raw `Option<&CatalogueSnapshot>` so the SERVER direction's
@@ -482,6 +521,18 @@ impl<'a> LiveSightings<'a> {
         Self(Some(snapshot))
     }
 
+    /// THE LAST SIGHTING for one registration, or `Sighting::Never` where this view has none.
+    ///
+    /// Handed to the ordered validator so the registration-level half of the artifact question is
+    /// derived by the lifecycle itself rather than restated here. `Never` is not a failure: a record
+    /// approved from a declarative config pin has legitimately never been reached, and it is what
+    /// keeps a deployment that has never run a refresh serving exactly as it did.
+    pub(crate) fn sighting_for(&self, server: &str) -> Sighting<TransportPin> {
+        self.0
+            .and_then(|s| s.servers.get(server))
+            .map_or(Sighting::Never, |e| e.sighting.clone())
+    }
+
     /// What `server`'s `tool` is CURRENTLY observed at, judged against the operator's LIVE standing
     /// approval.
     ///
@@ -503,28 +554,11 @@ impl<'a> LiveSightings<'a> {
         if matches!(sighting, Sighting::Never) {
             return LiveDigest::Unsighted;
         }
-        // A DEMOTION THIS PROCESS DID NOT WITNESS, replayed from the durable record at boot. Named
-        // separately from the `Quarantined` the state derivation produces below because the operator
-        // reading it has a different question — the drift itself is not in hand, and the sweep that
-        // re-derives it is due immediately.
-        if matches!(sighting, Sighting::Demoted(_)) {
-            return LiveDigest::Quarantined(
-                "this server was demoted before the last restart and the demotion has not been \
-                 worked",
-            );
-        }
-        match approval.state(sighting) {
-            TrustState::Approved => {}
-            TrustState::Quarantined => {
-                return LiveDigest::Quarantined("the last refresh disagrees with what was approved")
-            }
-            TrustState::Error => {
-                return LiveDigest::Quarantined("the last refresh could not reach this server")
-            }
-            TrustState::Suspended => return LiveDigest::Quarantined("this server is suspended"),
-            TrustState::Pending => {
-                return LiveDigest::Quarantined("this server has no locked identity pin")
-            }
+        // A DEMOTION THIS PROCESS DID NOT WITNESS, replayed from the durable record at boot, and
+        // every other non-serving state — asked as ONE question so the advertisement path and the
+        // dispatch path cannot answer it differently.
+        if let Some(why) = quarantine_word_for(sighting, approval.state(sighting)) {
+            return LiveDigest::Quarantined(why);
         }
         match sighting {
             Sighting::Seen(observation) => match observation.capabilities.get(tool) {
