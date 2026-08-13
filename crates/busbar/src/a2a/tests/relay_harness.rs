@@ -412,12 +412,35 @@ pub(super) async fn harness(outcome: Outcome, with_credential: bool) -> Harness 
     harness_granting(outcome, with_credential, &["planner"]).await
 }
 
+/// THE OPERATOR'S HOOK ATTACHMENT for a harness that wants one: the loaded plugin env, the
+/// `hooks:` DEFINITIONS, and the section-level `agents.hooks:` list they are attached by.
+///
+/// Optional rather than a defaulted field so that every existing harness caller builds the SAME
+/// deployment it always did — a fixture that quietly gains a gate is a fixture whose other tests
+/// start proving something else.
+pub(super) struct Gates {
+    pub(super) env: crate::hooks::HookEnv,
+    pub(super) hooks: Vec<(String, crate::config::HookCfg)>,
+    pub(super) attach: Vec<String>,
+}
+
 /// A harness whose caller is granted exactly `granted`. Two agents are always REGISTERED —
 /// `planner` and `payments` — so a test can point a caller at one it holds no grant on.
 pub(super) async fn harness_granting(
     outcome: Outcome,
     with_credential: bool,
     granted: &[&str],
+) -> Harness {
+    harness_gated(outcome, with_credential, granted, None).await
+}
+
+/// The same harness with an operator's `agents.hooks:` attach applied, resolved through the real
+/// resolver by the same `TestApp` build every other harness caller uses.
+pub(super) async fn harness_gated(
+    outcome: Outcome,
+    with_credential: bool,
+    granted: &[&str],
+    gates: Option<Gates>,
 ) -> Harness {
     use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec};
@@ -476,13 +499,21 @@ pub(super) async fn harness_granting(
         Some("external-agent-1"),
     );
 
-    let app = crate::test_support::TestApp::new()
+    let mut builder = crate::test_support::TestApp::new()
         .public_url(PUBLIC_URL)
         .agent_def("planner", agent_cfg(BACKEND, with_credential))
         .agent_def("payments", agent_cfg(OTHER_BACKEND, with_credential))
         .keys_chain()
-        .governance(Arc::clone(&gov))
-        .build();
+        .governance(Arc::clone(&gov));
+    if let Some(g) = gates {
+        builder = builder
+            .hook_env(g.env)
+            .agents_hooks(&g.attach.iter().map(String::as_str).collect::<Vec<_>>());
+        for (name, cfg) in g.hooks {
+            builder = builder.hook(&name, cfg);
+        }
+    }
+    let app = builder.build();
 
     let plane = app.a2a.as_ref().expect("the plane exists").clone();
     plane.with_registrations_mut(|regs| {

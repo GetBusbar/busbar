@@ -3750,6 +3750,35 @@ pub(crate) fn build_app_from_config(
     let global_gates =
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
 
+    // THE OTHER TWO PLANES' GATES, resolved by the SAME function, from the SAME registry, on the
+    // same generation — which is the point. `tools.hooks:` / `agents.hooks:` and the per-entry
+    // lists have parsed and validated since 1.5.3 and fired nothing, because nothing resolved them
+    // and nothing called them. These two lines and their two firing sites are the whole of what was
+    // missing; the grammar, the validation and the cross-plane refusal were already there.
+    //
+    // Empty on every deployment that attaches nothing, which is every deployment that does not
+    // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
+    let mcp_server_gates = hooks::resolve_container_gates(
+        cfg.tool_defs
+            .servers
+            .iter()
+            .map(|(name, def)| (name.as_str(), def.hooks.as_slice())),
+        &cfg.tool_defs.all_server_hooks,
+        &cfg.hooks,
+        &hook_env,
+        app_config_version,
+    );
+    let a2a_agent_gates = hooks::resolve_container_gates(
+        cfg.agent_defs
+            .agents
+            .iter()
+            .map(|(name, def)| (name.as_str(), def.hooks.as_slice())),
+        &cfg.agent_defs.all_agent_hooks,
+        &cfg.hooks,
+        &hook_env,
+        app_config_version,
+    );
+
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
     // with the OLD `App` that is still serving, so invoking it now would mutate the live engine's
@@ -3898,6 +3927,8 @@ pub(crate) fn build_app_from_config(
         tap_hooks_routing,
         tap_hooks_response,
         global_gates,
+        mcp_server_gates,
+        a2a_agent_gates,
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),
         requested_signals: hooks::requested_signals(&cfg.hooks),

@@ -294,6 +294,22 @@ pub(crate) struct App {
     /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
     /// priority so the merge's stable sort keeps globals-first on ties.
     pub(crate) global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    /// THE MCP DISPATCH GATES, per registered server: `tools.hooks:` ∪ `tools.<server>.hooks:`,
+    /// resolved to their transports ONCE per config generation and keyed by server name.
+    ///
+    /// Keyed by CONTAINER rather than held as one list because the grammar is per-container and
+    /// additive: a hook attached to one server must not fire for another. A server with no attached
+    /// hook has NO ENTRY (not an empty vector), so the dispatch path's lookup answers `None` and the
+    /// firing site costs one hash lookup on the default deployment.
+    ///
+    /// Resolved here, at config apply, for the reason every other hook list is: resolution `dlopen`s
+    /// the plugin, and doing that per request would put a library load on the dispatch path.
+    pub(crate) mcp_server_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    /// THE A2A SUBMISSION GATES, per registered agent: `agents.hooks:` ∪ `agents.<agent>.hooks:`.
+    /// The exact twin of [`App::mcp_server_gates`], same combine rule, same keying, same zero-cost
+    /// absence — because it is one operator concept spelled on two planes, and an operator who
+    /// learned it on `tools:` must not have to learn it again here.
+    pub(crate) a2a_agent_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
     /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty

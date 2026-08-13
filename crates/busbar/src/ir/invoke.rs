@@ -60,6 +60,78 @@ pub(crate) struct InvokeReq {
     pub(crate) extra: crate::lossless::SourceScopedExtra,
 }
 
+/// THE INVOCATION FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`], the
+/// family-blind seam the shared pipeline reads a request through.
+///
+/// It lives HERE, in the module that owns the IR, and not in `ir/facts.rs`: `facts.rs` carries the
+/// CHAT family's walk beside the trait, and a second family folded in there would be a superset
+/// across two families that never translate into one another — the standing rule this file's own
+/// header states. One IR, one walk, one file.
+///
+/// ## What a hook is shown for an invocation, and why it is exactly this
+///
+/// A tool call has no turns, no system prompt and no sampling controls. What it HAS is a target and
+/// arguments, and the arguments are the untrusted part: caller-authored, sent upstream verbatim,
+/// and the only thing on this operation a screening gate can act on. So the projection is ONE
+/// [`crate::ir::facts::ContentItem::Data`] carrying the arguments `Value` itself — not a pre-flattened string, so a
+/// gate that wants to walk the structure can, and one that wants text calls `screenable_text` — and
+/// its `label` is the TARGET, which is how "which tool" reaches a consumer that never learns the
+/// protocol.
+///
+/// [`crate::ir::facts::Slot::ToolArgs`] and not [`crate::ir::facts::Slot::Turn`], deliberately: the slot is a statement about
+/// PROVENANCE, and a consumer that treats a tool call's arguments as ordinary conversation content
+/// is a consumer that trusts them like conversation content. There is one invocation per request,
+/// so the turn index it is attributed to is `0`.
+impl crate::ir::facts::IrFacts for InvokeReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::Invoke
+    }
+
+    /// An invocation is one exchange. The streaming question belongs to the operations that can
+    /// answer it, and answering `false` here is a fact rather than a default.
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    /// NO END-USER IDENTIFIER, and this is a statement about the protocol rather than an omission:
+    /// neither wire shape this IR is read from carries the provider-side abuse-tracking field the
+    /// chat dialects spell `user` / `metadata.user_id`. The CALLER's identity still reaches a
+    /// granted hook — it comes from the resolved governance key at the firing site, which is where
+    /// it comes from on every plane.
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        crate::ir::facts::Shape {
+            // ONE unit of work. An invocation is not a conversation, and reporting `0` would tell a
+            // hook the request is empty.
+            turn_count: 1,
+            // The request IS a tool call: whatever else `has_tools` means to a consumer, answering
+            // `false` for an invocation would be false.
+            has_tools: true,
+            // Summed over the SAME items a content-granted hook is shown, for the reason
+            // [`crate::ir::facts::ContentItem::screenable_text`] gives: a size signal and a content projection computed
+            // by two functions is a size signal that can drift from what was screened.
+            text_chars: crate::ir::facts::IrFacts::content(self)
+                .iter()
+                .map(|i| i.screenable_text().chars().count())
+                .sum(),
+            // No output cap exists on this operation to normalise.
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        vec![crate::ir::facts::ContentItem::Data {
+            role: crate::ir::IrRole::User,
+            slot: crate::ir::facts::Slot::ToolArgs(0),
+            label: self.tool.as_str(),
+            value: &self.arguments,
+        }]
+    }
+}
+
 /// WHAT ONE TOOL CALL PRODUCED. The response half.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InvokeResp {

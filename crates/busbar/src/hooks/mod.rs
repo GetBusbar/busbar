@@ -37,6 +37,10 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+/// THE PROTOCOL-BLIND REQUEST GATE — the seam that fires a hook for a request the pipeline knows
+/// only as an [`crate::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
+/// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
+pub(crate) mod gate;
 pub(crate) mod plugin;
 pub(crate) mod scrape;
 pub(crate) mod wire;
@@ -1500,6 +1504,57 @@ pub(crate) fn resolve_gate_hooks(
     }
     ranked.sort_by_key(|(p, _)| *p);
     ranked
+}
+
+/// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
+///
+/// A section-level attach (`pools.hooks:` / `tools.hooks:` / `agents.hooks:`) and an entry's own
+/// `hooks:` are a LIST, and a LIST combines ADDITIVELY: section first, then the entry's own, deduped
+/// by name so a hook named in both fires ONCE, at its first (section) position.
+///
+/// Written here rather than once per plane because it is a rule of the CONFIG GRAMMAR, not of any
+/// plane — and because two copies of it is exactly how the section list and an entry list come to
+/// dedupe differently on one plane and not the other.
+pub(crate) fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
+    for h in section.iter().chain(own) {
+        if !out.iter().any(|e| e == h) {
+            out.push(h.clone());
+        }
+    }
+    out
+}
+
+/// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
+/// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
+/// [`resolve_gate_hooks`], keyed by container.
+///
+/// A container whose effective chain is EMPTY gets NO ENTRY, deliberately: the firing site's lookup
+/// then answers `None` on every deployment that attached nothing, which is the zero-cost default,
+/// and an empty vector in the map would make "attached nothing" and "attached something that did not
+/// resolve" indistinguishable at a glance.
+///
+/// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
+/// per request would put a library load on a dispatch path.
+pub(crate) fn resolve_container_gates<'a>(
+    containers: impl Iterator<Item = (&'a str, &'a [String])>,
+    section: &[String],
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    env: &HookEnv,
+    settings_version: u64,
+) -> std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>> {
+    let mut out = std::collections::HashMap::new();
+    for (name, own) in containers {
+        let attached = attach_list(section, own);
+        if attached.is_empty() {
+            continue;
+        }
+        let resolved = resolve_gate_hooks(hooks, &attached, env, settings_version);
+        if !resolved.is_empty() {
+            out.insert(name.to_string(), resolved);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

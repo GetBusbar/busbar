@@ -130,6 +130,16 @@ pub(crate) use crate::audit::vocab::{
 /// implementation behind it.
 pub(crate) type CallChain = crate::audit::Chain<McpCallRecord>;
 
+/// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
+/// `tools.<server>.hooks:`).
+///
+/// `refused`, and a token of its OWN rather than folding into `not_granted`: those two send an
+/// operator to different places. `not_granted` means the caller's key does not reach this tool and
+/// the remedy is a scope; this means the tool was reachable and a policy the operator attached said
+/// no, and the remedy is that policy. A single word for both would make an operator debug the
+/// grant matrix for a decision the grant matrix did not take.
+pub(crate) const REASON_HOOK_REJECTED: &str = "hook_rejected";
+
 /// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
 /// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
 /// site can supply a sequence number or a link of its own choosing.

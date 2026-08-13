@@ -124,6 +124,62 @@ The completion `outcome` vocabulary is `ok | failed | rejected_by_gate | rejecte
 projects identity on **gate decision payloads only**; tap and transform payloads omit identity
 (adding it later is an append-only change; key your parser on field presence).
 
+## The other two planes: MCP tool calls and A2A submissions (1.6.0)
+
+**A hook is a decision about one request, and it does not matter which protocol carried it.** The
+same `hooks:` definitions attach to a registered MCP server and to a registered A2A agent, by the
+same bare-name lists, with the same additive combine:
+
+```yaml
+tools:
+  hooks: [pii-screen]                      # RESERVED all-MCP attach: fires for EVERY server
+  filesystem:
+    url: https://mcp.internal/fs
+    pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+    hooks: [fs-policy]                     # this server only; ADDS to the section list
+
+agents:
+  hooks: [pii-screen]                      # RESERVED all-agent attach
+  planner:
+    url: https://planner.agent.internal/a2a
+    pin: { mechanism: unpinned }
+    hooks: [plan-policy]
+```
+
+**Where they fire.** On the DISPATCH path, never the catalogue: what a caller may SEE is decided by
+its key grants and nothing else, and a hook decides what a caller may DO. On MCP that is inside
+`tools/call`, after the tool has been resolved and re-validated and **after any `ask_caller` answers
+have been merged** — so the gate screens the arguments that would actually go upstream — and before
+the outbound credential is leased. On A2A it is after the submission has been admitted to an agent
+and before the meter, the egress gate and the task row. A rejection therefore costs no token
+exchange, no durable state and no hop.
+
+**What the hook receives** is the ordinary hook wire, built from the request's IR:
+
+```jsonc
+{"op": "decide",
+ "request": {"request_id": 7,
+             "pool": "filesystem",          // the CONTAINER: pool | MCP server | A2A agent
+             "ingress_protocol": "mcp",     // or "a2a"
+             "message_count": 1, "has_tools": true, "total_chars": 21, "stream": false,
+             // behind the `prompt: ro|rw` grant — the tool call's arguments (MCP) or the
+             // submission's params, including a message's `parts` (A2A):
+             "messages": [{"role": "user", "text": "{\"path\":\"/etc/hosts\"}"}],
+             "user": {"key_id": "k-1", "key_name": "reporting"}},   // behind `user: ro`
+ "candidates": [], "context": {}}
+```
+
+**`candidates` is empty on these planes, and that is a fact rather than a gap:** the request routes
+to the one registered upstream the caller's grant selected, so there is nothing to rank. Only
+**reject** applies. An `order` or `restrict` reply is ignored (logged at `debug`), and a gate that
+fails applies its own `on_error` exactly as on the pool plane — `on_error: reject` means a control
+an operator declared load-bearing cannot be skipped by being broken.
+
+A refusal is answered in the plane's own error vocabulary — MCP `-32000` with the hook's status and
+message, A2A a `-32004` ProtoJSON error body — and is recorded: the MCP per-call log carries the
+reason token `hook_rejected`, distinct from `not_granted`, because "your key does not reach this
+tool" and "a policy your operator attached said no" send an operator to different places.
+
 ## Access grants: what a hook is trusted to see
 
 By default a hook sees **shapes, not content**: sizes, counts, flags, live lane signals, never prompt text, never caller identity. Two per-hook grants, both default off, opt a trusted hook into more:
