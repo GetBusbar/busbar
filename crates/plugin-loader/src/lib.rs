@@ -1006,6 +1006,69 @@ impl Store for DynStore {
             || Ok(0),
         )
     }
+
+    // ── THE DURABLE MCP DEMOTION RECORD + THE SPENT-APPROVAL LEDGER ──────────────────────────
+    //
+    // FOUR MORE OVERRIDES, for the reason the ten above are overrides. A demotion that `DynStore`
+    // answered from the trait default is a demotion accepted, reported successful and discarded, so
+    // the restart it exists to survive would re-open the upstream anyway — and the write would have
+    // said `Ok(())` the whole time. Same for the ledger: a `redeem_ask_state` answered from the
+    // default says "first redemption" to every node of a fleet, which is the double-spend the
+    // durable ledger is here to stop, delivered with a green write.
+    //
+    // Each routes through `call_with_legacy_default` and nothing else is defaulted: a real backend
+    // error, a caught panic and a caller-protocol violation all propagate.
+
+    fn put_mcp_demotion(&self, row: &busbar_api::McpDemotionRow) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::PutMcpDemotion(row.clone()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn list_mcp_demotions(&self) -> StoreResult<Vec<busbar_api::McpDemotionRow>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListMcpDemotions,
+            |r| match r {
+                StoreResponse::McpDemotions(d) => Ok(d),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::ClearMcpDemotion(server.to_string()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
+        self.call_with_legacy_default(
+            StoreRequest::RedeemAskState {
+                nonce: nonce.to_string(),
+                expires_at,
+                now,
+            },
+            |r| match r {
+                StoreResponse::Redeemed(fresh) => Ok(fresh),
+                other => Err(unexpected(other)),
+            },
+            // "This backend does not keep a ledger", which is the trait's own default and leaves
+            // the engine's in-process ledger as the only guard - exactly where a deployment with no
+            // durable store already is.
+            || Ok(true),
+        )
+    }
 }
 
 impl std::fmt::Debug for DynStore {

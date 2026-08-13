@@ -503,6 +503,16 @@ impl<'a> LiveSightings<'a> {
         if matches!(sighting, Sighting::Never) {
             return LiveDigest::Unsighted;
         }
+        // A DEMOTION THIS PROCESS DID NOT WITNESS, replayed from the durable record at boot. Named
+        // separately from the `Quarantined` the state derivation produces below because the operator
+        // reading it has a different question — the drift itself is not in hand, and the sweep that
+        // re-derives it is due immediately.
+        if matches!(sighting, Sighting::Demoted(_)) {
+            return LiveDigest::Quarantined(
+                "this server was demoted before the last restart and the demotion has not been \
+                 worked",
+            );
+        }
         match approval.state(sighting) {
             TrustState::Approved => {}
             TrustState::Quarantined => {

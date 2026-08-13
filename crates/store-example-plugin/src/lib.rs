@@ -22,7 +22,7 @@
 //! No config (or unparseable config) still means `MemoryStore`, so the CI install-and-serve fixture
 //! and every existing over-the-ABI test are untouched.
 
-use busbar_api::McpCallRecord;
+use busbar_api::{McpCallRecord, McpDemotionRow};
 use busbar_api::{
     MeteringDelta, MeteringRow, Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageLedger,
     VirtualKey,
@@ -62,6 +62,13 @@ struct Durable {
     tasks: Vec<TaskRow>,
     task_events: Vec<TaskEventRow>,
     mcp_calls: Vec<McpCallRecord>,
+    /// Recorded upstream demotions, keyed by `server`. `#[serde(default)]` so a file written by an
+    /// earlier build of this fixture still opens.
+    #[serde(default)]
+    mcp_demotions: Vec<McpDemotionRow>,
+    /// The spent-approval ledger: nonce -> the instant past which the entry is meaningless.
+    #[serde(default)]
+    spent_ask_states: Vec<(String, u64)>,
 }
 
 /// A JSON-file-backed store. The A2A task and MCP call-log methods are REAL — they read and write
@@ -72,51 +79,79 @@ struct Durable {
 struct FileStore {
     path: PathBuf,
     inner: MemoryStore,
-    state: Mutex<Durable>,
+    /// Serialises this handle's own read-modify-write cycles. It holds no DATA, deliberately — see
+    /// [`FileStore::load`].
+    gate: Mutex<()>,
 }
 
 impl FileStore {
-    /// Open (and create if absent) the backing file, hydrating whatever a previous handle left.
+    /// Open (and create if absent) the backing file, VALIDATING whatever a previous handle left.
+    ///
+    /// The state read here is discarded: every operation re-reads. What this does is fail the LOAD
+    /// on an unreadable file, so a misconfigured `durable_path` is an error an operator sees at
+    /// startup rather than an empty store that looks exactly like a working one.
     fn open(path: PathBuf) -> Result<Self, String> {
-        let state = match std::fs::read(&path) {
-            Ok(bytes) if !bytes.is_empty() => serde_json::from_slice(&bytes).map_err(|e| {
-                format!(
-                    "durable_path '{}' is not readable state: {e}",
-                    path.display()
-                )
-            })?,
-            Ok(_) => Durable::default(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Durable::default(),
-            Err(e) => return Err(format!("durable_path '{}': {e}", path.display())),
-        };
+        Self::load_from(&path).map_err(|e| e.0)?;
         Ok(Self {
             path,
             inner: MemoryStore::new(),
-            state: Mutex::new(state),
+            gate: Mutex::new(()),
         })
     }
 
-    /// Run `f` against the in-memory view and persist the result. The write is the whole point, so a
-    /// failure to persist is an ERROR the caller sees — never a silent `Ok(())`, which is the exact
-    /// shape of the defect this fixture proves.
+    /// THE FILE IS THE STATE, and it is re-read on every operation rather than cached at open.
+    ///
+    /// That is not tidiness. A cached snapshot makes two live handles on one file behave like two
+    /// separate stores — the second one's writes are computed against whatever the file held when it
+    /// opened, and silently overwrite anything the first wrote since. A real backend is one database
+    /// that several nodes talk to, and the properties this fixture exists to prove are exactly the
+    /// ones that live in the difference: a fleet is TWO HANDLES OPEN AT ONCE on one store, and a
+    /// caching fixture would have reported the shared spent-approval ledger working while a second
+    /// node happily double-redeemed.
+    fn load(&self) -> StoreResult<Durable> {
+        Self::load_from(&self.path)
+    }
+
+    fn load_from(path: &PathBuf) -> StoreResult<Durable> {
+        match std::fs::read(path) {
+            Ok(bytes) if !bytes.is_empty() => serde_json::from_slice(&bytes).map_err(|e| {
+                StoreError(format!(
+                    "durable_path '{}' is not readable state: {e}",
+                    path.display()
+                ))
+            }),
+            Ok(_) => Ok(Durable::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Durable::default()),
+            Err(e) => Err(StoreError(format!(
+                "durable_path '{}': {e}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Read the file, apply `f`, and persist the result — one read-modify-write under one lock, so
+    /// a test-and-set really is a test-and-set. The write is the whole point, so a failure to
+    /// persist is an ERROR the caller sees, never a silent `Ok(())`, which is the exact shape of the
+    /// defect this fixture proves.
     fn mutate<T>(&self, f: impl FnOnce(&mut Durable) -> T) -> StoreResult<T> {
-        let mut guard = self
-            .state
+        let _guard = self
+            .gate
             .lock()
             .map_err(|_| StoreError("poisoned".into()))?;
-        let out = f(&mut guard);
-        let bytes = serde_json::to_vec(&*guard).map_err(|e| StoreError(e.to_string()))?;
+        let mut state = self.load()?;
+        let out = f(&mut state);
+        let bytes = serde_json::to_vec(&state).map_err(|e| StoreError(e.to_string()))?;
         std::fs::write(&self.path, bytes).map_err(|e| StoreError(e.to_string()))?;
         Ok(out)
     }
 
-    /// Read the in-memory view, which `open` hydrated from disk.
+    /// Read what is on disk NOW.
     fn read<T>(&self, f: impl FnOnce(&Durable) -> T) -> StoreResult<T> {
-        let guard = self
-            .state
+        let _guard = self
+            .gate
             .lock()
             .map_err(|_| StoreError("poisoned".into()))?;
-        Ok(f(&guard))
+        Ok(f(&self.load()?))
     }
 }
 
@@ -210,20 +245,25 @@ impl Store for FileStore {
     fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
         // Byte-identical on an existing `(principal, seq)` is the retry and is `Ok(())`; DIFFERENT
         // is a forked or tampered log and is an error, exactly as `append_audit` settles it.
-        let existing = self.read(|d| {
-            d.mcp_calls
+        // ONE read-modify-write, not a `read` then a `mutate`: the fork check and the append have to
+        // see the same state, and between two calls another handle on the same file can land a row.
+        self.mutate(|d| {
+            match d
+                .mcp_calls
                 .iter()
                 .find(|r| r.principal == record.principal && r.seq == record.seq)
-                .cloned()
-        })?;
-        match existing {
-            Some(prev) if &prev == record => Ok(()),
-            Some(_) => Err(StoreError(format!(
-                "mcp call log fork at ({}, {})",
-                record.principal, record.seq
-            ))),
-            None => self.mutate(|d| d.mcp_calls.push(record.clone())),
-        }
+            {
+                Some(prev) if prev == record => Ok(()),
+                Some(_) => Err(StoreError(format!(
+                    "mcp call log fork at ({}, {})",
+                    record.principal, record.seq
+                ))),
+                None => {
+                    d.mcp_calls.push(record.clone());
+                    Ok(())
+                }
+            }
+        })?
     }
     fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
         self.read(|d| {
@@ -250,6 +290,38 @@ impl Store for FileStore {
             let was = d.mcp_calls.len();
             d.mcp_calls.retain(|r| r.ts >= before);
             (was - d.mcp_calls.len()) as u64
+        })
+    }
+
+    // ── the durable ones: the MCP demotion record ────────────────────────────────────────────
+    fn put_mcp_demotion(&self, row: &McpDemotionRow) -> StoreResult<()> {
+        self.mutate(
+            |d| match d.mcp_demotions.iter_mut().find(|r| r.server == row.server) {
+                // UPSERT by `server`, as the trait requires.
+                Some(existing) => *existing = row.clone(),
+                None => d.mcp_demotions.push(row.clone()),
+            },
+        )
+    }
+    fn list_mcp_demotions(&self) -> StoreResult<Vec<McpDemotionRow>> {
+        self.read(|d| d.mcp_demotions.clone())
+    }
+    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()> {
+        self.mutate(|d| d.mcp_demotions.retain(|r| r.server != server))
+    }
+
+    // ── the durable one: the spent-approval ledger ───────────────────────────────────────────
+    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
+        // ONE critical section covering the expiry sweep, the lookup AND the insert. Splitting the
+        // read from the write is the double-redemption this ledger exists to refuse, so the fixture
+        // has to model it the way a real backend's single INSERT does.
+        self.mutate(|d| {
+            d.spent_ask_states.retain(|(_, expiry)| *expiry >= now);
+            if d.spent_ask_states.iter().any(|(n, _)| n == nonce) {
+                return false;
+            }
+            d.spent_ask_states.push((nonce.to_string(), expires_at));
+            true
         })
     }
 }

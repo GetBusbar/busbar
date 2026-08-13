@@ -106,6 +106,19 @@ pub(crate) enum Sighting<A: PinnedArtifact> {
     Failed(String),
     /// Contacted, and this is what it offered.
     Seen(Observation<A>),
+    /// CONTACTED BEFORE THIS PROCESS EXISTED, and what was seen then disagreed with the approval.
+    ///
+    /// The replay of a durable demotion record, carrying the operator-visible word for why. It is a
+    /// SIGHTING rather than a stored trust state on purpose: everything about this lifecycle derives
+    /// state from an approval and an observation, and a stored `Quarantined` would be the one state
+    /// a later approval could not clear. This says only what was last seen; the derivation below is
+    /// unchanged.
+    ///
+    /// It carries no `Observation` because the record does not keep one — a demotion outlives a
+    /// process, a whole tool list should not, and the drift an operator has to work is re-derived by
+    /// the first sweep after the restart, which is due immediately. So [`Sighting::observation`]
+    /// answers `None` here, exactly as it does for `Never` and `Failed`.
+    Demoted(String),
 }
 
 impl<A: PinnedArtifact> Sighting<A> {
@@ -280,6 +293,14 @@ impl<A: PinnedArtifact> Approval<A> {
         }
         if matches!(sighting, Sighting::Failed(_)) {
             return TrustState::Error;
+        }
+        // A RECORDED DEMOTION, and it is checked HERE — above the pin check and above the
+        // observation match — because the arm it has to outrank is the `None => Approved` one at the
+        // bottom. That arm is what makes an approved-and-not-re-observed upstream serve, which is
+        // right for one nobody has looked at and is exactly wrong for one somebody looked at and
+        // demoted. Reaching it with a demotion on record is the restart re-opening the quarantine.
+        if matches!(sighting, Sighting::Demoted(_)) {
+            return TrustState::Quarantined;
         }
         if self.pin.is_none() {
             return TrustState::Pending;

@@ -858,6 +858,30 @@ pub struct McpCallRecord {
     pub hash: String,
 }
 
+/// ONE RECORDED DEMOTION of an upstream MCP server, as it crosses the store seam.
+///
+/// An engine demotes a registered upstream when the tool list it is currently serving disagrees with
+/// what the operator approved. That decision is derived in memory from a live observation, so a
+/// process that has taken no observation has nothing to derive it from — and a server nobody has
+/// observed serves against the digest the operator wrote down, which is the declarative-approval
+/// behaviour every deployment without a live refresh depends on. Those two facts together mean a
+/// restart would hand a demoted upstream its approval back until the next unattended sweep looks
+/// again. This row is the difference: it is written when a server is demoted, cleared when a later
+/// observation agrees with the approval again, and read back at boot so the demotion is in force
+/// before the first request is served.
+///
+/// Keyed by `server` — one row per registered upstream, upserted. Carries no secret: `server` is the
+/// operator's local registration id and `reason` is an engine-chosen word for an operator to read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpDemotionRow {
+    /// The registered upstream's local id — the row's primary key.
+    pub server: String,
+    /// The operator-facing word for why it was demoted. Never free-form caller text.
+    pub reason: String,
+    /// Unix seconds the demotion was recorded.
+    pub recorded_at: u64,
+}
+
 /// The result type every `Store` method returns.
 pub type StoreResult<T> = Result<T, StoreError>;
 
@@ -1323,6 +1347,72 @@ pub trait Store: Send + Sync + 'static {
     /// purge while doing nothing would be worse than one that reports nothing purged.
     fn purge_mcp_calls_before(&self, _before: u64) -> StoreResult<u64> {
         Ok(0)
+    }
+
+    // ── THE DURABLE MCP DEMOTION RECORD ──────────────────────────────────────────────────────
+    //
+    // See [`McpDemotionRow`] for what the row is for. The three methods below are the whole of it:
+    // record one, read them all back at boot, drop one when the upstream is serving what was
+    // approved again.
+
+    /// UPSERT the demotion record for `row.server`. A second write for the same server replaces the
+    /// row rather than appending a rival one.
+    ///
+    /// DEFAULTED to a no-op for the same backward-compatibility reason [`Store::put_task`] is: a
+    /// store plugin that predates this method keeps working and simply provides no durable
+    /// demotions, which is exactly the behaviour a deployment had before the record existed. As
+    /// there, the return value is worthless as evidence of durability — the engine finds out what
+    /// its backend kept by READING BACK through [`Store::list_mcp_demotions`].
+    fn put_mcp_demotion(&self, _row: &McpDemotionRow) -> StoreResult<()> {
+        Ok(())
+    }
+
+    /// EVERY recorded demotion — the boot read that puts a demotion back in force before the first
+    /// request is served. DEFAULTED to empty: a store that keeps no demotions has none to report,
+    /// and an empty answer means "no upstream is recorded as demoted", never "we could not tell".
+    ///
+    /// An empty list is therefore the pre-existing declarative behaviour and must stay so: a server
+    /// with no row here is a server nobody has demoted, which is a different fact from a server that
+    /// drifted, and conflating them would demote every declaratively-approved deployment at boot.
+    fn list_mcp_demotions(&self) -> StoreResult<Vec<McpDemotionRow>> {
+        Ok(Vec::new())
+    }
+
+    /// DROP the demotion record for `server` — what a later observation that agrees with the
+    /// operator's approval does. Removing a row that is not there is a no-op, not an error: the
+    /// engine clears on every agreeing observation rather than tracking whether it had demoted.
+    /// DEFAULTED to a no-op, matching [`Store::put_mcp_demotion`].
+    fn clear_mcp_demotion(&self, _server: &str) -> StoreResult<()> {
+        Ok(())
+    }
+
+    // ── THE DURABLE SPENT-APPROVAL LEDGER ────────────────────────────────────────────────────
+    //
+    // A sealed, single-use approval is what makes a confirm-once tool execute once. The seal itself
+    // cannot carry that property: a caller presenting the same approval twice presents the same
+    // valid bytes twice, so the only thing that can tell the second presentation from the first is a
+    // record that the first happened. Held in process memory, that record is lost by a restart and
+    // is not shared by a second node — and two nodes of one deployment share the signing key, so
+    // they share the seal. Held here, it is one ledger for the whole deployment.
+
+    /// REDEEM the approval identified by `nonce`, which is valid until `expires_at` (Unix seconds).
+    /// `true` means THIS call is the first redemption; `false` means it was already redeemed.
+    ///
+    /// TEST-AND-SET, and it has to be one operation rather than a read followed by a write. Two
+    /// concurrent redemptions of one approval — against one node or against two — is the obvious way
+    /// to attack a check that reads and then writes, and it is precisely the shape the gate exists
+    /// to refuse. A backend implements this as an insert that reports whether it inserted.
+    ///
+    /// `now` is passed so a backend can drop lapsed rows as part of the same call: an entry is
+    /// meaningless once the approval it records can no longer be opened, so the ledger's size is
+    /// bounded by one approval-validity window rather than growing forever.
+    ///
+    /// DEFAULTED to `Ok(true)` — "this store keeps no ledger, so it has no opinion". That is the
+    /// accept-and-keep-nothing default every other durable method here takes, and it leaves a
+    /// deployment with no such backend exactly where it was: single-use is still enforced, by the
+    /// engine's own in-process ledger, per node and for the life of the process.
+    fn redeem_ask_state(&self, _nonce: &str, _expires_at: u64, _now: u64) -> StoreResult<bool> {
+        Ok(true)
     }
 }
 

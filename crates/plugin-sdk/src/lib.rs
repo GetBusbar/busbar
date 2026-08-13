@@ -168,6 +168,20 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         Q::ListMcpCalls(principal) => R::McpCalls(store.list_mcp_calls(&principal)?),
         Q::ListMcpCallPrincipals => R::McpCallPrincipals(store.list_mcp_call_principals()?),
         Q::PurgeMcpCallsBefore(before) => R::Purged(store.purge_mcp_calls_before(before)?),
+        Q::PutMcpDemotion(row) => {
+            store.put_mcp_demotion(&row)?;
+            R::Unit
+        }
+        Q::ListMcpDemotions => R::McpDemotions(store.list_mcp_demotions()?),
+        Q::ClearMcpDemotion(server) => {
+            store.clear_mcp_demotion(&server)?;
+            R::Unit
+        }
+        Q::RedeemAskState {
+            nonce,
+            expires_at,
+            now,
+        } => R::Redeemed(store.redeem_ask_state(&nonce, expires_at, now)?),
     })
 }
 

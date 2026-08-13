@@ -43,8 +43,8 @@
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
-    TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, MeteringDelta,
+    MeteringRow, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -132,6 +132,11 @@ pub mod kind {
 /// exactly as it did. See the block comment on those variants in [`StoreRequest`] for the mechanism
 /// (undecodable variant -> `STATUS_UNSUPPORTED` -> the loader's legacy default, which for all ten is
 /// the trait's own accept-and-keep-nothing default).
+///
+/// v2 STAYS v2 for the durable MCP demotion record and the spent-approval ledger (1.6.0): the four
+/// `PutMcpDemotion`/`ListMcpDemotions`/`ClearMcpDemotion`/`RedeemAskState` request variants and their
+/// two response variants are ADDITIVE on the same mechanism, and each one's default is the behaviour
+/// a deployment already had.
 pub const ABI_VERSION: u32 = 2;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
@@ -377,6 +382,35 @@ pub enum StoreRequest {
     ListMcpCallPrincipals,
     /// `purge_mcp_calls_before` - retention: drop call records with `ts < before`.
     PurgeMcpCallsBefore(u64),
+
+    // ── THE DURABLE MCP DEMOTION RECORD + THE SPENT-APPROVAL LEDGER ──────────────────────────
+    //
+    // ADDITIVE, on exactly the mechanism the ten variants above ride: an SDK that predates them
+    // cannot DECODE one, which is `STATUS_UNSUPPORTED`, which is the loader's `call_with_legacy
+    // _default`, which supplies the trait's own default. All four defaults are the behaviour a
+    // deployment had before these existed - no durable demotion, and a spent-approval ledger that
+    // is the engine's in-process one - so an already-signed v2 artifact keeps loading and behaving
+    // exactly as it did.
+    //
+    // AND THEY MUST BE HERE, not only on the trait. `DynStore` is what the engine holds for every
+    // plugin-loaded backend; a trait method with no matching variant here is a method `DynStore`
+    // answers from the DEFAULT, which for these means a demotion that is written, reported
+    // successful and discarded - the same silent-no-op that dropped every task write while each
+    // backend's own unit tests passed.
+    /// `put_mcp_demotion` - UPSERT the demotion record for one upstream, keyed by `server`.
+    PutMcpDemotion(McpDemotionRow),
+    /// `list_mcp_demotions` - every recorded demotion (the boot read).
+    ListMcpDemotions,
+    /// `clear_mcp_demotion` - drop one upstream's demotion record; absent is a no-op.
+    ClearMcpDemotion(String),
+    /// `redeem_ask_state` - TEST-AND-SET one sealed approval by nonce. See
+    /// [`busbar_api::Store::redeem_ask_state`]: the answer is whether THIS call was the first
+    /// redemption, so it must be one round trip and not a read followed by a write.
+    RedeemAskState {
+        nonce: String,
+        expires_at: u64,
+        now: u64,
+    },
 }
 
 /// The success payload for a `call`, matched to the request variant. Store-level errors do NOT ride
@@ -422,6 +456,12 @@ pub enum StoreResponse {
     /// reverse) with the loader none the wiser, and `unexpected()` is the guard that catches a
     /// plugin returning the wrong shape for the request it was given.
     McpCallPrincipals(Vec<String>),
+    /// `list_mcp_demotions` - every recorded upstream demotion. ADDITIVE.
+    McpDemotions(Vec<McpDemotionRow>),
+    /// `redeem_ask_state` - whether THIS redemption was the first. ADDITIVE, and its own variant
+    /// rather than a shared boolean for the reason [`StoreResponse::McpCallPrincipals`] is its own:
+    /// `unexpected()` can only catch a plugin answering the wrong shape if the shapes differ.
+    Redeemed(bool),
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────

@@ -746,6 +746,7 @@ pub(crate) struct TestApp {
     /// no upstream has ever been contacted, which is what every pre-existing test expects and what
     /// makes the dispatch gate fall back to the operator's configured hash.
     mcp_sightings: Option<std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>>,
+    mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
@@ -786,6 +787,7 @@ impl TestApp {
         Self {
             tool_defs: Default::default(),
             mcp_sightings: None,
+            mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
@@ -1059,6 +1061,24 @@ impl TestApp {
         self
     }
 
+    /// Give the built App the DURABLE HOME the MCP trust state writes through to, exactly as boot
+    /// attaches the configured governance store: the demotion record's sink, the shared
+    /// spent-approval ledger, and the boot replay of any demotion the store already holds.
+    ///
+    /// It takes a `dyn Store` rather than a whole governance runtime because these two properties
+    /// need one thing from the store seam and nothing from governance, and because the only honest
+    /// way to test them is against a store that really persists — which for this tree means the real
+    /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
+    /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
+    /// gets the process-local behaviour both properties had before.
+    pub(crate) fn mcp_durable_store(
+        mut self,
+        store: std::sync::Arc<dyn busbar_api::Store>,
+    ) -> Self {
+        self.mcp_durable_store = Some(store);
+        self
+    }
+
     /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
     /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
     /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
@@ -1180,6 +1200,10 @@ impl TestApp {
         std::sync::Arc<crate::state::App>,
         std::sync::Arc<crate::store::HealthState>,
     ) {
+        // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
+        // not a convenience either: the boot replay reads the operator's live registrations off the
+        // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
+        let mcp_durable_store = self.mcp_durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
         let mut lanes = Vec::with_capacity(self.lanes.len());
         let mut lane_data = Vec::with_capacity(self.lanes.len());
@@ -1349,6 +1373,7 @@ impl TestApp {
             mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
             mcp_spent_approvals: Default::default(),
+            mcp_demotions: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
@@ -1407,6 +1432,14 @@ impl TestApp {
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
+        // Mirror main's durable-MCP-trust boot block, in the same order: attach the sinks, then
+        // replay the recorded demotions into the sightings cache BEFORE the app is handed to a
+        // caller, which is where boot does it relative to binding a listener.
+        if let Some(durable) = mcp_durable_store {
+            app.mcp_spent_approvals.set_sink(durable.clone());
+            app.mcp_demotions.set_sink(durable);
+            crate::mcp::demotion::hydrate(&app);
+        }
         (app, store)
     }
 }
@@ -1653,7 +1686,26 @@ fn weighted(members: &[(usize, u32)]) -> Vec<crate::state::WeightedLane> {
         .collect()
 }
 
+/// Create (and return) a PRIVATE scratch directory for one test, under the process temp dir.
+///
+/// It lives in THIS file rather than beside the fixture that wants it because directory creation is
+/// one of the hazards `structure-lint`'s choke-point registry keeps to a single owner: a
+/// persist-then-swap is atomic only if every writer does the identical fsync/rename/cleanup dance,
+/// so the greppable primitives get one home each — `crate::durable` for production, this file for
+/// test scaffolding, which already creates the hook-plugin fixture trees the same way. A caller gets
+/// a path back and never reaches for `create_dir_all` itself.
+///
+/// `name` must already be unique per test AND per thread; this does not make it so.
+pub(crate) fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(&dir).expect("create the test scratch directory");
+    dir
+}
+
 pub(crate) mod warn_capture;
+
+/// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
+pub(crate) mod plugin_store;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

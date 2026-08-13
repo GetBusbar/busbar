@@ -123,6 +123,9 @@ pub(crate) mod catalogue;
 /// the same governance boundary this module's front door opens — same revision, same trust
 /// lifecycle, same scope kinds, opposite initiator.
 pub(crate) mod client;
+/// THE DURABLE DEMOTION RECORD: what a sweep saw, written through to the configured store and
+/// replayed into the sightings cache at boot, so a quarantine outlives the process that took it.
+pub(crate) mod demotion;
 
 /// The per-request progress channel: what the CALLER asked to be told, and what the upstream said.
 ///

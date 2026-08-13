@@ -24,6 +24,7 @@ fn minimal_app() -> Arc<App> {
         mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
         mcp_sightings: Default::default(),
         mcp_spent_approvals: Default::default(),
+        mcp_demotions: Default::default(),
         mcp_pool: Default::default(),
         mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
