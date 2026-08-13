@@ -12,7 +12,7 @@
 //! answering with one good address and one bad one in a single reply.
 
 use crate::mcp::client::ssrf::{
-    check_addresses, precheck, refuse_redirect, resolve_and_pin, SsrfPolicy, SsrfRefusal,
+    check_addresses, pin_upstream, precheck, refuse_redirect, SsrfPolicy, SsrfRefusal,
 };
 use std::net::SocketAddr;
 
@@ -188,10 +188,10 @@ fn a_redirect_is_refused_and_names_its_target() {
 /// address the check passed and the hostname is preserved for SNI.
 #[tokio::test]
 async fn a_pinned_target_carries_the_checked_address_and_the_original_host() {
-    let t = resolve_and_pin("https://93.184.216.34:8443/mcp", public())
+    let t = pin_upstream("https://93.184.216.34:8443/mcp", public())
         .await
         .expect("a public literal resolves and pins");
-    assert_eq!(t.addr(), sa("93.184.216.34:8443"));
+    assert_eq!(t.socket_addr(), sa("93.184.216.34:8443"));
     assert_eq!(t.host(), "93.184.216.34");
     assert_eq!(t.port(), 8443);
     assert!(t.is_https());
@@ -200,13 +200,13 @@ async fn a_pinned_target_carries_the_checked_address_and_the_original_host() {
 #[tokio::test]
 async fn a_loopback_literal_is_refused_by_default_and_pinned_under_allow_private() {
     assert!(matches!(
-        resolve_and_pin("https://127.0.0.1:9000/mcp", public()).await,
+        pin_upstream("https://127.0.0.1:9000/mcp", public()).await,
         Err(SsrfRefusal::InternalAddress { .. })
     ));
-    let t = resolve_and_pin("http://127.0.0.1:9000/mcp", private_ok())
+    let t = pin_upstream("http://127.0.0.1:9000/mcp", private_ok())
         .await
         .expect("an opted-in private target pins");
-    assert_eq!(t.addr(), sa("127.0.0.1:9000"));
+    assert_eq!(t.socket_addr(), sa("127.0.0.1:9000"));
     assert!(!t.is_https());
 }
 

@@ -32,7 +32,8 @@
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
 // AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::rpc` makes to the registered backend
-// agent: it guards and pins the target through the SAME `fetch::resolve_and_pin` the card fetch
+// agent: it guards and pins the target through the SAME `fetch::guard_hop` — and therefore the
+// same `crate::net_guard` resolve-then-pin — the card fetch
 // uses, RE-ASKS the trust question against the live registry immediately before the socket so a
 // mid-flight demotion is not something an in-flight request escapes, presents BUSBAR'S OWN leased
 // credential or none, and turns every way the hop can fail into a busbar-attributed error rather

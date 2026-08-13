@@ -365,7 +365,8 @@ fn judge_absolute(url: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
 ///
 /// Order is load-bearing. Metadata first and unconditionally, so an `allow_private` server cannot
 /// reach the one endpoint whose whole value to an attacker is that it hands out credentials.
-/// Obfuscated encodings next and also unconditionally, matching `super::ssrf::precheck`: a value
+/// Obfuscated encodings next and also unconditionally, matching `crate::net_guard::judge_host_name`
+/// as `super::ssrf::precheck` does: a value
 /// spelled so the check cannot read it is refused rather than guessed at. Internal addressing last,
 /// because that is the one an operator can legitimately opt into.
 fn judge_host(raw: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {

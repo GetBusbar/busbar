@@ -48,9 +48,18 @@
 //!   absent from the store is fetched, validated (`client_id` equal to the URL, `redirect_uris`
 //!   matched against the request) and materialised as an ephemeral [`oauth_as::client::Client`]
 //!   under the SAME [`policy::default_grant_scopes`] ceiling registration uses. That fetch is an
-//!   SSRF surface by construction — the URL is attacker-supplied — and it must go through
-//!   `a2a::fetch::fetch_card`'s resolve-then-pin guard rather than a second copy of it; a drifted
-//!   copy of exactly that guard was a live cloud-metadata bypass on the MCP plane.
+//!   SSRF surface by construction — the URL is attacker-supplied — and it goes through
+//!   [`crate::net_guard`]'s resolve-then-pin guard rather than a second copy of it; a drifted copy
+//!   of exactly that guard was a live cloud-metadata bypass on the MCP plane.
+//!
+//!   **It reaches for CORE, not for a plane.** An earlier draft of this note pointed at
+//!   `a2a::fetch::fetch_card`, which would have made an authorization server's security control a
+//!   dependency on the A2A plane's internals — and would have meant that deleting that plane broke
+//!   the AS. The guard now lives in `net_guard` with the knobs as parameters, so this path supplies
+//!   its OWN bounds — a client metadata document is a few kilobytes and the fetch is on an
+//!   interactive authorization request, so 5 KB and 10 s, not the card fetch's 512 KB — and gets
+//!   the same resolve-then-pin, the same unconditional cloud-metadata refusal and the same
+//!   re-guarded redirect chain as every other guarded fetch in the tree.
 
 pub(crate) mod config;
 pub(crate) mod consent;

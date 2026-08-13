@@ -33,7 +33,8 @@
 //!
 //! ## 2. THE NAME IS RESOLVED ONCE, BY THE GUARD, AND THE JUDGED ADDRESS IS WHAT CONNECTS
 //!
-//! This module does not open its own client. It reuses [`super::fetch::resolve_and_pin`] — the same
+//! This module does not open its own client. It reuses [`super::fetch::guard_hop`], and through it
+//! [`crate::net_guard::resolve_and_pin`] — the same
 //! guard the card fetch goes through — and hands the surviving address to the transport, which pins
 //! it. A relay that handed the URL to `reqwest` and let the client resolve the host would reinstate
 //! the second lookup, which is the whole of DNS rebinding, and would pass every test that does not
@@ -91,6 +92,7 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
+use crate::net_guard::PinnedTarget;
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -460,12 +462,14 @@ fn prepare<'a>(
     seam: &dyn RelaySeam,
     streaming: bool,
     now_ms: u64,
-) -> Result<(super::fetch::PinnedTarget, OutboundRelayRequest), RelayRefusal> {
-    // ── THE GUARD. One resolution, every answered address judged, one pinned address out. ──
+) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
+    // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
+    //    `crate::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
+    //    and a card fetch cannot be guarded to two different standards.
     // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
     // knows nothing about any registration; the call carries the one the operator's `allow_private:`
     // narrowed, which is what every other reader of that line already uses.
-    let target = super::fetch::resolve_and_pin(call.backend_url, seam.resolver(), call.policy)
+    let (url, pin) = super::fetch::guard_hop(call.backend_url, seam.resolver(), call.policy)
         .map_err(RelayRefusal::Guard)?;
 
     // ── THE LIVE TRUST DECISION, after the guard and before the socket. See the module note. ──
@@ -474,7 +478,7 @@ fn prepare<'a>(
         .map_err(RelayRefusal::Demoted)?;
 
     let request = build_request(
-        &target.url,
+        &url,
         call.agent_id,
         call.lease,
         call.body,
@@ -483,7 +487,7 @@ fn prepare<'a>(
         now_ms,
     )
     .map_err(RelayRefusal::Lease)?;
-    Ok((target, request))
+    Ok((url, pin, request))
 }
 
 /// RELAY ONE TASK SUBMISSION to the backend agent, and bring the answer back.
@@ -495,15 +499,15 @@ pub(crate) fn relay(
     seam: &dyn RelaySeam,
     now_ms: u64,
 ) -> Result<RelayReply, RelayRefusal> {
-    let (target, request) = prepare(call, seam, false, now_ms)?;
+    let (url, pin, request) = prepare(call, seam, false, now_ms)?;
 
     // The PINNED ADDRESS goes to the transport beside the URL. The transport connects to the
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
     let resp = seam
         .transport()
-        .post(&target.url, target.addr, &request.headers, &request.body)
+        .post(&url, pin.addr(), &request.headers, &request.body)
         .map_err(|err| RelayRefusal::Transport {
-            url: target.url.to_string(),
+            url: url.to_string(),
             err,
         })?;
 
@@ -511,17 +515,17 @@ pub(crate) fn relay(
         // Including a 3xx. A redirect on a task submission is a fresh, fully untrusted URL that the
         // guard has never seen, and following one would perform the next hop with no guard at all.
         return Err(RelayRefusal::Status {
-            url: target.url.to_string(),
+            url: url.to_string(),
             status: resp.status,
         });
     }
     if resp.body.len() > call.policy.max_body_bytes {
         return Err(RelayRefusal::BodyTooLarge {
-            url: target.url.to_string(),
+            url: url.to_string(),
             bytes: resp.body.len(),
         });
     }
-    read_reply(&resp.body, target.url.as_str(), call.rpc_id)
+    read_reply(&resp.body, url.as_str(), call.rpc_id)
 }
 
 /// Read one JSON-RPC answer off a completed body, AS THE ANSWER TO `rpc_id`.
@@ -978,7 +982,7 @@ pub(crate) fn relay_stream(
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
-    let (target, request) = prepare(call, seam, true, now_ms)?;
+    let (url, pin, request) = prepare(call, seam, true, now_ms)?;
     let cap = call.policy.max_body_bytes;
 
     let mut reader = SseReader::default();
@@ -1015,27 +1019,27 @@ pub(crate) fn relay_stream(
         };
         seam.transport()
             .post_stream(
-                &target.url,
-                target.addr,
+                &url,
+                pin.addr(),
                 &request.headers,
                 &request.body,
                 &mut on_chunk,
             )
             .map_err(|err| RelayRefusal::Transport {
-                url: target.url.to_string(),
+                url: url.to_string(),
                 err,
             })?
     };
 
     if !(200..300).contains(&head.status) {
         return Err(RelayRefusal::Status {
-            url: target.url.to_string(),
+            url: url.to_string(),
             status: head.status,
         });
     }
     if overflow {
         return Err(RelayRefusal::BodyTooLarge {
-            url: target.url.to_string(),
+            url: url.to_string(),
             bytes: cap.saturating_add(1),
         });
     }
@@ -1044,7 +1048,7 @@ pub(crate) fn relay_stream(
     // the other order would report the hop as successful.
     if let Some(reason) = uncorrelated {
         return Err(RelayRefusal::Uncorrelated {
-            url: target.url.to_string(),
+            url: url.to_string(),
             reason,
         });
     }
@@ -1053,8 +1057,7 @@ pub(crate) fn relay_stream(
     }
     // NOT A STREAM. The backend answered a single document; hand back the unary shape rather than
     // re-framing a non-stream as one.
-    read_reply(&head.body, target.url.as_str(), call.rpc_id)
-        .map(|r| RelayStream::Unary(Box::new(r)))
+    read_reply(&head.body, url.as_str(), call.rpc_id).map(|r| RelayStream::Unary(Box::new(r)))
 }
 
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop

@@ -277,7 +277,7 @@ fn a_mixed_answer_is_refused_whole_rather_than_filtered_to_the_public_address() 
         vec![ip([169, 254, 169, 254]), ip(PUBLIC)],
     ] {
         let r = ScriptedResolver::new().always("a2a.vendor", answer.clone());
-        let err = resolve_and_pin(
+        let err = guard_hop(
             "https://a2a.vendor/.well-known/agent-card.json",
             &r,
             &FetchPolicy::default(),
@@ -566,7 +566,7 @@ fn every_internal_literal_and_metadata_target_is_refused_by_name() {
     }
 
     for (url, what) in cases {
-        let err = resolve_and_pin(url, &NeverAsked, &FetchPolicy::default())
+        let err = guard_hop(url, &NeverAsked, &FetchPolicy::default())
             .expect_err(&format!("{url} ({what}) must be refused"));
         assert!(
             matches!(
@@ -584,7 +584,7 @@ fn every_internal_literal_and_metadata_target_is_refused_by_name() {
 fn a_plaintext_endpoint_is_refused_unless_the_operator_opted_in() {
     let r = ScriptedResolver::new().always("a2a.vendor", vec![ip(PUBLIC)]);
 
-    let err = resolve_and_pin("http://a2a.vendor/card", &r, &FetchPolicy::default())
+    let err = guard_hop("http://a2a.vendor/card", &r, &FetchPolicy::default())
         .expect_err("http:// is off by default");
     assert_eq!(
         err,
@@ -599,7 +599,7 @@ fn a_plaintext_endpoint_is_refused_unless_the_operator_opted_in() {
         ..FetchPolicy::default()
     };
     assert!(
-        resolve_and_pin("http://a2a.vendor/card", &r, &opted_in).is_ok(),
+        guard_hop("http://a2a.vendor/card", &r, &opted_in).is_ok(),
         "the opt-in must actually opt in"
     );
 }
@@ -627,7 +627,7 @@ fn a_non_http_scheme_is_refused_however_the_plaintext_knob_is_set() {
             "data:application/json,{}",
             "gopher://x/",
         ] {
-            let err = resolve_and_pin(url, &NeverAsked, &policy)
+            let err = guard_hop(url, &NeverAsked, &policy)
                 .expect_err(&format!("`{url}` must be refused"));
             assert!(
                 matches!(
@@ -643,7 +643,7 @@ fn a_non_http_scheme_is_refused_however_the_plaintext_knob_is_set() {
 #[test]
 fn a_resolution_failure_is_a_failure_and_not_an_absence_of_internal_addresses() {
     let r = ScriptedResolver::new().failing("a2a.vendor", "NXDOMAIN");
-    let err = resolve_and_pin("https://a2a.vendor/card", &r, &FetchPolicy::default())
+    let err = guard_hop("https://a2a.vendor/card", &r, &FetchPolicy::default())
         .expect_err("a resolution failure must refuse");
     assert_eq!(
         err,
@@ -657,7 +657,7 @@ fn a_resolution_failure_is_a_failure_and_not_an_absence_of_internal_addresses() 
 #[test]
 fn an_empty_resolver_answer_is_refused_rather_than_read_as_nothing_internal() {
     let r = ScriptedResolver::new().always("a2a.vendor", vec![]);
-    let err = resolve_and_pin("https://a2a.vendor/card", &r, &FetchPolicy::default())
+    let err = guard_hop("https://a2a.vendor/card", &r, &FetchPolicy::default())
         .expect_err("an empty answer must refuse");
     assert_eq!(err, FetchRefusal::NoAddresses("a2a.vendor".to_string()));
 }
@@ -749,13 +749,13 @@ fn allow_private_admits_the_loopback_endpoint_it_is_for() {
         "https://[::1]/agent",
     ] {
         assert!(
-            resolve_and_pin(url, &NeverAsked, &policy).is_ok(),
+            guard_hop(url, &NeverAsked, &policy).is_ok(),
             "`allow_private: true` must actually admit `{url}`, or the knob is decoration"
         );
     }
     // AND THE NAME FORM, which needs a resolver and must be judged on what it answered.
     let r = ScriptedResolver::new().always("agent.local", vec![ip([127, 0, 0, 1])]);
-    assert!(resolve_and_pin("http://agent.local/agent", &r, &policy).is_ok());
+    assert!(guard_hop("http://agent.local/agent", &r, &policy).is_ok());
 }
 
 /// THE HALF THAT MAKES THE KNOB SAFE TO HAVE: a cloud-metadata target is refused WITH
@@ -802,7 +802,7 @@ fn allow_private_never_opens_a_cloud_metadata_target() {
         ("https://2852039166/", "decimal IMDS"),
     ];
     for (url, what) in structural {
-        let err = resolve_and_pin(url, &NeverAsked, &policy).expect_err(&format!(
+        let err = guard_hop(url, &NeverAsked, &policy).expect_err(&format!(
             "{url} ({what}) must be refused WITH allow_private set"
         ));
         assert!(
@@ -817,7 +817,7 @@ fn allow_private_never_opens_a_cloud_metadata_target() {
     // AND ON THE ANSWER. A name an operator believes is their internal agent, whose nameserver
     // answers with IMDS, is the rebinding shape of the same attack.
     let r = ScriptedResolver::new().always("agent.internal", vec![ip([169, 254, 169, 254])]);
-    let err = resolve_and_pin("https://agent.internal/agent", &r, &policy)
+    let err = guard_hop("https://agent.internal/agent", &r, &policy)
         .expect_err("a resolved metadata address is refused with allow_private set");
     assert!(
         matches!(err, FetchRefusal::InternalAddress { .. }),
@@ -826,7 +826,8 @@ fn allow_private_never_opens_a_cloud_metadata_target() {
 }
 
 /// `allow_private` ADMITS PLAINTEXT, because that is what the word means on the `tools:` plane
-/// (`mcp::client::ssrf::precheck` refuses `http://` with exactly `!https && !allow_private`), and a
+/// (both planes ask `crate::net_guard::judge_scheme`, which refuses `http://` with exactly
+/// `!https && !plaintext_admissible()`), and a
 /// loopback agent that could only be reached over TLS is a knob that does not do its job.
 #[test]
 fn allow_private_carries_the_plaintext_permission_its_mcp_sibling_carries() {
@@ -836,12 +837,12 @@ fn allow_private_carries_the_plaintext_permission_its_mcp_sibling_carries() {
         ..FetchPolicy::default()
     };
     assert!(
-        resolve_and_pin("http://a2a.vendor/card", &r, &policy).is_ok(),
+        guard_hop("http://a2a.vendor/card", &r, &policy).is_ok(),
         "one operator decision, one flag — the same one the sibling plane spells"
     );
     // AND THE FLOOR IS UNMOVED: with neither opt-in, plaintext is still refused.
     assert!(matches!(
-        resolve_and_pin("http://a2a.vendor/card", &r, &FetchPolicy::default()),
+        guard_hop("http://a2a.vendor/card", &r, &FetchPolicy::default()),
         Err(FetchRefusal::NotHttps { .. })
     ));
 }
@@ -862,7 +863,7 @@ fn the_default_policy_still_refuses_the_loopback_family_by_name() {
         "https://localhost./",
         "https://api.localhost/",
     ] {
-        let err = resolve_and_pin(url, &NeverAsked, &FetchPolicy::default())
+        let err = guard_hop(url, &NeverAsked, &FetchPolicy::default())
             .expect_err(&format!("{url} must be refused by default"));
         assert!(
             matches!(err, FetchRefusal::InternalHostName { .. }),

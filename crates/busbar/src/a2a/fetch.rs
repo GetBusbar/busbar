@@ -1,13 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AGENT CARD FETCH, and the SSRF guard that is the only reason it is allowed to exist.
+//! THE AGENT CARD FETCH: the card-shaped part of a guarded fetch, over the guard in
+//! [`crate::net_guard`].
 //!
 //! Everything else on this plane decides. This is the one module that REACHES OUT, at a URL an
 //! operator wrote and following redirects a stranger controls, and it therefore carries the whole
 //! server-side-request-forgery surface of the A2A plane on its own.
 //!
-//! ## RESOLVE THEN PIN, and why a name check is not a guard
+//! ## THE GUARD IS NOT HERE, and that is the point
+//!
+//! Resolve-then-pin, the address judgement, the metadata arm that sits ahead of `allow_private`, the
+//! hop bound and the body cap all live in [`crate::net_guard`]. They were written twice — once here
+//! and once for the MCP dispatch path — and the doc comments in each copy had already started
+//! citing the other's function names as the reason an ordering was correct. A security control that
+//! has to cite its twin to explain itself has two implementations and one of them will be the stale
+//! one; on the MCP side that had already happened, and the stale copy was a live cloud-metadata
+//! bypass.
+//!
+//! What is here is the part that is genuinely about CARDS: the two well-known discovery paths, the
+//! redirect CHAIN (this fetch follows redirects; the dispatch path follows none), the JSON-object
+//! shape a card must have, and this plane's refusal WORDING — an operator reading a log needs
+//! "agent card URL" and a remedy that names `allow_private:` on a REGISTRATION.
+//!
+//! ## RESOLVE THEN PIN, restated because every reader of this file needs it
 //!
 //! Checking the host STRING and then handing the URL to an HTTP client is not a guard, it is a
 //! guard-shaped delay. The client performs its OWN name resolution when it connects, and between
@@ -16,17 +32,9 @@
 //! lookup with `169.254.169.254`.
 //!
 //! So the name is resolved exactly ONCE per hop, EVERY answered address is judged, and the address
-//! that survives is PINNED and handed to the transport. The socket connects to an address this
-//! module already looked at. There is no second lookup for an attacker to win, which is what makes
-//! the time-of-check/time-of-use gap not merely narrow but absent.
-//!
-//! ## Every address in the answer, not the one we would have used
-//!
-//! A resolver answering `[93.184.216.34, 169.254.169.254]` is refused OUTRIGHT rather than pinned to
-//! the public address. Picking the good one from a mixed answer would mean the same name is
-//! sometimes fine and sometimes not, decided by ordering the upstream chooses, and "the guard
-//! depends on which address the resolver listed first" is not a property anyone can reason about.
-//! A mixed answer is a hostile answer.
+//! that survives is PINNED and handed to the transport. A resolver answering
+//! `[93.184.216.34, 169.254.169.254]` is refused OUTRIGHT rather than pinned to the public address:
+//! a mixed answer is a hostile answer.
 //!
 //! ## A redirect is a fresh, fully untrusted URL
 //!
@@ -44,9 +52,16 @@
 
 use std::net::IpAddr;
 
-use crate::net_guard::{dns_name_is_internal, ip_is_internal, is_alternate_ipv4_encoding};
+use crate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
 
 use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
+
+/// NAME RESOLUTION, AS A SEAM — core's, re-exported because it is this plane's fetch seam too.
+///
+/// Re-exported rather than redeclared: a second trait with the same shape would let a transport be
+/// written against one and a guard against the other, which is how two implementations of one
+/// control start.
+pub(crate) use crate::net_guard::Resolver;
 
 /// The operator's fetch policy. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,11 +86,11 @@ pub(crate) struct FetchPolicy {
     ///
     /// The SAME name and the same meaning as the `tools:` grammar's, because it is one operator
     /// concept and two spellings of it would be two things to learn and two things to get wrong.
-    /// It relaxes the loopback/private ARMS of the guard below and NOTHING else: a cloud-metadata
-    /// name and a cloud-metadata address are refused with this set, exactly as
-    /// [`crate::mcp::client::ssrf::check_addresses`] refuses them, and the alternate-IPv4-encoding
-    /// arm is likewise unconditional. An `allow_private` that reached IMDS would be a config flag
-    /// that hands out cloud credentials.
+    /// It relaxes the loopback/private ARMS of the guard and NOTHING else: a cloud-metadata name
+    /// and a cloud-metadata address are refused with this set, because
+    /// [`crate::net_guard::judge_address`] tests the metadata arm BEFORE it reads this flag, and
+    /// the alternate-IPv4-encoding arm is likewise unconditional. An `allow_private` that reached
+    /// IMDS would be a config flag that hands out cloud credentials.
     pub(crate) allow_private: bool,
 }
 
@@ -86,6 +101,26 @@ impl Default for FetchPolicy {
             max_body_bytes: 512 * 1024,
             allow_plaintext: false,
             allow_private: false,
+        }
+    }
+}
+
+impl FetchPolicy {
+    /// LOWER THIS PLANE'S REGISTRATION KNOBS INTO THE SHARED POLICY.
+    ///
+    /// Every field maps across unchanged except the clock, which this type does not carry: the card
+    /// ceiling is a property of the HOP and lives on the transport that opens the socket
+    /// ([`super::transport::CARD_FETCH_TIMEOUT`]). The relay reuses this same policy for its guard
+    /// and then holds its socket to its OWN, longer ceiling, because a relayed `message/send` is the
+    /// backend agent doing the work the caller asked for rather than a small document read — so the
+    /// value carried here is the guard's default and never the relay's override.
+    pub(crate) fn guard(&self) -> GuardPolicy {
+        GuardPolicy {
+            allow_private: self.allow_private,
+            allow_plaintext: self.allow_plaintext,
+            max_redirects: self.max_redirects,
+            max_body_bytes: self.max_body_bytes,
+            timeout: super::transport::CARD_FETCH_TIMEOUT,
         }
     }
 }
@@ -124,6 +159,60 @@ pub(crate) enum FetchRefusal {
     BodyTooLarge { url: String, bytes: usize },
     /// The body is not a JSON object, so it is not a card.
     NotACard { url: String, err: String },
+    /// A SHARED REFUSAL THIS CALLER DOES NOT PRODUCE: [`GuardRefusal::Redirect`] is the
+    /// never-follow-a-3xx arm, and this fetch FOLLOWS redirects under
+    /// [`FetchPolicy::max_redirects`] and reports an over-long chain as
+    /// [`FetchRefusal::TooManyRedirects`] instead.
+    ///
+    /// Carried verbatim rather than folded into a nearby arm so that a refusal core grows later
+    /// arrives at an operator as itself. The conversion below is TOTAL on purpose: a new shared
+    /// refusal must be given a sentence here, not silently dropped into whichever arm happened to
+    /// be last.
+    Guard(GuardRefusal),
+}
+
+/// RENDER A SHARED REFUSAL IN THIS PLANE'S VOCABULARY.
+///
+/// The three name arms all become [`FetchRefusal::InternalHostName`] with the `why` this plane has
+/// always printed, and BOTH address arms become [`FetchRefusal::InternalAddress`] — a metadata
+/// address is reported here as an internal one, with the sentence saying it is refused whatever
+/// `allow_private` is set to. That collapse is this plane's WORDING and not its decision: core
+/// keeps the two apart, which is what stops the knob from ever speaking for the metadata arm.
+impl From<GuardRefusal> for FetchRefusal {
+    fn from(g: GuardRefusal) -> Self {
+        match g {
+            GuardRefusal::Scheme { url, scheme } | GuardRefusal::Plaintext { url, scheme } => {
+                FetchRefusal::NotHttps { url, scheme }
+            }
+            GuardRefusal::NoHost(url) => FetchRefusal::NoHost(url),
+            GuardRefusal::MetadataName(host) => FetchRefusal::InternalHostName {
+                host,
+                why: "a cloud-metadata name",
+            },
+            GuardRefusal::LoopbackName(host) => FetchRefusal::InternalHostName {
+                host,
+                why: "a loopback name; set this registration's `allow_private: true` if that is \
+                      deliberate",
+            },
+            GuardRefusal::ObfuscatedHost(host) => FetchRefusal::InternalHostName {
+                host,
+                why: "an alternate IPv4 encoding a resolver still expands to an internal address",
+            },
+            GuardRefusal::Unresolvable { host, reason } => {
+                FetchRefusal::ResolutionFailed { host, err: reason }
+            }
+            GuardRefusal::NoAddresses(host) => FetchRefusal::NoAddresses(host),
+            GuardRefusal::InternalAddress { host, addr }
+            | GuardRefusal::CloudMetadataAddress { host, addr } => {
+                FetchRefusal::InternalAddress { host, addr }
+            }
+            GuardRefusal::TooManyRedirects { limit, at } => {
+                FetchRefusal::TooManyRedirects { limit, at }
+            }
+            GuardRefusal::BodyTooLarge { url, bytes } => FetchRefusal::BodyTooLarge { url, bytes },
+            other @ GuardRefusal::Redirect { .. } => FetchRefusal::Guard(other),
+        }
+    }
 }
 
 impl std::fmt::Display for FetchRefusal {
@@ -176,32 +265,11 @@ impl std::fmt::Display for FetchRefusal {
             FetchRefusal::NotACard { url, err } => {
                 write!(f, "the document at `{url}` is not an agent card: {err}")
             }
+            FetchRefusal::Guard(g) => {
+                write!(f, "SSRF guard refused the agent card fetch: {g}")
+            }
         }
     }
-}
-
-/// A URL that PASSED the guard, together with the address it was pinned to.
-///
-/// The pair is the whole contract: a caller that has one of these connects to `addr` and sends
-/// `url`'s host in the `Host` header. Handing a transport the URL alone would re-open the second
-/// lookup this type exists to close.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PinnedTarget {
-    pub(crate) url: reqwest::Url,
-    pub(crate) addr: IpAddr,
-}
-
-/// Name resolution, as a seam.
-///
-/// A trait rather than a direct `to_socket_addrs` call because the hazards this module exists to
-/// defeat are all about WHAT THE RESOLVER SAYS AND WHEN: a mixed answer, an answer that changes
-/// between two lookups, a name that resolves to link-local. None of those is reproducible against
-/// the real resolver, so none of them would be tested, and an untested SSRF guard is a comment.
-pub(crate) trait Resolver {
-    /// Every address this name currently answers with. `Err` is a resolution failure, NOT an empty
-    /// answer: the two are different facts and collapsing them would let a failure read as "nothing
-    /// internal here".
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String>;
 }
 
 /// One HTTP response, reduced to what a card fetch reads.
@@ -248,29 +316,52 @@ pub(crate) trait Transport {
     fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String>;
 }
 
-/// GUARD ONE URL AND PIN IT.
+/// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`crate::net_guard::resolve_and_pin`].
 ///
-/// The order is the design. Cheap structural refusals first, so a hostile name never reaches the
-/// resolver; then exactly one resolution; then EVERY answered address; then the pin.
-pub(crate) fn resolve_and_pin(
+/// Returns the parsed URL BESIDE the pin, because the two are needed together and for different
+/// things: the socket goes to [`PinnedTarget::addr`], and the request carries the URL — its host in
+/// the `Host` header and as TLS SNI, its path on the wire, and its origin as the base a relative
+/// `Location` is joined against. Handing a transport the URL alone would re-open the second lookup
+/// the pin exists to close.
+///
+/// ## Why this parses with a URL type where the dispatch path uses a strict recogniser
+///
+/// The one difference between the two callers of the guard that could NOT be parameterised away.
+/// The MCP dispatch path wants a strict recogniser on an attacker-influenced string, and gets
+/// [`crate::net_guard::split_url`]. This path must FOLLOW redirects, and following one means
+/// joining a relative `Location` against the hop that sent it exactly as a client would — which
+/// needs a real URL type and its resolution rules, not a splitter. Both then bring the host they
+/// parsed through the SAME [`crate::net_guard::judge_host_name`] and the same resolve-then-pin, so
+/// what differs is the recognition and never the judgement.
+pub(crate) fn guard_hop(
     url: &str,
     resolver: &dyn Resolver,
     policy: &FetchPolicy,
-) -> Result<PinnedTarget, FetchRefusal> {
+) -> Result<(reqwest::Url, PinnedTarget), FetchRefusal> {
+    let guard = policy.guard();
     let parsed =
         reqwest::Url::parse(url).map_err(|_| FetchRefusal::NotAUrl(url.trim().to_string()))?;
 
+    // The scheme allowlist is by ABSENCE: `https` always, `http` only where the policy admits
+    // plaintext, and everything else — `file:`, `data:`, `gopher:` — refused because it is not
+    // named rather than because a blocklist remembered it.
     let scheme = parsed.scheme().to_ascii_lowercase();
-    // `allow_private` ADMITS PLAINTEXT, because that is what the word means on the sibling plane:
-    // `mcp::client::ssrf::precheck` refuses `http://` with exactly `!https && !policy.allow_private`.
-    // One knob covering both is not a shortcut — an operator pointing busbar at `http://127.0.0.1`
-    // has made one decision, and making them write two flags to express it would teach that the
-    // second flag is the harmless one. `allow_plaintext` remains its own field because a plaintext
-    // fetch of a PUBLIC host is a different, worse thing than a plaintext fetch of loopback and the
-    // policy has to be able to say so.
-    let plaintext_ok = policy.allow_plaintext || policy.allow_private;
-    let scheme_ok = scheme == "https" || (plaintext_ok && scheme == "http");
-    if !scheme_ok {
+    let https = match scheme.as_str() {
+        "https" => true,
+        "http" => false,
+        _ => {
+            return Err(FetchRefusal::NotHttps {
+                url: parsed.to_string(),
+                scheme,
+            })
+        }
+    };
+    // `allow_private` ADMITS PLAINTEXT, and the predicate that says so is core's, so this plane and
+    // the dispatch plane cannot answer it differently. An operator pointing busbar at
+    // `http://127.0.0.1` has made ONE decision; making them write two flags would teach that the
+    // second one is harmless. `allow_plaintext` stays its own field because a plaintext fetch of a
+    // PUBLIC host is a different, worse thing than a plaintext fetch of loopback.
+    if net_guard::judge_scheme(parsed.as_str(), https, guard).is_err() {
         return Err(FetchRefusal::NotHttps {
             url: parsed.to_string(),
             scheme,
@@ -286,88 +377,15 @@ pub(crate) fn resolve_and_pin(
     let host = raw_host.strip_prefix('[').unwrap_or(raw_host);
     let host = host.strip_suffix(']').unwrap_or(host);
     let host = host.strip_suffix('.').unwrap_or(host);
+    let port = parsed
+        .port_or_known_default()
+        .unwrap_or_else(|| net_guard::default_port(https));
 
-    // ── STRUCTURAL REFUSALS: true about the NAME, so no resolver is consulted. ──
-    //
-    // THE METADATA ARM IS SPLIT OUT AND IS UNCONDITIONAL. `dns_name_is_internal` answers for two
-    // populations at once — the cloud-metadata names and the `localhost` family — and only the
-    // second of them is something `allow_private` may speak for. Asking the merged question under
-    // the knob would make `allow_private: true` a way to fetch `metadata.google.internal`, which is
-    // the one outcome the sibling plane's guard orders its checks specifically to prevent
-    // (`mcp::client::ssrf::check_addresses` tests metadata BEFORE it consults the flag).
-    if crate::net_guard::METADATA_HOSTS
-        .iter()
-        .any(|m| host.eq_ignore_ascii_case(m))
-    {
-        return Err(FetchRefusal::InternalHostName {
-            host: host.to_string(),
-            why: "a cloud-metadata name",
-        });
-    }
-    if !policy.allow_private && dns_name_is_internal(host) {
-        return Err(FetchRefusal::InternalHostName {
-            host: host.to_string(),
-            why: "a loopback name; set this registration's `allow_private: true` if that is \
-                  deliberate",
-        });
-    }
-    if is_alternate_ipv4_encoding(host) {
-        return Err(FetchRefusal::InternalHostName {
-            host: host.to_string(),
-            why: "an alternate IPv4 encoding a resolver still expands to an internal address",
-        });
-    }
-    // An IP LITERAL is its own answer: judge it and pin it without asking a resolver about it. The
-    // resolver is not merely unnecessary here, it is wrong — a stub that echoes literals back is
-    // one more thing that could disagree with this check.
-    if let Ok(addr) = host.parse::<IpAddr>() {
-        judge_address(host, addr, policy)?;
-        return Ok(PinnedTarget { url: parsed, addr });
-    }
-
-    // ── EXACTLY ONE RESOLUTION, and every address in it is judged. ──
-    let addrs = resolver
-        .resolve(host)
-        .map_err(|err| FetchRefusal::ResolutionFailed {
-            host: host.to_string(),
-            err,
-        })?;
-    if addrs.is_empty() {
-        return Err(FetchRefusal::NoAddresses(host.to_string()));
-    }
-    // A MIXED ANSWER IS A HOSTILE ANSWER. Refused whole, never filtered down to the address that
-    // happens to be acceptable — see the module note.
-    for addr in &addrs {
-        judge_address(host, *addr, policy)?;
-    }
-
-    Ok(PinnedTarget {
-        url: parsed,
-        addr: addrs[0],
-    })
-}
-
-/// JUDGE ONE RESOLVED ADDRESS, in the order that makes [`FetchPolicy::allow_private`] safe to have.
-///
-/// Metadata FIRST and unconditionally, then the internal ranges, which are the only population the
-/// knob speaks for. This is the same ordering — and the same reason for it —
-/// [`crate::mcp::client::ssrf::check_addresses`] uses: a flag that meant "this endpoint is internal"
-/// must never also mean "and may therefore read IMDS". The two are one function rather than two call
-/// sites so the literal-host arm and the resolved-answer arm cannot be ordered differently.
-fn judge_address(host: &str, addr: IpAddr, policy: &FetchPolicy) -> Result<(), FetchRefusal> {
-    if crate::net_guard::ip_is_cloud_metadata(&addr) {
-        return Err(FetchRefusal::InternalAddress {
-            host: host.to_string(),
-            addr,
-        });
-    }
-    if ip_is_internal(&addr) && !policy.allow_private {
-        return Err(FetchRefusal::InternalAddress {
-            host: host.to_string(),
-            addr,
-        });
-    }
-    Ok(())
+    // ── THE GUARD. Structural name refusals, then EXACTLY ONE resolution, then EVERY answered
+    //    address, then the pin. All of it core's, including the ordering that keeps the
+    //    cloud-metadata arm ahead of `allow_private`.
+    let target = net_guard::resolve_and_pin(host, port, https, resolver, guard)?;
+    Ok((parsed, target))
 }
 
 /// A card that was fetched, with the chain it was fetched over.
@@ -432,40 +450,36 @@ pub(crate) fn fetch_card(
     loop {
         // EVERY HOP IS GUARDED FROM SCRATCH. A redirect is a URL a stranger chose; that the
         // previous hop passed says nothing at all about this one.
-        let target = resolve_and_pin(&current, resolver, policy)?;
-        chain.push(target.url.to_string());
+        let (url, pin) = guard_hop(&current, resolver, policy)?;
+        chain.push(url.to_string());
 
-        let resp =
-            transport
-                .get(&target.url, target.addr)
-                .map_err(|err| FetchRefusal::Transport {
-                    url: target.url.to_string(),
-                    err,
-                })?;
+        let resp = transport
+            .get(&url, pin.addr())
+            .map_err(|err| FetchRefusal::Transport {
+                url: url.to_string(),
+                err,
+            })?;
 
         if (300..400).contains(&resp.status) {
-            if u32::from(policy.max_redirects) <= hops {
-                return Err(FetchRefusal::TooManyRedirects {
-                    limit: policy.max_redirects,
-                    at: target.url.to_string(),
-                });
-            }
+            // THE HOP BOUND IS CORE'S. A guard applied correctly to an unbounded chain is a way to
+            // spend the process, and the bound is the same one every guarded fetch gets.
+            net_guard::refuse_hop_overflow(hops, url.as_str(), policy.guard())?;
             let location = resp
                 .location
                 .as_deref()
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
                 .ok_or_else(|| FetchRefusal::RedirectWithoutLocation {
-                    at: target.url.to_string(),
+                    at: url.to_string(),
                     status: resp.status,
                 })?;
             // Resolved RELATIVE TO THE HOP THAT SENT IT, which is what a client does, so a relative
             // `Location` cannot be mistaken for an absolute one and quietly land on a default host.
-            let next = target.url.join(location).map_err(|_| {
+            let next = url.join(location).map_err(|_| {
                 // An unparseable Location is a refusal, never a silent stop at the 3xx: stopping
                 // would return "no card here" for what is actually a malformed redirect.
                 FetchRefusal::RedirectWithoutLocation {
-                    at: target.url.to_string(),
+                    at: url.to_string(),
                     status: resp.status,
                 }
             })?;
@@ -476,32 +490,28 @@ pub(crate) fn fetch_card(
 
         if !(200..300).contains(&resp.status) {
             return Err(FetchRefusal::Status {
-                url: target.url.to_string(),
+                url: url.to_string(),
                 status: resp.status,
             });
         }
 
-        if resp.body.len() > policy.max_body_bytes {
-            return Err(FetchRefusal::BodyTooLarge {
-                url: target.url.to_string(),
-                bytes: resp.body.len(),
-            });
-        }
+        // THE BODY CAP IS CORE'S, and it is applied BEFORE the bytes are parsed.
+        net_guard::refuse_oversized_body(url.as_str(), resp.body.len(), policy.guard())?;
         let document: serde_json::Value =
             serde_json::from_slice(&resp.body).map_err(|e| FetchRefusal::NotACard {
-                url: target.url.to_string(),
+                url: url.to_string(),
                 err: e.to_string(),
             })?;
         if !document.is_object() {
             return Err(FetchRefusal::NotACard {
-                url: target.url.to_string(),
+                url: url.to_string(),
                 err: "the document is not a JSON object".to_string(),
             });
         }
         return Ok(FetchedCard {
             document,
             chain,
-            addr: target.addr,
+            addr: pin.addr(),
             peer_spki: resp.peer_spki,
             client_identity_offered: resp.client_identity_offered,
         });
