@@ -137,3 +137,49 @@ fn the_sse_reader_is_the_planes_own() {
         Some("{\"jsonrpc\":\"2.0\",\n\"id\":1}")
     );
 }
+
+/// THE NARROWING DROPS EXACTLY WHAT PROTOBUF CANNOT CARRY AND NOTHING ELSE.
+///
+/// The end-to-end proof that this rpc now answers a card at all is
+/// `served_methods_tests::the_extended_card_is_served_over_grpc_at_the_path_the_proto_defines`. This
+/// is the other half: a narrowing that removed one member too many would still transcode, still
+/// answer `200`, and would quietly stop telling a gRPC caller something the card does say.
+#[test]
+fn the_card_narrowing_removes_only_the_member_the_proto_has_no_field_for() {
+    let card = serde_json::json!({
+        "name": "busbar",
+        "capabilities": {
+            "streaming": true,
+            "pushNotifications": true,
+            "stateTransitionHistory": true,
+            "extendedAgentCard": true,
+        },
+        "skills": [{ "id": "planner" }],
+    });
+    let narrowed = narrowed_to_the_proto(card);
+
+    assert!(
+        narrowed["capabilities"]
+            .get("stateTransitionHistory")
+            .is_none(),
+        "the v0.3 member `a2a.proto` has no field for must not reach the transcode: {narrowed}"
+    );
+    // EVERY OTHER CAPABILITY SURVIVES. `extendedAgentCard` most of all: this rpc denying the very
+    // capability it implements would be the card contradicting itself on its own binding.
+    for kept in ["streaming", "pushNotifications", "extendedAgentCard"] {
+        assert_eq!(
+            narrowed["capabilities"][kept],
+            serde_json::Value::Bool(true),
+            "the narrowing dropped `{kept}`, which the proto DOES model: {narrowed}"
+        );
+    }
+    assert_eq!(narrowed["name"], "busbar");
+    assert_eq!(narrowed["skills"][0]["id"], "planner");
+
+    // AND THE LIST IS NOT EMPTY. A narrowing with nothing in it is a function that cannot fail and
+    // cannot help, and it would leave this rpc answering `Internal` exactly as it did before.
+    assert!(
+        !UNMODELLED_CARD_MEMBERS.is_empty(),
+        "an empty list means nothing is narrowed and the transcode fails again"
+    );
+}

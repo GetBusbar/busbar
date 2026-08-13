@@ -32,7 +32,6 @@ a2a|grpc|client|client|ListTasks
 a2a|grpc|client|client|SendMessage
 a2a|grpc|client|client|SendStreamingMessage
 a2a|grpc|client|client|SubscribeToTask
-a2a|grpc|server|client|GetExtendedAgentCard
 a2a|http+json|client|client|CancelTask
 a2a|http+json|client|client|CreateTaskPushNotificationConfig
 a2a|http+json|client|client|DeleteTaskPushNotificationConfig
@@ -46,8 +45,6 @@ a2a|http+json|client|client|SendMessage
 a2a|http+json|client|client|SendStreamingMessage
 a2a|http+json|client|client|SubscribeToTask
 a2a|http+json|client|server|PushNotificationDelivery
-a2a|http+json|server|client|GET /.well-known/agent-card.json
-a2a|http+json|server|client|GetExtendedAgentCard
 
 a2a|jsonrpc|client|client|CancelTask
 a2a|jsonrpc|client|client|CreateTaskPushNotificationConfig
@@ -61,17 +58,6 @@ a2a|jsonrpc|client|client|ListTasks
 a2a|jsonrpc|client|client|SendMessage
 a2a|jsonrpc|client|client|SendStreamingMessage
 a2a|jsonrpc|client|client|SubscribeToTask
-a2a|jsonrpc|server|client|CancelTask
-a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig
-a2a|jsonrpc|server|client|DeleteTaskPushNotificationConfig
-a2a|jsonrpc|server|client|GET /.well-known/agent-card.json
-a2a|jsonrpc|server|client|GetTask
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig
-a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs
-a2a|jsonrpc|server|client|ListTasks
-a2a|jsonrpc|server|client|SendMessage
-a2a|jsonrpc|server|client|SendStreamingMessage
-a2a|jsonrpc|server|client|SubscribeToTask
 mcp|stdio|client|client|completion/complete
 mcp|stdio|client|client|initialize
 mcp|stdio|client|client|logging/setLevel

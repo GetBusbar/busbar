@@ -342,6 +342,26 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Fixed
 
+- **The A2A gRPC binding could not serve Busbar's own extended Agent Card — it answered
+  `INTERNAL` to every caller.** `GetExtendedAgentCard` was mounted and written, and the call failed
+  inside the protobuf transcode: Busbar's card declares `capabilities.stateTransitionHistory` — an
+  A2A v0.3 member, and one the specification's own sample card in section 8.5 declares — while
+  `a2a.proto`'s `AgentCapabilities`, which the specification makes normative, has no such field. The
+  generated ProtoJSON type rejects unknown members, so the member did not get dropped: the whole
+  card failed to render. A gRPC client asking Busbar what it may reach got `grpc-status 13` and no
+  card.
+
+  The gRPC answer now carries the card minus the members a protobuf `AgentCard` has no field for,
+  from a named list rather than by ignoring whatever fails to parse. **The card served over JSON-RPC
+  and HTTP+JSON is unchanged** and still carries every member it did: this is not Busbar reshaping
+  the document A2A clients read, it is the one binding whose wire format cannot represent a member
+  carrying the rest of the card instead of nothing.
+
+  It was invisible to the official A2A TCK by construction — `CARD-EXT-002` skips itself once a card
+  is configured, and `CORE-CAP-003` only passes for a server that does *not* implement the verb — so
+  a Busbar that answered this perfectly and one that answered `INTERNAL` produced identical suite
+  output. It was found by a new in-tree test that drives the real mounted service path over h2c.
+
 - **MCP and A2A traffic was invisible on `/metrics`. It is now on the same series as model
   traffic.** `busbar_requests_total` and `busbar_request_duration_seconds` were emitted from the
   model plane's ingress and nowhere else, so a tool call and an agent task produced no sample at
