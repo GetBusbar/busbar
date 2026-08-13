@@ -371,36 +371,43 @@ The breaker is keyed on the **target** a request is about to reach. A target is 
 pool member on the LLM plane, a registered tool server on MCP, or a registered agent
 on A2A. Three identities, one state machine:
 
-| plane | breaker target | configured at |
+| plane | breaker target | live on the dispatch path? |
 |---|---|---|
-| LLM | a `(pool, lane)` cell | `pools.<pool>.breaker:` |
-| MCP | one registered tool server | `tools.<server>.breaker:` |
-| A2A | one registered agent | `agents.<agent>.breaker:` |
+| LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
+| MCP | one registered tool server | not yet: the seam exists, `mcp/client/dispatch.rs` does not call it |
+| A2A | one registered agent | not yet: same, for `a2a/relay.rs` |
 
-**One struct, three places.** `BreakerCfg` (the cooldown bounds and the `trip:`
-condition) is the same struct in all three, with the same defaults and the same
-validation. There is no MCP breaker grammar and no A2A breaker grammar to learn;
-what you already know from `pools:` is the whole of it.
+**One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
+the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
+`breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
+a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
+built-in defaults, through `crate::failover`, which calls the same
+`try_admit_breaker` the LLM plane calls and adds no second state machine.
 
-**What generalises, and what deliberately does not.** The state machine and the cause
+**What generalises, and what it took to generalise it.** The state machine and the cause
 attribution need a target identity and a failure history, and neither of those is
-LLM-shaped. *Member selection* is different: it needs substitutable members, and on
-MCP and A2A there are none. A tool is namespaced to the server that exports it, so
-`acme_read_file` exists on exactly one server; an A2A task addressed to one agent
-cannot be served by a different agent. **There is therefore no failover on the MCP or
-A2A planes, and `failover:` does not appear under `tools:` or `agents:`. Its absence
-is the statement.** These planes are the case §4 already describes on the LLM side:
-*the degenerate case, a single-member candidate set of weight 1.* Not new machinery:
-a case the engine already models, now reached from two more ingresses.
+LLM-shaped. *Member selection* needs one thing more: members that can substitute for one
+another. An earlier version of this section said MCP and A2A have none, and stated it as
+a property of the protocols. It is not one. The case operators actually run is the same
+server image deployed twice, or one agent registered twice, and busbar's inability to be
+told about it was a missing config vocabulary rather than a law. `tool_pools:` and
+`agent_pools:` (1.6.0) are that vocabulary, over one selection loop in `crate::failover`;
+a candidate set of one remains exactly the degenerate case §4 already describes. Two
+rules keep it safe and both are core's, not a plane's: two candidates are interchangeable
+only when the pins busbar already computed AGREE, and a call that has already gone out is
+repeated only when the operation is named in `repeatable:`. See
+[circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice).
 
 **What the caller gets when a target is Open** is protocol-native on each plane, and
-the difference matters more than it looks:
+the difference matters more than it looks. The LLM row is live; the MCP and A2A rows
+are the contract the dispatch-path wiring is being written to and are **not emitted
+today**, so do not test against them yet:
 
-| plane | refusal |
-|---|---|
-| LLM | the pool's `on_exhausted` policy: failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` |
-| MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` |
-| A2A | a task in state **`rejected`** (not `failed`), returned with its task id |
+| plane | refusal | live? |
+|---|---|---|
+| LLM | the pool's `on_exhausted` policy: failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` | yes |
+| MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` | not yet |
+| A2A | a task in state **`rejected`** (not `failed`), returned with its task id | not yet |
 
 On MCP this is an error, **never a tool result with `isError: true`**. `isError` means
 the tool ran and failed; a tripped breaker means the call never happened. Reporting

@@ -433,9 +433,13 @@ exceeds `max_cooldown_secs`. Defaults (no `breaker:` block): base 15s, max 120s.
 
 ### The breaker across the planes
 
-Configure it in the same three-key shape, with the same struct in each place:
-`pools.<pool>.breaker:`, `tools.<server>.breaker:`, `agents.<agent>.breaker:`. Omit
-the block and you get the defaults. Full detail, with worked YAML, is in
+There is one place to configure it: `pools.<pool>.breaker:`. There is no `breaker:`
+key under `tools:` or `agents:` (an earlier version of this page said there was, and a
+config written against it fails at boot, because both sections reject unknown keys).
+Omit the block and you get the defaults. On the MCP and A2A planes the breaker runs on
+those defaults through the shared selection seam, and **that seam is not yet wired into
+the tool-dispatch or agent-relay call sites**, so it does not fire on a live call today.
+Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 
 **Why an operator cares.** With no breaker on a plane, an upstream that is hard down

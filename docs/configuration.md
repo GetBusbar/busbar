@@ -1017,7 +1017,7 @@ chosen lane.
 
 Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
 
-**The same block, with the same fields and defaults, is accepted in three places**: `pools.<pool>.breaker:`, `tools.<server>.breaker:` (one MCP tool server) and `agents.<agent>.breaker:` (one A2A agent). The table below is the reference for all three. `failover:` is *not* accepted under `tools:` or `agents:`: tools are namespaced to their server and an agent is not interchangeable with another agent, so there is nothing to fail over to. See [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
+**This block is accepted under `pools:` and nowhere else.** An earlier version of this reference said `tools.<server>.breaker:` and `agents.<agent>.breaker:` were also accepted. They are not, they never were, and because `tools:` and `agents:` reject unknown keys, a config written against that sentence fails at boot rather than running with the block ignored. MCP and A2A share the one breaker through `tool_pools:` / `agent_pools:` (see [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice)), which take `members:` and `repeatable:` only, so those planes run on the built-in breaker defaults.
 
 ```yaml
 pools:

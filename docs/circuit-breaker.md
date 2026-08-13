@@ -176,43 +176,15 @@ conceptual so the two never drift.
 
 An upstream that is hard down does not only fail. It fails **slowly**. Without a breaker, every call to a tool server whose auth was revoked or whose billing lapsed pays the full request timeout before it can fail: latency burned on a known-dead upstream, a concurrency slot held while it burns, retries piling onto a server that is already struggling, and no operator signal that anything is wrong. The operator finds out from a user complaint.
 
-So the breaker is not an LLM-plane feature that MCP and A2A borrow. It is keyed on the **target** a request is about to reach, and a target is whatever the plane addresses:
+So the breaker is not an LLM-plane feature that MCP and A2A borrow. It is keyed on the **target** a request is about to reach, and a target is whatever the plane addresses: a `(pool, lane)` cell on the LLM plane, one registered tool server on MCP, one registered agent on A2A.
 
-| plane | breaker target | configured at |
-|---|---|---|
-| LLM | a `(pool, lane)` cell | `pools.<pool>.breaker:` |
-| MCP | one registered tool server | `tools.<server>.breaker:` |
-| A2A | one registered agent | `agents.<agent>.breaker:` |
+**Read the state of this honestly before you configure anything.** In 1.6.0 the selection and admission seam is real, proven and configurable (`tool_pools:` and `agent_pools:` below), and it runs on the one breaker the LLM plane has always used. It is **not yet wired into the MCP dispatch path or the A2A relay**, so on a live tool call or task submission the breaker does not fire today. Everything in this section that describes MCP or A2A behaviour is therefore the contract the seam is built to, not something you can observe on a request yet. The LLM plane, and everything above this section, is live and has been for every release since the breaker landed.
 
 ### What is identical
 
-Everything above this section. The Closed → Open → HalfOpen state machine, the two-stage disposition pipeline that decides whether an outcome was the upstream's fault or the caller's, the `error_rate` and `consecutive` trip modes, exponential cooldown with jitter, `Retry-After` honoured as a floor, hard-down's sticky cooldown, and single-flight half-open recovery: all of it is the same code reading the same state, whether the target is a model lane, a tool server or an agent.
+The Closed → Open → HalfOpen state machine, the two-stage disposition pipeline that decides whether an outcome was the upstream's fault or the caller's, the `error_rate` and `consecutive` trip modes, exponential cooldown with jitter, `Retry-After` honoured as a floor, hard-down's sticky cooldown, and single-flight half-open recovery. There is **one** breaker in the engine, keyed by `(pool, lane)`, and a tool server or an agent is a lane in a pool like any other. No second state machine was written for these planes and none should be.
 
-**The config is the same struct, in three places.** `breaker:` under `tools:` or `agents:` takes exactly the fields it takes under `pools:`, with the same defaults and the same validation. There is no second grammar:
-
-```yaml
-tools:
-  acme:
-    url: https://tools.acme.example/mcp
-    breaker:
-      trip:
-        mode: consecutive
-        consecutive_n: 3
-      base_cooldown_secs: 15
-      max_cooldown_secs: 120
-
-agents:
-  billing:
-    url: https://agents.partner.example/a2a
-    breaker:
-      trip:
-        mode: error_rate
-        window_secs: 30
-        threshold: 0.5
-        min_requests: 5
-```
-
-Omit the block and you get the defaults, exactly as with a pool. There is no inheritance between servers or between agents: each target's breaker is independent, which is the point. One dead tool server must not bench a healthy one.
+**There is one place to configure a breaker, and it is `pools.<pool>.breaker:`.** There is no `breaker:` key under `tools:` or under `agents:`: an earlier version of this page and of the configuration reference said there was, and that was wrong. `tools:` and `agents:` use `deny_unknown_fields`, so a config written against that older text does not start Busbar; it fails at boot naming the key. Nor is there breaker tuning on a tool pool or an agent pool: `tool_pools:` and `agent_pools:` accept exactly two keys, `members:` and `repeatable:`, and reject anything else at boot. So on these planes the breaker's thresholds and cooldowns are the built-in defaults, and narrowing them is a config surface that has not been written rather than one you are missing.
 
 ### Failover on MCP and A2A: the same server, deployed twice
 
@@ -268,9 +240,11 @@ For a single registration with no pool, unchanged: **failing fast instead of fai
 
 > **Landed state (1.6.0):** the selection seam, its config vocabulary and its proofs are in `crate::failover`, running on the one `try_admit_breaker` the LLM plane uses. Wiring the MCP dispatch and A2A relay call sites to it is a separate change; until it lands, a configured pool is validated at boot but not yet consulted at dispatch. This note is here rather than omitted because a page that describes a path before it is wired is how a reader learns something false.
 
-### What a tripped target returns: MCP
+### What a tripped target will return: MCP
 
-A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the breaker's own cooldown expiry: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** in Busbar's implementation-defined `-320xx` band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), with structured `data`:
+**Not emitted yet.** The wire shape below is the contract the dispatch-path wiring is being written to, and none of these tokens exist in the engine today. It is documented rather than left blank because the *reason* for the shape is the part that matters, and it is a reason a future implementer must not relitigate.
+
+A tripped tool server will answer HTTP **`503`** with a **`Retry-After`** header populated from the breaker's own cooldown expiry: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body will be a **JSON-RPC error** in Busbar's implementation-defined `-320xx` band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), with structured `data`:
 
 ```json
 { "reason": "upstream_unavailable", "server": "acme", "retry_after_ms": 12000 }
@@ -278,15 +252,17 @@ A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header pop
 
 **It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure. The model then reasons from a lie, and may report that false result onward as fact. The reserved JSON-RPC codes are each wrong for a specific reason: `-32603` internal error blames Busbar, `-32601` method-not-found says the tool does not exist when it does, and `-32602` invalid-params blames the caller.
 
-### What a tripped target returns: A2A
+### What a tripped target will return: A2A
 
-A2A has what MCP lacks: task state is first class. A submission to a tripped agent yields the task state **`rejected`**, not `failed`, and it is returned **with a task id**.
+**Not emitted yet either**, for the same reason: the relay call site is not wired to the seam.
+
+A2A has what MCP lacks: task state is first class. A submission to a tripped agent will yield the task state **`rejected`**, not `failed`, returned **with a task id**.
 
 The two states are different claims and the spec gives us both. `failed` means we tried and it broke. `rejected` means **we did not accept this work**, which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate, so it loses nothing, and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
 
 ### What the operator sees
 
-A trip on any plane is an operator-facing signal that names the target: which tool server, which agent, and the cause the disposition pipeline attributed. This is the part that does not exist without a breaker at all. Before it, a hard-down tool server produced nothing but slow calls, and the first report came from a user.
+On the LLM plane, a trip is an operator-facing signal that names the lane and the cause the disposition pipeline attributed. On MCP and A2A that signal arrives with the dispatch-path wiring described above: until then a hard-down tool server still produces nothing but slow calls, and the first report still comes from a user. That is the gap this work closes, and it is stated in the present tense because it is the present.
 
 ---
 
