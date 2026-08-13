@@ -10,10 +10,12 @@
 //! Between them they establish the defence at the moment it fires. Everything in this file is about
 //! what happens to that defence when nobody is firing it:
 //!
-//! 1. **It does not survive a restart.** Drift sightings are in-process, and a server with no
+//! 1. **It did not survive a restart.** Drift sightings are in-process, and a server with no
 //!    sighting serves against the hash the operator WROTE rather than the one the upstream is
-//!    SERVING. So a process restart hands a demoted upstream its approval back. See the case's own
-//!    doc for why this one is recorded rather than closed.
+//!    SERVING — so a process restart handed a demoted upstream its approval back. It is closed by a
+//!    durable record of the observation, written through the store seam and replayed at boot, and
+//!    the cases below judge it across a real `dlopen`, a dropped handle and a second `dlopen`,
+//!    because a write's `Ok(())` is not evidence of anything on that seam.
 //! 2. **Nothing proved the sweep is spawned at boot.** Every case in `timer_dispatch_tests.rs` calls
 //!    `refresh_sweep` directly — which is the exact "no production caller" hole that file's own
 //!    header records the drift battery having had, one level up. Delete the spawn from `run()` and
@@ -36,6 +38,7 @@ use crate::mcp::connect::connect_support::{
     approved_hash, call, gov_with_scopes, mcp_cfg, server_cfg, wire_tool, Peer,
 };
 use crate::mcp::connect::refresh_sweep;
+use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 use crate::test_support::TestApp;
 use std::sync::Arc;
 
@@ -63,26 +66,43 @@ fn granted() -> crate::governance::GovCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 
-/// ONE BOOT of a deployment: the operator's registration, and a sightings cache that starts empty
-/// exactly as a fresh process's does.
+/// ONE BOOT of a deployment: the operator's registration, a sightings cache that starts empty
+/// exactly as a fresh process's does, and the durable store — if any — that this deployment is
+/// configured with.
 ///
 /// Taking the cache as a parameter is what makes a RESTART expressible — the same config, brought up
-/// against memory that does not carry over.
-fn boot(peer: &Peer, sightings: Arc<CatalogueCache>) -> Arc<crate::state::App> {
+/// against memory that does not carry over. Taking the STORE as a parameter is what makes the two
+/// deployments this file is about expressible side by side: `None` is a deployment that configures
+/// no store, whose trust state is process-local and whose quarantine is bounded by one sweep
+/// interval; `Some` is one that configures a durable home, and each `Some` here is a fresh `dlopen`
+/// of the real store cdylib over the real plugin C ABI, which is the only path a durability claim
+/// can honestly be made across.
+fn boot(
+    peer: &Peer,
+    sightings: Arc<CatalogueCache>,
+    store: Option<Arc<dyn busbar_api::Store>>,
+) -> Arc<crate::state::App> {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let mut cfg = server_cfg(peer, &[("read", Some(hash))]);
     cfg.refresh_ttl = Some("1s".to_string());
-    TestApp::new()
+    let mut app = TestApp::new()
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
-        .with_mcp_sightings(sightings)
-        .build()
+        .with_mcp_sightings(sightings);
+    if let Some(store) = store {
+        app = app.mcp_durable_store(store);
+    }
+    app.build()
 }
 
 /// Bring a deployment up, let the sweep take its approving observation, then pull the rug and let
 /// the sweep notice. Hands back the app that is now holding a live quarantine.
-async fn quarantined(peer: &Peer, sightings: Arc<CatalogueCache>) -> Arc<crate::state::App> {
-    let app = boot(peer, sightings);
+async fn quarantined(
+    peer: &Peer,
+    sightings: Arc<CatalogueCache>,
+    store: Option<Arc<dyn busbar_api::Store>>,
+) -> Arc<crate::state::App> {
+    let app = boot(peer, sightings, store);
     let swept = refresh_sweep(&app, 0).await;
     assert_eq!(
         swept[0]
@@ -138,37 +158,39 @@ async fn advertised(app: &Arc<crate::state::App>) -> Vec<String> {
 
 /// A DEMOTED UPSTREAM MUST NOT BE RE-APPROVED BY A PROCESS RESTART.
 ///
-/// ## This case FAILS today, and is recorded rather than closed
-///
-/// It is `#[ignore]`d, which in this tree means "run it explicitly" and here means one thing
-/// precisely: **this is a known open gap with a written-down cost, not a passing property.** Removing
-/// the `#[ignore]` is how the fix is proven, and the test is here so that the rebuild this tree is
-/// scheduled for has the property in front of it rather than having to rediscover it.
-///
-/// ## What it proves and why it is not a defect to be patched here
+/// ## What was wrong, and what the record actually is
 ///
 /// Drift sightings live in `App::mcp_sightings`, which is process memory. A server with no sighting
 /// answers `LiveDigest::Unsighted`, and the dispatch gate then compares against the hash the
 /// operator WROTE IN CONFIG — deliberately, because a deployment that never runs `connect` must keep
 /// serving exactly as it did, and that is the declarative-approval path every existing deployment
 /// depends on. So the fallback is right for a server nobody has looked at and wrong for a server
-/// somebody looked at and demoted, and nothing on disk tells those two apart after a restart.
+/// somebody looked at and demoted, and nothing told those two apart after a restart.
 ///
-/// Closing it means the demotion has to be DURABLE, which means a new `busbar_api::Store` method,
-/// which means the plugin ABI — the same durable-store decision `askstate::SpentAskStates` names and
-/// defers, and the same argument applies with the same force: it is a substantial change to a tree
-/// that is scheduled for deletion and rebuild, and the rebuilt tree gets to decide where its state
-/// lives. What must not happen is the property being lost in the move, which is what this file is.
+/// What closes it is a durable record of the OBSERVATION, not of the state: `crate::mcp::demotion`
+/// writes "a live look at this server disagreed with the approval" through the store seam, and the
+/// boot replay puts it back as a `Sighting` the existing derivation runs on unchanged. Nothing
+/// acquires a stored `Quarantined` that a later approval could not clear.
 ///
-/// The window is bounded — see the case below, which is the half that IS closed.
+/// ## The store here is the REAL plugin, `dlopen`ed twice
+///
+/// A write's `Ok(())` proves nothing on this seam — the trait's durable methods are defaulted to
+/// accept-and-keep-nothing — so a claim about a restart is only honest if the read-back happens
+/// through a SECOND `busbar_open` after the first handle is gone. Both boots below load the genuine
+/// `busbar-store-example-plugin` cdylib across the same C ABI a customer's postgres or sqlite plugin
+/// is reached over, over one on-disk file. An in-process `Store` double would have been green
+/// throughout the entire four-method-ABI defect this release already paid for once.
 #[tokio::test]
-#[ignore = "KNOWN OPEN GAP: quarantine is process-local and a restart re-opens it. Closing it needs \
-            a durable demotion record behind the plugin ABI — see this case's doc comment. Bounded \
-            by the_first_sweep_after_a_restart_re_establishes_the_quarantine."]
 async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
     crate::metrics::init();
+    let (file, cfg) = durable_cfg("mcp-quarantine-restart");
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = quarantined(&peer, Arc::new(CatalogueCache::new())).await;
+    let app = quarantined(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(open_plugin(&cfg)),
+    )
+    .await;
 
     let (status, body) = read_call(&app).await;
     assert_eq!(
@@ -177,17 +199,28 @@ async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
     );
 
     // ── THE RESTART. The same operator config, brought up against memory that did not carry over,
-    // which is exactly what a process restart is. Nothing about the upstream has been fixed: the
-    // peer is still serving the poisoned schema.
-    let restarted = boot(&peer, Arc::new(CatalogueCache::new()));
+    // and a FRESH `dlopen` + `busbar_open` over the same on-disk store — which is exactly what a
+    // process restart is. The app holding the first handle is dropped first, so the read-back cannot
+    // be answered out of a map the plugin kept in RAM. Nothing about the upstream has been fixed:
+    // the peer is still serving the poisoned schema.
+    drop(app);
+    let restarted = boot(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(open_plugin(&cfg)),
+    );
 
     let before = peer.calls();
     let (status, body) = read_call(&restarted).await;
     assert_eq!(
-        status, 403,
+        status,
+        403,
         "a restart handed a demoted upstream its approval back. The operator's remedy was never \
          worked, the upstream is still serving the schema that got it quarantined, and the only \
-         thing that changed is that the process that noticed is no longer running: {body}"
+         thing that changed is that the process that noticed is no longer running. The durable \
+         store at {} holds: {} — response was: {body}",
+        file.display(),
+        std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
     );
     assert_eq!(
         peer.calls(),
@@ -195,23 +228,107 @@ async fn a_restart_does_not_re_approve_a_quarantined_upstream() {
         "and the re-opened call reached the wire, so the drift was not merely un-recorded — it was \
          acted on"
     );
+
+    // The BYTES the plugin actually kept, printed so a release report can quote evidence rather
+    // than quote an assertion that passed.
+    eprintln!(
+        "DURABLE DEMOTION RECORD {}:\n{}",
+        file.display(),
+        std::fs::read_to_string(&file).expect("the plugin's on-disk state")
+    );
 }
 
-/// THE WINDOW IS BOUNDED, AND IT CLOSES BY ITSELF. The FIRST sweep after a restart re-takes the
-/// observation and re-establishes the demotion, with no operator present.
+/// AND IT IS NOT ADVERTISED AFTER THE RESTART EITHER. The listing half of the same property.
 ///
-/// This is the half of the restart property that is closed, and it is what makes the case above a
-/// bounded gap rather than a standing hole: a restart re-opens a demoted upstream for at most one
-/// sweep interval, and the sweep that closes it is the same unattended one that opened the
-/// quarantine in the first place. Without this case the gap above would be indefinite, which is a
-/// different finding with a different answer.
+/// Refusing the dispatch is the safety property; this is what busbar SAYS it will do. Without it the
+/// case above could pass while a restarted deployment went on publishing the approved schema and the
+/// approved hash for a tool the upstream has stopped serving that way — a planning client reads it,
+/// spends a turn building a call against it, and is refused.
+#[tokio::test]
+async fn a_restart_does_not_re_advertise_a_quarantined_upstream() {
+    crate::metrics::init();
+    let (_file, cfg) = durable_cfg("mcp-quarantine-restart-listing");
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
+    let app = quarantined(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(open_plugin(&cfg)),
+    )
+    .await;
+    drop(app);
+
+    let restarted = boot(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(open_plugin(&cfg)),
+    );
+    let names = advertised(&restarted).await;
+    assert!(
+        !names.contains(&"fs_read".to_string()),
+        "a restarted deployment is publishing a demoted upstream's tool again, with the approved \
+         schema and the approved hash, for a tool the upstream has stopped serving that way: \
+         {names:?}"
+    );
+}
+
+/// THE CONTROL THAT KEEPS THE DECLARATIVE PATH ALIVE, and it is the one this whole change could
+/// most easily have broken.
+///
+/// The same durable store, attached exactly as above — and NO demotion in it, because nothing has
+/// ever observed this upstream. An `Unsighted` server is not a server that drifted, and a boot that
+/// treated an empty demotion table as anything other than "nobody is demoted" would refuse and
+/// un-advertise the catalogue of every declaratively-approved deployment on the day it shipped.
+///
+/// It is deliberately the DURABLE deployment rather than the store-less one: the store-less case is
+/// covered below and could never have regressed, because it reads nothing.
+#[tokio::test]
+async fn a_durable_deployment_with_no_recorded_demotion_still_serves_its_declarative_approval() {
+    crate::metrics::init();
+    let (_file, cfg) = durable_cfg("mcp-quarantine-no-record");
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
+    let app = boot(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(open_plugin(&cfg)),
+    );
+
+    assert_eq!(
+        peer.list_calls(),
+        0,
+        "nothing has observed this upstream — that is the point of this case"
+    );
+    let (status, body) = read_call(&app).await;
+    assert_eq!(
+        status, 200,
+        "a server nobody has looked at must still dispatch against the hash the operator WROTE. \
+         Refusing here would mean every declarative deployment that configures a store lost its \
+         catalogue at boot: {body}"
+    );
+    assert!(
+        advertised(&app).await.contains(&"fs_read".to_string()),
+        "and it must still be published, for the same reason"
+    );
+}
+
+/// AND FOR A DEPLOYMENT THAT CONFIGURES NO STORE, THE WINDOW IS BOUNDED AND CLOSES BY ITSELF. The
+/// FIRST sweep after a restart re-takes the observation and re-establishes the demotion, with no
+/// operator present.
+///
+/// NO STORE HERE, deliberately: this is what a `store: memory` deployment gets, and it is the floor
+/// under the durable case above rather than a duplicate of it. A restart re-opens a demoted upstream
+/// for at most one sweep interval, and the sweep that closes it is the same unattended one that
+/// opened the quarantine in the first place.
+///
+/// It is also the assertion that the durable record did not quietly become load-bearing for the
+/// unattended defence. If this ever depends on a store, a deployment with none has no drift
+/// quarantine at all.
 #[tokio::test]
 async fn the_first_sweep_after_a_restart_re_establishes_the_quarantine() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let _ = quarantined(&peer, Arc::new(CatalogueCache::new())).await;
+    let _ = quarantined(&peer, Arc::new(CatalogueCache::new()), None).await;
 
-    let restarted = boot(&peer, Arc::new(CatalogueCache::new()));
+    let restarted = boot(&peer, Arc::new(CatalogueCache::new()), None);
     let swept = refresh_sweep(&restarted, 0).await;
     assert_eq!(
         swept[0].due,
@@ -253,7 +370,7 @@ async fn the_first_sweep_after_a_restart_re_establishes_the_quarantine() {
 async fn the_refresh_job_is_started_for_a_deployment_with_a_registration() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = boot(&peer, Arc::new(CatalogueCache::new()));
+    let app = boot(&peer, Arc::new(CatalogueCache::new()), None);
     let handle = Arc::new(crate::state::AppHandle::new(app));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -327,7 +444,7 @@ fn the_boot_path_starts_the_refresh_job() {
 async fn a_quarantined_tool_is_not_advertised() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = quarantined(&peer, Arc::new(CatalogueCache::new())).await;
+    let app = quarantined(&peer, Arc::new(CatalogueCache::new()), None).await;
 
     let (status, _) = read_call(&app).await;
     assert_eq!(status, 403, "the tool really is demoted on this app");
@@ -348,7 +465,7 @@ async fn a_quarantined_tool_is_not_advertised() {
 async fn an_undrifted_tool_is_still_advertised() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = boot(&peer, Arc::new(CatalogueCache::new()));
+    let app = boot(&peer, Arc::new(CatalogueCache::new()), None);
     refresh_sweep(&app, 0).await;
 
     let (status, body) = read_call(&app).await;
@@ -368,7 +485,7 @@ async fn an_undrifted_tool_is_still_advertised() {
 async fn a_server_nobody_has_observed_is_still_advertised() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
-    let app = boot(&peer, Arc::new(CatalogueCache::new()));
+    let app = boot(&peer, Arc::new(CatalogueCache::new()), None);
 
     assert_eq!(
         peer.list_calls(),

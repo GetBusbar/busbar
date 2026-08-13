@@ -1069,6 +1069,39 @@ async fn run() {
         }
     }
 
+    // THE DURABLE MCP DEMOTION RECORD, and the SPENT-APPROVAL LEDGER. Two security properties that
+    // were process-local, attached to the same single durable home for the same reason as the three
+    // blocks above, and each closing a window that a restart used to re-open:
+    //
+    //   * A DEMOTED UPSTREAM stays demoted. Drift quarantine is derived from a live observation, and
+    //     a restarted process has none — so a server nobody has looked at and a server somebody
+    //     looked at and demoted became indistinguishable, and the declarative fallback (which is
+    //     right for the first) handed the second its approval back. The record is replayed here,
+    //     BEFORE a listener is bound, so the quarantine is in force for the first request.
+    //
+    //   * A SPENT APPROVAL stays spent, across a restart AND across a fleet. The in-process ledger
+    //     makes a sealed confirmation single-use per node for the life of the process; two nodes
+    //     share the signing key, so they share the seal, and without a shared ledger one approval
+    //     was redeemable once per node. On a money-moving tool that is the defect the gate exists to
+    //     stop.
+    //
+    // With `store: memory` both no-op and the pre-existing process-local behaviour is exactly what
+    // remains — the same documented posture the audit ring, the task table and the call log have.
+    if let Some(gov) = app.governance.as_ref() {
+        let store = gov.store();
+        app.mcp_spent_approvals.set_sink(store.clone());
+        app.mcp_demotions.set_sink(store.clone());
+        match crate::mcp::demotion::hydrate(&app) {
+            0 => {}
+            n => tracing::warn!(
+                servers = n,
+                "MCP upstream demotions restored from the durable governance store: these servers \
+                 were quarantined before the last restart and are refused until an operator works \
+                 the change or a sweep observes them serving what was approved"
+            ),
+        }
+    }
+
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
@@ -3976,6 +4009,13 @@ pub(crate) fn build_app_from_config(
         mcp_spent_approvals: prior.map_or_else(
             || Arc::new(crate::mcp::askstate::SpentAskStates::new()),
             |p| p.mcp_spent_approvals.clone(),
+        ),
+        // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
+        // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
+        // silently detach it and every later quarantine would stop being written down.
+        mcp_demotions: prior.map_or_else(
+            || Arc::new(crate::mcp::demotion::DurableDemotions::new()),
+            |p| p.mcp_demotions.clone(),
         ),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),

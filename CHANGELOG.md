@@ -89,6 +89,38 @@ All notable changes to Busbar are documented here. The format is based on
   With the default `store: memory` nothing is persisted and nothing is claimed: the log keeps chain
   positions in RAM, the boot restore reports zero, and that zero is the truth being reported.
 
+- **A quarantined MCP upstream stays quarantined across a restart.** When the unattended sweep finds
+  a registered upstream serving a tool list that disagrees with what you approved, it demotes it —
+  and now writes that observation to your durable store. On the next boot the demotion is restored
+  before the listener is bound, so a restarted Busbar refuses the upstream and stops advertising its
+  tools instead of handing it its approval back until the next sweep.
+
+  The record is cleared by the first observation that finds the upstream serving what you approved,
+  which is how your remedy takes effect: fix the upstream, let the sweep look, and it serves again.
+  Nothing else clears it — in particular a restart does not, and an upstream that goes unreachable
+  cannot buy its approval back by going dark.
+
+  A registration nobody has ever observed is untouched: with no record, it dispatches against the
+  hash you wrote in config exactly as it always has. "We have never looked" and "it moved" are
+  different facts, and a deployment that never runs a refresh keeps serving unchanged.
+
+  With `store: memory` this is process-local as before: the demotion holds for the life of the
+  process, and a restart re-opens the upstream for at most one sweep interval before the sweep
+  re-establishes it.
+
+- **An approval for a confirm-once tool can now be redeemed once per DEPLOYMENT, not once per node.**
+  When you gate a tool behind `ask_caller:`, the sealed `requestState` Busbar mints is single-use.
+  That record of "this one was already redeemed" now lives in your durable store, which closes two
+  holes: a restart no longer hands back an approval that had already been spent, and — the one that
+  matters at scale — two nodes sharing a signing key no longer redeem the same approval once each.
+  Nodes share the key so that one exchange can span requests different nodes serve, which means they
+  share the seal; without a shared ledger, a single operator confirmation executed a money-moving
+  tool once per node, and the second redemption needed nothing more than a load balancer.
+
+  With `store: memory` this remains what it was: single-use per node, for the life of the process.
+  If the shared ledger cannot be reached, the redemption is REFUSED — a ledger that cannot say
+  whether an approval was already spent must not be read as saying it was not.
+
 ### Changed
 
 - **The `operation` label reads `invoke`, not `tool_call`.** The operation that carries "a caller

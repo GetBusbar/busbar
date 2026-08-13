@@ -259,6 +259,11 @@ pub(crate) struct McpSubject {
     cfg: crate::mcp::config::McpServerDefCfg,
     pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
     sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
+    /// The durable demotion record. Carried on the subject because `connect` takes a LIVE
+    /// observation, which is the only kind of event that may write one — and because an operator
+    /// who works a remedy through this verb and is told `approved` must not find the upstream
+    /// quarantined again at the next restart.
+    demotions: Arc<crate::mcp::demotion::DurableDemotions>,
 }
 
 /// THE MCP PLANE'S TRUST SURFACE. Three items, and the surface owns everything else.
@@ -280,6 +285,7 @@ impl PlaneTrust for McpServers {
                     cfg: cfg.clone(),
                     pool: app.mcp_pool.clone(),
                     sightings: app.mcp_sightings.clone(),
+                    demotions: app.mcp_demotions.clone(),
                 }),
                 _ => None,
             }
@@ -295,6 +301,11 @@ impl PlaneTrust for McpServers {
                 // Both are the operator's own configuration, so both are `invalid_request` rather
                 // than a 404 or a 5xx.
                 .map_err(|refusal| AdminError::Validation(refusal.to_string()))?;
+        // THE SAME RULE THE SWEEP SETTLES BY, and reached through the same function. An operator
+        // pressing this button is taking exactly the observation the sweep takes; if only one of
+        // the two wrote the durable record, an operator's own remedy would be the one act that
+        // could not clear a quarantine.
+        crate::mcp::demotion::settle(&subject.demotions, &subject.entry.id, report.state);
         Ok(trust_view(&report, &subject.entry, &subject.cfg))
     }
 }

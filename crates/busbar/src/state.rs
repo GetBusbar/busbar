@@ -478,6 +478,14 @@ pub(crate) struct App {
     /// like it rebuilt. See [`crate::mcp::askstate::SpentAskStates`] for what a RESTART does to it
     /// and why that trade was taken.
     pub(crate) mcp_spent_approvals: Arc<crate::mcp::askstate::SpentAskStates>,
+    /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
+    /// record, and the reason a restart no longer hands a demoted upstream its approval back.
+    ///
+    /// Arc-shared across config applies for the same reason the two fields above are, and with one
+    /// extra: the durable sink is attached to it ONCE at boot, so an instance rebuilt on an apply
+    /// would be an instance with no sink — a quarantine that stopped being written down because
+    /// somebody edited an unrelated section of config. See [`crate::mcp::demotion`].
+    pub(crate) mcp_demotions: Arc<crate::mcp::demotion::DurableDemotions>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

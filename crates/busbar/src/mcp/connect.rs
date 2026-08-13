@@ -564,6 +564,13 @@ pub(crate) async fn refresh_sweep(
         // stamps nothing: the clock records when we LOOKED, and we did not look.
         if let Some(r) = &report {
             stamp(&app.mcp_sightings, &entry.id, now_ms, !r.drift.is_empty());
+            // AND THE DEMOTION IS WRITTEN DOWN. The sweep is what compares a live observation to
+            // the operator's approval in an unattended deployment, so it is what knows a demotion
+            // happened at all - and, symmetrically, what knows it has stopped. The RULE itself lives
+            // in `demotion::settle` rather than here, because the operator's `connect` verb takes
+            // the same kind of observation and has to settle it the same way; two copies of it is
+            // how one call site comes to record a demotion the other never clears.
+            crate::mcp::demotion::settle(&app.mcp_demotions, &entry.id, r.state);
         }
 
         out.push(crate::trust::sweep::SweepOutcome {

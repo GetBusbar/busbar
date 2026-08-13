@@ -150,8 +150,12 @@ pub(crate) fn settle<A: PinnedArtifact>(
             recovery_held: false,
         },
         // Nothing observed, nothing to fold. Keeping what is recorded is the only answer that does
-        // not invent an observation.
-        Sighting::Never => Settled {
+        // not invent an observation. `Demoted` is here with `Never` and not with `Failed` for
+        // exactly that reason: it is the REPLAY of an observation taken by a previous process, so it
+        // can arrive as the RECORDED sighting but is never something a fresh look produces. Folding
+        // it in as if it were would let a boot replay stamp the drift clock a second time for a
+        // demotion that has already been counted once.
+        Sighting::Never | Sighting::Demoted(_) => Settled {
             sighting: recorded.clone(),
             drift_observed: false,
             recovery_held: false,
