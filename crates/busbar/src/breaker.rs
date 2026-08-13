@@ -125,6 +125,21 @@ pub(crate) struct RawUpstreamError {
     pub(crate) retry_after_secs: Option<u64>,
 }
 
+impl RawUpstreamError {
+    /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
+    /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
+    /// answer rather than the most restrictive possible one: `classify` still places the failure
+    /// from the status, which is strictly better than a non-2xx the breaker never hears about.
+    pub(crate) fn from_status(status: u16) -> Self {
+        Self {
+            http_status: status,
+            provider_code: None,
+            structured_type: None,
+            retry_after_secs: None,
+        }
+    }
+}
+
 /// Parse a `Retry-After` header value. RFC 9110 §10.2.3 defines the field as
 /// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
 /// integer form silently discards the provider's stated cooldown floor on every date-form response,

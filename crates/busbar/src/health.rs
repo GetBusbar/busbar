@@ -220,8 +220,8 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
 
 /// Send a single health probe to lane `i` and fold the outcome into the breaker, running a non-2xx
 /// response through the SAME two-stage disposition pipeline organic traffic uses
-/// (`proto.extract_error` → `normalize_raw_error` → `breaker::classify`) rather than forcing every
-/// failure to a transient cooldown:
+/// (the cell's `extract_error` → `normalize_raw_error` → `breaker::classify`) rather than forcing
+/// every failure to a transient cooldown:
 ///   - 2xx → recover the lane if it was tripped (→ Closed), THEN push a success outcome into every
 ///     cell's sliding error-rate window (`record_probe_success_all_cells`). Recording the success is
 ///     what makes probe-outcome accounting SYMMETRIC: failures already feed the window via
@@ -345,14 +345,21 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             return;
         }
         Ok(r) => {
-            // Non-2xx: run the body through Stage 1a (proto.extract_error) → Stage 1b
+            // Non-2xx: run the body through Stage 1a (the cell's `extract_error`) → Stage 1b
             // (normalize_raw_error + the lane's error_map) → Stage 2 (classify), exactly as the
             // forwarding path does, capturing the Retry-After header the body-only extractor can't
             // see so the cooldown floor is honored.
+            //
+            // Stage 1a asks the CELL that spoke to this upstream — the probe is a chat exchange over
+            // HTTP against the lane's protocol — rather than the lane's chat vtable. Identical
+            // vocabulary for all six protocols (chat's codec delegates to that very reader), and an
+            // outbound attempt with no lane behind it can be attributed the same way.
             let status = r.status();
             let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r).await;
-            let mut raw: RawUpstreamError = lane.protocol.reader().extract_error(status, &body);
+            let mut raw: RawUpstreamError =
+                crate::handlers::chat(lane.protocol.name(), crate::transport::Transport::Http)
+                    .extract_error(status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

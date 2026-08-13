@@ -122,6 +122,11 @@ fn cohere_encoding_format(s: &str) -> EncFmt {
 struct CohereEmbeddings;
 
 impl OperationHandler for CohereEmbeddings {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("cohere", status, body)
+    }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
@@ -362,6 +367,11 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
 }
 
 impl OperationHandler for CohereRerank {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("cohere", status, body)
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;

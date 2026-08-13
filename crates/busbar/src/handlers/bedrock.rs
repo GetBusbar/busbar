@@ -114,6 +114,11 @@ impl RequestHandler for BedrockRequestHandler {
 struct BedrockImage;
 
 impl OperationHandler for BedrockImage {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("bedrock", status, body)
+    }
     /// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
     /// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
@@ -193,6 +198,11 @@ impl OperationHandler for BedrockImage {
 struct BedrockEmbeddings;
 
 impl OperationHandler for BedrockEmbeddings {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("bedrock", status, body)
+    }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
@@ -309,6 +319,11 @@ impl OperationHandler for BedrockEmbeddings {
 struct BedrockRerank;
 
 impl OperationHandler for BedrockRerank {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("bedrock", status, body)
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;

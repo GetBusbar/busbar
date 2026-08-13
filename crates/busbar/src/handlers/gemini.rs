@@ -147,6 +147,11 @@ impl RequestHandler for GeminiRequestHandler {
 struct GeminiTranscription;
 
 impl OperationHandler for GeminiTranscription {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("gemini", status, body)
+    }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
     /// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
@@ -285,6 +290,11 @@ impl OperationHandler for GeminiTranscription {
 struct GeminiSpeech;
 
 impl OperationHandler for GeminiSpeech {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("gemini", status, body)
+    }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -412,6 +422,11 @@ impl OperationHandler for GeminiSpeech {
 struct GeminiImage;
 
 impl OperationHandler for GeminiImage {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("gemini", status, body)
+    }
     /// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -510,6 +525,11 @@ impl OperationHandler for GeminiImage {
 struct GeminiEmbeddings;
 
 impl OperationHandler for GeminiEmbeddings {
+    /// This protocol's error envelope, shared by every operation it serves: the same
+    /// vocabulary its chat cell reports, read from the same upstream.
+    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
+        crate::handlers::protocol_error("gemini", status, body)
+    }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
