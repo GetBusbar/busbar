@@ -430,108 +430,6 @@ mcp|stdio|client|client|tools/call = implemented
 # addressed to nowhere.
 mcp|stdio|client|client|tools/list = implemented
 
-# ═══════════════════════════════════════════════════════════════════════════════════════════════
-# THE REST OF THE STDIO CLIENT LEG — 21 ISSUED METHODS AND 13 HANDLED MESSAGES.
-# ═══════════════════════════════════════════════════════════════════════════════════════════════
-#
-# WHAT IS BUILT
-#
-#   `crates/busbar/src/mcp/client/verb.rs`   — the CLOSED set of methods busbar issues. One enum,
-#                                              one envelope builder shared with `tools/call`, so a
-#                                              verb cannot get the revision's required `_meta` or
-#                                              its mirrored headers right in one place and wrong in
-#                                              another.
-#   `crates/busbar/src/mcp/client/issue.rs`  — the ONE governed send. Egress gate, RFC 8693/8707
-#                                              credential, the supervision breaker, JSON-RPC
-#                                              correlation and a per-call chain record at every
-#                                              terminal. There is no second send site, because a
-#                                              verb with its own send site is a verb whose author
-#                                              decides whether the gate runs.
-#   `crates/busbar/src/mcp/client/inbound.rs`— what a CHILD sends busbar: nine notifications, four
-#                                              requests, and the deny-by-default gate on the three
-#                                              of those that would spend busbar's own authority.
-#   `crates/busbar/src/mcp/client/stdio.rs`  — the read loop that made the handle half reachable.
-#
-# THE DEFECT THIS CLOSED, because it is the reason the handle half is not cosmetic. `StdioChild::
-# call` wrote one line and read ONE line, and treated it as the answer. A child's stdout carries
-# everything the child says, so ONE conformant `notifications/message` emitted before the answer was
-# adopted AS the answer — and every later call on that child was then served the previous call's
-# response. One well-behaved child desynchronised the stream permanently and silently.
-#
-# WHY `initialize`, `ping`, `logging/setLevel`, `notifications/initialized`, `resources/subscribe`
-# and `resources/unsubscribe` ARE IMPLEMENTED HERE AND WAIVED ON THE HTTP LEG ABOVE. The HTTP waiver
-# is correct and this is not a reversal of it. Over streamable HTTP busbar's peer speaks the same
-# revision busbar's own front door serves, and SEP-2575 deleted those methods, so there is nothing
-# to send. Over stdio busbar's peer is whatever binary the OPERATOR named in `command:` — an
-# installed SDK server, overwhelmingly speaking a revision in which `initialize` is a MUST and a
-# server may refuse everything else until it arrives. busbar does not get to choose the child's
-# revision; the operator chose it by installing it. A leg that could not handshake could not talk to
-# the stdio ecosystem at all.
-#
-# WATCHED GREEN ON THE INSTRUMENT, all six, and none of them can skip:
-#   mcp::upstream::stdio_client_leg_tests::every_issued_verb_reaches_a_real_child_and_is_correlated
-#   mcp::upstream::stdio_client_leg_tests::the_handshake_is_sent_once_per_child_and_not_per_call
-#   mcp::upstream::stdio_client_leg_tests::an_ungranted_caller_is_refused_before_the_child_is_reached
-#   mcp::upstream::stdio_client_leg_tests::a_chatty_child_is_handled_and_the_answer_is_still_the_right_one
-#   mcp::upstream::stdio_client_leg_tests::a_granted_ask_is_refused_differently_than_an_ungranted_one
-#   mcp::upstream::stdio_client_leg_tests::a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited
-# plus the unit batteries `client::verb::verb_tests` and `client::inbound::inbound_tests`, which
-# compare the closed sets against `qa/method-inventory.json` IN BOTH DIRECTIONS — so a verb this
-# leg forgets is a red test, and a verb it invents is a red test too.
-#
-# THE HONEST LIMIT, stated because it is the thing a reader would otherwise have to discover: the
-# 21 issued verbs have no INBOUND caller yet. busbar's own front door does not expose a
-# `prompts/list` that proxies through to an upstream's, so `issue()` is reached today by the
-# batteries above and by nothing else. The leg is built, governed, audited and proven against a real
-# child process; what is missing is the server-plane method that would call it, and that is
-# `crate::mcp::method`'s surface rather than this leg's. `tools/list` DOES have a production caller
-# (`mcp::connect::refresh` builds it through the same closed verb set).
-
-# ── 21 ISSUED (busbar must ISSUE these to a child MCP server) ───────────────────────────────────
-mcp|stdio|client|client|completion/complete = implemented
-mcp|stdio|client|client|initialize = implemented
-mcp|stdio|client|client|logging/setLevel = implemented
-mcp|stdio|client|client|notifications/cancelled = implemented
-mcp|stdio|client|client|notifications/elicitation/response = implemented
-mcp|stdio|client|client|notifications/initialized = implemented
-mcp|stdio|client|client|notifications/progress = implemented
-mcp|stdio|client|client|notifications/roots/list_changed = implemented
-mcp|stdio|client|client|ping = implemented
-mcp|stdio|client|client|prompts/get = implemented
-mcp|stdio|client|client|prompts/list = implemented
-mcp|stdio|client|client|resources/list = implemented
-mcp|stdio|client|client|resources/read = implemented
-mcp|stdio|client|client|resources/subscribe = implemented
-mcp|stdio|client|client|resources/templates/list = implemented
-mcp|stdio|client|client|resources/unsubscribe = implemented
-mcp|stdio|client|client|server/discover = implemented
-mcp|stdio|client|client|subscriptions/listen = implemented
-mcp|stdio|client|client|tasks/cancel = implemented
-mcp|stdio|client|client|tasks/get = implemented
-mcp|stdio|client|client|tasks/update = implemented
-
-# ── 13 HANDLED (busbar must HANDLE these when the child sends them) ─────────────────────────────
-#
-# `ping` is answered with an empty result under NO grants — it spends nothing, and refusing it would
-# make busbar look dead to every child that probes. The three authority asks are refused, and the
-# two refusals are DELIBERATELY DISTINGUISHABLE: `ungranted` sends an operator to
-# `tools.<server>.grants.<kind>: true`, `unsatisfiable` says the grant is held and there is no
-# satisfier on this leg. A single word for both would make an operator debug a grant matrix that
-# took no decision. Neither is ever proxied outward to busbar's own caller.
-mcp|stdio|client|server|elicitation/create = implemented
-mcp|stdio|client|server|notifications/cancelled = implemented
-mcp|stdio|client|server|notifications/message = implemented
-mcp|stdio|client|server|notifications/progress = implemented
-mcp|stdio|client|server|notifications/prompts/list_changed = implemented
-mcp|stdio|client|server|notifications/resources/list_changed = implemented
-mcp|stdio|client|server|notifications/resources/updated = implemented
-mcp|stdio|client|server|notifications/subscriptions/acknowledged = implemented
-mcp|stdio|client|server|notifications/tasks = implemented
-mcp|stdio|client|server|notifications/tools/list_changed = implemented
-mcp|stdio|client|server|ping = implemented
-mcp|stdio|client|server|roots/list = implemented
-mcp|stdio|client|server|sampling/createMessage = implemented
-
 # ---------------------------------------------------------------------------
 # waived
 # ---------------------------------------------------------------------------
@@ -697,111 +595,69 @@ mcp|stdio|server|server|notifications/tools/list_changed = waived 2026-08-12 bus
 mcp|stdio|server|server|ping = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
 mcp|stdio|server|server|roots/list = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
 mcp|stdio|server|server|sampling/createMessage = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
-
-# ═════════════════════════════════════════════════════════════════════════════════════════════════
-# THE REST OF busbar-as-SERVER ON A2A -- the fourteen cells that close the direction. 2026-08-13.
-# ═════════════════════════════════════════════════════════════════════════════════════════════════
-#
-# WHY THESE SAT IN THE QUEUE WHILE THEIR CODE WAS MOUNTED, because that is the interesting part.
-# The HTTP+JSON and gRPC server rows above were claimed on the official TCK's stdout: a real
-# instrument, the right one, and the publisher's own. But it lives outside this repository, fetches
-# a pinned suite over the network, needs a Go control and a booted subject, and `cargo test` cannot
-# run any of it. So nothing inside this tree re-established those claims on a later commit -- and
-# the ELEVEN JSON-RPC cells had no in-tree instrument at all, despite `/a2a` being the door every
-# other binding re-frames onto and the one busbar's own agent card publishes.
-#
-# THE INSTRUMENT FOR ALL FOURTEEN: `a2a/tests/served_methods_tests.rs`, twelve tests, every one of
-# them driving `crate::build_router` -- a real router, a real socket, a real audience-bound busbar
-# token minted by the same signer the verifier runs, and the relay's recording seam standing in for
-# the backend. NONE OF THEM CAN SKIP: there is no environment probe and no `else { return }` in the
-# file, so a rig that stops being wired fails rather than reporting green over nothing, which is how
-# four batteries in this release reported green over unwired code.
-#
-# Each cell is claimed on something the METHOD decides, never on a 200:
-#   * relayed verbs      -- the recording seam saw the hop, with the right framing, carrying the
-#                           BACKEND's task id and never busbar's;
-#   * locally answered   -- the ABSENCE of a hop plus the content of the answer, because that is the
-#                           whole of what `a2a/local.rs` claims;
-#   * the card cells     -- the interface the served card publishes for that binding, which is the
-#                           only thing that makes a well-known path a per-transport cell at all.
-
-# JSON-RPC, SERVER SIDE -- `POST /a2a` and `POST /a2a/agents/{id}`.
-#
-#   SendMessage                       send_message_is_served_and_reaches_the_backend
-#   SendStreamingMessage              send_streaming_message_is_served_as_a_stream
-#   GetTask                           get_task_is_served_and_asks_the_backend_about_its_own_id
-#   CancelTask                        cancel_task_is_served_against_the_task_the_caller_named
-#   ListTasks                         list_tasks_is_answered_from_busbars_own_store_without_a_hop
-#   SubscribeToTask                   subscribe_to_task_refuses_what_busbar_knows_and_relays_what_it_does_not
-#   CreateTaskPushNotificationConfig  create_push_notification_config_is_served_and_keeps_the_callers_credential
-#   GetTaskPushNotificationConfig     the_push_notification_config_is_readable_by_both_of_its_verbs
-#   ListTaskPushNotificationConfigs   the_push_notification_config_is_readable_by_both_of_its_verbs
-#   DeleteTaskPushNotificationConfig  delete_push_notification_config_is_served_and_takes_the_credential_with_it
-#   GET /.well-known/agent-card.json  the_well_known_card_publishes_both_http_bindings_at_the_mount_that_serves_them
-#
-# THE PUSH-CONFIG CELLS CARRY THE CAPABILITY THE TCK CANNOT SEE. PUSH-DELIVER-001/002/003 are
-# permanently waived (the suite's own webhook receiver is plaintext `http://` by literal and busbar
-# refuses a plaintext callback -- testing/a2a-tck/WAIVERS.md), so the `authentication` member a
-# customer with an https receiver depends on is UNOBSERVABLE on that instrument. It is asserted here
-# instead: registered, held, presented as `<scheme> <credentials>`, never echoed back on a read, and
-# forgotten when the config is deleted. Conformance being unobservable is not permission to leave a
-# capability unbuilt, and it is not a reason to claim the three requirements either.
-a2a|jsonrpc|server|client|SendMessage = implemented
-a2a|jsonrpc|server|client|SendStreamingMessage = implemented
-a2a|jsonrpc|server|client|GetTask = implemented
-a2a|jsonrpc|server|client|CancelTask = implemented
-a2a|jsonrpc|server|client|ListTasks = implemented
-a2a|jsonrpc|server|client|SubscribeToTask = implemented
-a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig = implemented
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig = implemented
-a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs = implemented
-a2a|jsonrpc|server|client|DeleteTaskPushNotificationConfig = implemented
-a2a|jsonrpc|server|client|GET /.well-known/agent-card.json = implemented
-
-# HTTP+JSON, SERVER SIDE -- the two cells the binding's own commit deliberately did NOT claim.
-#
-#   GET /.well-known/agent-card.json  the_well_known_card_publishes_both_http_bindings_at_the_mount_that_serves_them
-#   GetExtendedAgentCard              the_extended_card_is_served_over_http_json_and_names_only_this_callers_agents
-#
-# ONE DOCUMENT, TWO CELLS, and the difference is real rather than bookkeeping: the well-known card is
-# how a client discovers WHICH bindings this deployment answers, so a card served without a
-# `JSONRPC` entry leaves that binding undiscoverable however well it is mounted, and the same for
-# `HTTP+JSON`. The test asserts both entries, at the mount that serves them, each with the protocol
-# version it speaks -- and re-asserts that the unauthenticated document still names no fronted agent.
-#
-# THE EXTENDED CARD IS CLAIMED ON THE TENANT BOUNDARY, not on the status. The deployment fronts two
-# agents; the caller holds a grant on one; the card names exactly that one. The naive gateway
-# implementation -- union every fronted agent's skills -- is a DATA-EXPOSURE bug rather than a
-# conformance one, and it is what this assertion exists to catch. Section 11.3 is asserted beside it:
-# the REST body IS the `result` verbatim, carrying no `jsonrpc` member.
+a2a|grpc|client|client|CancelTask = implemented                         # grpc_client_issues_cancel_task
+a2a|grpc|client|client|GetTask = implemented                            # grpc_client_issues_get_task
+a2a|grpc|client|client|SendMessage = implemented                        # grpc_client_issues_send_message
+a2a|grpc|client|client|SendStreamingMessage = implemented               # grpc_client_issues_send_streaming_message
+a2a|grpc|client|client|SubscribeToTask = implemented                    # grpc_client_issues_subscribe_to_task
+a2a|grpc|server|client|GetExtendedAgentCard = implemented
+a2a|http+json|client|client|CancelTask = implemented                    # http_json_client_issues_cancel_task
+a2a|http+json|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+a2a|http+json|client|client|GetTask = implemented                       # http_json_client_issues_get_task
+a2a|http+json|client|client|SendMessage = implemented                   # http_json_client_issues_send_message
+a2a|http+json|client|client|SendStreamingMessage = implemented          # http_json_client_issues_send_streaming_message
+a2a|http+json|client|client|SubscribeToTask = implemented               # http_json_client_issues_subscribe_to_task
+a2a|http+json|client|server|PushNotificationDelivery = implemented      # pushdeliver_tests::a_completed_task_with_a_callback_is_delivered
 a2a|http+json|server|client|GET /.well-known/agent-card.json = implemented
 a2a|http+json|server|client|GetExtendedAgentCard = implemented
-
-# gRPC, SERVER SIDE -- `GetExtendedAgentCard`, and it did not work.
-#
-#   the_extended_card_is_served_over_grpc_at_the_path_the_proto_defines
-#   the_card_narrowing_removes_only_the_member_the_proto_has_no_field_for
-#
-# THIS CELL WAS A DEFECT, FOUND BY BEING DRIVEN. The route was mounted, the rpc was written, and the
-# call answered `grpc-status 13 (Internal)` to every caller: busbar's own card declares
-# `capabilities.stateTransitionHistory` -- an A2A v0.3 member, declared by the specification's own
-# sample card in section 8.5 -- and `a2a.proto`'s `AgentCapabilities`, which SPEC 1.4 makes
-# normative, has no such field. The generated ProtoJSON type is `deny_unknown_fields`, so the
-# transcode did not drop the member: it failed, and took the whole card with it. A mounted path that
-# answers nothing is not an implemented method.
-#
-# It was invisible to the publisher's suite by construction: `CARD-EXT-002` skips itself the moment
-# a card is configured and `CORE-CAP-003` only passes for an implementation that does NOT have the
-# verb, so a busbar that answers this perfectly and one that answers `Internal` produce identical
-# TCK output. The in-tree test is the only instrument that can see it, which is the argument for
-# having one.
-#
-# THE FIX IS NOT THE ONE `testing/a2a-tck/WAIVERS.md` REFUSES. That decision -- dated, recorded --
-# is that busbar does not reshape the card it PUBLISHES to satisfy a generated schema the
-# specification's own sample contradicts, and the document served over both HTTP bindings is
-# untouched: it still carries the member. What changed is only this binding's transcode, where the
-# answer IS a protobuf `AgentCard` and a member the message has no field for cannot be put on the
-# wire in any shape. The two available answers were "the card, minus what protobuf cannot represent"
-# and "no card"; `grpc::narrowed_to_the_proto` takes the first, from a NAMED list rather than by
-# ignoring whatever fails to parse, so the next divergence is a line somebody writes down.
-a2a|grpc|server|client|GetExtendedAgentCard = implemented
+a2a|jsonrpc|client|client|CancelTask = implemented                      # jsonrpc_client_issues_cancel_task
+a2a|jsonrpc|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+a2a|jsonrpc|client|client|GetTask = implemented                         # jsonrpc_client_issues_get_task
+a2a|jsonrpc|client|client|SendMessage = implemented                     # jsonrpc_client_issues_send_message
+a2a|jsonrpc|client|client|SendStreamingMessage = implemented            # jsonrpc_client_issues_send_streaming_message
+a2a|jsonrpc|client|client|SubscribeToTask = implemented                 # jsonrpc_client_issues_subscribe_to_task
+a2a|jsonrpc|server|client|CancelTask = implemented
+a2a|jsonrpc|server|client|CreateTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|DeleteTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|GET /.well-known/agent-card.json = implemented
+a2a|jsonrpc|server|client|GetTask = implemented
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig = implemented
+a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs = implemented
+a2a|jsonrpc|server|client|ListTasks = implemented
+a2a|jsonrpc|server|client|SendMessage = implemented
+a2a|jsonrpc|server|client|SendStreamingMessage = implemented
+a2a|jsonrpc|server|client|SubscribeToTask = implemented
+mcp|stdio|client|client|completion/complete = implemented
+mcp|stdio|client|client|initialize = implemented
+mcp|stdio|client|client|logging/setLevel = implemented
+mcp|stdio|client|client|notifications/cancelled = implemented
+mcp|stdio|client|client|notifications/elicitation/response = implemented
+mcp|stdio|client|client|notifications/initialized = implemented
+mcp|stdio|client|client|notifications/progress = implemented
+mcp|stdio|client|client|notifications/roots/list_changed = implemented
+mcp|stdio|client|client|ping = implemented
+mcp|stdio|client|client|prompts/get = implemented
+mcp|stdio|client|client|prompts/list = implemented
+mcp|stdio|client|client|resources/list = implemented
+mcp|stdio|client|client|resources/read = implemented
+mcp|stdio|client|client|resources/subscribe = implemented
+mcp|stdio|client|client|resources/templates/list = implemented
+mcp|stdio|client|client|resources/unsubscribe = implemented
+mcp|stdio|client|client|server/discover = implemented
+mcp|stdio|client|client|subscriptions/listen = implemented
+mcp|stdio|client|client|tasks/cancel = implemented
+mcp|stdio|client|client|tasks/get = implemented
+mcp|stdio|client|client|tasks/update = implemented
+mcp|stdio|client|server|elicitation/create = implemented
+mcp|stdio|client|server|notifications/cancelled = implemented
+mcp|stdio|client|server|notifications/message = implemented
+mcp|stdio|client|server|notifications/progress = implemented
+mcp|stdio|client|server|notifications/prompts/list_changed = implemented
+mcp|stdio|client|server|notifications/resources/list_changed = implemented
+mcp|stdio|client|server|notifications/resources/updated = implemented
+mcp|stdio|client|server|notifications/subscriptions/acknowledged = implemented
+mcp|stdio|client|server|notifications/tasks = implemented
+mcp|stdio|client|server|notifications/tools/list_changed = implemented
+mcp|stdio|client|server|ping = implemented
+mcp|stdio|client|server|roots/list = implemented
+mcp|stdio|client|server|sampling/createMessage = implemented

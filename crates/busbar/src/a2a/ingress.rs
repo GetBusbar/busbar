@@ -1320,8 +1320,45 @@ async fn invoke_inner(
         None => None,
     };
 
+    // ── WHICH BINDING THIS BACKEND SPEAKS. Read off the card busbar already fetched, verified and
+    //    pinned for this registration — never off the request, and never off a URL the card
+    //    supplied. See `relay`'s `THE OUTBOUND BINDING` note: the card says HOW, the operator's
+    //    `url:` says WHERE.
+    let binding = super::relay::binding_of(
+        plane
+            .with_registrations(|regs| {
+                regs.iter()
+                    .find(|r| r.agent_id == admitted.dispatch.agent_id)
+                    .and_then(|r| r.cached_card.clone())
+            })
+            .as_ref(),
+    );
+    let Some(framing) = super::relay::framing_for(&binding) else {
+        // REFUSED BY NAME, and refused HERE rather than relayed as JSON-RPC anyway. A backend that
+        // publishes only a binding this build cannot speak is unreachable, and saying so names the
+        // word an operator has to act on; sending it an envelope it never offered to read would
+        // produce a `400` from the backend and an operator hunting the wrong end of the hop.
+        tracing::error!(
+            agent = %admitted.dispatch.agent_id,
+            binding = %binding,
+            "a2a: the registered agent's card declares no binding busbar can speak"
+        );
+        return refuse_hop_early(
+            &rpc_id,
+            &super::relay::RelayRefusal::Unframable {
+                binding: "unknown",
+                method: super::local::method_of(&envelope).to_string(),
+                reason: format!(
+                    "the agent's card declares `{binding}`, which is not one of A2A's three \
+                     bindings this build speaks"
+                ),
+            },
+        );
+    };
+
     let hop_ctx = HopContext {
         seam: Arc::clone(&seam),
+        framing,
         agent_id: admitted.dispatch.agent_id.clone(),
         addressed: addressed.is_some(),
         backend_url: admitted.dispatch.backend_url.clone(),
@@ -1384,6 +1421,13 @@ struct HopContext {
     /// THE REGISTRY GENERATION ADMISSION DECIDED UNDER, carried to the pre-socket gate. See
     /// `relay::RelayCall::admitted_generation`.
     admitted_generation: u64,
+    /// WHICH OF A2A'S THREE BINDINGS THE BACKEND SPEAKS, as the framing that composes the hop.
+    ///
+    /// Resolved ONCE, here, off the registration's own cached card, and carried rather than looked
+    /// up again in each hop: the two hops must not be able to reach different answers about which
+    /// binding one request goes out on. `&'static` because the three framings are stateless
+    /// vtables, so carrying one costs a pointer and there is nothing to build.
+    framing: &'static dyn super::relay::OutboundFraming,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1505,6 +1549,7 @@ async fn unary_hop(
     let backend_url = ctx.backend_url.clone();
     let relay_policy = ctx.policy.clone();
     let admitted_generation = ctx.admitted_generation;
+    let framing = ctx.framing;
     let now_ms = ctx.now_ms;
     // The id the hop's answer must name. `body` goes out verbatim, so the id busbar sends to the
     // backend IS this one — see `RelayCall::rpc_id`.
@@ -1522,6 +1567,7 @@ async fn unary_hop(
                 rpc_id: &rpc_id,
                 policy: &relay_policy,
                 a2a_version,
+                framing,
             },
             seam.as_ref(),
             now_ms,
@@ -1598,6 +1644,7 @@ async fn stream_hop(
     let backend_url = ctx.backend_url.clone();
     let relay_policy = ctx.policy.clone();
     let admitted_generation = ctx.admitted_generation;
+    let framing = ctx.framing;
     let now = ctx.now;
     let now_ms = ctx.now_ms;
     // The same id the unary path answers under, and now the same id every STREAMED event is
@@ -1683,6 +1730,7 @@ async fn stream_hop(
                 rpc_id: &rpc_id,
                 policy: &relay_policy,
                 a2a_version,
+                framing,
             },
             seam.as_ref(),
             &task_id,
@@ -1861,6 +1909,26 @@ fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::task::Task)
 /// A DEMOTED registration does NOT fail the task. The work never started, the agent is what changed,
 /// and burning the caller's task row for an operator's suspension would make a resume impossible
 /// once the agent is restored.
+/// A HOP REFUSED BEFORE THERE IS A [`HopContext`] TO REFUSE IT AGAINST.
+///
+/// One case reaches this and it is [`super::relay::RelayRefusal::Unframable`] on the binding
+/// lookup: the registration's card names a wire format this build does not speak, which is known
+/// before anything about the hop is decided. It is the SAME status the refusal itself carries, so a
+/// caller cannot tell "refused before the context existed" from "refused at the socket" — the fault
+/// is busbar's either way and the distinction is an internal one.
+fn refuse_hop_early(rpc_id: &serde_json::Value, refusal: &super::relay::RelayRefusal) -> Response {
+    (
+        axum::http::StatusCode::from_u16(refusal.status())
+            .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+        axum::Json(super::rpcerror::body(
+            rpc_id,
+            super::rpcerror::A2aError::InvalidAgentResponse,
+            refusal.to_string(),
+        )),
+    )
+        .into_response()
+}
+
 fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
     tracing::warn!(agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
     if ctx.addressed {

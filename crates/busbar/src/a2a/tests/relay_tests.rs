@@ -578,8 +578,9 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
     }
     struct NeverPosts;
     impl crate::a2a::relay::RelayTransport for NeverPosts {
-        fn post(
+        fn send(
             &self,
+            _m: &str,
             _u: &reqwest::Url,
             _a: IpAddr,
             _h: &[(String, String)],
@@ -679,26 +680,59 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
     .expect("the lease mints")
 }
 
+/// THE JSON-RPC FRAMING OF ONE BODY, for the builder tests below.
+///
+/// `build_request` takes a FRAMED request now — the composition is the binding's and the header set
+/// is the builder's — so these tests frame first and assert on the headers second, which is the
+/// same two steps the hop takes.
+fn framed(url: &reqwest::Url, body: &[u8], streaming: bool) -> crate::a2a::relay::FramedRequest {
+    let envelope: serde_json::Value =
+        serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+    let params = envelope
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    crate::a2a::relay::default_framing()
+        .compose(
+            url,
+            &crate::a2a::relay::Outbound {
+                verbatim: body,
+                method: crate::a2a::local::method_of(&envelope),
+                params: &params,
+            },
+            streaming,
+        )
+        .expect("the JSON-RPC framing is a courier and cannot refuse a body")
+}
+
 /// `OutboundRelayRequest` is destructured EXHAUSTIVELY, so a field added to it without being added
 /// to `wire_bytes` stops this test COMPILING rather than silently narrowing the scan. A scan that
 /// quietly stops covering a new field is the exact false green the whole shape exists to prevent.
 #[test]
 fn every_field_of_the_outbound_request_is_scanned() {
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
+    let body_bytes = b"{\"params\":{\"text\":\"BODYMARK\"}}";
     let req = crate::a2a::relay::build_request(
-        &url,
+        framed(&url, body_bytes, false),
         "planner",
         Some(&a_lease("planner", 1_000)),
-        b"{\"params\":{\"text\":\"BODYMARK\"}}",
-        false,
         "0.3",
         1_000,
     )
     .expect("the request builds");
 
-    let crate::a2a::relay::OutboundRelayRequest { url, headers, body } = &req;
+    let crate::a2a::relay::OutboundRelayRequest {
+        http_method,
+        url,
+        headers,
+        body,
+    } = &req;
     let wire = req.wire_bytes();
     assert!(contains(&wire, url.as_bytes()), "url must be scanned");
+    assert!(
+        contains(&wire, http_method.as_bytes()),
+        "the request line's verb must be scanned"
+    );
     assert!(!headers.is_empty(), "headers must be present to be scanned");
     for (n, v) in headers {
         assert!(
@@ -725,8 +759,9 @@ fn every_field_of_the_outbound_request_is_scanned() {
 fn the_relayed_request_carries_only_constants_and_the_lease() {
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
 
-    let bare = crate::a2a::relay::build_request(&url, "planner", None, b"{}", false, "0.3", 1_000)
-        .expect("the request builds");
+    let bare =
+        crate::a2a::relay::build_request(framed(&url, b"{}", false), "planner", None, "0.3", 1_000)
+            .expect("the request builds");
     let names: Vec<&str> = bare.headers.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
@@ -735,11 +770,9 @@ fn the_relayed_request_carries_only_constants_and_the_lease() {
     );
 
     let leased = crate::a2a::relay::build_request(
-        &url,
+        framed(&url, b"{}", false),
         "planner",
         Some(&a_lease("planner", 1_000)),
-        b"{}",
-        false,
         "0.3",
         1_000,
     )
@@ -759,8 +792,13 @@ fn the_relayed_request_carries_only_constants_and_the_lease() {
 fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
     let url = reqwest::Url::parse(BACKEND).expect("a URL");
     let lease = a_lease("researcher", 1_000);
-    let wrong =
-        crate::a2a::relay::build_request(&url, "planner", Some(&lease), b"{}", false, "0.3", 1_000);
+    let wrong = crate::a2a::relay::build_request(
+        framed(&url, b"{}", false),
+        "planner",
+        Some(&lease),
+        "0.3",
+        1_000,
+    );
     assert!(
         matches!(wrong, Err(crate::a2a::creds::LeaseError::WrongAgent { .. })),
         "a credential leased for one agent must not be presented to another: {wrong:?}"
@@ -768,11 +806,9 @@ fn a_lease_for_another_agent_or_a_dead_one_refuses_the_hop() {
 
     let lease = a_lease("planner", 1_000);
     let expired = crate::a2a::relay::build_request(
-        &url,
+        framed(&url, b"{}", false),
         "planner",
         Some(&lease),
-        b"{}",
-        false,
         "0.3",
         10_000_000,
     );
@@ -807,8 +843,9 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
     }
     struct NeverCalled;
     impl crate::a2a::relay::RelayTransport for NeverCalled {
-        fn post(
+        fn send(
             &self,
+            _m: &str,
             _u: &reqwest::Url,
             _a: IpAddr,
             _h: &[(String, String)],
@@ -851,6 +888,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             rpc_id: &serde_json::json!(1),
             policy: &FetchPolicy::default(),
             a2a_version: "0.3",
+            framing: crate::a2a::relay::default_framing(),
         },
         &Seam(FetchPolicy::default()),
         1_000,
@@ -975,8 +1013,9 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
     }
     struct Reached;
     impl crate::a2a::relay::RelayTransport for Reached {
-        fn post(
+        fn send(
             &self,
+            _m: &str,
             _u: &reqwest::Url,
             _a: IpAddr,
             _h: &[(String, String)],
@@ -1037,6 +1076,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             rpc_id: &serde_json::json!(1),
             policy: &registration_policy,
             a2a_version: "0.3",
+            framing: crate::a2a::relay::default_framing(),
         },
         &Seam(plane_default.clone()),
         1_000,
@@ -1060,6 +1100,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             rpc_id: &serde_json::json!(1),
             policy: &plane_default,
             a2a_version: "0.3",
+            framing: crate::a2a::relay::default_framing(),
         },
         &Seam(registration_policy.clone()),
         1_000,

@@ -49,6 +49,11 @@ pub(super) const LEASED: &str = "leased-outbound-cred-BUSBAR-PRESENTS-THIS-7f3a"
 /// One request the relay asked to have sent, as it asked.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Recorded {
+    /// THE REQUEST LINE'S VERB. Recorded because A2A's HTTP+JSON binding reads with `GET` and
+    /// withdraws with `DELETE`, so "busbar issued this operation" is a claim about the verb as much
+    /// as about the path — and a client that spelled every operation as a `POST` would look correct
+    /// in a log that only kept the URL.
+    pub(super) http_method: String,
     pub(super) url: String,
     pub(super) addr: Option<IpAddr>,
     pub(super) headers: Vec<(String, String)>,
@@ -63,6 +68,7 @@ impl Recorded {
     /// the body. The haystack the sentinel scan searches.
     pub(super) fn wire(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        out.extend_from_slice(self.http_method.as_bytes());
         out.extend_from_slice(self.url.as_bytes());
         for (n, v) in &self.headers {
             out.extend_from_slice(n.as_bytes());
@@ -97,6 +103,29 @@ pub(super) enum Outcome {
     /// A stream request answered with a single JSON document — legal for a task the backend
     /// finished instantly.
     StreamAnsweredUnary(String),
+    /// A backend that answers each UNARY hop IN TURN, the last body repeating once the list runs
+    /// out.
+    ///
+    /// The addressed verbs need TWO hops against ONE backend — a submission that opens the task and
+    /// then the read or the cancel that names it — and the two answers are DIFFERENT MESSAGE TYPES
+    /// on the gRPC binding (`SendMessageResponse`, then `Task`). A fixture that served one body to
+    /// both would make the second hop's answer undecodable, and a test that then asserted only on
+    /// the request would silently stop covering the answer half.
+    AnswersInTurn(u16, Vec<String>, Arc<AtomicUsize>),
+    /// A backend that answers a UNARY hop with one document and a STREAMING hop with these frames.
+    ///
+    /// One fixture rather than two harnesses, because the tests that need it are the ones that OPEN
+    /// a task with a submission and then SUBSCRIBE to it — two hops of different shapes against one
+    /// backend, which is what a resubscribe actually is. A fixture that could only do one of them
+    /// forced the subscribe tests to stand up a second deployment, and a task opened in one
+    /// deployment is not addressable in another.
+    AnswersThenStreams(u16, String, Vec<String>),
+}
+
+/// [`Outcome::AnswersInTurn`] with its own counter. A constructor rather than a literal so a test
+/// cannot accidentally share one counter between two harnesses.
+pub(super) fn in_turn(status: u16, replies: Vec<String>) -> Outcome {
+    Outcome::AnswersInTurn(status, replies, Arc::new(AtomicUsize::new(0)))
 }
 
 pub(super) struct RecordingResolver {
@@ -118,6 +147,7 @@ pub(super) struct RecordingTransport {
 impl RecordingTransport {
     fn record(
         &self,
+        http_method: &str,
         url: &reqwest::Url,
         addr: IpAddr,
         headers: &[(String, String)],
@@ -128,6 +158,7 @@ impl RecordingTransport {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Recorded {
+                http_method: http_method.to_string(),
                 url: url.to_string(),
                 addr: Some(addr),
                 headers: headers.to_vec(),
@@ -138,14 +169,15 @@ impl RecordingTransport {
 }
 
 impl RelayTransport for RecordingTransport {
-    fn post(
+    fn send(
         &self,
+        http_method: &str,
         url: &reqwest::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, String> {
-        self.record(url, addr, headers, body, false);
+        self.record(http_method, url, addr, headers, body, false);
         match &self.outcome {
             Outcome::Answers(status, reply) => Ok(HttpResponse {
                 status: *status,
@@ -162,6 +194,27 @@ impl RelayTransport for RecordingTransport {
                 client_identity_offered: false,
             }),
             Outcome::Fails(err) => Err(err.clone()),
+            Outcome::AnswersInTurn(status, replies, seen) => {
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                let reply = replies
+                    .get(n)
+                    .or_else(|| replies.last())
+                    .expect("an `AnswersInTurn` fixture with no answers answers nothing");
+                Ok(HttpResponse {
+                    status: *status,
+                    location: None,
+                    body: correlated(reply, body).into_bytes(),
+                    peer_spki: None,
+                    client_identity_offered: false,
+                })
+            }
+            Outcome::AnswersThenStreams(status, reply, _) => Ok(HttpResponse {
+                status: *status,
+                location: None,
+                body: correlated(reply, body).into_bytes(),
+                peer_spki: None,
+                client_identity_offered: false,
+            }),
             Outcome::Streams(_) | Outcome::StreamAnsweredUnary(_) => {
                 panic!("a streaming fixture was reached through the UNARY hop")
             }
@@ -176,10 +229,10 @@ impl RelayTransport for RecordingTransport {
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String> {
-        self.record(url, addr, headers, body, true);
+        self.record("POST", url, addr, headers, body, true);
         match &self.outcome {
             Outcome::Fails(err) => Err(err.clone()),
-            Outcome::Streams(frames) => {
+            Outcome::AnswersThenStreams(_, _, frames) | Outcome::Streams(frames) => {
                 // THE SINK IS CALLED FROM INSIDE A RUNTIME, exactly as production calls it.
                 //
                 // This is not decoration and it is not "more realistic": it is the whole reason the
@@ -220,6 +273,11 @@ impl RelayTransport for RecordingTransport {
                 status: *status,
                 content_type: "application/json".to_string(),
                 body: doc.clone().into_bytes(),
+            }),
+            Outcome::AnswersInTurn(status, replies, _) => Ok(StreamHead {
+                status: *status,
+                content_type: "application/json".to_string(),
+                body: replies.last().cloned().unwrap_or_default().into_bytes(),
             }),
             Outcome::AnswersCorrelated(status, doc) => Ok(StreamHead {
                 status: *status,
@@ -320,10 +378,28 @@ pub(super) fn a_card() -> serde_json::Value {
     })
 }
 
+/// THE SAME CARD, DECLARING WHICH OF A2A'S THREE BINDINGS THIS AGENT SERVES.
+///
+/// `supportedInterfaces` is the member A2A defines for it and the one `relay::binding_of` reads.
+/// A card that declares NONE is [`a_card`] above and means JSON-RPC, which is A2A's own default —
+/// so every existing harness caller keeps building exactly the deployment it always built.
+pub(super) fn a_card_on(binding: &str) -> serde_json::Value {
+    let mut card = a_card();
+    card["supportedInterfaces"] = serde_json::json!([{
+        "url": BACKEND,
+        "protocolBinding": binding,
+    }]);
+    card
+}
+
 /// Lift a registration to APPROVED against the card it has cached, the way the `connect`/approve
 /// verb pair does — nothing here invents a trust state of its own.
 pub(super) fn approve(reg: &mut AgentRegistration) {
-    let card = a_card();
+    approve_card(reg, a_card());
+}
+
+/// The same, against a card that declares a binding.
+pub(super) fn approve_card(reg: &mut AgentRegistration, card: serde_json::Value) {
     let digests = crate::a2a::card::skill_digests(&card).expect("digests");
     let sighting = crate::trust::Sighting::Seen(crate::trust::Observation {
         pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
@@ -410,6 +486,23 @@ impl Drop for Harness {
 /// The default harness: one agent (`planner`), granted to the caller.
 pub(super) async fn harness(outcome: Outcome, with_credential: bool) -> Harness {
     harness_granting(outcome, with_credential, &["planner"]).await
+}
+
+/// THE SAME DEPLOYMENT, WITH THE BACKEND'S CARD DECLARING `binding`.
+///
+/// The ONLY difference from [`harness`] is the card each registration has cached — no second router,
+/// no second seam, no second ingress. That is the claim the whole binding block rests on: arming a
+/// leg is re-framing, so a test that changes one member of one card and finds a different request on
+/// the wire is a test that has proved the framing is the only thing that varied.
+pub(super) async fn harness_on(outcome: Outcome, binding: &str) -> Harness {
+    let h = harness_granting(outcome, false, &["planner"]).await;
+    let card = a_card_on(binding);
+    h.plane.with_registrations_mut(|regs| {
+        for reg in regs.iter_mut() {
+            approve_card(reg, card.clone());
+        }
+    });
+    h
 }
 
 /// THE OPERATOR'S HOOK ATTACHMENT for a harness that wants one: the loaded plugin env, the

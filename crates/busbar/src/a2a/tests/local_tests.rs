@@ -332,8 +332,9 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
     }
     struct NoTransport;
     impl RelayTransport for NoTransport {
-        fn post(
+        fn send(
             &self,
+            _http_method: &str,
             _url: &reqwest::Url,
             _addr: IpAddr,
             _headers: &[(String, String)],
