@@ -103,6 +103,21 @@ impl crate::ir::facts::IrFacts for InvokeReq {
     }
 
     fn shape(&self) -> crate::ir::facts::Shape {
+        // Summed over the SAME items a content-granted hook is shown, for the reason
+        // [`crate::ir::facts::ContentItem::screenable_text`] gives: a size signal and a content
+        // projection computed by two functions is a size signal that can drift from what was
+        // screened. `system_chars` is accumulated in THIS walk rather than by a second pass, which
+        // is the invariant [`crate::ir::facts::Shape::system_chars`] states: it is a subset of
+        // `text_chars` and the two cannot drift because nothing walks twice.
+        let mut text_chars = 0usize;
+        let mut system_chars = 0usize;
+        for item in crate::ir::facts::IrFacts::content(self) {
+            let n = item.screenable_text().chars().count();
+            text_chars += n;
+            if matches!(item.slot(), crate::ir::facts::Slot::System) {
+                system_chars += n;
+            }
+        }
         crate::ir::facts::Shape {
             // ONE unit of work. An invocation is not a conversation, and reporting `0` would tell a
             // hook the request is empty.
@@ -110,13 +125,17 @@ impl crate::ir::facts::IrFacts for InvokeReq {
             // The request IS a tool call: whatever else `has_tools` means to a consumer, answering
             // `false` for an invocation would be false.
             has_tools: true,
-            // Summed over the SAME items a content-granted hook is shown, for the reason
-            // [`crate::ir::facts::ContentItem::screenable_text`] gives: a size signal and a content projection computed
-            // by two functions is a size signal that can drift from what was screened.
-            text_chars: crate::ir::facts::IrFacts::content(self)
-                .iter()
-                .map(|i| i.screenable_text().chars().count())
-                .sum(),
+            // ONE tool is in play, named by [`InvokeReq::tool`]. This is the coherent partner of
+            // `has_tools: true` above: a consumer handed `has_tools` with a count of zero would be
+            // reading a contradiction. The count is of tools the request puts in play, and an
+            // invocation puts exactly the one it targets.
+            tool_count: 1,
+            text_chars,
+            // Always `0` today, and computed rather than written down so it STAYS true. An
+            // invocation projects one [`crate::ir::facts::Slot::ToolArgs`] item and has no system
+            // slot at all — a hardcoded `0` would silently become a lie the day this projection
+            // grows an item, which is the whole reason the sum shares the walk above.
+            system_chars,
             // No output cap exists on this operation to normalise.
             max_tokens: None,
         }

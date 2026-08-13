@@ -116,6 +116,12 @@ fn build_with_hook_makes_an_mcp_attach_live() {
         },
         refresh_ttl: None,
         timeout: None,
+        // The stdio child-process grammar, absent: this fixture is an HTTP-transport server
+        // (`url:` above, `transport: None`), and these four are `transport: stdio` only.
+        command: None,
+        args: Default::default(),
+        env: Default::default(),
+        cwd: None,
         tools_allow: Default::default(),
         prompts_allow: Default::default(),
         resources_allow: Default::default(),
