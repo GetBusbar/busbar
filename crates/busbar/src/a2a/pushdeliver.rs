@@ -303,7 +303,7 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
 ///
 /// Synchronous, because both seams it uses are: the resolver performs a real name lookup and the
 /// transport blocks a thread per hop. Callers run it on a blocking thread — see
-/// [`super::ingress`] — for the same reason the relay does.
+/// [`super::receive`] — for the same reason the relay does.
 pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let Some(url) = task.push_callback.as_deref() else {
         return Err(PushRefusal::NoCallback);

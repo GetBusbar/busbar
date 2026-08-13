@@ -18,7 +18,7 @@
 //! and per-principal audit chain are built on. **Two task stores means two answers to "what
 //! happened", and the one a customer's auditor reads is whichever was wired last.** So busbar
 //! implements the trait itself, which is this file, and the implementation is thin because the
-//! answer already exists: [`super::ingress::invoke`].
+//! answer already exists: [`super::receive::invoke`].
 //!
 //! ## THE BINDING IS FRAMING, NOT A SECOND IMPLEMENTATION
 //!
@@ -33,7 +33,7 @@
 //! things and no more:
 //!
 //! 1. transcode the protobuf request to its canonical JSON through the SDK's own conversions,
-//! 2. hand it to [`super::ingress::invoke`] — the SAME admission, catalogue, dispatch, meter, audit,
+//! 2. hand it to [`super::receive::invoke`] — the SAME admission, catalogue, dispatch, meter, audit,
 //!    task store and relay the JSON-RPC leg goes through, with nothing skipped and nothing added,
 //! 3. transcode the answer back, or turn the JSON-RPC error into the `grpc-status` A2A section 5.4
 //!    binds it to ([`super::rpcerror::A2aError::grpc_status`]).
@@ -115,7 +115,7 @@ const A2A_VERSION_METADATA: &str = "a2a-version";
 /// THE HANDLER, and the whole of this binding's mount. See the module note for why the tonic service
 /// is built here rather than mounted as a router.
 ///
-/// The three extractors are the same three `super::ingress::plane_rpc` takes, in the same order, and
+/// The three extractors are the same three `super::receive::plane_rpc` takes, in the same order, and
 /// they are what makes the constructed service busbar's rather than the SDK's: `gov` carries the key
 /// every meter and audit record is written against, and `principal` is who the auth middleware said
 /// is calling. Neither is reachable from inside a `tower::Service` mounted as a router, which is the
@@ -178,12 +178,12 @@ impl Busbar {
             "method": method,
             "params": params,
         });
-        let wire = super::ingress::Wire::for_grpc(version);
-        let response = super::ingress::invoke(
+        let wire = super::receive::Wire::for_grpc(version);
+        let response = super::receive::invoke(
             Arc::clone(&self.app),
             self.gov.clone(),
             self.principal.clone(),
-            super::ingress::Target::FromCatalogue,
+            super::receive::Target::FromCatalogue,
             wire,
             // THE LEG, CARRIED RATHER THAN COMPARED. The ingress reads it in exactly one place —
             // the metric label it emits for every A2A request — and this is the only site that
@@ -536,12 +536,12 @@ impl Busbar {
             "method": method,
             "params": params,
         });
-        let wire = super::ingress::Wire::for_grpc(version);
-        let response = super::ingress::invoke(
+        let wire = super::receive::Wire::for_grpc(version);
+        let response = super::receive::invoke(
             Arc::clone(&self.app),
             self.gov.clone(),
             self.principal.clone(),
-            super::ingress::Target::FromCatalogue,
+            super::receive::Target::FromCatalogue,
             wire,
             // THE LEG, CARRIED RATHER THAN COMPARED. The ingress reads it in exactly one place —
             // the metric label it emits for every A2A request — and this is the only site that

@@ -15,7 +15,7 @@
 //!
 //! ## Why a layer on the door rather than a call in each handler
 //!
-//! `mcp::ingress::rpc` and `a2a::ingress::rpc` each have upwards of a dozen `return`s — envelope
+//! `mcp::envelope::invoke` and `a2a::receive::invoke` each have upwards of a dozen `return`s — envelope
 //! defects, header mismatches, governance refusals, egress-gate refusals. A call at the bottom of
 //! each handler would miss every one of them, and a call at each `return` is thirty call sites two
 //! planes have to keep in agreement. Worse, either shape needs a per-plane symbol to hang itself
@@ -67,7 +67,7 @@
 //! The two mechanisms are not alternatives and the A2A plane needs both. Its gRPC binding has a door
 //! of its own, so a `401` there is counted `grpc` from the claim without any handler running; its
 //! JSON-RPC and HTTP+JSON bindings share `/a2a`, where no claim can say which spoke, so their
-//! requests are labelled by `a2a::ingress::invoke` and marked [`Counted`] so this layer stands down.
+//! requests are labelled by `a2a::receive::invoke` and marked [`Counted`] so this layer stands down.
 
 use crate::state::AppHandle;
 use axum::extract::{Request, State};

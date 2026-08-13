@@ -167,7 +167,11 @@ pub(crate) mod connect;
 /// is one stable string.
 pub(crate) use connect::spawn_refresh_job;
 
-pub(crate) mod ingress;
+/// THIS REVISION'S ENVELOPE RULES. Not `ingress` any more, and the rename is the statement: the
+/// ingress SEQUENCE is `crate::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
+/// in here is a statement about the ENVELOPE — `params._meta`, the mirrored routing headers, the
+/// protocol version — which is what its own header said it was all along.
+pub(crate) mod envelope;
 pub(crate) mod inputreq;
 pub(crate) mod method;
 /// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
@@ -390,15 +394,19 @@ impl McpResource {
         &self.scopes_supported
     }
 
-    /// Whether an inbound `Origin` header is acceptable.
+    /// THE OPERATOR'S BROWSER-ORIGIN ALLOWLIST, as data.
     ///
-    /// A request with NO `Origin` is not this function's business — non-browser clients send none,
-    /// and refusing them would refuse every agent. This answers only "is THIS origin allowed", and
-    /// the empty allowlist answers `false` for every origin, which is the documented default.
-    /// Comparison is exact: an `Origin` is a serialized origin (scheme, host, port), and matching it
-    /// as a prefix is how `https://good.example` starts admitting `https://good.example.evil.test`.
-    pub(crate) fn origin_allowed(&self, origin: &str) -> bool {
-        self.allowed_origins.iter().any(|a| a == origin)
+    /// This used to be `origin_allowed(&self, origin) -> bool` — the DECISION. The decision is now
+    /// `crate::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
+    /// DNS-rebinding is not a fact about MCP: A2A had no `Origin` check at all for as long as this
+    /// one was a method here. The plane keeps the DATA and core keeps the verdict, which is
+    /// `crate::net_guard`'s rule stated for a second concern — a caller keeps its refusal
+    /// VOCABULARY, not its DECISION.
+    ///
+    /// The empty allowlist admits no browser origin, which is the documented default; loopback is
+    /// admitted unconditionally by the shared rule, and the argument for that is on it.
+    pub(crate) fn allowed_origins(&self) -> &[String] {
+        &self.allowed_origins
     }
 
     /// The plane admission facts this resource contributes to the dispatch table: the audience a

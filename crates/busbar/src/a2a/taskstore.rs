@@ -394,7 +394,7 @@ impl TaskRegistry {
     /// Register (or clear) this task's push-notification callback.
     ///
     /// THE FULL SSRF DECISION IS STILL MADE ELSEWHERE — twice, and both are load-bearing:
-    /// `ingress::rpc` runs [`super::pushnotify::validate`] against a live resolution before the
+    /// `ingress::invoke` runs [`super::pushnotify::validate`] against a live resolution before the
     /// caller's registration is accepted at all, and [`super::pushdeliver`] runs it AGAIN against a
     /// fresh resolution before every single delivery, because a durable row outlives the DNS answer
     /// that was checked when it was written.

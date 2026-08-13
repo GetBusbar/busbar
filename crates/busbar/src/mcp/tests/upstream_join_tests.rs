@@ -82,7 +82,7 @@ async fn a_granted_call_reaches_the_upstream_and_returns_its_result() {
     };
     assert_eq!(
         header("mcp-protocol-version").as_deref(),
-        Some(crate::mcp::ingress::PROTOCOL_VERSION),
+        Some(crate::mcp::envelope::PROTOCOL_VERSION),
         "busbar must satisfy the same transport MUSTs it enforces on its own ingress"
     );
     assert_eq!(header("mcp-method").as_deref(), Some("tools/call"));

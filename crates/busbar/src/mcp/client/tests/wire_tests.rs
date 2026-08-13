@@ -4,7 +4,7 @@
 //! The `2026-07-28` outbound wire: the mirrored headers, `params._meta`, and the un-namespacing.
 //!
 //! The strongest assertion here is the SYMMETRY one: a request this module builds is fed to
-//! `crate::mcp::ingress`'s own reader, and must be accepted. busbar refusing a request busbar sent
+//! `crate::mcp::envelope`'s own reader, and must be accepted. busbar refusing a request busbar sent
 //! would be a silent, mutual misunderstanding that no single-direction test can see.
 
 use crate::mcp::client::jsonrpc::{
@@ -54,7 +54,7 @@ fn meta_lives_at_params_meta_and_not_at_the_top_level() {
     assert!(body.get("_meta").is_none(), "no top-level `_meta`");
     assert_eq!(
         body["params"]["_meta"][META_PROTOCOL_VERSION],
-        crate::mcp::ingress::PROTOCOL_VERSION
+        crate::mcp::envelope::PROTOCOL_VERSION
     );
     // Capabilities are declared EMPTY: busbar will refuse sampling/elicitation/roots unless the
     // operator granted them, and declaring a capability we then refuse invites a call sequence
@@ -125,7 +125,7 @@ fn the_authorization_header_is_present_exactly_when_a_credential_was_planned() {
 // and mutual: busbar would have refused a request busbar sent, and no single-direction test could
 // see it, because each side was internally consistent with its own copy.
 //
-// There is now ONE copy. `mcp::ingress` owns all five constants and `mcp::client::jsonrpc` `use`s
+// There is now ONE copy. `mcp::envelope` owns all five constants and `mcp::client::jsonrpc` `use`s
 // them, so the two directions cannot disagree — the module header there already claimed this was
 // true, and until 2026-08-12 it was true as a claim and false as code. Nothing is left to compare,
 // so the comparison is gone rather than ported.

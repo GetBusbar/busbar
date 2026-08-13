@@ -37,7 +37,8 @@
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
-use super::inbound::{Dispatch, InboundRefusal, CREDENTIAL_KIND_A2A_INBOUND};
+use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
+use super::words::{plane_absent, refuse_admission, A2aWords};
 use crate::state::{App, CurrentApp};
 
 /// The audit action every inbound call on this plane records under.
@@ -62,55 +63,6 @@ fn credential_kind_of(app: &App) -> &'static str {
     }
 }
 
-/// A refusal, rendered. The body names the reason token and never the backend: `InboundRefusal`'s
-/// own `Display` is written to be safe to return, and `Dispatch::backend_url` never leaves here.
-fn refuse(refusal: &InboundRefusal) -> Response {
-    // THE PLANE'S OWN ERROR ENVELOPE, and the HTTP status the refusal already chose. An admission
-    // refusal has no A2A error type of its own, so it takes the nearest binding
-    // (`UnsupportedOperationError`) with the real reason in the message — see `rpcerror`'s note on
-    // why an invented code in the A2A range would be worse than a near one.
-    let status = axum::http::StatusCode::from_u16(refusal.status())
-        .unwrap_or(axum::http::StatusCode::FORBIDDEN);
-    (
-        status,
-        axum::Json(super::rpcerror::body(
-            &serde_json::Value::Null,
-            super::rpcerror::A2aError::UnsupportedOperation,
-            refusal.to_string(),
-        )),
-    )
-        .into_response()
-}
-
-/// The RFC 9728 protected-resource metadata document for the A2A plane.
-///
-/// Mounted `RouteAuth::None`, for the reason the sibling plane's is: every caller who needs this
-/// document is by definition one that does not have a token yet, so requiring one would be a
-/// discovery loop with no entrance.
-pub(crate) async fn metadata(CurrentApp(app): CurrentApp) -> Response {
-    let Some(admission) = app.a2a.as_ref().and_then(|p| p.admission()) else {
-        return not_found();
-    };
-    // `resource` is the audience a client must have its authorization server mint for, and it is
-    // compared byte-for-byte against the `aud` of every token presented under this mount. Both sides
-    // read it from `A2aPlane::admission`, so there is no second spelling of it anywhere.
-    let doc = serde_json::json!({
-        "resource": admission.audience,
-        "bearer_methods_supported": ["header"],
-    });
-    (
-        [
-            (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/json; charset=utf-8",
-            ),
-        ],
-        axum::Json(doc),
-    )
-        .into_response()
-}
-
 /// BUSBAR'S OWN AGENT CARD at `/.well-known/agent-card.json`, unauthenticated.
 ///
 /// The A2A protocol specification makes serving an Agent Card a MUST, and this is the path a
@@ -120,7 +72,7 @@ pub(crate) async fn metadata(CurrentApp(app): CurrentApp) -> Response {
 /// not name the agents busbar fronts.
 pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
     let Some(plane) = app.a2a.as_ref() else {
-        return not_found();
+        return plane_absent();
     };
     // NO PUBLIC URL, NO CARD. A deployment with no receiving side is not an A2A server, and a card
     // whose `url` was guessed would point callers somewhere busbar does not answer.
@@ -158,17 +110,6 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
     }
 }
 
-/// 404 in this plane's envelope. Used where the mount exists but the plane does not, which is
-/// unreachable while the mount and the config are created in one act, and is still answered rather
-/// than unwrapped because this is a request path.
-fn not_found() -> Response {
-    super::rpcerror::respond(
-        &serde_json::Value::Null,
-        super::rpcerror::A2aError::Internal,
-        "this deployment has no A2A plane",
-    )
-}
-
 /// Everything the admitted half of a request needs, resolved under ONE read of the registry.
 ///
 /// A single lock acquisition rather than one per step, because `authorize` and the catalogue must
@@ -203,7 +144,7 @@ fn admit(
     now_secs: u64,
 ) -> Result<Admitted, Box<Response>> {
     let Some(plane) = app.a2a.as_ref() else {
-        return Err(Box::new(not_found()));
+        return Err(Box::new(plane_absent()));
     };
     let kind = credential_kind_of(app);
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
@@ -219,7 +160,7 @@ fn admit(
         //    guard's slice and cannot, which is why the skill is cloned out below rather than
         //    returned.
         let dispatch = super::inbound::authorize(key, kind, agent_id, regs, generation, now_secs)
-            .map_err(|r| Box::new(refuse(&r)))?;
+            .map_err(|r| Box::new(refuse_admission(&r)))?;
 
         // 3. CATALOGUE. Authorisation says the caller may reach this agent AT ALL; the catalogue
         //    says whether it may reach it for the work it is actually asking for. Both run: a
@@ -310,7 +251,7 @@ fn select(
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
     let Some(plane) = app.a2a.as_ref() else {
-        return Err(Box::new(not_found()));
+        return Err(Box::new(plane_absent()));
     };
     let caller = crate::catalogue::Caller {
         key: Some(key),
@@ -352,7 +293,7 @@ fn select(
 
 /// THE PLANE'S OWN ENDPOINT — `POST /a2a`, the one busbar's Agent Card publishes.
 ///
-/// Identical to [`rpc`] in everything except how the agent is named. See [`select`].
+/// Identical to [`agent_rpc`] in everything except how the agent is named. See [`select`].
 pub(crate) async fn plane_rpc(
     CurrentApp(app): CurrentApp,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
@@ -410,19 +351,24 @@ fn is_json_media_type(media: &str) -> bool {
             .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("json"))
 }
 
-/// THE TWO HEADERS THIS PLANE READS OFF AN INBOUND REQUEST, and deliberately the only two.
+/// THE THREE HEADERS THIS PLANE READS OFF AN INBOUND REQUEST, and deliberately the only three.
 ///
 /// A `HeaderMap` is NOT extracted, here or anywhere on this path, and that is a security property
 /// rather than a style: the first draft of the relay extracted one and the caller's own credential
 /// went out on the backend hop (see step 7 in [`invoke`]). An extractor that can only ever hold
-/// these two owned strings cannot forward a third header by accident, because there is no third
-/// header in it to forward.
+/// these owned strings cannot forward a further header by accident, because there is no further
+/// header in it to forward. **The property is about what this type CANNOT hold, not about the
+/// number three** — [`Wire::origin`] joined it when the shared ingress gained its DNS-rebinding
+/// refusal, and it joined as one more `Option<String>` for exactly that reason.
 pub(crate) struct Wire {
     /// The request's `Content-Type`, as sent. `None` when the caller sent none.
     content_type: Option<String>,
     /// The requested `A2A-Version`. `None` when absent; `Some("")` when present and empty, which
     /// the specification defines as `0.3` rather than as a refusal.
     version: Option<String>,
+    /// The caller's `Origin`, when it sent one. Read here rather than judged here: the verdict is
+    /// `crate::ingress::protocol::origin_admitted`'s, once, for every JSON-RPC plane.
+    origin: Option<String>,
 }
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
@@ -445,6 +391,7 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
         Ok(Wire {
             content_type: read("content-type"),
             version: read("a2a-version"),
+            origin: read("origin"),
         })
     }
 }
@@ -467,7 +414,16 @@ impl Wire {
         Wire {
             content_type: None,
             version: Some(version),
+            // NO ORIGIN ON A gRPC LEG. `Origin` is a browser header and the rebinding attack it
+            // defends against is a browser attack; a gRPC frame arrives from a client that has no
+            // such concept, so declaring one here would invent a fact about the request.
+            origin: None,
         }
+    }
+
+    /// The caller's `Origin` header, as sent. A FACT, never a verdict — see the field.
+    fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
     }
 
     /// THE REFUSAL THIS REQUEST'S HEADERS EARN, or `None` when they earn none.
@@ -573,7 +529,7 @@ pub(crate) async fn card(
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
     let Some(plane) = app.a2a.as_ref() else {
-        return not_found();
+        return plane_absent();
     };
     let Some(key) = gov.key.as_ref() else {
         return governance_required();
@@ -676,7 +632,7 @@ fn no_receiving_side() -> Response {
 /// answer or as a stream of them, or answers a busbar-attributed error and ends the task.
 ///
 /// The handler deliberately does NOT extract a `HeaderMap`. See step 7 below.
-pub(crate) async fn rpc(
+pub(crate) async fn agent_rpc(
     CurrentApp(app): CurrentApp,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
@@ -767,15 +723,7 @@ async fn invoke_inner(
     wire: Wire,
     body: axum::body::Bytes,
 ) -> Response {
-    if app.a2a.is_none() {
-        return not_found();
-    }
-    let Some(key) = gov.key.as_ref() else {
-        return governance_required();
-    };
-    let now = crate::store::now();
-
-    // ── THE TWO FACTS OFF THE REQUEST LINE, JUDGED BEFORE ANYTHING ELSE. ────────────────────────
+    // ── THE TWO FACTS OFF THE REQUEST LINE, JUDGED BEFORE THE BODY IS PARSED. ───────────────────
     //
     // busbar is content-blind about the caller's ENVELOPE and is not content-blind about the HTTP
     // request carrying it. busbar terminated this connection; busbar is the server the client
@@ -784,65 +732,100 @@ async fn invoke_inner(
     // relaying either to a backend and forwarding its cheerful reply tells the caller it was
     // understood when nothing understood it.
     //
-    // FIRST, and before the JSON parse, because the order IS the behaviour: a request with a wrong
-    // media type usually also carries a body that is not JSON, and a gate placed after the parse
-    // answers `Parse` (-32700) forever and never reaches -32005. The caller is then told to fix its
-    // body when the thing to fix is a header.
-    if let Some(refusal) = wire.refuse() {
-        return refusal;
-    }
+    // BEFORE THE JSON PARSE, because the order IS the behaviour: a request with a wrong media type
+    // usually also carries a body that is not JSON, and a gate placed after the parse answers
+    // `Parse` (-32700) forever and never reaches -32005. The caller is then told to fix its body
+    // when the thing to fix is a header. `crate::ingress::protocol::serve` runs step 3 — this
+    // value — before its own parse for exactly that reason; it is the one pre-parse step that is
+    // genuinely a protocol's.
+    //
+    // GOVERNANCE IS FOLDED IN AHEAD OF IT, keeping the order this plane has always had: without
+    // governance there is no key, and this plane's whole admission story is an audience on a
+    // busbar-minted token plus that key's `agent` scopes.
+    let wire_refusal = if gov.key.is_none() {
+        Some(governance_required())
+    } else {
+        wire.refuse()
+    };
     // ADMITTED, AND THEREFORE RESTATED ON THE NEXT HOP. busbar answers for this header at its own
     // edge and then speaks it downstream; see `Wire::negotiated_version` for why terminating it is
     // not the same as forgetting it.
     let a2a_version = wire.negotiated_version();
+    let origin = wire.origin().map(str::to_string);
+    // A SECOND HANDLE ON THE SAME BYTES, not a second copy: `Bytes` is refcounted. The shared
+    // sequence borrows the body to parse it and the relay needs to own it afterwards, and one
+    // `Arc` bump is the whole cost of letting both have it.
+    let relayed = body.clone();
 
-    let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return super::rpcerror::respond(
-            &serde_json::Value::Null,
-            super::rpcerror::A2aError::Parse,
-            "the request body is not JSON",
-        );
-    };
-
-    // ── THE JSON-RPC ENVELOPE, READ BY THE READER THE MCP PLANE USES. ───────────────────────────
-    //
-    // This plane had NO envelope validation before: no `jsonrpc` version check, no `method` check,
-    // and `rpc_id` was `envelope.get("id").cloned().unwrap_or(Value::Null)` — a single
-    // `unwrap_or` that destroyed the difference between a request whose id is `null` (which no
-    // caller can correlate) and a NOTIFICATION, which has no id member and which JSON-RPC 2.0 section 4.1
-    // says a server MUST NOT answer at all. Both were served `200` and a success result, and a
-    // notification's answer came back under an id the caller never sent.
-    //
-    // The defect was REPORTED against the MCP plane. It was here too, in a second implementation of
-    // the same concern, which is exactly the failure mode `structure-lint`'s plane-coherence check
-    // exists to name. Hence one reader, not two fixes. See `crate::ingress::jsonrpc` for the
-    // clauses, and for the argument for refusing `"id": null` on a plane whose own specification
-    // only discourages it.
-    //
-    // THE SHARED READER DECIDES; THIS PLANE RENDERS. The decision — request, notification, or not a
-    // JSON-RPC message — is the reader's, so both planes make it the same way. The WIRE is this
-    // plane's: A2A section 5.4 binds its own status and its own ProtoJSON error body to each code, and a
-    // refusal rendered in the MCP plane's shape would be a body the TCK rejects by schema. Hence
-    // `read` for the verdict and [`super::rpcerror::respond`] for the answer.
-    //
-    // BEFORE ADMISSION, THE CATALOGUE, THE METER AND THE EGRESS GATE, on purpose: an envelope this
-    // plane will not honour must not open a task, spend a caller's budget or cause busbar's own
-    // credential to be leased for a backend hop.
-    let rpc_id = match crate::ingress::jsonrpc::read(&envelope) {
-        Ok(crate::ingress::jsonrpc::Envelope::Request { id, .. }) => id,
-        // section 4.1: "The Server MUST NOT reply to a Notification." A2A defines no notification method,
-        // so there is nothing to do with one either — but "nothing to do" is still not "answer it".
-        Ok(crate::ingress::jsonrpc::Envelope::Notification { .. }) => {
-            return crate::ingress::jsonrpc::accepted()
-        }
-        Err(invalid) => {
-            return super::rpcerror::respond(
-                &invalid.id,
-                super::rpcerror::A2aError::InvalidRequest,
-                invalid.message,
+    // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S. This plane states none of them any more, and
+    // step 2 — the `Origin` / DNS-rebinding refusal — is one it never stated at all: it arrived
+    // here by being core's, which is the entire argument for the concern having one home.
+    crate::ingress::protocol::serve(
+        &A2aWords,
+        crate::ingress::protocol::Request {
+            present: app.a2a.is_some(),
+            origin: origin.as_deref(),
+            // NO OPERATOR ALLOWLIST ON THIS PLANE, so loopback and nothing else. A2A is an
+            // agent-to-agent protocol: its clients are servers and agents, which send no `Origin`
+            // at all and are therefore untouched by this. A browser-driven A2A console would need
+            // a listed origin, and the day one exists this is where the operator's list arrives —
+            // as DATA, into the rule that already decides it, not as a second check.
+            allowed_origins: &[],
+            wire_refusal,
+            body: &body,
+        },
+        |envelope, rpc_id, _method| async move {
+            Some(
+                admitted(
+                    app,
+                    gov,
+                    principal,
+                    target,
+                    a2a_version,
+                    envelope,
+                    rpc_id,
+                    relayed,
+                )
+                .await,
             )
-        }
+        },
+    )
+    .await
+}
+
+/// EVERYTHING AFTER THE ENVELOPE: this plane's own vocabulary and its verb dispatch — steps 9 to
+/// 12 of the measurement in `crate::ingress::protocol`.
+///
+/// `rpc_id` and `envelope` arrive ALREADY DECIDED by the shared reader: the id is a string or a
+/// number by construction, never `null` and never a notification's absence. A second reading of
+/// either here would be a second answer to a question that is already answered.
+// EIGHT ARGUMENTS, and each is a fact the shared sequence established that this one needs: the
+// snapshot, the caller, the target, the negotiated version, the envelope, its id and the bytes as
+// they arrived. Grouping them into a struct would be a type that exists to satisfy a lint and has
+// exactly one construction site; the ABI's `Wire` is where they converge when the protocols leave
+// core (`design/protocol-plugin-abi.md` section 1), and inventing a different one first is churn
+// that convergence deletes.
+#[allow(clippy::too_many_arguments)]
+async fn admitted(
+    app: Arc<App>,
+    gov: crate::governance::GovCtx,
+    principal: crate::auth::AuthPrincipal,
+    target: Target,
+    a2a_version: &'static str,
+    envelope: serde_json::Value,
+    rpc_id: serde_json::Value,
+    // THE BYTES AS THEY ARRIVED. Carried alongside the parsed envelope, never re-derived from it:
+    // this plane relays a submission VERBATIM when `idmap` has nothing to rewrite, and
+    // re-serialising the parsed value would change a body busbar promised to pass through.
+    body: axum::body::Bytes,
+) -> Response {
+    // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
+    // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
+    // is on a request path.
+    let Some(key) = gov.key.as_ref() else {
+        return governance_required();
     };
+    let now = crate::store::now();
 
     // ── THE ONE VERB THAT NAMES NO AGENT. ───────────────────────────────────────────────────────
     //
@@ -1008,7 +991,7 @@ async fn invoke_inner(
             }
             super::local::LocalVerb::CreatePushConfig(dialect) => {
                 let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
-                    return not_found();
+                    return plane_absent();
                 };
                 Some(
                     super::local::create_push_config(
@@ -1107,7 +1090,7 @@ async fn invoke_inner(
         None => None,
         Some(url) => {
             let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
-                return not_found();
+                return plane_absent();
             };
             match validate_callback(url, seam).await {
                 Ok(pinned) => Some(pinned),
@@ -1238,7 +1221,7 @@ async fn invoke_inner(
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(error = ?e, "a2a: could not open an inbound task");
-                return not_found();
+                return plane_absent();
             }
         };
         if let Err(e) = super::taskstore::TASKS.submit(&task, &request_id) {
@@ -1308,7 +1291,7 @@ async fn invoke_inner(
     // otherwise each have to remember.
     let now_ms = now.saturating_mul(1_000);
     let Some(plane) = plane_of(&app) else {
-        return not_found();
+        return plane_absent();
     };
     let seam = plane.relay_seam();
     let gate: Arc<dyn super::relay::DelegationGate> =
@@ -1465,7 +1448,7 @@ fn extended_agent_card(
     rpc_id: &serde_json::Value,
 ) -> Response {
     let Some(plane) = app.a2a.as_ref() else {
-        return not_found();
+        return plane_absent();
     };
     let Some(public_url) = plane.public_url() else {
         return no_receiving_side();
@@ -1853,7 +1836,7 @@ async fn stream_hop(
         )
         .header(axum::http::header::CACHE_CONTROL, "no-store")
         .body(axum::body::Body::from_stream(stream))
-        .unwrap_or_else(|_| not_found())
+        .unwrap_or_else(|_| plane_absent())
 }
 
 /// RECORD WHAT THE BACKEND SAID THE TASK IS NOW.
@@ -2312,7 +2295,7 @@ pub(crate) fn mount(
             super::serve::METADATA_PATH,
             RouteMethod::Get,
             RouteAuth::None,
-            metadata,
+            crate::ingress::protocol::metadata_handler::<A2aWords>,
         )
         // THE DISCOVERY PATH THE SPECIFICATION MANDATES. Auth-exempt for the reason given on
         // `serve::self_card`: this document is what tells a caller which credential to present, so
@@ -2335,7 +2318,7 @@ pub(crate) fn mount(
             format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),
             RouteMethod::Post,
             RouteAuth::Key,
-            rpc,
+            agent_rpc,
         )
         // THE ENDPOINT BUSBAR'S OWN AGENT CARD PUBLISHES. `serve::self_card` advertises
         // `<public_url>/a2a` as this deployment's `JSONRPC` interface and nothing was mounted

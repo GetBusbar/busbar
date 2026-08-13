@@ -86,7 +86,7 @@
 //!
 //! **Two of the three share a door and one has its own, and that is why both labelling mechanisms
 //! exist.** `jsonrpc` and `http+json` are both spoken at `/a2a`, so the boundary cannot tell them
-//! apart and `a2a::ingress::invoke` labels them from inside with the leg it was handed. gRPC is
+//! apart and `a2a::receive::invoke` labels them from inside with the leg it was handed. gRPC is
 //! spoken at `/lf.a2a.v1.A2AService`, a door of its own, so `PlaneDispatch::wire_format_of` can name
 //! it from the claim before any handler runs — which is what still counts a refusal that reaches no
 //! handler at all.

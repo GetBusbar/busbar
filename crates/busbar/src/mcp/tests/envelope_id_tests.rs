@@ -35,7 +35,7 @@
 //! The in-house battery's `CONC.NULL-ID-REJECTED` cites the same clause under the id
 //! `BASE.REQ.ID-NOT-NULL`; see `testing/mcp-conformance/src/core/spec.mjs`.
 
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::envelope::PROTOCOL_VERSION;
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 

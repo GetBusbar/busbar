@@ -87,7 +87,7 @@ pub(crate) enum A2aError {
     /// at all, so the one deployment shape that reaches this is one that fronts nothing.
     ExtendedAgentCardNotConfigured,
     /// The caller's `A2A-Version` names a protocol version this endpoint does not speak. See
-    /// [`super::ingress`] for which versions busbar claims and what makes each claim true.
+    /// [`super::receive`] for which versions busbar claims and what makes each claim true.
     VersionNotSupported,
     /// JSON-RPC section 5.1: the body was not JSON.
     Parse,

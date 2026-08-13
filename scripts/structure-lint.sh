@@ -1383,10 +1383,17 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 
 # The concerns, and where each one's single implementation should end up. `-` for an owner means
 # THERE IS NO SHARED HOME YET, which is itself the finding: the concern has only plane-local copies.
+# RETIRED 2026-08-13: `ingress`. It owned FIVE rows — `rpc`, `refuse`, `not_found`, `metadata` and
+# the `ingress.rs` module itself — and it is the first concern to empty. `crate::ingress::protocol`
+# now owns the sequence (nine of the thirteen steps two JSON-RPC ingresses ran between them, five
+# of which `ingress/jsonrpc.rs` had already taken); a protocol supplies a `Words` impl, its RFC 9728
+# facts and its verb dispatch. Neither plane has an ingress module any more: `mcp/envelope.rs` is
+# this revision's envelope rules and `a2a/receive.rs` is that plane's receiving hot path, which is
+# what each was always about once the ingress left. The concern is deleted rather than left with an
+# empty row list, because a concern with nothing owed is a heading somebody adds a row under.
 PLANE_CONCERNS=(
   'guarded-fetch|crates/busbar/src/net_guard.rs|route every attacker-influenced fetch through net_guard: one resolver, one pin, one redirect refusal'
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
-  'ingress|crates/busbar/src/ingress|one plane-neutral admission in ingress/, with the plane supplying its wire reader'
   'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
   'plane-config|crates/busbar/src/plane/config.rs|the parse-time plane-boundary rule now lives here once, with its section list DERIVED; what is left is the per-plane config MODULE, whose value rules are genuinely plane-specific'
   'plane-admin-verbs|crates/busbar/src/admin|one admin verb surface parameterised by plane, not one handler set per plane'
@@ -1394,13 +1401,8 @@ PLANE_CONCERNS=(
 )
 
 PLANE_LEDGER="
-rpc|DEBT|ingress|mcp/ingress.rs and a2a/ingress.rs each mount their own JSON-RPC entry point
-refuse|DEBT|ingress|two per-plane refusal shapers; the wire shape of a refusal is not plane-specific
-not_found|DEBT|ingress|two per-plane 404 shapers
-metadata|DEBT|ingress|the RFC 9728 protected-resource metadata document, written once per plane, verified 2026-08-11 to be the same document with the same audience rule
 declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
 config.rs|DEBT|plane-config|the config module exists once per plane
-ingress.rs|DEBT|ingress|the ingress module exists once per plane
 transport.rs|DEBT|guarded-fetch|the outbound transport exists once per plane
 judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/registry.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
 revalidate|DISTINCT|-|mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other.

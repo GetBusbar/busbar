@@ -72,7 +72,7 @@ use crate::mcp::config::ServerRequestGrants;
 
 /// JSON-RPC standard: the method is not implemented.
 ///
-/// A local re-statement rather than an import of `crate::mcp::ingress::code`, and it is the one
+/// A local re-statement rather than an import of `crate::mcp::envelope::code`, and it is the one
 /// duplicated number in this module: that module's codes are `pub(super)`/`pub(in crate::mcp)` on
 /// the SERVER plane's ingress, and widening their visibility so the client leg could borrow one
 /// would make the ingress vocabulary reachable from the outbound half. The value is the JSON-RPC

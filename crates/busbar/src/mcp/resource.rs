@@ -31,70 +31,16 @@
 //! every user of that IdP already knows). It does NOT enumerate tools, keys, pools or policy — the
 //! catalogue is grant-scoped and lives behind the token.
 
-use axum::response::{IntoResponse, Response};
-
-/// `GET /.well-known/oauth-protected-resource<mcp-path>`.
-///
-/// The path is registered CONCRETELY at mount time from the operator's canonical URI, not matched as
-/// a prefix. That is what lets the auth middleware keep its exact-match discipline: a prefix
-/// exemption under `/.well-known/` would hand a free pass to every path beneath it, and the RFC's
-/// path-insertion rule means the exact string is knowable at boot anyway.
-pub(crate) async fn metadata(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    let Some(resource) = app.mcp.as_ref() else {
-        // Unreachable while the mount and the config are created in the same act. Kept as a clean
-        // refusal rather than an unwrap because this is a request path.
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({ "error": "not_found" })),
-        )
-            .into_response();
-    };
-
-    // Field order follows RFC 9728 §2. `resource` is the only REQUIRED member, and it is the one
-    // that matters: it is the audience a client must ask its authorization server to mint for, and
-    // it is compared byte-for-byte against the `aud` of every token presented here. If this document
-    // said one thing and the verifier expected another, every correctly-behaved client in the world
-    // would obtain a token this server then refuses — so both read the same value from the same
-    // validated config object, and there is no second spelling of it anywhere.
-    let mut doc = serde_json::Map::new();
-    doc.insert(
-        "resource".into(),
-        serde_json::Value::from(resource.canonical_uri()),
-    );
-    doc.insert(
-        "authorization_servers".into(),
-        serde_json::Value::from(resource.authorization_servers()),
-    );
-    if !resource.scopes_supported().is_empty() {
-        doc.insert(
-            "scopes_supported".into(),
-            serde_json::Value::from(resource.scopes_supported()),
-        );
-    }
-    // busbar accepts the bearer token in the `Authorization` header and nowhere else. RFC 6750 also
-    // defines a form-encoded body parameter and a URI query parameter; both are advertised here by
-    // some servers and both are mistakes for this surface — a token in a query string lands in
-    // access logs, proxy logs and `Referer` headers. Stating `["header"]` explicitly tells a
-    // conforming client not to try the others, rather than leaving it to discover by rejection.
-    doc.insert(
-        "bearer_methods_supported".into(),
-        serde_json::Value::from(vec!["header"]),
-    );
-
-    (
-        // Public, cacheable, and stable for the life of a config generation. A client that follows
-        // the challenge on every request would otherwise re-fetch this document on every request.
-        [
-            (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/json; charset=utf-8",
-            ),
-        ],
-        axum::Json(serde_json::Value::Object(doc)),
-    )
-        .into_response()
-}
+// THE HANDLER IS NOT HERE ANY MORE, and its absence is the point of this file's remaining
+// header. `GET /.well-known/oauth-protected-resource<mcp-path>` is served by
+// `crate::ingress::protocol::metadata_handler::<McpWords>` — the ONE handler both JSON-RPC planes
+// mount — and the three facts it renders are declared by `impl ResourceMetadata for McpWords` in
+// `super::envelope`, beside the rest of this protocol's vocabulary.
+//
+// The plane-coherence ledger had verified, on 2026-08-11, that this document and the A2A plane's
+// were the same document with the same audience rule. They were, and two copies of one document is
+// two places for an audience to be spelled differently, which is the one defect this file's header
+// says would make every correctly-behaved client in the world obtain a token this server refuses.
 
 #[cfg(test)]
 #[path = "tests/resource_tests.rs"]

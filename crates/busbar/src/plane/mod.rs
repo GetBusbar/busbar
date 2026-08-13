@@ -218,7 +218,7 @@ impl Plane {
             // wire formats, and a plane with several can no longer be labelled FROM THE PLANE at the
             // ingress boundary. Which door was knocked on still labels the ones that have their own
             // (`PlaneDispatch::wire_format_of`, which is how the gRPC leg is counted), and
-            // `a2a::ingress` labels the two that share `/a2a` from inside, where the dialect that
+            // `a2a::receive` labels the two that share `/a2a` from inside, where the dialect that
             // spoke is known.
             //
             // ORDERED, and the order is read: the first entry is this plane's canonical binding —
@@ -310,7 +310,7 @@ pub(crate) struct PlaneDispatch {
 ///
 /// The A2A plane is both at once, which is why this is a per-claim fact and not a per-plane one:
 /// `/a2a` answers JSON-RPC and HTTP+JSON, so its claim names `jsonrpc` (the canonical one, and the
-/// one a door refusal's body is shaped in) and `a2a::ingress::invoke` labels those requests itself
+/// one a door refusal's body is shaped in) and `a2a::receive::invoke` labels those requests itself
 /// with the leg it actually read; `/lf.a2a.v1.A2AService` answers gRPC and nothing else, so its
 /// claim names `grpc` and the boundary can label it before any handler runs.
 #[derive(Clone, Debug, PartialEq, Eq)]

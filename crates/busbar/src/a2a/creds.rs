@@ -63,7 +63,7 @@
 //! the Agent Card, and never in a debug rendering: [`Lease`] has a hand-written `Debug` for exactly
 //! the reason `VirtualKey` and `CredentialSecret` do.
 
-// MOUNTED. `mint_from` and `Lease::header_for` are on the hot path: `ingress::rpc` mints a lease
+// MOUNTED. `mint_from` and `Lease::header_for` are on the hot path: `ingress::invoke` mints a lease
 // per relayed submission and the lease is the ONLY credential that goes on the hop. `mint` itself —
 // the whole-registration form — still has no production caller, because the hot path holds a cloned
 // handle rather than a registration (cloning one per request would copy a cached Agent Card per

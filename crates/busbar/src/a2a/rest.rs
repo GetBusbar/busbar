@@ -15,7 +15,7 @@
 //! So this module does exactly two things and deliberately nothing else:
 //!
 //! 1. **Compose the envelope** the JSON-RPC leg would have received, from the path, the query and
-//!    the body, and hand it to [`super::ingress::invoke`] — the SAME function, with the same
+//!    the body, and hand it to [`super::receive::invoke`] — the SAME function, with the same
 //!    admission, egress gate, SSRF guard, meter, audit chain and relay. There is no second sequence
 //!    here and there must never be one: a second copy of that sequence is a second place for the
 //!    egress gate or the push-callback guard to go missing, which is the argument `ingress::invoke`
@@ -51,7 +51,7 @@
 use axum::response::Response;
 use serde_json::{json, Map, Value};
 
-use super::ingress::{invoke, Target, Wire};
+use super::receive::{invoke, Target, Wire};
 use crate::state::CurrentApp;
 use crate::transport::Transport;
 

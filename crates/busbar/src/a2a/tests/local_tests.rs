@@ -14,7 +14,7 @@
 //!
 //! ## What is asserted, and what is deliberately not
 //!
-//! These are decision tests. The dispatch that reaches them lives in `super::super::ingress` and is
+//! These are decision tests. The dispatch that reaches them lives in `super::super::receive` and is
 //! exercised end to end by the conformance rig; what is pinned here is the part that can be wrong
 //! silently: WHICH verbs are local, what each one answers, and — most of all — the three refusals
 //! that only busbar can make. A subscribe to a live task is asserted to be relayed, because a local
@@ -775,7 +775,7 @@ fn every_a2a_method_is_read_identically_under_both_of_its_live_json_rpc_names() 
         });
         // The two readers that are not `verb_of`: the streaming classifier the catalogue filters
         // on, and the extended-card verb the ingress answers before it selects an agent.
-        let streams = crate::a2a::ingress::reads_as_streaming_for_test(method);
+        let streams = crate::a2a::receive::reads_as_streaming_for_test(method);
         let extended = matches!(
             method,
             "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"

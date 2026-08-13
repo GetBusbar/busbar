@@ -24,7 +24,7 @@
 //! when it is told to retry, and two lists that could disagree is a client told to retry with a
 //! version it will be refused for.
 
-use crate::mcp::ingress::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::mcp::envelope::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 use crate::mcp::McpCfg;
 use crate::test_support::TestApp;
 

@@ -147,7 +147,7 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
     task
 }
 
-/// REGISTER the callback the way `ingress::rpc` does: validate against the addresses it resolves to
+/// REGISTER the callback the way `ingress::invoke` does: validate against the addresses it resolves to
 /// NOW, and keep the pin. Every test that starts here is testing a callback that was legitimate.
 fn register(task_id: &str) {
     let pinned = pushnotify::validate(CALLBACK, &[AT_REGISTRATION], false)

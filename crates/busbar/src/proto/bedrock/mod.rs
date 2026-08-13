@@ -23,6 +23,9 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // `tooluse_…` is Bedrock's documented native tool-call id shape.
     native_tool_id_prefix: Some("tooluse_"),
     ingress_auth: IngressAuth::SigV4,
+    // THE MODEL IS IN THE URL: `/model/{model_id}/converse`, `/converse-stream` and `/invoke`, plus
+    // the native 404 for anything else beneath it. All four were a name-matched arm in core.
+    path_ingress: Some(crate::ingress::bedrock_arrival),
     stream_usage_requires_opt_in: false,
 };
 

@@ -43,6 +43,14 @@
 use super::Protocol;
 use crate::handlers::RequestHandler;
 
+/// A path-model protocol's own ingress: one arrival in, one response out. See
+/// [`ProtocolDecl::path_ingress`].
+pub(crate) type PathIngress = fn(
+    crate::ingress::dispatch::Arrival,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = axum::response::Response> + Send>,
+>;
+
 /// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 /// verification itself stays in the auth layer, which has the governance key lookup and the shared
 /// signing helpers. This replaces `ProtocolReader::uses_sigv4_ingress_auth()`, which was the same
@@ -114,6 +122,22 @@ pub(crate) struct ProtocolDecl {
     /// Which inbound auth scheme this protocol's clients present. Replaces
     /// `ProtocolReader::uses_sigv4_ingress_auth()`.
     pub(crate) ingress_auth: IngressAuth,
+
+    /// THE ARRIVAL THIS PROTOCOL SERVES ITSELF, or `None` for a protocol whose operation the
+    /// catch-all resolves from the body and serves through the universal ingress.
+    ///
+    /// Replaces the LAST TWO protocol-name comparisons in core: `ingress/dispatch.rs` matched
+    /// `PROTO_GEMINI` and `PROTO_BEDROCK` by name to reach bespoke path-model futures. They
+    /// survived the registry unit — which noted that removing them "needs an ingress fn-pointer on
+    /// the declaration, i.e. designing the mount table" — and this is that pointer. Only a protocol
+    /// that keeps its MODEL IN THE URL needs one; the four body-model dialects declare `None` and
+    /// core reaches the same universal ingress for every one of them.
+    ///
+    /// It returns a BOXED future deliberately. The arms it replaced were `Box::pin`ed because in a
+    /// `match` every arm's future is inlined into the dispatch coroutine's union, so a ~5.7 KB arm
+    /// inflated the future every request carried regardless of dialect. A function pointer to a
+    /// boxed future keeps that cost on the requests that take it.
+    pub(crate) path_ingress: Option<PathIngress>,
 
     /// Whether a STREAMING response on this protocol reports token usage only when the request
     /// explicitly opted in (OpenAI Chat Completions' `stream_options.include_usage`). `false` — the

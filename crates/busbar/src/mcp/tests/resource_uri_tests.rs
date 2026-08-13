@@ -28,7 +28,7 @@
 //! categorically better than a quiet pick even when the quiet pick would usually be right.
 
 use crate::mcp::config::McpServerDefCfg;
-use crate::mcp::ingress::PROTOCOL_VERSION;
+use crate::mcp::envelope::PROTOCOL_VERSION;
 use crate::mcp::McpCfg;
 use crate::state::{App, AppHandle};
 use crate::test_support::TestApp;

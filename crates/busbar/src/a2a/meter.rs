@@ -27,7 +27,7 @@
 //! work may be a long-running task that reached down into L2 tools, and a limit enforced after it
 //! has already cost the operator the thing the limit was for.
 
-// PARTLY UNMOUNTED. `Attribution::receiving` is on the hot path (`ingress::rpc` bills the
+// PARTLY UNMOUNTED. `Attribution::receiving` is on the hot path (`ingress::invoke` bills the
 // presenting key through it). `Attribution::delegating`, `Direction::Delegating` and `Admission`
 // are the delegating direction's half: nothing delegates outward yet, and `Admission` is this
 // plane's own window arithmetic, which the ingress does not use because it meters through the

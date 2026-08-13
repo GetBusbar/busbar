@@ -784,10 +784,17 @@ async fn ingress_path_model(
 // plane supplying its wire reader". This is the envelope half of that.
 pub(crate) mod jsonrpc;
 
+/// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
+/// that says which four steps are a protocol's and which nine are core's.
+pub(crate) mod protocol;
+
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
 pub(crate) mod native;
 
-mod dispatch;
+/// The protocol catch-all. `pub(crate)` for one member: `dispatch::Arrival` is the type a
+/// path-model protocol's declared ingress receives, and a declaration in `proto/` has to be able
+/// to name it.
+pub(crate) mod dispatch;
 pub(crate) use dispatch::{operation_resolved, protocol_dispatch};
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
 #[cfg(test)]
@@ -804,6 +811,81 @@ pub(crate) use dispatch::operation_ingress;
 // intentional, documented limitation rather than a relayed call. They return the native NOT_FOUND
 // envelope so the failure mode is at least Gemini-shaped.
 #[tracing::instrument(level = "debug", name = "gemini_ingress", skip_all)]
+/// GEMINI'S PATH-MODEL ARRIVAL, as it is DECLARED on `proto::gemini::DECL`.
+///
+/// The whole of what used to be a `PROTO_GEMINI =>` arm in core: percent-decode the tail that
+/// axum's `{*rest}` wildcard decoded before the route collapse, and hand it to this protocol's own
+/// ingress. Core no longer knows that Gemini keeps its model in the URL — it reads
+/// `ProtocolDecl::path_ingress` and calls what it finds.
+pub(crate) fn gemini_arrival(
+    a: dispatch::Arrival,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    let rest = crate::observability::percent_decode(a.path.split("/models/").nth(1).unwrap_or(""));
+    Box::pin(gemini_ingress(
+        crate::state::CurrentApp(a.app),
+        Path(rest),
+        OriginalUri(a.uri),
+        axum::extract::Extension(a.gov),
+        axum::extract::Extension(a.caller),
+        a.headers,
+        a.body,
+    ))
+}
+
+/// BEDROCK'S PATH-MODEL ARRIVAL, as it is DECLARED on `proto::bedrock::DECL`.
+///
+/// Three shapes under one model path — `converse`, `converse-stream` and `invoke` — plus the native
+/// 404 for anything else under it. All four were a `PROTO_BEDROCK =>` arm in core; all four are
+/// this protocol's own statement about its own URL space now.
+pub(crate) fn bedrock_arrival(
+    a: dispatch::Arrival,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    // axum's Path extractor percent-decoded {model_id} before the collapse; match it.
+    let model = crate::handlers::request_handler(PROTO_BEDROCK)
+        .and_then(|rh| rh.path_model(&a.path))
+        .map(|m| crate::observability::percent_decode(&m))
+        .unwrap_or_default();
+    if a.path.ends_with("/converse") {
+        Box::pin(bedrock_converse(
+            crate::state::CurrentApp(a.app),
+            Path(model),
+            axum::extract::Extension(a.gov),
+            axum::extract::Extension(a.caller),
+            a.headers,
+            a.body,
+        ))
+    } else if a.path.ends_with("/converse-stream") {
+        Box::pin(bedrock_converse_stream(
+            crate::state::CurrentApp(a.app),
+            Path(model),
+            axum::extract::Extension(a.gov),
+            axum::extract::Extension(a.caller),
+            a.headers,
+            a.body,
+        ))
+    } else if a.path.ends_with("/invoke") {
+        Box::pin(dispatch::bedrock_invoke(
+            crate::state::CurrentApp(a.app),
+            Path(model),
+            OriginalUri(a.uri),
+            axum::extract::Extension(a.gov),
+            axum::extract::Extension(a.caller),
+            a.headers,
+            a.body,
+        ))
+    } else {
+        Box::pin(async move {
+            crate::fallback_error_response(
+                &a.app.planes,
+                &a.path,
+                StatusCode::NOT_FOUND,
+                crate::admin::ERR_TYPE_NOT_FOUND,
+                "the requested resource was not found",
+            )
+        })
+    }
+}
+
 pub(crate) async fn gemini_ingress(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path(rest): Path<String>,

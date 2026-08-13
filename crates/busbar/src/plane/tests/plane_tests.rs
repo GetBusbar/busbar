@@ -277,7 +277,7 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     // three bindings, so "which dialect DID speak" is not a fact about the plane — it is a fact
     // about the DOOR, and each claimed path records it. See
     // `a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on` for the two doors,
-    // and `a2a::ingress::invoke` for the two bindings that share one and label themselves.
+    // and `a2a::receive::invoke` for the two bindings that share one and label themselves.
     assert_eq!(Plane::A2a.sole_wire_format(), None);
 }
 
@@ -292,7 +292,7 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
 /// traffic that stopped.
 ///
 /// The `/a2a` door is claimed for `jsonrpc` and answers HTTP+JSON at the same address, which no
-/// claim can distinguish — those two are labelled by `a2a::ingress::invoke` itself, which then marks
+/// claim can distinguish — those two are labelled by `a2a::receive::invoke` itself, which then marks
 /// the response `plane::observe::Counted` so this boundary does not count them twice.
 #[test]
 fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {

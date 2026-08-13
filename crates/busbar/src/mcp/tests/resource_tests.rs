@@ -246,7 +246,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
         "params": {
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion":
-                    crate::mcp::ingress::PROTOCOL_VERSION,
+                    crate::mcp::envelope::PROTOCOL_VERSION,
                 "io.modelcontextprotocol/clientCapabilities": {},
             },
         },
@@ -260,7 +260,7 @@ async fn a_token_minted_for_another_resource_is_refused_even_when_the_chain_woul
                 .header("authorization", format!("Bearer {tok}"))
                 .header(
                     "mcp-protocol-version",
-                    crate::mcp::ingress::PROTOCOL_VERSION,
+                    crate::mcp::envelope::PROTOCOL_VERSION,
                 )
                 .header("mcp-method", "tools/list")
                 .json(&body)

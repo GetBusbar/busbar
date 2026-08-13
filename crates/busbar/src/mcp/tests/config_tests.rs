@@ -149,18 +149,30 @@ fn a_resource_with_no_authorization_server_is_refused() {
 /// Origins are matched EXACTLY. Every entry below shares a prefix or a suffix with an allowed origin
 /// and is a different origin; admitting one is how `https://app.example.com` starts admitting
 /// `https://app.example.com.evil.test`, which is the DNS-rebinding attack the check exists for.
+///
+/// THE VERDICT IS NO LONGER THIS PLANE'S — it is `crate::ingress::protocol::origin_admitted`, one
+/// rule for every JSON-RPC plane, because A2A had no such check at all for as long as this one was
+/// a method on `McpResource`. What this asserts is unchanged: the exact-match rule, applied to the
+/// list THIS config parses. The loopback half of the same rule is asserted beside the rule itself,
+/// in `ingress::protocol`'s own battery.
 #[test]
 fn origin_matching_is_exact_and_the_empty_allowlist_admits_nothing() {
     let mut c = cfg("https://gateway.example.com/mcp");
     let empty = McpResource::from_cfg(&c).unwrap();
     assert!(
-        !empty.origin_allowed("https://app.example.com"),
+        !crate::ingress::protocol::origin_admitted(
+            "https://app.example.com",
+            empty.allowed_origins()
+        ),
         "the default allowlist is empty and must admit no origin at all"
     );
 
     c.allowed_origins = vec!["https://app.example.com".to_string()];
     let r = McpResource::from_cfg(&c).unwrap();
-    assert!(r.origin_allowed("https://app.example.com"));
+    assert!(crate::ingress::protocol::origin_admitted(
+        "https://app.example.com",
+        r.allowed_origins()
+    ));
     for near in [
         "https://app.example.com.evil.test",
         "https://app.example.com/",
@@ -172,7 +184,7 @@ fn origin_matching_is_exact_and_the_empty_allowlist_admits_nothing() {
         "",
     ] {
         assert!(
-            !r.origin_allowed(near),
+            !crate::ingress::protocol::origin_admitted(near, r.allowed_origins()),
             "`{near}` is not the allowed origin and must be refused"
         );
     }
