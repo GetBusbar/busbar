@@ -47,7 +47,7 @@
 use super::*;
 use crate::ir::facts::IrFacts;
 use crate::ir::{IrRequest, IrRole};
-use crate::proto::{ProtocolRegistry, KNOWN_PROTOCOLS};
+use crate::proto::{known_protocols, ProtocolRegistry};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE NORMALIZED VIEW — the canonical form both implementations reduce to.
@@ -649,7 +649,7 @@ fn every_opaque_shape_projects_the_marker_and_never_the_bytes() {
 #[test]
 fn corpus_covers_every_known_protocol() {
     let covered: std::collections::BTreeSet<&str> = corpus().iter().map(|f| f.proto).collect::<_>();
-    let known: std::collections::BTreeSet<&str> = KNOWN_PROTOCOLS.iter().copied().collect();
+    let known: std::collections::BTreeSet<&str> = known_protocols().iter().copied().collect();
     assert_eq!(
         covered, known,
         "every registered protocol needs fixtures; a protocol with none is a protocol whose \

@@ -9,6 +9,24 @@ use super::openai_family::{
 };
 use super::*;
 
+/// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
+/// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
+/// shim key without naming one.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_GEMINI,
+    codec: Some(Protocol::gemini),
+    handler: Some(&crate::handlers::gemini::GeminiRequestHandler),
+    verbs: &["chat", "embeddings", "image", "transcription", "speech"],
+    head_keys: LLM_HEAD_KEYS,
+    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
+    // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
+    // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
+    native_tool_id_prefix: None,
+    ingress_auth: IngressAuth::Bearer,
+    stream_usage_requires_opt_in: false,
+};
+
 /// Router-internal shim key the gemini ingress route injects into the request body when the client
 /// sent a streaming `:streamGenerateContent` request WITHOUT `?alt=sse` (so the response must be the
 /// JSON-array streaming format, not SSE). It rides alongside the `model`/`stream` shims. Single

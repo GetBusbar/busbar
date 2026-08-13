@@ -1073,14 +1073,6 @@ impl ProtocolWriter for BedrockWriter {
         Box::<BedrockStreamFraming>::default()
     }
 
-    fn streaming_content_type(&self) -> &'static str {
-        // Bedrock ingress expects a BINARY `application/vnd.amazon.eventstream` body; the encoder
-        // is implemented and wired (`StreamTranslate` packs each event into a CRC-valid frame).
-        // Returns this instead of the default `text/event-stream` so the response CT matches the
-        // body framing the client actually receives — mislabeling it as SSE would break the SDK.
-        APPLICATION_VND_AMAZON_EVENTSTREAM
-    }
-
     fn egress_user_agent(&self) -> &'static str {
         // AWS Bedrock is reached via boto3/botocore; the SDK's UA is the backend-facing fingerprint
         // guard. Pinned — see `EGRESS_UA_BEDROCK` in proxy engine.

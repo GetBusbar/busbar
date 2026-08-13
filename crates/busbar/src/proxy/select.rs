@@ -430,12 +430,10 @@ pub(crate) async fn pick_among(
 /// used by Anthropic/OpenAI/Gemini-SSE) and AWS event-stream (Bedrock ConverseStream). Both
 /// must engage the streaming body path rather than being buffered.
 pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
-    // Read the cached streaming-CT set instead of re-sweeping the registry per request: a CT is
-    // "streaming" iff it is the streaming `Content-Type` of SOME registered protocol's writer (SSE
-    // protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The cache
-    // (`proto::streaming_content_types`) reads those MIMEs from the writer vtable, so naming no
-    // protocol/MIME literal here keeps the agnostic core clean. The detected set is unchanged:
-    // `text/event-stream` + `application/vnd.amazon.eventstream`.
+    // A CT is "streaming" iff SOME declared protocol declared it as its streaming `Content-Type`
+    // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
+    // set is a registry aggregate folded once at boot from the declarations, so naming no
+    // protocol/MIME literal here keeps the agnostic core clean.
     crate::proto::streaming_content_types()
         .iter()
         .any(|p| ct.starts_with(p))
@@ -448,9 +446,10 @@ pub(crate) fn is_streaming_content_type(ct: &str) -> bool {
 /// versa). Returns `None` for an unrecognized protocol name so the caller keeps the upstream CT
 /// rather than guessing.
 ///
-/// Dispatches through `ProtocolWriter::streaming_content_type` (SSE protocols → `text/event-stream`;
-/// Bedrock → `application/vnd.amazon.eventstream`) so this function carries no `"bedrock"` branch —
-/// the CT is a property of the writer vtable, not the name string.
+/// Reads `ProtocolDecl::streaming_content_type` (SSE protocols → `text/event-stream`; Bedrock →
+/// `application/vnd.amazon.eventstream`) so this function carries no `"bedrock"` branch — the CT is
+/// a fact the protocol DECLARED, not the name string, and reading a declaration allocates nothing
+/// where building a writer to ask it allocated two boxes.
 pub(crate) fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    crate::proto::protocol_for(ingress).map(|p| p.writer().streaming_content_type())
+    crate::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
 }

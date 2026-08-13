@@ -117,7 +117,7 @@ fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
 fn the_llm_wire_format_count_comes_from_the_protocol_registry() {
     assert_eq!(
         Plane::Llm.wire_formats(),
-        crate::proto::KNOWN_PROTOCOLS.len()
+        crate::proto::known_protocols().len()
     );
     assert!(
         Plane::Llm.wire_formats() >= 2,

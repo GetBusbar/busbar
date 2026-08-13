@@ -5,6 +5,22 @@
 
 use super::*;
 
+/// ANTHROPIC'S DECLARATION — everything core knows about this protocol, stated here rather than
+/// discovered by a `match` in core. Registered by reference in `proto::registry::BUILTIN_DECLS`.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_ANTHROPIC,
+    codec: Some(Protocol::anthropic),
+    handler: Some(&crate::handlers::anthropic::AnthropicRequestHandler),
+    verbs: &["chat"],
+    head_keys: LLM_HEAD_KEYS,
+    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    array_stream_shim_key: None,
+    // `toolu_…` is Anthropic's documented native tool-call id shape.
+    native_tool_id_prefix: Some("toolu_"),
+    ingress_auth: IngressAuth::Bearer,
+    stream_usage_requires_opt_in: false,
+};
+
 /// Value of the required `anthropic-version` request header (the Messages API version busbar
 /// targets). Bump when adopting a newer Anthropic API version.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";

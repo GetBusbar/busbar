@@ -11,6 +11,28 @@ use super::openai_family::{
 };
 use super::*;
 
+/// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_OPENAI,
+    codec: Some(Protocol::openai),
+    handler: Some(&crate::handlers::openai::OpenAiRequestHandler),
+    verbs: &[
+        "chat",
+        "embeddings",
+        "moderation",
+        "image",
+        "transcription",
+        "speech",
+    ],
+    head_keys: LLM_HEAD_KEYS,
+    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    array_stream_shim_key: None,
+    // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
+    native_tool_id_prefix: Some("call_"),
+    ingress_auth: IngressAuth::Bearer,
+    stream_usage_requires_opt_in: true,
+};
+
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most
 /// 128 parallel tool calls, so any larger index is malformed; we clamp to this value before it
 /// reaches the IR index arithmetic (`oai_idx + 1 + offset`) so a crafted `u64::MAX` index can never

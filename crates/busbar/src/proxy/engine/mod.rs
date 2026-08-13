@@ -463,7 +463,8 @@ async fn translate_response_cross_protocol(
                     {
                         let rb = Response::builder().status(status).header(
                             CONTENT_TYPE,
-                            ingress_proto.writer().streaming_content_type(),
+                            crate::proxy::ingress_stream_content_type(ingress_protocol)
+                                .unwrap_or(crate::proxy::TEXT_EVENT_STREAM),
                         );
                         let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
                         let rb =
@@ -1586,14 +1587,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         //      that never materializes the DOM, so an opted-out pristine same-proto body stays
         //      parse-free too. Only the rare body that DOES carry a non-opted-in `stream_options`
         //      (e.g. `include_usage:false`, or sibling keys only) falls to the DOM injector.
-        // Scoped to `egress_name == "openai"` (Chat Completions) - the Responses egress carries usage
-        // unconditionally and non-OpenAI egresses always report usage. The client-facing trailing
+        // Scoped to egresses that DECLARE `stream_usage_requires_opt_in` (Chat Completions) - every
+        // other dialect's stream reports usage unconditionally, so there is nothing to inject and
+        // this path never learns which dialect that was. The client-facing trailing
         // chunk is then gated on the CLIENT's own opt-in at the framing seam (both the cross-proto
         // `on_egress_chunk` un-fold/strip AND the same-proto verbatim strip), so this
         // injection never leaks an unsolicited usage chunk to an opted-out client.
         let payload = if wants_stream
             && body_is_json
-            && egress_name == crate::proto::PROTO_OPENAI
+            && crate::proto::decl_for(egress_name).is_some_and(|d| d.stream_usage_requires_opt_in)
             && !client_include_usage
         {
             if client_has_stream_options {

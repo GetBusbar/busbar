@@ -1222,6 +1222,16 @@ REQUEST_PATH=(
   # seen from the other side: the reason the store may not appear here is that nothing on this path
   # may suspend, and an `.await` is how a round-trip gets in.
   'A7-govstate-try-admit|STORE-ON-REQUEST-PATH|crates/busbar/src/governance/state.rs|try_admit|[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]>>a store reference inside the admission path;[^A-Za-z0-9_][Ss]tore$>>a store reference inside the admission path;\.await>>an await inside the admission path (it is declared SYNCHRONOUS and INFALLIBLE)|keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it|the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O'
+  # THE PROTOCOL LOOKUP ALLOCATES NOTHING. `decl_for` is the one by-name protocol resolution in
+  # busbar and it is called several times per request, by each layer that resolves the protocol it
+  # needs from a name string. The `match` it replaced returned an OWNED `Protocol` and therefore
+  # allocated a `Box<dyn ProtocolReader>` + a `Box<dyn ProtocolWriter>` on EVERY call — including
+  # the many calls that only wanted a `&'static` constant off the declaration. Everything reachable
+  # through a `ProtocolDecl` is `&'static`, so this function has no legitimate reason to allocate,
+  # own a string, or suspend; a row here fails on the day one of those appears rather than on the
+  # day somebody profiles it. `Box::new`/`Vec::`/`to_string`/`String::` are the three ways the old
+  # cost could come back, and `.await` rides along for the same reason it does above.
+  'A8-protocol-decl-for|ALLOC-ON-PROTOCOL-LOOKUP|crates/busbar/src/proto/registry.rs|decl_for|Box::new>>a box allocated while resolving a protocol name;Vec::>>a vector allocated while resolving a protocol name;to_string>>an owned string allocated while resolving a protocol name;String::>>an owned string allocated while resolving a protocol name;\.await>>an await inside the by-name protocol lookup|read the `&'"'"'static` declaration and hand it back: every fact on a `ProtocolDecl` is a constant the protocol declared, so nothing on this path needs to be built|it is called several times per request, and the match it replaced allocated two vtable boxes on every call to answer a static question'
 )
 
 # ══ THE FUNCTION-SCOPED RULE RUNNER ══════════════════════════════════════════════════════════════
@@ -1786,6 +1796,22 @@ DECLARATION_CENSUS=(
   #    moments; merging them would delete one rather than deduplicate it.
   'one-parse-time-plane-boundary|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+refuse_cross_plane_reference[[:space:]]*\(|1|crates/busbar/src/|there is exactly ONE parse-time answer to "does this hook reference reach onto another plane"; a second is two answers that drift the first time either is fixed, and zero means the rule left the tree and every dotted reference is now silently accepted'
   'one-section-attach-validator|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+validate_section_hooks[[:space:]]*\(|1|crates/busbar/src/|the SECTION-level attach list must be judged by the same rule one entry is; a second copy is the place a looser rule grows, and it is the list an operator uses to attach a control to everything'
+
+  # ── THE ONE BY-NAME PROTOCOL RESOLUTION. Before the registry there were THREE: `protocol_for`'"'"'s
+  #    match, `handlers::request_handler`'"'"'s match, and `ProtocolRegistry::with_builtins`'"'"'s match,
+  #    each a list of protocol names core had been edited to know. They are one `fn decl_for` now,
+  #    and the census is what keeps them one: a SECOND by-name resolution is a second place a
+  #    protocol can be known, and the failure mode is a protocol that resolves for routing and not
+  #    for dispatch (or the reverse), discovered as a 404 on a path that is mounted. Zero is the
+  #    other failure: the lookup was renamed or inlined and every ban above it scans nothing.
+  'protocol-name-resolution|PROTOCOL-LOOKUP-RESPELT|fn[[:space:]]+decl_for[[:space:]]*\(|1|crates/busbar/src/|there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist'
+
+  # ── THE BUILT-IN DECLARATION TABLE. One slice, and it is DATA rather than a match — the whole
+  #    point of the step (`design/protocol-plugin-abi.md` §8.1: a registry whose population is a
+  #    match in core has not removed the match, it has moved it). A second table is a second answer
+  #    to which protocols ship; zero means the table was inlined back into a constructor, which is
+  #    how the match would return.
+  'protocol-builtin-table|PROTOCOL-TABLE-RESPELT|static[[:space:]]+BUILTIN_DECLS|1|crates/busbar/src/|the set of built-in protocols is declared in exactly one place, as data; a second table or none at all is the match coming back'
 )
 
 hdr "declaration census (a shared decision, and each shared wire word, exists EXACTLY once)"

@@ -9,6 +9,23 @@ use super::openai_family::{
 };
 use super::*;
 
+/// BEDROCK'S DECLARATION. The only protocol declaring SigV4 ingress auth and a non-SSE streaming
+/// content type — the two facts core used to learn by allocating a reader and a writer to ask.
+pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+    name: PROTO_BEDROCK,
+    codec: Some(Protocol::bedrock),
+    handler: Some(&crate::handlers::bedrock::BedrockRequestHandler),
+    verbs: &["chat", "embeddings", "image", "rerank"],
+    head_keys: LLM_HEAD_KEYS,
+    // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
+    streaming_content_type: Some(APPLICATION_VND_AMAZON_EVENTSTREAM),
+    array_stream_shim_key: None,
+    // `tooluse_…` is Bedrock's documented native tool-call id shape.
+    native_tool_id_prefix: Some("tooluse_"),
+    ingress_auth: IngressAuth::SigV4,
+    stream_usage_requires_opt_in: false,
+};
+
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):
 /// the per-request id the AWS SDK surfaces via `*Output::request_id()`, and the error-type header
 /// the SDK reads BEFORE the body `__type` for typed-exception dispatch. Defined here (the Bedrock

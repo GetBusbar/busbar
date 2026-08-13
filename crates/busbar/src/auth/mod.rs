@@ -1513,13 +1513,13 @@ pub(crate) async fn auth_middleware(
     // carries an `AWS4-HMAC-SHA256` Authorization header. Gating on `keys_in_chain` keeps an OPEN
     // `chain:[]` open even for a SigV4-shaped request (pure anonymous). On success it yields the same
     // `Identified { resolved: Some(key) }` the bearer keys arm produces, feeding the SINGLE match
-    // below. The "which protocol uses SigV4" decision is a `ProtocolReader` vtable predicate, NOT a
-    // `proto == "bedrock"` name-branch.
-    let ingress_uses_sigv4 = crate::proto::protocol_for(crate::ingress::native::envelope_dialect(
+    // below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
+    // (`ProtocolDecl::ingress_auth`), NOT a `proto == "bedrock"` name-branch — and reading it no
+    // longer costs the reader/writer pair the old vtable predicate had to allocate to ask.
+    let ingress_uses_sigv4 = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
         ingress_for_path(&app, &path),
     ))
-    .map(|p| p.reader().uses_sigv4_ingress_auth())
-    .unwrap_or(false);
+    .is_some_and(|d| d.uses_sigv4_ingress_auth());
     // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
     // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
     // secret and produces an identity with no audience anywhere in it, so allowing it here would be

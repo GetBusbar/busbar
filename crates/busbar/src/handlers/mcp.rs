@@ -86,6 +86,27 @@ const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotificationMethod:
 
 pub(crate) struct McpRequestHandler;
 
+/// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
+/// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no
+/// top-level body key on the pre-materialized path (its method lives in the JSON-RPC envelope, which
+/// `ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have had to grow
+/// a special case for it; this one holds a declaration that says `None` four times.
+///
+/// It lives here rather than under `proto/` because MCP has no `proto/mcp/` module — it is a
+/// protocol without a wire codec, and its cells are the only thing core resolves for it.
+pub(crate) const DECL: crate::proto::ProtocolDecl = crate::proto::ProtocolDecl {
+    name: "mcp",
+    codec: None,
+    handler: Some(&McpRequestHandler),
+    verbs: &["invoke", "subscribe"],
+    head_keys: &[],
+    streaming_content_type: None,
+    array_stream_shim_key: None,
+    native_tool_id_prefix: None,
+    ingress_auth: crate::proto::IngressAuth::Bearer,
+    stream_usage_requires_opt_in: false,
+};
+
 /// The `(mcp, Invoke)` cell. One protocol, one operation, one codec.
 static INVOKE: InvokeOperation = InvokeOperation;
 

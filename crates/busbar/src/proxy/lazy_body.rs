@@ -37,25 +37,15 @@
 use super::*;
 
 /// The top-level keys the head projection captures — the COMPLETE set of body point-reads on the
-/// pre-materialized path. `model` (ingress model resolution + the pristine model-rewrite check),
-/// `stream` (chat's `wants_stream` + shim-strip invalidator #2), `system` (chat's body affinity
-/// key), plus every registered protocol's array-stream shim key (invalidator #1 + gemini's
-/// `wants_array_stream`).
+/// pre-materialized path, DECLARED by the protocols rather than hardcoded here.
+///
+/// This was the third `OnceLock` sweep: four keys spelled in this file, unioned with a second sweep
+/// (`proto::array_stream_shim_keys()`) that built a `Protocol` per known name to read one constant
+/// off its writer. Both halves are now `ProtocolDecl` fields — `head_keys` and
+/// `array_stream_shim_key` — folded into one registry aggregate at boot, so the set this function
+/// returns is the set the protocols declared and there is nowhere else to state it.
 fn captured_head_keys() -> &'static [&'static str] {
-    static CACHE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            // `stream_options` is captured so the engine can read `stream_options.include_usage`
-            // (the OpenAI streaming-usage opt-in) off the head projection WITHOUT forcing
-            // a full DOM materialization on the common streaming path. It is a small top-level object;
-            // capturing it keeps the point read O(1) and DOM-equivalent.
-            let mut v: Vec<&'static str> = vec!["model", "stream", "stream_options", "system"];
-            v.extend_from_slice(crate::proto::array_stream_shim_keys());
-            v.sort_unstable();
-            v.dedup();
-            v
-        })
-        .as_slice()
+    crate::proto::registry::registry().head_keys()
 }
 
 /// A top-level map key classified against [`captured_head_keys`] WITHOUT allocating: the serde
@@ -307,8 +297,9 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
     if obj.get("model").and_then(|m| m.as_str()) != Some(lane.wire_model()) {
         return false;
     }
-    // Claude-on-Vertex: always mutates an object body (drops `model`, injects `anthropic_version`).
-    if lane.path_base.is_some() && lane.protocol.name() == crate::proto::PROTO_ANTHROPIC {
+    // A dialect that reshapes its body at a path-model URL always mutates an object body, so such
+    // a request can never be a pristine passthrough. Asked of the WRITER before any DOM exists.
+    if lane.path_base.is_some() && lane.protocol.writer().reshapes_body_at_path_base() {
         return false;
     }
     // #4: a same-protocol path-model body `model` is stripped after the rewrite.
