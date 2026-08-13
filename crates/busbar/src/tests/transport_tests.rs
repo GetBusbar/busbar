@@ -12,13 +12,34 @@ use crate::handlers::request_handler;
 
 #[test]
 fn names_are_stable_and_distinct() {
-    let all = [Transport::Http];
-    let names: Vec<_> = all.iter().map(|t| t.name()).collect();
+    let names: Vec<_> = Transport::ALL.iter().map(|t| t.name()).collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "transport names must be unique");
     assert_eq!(Transport::Http.name(), "http");
+    assert_eq!(Transport::JsonRpc.name(), "jsonrpc");
+    assert_eq!(Transport::HttpJson.name(), "http+json");
+}
+
+/// THE A2A LEGS' NAMES ARE THE A2A PLANE'S WIRE FORMATS, and this is the assertion that keeps the
+/// two lists one vocabulary rather than two that happen to agree. The card a served agent publishes
+/// spells its `protocolBinding` from the plane's list (`serve::servable_bindings` upper-cases it),
+/// and the metric label an operator reads spells it from here. If these ever diverge, an operator
+/// correlating a Prometheus series with a published binding is silently comparing two strings that
+/// no longer describe the same leg.
+#[test]
+fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
+    let wires = crate::plane::Plane::A2a.wire_format_names();
+    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson]
+        .iter()
+        .map(|t| t.name())
+        .collect();
+    assert_eq!(
+        wires,
+        legs.as_slice(),
+        "the A2A plane's wire formats and the transports its legs ride must be one list"
+    );
 }
 
 /// FRAMING IS IDENTITY ON `Http`, AND THE CODEC IS UNTOUCHED. The framed cell hands back the very
@@ -48,9 +69,10 @@ fn framing_carries_the_codec_through_unchanged() {
     assert_eq!(framed.taps_nonstream_usage(), codec.taps_usage());
 }
 
-/// EVERY PROTOCOL IN THE MATRIX FRAMES ON THE ONE VARIANT. Six LLM dialects plus MCP, each framed
-/// through its own registered codec — the acceptance condition for landing the axis with one
-/// variant. When a second variant arms, this test is where its row goes.
+/// EVERY PROTOCOL IN THE MATRIX STILL FRAMES ON `Http`. Six LLM dialects plus MCP, each framed
+/// through its own registered codec. The point of keeping this unchanged when the axis grew two
+/// variants is that the split was NOT a relabelling of what was already there: these seven cells
+/// ride the same variant, with the same name, that they rode before A2A's legs existed.
 #[test]
 fn all_seven_protocols_frame_over_http() {
     let cells = [

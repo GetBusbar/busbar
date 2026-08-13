@@ -98,6 +98,14 @@ pub(crate) mod observe;
 /// envelope. A literal spelled per site is how those two answers start to differ.
 pub(crate) const WIRE_JSONRPC: &str = "jsonrpc";
 
+/// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
+/// names the operation rather than a body member. Named once, here, because it is read three ways
+/// and all three must agree — as a [`Plane::wire_format_names`] entry, as the
+/// [`crate::transport::Transport::HttpJson`] label, and (upper-cased by
+/// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
+/// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
+pub(crate) const WIRE_HTTP_JSON: &str = "http+json";
+
 /// One governance plane. The variant set is the only thing a new plane adds here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Plane {
@@ -190,8 +198,20 @@ impl Plane {
             Plane::Llm => crate::proto::KNOWN_PROTOCOLS,
             // JSON-RPC 2.0, over any of three transports.
             Plane::Mcp => &[WIRE_JSONRPC],
-            // JSON-RPC 2.0. One wire format today.
-            Plane::A2a => &[WIRE_JSONRPC],
+            // TWO, AND THE SECOND ONE IS WHAT MAKES THIS PLANE'S RULES FIRE. A2A defines its
+            // bindings as `supportedInterfaces[]` entries of ONE agent, and busbar serves two of
+            // them: the JSON-RPC envelope, where a body member names the operation, and HTTP+JSON,
+            // where the request line does. `serve::servable_bindings` reads this list to decide
+            // what a served card may advertise, so this line — not a hand-written card entry — is
+            // what publishes the second binding.
+            //
+            // Two entries also means `has_superset_ir` now answers TRUE for this plane and
+            // `sole_wire_format` answers NONE. Both are DERIVED from this array's length and both
+            // are meant to move: the design's threshold for a plane earning a superset IR is two
+            // wire formats, and a plane with two can no longer be labelled at the ingress boundary
+            // because which dialect spoke is a fact only its reader knows. See `a2a::ingress`, which
+            // now labels its own requests from inside for exactly that reason.
+            Plane::A2a => &[WIRE_JSONRPC, WIRE_HTTP_JSON],
         }
     }
 
@@ -426,6 +446,34 @@ impl Ingress {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
             Ingress::Mounted(plane) => plane.sole_wire_format(),
+            Ingress::Residual(dialect) => dialect,
+        }
+    }
+
+    /// THE DIALECT AN ANSWER IS SHAPED IN when the request itself could not say which — a `413` for
+    /// a body nothing read, a `401` before any handler ran, a `404` for a path that matched nothing.
+    ///
+    /// ## Why this is a DIFFERENT question from [`Self::wire_format`], and why conflating them broke
+    ///
+    /// [`Self::wire_format`] answers "which dialect DID speak", and `None` is its honest answer for
+    /// a plane with several: nobody at the door knows yet. That is exactly right for a metric label,
+    /// where guessing invents a fact. It is exactly wrong for an ERROR BODY, where `None` is not an
+    /// option — some bytes have to go back — and the caller of `envelope_dialect` had one fallback
+    /// for both cases: OpenAI's envelope.
+    ///
+    /// That fallback was harmless while every mounted plane spoke one dialect. The moment the A2A
+    /// plane spoke two, `wire_format()` started answering `None` for it and every door-level refusal
+    /// on a MOUNTED, audience-bound plane would have been shaped, labelled and messaged as OPENAI —
+    /// the precise defect the merged resolver was built to end, re-entering through the fallback
+    /// rather than through a second classifier.
+    ///
+    /// So a mounted plane answers its FIRST wire format. Not an arbitrary pick: `supportedInterfaces`
+    /// is an ORDERED list whose first entry is the preferred binding, busbar's own card publishes
+    /// these in this order, and a refusal that cannot know which binding the caller intended is owed
+    /// the one the card names first.
+    pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
+        match self {
+            Ingress::Mounted(plane) => plane.wire_format_names().first().copied(),
             Ingress::Residual(dialect) => dialect,
         }
     }

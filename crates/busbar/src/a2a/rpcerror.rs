@@ -141,6 +141,32 @@ impl A2aError {
         }
     }
 
+    /// THE CANONICAL STATUS NAME — the `gRPC Status` column of A2A section 5.4, which AIP-193 puts
+    /// in `error.status` on the HTTP+JSON binding.
+    ///
+    /// It is the SAME column for both bindings, and that is why it is a method on this table rather
+    /// than a second table beside the REST framing: section 5.4 binds one error type to a JSON-RPC
+    /// code, a gRPC status and an HTTP status AT ONCE, so a REST refusal and the JSON-RPC refusal
+    /// for the same condition cannot disagree about which condition it was.
+    ///
+    /// The standard JSON-RPC errors have no row of their own in that table. Each is mapped to the
+    /// canonical name for what it IS — a malformed request is `INVALID_ARGUMENT`, an unknown method
+    /// is `UNIMPLEMENTED` — rather than to a name invented for the occasion.
+    pub(crate) fn status(self) -> &'static str {
+        match self {
+            A2aError::TaskNotFound => "NOT_FOUND",
+            A2aError::TaskNotCancelable => "FAILED_PRECONDITION",
+            A2aError::UnsupportedOperation
+            | A2aError::VersionNotSupported
+            | A2aError::MethodNotFound => "UNIMPLEMENTED",
+            A2aError::ContentTypeNotSupported
+            | A2aError::Parse
+            | A2aError::InvalidRequest
+            | A2aError::InvalidParams => "INVALID_ARGUMENT",
+            A2aError::InvalidAgentResponse | A2aError::Internal => "INTERNAL",
+        }
+    }
+
     /// THE ERROR TYPE A BACKEND'S JSON-RPC CODE NAMES, or `None` for a code A2A does not define.
     ///
     /// Used to carry a relayed backend's error SEMANTICS through busbar without carrying its words.
@@ -212,6 +238,73 @@ pub(crate) fn body(id: &Value, err: A2aError, message: impl Into<String>) -> Val
         }]);
     }
     json!({ "jsonrpc": "2.0", "id": id, "error": error })
+}
+
+/// THE SAME REFUSAL, IN THE OTHER BINDING'S SHAPE — A2A section 11.6's AIP-193 representation.
+///
+/// ## This is the error half of the re-framing, and it is a RE-SHAPE of one answer, not a second one
+///
+/// Both A2A bindings answer the same refusals, because section 5.4 binds each error type to a
+/// JSON-RPC code, a canonical status and an HTTP status in ONE row. So this takes the JSON-RPC error
+/// object [`body`] already built and moves its three parts to where AIP-193 keeps them, and it
+/// invents nothing:
+///
+/// * `error.code` becomes THE HTTP STATUS. That is section 11.6's own instruction ("Error Code:
+///   mapped to the HTTP status code and the `error.code` field"), and it is the one member whose
+///   value genuinely differs between the bindings — a REST client reads an integer status here, not
+///   a JSON-RPC code, and putting `-32001` in it would hand every conformant client a number outside
+///   the range this field is defined over.
+/// * `error.data` becomes `error.details`, VERBATIM. It is already the ProtoJSON array of
+///   `google.rpc.ErrorInfo` (and, where the refusal names one, `ResourceInfo`) that AIP-193 asks
+///   for; only the member name differs between the bindings.
+/// * `error.status` is added — the canonical name, from [`A2aError::status`].
+///
+/// ## Why the status is recovered from the CODE rather than passed in
+///
+/// The refusal has already been decided by the time it gets here, and it was decided ONCE, on the
+/// shared path both bindings run. Taking the error type as a second argument would let a caller
+/// hand in a status that disagrees with the code in the body it is re-shaping — two answers to a
+/// question already answered, which is the defect the shared envelope reader exists to prevent one
+/// layer up. A code this table does not define (a relayed backend's own, or a busbar refusal shaped
+/// with a string code) falls back to the canonical name for the HTTP STATUS, which is the only other
+/// fact the answer actually carries.
+fn status_for_http(status: u16) -> &'static str {
+    match status {
+        400 | 415 => "INVALID_ARGUMENT",
+        401 => "UNAUTHENTICATED",
+        403 => "PERMISSION_DENIED",
+        404 => "NOT_FOUND",
+        409 => "FAILED_PRECONDITION",
+        429 => "RESOURCE_EXHAUSTED",
+        503 => "UNAVAILABLE",
+        504 => "DEADLINE_EXCEEDED",
+        _ => "INTERNAL",
+    }
+}
+
+/// See [`status_for_http`] for the whole of the argument; this is the function that applies it.
+pub(crate) fn aip193(http_status: u16, error: &Value) -> Value {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let status = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .and_then(A2aError::from_code)
+        .map_or_else(|| status_for_http(http_status), A2aError::status);
+    let mut out = json!({
+        "code": http_status,
+        "status": status,
+        "message": message,
+    });
+    // ONLY WHEN THERE IS ONE. AIP-193 makes `details` optional, and an empty array would assert
+    // "there is structured context and it is nothing", which is a different claim from "there is
+    // none" to a client that branches on the member's presence.
+    if let Some(details) = error.get("data").filter(|d| d.is_array()) {
+        out["details"] = details.clone();
+    }
+    json!({ "error": out })
 }
 
 /// The ProtoJSON type URL of `google.rpc.ResourceInfo`, which is how the task a refusal is about

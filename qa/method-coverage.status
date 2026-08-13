@@ -32,13 +32,15 @@
 # legitimate waiver. "We ran out of time" is ALSO a legitimate waiver -- but only if it is written
 # down here, dated, with the customer-visible consequence spelled out.
 #
-# WHY THIS FILE IS EMPTY OF `implemented` LINES TODAY, and that is not an oversight.
+# WHY THIS FILE STARTED EMPTY OF `implemented` LINES, and why it no longer is.
 # `crates/busbar/src/mcp/` and `crates/busbar/src/a2a/` are being deleted whole (goal D10) and
 # rebuilt cell by cell on the Protocol x Operation x Transport axes. Claiming a cell here on the
 # strength of code that is scheduled for deletion would be claiming coverage the release does not
-# have. Every cell is therefore MISSING, the full list is pinned in qa/method-coverage.missing,
-# and THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has
-# been watched green on an instrument -- read the output, not the tick.
+# have, so every cell began MISSING, the full list is pinned in qa/method-coverage.missing, and
+# THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has been
+# watched green on an instrument -- read the output, not the tick. The first cells to leave the
+# queue are the A2A plane's HTTP+JSON server side, below, and each one names the requirement the
+# publisher's own suite passed on the `[http_json]` parameterisation.
 
 # ---------------------------------------------------------------------------
 # implemented
@@ -67,7 +69,6 @@
 # be one here: CORE-CAP-003 only runs when the capability is ABSENT, and CARD-EXT-002 skips itself
 # the moment the card is configured, so a busbar that answers this perfectly and one that answers
 # it with garbage produce identical TCK output.
-a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
 
 # PushNotificationDelivery, busbar as SERVER, over HTTP+JSON -- the outbound POST to a caller's
 # webhook. (The JSON-RPC and gRPC columns are N/A with a reason: there is no delivery rpc.)
@@ -91,7 +92,6 @@ a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
 # owed to every customer whose webhook is https, and NOT on those three going green. Conformance
 # being unobservable here is not permission to leave the capability unbuilt, and it is not
 # permission to claim the three either.
-a2a|http+json|server|server|PushNotificationDelivery = implemented
 
 # AND ONE THING THAT LANDED WITHOUT CLAIMING A CELL, RECORDED SO THAT ITS ABSENCE HERE IS NOT READ
 # AS AN OVERSIGHT. `resources/subscribe`, `resources/unsubscribe`,

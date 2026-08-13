@@ -27,24 +27,41 @@
 //! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
 //! it a codec's property (it is not — the codec must never learn it).
 //!
-//! ## ONE VARIANT, ON PURPOSE
+//! ## THREE VARIANTS. THE TWO NEW ONES WERE BOUGHT, NOT GUESSED.
 //!
-//! This lands the axis with a single variant for what exists today and nothing else. `Stdio` and
-//! `Grpc` are later units and are deliberately absent: an enum with two speculative variants nobody
-//! has driven a request through is a design nobody has tested. If the shape is wrong it is wrong
-//! here, where the cost is one enum and the sites the compiler names — the same "prove the interface
-//! with one subclass" move that landed the parent IR.
+//! The axis landed with ONE variant for what existed and nothing else, on the argument that an enum
+//! with speculative variants nobody has driven a request through is a design nobody has tested.
+//! `Stdio` and `Grpc` are still absent for exactly that reason: no request rides either. A2A's two
+//! served bindings do, which is the whole of why they are here.
 //!
-//! ## THE ONE QUESTION THIS STEP DELIBERATELY DOES NOT ANSWER
+//! ## THE QUESTION THE FIRST STEP DEFERRED, AND THE ANSWER THE INSTRUMENT GAVE
 //!
 //! A2A's spec calls JSON-RPC and HTTP+JSON two *transports* of one agent, but by the rule this tree
 //! already applies they differ only in which member names the operation — and `handlers/mcp.rs`
 //! states in its own header that a JSON-RPC envelope is the protocol's DIALECT, "exactly as
-//! `{"messages": […]}` is OpenAI's", carried by the codec. Both readings cannot be right. This step
-//! does not settle it, because settling it needs a second armed binding to read the answer off
-//! rather than an argument: the TCK scores each armed leg separately, so if the legs must be
-//! LABELLED separately then [`Transport::Http`] splits at that point. That split costs one enum
-//! variant plus the sites the compiler names, which is the property this step exists to buy.
+//! `{"messages": […]}` is OpenAI's", carried by the codec. Both readings cannot be right. The first
+//! step did not settle it, and said exactly what would: *the TCK scores each armed leg separately,
+//! so if the legs must be LABELLED separately then [`Transport::Http`] splits at that point.*
+//!
+//! **They must, and it did.** The official A2A TCK reports `jsonrpc:` and `http_json:` as separate
+//! rows over ONE requirement set, and a requirement FAILS if any armed leg fails it. "Which leg did
+//! this request arrive on" is therefore a fact busbar's own telemetry has to be able to state, and
+//! one label covering both cannot state it. So [`Transport::Http`] split into itself plus
+//! [`Transport::JsonRpc`] and [`Transport::HttpJson`], and it cost what the first step predicted:
+//! the enum variants plus the sites the compiler named.
+//!
+//! **The split is not a rename of the old variant, and that distinction is load-bearing.**
+//! [`Transport::Http`] still carries the six LLM protocols' POSTs, unchanged and unrelabelled: no
+//! instrument scores them as separate legs of one requirement, which is the only thing that made
+//! A2A's two need separate names, and moving them would have changed a live metric label to prove a
+//! point about tidiness. What moved is the A2A plane, which had no `Transport` at all before this.
+//!
+//! **The names are the plane's wire-format names, not a second vocabulary.**
+//! [`Transport::JsonRpc`] and [`Transport::HttpJson`] answer `jsonrpc` and `http+json` — the two
+//! entries of `Plane::A2a.wire_format_names()`, read from the same two constants. That is what lets
+//! this plane label its own requests now that it no longer can be labelled at the ingress boundary
+//! (`Plane::sole_wire_format` answers `None` for a plane with two dialects), and it is why the
+//! label an operator reads in Prometheus is the same word the served agent card advertises.
 
 use crate::handlers::{OpDispatch, OperationHandler};
 use crate::operation::Operation;
@@ -56,17 +73,52 @@ pub(crate) enum Transport {
     /// ONE HTTP request in, ONE HTTP response out — the exchange every cell in the tree uses
     /// today: the six LLM protocols' POSTs and `handlers/mcp.rs`'s streamable-HTTP `/mcp`. The
     /// response may be buffered, SSE-framed or binary event-stream framed; that choice belongs to
-    /// the codec and the ingress writer, not here, which is why one variant covers all seven cells.
+    /// the codec and the ingress writer, not here, which is why one variant covers all six cells.
     Http,
+    /// A2A'S JSON-RPC BINDING — one HTTP POST carrying a `{jsonrpc, id, method, params}` envelope,
+    /// where A BODY MEMBER names the operation. The `JSONRPC` entry of an agent card's
+    /// `supportedInterfaces[]`, and the leg the TCK scores as `jsonrpc:`.
+    JsonRpc,
+    /// A2A'S HTTP+JSON BINDING — the same HTTP exchange, with THE REQUEST LINE naming the operation
+    /// instead of a body member. `POST /message:send` rather than `{"method":"SendMessage"}`,
+    /// `GET /tasks/{id}` rather than `{"method":"GetTask","params":{"id":…}}`.
+    ///
+    /// A separate variant rather than a flag on [`Transport::JsonRpc`] because the specification
+    /// models the two as distinct bindings of ONE agent and the conformance instrument scores each
+    /// as its own leg of every requirement. What rides them is otherwise IDENTICAL: A2A section 11.3
+    /// makes the REST request body the JSON-RPC `params` VERBATIM and the REST success body the
+    /// `result` VERBATIM. That is why arming this one is re-framing rather than translation, and
+    /// why the cell below it never learns which of the two it is being spoken over.
+    HttpJson,
 }
 
 impl Transport {
+    /// Every transport, so a site that must cover all of them cannot silently cover some. The same
+    /// role `Plane::ALL` plays for its axis: a variant absent from here is a variant nothing
+    /// enumerates.
+    ///
+    /// Its readers are TESTS today, and that is stated rather than hidden behind a production use
+    /// invented to justify it. What it buys is that the axis is ENUMERABLE — the label-uniqueness
+    /// check and the "these two legs are the A2A plane's two wire formats" check both walk it, so
+    /// adding a fourth variant with a duplicate or off-vocabulary name is a failing test rather
+    /// than a metric label nobody notices is wrong.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const ALL: &'static [Transport] =
+        &[Transport::Http, Transport::JsonRpc, Transport::HttpJson];
+
     /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
     /// the label that says WHICH LEG a request arrived on, which is what makes a per-transport
-    /// conformance number readable from busbar's own telemetry once a second transport arms.
+    /// conformance number readable from busbar's own telemetry now that a second transport is armed.
+    ///
+    /// The two A2A legs answer their PLANE'S wire-format names, read from the same two constants
+    /// `Plane::A2a.wire_format_names()` is built from, rather than from strings spelled again here.
+    /// That is what makes the metric label, the plane's dialect list and the `protocolBinding` a
+    /// served card advertises one vocabulary instead of three that agree today.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",
+            Transport::JsonRpc => crate::plane::WIRE_JSONRPC,
+            Transport::HttpJson => crate::plane::WIRE_HTTP_JSON,
         }
     }
 

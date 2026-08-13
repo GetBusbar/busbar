@@ -127,6 +127,68 @@ fn a_binding_busbar_cannot_serve_is_not_published_at_busbars_own_address() {
     );
 }
 
+/// THE SAME DEFECT, ONE ADDRESS DOWN, AND IT RE-ENTERED THE DAY THE PLANE ARMED A SECOND BINDING.
+///
+/// The filter above asks "can busbar serve this binding", and while the plane spoke one dialect that
+/// was the same question as "does busbar answer this binding AT THE ADDRESS THIS ENTRY NOW POINTS
+/// AT". It stopped being the same question when `a2a::rest` mounted the HTTP+JSON paths: those hang
+/// off the PLANE'S mount (`/a2a/message:send`, `/a2a/tasks/{id}`, …), and a fronted agent's card is
+/// rewritten to point at `/a2a/agents/{id}`, where `POST` answers a JSON-RPC envelope and no request
+/// line names an operation at all.
+///
+/// So a backend offering HTTP+JSON would have had that entry KEPT — the plane can serve it — and its
+/// url rewritten to an address that does not, publishing exactly the "interface at busbar's address
+/// for a protocol nothing there answers" the test above exists to prevent.
+#[test]
+fn a_binding_the_plane_serves_only_at_its_own_mount_is_not_published_at_an_agents_address() {
+    let mut card = backend_card();
+    card.as_object_mut().expect("object").insert(
+        "supportedInterfaces".to_string(),
+        json!([
+            { "url": format!("{BACKEND}/a2a/jsonrpc"), "protocolBinding": "JSONRPC" },
+            { "url": format!("{BACKEND}/a2a/rest"), "protocolBinding": "HTTP+JSON" }
+        ]),
+    );
+    let served = rewrite_card(&card, BACKEND, PUBLIC, "planner", None).expect("rewrite");
+    let bindings: Vec<&str> = served["supportedInterfaces"]
+        .as_array()
+        .expect("interfaces")
+        .iter()
+        .filter_map(|i| i["protocolBinding"].as_str())
+        .collect();
+
+    assert_eq!(
+        bindings,
+        vec!["JSONRPC"],
+        "the fronted-agent address answers the JSON-RPC envelope and nothing else, so that is the \
+         only binding its card may advertise: {}",
+        serde_json::to_string_pretty(&served).expect("pretty")
+    );
+}
+
+/// AND BUSBAR'S OWN CARD STILL ADVERTISES BOTH, because its address is the one that serves both.
+/// Pinned beside the test above so the fix for that one cannot be "stop publishing HTTP+JSON" —
+/// the two addresses answer different sets, and both statements have to stay true.
+#[test]
+fn the_planes_own_card_advertises_every_binding_the_plane_mounts() {
+    let card = self_card(PUBLIC, None).expect("self card");
+    let bindings: Vec<&str> = card["supportedInterfaces"]
+        .as_array()
+        .expect("interfaces")
+        .iter()
+        .filter_map(|i| i["protocolBinding"].as_str())
+        .collect();
+    assert_eq!(bindings, vec!["JSONRPC", "HTTP+JSON"]);
+    // ORDERED, and the order is the plane's. `supportedInterfaces` is a preference list, and the
+    // first entry is also what `Ingress::shaping_wire_format` names for a refusal that reached no
+    // handler — one order, read in two places.
+    assert_eq!(
+        bindings.len(),
+        crate::plane::Plane::A2a.wire_format_names().len(),
+        "every wire format the plane declares is published, and nothing else"
+    );
+}
+
 #[test]
 fn every_published_binding_is_one_the_a2a_plane_declares_a_wire_format_for() {
     // THE RULE, not today's answer. The published set is derived from `Plane::A2a`'s wire formats,

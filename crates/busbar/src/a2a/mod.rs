@@ -81,6 +81,8 @@ pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 pub(crate) mod registry;
 pub(crate) mod relay;
+/// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
+pub(crate) mod rest;
 pub(crate) mod rpcerror;
 // THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no
 // call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
