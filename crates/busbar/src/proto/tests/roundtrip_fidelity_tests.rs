@@ -11,12 +11,12 @@
 //! lose: `read_request` → `write_request` and `read_response` → `write_response` through the neutral
 //! IR, and diffs the result against the original body field by field.
 //!
-//! Until this existed there was NO property/round-trip test at all — only ~30 hand-written per-field
+//! Until this existed there was NO property/round-trip test at all, only ~30 hand-written per-field
 //! assertions scattered across six `tests/tests.rs` files. That absence is what let a whole class of
-//! loss accumulate unnoticed: **you cannot mutate a field that is never read or never emitted**, so
-//! a mutation-testing pass over the writers came back clean while attachments, usage sub-buckets and
-//! citation offsets were being dropped in silence. A field no test would miss is a field a future
-//! edit can silently drop.
+//! loss accumulate unnoticed: **a field that is never read and never emitted has nothing to check
+//! it**, so the writers looked well covered while attachments, usage sub-buckets and citation
+//! offsets were being dropped in silence. A field no test would miss is a field a future edit can
+//! silently drop.
 //!
 //! # The contract: an EXACT allow-list, not a budget
 //!
