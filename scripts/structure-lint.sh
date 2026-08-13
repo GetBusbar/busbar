@@ -269,8 +269,8 @@ plane_dup_table() {   # $1.. = plane=dir
 }
 
 # The same question asked of FILE NAMES rather than symbols, because a concern can be duplicated
-# without a single name colliding. `mcp/catalogue.rs` and `a2a/catalogue.rs` are two implementations
-# of "the catalogue" whatever they call their types, and the module name is the author's own
+# without a single name colliding. `mcp/config.rs` and `a2a/config.rs` are two implementations
+# of "the plane's config" whatever they call their types, and the module name is the author's own
 # statement of which concern the file is. `mod.rs` is excluded: it is Rust's spelling of "this
 # directory", not a concern.
 plane_dup_modules() {   # $1.. = plane=dir
@@ -1353,7 +1353,7 @@ run_fn_scoped "decision-input invariant(s)" "${DECISION_INPUT[@]}"
 #            `fn compute_hash` in `mcp/` and a free `fn compute_hash` in `a2a/` is two authors
 #            naming the same idea at file scope, twice.
 #   MODULE — the same file name in two planes. A concern can be duplicated without one name
-#            colliding; `mcp/catalogue.rs` beside `a2a/catalogue.rs` is the author's own statement
+#            colliding; `mcp/config.rs` beside `a2a/config.rs` is the author's own statement
 #            of which concern each file is. `mod.rs` is excluded — it names a directory, not an idea.
 #
 # COMMENTS ARE NOT DECLARATIONS, and that is load-bearing here. GOAL §A6.1 records that the circuit
@@ -1384,7 +1384,6 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 # The concerns, and where each one's single implementation should end up. `-` for an owner means
 # THERE IS NO SHARED HOME YET, which is itself the finding: the concern has only plane-local copies.
 PLANE_CONCERNS=(
-  'catalogue|-|one catalogue generic over the plane, keyed by plane::Plane; the entry type is the plane-specific part'
   'guarded-fetch|crates/busbar/src/net_guard.rs|route every attacker-influenced fetch through net_guard: one resolver, one pin, one redirect refusal'
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
   'ingress|crates/busbar/src/ingress|one plane-neutral admission in ingress/, with the plane supplying its wire reader'
@@ -1400,11 +1399,10 @@ refuse|DEBT|ingress|two per-plane refusal shapers; the wire shape of a refusal i
 not_found|DEBT|ingress|two per-plane 404 shapers
 metadata|DEBT|ingress|the RFC 9728 protected-resource metadata document, written once per plane, verified 2026-08-11 to be the same document with the same audience rule
 declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
-catalogue.rs|DEBT|catalogue|the catalogue module exists once per plane
 config.rs|DEBT|plane-config|the config module exists once per plane
 ingress.rs|DEBT|ingress|the ingress module exists once per plane
 transport.rs|DEBT|guarded-fetch|the outbound transport exists once per plane
-judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/catalogue.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
+judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/registry.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
 revalidate|DISTINCT|-|mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other.
 Transport|DISTINCT|-|mcp/config.rs is a config ENUM naming stdio/http/sse; a2a/fetch.rs is a TRAIT abstracting the HTTP client for tests. Unrelated shapes that share a noun.
 "
@@ -1789,6 +1787,33 @@ DECLARATION_CENSUS=(
   #    somebody unified them. Zero means no snapshot in the tree is versioned any more, which is the
   #    in-flight-outliving-the-approval window standing wide open with every test still green.
   'the-one-generation-source|GENERATION-SOURCE-FORKED|fn[[:space:]]+next_generation[^a-zA-Z0-9_]|1|crates/busbar/src/|every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned'
+
+  # ── THE THIRD CATALOGUE WALK, RECORDED BECAUSE PLANE_LEDGER STRUCTURALLY CANNOT HOLD IT.
+  #    `crate::catalogue` unified the two INBOUND catalogues — walk an inventory, hand what each item
+  #    declares to the ordered gate, keep the entitled subset, render it — and retired the
+  #    `catalogue` concern from PLANE_CONCERNS. It did NOT unify the third one:
+  #    `mcp/client/dispatch.rs::visible_catalogue` walks the OUTBOUND leg's live upstream snapshot
+  #    applying the caller's grants, through `egress::authorise_tool_egress` rather than through
+  #    `trust::validate`. Same question — what may this caller SEE — third answer.
+  #
+  #    IT CANNOT BE A PLANE_LEDGER ROW. That ledger's entire mechanism is CROSS-plane duplication:
+  #    `check_plane_dups` only ever sees a symbol declared in BOTH `mcp/` and `a2a/`, and a row for a
+  #    name that is not is a hard STALE-LEDGER error. `visible_catalogue` exists once, in `mcp/`, so
+  #    the row would fail the moment it was written — verified 2026-08-13 by writing it and reading
+  #    the failure. A duplication the ledger cannot express is exactly the kind that gets forgotten,
+  #    so it is expressed here instead, where the instrument fits: a count of the subject itself.
+  #
+  #    THE TARGET IS THIS ROW'S DELETION, not its count. One is today's honest number. When the walk
+  #    is routed through `crate::catalogue::visible` the function goes and the count becomes zero,
+  #    which fails — and the failure is the instruction to delete the row, exactly as a paid-off
+  #    PLANE_LEDGER row is. A SECOND `visible_catalogue` fails for the ordinary reason.
+  #
+  #    It is not fixed in this unit for two reasons, both stated rather than implied: the file is
+  #    held by another unit mid-rebase, and the function has no production caller today
+  #    (`dispatch.rs` is `#![allow(dead_code)]`), so it is a third IMPLEMENTATION and not yet a third
+  #    live answer. The second reason is why it is debt and not a defect; the first is why it is
+  #    debt today.
+  'the-third-catalogue-walk|THIRD-CATALOGUE-WALK|fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]|1|crates/busbar/src/|the outbound client leg still walks its own catalogue instead of crate::catalogue, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through the one walk and deletes the row'
 
   'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|crates/busbar/src/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
 

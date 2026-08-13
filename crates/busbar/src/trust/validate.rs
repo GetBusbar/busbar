@@ -312,25 +312,33 @@ pub(crate) struct Ask<'a, A: PinnedArtifact> {
     pub(crate) generation: Generations,
 }
 
-/// THE ORDERED GATE. Every request, whatever protocol it arrived on, passes through this.
+/// STEPS 1 AND 2 ALONE — IDENTITY, THEN GRANT — for a caller asking WHAT EXISTS rather than asking
+/// to USE something.
 ///
-/// The order is the whole content of the function, and each position is a decision:
+/// ## Why the catalogue stops here, and why that is not a skipped step
 ///
-/// 1. **IDENTITY** first, because a principal that no longer exists has no grant to read and no
-///    approval to have been admitted under.
-/// 2. **GRANT** before anything about the upstream, so a refusal never leaks the thing it refuses.
-/// 3. **ARTIFACT**: the registration-level state first — a suspended or quarantined registration
-///    serves nothing whatever a single capability's fingerprint says — and only then the named
-///    capability's fingerprint, computed HERE.
-/// 4. **GENERATION** last, because it is the cheapest and the least specific: "something moved,
-///    retry" is a worse message than any of the three above and should only be reached when none of
-///    them applies.
-pub(crate) fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refusal> {
+/// A catalogue answers "what may this caller SEE". That is the same identity question and the same
+/// grant question [`validate_request`] asks, and it is deliberately NOT the artifact question: the
+/// MCP catalogue LISTS what it will not dispatch, because an operator's view of what is waiting in
+/// the approval queue is the catalogue's job and hiding a pending entry makes the queue invisible.
+/// A2A's catalogue does ask the artifact question, because on that plane a listing IS an admission —
+/// so the difference is in WHAT EACH PLANE ASKS FOR, stated at its own call site, and never in which
+/// steps a shared function decided to run.
+///
+/// **This is an entry point, not a lenient default.** [`validate_request`] calls it for its first
+/// two steps, so there is exactly ONE identity check and ONE grant evaluator in busbar; a caller
+/// that holds an artifact and calls this instead would be silently excusing the artifact step, which
+/// is why the two are named for the two different questions rather than for a step count.
+pub(crate) fn validate_visibility(
+    principal: Option<&VirtualKey>,
+    now: u64,
+    grants: &[Grant<'_>],
+) -> Result<(), Refusal> {
     // ── 1. IDENTITY ─────────────────────────────────────────────────────────────────────────────
     // A tombstoned principal's row survives forever so billing and audit keep resolving it, which
     // means liveness is the check and the row's existence is not.
-    if let Some(p) = ask.principal {
-        if !p.is_live() || !p.enabled || p.expires_at.is_some_and(|exp| ask.now >= exp) {
+    if let Some(p) = principal {
+        if !p.is_live() || !p.enabled || p.expires_at.is_some_and(|exp| now >= exp) {
             return Err(Refusal::IdentityNotLive {
                 principal: p.id.clone(),
             });
@@ -338,13 +346,13 @@ pub(crate) fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<()
     }
 
     // ── 2. GRANT ────────────────────────────────────────────────────────────────────────────────
-    for grant in ask.grants {
+    for grant in grants {
         match grant {
             Grant::Scope { kind, name } => {
                 // With no principal there is no grant to narrow. That is the same posture the rest
                 // of the tree takes for an ungoverned deployment, and it is stated once, here,
                 // rather than at each call site as a skipped call.
-                let held = ask.principal.is_none_or(|p| p.scope_allowed(kind, name));
+                let held = principal.is_none_or(|p| p.scope_allowed(kind, name));
                 if !held {
                     return Err(Refusal::NotGranted {
                         kind: (*kind).to_string(),
@@ -361,6 +369,27 @@ pub(crate) fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<()
             }
         }
     }
+    Ok(())
+}
+
+/// THE ORDERED GATE. Every request, whatever protocol it arrived on, passes through this.
+///
+/// The order is the whole content of the function, and each position is a decision:
+///
+/// 1. **IDENTITY** first, because a principal that no longer exists has no grant to read and no
+///    approval to have been admitted under.
+/// 2. **GRANT** before anything about the upstream, so a refusal never leaks the thing it refuses.
+/// 3. **ARTIFACT**: the registration-level state first — a suspended or quarantined registration
+///    serves nothing whatever a single capability's fingerprint says — and only then the named
+///    capability's fingerprint, computed HERE.
+/// 4. **GENERATION** last, because it is the cheapest and the least specific: "something moved,
+///    retry" is a worse message than any of the three above and should only be reached when none of
+///    them applies.
+pub(crate) fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refusal> {
+    // ── 1. IDENTITY, then 2. GRANT ──────────────────────────────────────────────────────────────
+    // The first two steps are [`validate_visibility`], called rather than restated, so the ONE
+    // grant evaluator in busbar stays one. See that function for who else asks for them alone.
+    validate_visibility(ask.principal, ask.now, ask.grants)?;
 
     // ── 3. ARTIFACT ─────────────────────────────────────────────────────────────────────────────
     // The registration first. This is the lifecycle's OWN derivation, so the answer a dispatch gets

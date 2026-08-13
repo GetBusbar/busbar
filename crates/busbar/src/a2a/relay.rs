@@ -5,7 +5,7 @@
 //! actually receives, and its reply — one answer or a stream of them — into the caller's answer.
 //!
 //! Everything above this module DECIDED. [`super::inbound::authorize`] said who may reach which
-//! agent, [`super::catalogue`] said for what shape of work, [`super::meter`] said whose budget, and
+//! agent, [`super::registry`]'s catalogue said for what shape of work, [`super::meter`] said whose budget, and
 //! [`super::taskstore`] recorded that a dispatch happened. None of that reached the backend. This
 //! is the module that does, and being the one that opens a socket is what makes the properties
 //! below its own rather than somebody else's.

@@ -145,7 +145,7 @@ The lint reads **declarations**, never prose, and asks two mechanical questions 
   both planes? Top-level is what makes this usable: methods inside `impl` blocks are scoped by their
   type, so `new`, `fmt`, `len` and `default` never reach the comparison.
 - **module**: does the same file name exist in both planes? A concern can be duplicated without one
-  symbol colliding; `mcp/catalogue.rs` beside `a2a/catalogue.rs` is the author's own statement of
+  symbol colliding; `mcp/config.rs` beside `a2a/config.rs` is the author's own statement of
   which concern each file is. `mod.rs` is exempt: it names a directory, not an idea.
 
 Reading declarations rather than words is load-bearing. The circuit breaker is **not** duplicated.

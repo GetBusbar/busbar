@@ -28,7 +28,7 @@
 // describing is gone: [`ingress`] mounts `GET`/`POST /a2a/agents/{agent_id}` and this plane's RFC
 // 9728 metadata document, and a request arriving there is authenticated by the shared middleware
 // against [`crate::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
-// [`catalogue::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
+// [`registry::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
 // AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::rpc` makes to the registered backend
@@ -65,7 +65,6 @@
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
-pub(crate) mod catalogue;
 pub(crate) mod config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
