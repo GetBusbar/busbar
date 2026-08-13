@@ -560,7 +560,15 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// SEP-2663 §"Streamable HTTP: Routing Headers" extends SEP-2243's requirement to the three tasks
 /// methods, mirroring `params.taskId` — so an intermediary can route a poll to the node holding the
 /// task without parsing the body, which is the whole purpose of the header.
-fn name_source_of(method: &str) -> Option<&'static str> {
+///
+/// READ FROM BOTH DIRECTIONS, and that is why it is `pub(crate)`. `crate::mcp::client::verb`'s
+/// builder asks this same function which member to mirror into the `Mcp-Name` it SENDS. It carried
+/// its own copy of the rule until 2026-08-13 and the two DISAGREED: this one names the three tasks
+/// methods (SEP-2663 §"Streamable HTTP: Routing Headers") and that one did not, so a `tasks/get`
+/// issued over streamable HTTP went out with no `Mcp-Name` — which busbar's own front door answers
+/// `-32020` to. The divergence was invisible on stdio, which has no headers, and would have
+/// surfaced as an upstream refusing a verb for a reason busbar could not see.
+pub(crate) fn name_source_of(method: &str) -> Option<&'static str> {
     match method {
         "tools/call" | "prompts/get" => Some("name"),
         "resources/read" => Some("uri"),

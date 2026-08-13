@@ -14,6 +14,26 @@ use crate::mcp::client::transport::{HttpTransport, TransportError};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+/// One `WireLeg` for a bare HTTP send.
+///
+/// The transport takes the whole leg because its INBOUND half — the server-originated frames on an
+/// SSE answer — needs the registration they arrived from and the pool's refresh triggers. These
+/// tests are about the outbound half; `tests/http_peer_tests.rs` owns the inbound one.
+fn leg<'a>(
+    pool: &'a crate::mcp::client::pool::McpConnectionPool,
+    policy: SsrfPolicy,
+    timeout: Duration,
+) -> crate::mcp::client::wire::WireLeg<'a> {
+    crate::mcp::client::wire::WireLeg {
+        pool,
+        policy,
+        timeout,
+        server: "transport-tests",
+        command: None,
+        grants: Default::default(),
+    }
+}
+
 fn private_ok() -> SsrfPolicy {
     SsrfPolicy {
         allow_private: true,
@@ -63,7 +83,7 @@ async fn a_json_response_round_trips() {
     .await;
     let pool = McpConnectionPool::new();
     let req = tools_list(&url, 1, None);
-    let resp = HttpTransport::send(&pool, &req, private_ok(), Duration::from_secs(5))
+    let resp = HttpTransport::send(&leg(&pool, private_ok(), Duration::from_secs(5)), &req)
         .await
         .expect("a 200 with JSON round trips");
     assert_eq!(resp.status, 200);
@@ -85,7 +105,7 @@ async fn a_redirect_is_refused_and_names_where_it_pointed() {
     .await;
     let pool = McpConnectionPool::new();
     let req = tools_list(&url, 1, Some("secret-upstream-token"));
-    let err = HttpTransport::send(&pool, &req, private_ok(), Duration::from_secs(5))
+    let err = HttpTransport::send(&leg(&pool, private_ok(), Duration::from_secs(5)), &req)
         .await
         .expect_err("a 302 must be refused");
     assert_eq!(
@@ -114,7 +134,7 @@ async fn an_sse_answer_yields_the_last_data_payload() {
     .await;
     let pool = McpConnectionPool::new();
     let req = tools_list(&url, 1, None);
-    let resp = HttpTransport::send(&pool, &req, private_ok(), Duration::from_secs(5))
+    let resp = HttpTransport::send(&leg(&pool, private_ok(), Duration::from_secs(5)), &req)
         .await
         .expect("an SSE answer is read");
     assert_eq!(
@@ -130,9 +150,12 @@ async fn an_sse_answer_yields_the_last_data_payload() {
 async fn the_transport_refuses_a_destination_the_guard_rejects() {
     let pool = McpConnectionPool::new();
     let req = tools_list("https://169.254.169.254/mcp", 1, Some("token"));
-    let err = HttpTransport::send(&pool, &req, SsrfPolicy::default(), Duration::from_secs(5))
-        .await
-        .expect_err("cloud metadata is refused");
+    let err = HttpTransport::send(
+        &leg(&pool, SsrfPolicy::default(), Duration::from_secs(5)),
+        &req,
+    )
+    .await
+    .expect_err("cloud metadata is refused");
     assert!(
         matches!(
             err,
@@ -154,10 +177,8 @@ async fn an_upstream_jsonrpc_error_is_not_a_transport_error() {
     .await;
     let pool = McpConnectionPool::new();
     let resp = HttpTransport::send(
-        &pool,
+        &leg(&pool, private_ok(), Duration::from_secs(5)),
         &tools_list(&url, 1, None),
-        private_ok(),
-        Duration::from_secs(5),
     )
     .await
     .expect("reachable and healthy, protocol disagreement aside");
@@ -222,10 +243,8 @@ async fn an_answer_naming_a_different_request_is_refused_and_its_payload_never_s
     .await;
     let pool = McpConnectionPool::new();
     let resp = HttpTransport::send(
-        &pool,
+        &leg(&pool, private_ok(), Duration::from_secs(5)),
         &tools_list(&url, 4242, None),
-        private_ok(),
-        Duration::from_secs(5),
     )
     .await
     .expect("the upstream answered");
@@ -264,10 +283,8 @@ async fn the_same_exchange_with_the_id_that_was_sent_is_served() {
     .await;
     let pool = McpConnectionPool::new();
     let resp = HttpTransport::send(
-        &pool,
+        &leg(&pool, private_ok(), Duration::from_secs(5)),
         &tools_list(&url, 4242, None),
-        private_ok(),
-        Duration::from_secs(5),
     )
     .await
     .expect("the upstream answered");
@@ -292,10 +309,8 @@ async fn a_null_id_and_a_missing_id_are_uncorrelated_rather_than_results() {
         let (url, _seen) = one_shot_capturing("200 OK", "application/json", body).await;
         let pool = McpConnectionPool::new();
         let resp = HttpTransport::send(
-            &pool,
+            &leg(&pool, private_ok(), Duration::from_secs(5)),
             &tools_list(&url, 4242, None),
-            private_ok(),
-            Duration::from_secs(5),
         )
         .await
         .expect("the upstream answered");

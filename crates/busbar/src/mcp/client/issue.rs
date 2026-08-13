@@ -88,7 +88,11 @@ pub(crate) async fn issue(
     verb: &UpstreamVerb,
     request_id: u64,
 ) -> Result<Issued, String> {
-    let server: &ServerId = auth.key.server();
+    // THE REGISTRATION, off the leg itself rather than off a tool key. A verb names no tool, and
+    // reading the server out of one was what made an `mcp_tool` grant a prerequisite for issuing a
+    // verb that requires only `mcp_server` — the subject said one grant and the constructor
+    // demanded two.
+    let server: &ServerId = &auth.server;
     let method = verb.method();
     let principal = auth.caller.id.clone();
     let record = |outcome: &'static str, reason: String| {
@@ -121,6 +125,32 @@ pub(crate) async fn issue(
             return Err(reason);
         }
     };
+    // (1b) THE ARGUMENT GUARD, on the verb's OWN params, and BEFORE the exchange.
+    //
+    // `crate::mcp::upstream::authorise` puts a `tools/call`'s arguments through this walk because
+    // "an argument is attacker-influenced content travelling to an operator-chosen destination,
+    // which the routing rule does not and cannot address". Nothing about that sentence is true only
+    // of tools. A `resources/read` carries a caller-chosen `uri`, a `completion/complete` carries a
+    // caller-chosen argument value, and until this ran they reached an upstream unjudged — the
+    // routing rule makes the DESTINATION immune to attacker-chosen text and does nothing whatever
+    // for the PAYLOAD.
+    //
+    // The schema is `{"type": "object"}`: a verb's params have no operator-approved schema, and the
+    // walk is VALUE-driven with the schema riding alongside, so an absent schema narrows what the
+    // walk may call "declared" and narrows nothing else.
+    //
+    // AFTER the gate and BEFORE the exchange, which is the same ordering `authorise` uses: a caller
+    // with no grant learns it is ungranted and nothing else, and a refused param still costs no
+    // token-endpoint round trip on busbar's own authorization server.
+    if let Err(refusal) = super::argguard::guard(
+        &serde_json::json!({ "type": "object" }),
+        &verb.params_for_guard(),
+        auth.policy,
+    ) {
+        let reason = refusal.to_string();
+        record(OUTCOME_REFUSED, reason.clone());
+        return Err(reason);
+    }
     let bearer = match plan {
         CredentialPlan::None => None,
         CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
@@ -169,7 +199,7 @@ pub(crate) async fn issue(
         Ok(r) => r,
         Err(e) => {
             let reason = e.to_string();
-            record(REASON_UPSTREAM_FAILED, reason.clone());
+            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
             return Err(reason);
         }
     };
@@ -184,7 +214,7 @@ pub(crate) async fn issue(
         RpcOutcome::Error { code, message } => {
             let reason =
                 format!("MCP upstream answered JSON-RPC error {code} to {method}: {message}");
-            record(REASON_UPSTREAM_FAILED, reason.clone());
+            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
             Err(reason)
         }
         // AN ASK, ANSWERED WITH A REFUSAL AND NEVER PROXIED. An upstream asking busbar to spend its
@@ -207,7 +237,7 @@ pub(crate) async fn issue(
                  response: {reason}",
                 response.status
             );
-            record(REASON_UPSTREAM_FAILED, reason.clone());
+            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
             Err(reason)
         }
         RpcOutcome::Uncorrelated(reason) => {
@@ -216,7 +246,7 @@ pub(crate) async fn issue(
                  correlate to this call: {reason}",
                 response.status
             );
-            record(REASON_UPSTREAM_FAILED, reason.clone());
+            record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());
             Err(reason)
         }
     }
