@@ -1,6 +1,6 @@
 # Wire protocols and cross-protocol translation
 
-Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features: losslessly, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back.
+Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back. Same-protocol routes are byte-for-byte identical to calling the provider directly; cross-protocol, read [what "lossless" means here](#what-lossless-means-here) before you rely on the word, because that section also lists what does not cross in 1.6.0.
 
 This document covers:
 
@@ -17,7 +17,7 @@ This document covers:
 
 ## One protocol in, any backend out
 
-<svg viewBox="0 0 760 400" role="img" aria-label="Any of six client protocols enters Busbar, is translated through a superset intermediate representation, and reaches any of six backend protocols, losslessly and in both directions." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 0 760 400" role="img" aria-label="Any of six client protocols enters Busbar, is translated through a superset intermediate representation, and reaches any of six backend protocols, in both directions." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
     <marker id="ir-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
@@ -44,7 +44,7 @@ This document covers:
   <!-- hub -->
   <rect x="300" y="152" width="160" height="96" rx="16" fill="#0f172a" stroke="#a3e635" stroke-width="2.5"/>
   <text x="380" y="196" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">Superset IR</text>
-  <text x="380" y="216" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">lossless both ways</text>
+  <text x="380" y="216" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">both ways, natively</text>
   <!-- protocol chips -->
   <g font-size="13" font-weight="600" fill="#0f172a">
     <g>
@@ -323,7 +323,7 @@ response = bedrock.converse(
 
 ## Operations: more than chat
 
-Since 1.2, chat is one of six operations. Embeddings, moderations, image generation, audio (transcription, speech-to-English translation, and text-to-speech), and rerank all run through the same lossless translation layer, in both directions, errors and usage accounting included. A client speaking one protocol can call any operation on a backend speaking another, wherever both sides support it.
+Since 1.2, chat is one of six operations. Embeddings, moderations, image generation, audio (transcription, speech-to-English translation, and text-to-speech), and rerank all run through the same translation layer, in both directions, errors and usage totals included. A client speaking one protocol can call any operation on a backend speaking another, wherever both sides support it.
 
 There is nothing to configure. A lane or pool serves whichever operations its protocol supports; you call the operation's surface instead of the chat surface, with the same model or pool name.
 
@@ -448,6 +448,12 @@ Same-protocol error responses (`4xx`) are relayed verbatim.
 
 ### What "lossless" means here
 
+The claim busbar makes, in full, so you can check it rather than take it:
+
+> **Same-protocol routes are byte-for-byte identical to calling the provider directly: busbar forwards your original bytes, it does not re-serialize them. Cross-protocol, every modelled field survives in the target's native shape, and what cannot cross is dropped deliberately: your client always gets a response its own SDK parses, and the backend always gets a request it accepts.**
+
+The first sentence is unconditional and is the stronger of the two: see [Same-protocol note](#same-protocol-note). The second holds for everything the IR models, and [Known gaps in 1.6.0](#known-gaps-in-160) names the constructs it does not model yet, including the ones that are dropped **without** a log line. Read that list before you rely on the word "lossless" for a cross-protocol route.
+
 Busbar's translation is **lossless** in a specific, testable sense: **neither end can tell the hop happened.**
 
 - **The client is never confused.** It gets a response its own SDK parses cleanly, in its own protocol's shape, that never contradicts what it sent: no `finish_reason`/`stop_reason` outside its enum, no field in a shape its validator rejects, no identifier minted by a foreign vendor.
@@ -456,6 +462,22 @@ Busbar's translation is **lossless** in a specific, testable sense: **neither en
 The reference is native-to-native: a translated exchange should behave exactly as if the client had spoken the backend's protocol directly. A difference counts as *loss* only if it trips one of those two tests, a client that can't parse what it got back, or a backend that rejects what it was sent. Field-level differences that trip neither test (e.g. an upstream `id` replaced with an ingress-native one) are not loss.
 
 Where a construct genuinely has **no representation** in the target protocol: a rare, inherent limit, see [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express), Busbar degrades it to the closest valid native form **and emits a `warn!`**, never something either end would reject. The degradation is observable in logs; it is never silent and never yields an unparseable or malformed wire body.
+
+### Known gaps in 1.6.0
+
+Everything in this subsection is a **defect measured in the 1.6.0 tree**, not a design decision, and none of it applies to a same-protocol route. It is written here because the definition above is the promise, and a promise is only worth reading next to its current exceptions.
+
+| Gap | What happens on a cross-protocol hop | Signalled? |
+|---|---|---|
+| Non-image attachments: OpenAI `input_audio` and `file` content parts, Responses `input_file`, Anthropic `document` and `search_result`, Bedrock `document` and `video` | The IR models text, thinking, tool-use, tool-result, image and JSON blocks, and no document/audio/video block. The attachment does not reach the backend: OpenAI and Responses parts arrive as an empty text block, and the Anthropic and Bedrock ones are stashed for same-protocol re-emit and then cleared at the cross-protocol seam. The model answers as though you never sent the file | **Only Responses `input_file`, which warns.** Everywhere else this is a caller's payload disappearing with no log line, which makes it the most serious item on this page |
+| Response citations out of a **Cohere** backend | Every construction site in the Cohere response reader hardcodes an empty citation list, so a Cohere RAG answer reaches a foreign client with its sources stripped. The other direction is fine: the Cohere writer emits citations, so a citation reaching a Cohere client arrives. OpenAI is **not** affected: `url_citation` annotations are read into the IR, though the character offsets (`start_index`, `end_index`) are deliberately not carried, because they index a body busbar may have re-assembled | No |
+| Streaming citation deltas toward an OpenAI, Cohere or Bedrock client | Not emitted: each of those three writers suppresses `CitationsDelta` rather than emit a frame its protocol does not define. The same request against the same backend can therefore return sources with `stream: false` and none with `stream: true` | No |
+| Usage **sub-buckets** | Totals are correct and billing is complete. The breakdown is not: the IR carries input, output, cache-creation and cache-read tokens only, so `reasoning_tokens` arrives as a hard `0`, Anthropic's separately priced 5m and 1h cache tiers collapse into one number, and Cohere `billed_units` (including the separately billed `search_units`) is gone | No |
+| Response-side provider metadata: Gemini `safetyRatings` and `groundingMetadata`, Bedrock guardrail `trace` | Never read into the IR, so they do not reach a foreign client, and a customer using Bedrock Guardrails for compliance evidence does not get the trace across a hop. Gemini's `promptFeedback.blockReason` **is** mapped to a stop reason, so a blocked prompt still reads as blocked | No |
+| Request knobs that ride the `extra` map | Cleared in full at the seam (see [The `extra` map](#the-extra-map)). That is correct behaviour for fields with no analog, but only two keys currently name themselves when they go: Gemini `cachedContent` and Cohere `documents` | Two keys yes, the rest no |
+| `tools[].strict`, `messages[].name`, Cohere assistant `tool_plan` | `strict` and `name` have no IR field and are dropped. Cohere's `tool_plan` is worse than dropped: it is prepended to the assistant turn, so the model's internal plan can appear to the end user as the first paragraph of the answer | No |
+
+If your request depends on any of these, route it to a same-protocol backend, where none of it applies.
 
 ### Always preserved
 
@@ -469,7 +491,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, redacted, cache_control }`. `redacted: true` means `text` holds opaque provider-encrypted bytes, not plaintext |
 | Tool definitions | `IrRequest.tools`: `IrTool { name, description, input_schema }` |
 | Tool-use and tool-result blocks | `IrBlock::ToolUse`, `IrBlock::ToolResult` |
-| Image blocks | `IrBlock::Image { source: IrImageSource, cache_control }` (media type and data live in `IrImageSource::Base64 { media_type, data }`) |
+| Image blocks | `IrBlock::Image { source: IrImageSource, cache_control }` (media type and data live in `IrImageSource::Base64 { media_type, data }`). Images only: audio, video and document attachments have no IR block and do not cross (see [Known gaps](#known-gaps-in-160)) |
 | Prompt-cache breakpoints (`cache_control`) | First-class on text, tool-use, tool-result, **thinking, and image** blocks: an Anthropic cache breakpoint survives a same-protocol re-serialize instead of vanishing |
 | Structured output (`response_format` / `responseSchema`) | `IrRequest.response_format`, mapped into **each backend's native shape** (OpenAI `json_schema`, Cohere `json_object`, Gemini `responseMimeType`/`responseSchema`), never forwarded in a foreign shape the backend rejects |
 | Stop reason (`finish_reason` / `stop_reason` / `finishReason`) | Normalized to a **valid member of each protocol's enum** on egress: an unknown/foreign reason degrades to that protocol's SDK-safe value rather than leaking an off-enum string the client can't parse |
@@ -480,9 +502,9 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | `stream` flag | `IrRequest.stream` |
 | `n` (multiple completions) | `IrRequest.n`, a first-class field written only by protocols that model it (OpenAI `n`, Gemini `candidateCount`); preserved across those hops, omitted where the target has no analog |
 | `frequency_penalty`, `presence_penalty`, `seed` | First-class IR fields; survive cross-protocol hops (dropped with `warn!` where the target protocol has no analog) |
-| Grounding/web-search citations | `IrCitation` (with `raw` escape hatch for byte-exact Anthropic re-emit); streaming `citations_delta` included |
+| Grounding/web-search citations | `IrCitation` (with `raw` escape hatch for byte-exact Anthropic re-emit); streaming `citations_delta` included. **Two exceptions in 1.6.0**: a citation coming *from* a Cohere backend is not read, and streaming citation deltas are not emitted to OpenAI, Cohere or Bedrock clients (see [Known gaps](#known-gaps-in-160)) |
 | Serving model name | `IrResponse.model` (so pooled cross-protocol responses report which model served) |
-| Token usage | `IrUsage` (input/output tokens, with input-usage backfill on streams that only report it at message start) |
+| Token usage | `IrUsage` (input/output tokens plus cache-creation and cache-read, with input-usage backfill on streams that only report it at message start). **Totals only**: vendor sub-buckets such as `reasoning_tokens` do not cross (see [Known gaps](#known-gaps-in-160)) |
 
 **Usage-token cross-protocol nuance (Anthropic/Bedrock → OpenAI/Gemini/Responses):** Anthropic and Bedrock responses carry a separate `cache_creation` token bucket that has no equivalent field in the OpenAI, Gemini, or Responses wire shapes. When such a response is translated to one of those protocols, the reported `prompt_tokens` / `input_tokens` total *includes* cache-creation tokens (so billing is complete), but the `cached_tokens` sub-field reflects only cache-read tokens, because the target wire shape has no cache-creation bucket to place them in. Billing is unaffected (all consumed tokens are counted); only the sub-field breakdown differs.
 
@@ -490,7 +512,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 
 This is not loss in the sense defined above: lossless means neither end can tell the hop happened, and these are fields that have *no place to go* on the other side of the hop. Forwarding them anyway would make the backend reject the request, which is the one thing translation must never do. So they are dropped at the seam, deliberately. On a **same-protocol** route none of this applies: every one of these fields survives byte-for-byte (see [Same-protocol note](#same-protocol-note)).
 
-The tables below are **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed (last verified against 1.2.0; re-checked each release).
+The tables below were **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed. **That measurement was made against 1.2.0 and has not been re-run since**, so on 1.6.0 read these rows as the engine's documented intent rather than a fresh reading. A 1.6.0 re-measurement is outstanding; the rows will carry its version and date when it lands. The most recent audit of the translation path (1.6.0, by code read plus an executed read/write round trip per protocol) is what produced [Known gaps in 1.6.0](#known-gaps-in-160) above.
 
 Two things can happen to a field on a cross-protocol hop:
 

@@ -1,6 +1,6 @@
 # Adding a provider
 
-Busbar's thesis is **protocols, not providers**. It implements six wire protocols losslessly; a *provider* is just a catalog entry that says which protocol it speaks and where it lives. Adding one is a config entry you write yourself; no code changes hands. Any provider that speaks one of the six protocols, `anthropic`, `openai`, `gemini`, `bedrock`, `responses`, `cohere`, is a few lines of YAML. No new code, no pull request to Busbar, no waiting on an "integration."
+Busbar's thesis is **protocols, not providers**. It implements six wire protocols natively on both sides; a *provider* is just a catalog entry that says which protocol it speaks and where it lives. Adding one is a config entry you write yourself; no code changes hands. Any provider that speaks one of the six protocols, `anthropic`, `openai`, `gemini`, `bedrock`, `responses`, `cohere`, is a few lines of YAML. No new code, no pull request to Busbar, no waiting on an "integration."
 
 ## What a provider entry is
 
@@ -64,7 +64,7 @@ The `protocol` is the provider's **native wire format**: what its own SDK speaks
 - **`responses`**: OpenAI Responses (`/v1/responses`).
 - **`cohere`**: Cohere v2 (`/v2/chat`).
 
-A client speaking *any* of these protocols can target a provider speaking *any other*, Busbar translates between them losslessly. The provider's protocol only says how Busbar talks to it upstream.
+A client speaking *any* of these protocols can target a provider speaking *any other*, and Busbar translates between them: every modelled field arrives in the target's native shape, and what cannot cross is dropped at the seam rather than mangled. Same-protocol routes are not translated at all, they are forwarded byte-for-byte. What "lossless" does and does not mean, including the constructs that do not cross in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). The provider's protocol only says how Busbar talks to it upstream.
 
 ## Who speaks what: the model landscape as a lookup
 

@@ -2,7 +2,7 @@
 
 Busbar is the **reliability layer for your AI traffic**: the breaker-and-failover control plane that sits between your application and every provider it calls. This page is for the person deciding whether to adopt it: the specific problems it solves, what it *enables* that you would otherwise have to build yourself, and an honest comparison with the tools you are probably weighing it against.
 
-It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates losslessly across six wire protocols, so you never trade away a provider's native features to get portability.
+It shares an arena with multi-provider proxies and hosted routers, but the priorities are different. Where those forward requests and list models, Busbar is built reliability-first. It knows whose fault a failure is. It fails over inside the request, before your user sees a byte. And it translates across six wire protocols through a superset intermediate representation rather than an OpenAI-shaped lowest common denominator, so a provider's native features are carried, not flattened, wherever the target has a shape for them ([what that covers, and what it does not yet](https://getbusbar.com/docs/protocols/#what-lossless-means-here)).
 
 ---
 
@@ -18,7 +18,7 @@ Busbar provides genuine in-flight failover. Requests that have not yet received 
 
 Every provider ships an SDK that speaks its own wire format. Migrating from Anthropic to OpenAI, or adding a second provider as a fallback, means updating call sites across your codebase. In practice, teams don't do this until they have to, and by then the migration is a project.
 
-Busbar presents a single endpoint to your application. You configure which provider or pool of providers lives behind it. Swapping or adding a provider is a config change, not a code change. Because Busbar translates losslessly between all six supported wire protocols (Anthropic, OpenAI, OpenAI Responses, Gemini, Amazon Bedrock, Cohere), your application does not need to know or care which model answered the request.
+Busbar presents a single endpoint to your application. You configure which provider or pool of providers lives behind it. Swapping or adding a provider is a config change, not a code change. Because Busbar translates between all six supported wire protocols (Anthropic, OpenAI, OpenAI Responses, Gemini, Amazon Bedrock, Cohere), giving your client a response its own SDK parses whichever backend served it, your application does not need to know or care which model answered the request.
 
 ### Cost control requires a control plane
 

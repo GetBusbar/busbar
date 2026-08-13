@@ -830,7 +830,7 @@ Selection uses Nginx-style smooth weighted round-robin (SWRR) across the healthy
 
 **Empty `members` list is a startup error.**
 
-A pool spanning members that use different underlying protocols produces a startup **warning** (not an error). Cross-protocol requests are translated via the IR (intermediate representation), which is lossless for all standard fields. Source-only fields (e.g. OpenAI `logprobs`, `n`) are dropped before reaching a foreign backend.
+A pool spanning members that use different underlying protocols produces a startup **warning** (not an error). Cross-protocol requests are translated via the IR (intermediate representation), which carries every field it models into the target's native shape. Source-only fields (e.g. OpenAI `logit_bias`) are dropped before reaching a foreign backend, and so are a few standard ones the IR does not model yet, including non-image attachments; the list is in [Known gaps](https://getbusbar.com/docs/protocols/#known-gaps-in-160). Same-protocol members are unaffected: those requests are forwarded byte-for-byte.
 
 ---
 
