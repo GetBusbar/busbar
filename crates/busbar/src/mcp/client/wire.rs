@@ -85,6 +85,14 @@ pub(crate) struct WireLeg<'a> {
     pub(crate) server: &'a str,
     /// The operator's spawn recipe, present only on a registration whose transport is stdio.
     pub(crate) command: Option<&'a super::stdio::StdioCommand>,
+    /// THE PER-SERVER GRANTS for the three authority asks a peer can make — sampling, elicitation,
+    /// roots. All false unless an operator set them.
+    ///
+    /// On the leg rather than captured anywhere, and read at the moment each message is judged, for
+    /// the reason `super::jsonrpc::InputRequiredLoop::may_satisfy` takes them as a parameter: there
+    /// is no handshake to authorise once, so a revocation has to bite on the next message rather
+    /// than at the end of a stream that has no end. See `super::peer`.
+    pub(crate) grants: crate::mcp::config::ServerRequestGrants,
 }
 
 /// ONE CHANNEL a built JSON-RPC message can ride.
@@ -101,4 +109,27 @@ pub(crate) trait McpWire: Send + Sync {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError>;
+
+    /// Send one JSON-RPC NOTIFICATION: no `id`, no answer, and NOTHING IS READ.
+    ///
+    /// ## Why this is a second trait method and not `send` with the result thrown away
+    ///
+    /// On stdio the distinction is not cosmetic, it is correctness. A child's stdout is one byte
+    /// stream, and a notification produces no line on it. A `send` that wrote a notification and
+    /// then waited for a line would either time out — retiring a perfectly healthy child, because
+    /// this transport treats a timeout as a crash by design — or, worse, consume the NEXT thing the
+    /// child said and hand it back as the answer to a message that has no answer. Every subsequent
+    /// call on that child would then be served the previous one's response.
+    ///
+    /// On HTTP the difference is smaller and still real: a notification is answered `202` with an
+    /// empty body, and parsing that as a JSON-RPC response is a guaranteed `Malformed`.
+    ///
+    /// So the distinction is on the VTABLE, decided once by [`super::verb::UpstreamVerb::
+    /// is_notification`], rather than at each call site — where it would be one `if` per verb and
+    /// twenty-three chances to get it wrong.
+    ///
+    /// Called from `super::issue::issue`, which has no inbound caller yet — see that module. The
+    /// allow is on this method alone.
+    #[allow(dead_code)]
+    async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError>;
 }

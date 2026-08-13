@@ -584,12 +584,12 @@ impl<'a> LiveSightings<'a> {
 /// Deliberately NOT a token bucket. A bucket lets a burst through, and the thing being rationed is
 /// "how recently did we re-pull", where a burst has no value: two re-pulls a millisecond apart
 /// return the same list. A hard floor between accepted triggers is the honest shape.
-// STILL UNWIRED: nothing handles `notifications/tools/list_changed`. Refreshes are operator-driven
-// through the `connect` verb, which needs no rate limit because it is already behind admin auth and
-// the config-class mutation budget. This gate is what an upstream-triggered refresh would have to
-// pass, and it is kept rather than deleted because deleting it is how the next increment adds the
-// notification handler with no rate limit at all.
-#[allow(dead_code)]
+// WIRED. `super::peer` classifies a peer's `…/list_changed` and `super::pool::RefreshTriggers`
+// holds one of these per server; an accepted trigger puts the server's NAME — and nothing from the
+// notification's body — into the set `crate::mcp::connect::refresh_sweep` drains on its next tick.
+// The gate was written and kept unwired precisely so that the increment which added the handler
+// could not add it with no rate limit at all, which is what would have happened had it been deleted
+// as dead code.
 #[derive(Debug)]
 pub(crate) struct RefreshGate {
     min_interval_ms: u64,

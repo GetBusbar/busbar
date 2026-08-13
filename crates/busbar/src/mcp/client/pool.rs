@@ -60,6 +60,80 @@ pub(crate) struct McpConnectionPool {
     /// The supervised child processes. Empty on every deployment that registers no stdio server,
     /// and it costs a `BTreeMap` to be so.
     pub(crate) children: super::stdio::StdioPool,
+    /// PEER-SIGNALLED REFRESHES, rate-limited. See [`RefreshTriggers`].
+    pub(crate) triggers: RefreshTriggers,
+}
+
+/// EVERY `…/list_changed` A PEER HAS SIGNALLED SINCE THE LAST SWEEP READ THIS, rate-limited per
+/// server.
+///
+/// ## Why the trigger is a SET OF NAMES and never a payload
+///
+/// A `notifications/tools/list_changed` is a message from an UNTRUSTED peer. `super::catalogue`'s
+/// rule is that such a message may bring a re-pull FORWARD and may not choose its content: the
+/// authoritative `tools/list` is re-fetched and re-hashed exactly as a scheduled refresh would do
+/// it. This structure is that rule made structural — there is nowhere in it to put a tool
+/// definition, so there is no version of "the peer told us what changed" that this can express.
+///
+/// ## Why it is rate-limited, and why the limiter lives per server
+///
+/// Without a floor interval a peer can drive busbar's own outbound fetch rate by writing one line
+/// per millisecond, which is an amplifier with a config file behind it. [`RefreshGate`] enforces the
+/// floor, and there is one gate per server so a chatty registration cannot starve a quiet one's
+/// trigger by consuming a shared budget.
+///
+/// ## Why it lives on the POOL
+///
+/// The same argument the stdio children ride here on: this is engine-owned state at the lifetime of
+/// busbar's connections to upstreams, and the pool is already threaded to every send site. A
+/// separate handle would be a second thing to remember to pass, and the site that forgot would be
+/// the one that could not record a trigger.
+#[derive(Debug, Default)]
+pub(crate) struct RefreshTriggers {
+    gates: Mutex<HashMap<String, super::catalogue::RefreshGate>>,
+    pending: Mutex<std::collections::BTreeSet<String>>,
+}
+
+/// The floor between two peer-signalled refreshes of the SAME server.
+///
+/// Sixty seconds: long enough that a peer emitting a notification per tool per change cannot turn
+/// one edit into a fetch storm, short enough that an operator who edits a child's tool set sees the
+/// change land within a minute rather than at the next `refresh_ttl:`.
+const PEER_TRIGGER_FLOOR_MS: u64 = 60_000;
+
+impl RefreshTriggers {
+    /// A peer signalled that `server`'s catalogue moved. Returns whether the signal was ACCEPTED —
+    /// `false` means the rate limiter swallowed it, which is a fact a caller logs rather than a
+    /// failure.
+    pub(crate) fn signal(&self, server: &str, now_ms: u64) -> bool {
+        let allowed = {
+            let mut gates = match self.gates.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            gates
+                .entry(server.to_string())
+                .or_insert_with(|| super::catalogue::RefreshGate::new(PEER_TRIGGER_FLOOR_MS))
+                .allow(now_ms)
+        };
+        if allowed {
+            match self.pending.lock() {
+                Ok(mut p) => p.insert(server.to_string()),
+                Err(p) => p.into_inner().insert(server.to_string()),
+            };
+        }
+        allowed
+    }
+
+    /// DRAIN the pending set. Draining rather than reading, so one signal causes exactly one
+    /// brought-forward refresh: a set the sweep only read would make every subsequent tick refetch
+    /// on the strength of a notification that was already acted on.
+    pub(crate) fn take_pending(&self) -> std::collections::BTreeSet<String> {
+        match self.pending.lock() {
+            Ok(mut p) => std::mem::take(&mut *p),
+            Err(p) => std::mem::take(&mut *p.into_inner()),
+        }
+    }
 }
 
 impl std::fmt::Debug for McpConnectionPool {

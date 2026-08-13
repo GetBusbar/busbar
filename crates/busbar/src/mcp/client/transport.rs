@@ -57,6 +57,24 @@ impl McpWire for HttpTransport {
     ) -> Result<TransportResponse, TransportError> {
         HttpTransport::send(leg.pool, req, leg.policy, leg.timeout).await
     }
+
+    /// A NOTIFICATION over streamable HTTP is an ordinary POST whose response body is discarded.
+    ///
+    /// The STATUS is still checked, because the two facts a notification's response carries are the
+    /// only two busbar can learn: it was accepted, or the peer refused it. A `4xx`/`5xx` swallowed
+    /// here would make "busbar told the upstream" a claim with no evidence behind it — which is the
+    /// shape of a notification path that silently does nothing.
+    async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError> {
+        let response = HttpTransport::send(leg.pool, req, leg.policy, leg.timeout).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(TransportError::Io(format!(
+                "the upstream refused a JSON-RPC notification with HTTP {}; a notification has no \
+                 reply, so the status is the only evidence it was accepted",
+                response.status
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl HttpTransport {

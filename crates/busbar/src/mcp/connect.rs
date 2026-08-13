@@ -239,7 +239,15 @@ pub(crate) async fn refresh(
         }
     };
 
-    let request = jsonrpc::tools_list(&server.url, REFRESH_REQUEST_ID, bearer.as_deref());
+    // BUILT THROUGH THE CLOSED VERB SET, not by a builder of this path's own. `tools/list` is a cell
+    // of the matrix like every other, and a refresh that assembled its own envelope would be a second
+    // place the revision's required `_meta` and mirrored headers could be got wrong — with the
+    // failure visible only against an upstream strict enough to check.
+    let request = super::client::verb::UpstreamVerb::ToolsList.build(
+        &server.url,
+        REFRESH_REQUEST_ID,
+        bearer.as_deref(),
+    );
     // THE SAME VTABLE THE DISPATCH PATH USES, and it has to be. This was a direct
     // `HttpTransport::send`, which was correct while there was one transport and became a real
     // defect the moment there were two: a stdio registration carries no `url:`, so the refresh would
@@ -255,6 +263,11 @@ pub(crate) async fn refresh(
         timeout: REFRESH_TIMEOUT,
         server: server_id.as_str(),
         command: server.stdio.as_ref(),
+        // The operator's own grants for this registration. A refresh is not a caller's dispatch, but
+        // the child it reaches can still send busbar an authority ask on its stdout while the tool
+        // list is being fetched, and that ask is judged against the same grants a dispatch would use
+        // — never against a default this call site chose.
+        grants: server.grants,
     };
     let response = match server.transport.mcp_wire().send(&leg, &request).await {
         Ok(r) => r,
@@ -547,13 +560,35 @@ pub(crate) async fn refresh_sweep(
     // first look is the one the timer never reaches.
     let servers: Vec<_> = app.mcp_catalogue.servers().cloned().collect();
     let mut out = Vec::with_capacity(servers.len());
+    // DRAINED, not read. One accepted notification brings forward exactly one refresh; a set that
+    // survived the sweep would make every later tick refetch on the strength of a signal that has
+    // already been acted on. See `crate::mcp::client::pool::RefreshTriggers`.
+    let signalled = app.mcp_pool.triggers.take_pending();
 
     for entry in &servers {
         let ledger = ledger_of(&app.mcp_sightings, &entry.id);
         // THE TIMER IS NOT AN OPERATOR. `operator_sync` is `false` and there is no argument on this
         // path through which a due check could be suppressed.
         let why = crate::trust::reverify::due(&ledger, &entry.refresh_policy, now_ms, false);
-        if !why.should_check() {
+        // AND THE PEER'S OWN SIGNAL, which can only ever bring a re-pull FORWARD. It cannot suppress
+        // one (the `||` has no arm that turns a due check off) and it cannot choose what is fetched:
+        // what follows is the same authoritative `tools/list`, re-hashed the same way. Rate-limited
+        // per server before it ever reached this set.
+        let peer_signalled = signalled.contains(&entry.id);
+        if peer_signalled {
+            // LOGGED AND NOT FOLDED INTO `Due`. `crate::trust::reverify::Due` is core's vocabulary
+            // for why OUR clock says to look, and an untrusted peer's notification is not our clock;
+            // giving it a variant there would put it in the same enum as the operator's own
+            // `OperatorSync`, which is exactly the conflation the comment above refuses.
+            tracing::info!(
+                server = %entry.id,
+                clock_says = ?why,
+                "mcp: a peer signalled a catalogue change and the rate limiter accepted it; the \
+                 re-pull is brought forward. The notification's CONTENTS are not read — what \
+                 follows is the authoritative tool list, re-hashed."
+            );
+        }
+        if !why.should_check() && !peer_signalled {
             out.push(crate::trust::sweep::SweepOutcome {
                 subject: entry.id.clone(),
                 due: why,
