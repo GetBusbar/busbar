@@ -212,6 +212,17 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 # `prost 0.14` is already in the lock (via `opentelemetry-otlp`) and the major aligns, so the
 # protobuf runtime is not new to the tree — only the service layer is.
 tonic = { version = "0.14", default-features = false }
+# The protobuf runtime, named directly because busbar is now a gRPC CLIENT as well as a server. The
+# server direction never had to touch it: `tonic` decodes the request and encodes the answer, and
+# `a2a-pb`'s generated types carry the `Message` impls. The A2A gRPC binding in the DELEGATING
+# direction has to put the length-prefixed frame on the wire itself — busbar's outbound hop is its
+# own resolve-then-pin transport, not a tonic `Channel`, precisely so the address the SSRF guard
+# judged is the address that connects — so `Message::encode`/`decode` have to be nameable.
+#
+# ZERO NEW SUPPLY-CHAIN SURFACE, which is the same argument `tonic` above makes for itself: prost
+# 0.14 is already in `Cargo.lock` and already in the shipped artifact (a2a-pb, tonic and
+# opentelemetry-otlp all depend on it). What changes is that busbar can say its name.
+prost = { version = "0.14", default-features = false, features = ["std"] }
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"

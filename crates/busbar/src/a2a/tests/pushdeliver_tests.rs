@@ -64,8 +64,9 @@ struct RecordingTransport {
 }
 
 impl RelayTransport for RecordingTransport {
-    fn post(
+    fn send(
         &self,
+        _http_method: &str,
         url: &reqwest::Url,
         addr: IpAddr,
         headers: &[(String, String)],

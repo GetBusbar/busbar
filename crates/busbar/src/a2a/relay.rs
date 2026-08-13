@@ -104,8 +104,13 @@ use crate::net_guard::PinnedTarget;
 ///
 /// `Send + Sync` because the plane holds one for the process's life and every request reads it.
 pub(crate) trait RelayTransport: Send + Sync {
-    fn post(
+    /// ONE UNARY HOP. `http_method` is the request line's verb, and it is an ARGUMENT rather than a
+    /// constant because A2A's HTTP+JSON binding reads with `GET` and withdraws with `DELETE` — a
+    /// seam that could only `POST` would make busbar a client that spells every operation as a
+    /// submission, which is a different request from the one the specification defines.
+    fn send(
         &self,
+        http_method: &str,
         url: &reqwest::Url,
         addr: IpAddr,
         headers: &[(String, String)],
@@ -254,6 +259,12 @@ pub(crate) struct RelayCall<'a> {
     /// `1.0`, and a backend that believes the omission refuses a request busbar had just accepted
     /// as valid.
     pub(crate) a2a_version: &'a str,
+    /// WHICH OF A2A'S THREE BINDINGS THIS HOP SPEAKS, as a framing rather than as a tag.
+    ///
+    /// Selected by LOOKUP from the backend's own card ([`framing_for`]), never by a branch: the
+    /// hop below is ONE implementation and this is the only thing that varies across the three.
+    /// See the `THE OUTBOUND BINDING` note further down for why re-framing is all that is owed.
+    pub(crate) framing: &'a dyn OutboundFraming,
 }
 
 /// THE REQUEST THE RELAY IS ABOUT TO SEND: everything, in one value.
@@ -263,6 +274,9 @@ pub(crate) struct RelayCall<'a> {
 /// can miss the field the builder added last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OutboundRelayRequest {
+    /// THE REQUEST LINE'S VERB. `POST` on the JSON-RPC and gRPC bindings, and whatever A2A section
+    /// 11.3 binds the operation to on HTTP+JSON.
+    pub(crate) http_method: &'static str,
     pub(crate) url: String,
     /// Header name/value pairs, lower-cased names, in the order they will be written.
     pub(crate) headers: Vec<(String, String)>,
@@ -284,6 +298,7 @@ impl OutboundRelayRequest {
     #[cfg(test)]
     pub(crate) fn wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        out.extend_from_slice(self.http_method.as_bytes());
         out.extend_from_slice(self.url.as_bytes());
         for (name, value) in &self.headers {
             out.extend_from_slice(name.as_bytes());
@@ -343,6 +358,20 @@ pub(crate) enum RelayRefusal {
     /// The backend's payload is deliberately not carried into the refusal — it is another
     /// conversation's content and this string reaches an operator's log.
     Uncorrelated { url: String, reason: String },
+    /// THE REQUEST COULD NOT BE FRAMED FOR THE BINDING THE BACKEND SPEAKS, or its answer could not
+    /// be read back out of that binding's frame.
+    ///
+    /// A busbar-attributed 502 like every other arm here, and deliberately NOT a refusal aimed at
+    /// the caller: a caller who sent a perfectly good `GetTask` is not at fault because the agent an
+    /// operator registered publishes a binding on which busbar cannot spell it. The `binding` and
+    /// `method` are both named because an operator reading this needs to know WHICH of the three
+    /// legs refused and for which operation — "the relay could not frame the request" names
+    /// neither.
+    Unframable {
+        binding: &'static str,
+        method: String,
+        reason: String,
+    },
 }
 
 impl RelayRefusal {
@@ -388,6 +417,15 @@ impl std::fmt::Display for RelayRefusal {
                 "the backend agent at `{url}` answered something busbar cannot correlate to the \
                  request it sent, so it is refused rather than relayed: {reason}"
             ),
+            RelayRefusal::Unframable {
+                binding,
+                method,
+                reason,
+            } => write!(
+                f,
+                "`{method}` could not be carried to this backend over its `{binding}` binding: \
+                 {reason}"
+            ),
         }
     }
 }
@@ -418,6 +456,836 @@ const ACCEPT_STREAM: &str = "text/event-stream, application/json";
 /// The media type an SSE stream is framed in, on both the hop and the caller's side.
 pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 
+// ══ THE OUTBOUND BINDING: ONE HOP, THREE FRAMINGS ════════════════════════════════════════════════
+//
+// busbar is an A2A CLIENT here, and A2A defines THREE bindings of one agent. A backend an operator
+// registered may publish any of them, and until this section existed busbar spoke exactly one: every
+// hop went out as a JSON-RPC envelope, so a registered agent serving the HTTP+JSON or gRPC binding
+// was unreachable through busbar by any sequence of operator actions.
+//
+// ## WHY THIS IS RE-FRAMING AND NOT A SECOND CLIENT
+//
+// A2A section 11.3 defines the REST binding BY REFERENCE to the JSON-RPC one: **the request body IS
+// the JSON-RPC `params` verbatim, and the success body IS the `result` verbatim.** A2A v1.0's JSON
+// representation of a gRPC message IS that message's ProtoJSON, which is the same document again.
+// So all three bindings carry the SAME `(method, params) -> result` and differ only in
+//
+//   * where the method's NAME goes — a body member, the request line, or the `:path` pseudo-header;
+//   * how the payload is WRAPPED — a JSON-RPC envelope, a bare document, or a length-prefixed
+//     protobuf frame.
+//
+// That is FRAMING, and it is exactly the split `crate::transport`'s header states: `framing =
+// transport.frame(codec)`, with the codec never learning which channel spoke. So [`relay`] and
+// [`relay_stream`] below are ONE implementation — one guard, one live trust gate, one lease, one
+// correlation, one identity substitution — and the only thing that varies across the three legs is
+// the [`OutboundFraming`] they are handed.
+//
+// ## THE BINDING IS SELECTED BY LOOKUP, NEVER BY A BRANCH
+//
+// [`framing_for`] maps the backend card's `protocolBinding` word onto a framing. There is no
+// `if transport ==` on this path and there is no place for one — which is the same rule the
+// receiving side already lives under (`super::rest`'s header: "which framing applies is settled by
+// WHICH HANDLER THE ROUTER PICKED, before any code runs"), applied to the direction that picks its
+// own.
+//
+// ## THE OPERATOR'S URL IS THE BASE. THE CARD SAYS *HOW*, NEVER *WHERE*.
+//
+// A card declares an interface's URL as well as its binding, and following that URL would let an
+// upstream re-point busbar's outbound hop at a host the operator never wrote down. The SSRF guard
+// would judge it, so it is not a hole — but it is an upstream choosing busbar's peer, which is the
+// rug-pull the whole pinning apparatus exists to refuse one member up. So the base URL is always the
+// operator's `backend_url` and the binding decides only what is APPENDED to it: the operation's path
+// on HTTP+JSON, the service path on gRPC, nothing at all on JSON-RPC.
+
+/// The A2A card word for each binding, as `AgentInterface.protocolBinding` spells it. These are the
+/// specification's tokens, so they are compared case-insensitively but never re-spelt.
+pub(crate) const BINDING_JSONRPC: &str = "JSONRPC";
+pub(crate) const BINDING_HTTP_JSON: &str = "HTTP+JSON";
+pub(crate) const BINDING_GRPC: &str = "GRPC";
+
+/// ONE REQUEST, FRAMED FOR ONE BINDING: everything about it that the binding decided.
+pub(crate) struct FramedRequest {
+    /// The request line's verb.
+    pub(crate) http_method: &'static str,
+    pub(crate) url: reqwest::Url,
+    /// The `content-type` this framing sends, or `None` for a request with no body at all (a REST
+    /// `GET` or `DELETE`) — where a media type would be describing a document that is not there.
+    pub(crate) content_type: Option<&'static str>,
+    /// The `accept` this framing sends.
+    pub(crate) accept: &'static str,
+    pub(crate) body: Vec<u8>,
+}
+
+/// THE CALLER'S REQUEST, READ ONCE, in the three forms the framings need it in.
+///
+/// `verbatim` is the caller's own bytes and is what the JSON-RPC framing sends — content-blindness
+/// is a property of that binding and re-serializing would spend it for nothing. The other two
+/// bindings cannot be couriers (they have to author a different document), so they read `method`
+/// and `params`, which is the same admission `super::grpc`'s header makes for the receiving
+/// direction.
+pub(crate) struct Outbound<'a> {
+    pub(crate) verbatim: &'a [u8],
+    pub(crate) method: &'a str,
+    pub(crate) params: &'a serde_json::Value,
+}
+
+/// WHOLE FRAMES OUT OF A STREAMED BODY, in the JSON-RPC dialect [`read_event`] reads.
+///
+/// A trait rather than a concrete reader because the three bindings do not agree on what a frame IS:
+/// JSON-RPC and HTTP+JSON stream SSE (and differ only in whether the `data:` payload is an envelope
+/// or the bare event), and gRPC streams length-prefixed protobuf messages with no SSE anywhere. What
+/// they DO agree on is what comes out — one SSE frame carrying one JSON-RPC response — so
+/// [`read_event`] is one implementation reading one dialect, and the re-framing happens here.
+pub(crate) trait FrameReader: Send {
+    /// Feed a chunk and take every COMPLETE frame it finished, already re-framed.
+    fn feed(&mut self, chunk: &[u8]) -> Vec<String>;
+    /// How many bytes are held waiting for a terminator, for the ceiling check.
+    fn pending(&self) -> usize;
+}
+
+/// ONE OF A2A'S THREE BINDINGS, AS THE OUTBOUND HOP SEES IT.
+///
+/// `Send + Sync` and reached as a `&'static dyn`: the three are stateless values, so a framing is a
+/// vtable rather than an object anybody has to build.
+pub(crate) trait OutboundFraming: Send + Sync {
+    /// The card word this framing answers to. Carried so a refusal names the leg.
+    fn word(&self) -> &'static str;
+
+    /// The axis label for this leg, for telemetry. A STATEMENT OF FACT at a known arrival, which is
+    /// what `crate::transport`'s own note says naming a variant is for; nothing compares it.
+    fn leg(&self) -> crate::transport::Transport;
+
+    /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
+    fn compose(
+        &self,
+        base: &reqwest::Url,
+        call: &Outbound<'_>,
+        streaming: bool,
+    ) -> Result<FramedRequest, String>;
+
+    /// Re-frame a COMPLETED answer into the JSON-RPC envelope [`read_reply`] reads.
+    ///
+    /// Returning the envelope rather than the `result` is what keeps the reader ONE reader: the
+    /// correlation, the `jsonrpc` member check and the `error` arm are the same three rules on all
+    /// three legs, and a binding that handed back a bare payload would have had to re-implement
+    /// them or skip them.
+    fn read_answer(
+        &self,
+        method: &str,
+        body: &[u8],
+        rpc_id: &serde_json::Value,
+    ) -> Result<Vec<u8>, String>;
+
+    /// The frame reader for a STREAMED answer on this binding.
+    fn reader(&self, method: &str, rpc_id: &serde_json::Value) -> Box<dyn FrameReader>;
+}
+
+/// THE LOOKUP. An unknown word is `None` — a registration whose card declares a binding this build
+/// cannot speak is refused at the hop with the word named, rather than silently relayed as JSON-RPC
+/// to a peer that does not speak it.
+pub(crate) fn framing_for(word: &str) -> Option<&'static dyn OutboundFraming> {
+    let word = word.trim().to_ascii_uppercase();
+    if word == BINDING_JSONRPC {
+        return Some(&JsonRpcFraming);
+    }
+    if word == BINDING_HTTP_JSON {
+        return Some(&HttpJsonFraming);
+    }
+    if word == BINDING_GRPC {
+        return Some(&GrpcFraming);
+    }
+    None
+}
+
+/// THE JSON-RPC FRAMING AS A VALUE, for tests that need one to hand to [`build_request`] or to a
+/// [`RelayCall`].
+///
+/// `#[cfg(test)]` deliberately. Production never reaches for "the default": [`binding_of`] reads a
+/// word off the registration's card and [`framing_for`] resolves it, and a production `default_…`
+/// beside those two would be a third answer to "which binding is this hop" that no card ever
+/// authorised — which is exactly the shape a fail-open acquires.
+#[cfg(test)]
+pub(crate) fn default_framing() -> &'static dyn OutboundFraming {
+    &JsonRpcFraming
+}
+
+/// THE BINDING A REGISTRATION'S CACHED CARD DECLARES, or [`BINDING_JSONRPC`] where it declares none.
+///
+/// The FIRST entry of `supportedInterfaces` is the agent's preferred one, which is A2A's own rule,
+/// so this reads in order and takes the first word busbar can speak rather than the first word
+/// present — an agent that lists gRPC first and JSON-RPC second is reachable on the second by a
+/// build that speaks it, and a build that speaks neither refuses by name at the hop.
+pub(crate) fn binding_of(card: Option<&serde_json::Value>) -> String {
+    let Some(interfaces) = card
+        .and_then(|c| c.get("supportedInterfaces"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return BINDING_JSONRPC.to_string();
+    };
+    let words: Vec<&str> = interfaces
+        .iter()
+        .filter_map(|i| i.get("protocolBinding"))
+        .filter_map(serde_json::Value::as_str)
+        .filter(|w| !w.trim().is_empty())
+        .collect();
+    if words.is_empty() {
+        return BINDING_JSONRPC.to_string();
+    }
+    words
+        .iter()
+        .find(|w| framing_for(w).is_some())
+        // NOT a fallback to JSON-RPC. A card that declares interfaces and none of them is one busbar
+        // speaks must reach `framing_for` and be refused BY NAME; answering `JSONRPC` here would send
+        // an envelope to a peer that has just said it does not speak one.
+        .map_or_else(|| words[0].to_string(), |w| (*w).to_string())
+}
+
+// ── The JSON-RPC framing: the courier. ──────────────────────────────────────────────────────────
+
+struct JsonRpcFraming;
+
+impl OutboundFraming for JsonRpcFraming {
+    fn word(&self) -> &'static str {
+        BINDING_JSONRPC
+    }
+
+    fn leg(&self) -> crate::transport::Transport {
+        crate::transport::Transport::JsonRpc
+    }
+
+    fn compose(
+        &self,
+        base: &reqwest::Url,
+        call: &Outbound<'_>,
+        streaming: bool,
+    ) -> Result<FramedRequest, String> {
+        Ok(FramedRequest {
+            http_method: "POST",
+            url: base.clone(),
+            content_type: Some(CONTENT_TYPE),
+            accept: if streaming {
+                ACCEPT_STREAM
+            } else {
+                CONTENT_TYPE
+            },
+            // VERBATIM. The whole property of this binding: the caller's bytes, unread and
+            // un-normalised, so a member busbar does not model still reaches the backend.
+            body: call.verbatim.to_vec(),
+        })
+    }
+
+    fn read_answer(
+        &self,
+        _method: &str,
+        body: &[u8],
+        _rpc_id: &serde_json::Value,
+    ) -> Result<Vec<u8>, String> {
+        Ok(body.to_vec())
+    }
+
+    fn reader(&self, _method: &str, _rpc_id: &serde_json::Value) -> Box<dyn FrameReader> {
+        Box::new(SseReader::default())
+    }
+}
+
+impl FrameReader for SseReader {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        SseReader::feed(self, chunk)
+    }
+    fn pending(&self) -> usize {
+        SseReader::pending(self)
+    }
+}
+
+// ── The HTTP+JSON framing: section 11.3, applied in the direction that composes. ─────────────────
+
+/// WHERE ONE OPERATION LIVES ON THE REST BINDING: the request line, and which members of `params`
+/// the request line and the query string consume.
+///
+/// The INVERSE of `super::rest`'s route table, and it has to be an inverse rather than a copy: that
+/// module reads a request line and composes `params`, this one reads `params` and composes a request
+/// line. The two are checked against each other by `rest_client_tests`, which drives a composed
+/// request straight back through busbar's own REST routes — a client and a server that agree only
+/// with themselves is the failure the relay harness's `backend_ok_for` note already paid for once.
+struct RestOp {
+    http_method: &'static str,
+    /// The path, relative to the operator's endpoint. `{member}` is substituted from `params`.
+    path: &'static str,
+    /// The `params` members that ride the query string instead.
+    query: &'static [&'static str],
+    /// Does whatever is LEFT of `params` travel as the request body?
+    ///
+    /// `false` for the reads and the delete, where A2A's request line carries the whole request and
+    /// a body would be a document the specification does not define. A leftover member on one of
+    /// those is a request this binding cannot carry, and it is refused rather than dropped.
+    body: bool,
+}
+
+/// THE ELEVEN OPERATIONS, in A2A v1.0's spelling, each with its REST row.
+///
+/// The v1.0 names are `super::rest::method`'s constants rather than fresh literals: one spelling per
+/// wire word in the tree, and the server binding and the client binding provably name the same
+/// eleven operations.
+fn rest_op(method: &str) -> Option<RestOp> {
+    use super::rest::method as m;
+    let op = match canonical_method(method)? {
+        m::SEND_MESSAGE => RestOp {
+            http_method: "POST",
+            path: "/message:send",
+            query: &[],
+            body: true,
+        },
+        m::SEND_STREAMING_MESSAGE => RestOp {
+            http_method: "POST",
+            path: "/message:stream",
+            query: &[],
+            body: true,
+        },
+        m::GET_TASK => RestOp {
+            http_method: "GET",
+            path: "/tasks/{id}",
+            query: &["historyLength"],
+            body: false,
+        },
+        m::LIST_TASKS => RestOp {
+            http_method: "GET",
+            path: "/tasks",
+            query: &[
+                "contextId",
+                "status",
+                "pageSize",
+                "pageToken",
+                "historyLength",
+                "statusTimestampAfter",
+                "includeArtifacts",
+            ],
+            body: false,
+        },
+        m::CANCEL_TASK => RestOp {
+            http_method: "POST",
+            path: "/tasks/{id}:cancel",
+            query: &[],
+            body: false,
+        },
+        m::SUBSCRIBE_TO_TASK => RestOp {
+            http_method: "POST",
+            path: "/tasks/{id}:subscribe",
+            query: &[],
+            body: false,
+        },
+        m::CREATE_PUSH_CONFIG => RestOp {
+            http_method: "POST",
+            path: "/tasks/{taskId}/pushNotificationConfigs",
+            query: &[],
+            body: true,
+        },
+        m::LIST_PUSH_CONFIGS => RestOp {
+            http_method: "GET",
+            path: "/tasks/{taskId}/pushNotificationConfigs",
+            query: &["pageSize", "pageToken"],
+            body: false,
+        },
+        m::GET_PUSH_CONFIG => RestOp {
+            http_method: "GET",
+            path: "/tasks/{taskId}/pushNotificationConfigs/{id}",
+            query: &[],
+            body: false,
+        },
+        m::DELETE_PUSH_CONFIG => RestOp {
+            http_method: "DELETE",
+            path: "/tasks/{taskId}/pushNotificationConfigs/{id}",
+            query: &[],
+            body: false,
+        },
+        m::GET_EXTENDED_AGENT_CARD => RestOp {
+            http_method: "GET",
+            path: "/extendedAgentCard",
+            query: &[],
+            body: false,
+        },
+        // `canonical_method` is total over the eleven, so this arm is unreachable — written rather
+        // than `unreachable!()` because a panic on a routing hot path is a panic waiting for the day
+        // somebody adds a twelfth name to the table above and not to this one.
+        _ => return None,
+    };
+    Some(op)
+}
+
+/// THE OPERATION A METHOD NAME NAMES, in A2A v1.0's spelling, from EITHER dialect.
+///
+/// This plane speaks two protocol versions and every reader on it already handles both — see
+/// `super::local::verb_of` and `super::ingress::shape_of`. The two non-JSON-RPC bindings are v1.0
+/// constructs, so a v0.3 caller's `tasks/get` has to be recognised as `GetTask` before it can be
+/// framed for one; a table that read only the v1.0 spelling would refuse every v0.3 caller at the
+/// hop with "no such operation", which is busbar failing to carry a request it had just admitted.
+fn canonical_method(method: &str) -> Option<&'static str> {
+    use super::rest::method as m;
+    Some(match method {
+        "SendMessage" | "message/send" => m::SEND_MESSAGE,
+        "SendStreamingMessage" | "message/stream" => m::SEND_STREAMING_MESSAGE,
+        "GetTask" | "tasks/get" => m::GET_TASK,
+        "ListTasks" | "tasks/list" => m::LIST_TASKS,
+        "CancelTask" | "tasks/cancel" => m::CANCEL_TASK,
+        "SubscribeToTask" | "tasks/resubscribe" => m::SUBSCRIBE_TO_TASK,
+        "CreateTaskPushNotificationConfig" | "tasks/pushNotificationConfig/set" => {
+            m::CREATE_PUSH_CONFIG
+        }
+        "GetTaskPushNotificationConfig" | "tasks/pushNotificationConfig/get" => m::GET_PUSH_CONFIG,
+        "ListTaskPushNotificationConfigs" | "tasks/pushNotificationConfig/list" => {
+            m::LIST_PUSH_CONFIGS
+        }
+        "DeleteTaskPushNotificationConfig" | "tasks/pushNotificationConfig/delete" => {
+            m::DELETE_PUSH_CONFIG
+        }
+        "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard" => m::GET_EXTENDED_AGENT_CARD,
+        _ => return None,
+    })
+}
+
+struct HttpJsonFraming;
+
+impl OutboundFraming for HttpJsonFraming {
+    fn word(&self) -> &'static str {
+        BINDING_HTTP_JSON
+    }
+
+    fn leg(&self) -> crate::transport::Transport {
+        crate::transport::Transport::HttpJson
+    }
+
+    fn compose(
+        &self,
+        base: &reqwest::Url,
+        call: &Outbound<'_>,
+        streaming: bool,
+    ) -> Result<FramedRequest, String> {
+        let op = rest_op(call.method).ok_or_else(|| {
+            format!(
+                "`{}` is not one of the eleven operations A2A's HTTP+JSON binding defines",
+                call.method
+            )
+        })?;
+        // A `params` that is not an object cannot have a path member taken out of it, and every
+        // operation on this binding either has one or has no request document at all.
+        let empty = serde_json::Map::new();
+        let members = call.params.as_object().unwrap_or(&empty);
+        let mut left = members.clone();
+
+        // ── THE PATH. Substituted from `params`, and a missing member is a refusal rather than an
+        //    empty segment: `/tasks//pushNotificationConfigs` addresses nothing, and sending it
+        //    would turn a malformed request into a 404 from a backend that never saw the problem.
+        let mut path = String::new();
+        let mut rest = op.path;
+        while let Some(open) = rest.find('{') {
+            path.push_str(&rest[..open]);
+            let close = rest[open..]
+                .find('}')
+                .ok_or_else(|| format!("the route template `{}` is malformed", op.path))?
+                + open;
+            let name = &rest[open + 1..close];
+            let value = left
+                .remove(name)
+                .ok_or_else(|| format!("`{}` names no `{name}` to address", call.method))?;
+            let value = value.as_str().map(str::to_string).unwrap_or_else(|| {
+                // A JSON number is a legal id on the wire and `to_string` renders it without the
+                // quotes a `Value`'s Display would keep for a string.
+                value.to_string()
+            });
+            if value.is_empty() {
+                return Err(format!("`{}`'s `{name}` is empty", call.method));
+            }
+            path.push_str(&percent(&value));
+            rest = &rest[close + 1..];
+        }
+        path.push_str(rest);
+
+        let mut url = base.clone();
+        // JOINED ONTO THE OPERATOR'S PATH rather than replacing it. `Url::join` would treat a
+        // leading `/` as absolute and throw away the `/a2a` an operator wrote, so the two are
+        // concatenated with exactly one separator between them.
+        let joined = format!("{}{path}", base.path().trim_end_matches('/'));
+        url.set_path(&joined);
+        {
+            let mut query = url.query_pairs_mut();
+            query.clear();
+            for name in op.query {
+                if let Some(value) = left.remove(*name) {
+                    query.append_pair(name, &scalar(&value));
+                }
+            }
+        }
+        // `query_pairs_mut` writes an empty `?` when nothing was appended; an empty query string is
+        // not the same request as no query string.
+        if url.query() == Some("") {
+            url.set_query(None);
+        }
+
+        // ── THE BODY. Section 11.3: it IS the remaining `params`, verbatim.
+        if !op.body && !left.is_empty() {
+            let mut names: Vec<&String> = left.keys().collect();
+            names.sort();
+            return Err(format!(
+                "`{}` carries {names:?}, which A2A's HTTP+JSON binding has nowhere to put on a \
+                 `{}` request",
+                call.method, op.http_method
+            ));
+        }
+        let body = if op.body {
+            serde_json::to_vec(&serde_json::Value::Object(left))
+                .map_err(|e| format!("the request params could not be rendered: {e}"))?
+        } else {
+            Vec::new()
+        };
+        Ok(FramedRequest {
+            http_method: op.http_method,
+            url,
+            content_type: op.body.then_some(CONTENT_TYPE),
+            accept: if streaming {
+                ACCEPT_STREAM
+            } else {
+                CONTENT_TYPE
+            },
+            body,
+        })
+    }
+
+    /// Section 11.3 again, in the other direction: the success body IS the `result`. It is WRAPPED
+    /// back into a JSON-RPC envelope so the one reader reads it — see [`OutboundFraming::read_answer`].
+    fn read_answer(
+        &self,
+        _method: &str,
+        body: &[u8],
+        rpc_id: &serde_json::Value,
+    ) -> Result<Vec<u8>, String> {
+        // A2A binds `DeleteTaskPushNotificationConfig` to an EMPTY 200 body. Its JSON-RPC answer is
+        // `"result": null`, so an empty body is that answer rather than a malformed one; treating it
+        // as a parse failure would make the one operation with nothing to say the one that always
+        // fails.
+        let result = if body.iter().all(u8::is_ascii_whitespace) {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice::<serde_json::Value>(body)
+                .map_err(|e| format!("the answer is not JSON: {e}"))?
+        };
+        envelope_bytes(rpc_id, result)
+    }
+
+    fn reader(&self, _method: &str, rpc_id: &serde_json::Value) -> Box<dyn FrameReader> {
+        Box::new(RestSseReader {
+            inner: SseReader::default(),
+            rpc_id: rpc_id.clone(),
+        })
+    }
+}
+
+/// One JSON-RPC success envelope, as bytes.
+fn envelope_bytes(
+    rpc_id: &serde_json::Value,
+    result: serde_json::Value,
+) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": result,
+    }))
+    .map_err(|e| format!("the answer could not be re-framed: {e}"))
+}
+
+/// A query-string value. The inverse of `super::rest::json_scalar`: a string goes as itself and
+/// anything else goes as its JSON rendering, so `historyLength: 5` becomes `historyLength=5` rather
+/// than `historyLength="5"`.
+fn scalar(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
+}
+
+/// Percent-encode one path SEGMENT's worth of text.
+///
+/// Hand-written against an ALLOWLIST rather than reached for from a crate: the set of characters
+/// that may appear unescaped in a path segment is small and closed, and everything outside it is
+/// escaped. A blocklist here would be a way for a task id containing `/` or `?` to re-point the
+/// request line, which is a caller choosing busbar's outbound path.
+fn percent(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        let safe = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
+        if safe {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// THE REST BINDING'S STREAM, RE-FRAMED EVENT BY EVENT.
+///
+/// A2A's REST binding streams SSE whose `data:` payload is the BARE event — that is `super::rest`'s
+/// own rule for the direction that serves it, and this is its inverse. Each payload is wrapped back
+/// into a JSON-RPC response so [`read_event`] reads one dialect on all three legs.
+///
+/// A frame whose payload is not JSON, or that carries no `data:` at all, passes through UNCHANGED:
+/// a stream legitimately carries comments and keep-alives, and re-framing what it cannot read would
+/// turn a backend's own extension into a corrupted frame.
+struct RestSseReader {
+    inner: SseReader,
+    rpc_id: serde_json::Value,
+}
+
+impl FrameReader for RestSseReader {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.inner
+            .feed(chunk)
+            .into_iter()
+            .map(|frame| match sse_data(&frame) {
+                Some(data) => match serde_json::from_str::<serde_json::Value>(&data) {
+                    Ok(event) => format!(
+                        "data: {}\n\n",
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": self.rpc_id,
+                            "result": event,
+                        })
+                    ),
+                    Err(_) => frame,
+                },
+                None => frame,
+            })
+            .collect()
+    }
+
+    fn pending(&self) -> usize {
+        self.inner.pending()
+    }
+}
+
+// ── The gRPC framing: the SDK's own conversions, in the direction that sends. ────────────────────
+
+/// The `content-type` a gRPC request and its answer carry.
+const GRPC_CONTENT_TYPE: &str = "application/grpc+proto";
+
+/// The length-prefix every gRPC message carries: one compression flag byte and a four-byte
+/// big-endian length.
+const GRPC_PREFIX: usize = 5;
+
+struct GrpcFraming;
+
+impl OutboundFraming for GrpcFraming {
+    fn word(&self) -> &'static str {
+        BINDING_GRPC
+    }
+
+    fn leg(&self) -> crate::transport::Transport {
+        crate::transport::Transport::Grpc
+    }
+
+    /// The rpc's own path under the service `a2a.proto` declares, and one length-prefixed message.
+    ///
+    /// The path is built from [`super::serve::GRPC_MOUNT_PATH`] — the SAME string busbar's own gRPC
+    /// binding is served at and `PlaneDispatch` claims — so the client direction and the server
+    /// direction cannot drift apart about what the service is called.
+    fn compose(
+        &self,
+        base: &reqwest::Url,
+        call: &Outbound<'_>,
+        _streaming: bool,
+    ) -> Result<FramedRequest, String> {
+        let rpc = canonical_method(call.method).ok_or_else(|| {
+            format!(
+                "`{}` is not one of the eleven rpcs A2A's gRPC service declares",
+                call.method
+            )
+        })?;
+        let mut url = base.clone();
+        // ABSOLUTE, not joined onto the operator's path. A gRPC `:path` is the fully-qualified
+        // service and rpc and nothing else — a server routes on it exactly, so prefixing it with
+        // whatever path an operator wrote for the JSON-RPC endpoint would address nothing.
+        url.set_path(&format!("{}/{rpc}", super::serve::GRPC_MOUNT_PATH));
+        url.set_query(None);
+        Ok(FramedRequest {
+            http_method: "POST",
+            url,
+            content_type: Some(GRPC_CONTENT_TYPE),
+            accept: GRPC_CONTENT_TYPE,
+            body: grpc_encode(rpc, call.params)?,
+        })
+    }
+
+    /// One length-prefixed message in, one JSON-RPC envelope out. The answer's TYPE is the rpc's,
+    /// which is why the method is an argument here: a protobuf frame carries no self-description,
+    /// so a reader that did not know which rpc it answered could not decode it at all.
+    fn read_answer(
+        &self,
+        method: &str,
+        body: &[u8],
+        rpc_id: &serde_json::Value,
+    ) -> Result<Vec<u8>, String> {
+        let rpc = canonical_method(method)
+            .ok_or_else(|| format!("`{method}` is not an rpc of A2A's gRPC service"))?;
+        let (len, _) = grpc_split(body)?
+            .ok_or_else(|| "the peer's gRPC answer carried no complete message".to_string())?;
+        envelope_bytes(
+            rpc_id,
+            grpc_decode(rpc, &body[GRPC_PREFIX..GRPC_PREFIX + len])?,
+        )
+    }
+
+    fn reader(&self, method: &str, rpc_id: &serde_json::Value) -> Box<dyn FrameReader> {
+        Box::new(GrpcFrameReader {
+            buf: Vec::new(),
+            rpc: canonical_method(method).unwrap_or(method).to_string(),
+            rpc_id: rpc_id.clone(),
+        })
+    }
+}
+
+/// ONE LENGTH-PREFIXED gRPC MESSAGE, from the ProtoJSON `params` A2A v1.0 says the request IS.
+///
+/// The conversions are the SDK's — `a2a_pb::protojson_conv` — and they are the SAME ones
+/// `super::grpc` uses to read a request in the other direction. That is the whole reason this is
+/// short: the translation exists exactly once per direction, so there is one reader and one writer
+/// and nothing to diverge.
+fn grpc_encode(rpc: &str, params: &serde_json::Value) -> Result<Vec<u8>, String> {
+    use super::rest::method as m;
+    let params = params.clone();
+    match rpc {
+        m::SEND_MESSAGE | m::SEND_STREAMING_MESSAGE => {
+            grpc_frame::<a2a::SendMessageRequest>(params)
+        }
+        m::GET_TASK => grpc_frame::<a2a::GetTaskRequest>(params),
+        m::LIST_TASKS => grpc_frame::<a2a::ListTasksRequest>(params),
+        m::CANCEL_TASK => grpc_frame::<a2a::CancelTaskRequest>(params),
+        m::SUBSCRIBE_TO_TASK => grpc_frame::<a2a::SubscribeToTaskRequest>(params),
+        m::CREATE_PUSH_CONFIG => grpc_frame::<a2a::TaskPushNotificationConfig>(params),
+        m::GET_PUSH_CONFIG => grpc_frame::<a2a::GetTaskPushNotificationConfigRequest>(params),
+        m::LIST_PUSH_CONFIGS => grpc_frame::<a2a::ListTaskPushNotificationConfigsRequest>(params),
+        m::DELETE_PUSH_CONFIG => grpc_frame::<a2a::DeleteTaskPushNotificationConfigRequest>(params),
+        m::GET_EXTENDED_AGENT_CARD => grpc_frame::<a2a::GetExtendedAgentCardRequest>(params),
+        other => Err(format!("`{other}` is not an rpc of A2A's gRPC service")),
+    }
+}
+
+/// THE ANSWER TO ONE RPC, as the ProtoJSON document A2A v1.0 says the `result` IS.
+fn grpc_decode(rpc: &str, message: &[u8]) -> Result<serde_json::Value, String> {
+    use super::rest::method as m;
+    match rpc {
+        m::SEND_MESSAGE => grpc_read::<a2a::SendMessageResponse>(message),
+        m::SEND_STREAMING_MESSAGE | m::SUBSCRIBE_TO_TASK => {
+            grpc_read::<a2a::StreamResponse>(message)
+        }
+        m::GET_TASK | m::CANCEL_TASK => grpc_read::<a2a::Task>(message),
+        m::LIST_TASKS => grpc_read::<a2a::ListTasksResponse>(message),
+        m::CREATE_PUSH_CONFIG | m::GET_PUSH_CONFIG => {
+            grpc_read::<a2a::TaskPushNotificationConfig>(message)
+        }
+        m::LIST_PUSH_CONFIGS => grpc_read::<a2a::ListTaskPushNotificationConfigsResponse>(message),
+        // `google.protobuf.Empty`. The JSON-RPC answer to this verb is `null` and there is nothing
+        // in the frame to transcode, which is the same statement `super::grpc` makes serving it.
+        m::DELETE_PUSH_CONFIG => Ok(serde_json::Value::Null),
+        m::GET_EXTENDED_AGENT_CARD => grpc_read::<a2a::AgentCard>(message),
+        other => Err(format!("`{other}` is not an rpc of A2A's gRPC service")),
+    }
+}
+
+/// ProtoJSON in, one length-prefixed protobuf frame out.
+fn grpc_frame<T>(params: serde_json::Value) -> Result<Vec<u8>, String>
+where
+    T: a2a_pb::protojson_conv::ProtoJsonPayload,
+{
+    use prost::Message as _;
+    let native: T = a2a_pb::protojson_conv::from_value(params)
+        .map_err(|e| format!("the request could not be rendered as protobuf: {e}"))?;
+    let proto = T::to_proto(&native);
+    let len = proto.encoded_len();
+    let mut out = Vec::with_capacity(GRPC_PREFIX + len);
+    // The compression flag. Zero: busbar sends no `grpc-encoding`, so a compressed frame would be
+    // one the peer was never told to expect.
+    out.push(0);
+    out.extend_from_slice(
+        &u32::try_from(len)
+            .map_err(|_| "the request is too large for one gRPC frame".to_string())?
+            .to_be_bytes(),
+    );
+    proto
+        .encode(&mut out)
+        .map_err(|e| format!("the protobuf frame could not be written: {e}"))?;
+    Ok(out)
+}
+
+/// One length-prefixed protobuf frame in, the ProtoJSON `result` out.
+fn grpc_read<T>(message: &[u8]) -> Result<serde_json::Value, String>
+where
+    T: a2a_pb::protojson_conv::ProtoJsonPayload,
+{
+    use prost::Message as _;
+    let proto = <T as a2a_pb::protojson_conv::ProtoJsonPayload>::Proto::decode(message)
+        .map_err(|e| format!("the answer is not a readable protobuf message: {e}"))?;
+    let native =
+        T::try_from_proto(&proto).map_err(|e| format!("the answer could not be read: {e}"))?;
+    a2a_pb::protojson_conv::to_value(&native)
+        .map_err(|e| format!("the answer could not be rendered: {e}"))
+}
+
+/// The payload of one length-prefixed gRPC frame at the head of `buf`, and how many bytes it
+/// consumed. `None` while the frame is still arriving.
+///
+/// A COMPRESSED frame is an error rather than a skip: busbar sends no `grpc-accept-encoding`, so a
+/// peer that compressed anyway has answered in a framing busbar cannot read, and passing an
+/// undecompressed body to the protobuf reader would produce a parse error blaming the wrong thing.
+fn grpc_split(buf: &[u8]) -> Result<Option<(usize, usize)>, String> {
+    if buf.len() < GRPC_PREFIX {
+        return Ok(None);
+    }
+    if buf[0] != 0 {
+        return Err("the peer compressed a gRPC frame busbar did not offer to decompress".into());
+    }
+    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+    if buf.len() < GRPC_PREFIX + len {
+        return Ok(None);
+    }
+    Ok(Some((len, GRPC_PREFIX + len)))
+}
+
+/// THE gRPC SERVER-STREAM, RE-FRAMED MESSAGE BY MESSAGE.
+///
+/// A gRPC stream is a sequence of length-prefixed messages on one HTTP/2 body, with no SSE anywhere
+/// — so this reader is genuinely different from the other two, and that difference is the whole
+/// reason [`FrameReader`] is a trait. What it EMITS is the same as theirs: one SSE frame carrying
+/// one JSON-RPC response, so [`read_event`] stays one implementation reading one dialect.
+struct GrpcFrameReader {
+    buf: Vec<u8>,
+    rpc: String,
+    rpc_id: serde_json::Value,
+}
+
+impl FrameReader for GrpcFrameReader {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buf.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        // A malformed frame STOPS the reader rather than being skipped: the length prefix is how
+        // the next frame is found, so a frame busbar cannot read is a stream busbar has lost its
+        // place in, and guessing where the next one starts is how a caller is served somebody
+        // else's bytes.
+        while let Ok(Some((len, consumed))) = grpc_split(&self.buf) {
+            let message = self.buf[GRPC_PREFIX..GRPC_PREFIX + len].to_vec();
+            self.buf.drain(..consumed);
+            let Ok(event) = grpc_decode(&self.rpc, &message) else {
+                break;
+            };
+            out.push(format!(
+                "data: {}\n\n",
+                serde_json::json!({ "jsonrpc": "2.0", "id": self.rpc_id, "result": event })
+            ));
+        }
+        out
+    }
+
+    fn pending(&self) -> usize {
+        self.buf.len()
+    }
+}
+
 /// BUILD THE OUTBOUND REQUEST. Separated from [`relay`] so the scan can read the request as a value
 /// rather than having to intercept a socket.
 ///
@@ -426,30 +1294,24 @@ pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 /// and in particular nothing of the CALLER's request travels here — the defect that rule exists to
 /// prevent is the caller's own credential going out on the backend hop.
 pub(crate) fn build_request(
-    url: &reqwest::Url,
+    framed: FramedRequest,
     agent_id: &str,
     lease: Option<&Lease>,
-    body: &[u8],
-    streaming: bool,
     a2a_version: &str,
     now_ms: u64,
 ) -> Result<OutboundRelayRequest, LeaseError> {
-    let mut headers = vec![
-        ("content-type".to_string(), CONTENT_TYPE.to_string()),
-        (
-            "accept".to_string(),
-            if streaming {
-                ACCEPT_STREAM.to_string()
-            } else {
-                CONTENT_TYPE.to_string()
-            },
-        ),
-        // A CONSTANT IN SHAPE, THE CALLER'S IN VALUE. It is not a fourth source of header material
-        // in the sense the note above refuses: nothing of the caller's REQUEST travels here, only
-        // the protocol version busbar's own edge already negotiated and admitted, restated so the
-        // backend is told which dialect the relayed method is written in.
-        ("a2a-version".to_string(), a2a_version.to_string()),
-    ];
+    let mut headers = Vec::new();
+    // A REQUEST WITH NO DOCUMENT CARRIES NO MEDIA TYPE. A REST `GET` or `DELETE` sends no body, and
+    // a `content-type` on one describes a document that is not there.
+    if let Some(content_type) = framed.content_type {
+        headers.push(("content-type".to_string(), content_type.to_string()));
+    }
+    headers.push(("accept".to_string(), framed.accept.to_string()));
+    // A CONSTANT IN SHAPE, THE CALLER'S IN VALUE. It is not a fourth source of header material
+    // in the sense the note above refuses: nothing of the caller's REQUEST travels here, only
+    // the protocol version busbar's own edge already negotiated and admitted, restated so the
+    // backend is told which dialect the relayed method is written in.
+    headers.push(("a2a-version".to_string(), a2a_version.to_string()));
     if let Some(lease) = lease {
         // `header_for` checks BOTH that the lease was minted for this agent and that it is still
         // live. Both checks live on the lease rather than here, so a call site cannot forget one.
@@ -457,10 +1319,30 @@ pub(crate) fn build_request(
         headers.push((name.to_ascii_lowercase(), value));
     }
     Ok(OutboundRelayRequest {
-        url: url.to_string(),
+        http_method: framed.http_method,
+        url: framed.url.to_string(),
         headers,
-        body: body.to_vec(),
+        body: framed.body,
     })
+}
+
+/// THE CALLER'S ENVELOPE, READ ONCE PER HOP.
+///
+/// The JSON-RPC framing never looks at either member — it sends `body` verbatim — so this parse is
+/// pure cost on the binding that is the common case. It is done anyway, once, in the shared
+/// preamble rather than inside the two framings that need it, because the alternative is each
+/// framing parsing for itself and the caller's bytes being read a different number of times
+/// depending on which binding a backend happened to publish.
+fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
+    let envelope: serde_json::Value =
+        serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+    (
+        super::local::method_of(&envelope).to_string(),
+        envelope
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
 }
 
 /// THE PREAMBLE EVERY HOP SHARES: guard the target, re-ask the trust question, build the request.
@@ -488,17 +1370,46 @@ fn prepare<'a>(
         .still_delegable(call.agent_id, call.admitted_generation)
         .map_err(RelayRefusal::Demoted)?;
 
-    let request = build_request(
-        &url,
-        call.agent_id,
-        call.lease,
-        call.body,
-        streaming,
-        call.a2a_version,
-        now_ms,
-    )
-    .map_err(RelayRefusal::Lease)?;
-    Ok((url, pin, request))
+    // ── THE FRAMING, and it is the ONLY thing that varies across A2A's three bindings. Everything
+    //    above this line — the guard, the pin, the live trust decision — and everything below it in
+    //    the two hops is one implementation. See `THE OUTBOUND BINDING`.
+    let (method, params) = outbound_of(call.body);
+    let framed = call
+        .framing
+        .compose(
+            &url,
+            &Outbound {
+                verbatim: call.body,
+                method: &method,
+                params: &params,
+            },
+            streaming,
+        )
+        .map_err(|reason| RelayRefusal::Unframable {
+            binding: call.framing.word(),
+            method: method.clone(),
+            reason,
+        })?;
+    // THE LEG, NAMED. A statement of fact at a known point, which is what `crate::transport`'s own
+    // note says naming a variant is for; nothing on this path compares it.
+    tracing::debug!(
+        agent = call.agent_id,
+        transport = framed_leg(call.framing),
+        method = %method,
+        "a2a: relaying on the backend's own binding"
+    );
+    // The FRAMED url, not the operator's: a REST hop addresses the operation and a gRPC hop
+    // addresses the rpc, and a refusal that quoted the base would name a URL busbar never asked for.
+    let framed_url = framed.url.clone();
+    let request = build_request(framed, call.agent_id, call.lease, call.a2a_version, now_ms)
+        .map_err(RelayRefusal::Lease)?;
+    Ok((framed_url, pin, request))
+}
+
+/// The axis label for one framing. A one-line helper so the `tracing` call above reads as a label
+/// rather than as a chain, and so the axis value is fetched in exactly one place on this path.
+fn framed_leg(framing: &dyn OutboundFraming) -> &'static str {
+    framing.leg().name()
 }
 
 /// RELAY ONE TASK SUBMISSION to the backend agent, and bring the answer back.
@@ -516,7 +1427,13 @@ pub(crate) fn relay(
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
     let resp = seam
         .transport()
-        .post(&url, pin.addr(), &request.headers, &request.body)
+        .send(
+            request.http_method,
+            &url,
+            pin.addr(),
+            &request.headers,
+            &request.body,
+        )
         .map_err(|err| RelayRefusal::Transport {
             url: url.to_string(),
             err,
@@ -536,7 +1453,21 @@ pub(crate) fn relay(
             bytes: resp.body.len(),
         });
     }
-    read_reply(&resp.body, url.as_str(), call.rpc_id)
+    // ── THE ANSWER, RE-FRAMED BACK INTO ONE DIALECT. Section 11.3 makes the REST success body the
+    //    `result` verbatim and A2A v1.0 makes a gRPC message's ProtoJSON the same document, so both
+    //    are wrapped back into the JSON-RPC envelope `read_reply` reads. ONE reader, so the
+    //    correlation, the `jsonrpc` member check and the `error` arm are the same three rules on
+    //    every leg rather than three copies of them.
+    let (method, _) = outbound_of(call.body);
+    let envelope = call
+        .framing
+        .read_answer(&method, &resp.body, call.rpc_id)
+        .map_err(|reason| RelayRefusal::Unframable {
+            binding: call.framing.word(),
+            method,
+            reason,
+        })?;
+    read_reply(&envelope, url.as_str(), call.rpc_id)
 }
 
 /// Read one JSON-RPC answer off a completed body, AS THE ANSWER TO `rpc_id`.
@@ -996,7 +1927,11 @@ pub(crate) fn relay_stream(
     let (url, pin, request) = prepare(call, seam, true, now_ms)?;
     let cap = call.policy.max_body_bytes;
 
-    let mut reader = SseReader::default();
+    // THE BINDING'S OWN FRAME READER. Whatever it reads — SSE with an envelope payload, SSE with a
+    // bare one, or length-prefixed protobuf — what it EMITS is one dialect, so `read_event` below is
+    // one implementation.
+    let (method, _) = outbound_of(call.body);
+    let mut reader = call.framing.reader(&method, call.rpc_id);
     let mut streamed_any = false;
     let mut overflow = false;
     // AN UNCORRELATED FRAME STOPS THE HOP. Recorded rather than returned from the closure because
@@ -1067,8 +2002,18 @@ pub(crate) fn relay_stream(
         return Ok(RelayStream::Streamed);
     }
     // NOT A STREAM. The backend answered a single document; hand back the unary shape rather than
-    // re-framing a non-stream as one.
-    read_reply(&head.body, url.as_str(), call.rpc_id).map(|r| RelayStream::Unary(Box::new(r)))
+    // re-framing a non-stream as one — through the SAME re-framing the unary hop uses, because a
+    // one-document answer to a streaming request is a unary answer and the binding it arrived on
+    // has not changed.
+    let envelope = call
+        .framing
+        .read_answer(&method, &head.body, call.rpc_id)
+        .map_err(|reason| RelayRefusal::Unframable {
+            binding: call.framing.word(),
+            method: method.clone(),
+            reason,
+        })?;
+    read_reply(&envelope, url.as_str(), call.rpc_id).map(|r| RelayStream::Unary(Box::new(r)))
 }
 
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop
@@ -1119,3 +2064,9 @@ mod wire_headers_tests;
 #[cfg(test)]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
+
+// BUSBAR AS AN A2A **CLIENT**, over all three bindings. Mounted here for the reason every block
+// above is: the claim is about A REQUEST ON THE WIRE, and only the shared harness can see one.
+#[cfg(test)]
+#[path = "tests/client_leg_tests.rs"]
+mod client_leg_tests;

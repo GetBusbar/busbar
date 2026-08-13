@@ -595,3 +595,41 @@ mcp|stdio|server|server|notifications/tools/list_changed = waived 2026-08-12 bus
 mcp|stdio|server|server|ping = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
 mcp|stdio|server|server|roots/list = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
 mcp|stdio|server|server|sampling/createMessage = waived 2026-08-12 busbar is not itself launched as a child process. The stdio SERVER direction means an agent spawns `busbar` and speaks MCP on its stdin -- one gateway process per client, with no listener, no TLS, no admin plane and no shared store. Every control busbar exists to apply is scoped to a long-lived multi-tenant listener: virtual keys, budgets, the audience validation that is the confused-deputy defence, the per-call log chain, the trust lifecycle. None of them means anything inside one client's own child process, and a busbar that served MCP there would be a governance gateway with the governance switched off. The OUTBOUND stdio direction is implemented instead, which is the one a gateway is for: busbar fronts local stdio MCP servers on behalf of many callers. Reversible -- it is a product decision, not a technical block.
+
+# ── THE A2A CLIENT LEG, over all three bindings (1.6.0). ─────────────────────────────────────────
+#
+# busbar is an A2A CLIENT as well as a server, and A2A defines THREE bindings of one agent. Until
+# this unit every outbound hop went out as a JSON-RPC envelope, so a registered agent publishing the
+# HTTP+JSON or gRPC binding was unreachable through busbar by any sequence of operator actions.
+#
+# ONE dispatch serves all three: `a2a/relay.rs` guards, pins, re-asks the trust question, leases,
+# correlates and substitutes identity ONCE, and the only thing that varies is the `OutboundFraming`
+# selected by LOOKUP from the backend's own cached card. A2A section 11.3 makes the REST request body
+# the JSON-RPC `params` verbatim and the success body the `result` verbatim, and A2A v1.0 makes a gRPC
+# message's ProtoJSON the same document — so all three are RE-FRAMING and every answer is wrapped
+# back into one envelope for one reader.
+#
+# EVERY CELL BELOW IS PROVEN BY A TEST THAT DRIVES THE REAL ROUTER AND READS THE REQUEST BUSBAR PUT
+# ON THE WIRE (`a2a/tests/client_leg_tests.rs`). Those tests PANIC when no outbound hop was recorded:
+# a verb this plane answers locally makes no hop, so "the call returned 200" proves nothing about the
+# client leg and must not be allowed to read as a pass.
+a2a|jsonrpc|client|client|SendMessage = implemented                     # jsonrpc_client_issues_send_message
+a2a|jsonrpc|client|client|SendStreamingMessage = implemented            # jsonrpc_client_issues_send_streaming_message
+a2a|jsonrpc|client|client|GetTask = implemented                         # jsonrpc_client_issues_get_task
+a2a|jsonrpc|client|client|CancelTask = implemented                      # jsonrpc_client_issues_cancel_task
+a2a|jsonrpc|client|client|SubscribeToTask = implemented                 # jsonrpc_client_issues_subscribe_to_task
+a2a|jsonrpc|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+a2a|http+json|client|client|SendMessage = implemented                   # http_json_client_issues_send_message
+a2a|http+json|client|client|SendStreamingMessage = implemented          # http_json_client_issues_send_streaming_message
+a2a|http+json|client|client|GetTask = implemented                       # http_json_client_issues_get_task
+a2a|http+json|client|client|CancelTask = implemented                    # http_json_client_issues_cancel_task
+a2a|http+json|client|client|SubscribeToTask = implemented               # http_json_client_issues_subscribe_to_task
+a2a|http+json|client|client|GET /.well-known/agent-card.json = implemented # both_http_bindings_discover_the_card_at_the_well_known_path
+# busbar POSTs the notification itself, through its own guarded, re-pinned delivery hop, so the
+# callback a caller registered is fetched by busbar and never by the backend around busbar's guard.
+a2a|http+json|client|server|PushNotificationDelivery = implemented      # pushdeliver_tests::a_completed_task_with_a_callback_is_delivered
+a2a|grpc|client|client|SendMessage = implemented                        # grpc_client_issues_send_message
+a2a|grpc|client|client|SendStreamingMessage = implemented               # grpc_client_issues_send_streaming_message
+a2a|grpc|client|client|GetTask = implemented                            # grpc_client_issues_get_task
+a2a|grpc|client|client|CancelTask = implemented                         # grpc_client_issues_cancel_task
+a2a|grpc|client|client|SubscribeToTask = implemented                    # grpc_client_issues_subscribe_to_task

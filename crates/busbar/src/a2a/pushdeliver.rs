@@ -364,7 +364,7 @@ pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefus
     let body = notification_body(task);
     let resp = seam
         .transport()
-        .post(&parsed, addr, &headers, &body)
+        .send("POST", &parsed, addr, &headers, &body)
         .map_err(PushRefusal::Transport)?;
 
     // Remember what this delivery pinned, so the next one can require an overlap with it.

@@ -521,21 +521,31 @@ impl Transport for ReqwestTransport {
 /// ceiling. Everything that makes the hop safe is [`ReqwestTransport::execute`]'s, so it cannot be
 /// true of one caller and false of the other.
 impl RelayTransport for ReqwestTransport {
-    fn post(
+    fn send(
         &self,
+        http_method: &str,
         url: &reqwest::Url,
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, String> {
+        // PARSED, NOT MATCHED. The verb comes off the framing that composed the request, and
+        // `reqwest::Method` is the type that already knows which tokens are methods — a table here
+        // would be a second, shorter answer to a question the http crate has answered once.
+        let method = reqwest::Method::from_bytes(http_method.as_bytes())
+            .map_err(|_| format!("`{http_method}` is not an HTTP method"))?;
+        // A BODY-LESS REQUEST SENDS NO BODY. A zero-length body on a `GET` is not the same request
+        // as no body at all: it puts `content-length: 0` on a request the specification defines
+        // without one, which some peers refuse outright.
+        let body = (!body.is_empty()).then(|| body.to_vec());
         self.execute(
             "a2a task relay",
-            reqwest::Method::POST,
+            method,
             Hop {
                 url,
                 addr,
                 headers,
-                body: Some(body.to_vec()),
+                body,
             },
             RELAY_TIMEOUT,
         )

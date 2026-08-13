@@ -1,0 +1,800 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! BUSBAR AS AN A2A **CLIENT**, over all three of A2A's bindings.
+//!
+//! Every test here drives busbar's REAL router — the same `crate::build_router`, the same admission,
+//! the same egress gate, the same SSRF guard, the same audit chain, the same task store — and then
+//! reads what busbar ASKED TO HAVE SENT off the recording seam. That is what makes these tests
+//! evidence for a coverage cell rather than evidence that a function exists: the claim
+//! `a2a|<binding>|client|client|<Method>` is *busbar issues this operation on this binding*, and the
+//! only thing that can prove it is the request on the wire.
+//!
+//! ## NOTHING HERE CAN SKIP
+//!
+//! [`issued`] PANICS when no outbound request was recorded, and every assertion runs against a
+//! `Recorded` that therefore exists. A test that quietly asserted nothing because the hop never
+//! happened would report a green over a client leg that does not work, which is the exact failure
+//! this battery exists to prevent — and it is not hypothetical: a verb this plane answers LOCALLY
+//! makes no hop at all, so "the call returned 200" proves nothing whatsoever about the client leg.
+//!
+//! ## WHY THE SAME TEST SHAPE THREE TIMES IS THE POINT, NOT DUPLICATION
+//!
+//! The three bindings are ONE dispatch. The deployment differs in exactly one member of one cached
+//! agent card ([`harness_on`]) and in nothing else — no second router, no second seam, no second
+//! ingress — so a per-binding test that finds a correctly re-framed request on the wire has proved
+//! that the framing was the only thing that varied. Writing the assertions out per binding is what
+//! makes the re-framing legible: `GetTask` is a body member on one leg, a path segment plus a `GET`
+//! on the second, and a protobuf message under an rpc path on the third, and those are three
+//! different claims about three different bytes.
+
+use super::relay_harness::*;
+use crate::a2a::relay::{BINDING_GRPC, BINDING_HTTP_JSON, BINDING_JSONRPC};
+
+/// The base every framing composes against: the operator's `url:` for the `planner` registration.
+const BASE: &str = "https://backend.agent.test/a2a";
+
+// ══ DRIVING ONE OPERATION, AND READING WHAT WENT OUT ═════════════════════════════════════════════
+
+/// Call `planner` with `envelope` and hand back EVERY request busbar asked to have sent.
+///
+/// PANICS when there were none. See the module note: a locally-answered verb makes no hop, so an
+/// empty log is the one answer this battery must never treat as a pass.
+async fn issued(h: &Harness, envelope: &serde_json::Value) -> Vec<Recorded> {
+    let (status, body) = call_agent(h, "planner", envelope).await;
+    let sent = h.sent();
+    assert!(
+        !sent.is_empty(),
+        "busbar made NO outbound hop for {:?}. It answered {status} with {body}. A client-leg cell \
+         is a claim about a request on the wire, and there was none — this test must fail rather \
+         than assert nothing.",
+        envelope.get("method")
+    );
+    sent
+}
+
+/// The LAST request busbar asked to have sent. The addressed verbs need a task to address, so their
+/// tests make a submission first; the operation under test is the one that went out last.
+async fn issued_last(h: &Harness, envelope: &serde_json::Value) -> Recorded {
+    issued(h, envelope)
+        .await
+        .pop()
+        .expect("`issued` refuses an empty log")
+}
+
+/// The JSON body of a recorded request, or a panic naming what was there instead.
+fn body_json(r: &Recorded) -> serde_json::Value {
+    serde_json::from_slice(&r.body).unwrap_or_else(|e| {
+        panic!(
+            "the outbound body is not JSON ({e}): {:?}",
+            String::from_utf8_lossy(&r.body)
+        )
+    })
+}
+
+/// The path (and query) of a recorded request's URL, with the origin removed.
+fn path_of(r: &Recorded) -> String {
+    let url = reqwest::Url::parse(&r.url).expect("the recorded URL parses");
+    match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+/// THE SUBMISSION A v1.0 CALLER SENDS.
+///
+/// A2A v0.3's `message/send` params — `role: "user"`, `parts: [{kind, text}]` — are NOT the
+/// protobuf message's ProtoJSON, and the gRPC binding is a v1.0 construct with no v0.3 protobuf to
+/// transcode to. So a caller reaching a gRPC backend speaks v1.0, which is what this composes:
+/// `content`, `ROLE_USER`, and a `Part` oneof. That is not a limitation this test works around — it
+/// is the honest boundary `super::super::grpc`'s own header states, that this binding cannot be a
+/// courier, applied in the direction that sends.
+fn v10_envelope() -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "SendMessage",
+        "params": {
+            "message": {
+                "messageId": "m-1",
+                "role": "ROLE_USER",
+                "parts": [{ "text": "PLAN THE MIGRATION" }]
+            }
+        }
+    })
+}
+
+/// The backend's answer for a task that is still RUNNING. A resubscribe to a task busbar holds as
+/// TERMINAL is refused locally (`local::subscribe_refusal`) and makes no hop at all, so a fixture
+/// that completed the task would make every subscribe test assert nothing.
+fn backend_working() -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": 7,
+        "result": {
+            "id": "BACKEND-OWN-TASK-ID", "contextId": "BACKEND-OWN-CONTEXT", "kind": "task",
+            "status": { "state": "working" }
+        }
+    })
+    .to_string()
+}
+
+/// The same, in the shape A2A section 11.3 gives the REST binding: the `result`, bare.
+fn backend_rest_working() -> String {
+    serde_json::json!({
+        "id": "BACKEND-OWN-TASK-ID", "contextId": "BACKEND-OWN-CONTEXT", "kind": "task",
+        "status": { "state": "working" }
+    })
+    .to_string()
+}
+
+/// A submission envelope naming `method`, with `params`.
+fn envelope_for(method: &str, params: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": 7, "method": method, "params": params })
+}
+
+/// A `message/send` that opens one task, and the busbar task id it was answered with.
+///
+/// Every addressed verb needs a task that busbar issued and that this caller owns — a `GetTask` for
+/// anything else resolves to nothing and takes a different path — so this is the setup those tests
+/// share. It asserts the id came back, because a test that went on to address `""` would be
+/// addressing nothing and would pass for the wrong reason.
+async fn open_a_task(h: &Harness, submission: &serde_json::Value) -> String {
+    let (status, answer) = call_agent(h, "planner", submission).await;
+    assert_eq!(status, 200, "the submission must succeed: {answer}");
+    // BOTH SHAPES. A2A v0.3 makes the `result` the Task itself; v1.0 WRAPS it under `task`, and the
+    // wrapper is what a v1.0 caller — every gRPC caller — gets back.
+    let id = answer
+        .pointer("/result/id")
+        .or_else(|| answer.pointer("/result/task/id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("the submission answered no task id: {answer}"));
+    assert!(!id.is_empty(), "the submission answered an empty task id");
+    id.to_string()
+}
+
+// ══ THE JSON-RPC BINDING ═════════════════════════════════════════════════════════════════════════
+//
+// The courier. busbar sends the caller's own bytes, so what is asserted here is that the hop happens
+// AT ALL, that it goes to the operator's endpoint as a `POST`, and that the envelope on the wire is
+// the caller's — content-blindness is the property of this leg and a re-serialization would spend it.
+
+/// One JSON-RPC hop, asserted whole: the verb, the endpoint, and the method the envelope names.
+fn assert_jsonrpc(r: &Recorded, method: &str) {
+    assert_eq!(r.http_method, "POST", "JSON-RPC is a POST to one endpoint");
+    assert_eq!(
+        r.url,
+        format!("{BASE}"),
+        "the operator's endpoint, verbatim"
+    );
+    let body = body_json(r);
+    assert_eq!(
+        body.get("method").and_then(serde_json::Value::as_str),
+        Some(method),
+        "the envelope on the wire must name `{method}`: {body}"
+    );
+    assert_eq!(
+        body.get("jsonrpc").and_then(serde_json::Value::as_str),
+        Some("2.0"),
+        "a JSON-RPC hop carries the `jsonrpc` member"
+    );
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_send_message() {
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, backend_ok()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let sent = issued_last(&h, &envelope()).await;
+    assert_jsonrpc(&sent, "message/send");
+    assert!(
+        contains(&sent.body, b"PLAN THE MIGRATION"),
+        "the caller's own content reaches the backend on this leg"
+    );
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_send_streaming_message() {
+    let h = harness_on(
+        Outcome::Streams(vec![format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 11,
+                "result": { "id": "B", "contextId": "C", "kind": "task",
+                            "status": { "state": "completed" } }
+            })
+        )]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 11, "method": "message/stream",
+        "params": { "message": { "role": "user", "parts": [{ "kind": "text", "text": "GO" }] } }
+    });
+    let (status, _, _) = call_raw(&h, "planner", &body).await;
+    assert_eq!(status, 200, "the streaming submission must be served");
+    let sent = h.sent();
+    assert!(!sent.is_empty(), "busbar made no streaming hop");
+    let last = sent.last().expect("just checked");
+    assert!(last.streaming, "a `message/stream` must go out as a STREAM");
+    assert_jsonrpc(last, "message/stream");
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_get_task() {
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, backend_ok()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("tasks/get", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_jsonrpc(&sent, "tasks/get");
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_cancel_task() {
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, backend_ok()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("tasks/cancel", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_jsonrpc(&sent, "tasks/cancel");
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_subscribe_to_task() {
+    let h = harness_on(
+        Outcome::AnswersThenStreams(
+            200,
+            backend_working(),
+            vec![format!(
+                "data: {}\n\n",
+                serde_json::json!({ "jsonrpc": "2.0", "id": 7,
+                                    "result": { "id": "B", "status": { "state": "working" } } })
+            )],
+        ),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let body = envelope_for("tasks/resubscribe", serde_json::json!({ "id": task }));
+    let (status, _, _) = call_raw(&h, "planner", &body).await;
+    assert_eq!(status, 200, "a resubscribe to a live task must be served");
+    let last = h
+        .sent()
+        .pop()
+        .expect("busbar made no hop for a resubscribe");
+    assert_jsonrpc(&last, "tasks/resubscribe");
+}
+
+// ══ THE HTTP+JSON BINDING ════════════════════════════════════════════════════════════════════════
+//
+// A2A section 11.3: the REST request body IS the JSON-RPC `params` verbatim. So what is asserted per
+// operation is the REQUEST LINE — the verb and the path the specification binds the operation to —
+// and, where there is one, that the body is the params and nothing else.
+
+#[tokio::test]
+async fn http_json_client_issues_send_message() {
+    let h = harness_on(
+        Outcome::Answers(200, backend_rest_task()),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let sent = issued_last(&h, &envelope()).await;
+    assert_eq!(sent.http_method, "POST");
+    assert_eq!(path_of(&sent), "/a2a/message:send");
+    let body = body_json(&sent);
+    assert!(
+        body.get("message").is_some(),
+        "section 11.3: the body IS the params, so the caller's `message` is at the top: {body}"
+    );
+    assert!(
+        body.get("method").is_none() && body.get("jsonrpc").is_none(),
+        "the REST body must carry no JSON-RPC envelope members: {body}"
+    );
+}
+
+#[tokio::test]
+async fn http_json_client_issues_send_streaming_message() {
+    let h = harness_on(
+        Outcome::Streams(vec![format!(
+            "data: {}\n\n",
+            serde_json::json!({ "id": "B", "contextId": "C", "kind": "task",
+                                "status": { "state": "completed" } })
+        )]),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 11, "method": "message/stream",
+        "params": { "message": { "role": "user", "parts": [{ "kind": "text", "text": "GO" }] } }
+    });
+    let (status, ct, sse) = call_raw(&h, "planner", &body).await;
+    assert_eq!(
+        status, 200,
+        "the streaming submission must be served: {sse}"
+    );
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "the caller is answered a stream, whatever binding the backend spoke: {ct}"
+    );
+    let last = h.sent().pop().expect("busbar made no streaming hop");
+    assert!(last.streaming, "the hop must be a STREAM");
+    assert_eq!(last.http_method, "POST");
+    assert_eq!(path_of(&last), "/a2a/message:stream");
+    // THE RE-FRAMING, IN THE ANSWERING DIRECTION. The backend streamed BARE events — that is what
+    // A2A's REST binding puts in a `data:` — and the caller got a JSON-RPC stream, because
+    // `RestSseReader` wrapped each one before `read_event` ever saw it.
+    assert!(
+        sse.contains("\"jsonrpc\""),
+        "a bare REST event must reach the caller re-framed as a JSON-RPC response: {sse}"
+    );
+}
+
+#[tokio::test]
+async fn http_json_client_issues_get_task() {
+    let h = harness_on(
+        Outcome::Answers(200, backend_rest_task()),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("tasks/get", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_eq!(
+        sent.http_method, "GET",
+        "A2A binds `GetTask` to a GET; a POST here is a different request"
+    );
+    // The backend's OWN task id, not busbar's: `idmap` translates the addressed id on the way out,
+    // and a path carrying busbar's id would address a task the backend has never heard of.
+    assert_eq!(path_of(&sent), "/a2a/tasks/BACKEND-OWN-TASK-ID");
+    assert!(
+        sent.body.is_empty(),
+        "a GET carries no body: {:?}",
+        String::from_utf8_lossy(&sent.body)
+    );
+}
+
+#[tokio::test]
+async fn http_json_client_issues_cancel_task() {
+    let h = harness_on(
+        Outcome::Answers(200, backend_rest_task()),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("tasks/cancel", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_eq!(sent.http_method, "POST");
+    assert_eq!(path_of(&sent), "/a2a/tasks/BACKEND-OWN-TASK-ID:cancel");
+}
+
+#[tokio::test]
+async fn http_json_client_issues_subscribe_to_task() {
+    let h = harness_on(
+        Outcome::AnswersThenStreams(
+            200,
+            backend_rest_working(),
+            vec!["data: {\"id\":\"B\",\"status\":{\"state\":\"working\"}}\n\n".to_string()],
+        ),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let body = envelope_for("tasks/resubscribe", serde_json::json!({ "id": task }));
+    let (status, _, _) = call_raw(&h, "planner", &body).await;
+    assert_eq!(status, 200, "a resubscribe to a live task must be served");
+    let last = h
+        .sent()
+        .pop()
+        .expect("busbar made no hop for a resubscribe");
+    assert_eq!(last.http_method, "POST");
+    assert_eq!(path_of(&last), "/a2a/tasks/BACKEND-OWN-TASK-ID:subscribe");
+}
+
+/// A REST-shaped answer: section 11.3 makes the success body the `result` VERBATIM, so there is no
+/// envelope around it. The ids are the backend's own, exactly as [`backend_ok`]'s are.
+fn backend_rest_task() -> String {
+    serde_json::json!({
+        "id": "BACKEND-OWN-TASK-ID",
+        "contextId": "BACKEND-OWN-CONTEXT",
+        "kind": "task",
+        "status": { "state": "completed" }
+    })
+    .to_string()
+}
+
+// ══ THE gRPC BINDING ═════════════════════════════════════════════════════════════════════════════
+//
+// The one binding that cannot be a courier: the peer speaks protobuf, so busbar authors the frame.
+// The conversions are the SDK's — `a2a_pb` — and they are the SAME ones `super::grpc` uses to READ a
+// request in the other direction, so what is asserted here is that the frame busbar composed decodes
+// back to the operation the caller asked for. The decode is done with `a2a_pb` directly rather than
+// with busbar's own reader, so the oracle is the SDK and not the code under test.
+
+/// The rpc path a recorded request addresses, and the length-prefixed message it carries, decoded
+/// with the SDK. PANICS on anything that is not a well-formed gRPC frame.
+fn grpc_message<T>(r: &Recorded) -> T
+where
+    T: prost::Message + Default,
+{
+    assert_eq!(r.http_method, "POST", "a gRPC call is always a POST");
+    assert!(
+        r.body.len() >= 5,
+        "a gRPC frame is a flag byte, a four-byte length and a message; got {} bytes",
+        r.body.len()
+    );
+    assert_eq!(
+        r.body[0], 0,
+        "busbar offers no compression, so the flag is 0"
+    );
+    let len = u32::from_be_bytes([r.body[1], r.body[2], r.body[3], r.body[4]]) as usize;
+    assert_eq!(
+        r.body.len(),
+        5 + len,
+        "the frame's length prefix must describe the frame"
+    );
+    <T as prost::Message>::decode(&r.body[5..])
+        .expect("the frame decodes as the rpc's request message")
+}
+
+/// One gRPC frame, as a backend answers it.
+fn grpc_frame<M: prost::Message>(message: &M) -> Vec<u8> {
+    let len = prost::Message::encoded_len(message);
+    let mut out = vec![0u8];
+    out.extend_from_slice(
+        &(u32::try_from(len).expect("a test fixture fits in a frame")).to_be_bytes(),
+    );
+    prost::Message::encode(message, &mut out).expect("the message encodes");
+    out
+}
+
+/// What a healthy gRPC backend answers a submission with, as a `String` the fixture can carry.
+///
+/// The recording transport hands back `String` bytes, and a protobuf frame is not UTF-8 — so it
+/// travels as latin-1, byte for byte, and is turned back into bytes on the way out. Ugly and
+/// EXACT: no byte is lost, which is the only property that matters for a frame.
+fn as_fixture(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| *b as char).collect()
+}
+
+/// The backend's own task, in the shape its gRPC binding answers with.
+fn grpc_task(state: a2a_pb::proto::TaskState) -> a2a_pb::proto::Task {
+    a2a_pb::proto::Task {
+        id: "BACKEND-OWN-TASK-ID".to_string(),
+        context_id: "BACKEND-OWN-CONTEXT".to_string(),
+        status: Some(a2a_pb::proto::TaskStatus {
+            state: state as i32,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn grpc_task_answer() -> String {
+    as_fixture(&grpc_frame(&grpc_task(a2a_pb::proto::TaskState::Completed)))
+}
+
+/// The same, for a task the backend is still WORKING on. See [`backend_working`].
+fn grpc_working_answer() -> String {
+    as_fixture(&grpc_frame(&a2a_pb::proto::SendMessageResponse {
+        payload: Some(a2a_pb::proto::send_message_response::Payload::Task(
+            grpc_task(a2a_pb::proto::TaskState::Working),
+        )),
+    }))
+}
+
+fn grpc_send_answer() -> String {
+    as_fixture(&grpc_frame(&a2a_pb::proto::SendMessageResponse {
+        payload: Some(a2a_pb::proto::send_message_response::Payload::Task(
+            grpc_task(a2a_pb::proto::TaskState::Completed),
+        )),
+    }))
+}
+
+/// One streamed event, as the backend's gRPC binding frames it.
+fn grpc_stream_frame(state: a2a_pb::proto::TaskState) -> String {
+    as_fixture(&grpc_frame(&a2a_pb::proto::StreamResponse {
+        payload: Some(a2a_pb::proto::stream_response::Payload::Task(grpc_task(
+            state,
+        ))),
+    }))
+}
+
+#[tokio::test]
+async fn grpc_client_issues_send_message() {
+    let h = harness_on(Outcome::Answers(200, grpc_send_answer()), BINDING_GRPC).await;
+    let sent = issued_last(&h, &v10_envelope()).await;
+    assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/SendMessage");
+    let req: a2a_pb::proto::SendMessageRequest = grpc_message(&sent);
+    let text = req
+        .message
+        .as_ref()
+        .map(|m| format!("{m:?}"))
+        .unwrap_or_default();
+    assert!(
+        text.contains("PLAN THE MIGRATION"),
+        "the caller's own content must survive the transcode: {text}"
+    );
+}
+
+#[tokio::test]
+async fn grpc_client_issues_get_task() {
+    let h = harness_on(
+        in_turn(200, vec![grpc_send_answer(), grpc_task_answer()]),
+        BINDING_GRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &v10_envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("GetTask", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/GetTask");
+    let req: a2a_pb::proto::GetTaskRequest = grpc_message(&sent);
+    assert_eq!(
+        req.id, "BACKEND-OWN-TASK-ID",
+        "the rpc must name the BACKEND's own task id, not busbar's"
+    );
+}
+
+#[tokio::test]
+async fn grpc_client_issues_cancel_task() {
+    let h = harness_on(
+        in_turn(200, vec![grpc_send_answer(), grpc_task_answer()]),
+        BINDING_GRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &v10_envelope()).await;
+    let sent = issued_last(
+        &h,
+        &envelope_for("CancelTask", serde_json::json!({ "id": task })),
+    )
+    .await;
+    assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/CancelTask");
+    let req: a2a_pb::proto::CancelTaskRequest = grpc_message(&sent);
+    assert_eq!(req.id, "BACKEND-OWN-TASK-ID");
+}
+
+#[tokio::test]
+async fn grpc_client_issues_send_streaming_message() {
+    let frame = grpc_stream_frame(a2a_pb::proto::TaskState::Completed);
+    let h = harness_on(Outcome::Streams(vec![frame]), BINDING_GRPC).await;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 11, "method": "SendStreamingMessage",
+        "params": { "message": { "messageId": "m-2", "role": "ROLE_USER",
+                                 "parts": [{ "text": "GO" }] } }
+    });
+    let (status, _, sse) = call_raw(&h, "planner", &body).await;
+    assert_eq!(
+        status, 200,
+        "the streaming submission must be served: {sse}"
+    );
+    let last = h.sent().pop().expect("busbar made no streaming hop");
+    assert!(last.streaming, "the hop must be a STREAM");
+    assert_eq!(path_of(&last), "/lf.a2a.v1.A2AService/SendStreamingMessage");
+    let _: a2a_pb::proto::SendMessageRequest = grpc_message(&last);
+    // THE RE-FRAMING, IN THE ANSWERING DIRECTION: a length-prefixed protobuf message reached the
+    // caller as one JSON-RPC response in an SSE frame, because `GrpcFrameReader` produced the same
+    // dialect the other two legs produce.
+    assert!(
+        sse.contains("\"jsonrpc\""),
+        "a gRPC stream message must reach the caller as a JSON-RPC response: {sse}"
+    );
+}
+
+#[tokio::test]
+async fn grpc_client_issues_subscribe_to_task() {
+    let frame = grpc_stream_frame(a2a_pb::proto::TaskState::Working);
+    let h = harness_on(
+        Outcome::AnswersThenStreams(200, grpc_working_answer(), vec![frame]),
+        BINDING_GRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &v10_envelope()).await;
+    let body = envelope_for("SubscribeToTask", serde_json::json!({ "id": task }));
+    let (status, _, _) = call_raw(&h, "planner", &body).await;
+    assert_eq!(status, 200, "a resubscribe to a live task must be served");
+    let last = h
+        .sent()
+        .pop()
+        .expect("busbar made no hop for a resubscribe");
+    assert_eq!(path_of(&last), "/lf.a2a.v1.A2AService/SubscribeToTask");
+    let req: a2a_pb::proto::SubscribeToTaskRequest = grpc_message(&last);
+    assert_eq!(req.id, "BACKEND-OWN-TASK-ID");
+}
+
+// ══ THE PROPERTIES THAT HOLD ACROSS ALL THREE LEGS ═══════════════════════════════════════════════
+
+/// THE CALLER'S CREDENTIAL NEVER TRAVELS, ON ANY BINDING.
+///
+/// The adversarial scan in `relay_tests` proves this for the JSON-RPC leg in five encodings. Arming
+/// two more bindings is arming two more places for a header set to be assembled, so the scan is
+/// re-run against each of them here — a defence that holds on the leg it was written for and not on
+/// the legs that came later is a defence with two thirds of a hole in it.
+#[tokio::test]
+async fn no_binding_leaks_the_callers_busbar_key() {
+    for (binding, outcome) in [
+        (
+            BINDING_JSONRPC,
+            Outcome::AnswersCorrelated(200, backend_ok()),
+        ),
+        (
+            BINDING_HTTP_JSON,
+            Outcome::Answers(200, backend_rest_task()),
+        ),
+        (BINDING_GRPC, Outcome::Answers(200, grpc_send_answer())),
+    ] {
+        let h = harness_on(outcome, binding).await;
+        // The v1.0 shape on every leg: the gRPC binding cannot transcode a v0.3 `message/send`, and
+        // a scan whose gRPC arm never reached the wire would be a scan that proved nothing there.
+        let sent = issued(&h, &v10_envelope()).await;
+        assert!(!sent.is_empty(), "{binding}: no hop was made");
+        let wire = h.all_wire();
+        for (encoding, needle) in encodings(&h.bearer) {
+            assert!(
+                !contains(&wire, &needle),
+                "{binding}: the caller's busbar key reached the backend hop, {encoding}-encoded"
+            );
+        }
+    }
+}
+
+/// A CARD DECLARING A BINDING BUSBAR CANNOT SPEAK IS A NAMED REFUSAL, NOT A JSON-RPC HOP.
+///
+/// The fail-open here would be silent and would look like it worked: fall back to JSON-RPC, send an
+/// envelope to a peer that has just said in its own card that it does not read one, and report the
+/// backend's `400` as the backend's fault. So the lookup returns `None` and the hop never happens —
+/// and this test asserts the ABSENCE of the request, which is the only thing that can tell the two
+/// apart.
+#[tokio::test]
+async fn a_binding_busbar_cannot_speak_refuses_before_the_socket() {
+    let h = harness_on(
+        Outcome::Answers(200, backend_ok()),
+        "SOAP-1.2-OVER-CARRIER-PIGEON",
+    )
+    .await;
+    let (status, body) = call_agent(&h, "planner", &envelope()).await;
+    assert_eq!(
+        status, 502,
+        "a binding busbar cannot speak is busbar's failure to carry the request, not the caller's"
+    );
+    assert!(
+        h.sent().is_empty(),
+        "busbar must not fall back to a binding the card did not offer: {:?}",
+        h.sent()
+    );
+    assert!(
+        body.to_string().contains("SOAP-1.2-OVER-CARRIER-PIGEON"),
+        "the refusal must name the word an operator has to act on: {body}"
+    );
+}
+
+/// THE BINDING COMES FROM THE CARD AND THE ADDRESS COMES FROM THE OPERATOR.
+///
+/// A card may say HOW to talk to an agent; it may not say WHERE. This drives a registration whose
+/// card declares an interface at a completely different host and asserts that the hop still goes to
+/// the host the operator wrote down — because a card that could re-point the outbound hop is an
+/// upstream choosing busbar's peer, which is the rug-pull the pinning apparatus exists to refuse.
+#[tokio::test]
+async fn the_cards_interface_url_never_moves_the_hop() {
+    let h = harness_granting(
+        Outcome::Answers(200, backend_rest_task()),
+        false,
+        &["planner"],
+    )
+    .await;
+    let mut card = a_card();
+    card["supportedInterfaces"] = serde_json::json!([{
+        "url": "https://attacker.example/a2a",
+        "protocolBinding": BINDING_HTTP_JSON,
+    }]);
+    h.plane.with_registrations_mut(|regs| {
+        for reg in regs.iter_mut() {
+            approve_card(reg, card.clone());
+        }
+    });
+    let sent = issued_last(&h, &envelope()).await;
+    let url = reqwest::Url::parse(&sent.url).expect("the recorded URL parses");
+    assert_eq!(
+        url.host_str(),
+        Some("backend.agent.test"),
+        "the hop must go to the OPERATOR's host, whatever the card's interface says: {}",
+        sent.url
+    );
+    assert_eq!(
+        sent.http_method, "POST",
+        "the card's BINDING is still honoured — only its address is ignored"
+    );
+    assert_eq!(path_of(&sent), "/a2a/message:send");
+}
+
+// ══ CARD DISCOVERY: THE ONE CLIENT VERB THAT IS NOT AN RPC ═══════════════════════════════════════
+
+/// `GET /.well-known/agent-card.json`, ON BOTH HTTP BINDINGS.
+///
+/// A2A defines card discovery as an HTTP resource at a well-known path rather than as an operation,
+/// so it is the ONE client cell whose framing is the same on both HTTP legs — and that sameness is
+/// the claim, not an omission. (The inventory marks the gRPC column `na` for exactly this reason:
+/// gRPC has no well-known-path concept and the proto service block does not declare it.)
+///
+/// Driven through [`crate::a2a::fetch::fetch_card`], which is the production fetch — the one the
+/// re-verification sweep and the `connect`/`approve` verbs both reach through
+/// `transport::LiveCardFetch` — with the SSRF guard and the resolve-then-pin in place. What is
+/// asserted is the request line busbar issued and the address it was pinned to, because "busbar
+/// fetches a card" is a claim about a `GET` at a path, and a fetch that went anywhere else would
+/// satisfy a test that only checked the card came back.
+#[test]
+fn both_http_bindings_discover_the_card_at_the_well_known_path() {
+    use crate::a2a::fetch::{discovery_urls, fetch_card, FetchPolicy, HttpResponse, Resolver};
+    use std::cell::RefCell;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    const PUBLIC: IpAddr = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+
+    struct One;
+    impl Resolver for One {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![PUBLIC])
+        }
+    }
+    #[derive(Default)]
+    struct Seen(RefCell<Vec<(String, IpAddr)>>);
+    impl crate::a2a::fetch::Transport for Seen {
+        fn get(&self, url: &reqwest::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+            self.0.borrow_mut().push((url.to_string(), addr));
+            Ok(HttpResponse {
+                status: 200,
+                location: None,
+                body: br#"{"protocolVersion":"0.3.0","name":"planner","skills":[{"id":"plan"}]}"#
+                    .to_vec(),
+                peer_spki: None,
+                client_identity_offered: false,
+            })
+        }
+    }
+
+    // The two bindings' registrations differ in the card they cache and NOT in their endpoint, so
+    // the discovery URL derived from that endpoint is the same string — which is the property.
+    for binding in [BINDING_JSONRPC, BINDING_HTTP_JSON] {
+        let urls = discovery_urls(BASE).expect("the endpoint is a URL");
+        assert_eq!(
+            urls.first().map(String::as_str),
+            Some("https://backend.agent.test/.well-known/agent-card.json"),
+            "{binding}: the canonical discovery path is tried first"
+        );
+        let seen = Seen::default();
+        let got = fetch_card(&urls[0], &One, &seen, &FetchPolicy::default())
+            .expect("the card must be fetched");
+        assert_eq!(
+            got.addr, PUBLIC,
+            "{binding}: the fetch must be pinned to the address the guard judged"
+        );
+        assert_eq!(
+            seen.0.into_inner(),
+            vec![(
+                "https://backend.agent.test/.well-known/agent-card.json".to_string(),
+                PUBLIC
+            )],
+            "{binding}: busbar must issue exactly one GET, at the well-known path, to the pinned \
+             address"
+        );
+    }
+}

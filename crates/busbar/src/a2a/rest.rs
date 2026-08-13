@@ -77,18 +77,18 @@ const REST_RPC_ID: &str = "a2a-http-json";
 /// these, so a REST request is composed as a v1.0 envelope. That is not a preference: `local::verb_of`
 /// and `ingress::shape_of` both read a method name, both read BOTH dialects, and composing a v0.3
 /// name here would compose an envelope for the version this binding does not belong to.
-mod method {
-    pub(super) const SEND_MESSAGE: &str = "SendMessage";
-    pub(super) const SEND_STREAMING_MESSAGE: &str = "SendStreamingMessage";
-    pub(super) const GET_TASK: &str = "GetTask";
-    pub(super) const LIST_TASKS: &str = "ListTasks";
-    pub(super) const CANCEL_TASK: &str = "CancelTask";
-    pub(super) const SUBSCRIBE_TO_TASK: &str = "SubscribeToTask";
-    pub(super) const CREATE_PUSH_CONFIG: &str = "CreateTaskPushNotificationConfig";
-    pub(super) const GET_PUSH_CONFIG: &str = "GetTaskPushNotificationConfig";
-    pub(super) const LIST_PUSH_CONFIGS: &str = "ListTaskPushNotificationConfigs";
-    pub(super) const DELETE_PUSH_CONFIG: &str = "DeleteTaskPushNotificationConfig";
-    pub(super) const GET_EXTENDED_AGENT_CARD: &str = "GetExtendedAgentCard";
+pub(super) mod method {
+    pub(crate) const SEND_MESSAGE: &str = "SendMessage";
+    pub(crate) const SEND_STREAMING_MESSAGE: &str = "SendStreamingMessage";
+    pub(crate) const GET_TASK: &str = "GetTask";
+    pub(crate) const LIST_TASKS: &str = "ListTasks";
+    pub(crate) const CANCEL_TASK: &str = "CancelTask";
+    pub(crate) const SUBSCRIBE_TO_TASK: &str = "SubscribeToTask";
+    pub(crate) const CREATE_PUSH_CONFIG: &str = "CreateTaskPushNotificationConfig";
+    pub(crate) const GET_PUSH_CONFIG: &str = "GetTaskPushNotificationConfig";
+    pub(crate) const LIST_PUSH_CONFIGS: &str = "ListTaskPushNotificationConfigs";
+    pub(crate) const DELETE_PUSH_CONFIG: &str = "DeleteTaskPushNotificationConfig";
+    pub(crate) const GET_EXTENDED_AGENT_CARD: &str = "GetExtendedAgentCard";
 }
 
 /// THE TWO OPERATIONS `POST /tasks/{id}:<verb>` SPELLS, and the reason they arrive together.
