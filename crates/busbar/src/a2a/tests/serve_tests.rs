@@ -79,17 +79,26 @@ fn every_endpoint_member_is_rewritten_through_busbar() {
     let endpoint = "https://gateway.acme.example/a2a/agents/planner";
 
     assert_eq!(served["url"], endpoint, "the pre-v0.3 top-level `url` too");
+    // EACH SURVIVOR POINTS AT THE ADDRESS ITS OWN BINDING IS ANSWERED ON, which is not one string
+    // any more. The HTTP bindings take busbar's agent endpoint; gRPC takes busbar's AUTHORITY,
+    // because a gRPC channel is opened against `host:port` and a URL is not dialable. Writing the
+    // endpoint into every entry — which is what this loop used to assert — became, the moment the
+    // plane started serving gRPC, exactly the defect the binding filter beside it exists to prevent.
+    let grpc_endpoint = "gateway.acme.example:443";
     for iface in served["supportedInterfaces"]
         .as_array()
         .expect("interfaces")
         .iter()
     {
-        assert_eq!(iface["url"], endpoint);
+        let expected = if iface["protocolBinding"] == "GRPC" {
+            grpc_endpoint
+        } else {
+            endpoint
+        };
+        assert_eq!(iface["url"], expected, "for {iface}");
     }
     // The binding of a SURVIVING entry is untouched: rewriting WHERE a caller goes is not rewriting
-    // WHAT is spoken there. The backend's GRPC entry is not among the survivors — see
-    // `a_binding_busbar_cannot_serve_is_not_published_at_busbars_own_address` — because the address
-    // in a served entry is BUSBAR'S, and busbar answers JSON-RPC there and nothing else.
+    // WHAT is spoken there.
     assert_eq!(
         served["supportedInterfaces"][0]["protocolBinding"],
         "JSONRPC"
@@ -101,13 +110,23 @@ fn a_binding_busbar_cannot_serve_is_not_published_at_busbars_own_address() {
     // THE DEFECT THIS TEST WAS WRITTEN FOR. The rewrite replaced every `supportedInterfaces[].url`
     // with busbar's endpoint and passed `protocolBinding` through untouched, so a backend offering
     // `{"url": ..., "protocolBinding": "GRPC"}` made busbar publish a gRPC interface AT BUSBAR'S OWN
-    // ADDRESS — a protocol busbar does not implement and its router does not answer.
+    // ADDRESS — a protocol busbar did not implement and its router did not answer.
     //
-    // It is reachable rather than theoretical: `supportedInterfaces` is an ORDERED list a client
-    // selects from, so a conformant client picking the gRPC entry is sent to busbar to speak
-    // something nothing there serves. That is the same shape as a card advertising an address its
-    // own router does not serve, one member down: the binding rather than the path.
-    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
+    // IT IS THE SAME TEST, AND THE EXAMPLE HAD TO MOVE. busbar now really does serve gRPC, so `GRPC`
+    // is no longer an unservable binding and asserting it is absent would assert the opposite of
+    // what shipped. The property is unchanged — a served card advertises exactly the bindings this
+    // deployment answers, no more — so it is now driven by a binding the plane does not speak, and
+    // the surviving set is compared against `servable_bindings()` rather than a literal, which is
+    // what makes this a rule instead of a snapshot of today.
+    let mut card = backend_card();
+    card.as_object_mut().expect("object").insert(
+        "supportedInterfaces".to_string(),
+        json!([
+            { "url": format!("{BACKEND}/a2a/jsonrpc"), "protocolBinding": "JSONRPC" },
+            { "url": format!("{BACKEND}/a2a/ws"), "protocolBinding": "WEBSOCKET" }
+        ]),
+    );
+    let served = rewrite_card(&card, BACKEND, PUBLIC, "planner", None).expect("rewrite");
     let bindings: Vec<&str> = served["supportedInterfaces"]
         .as_array()
         .expect("interfaces")
@@ -116,14 +135,37 @@ fn a_binding_busbar_cannot_serve_is_not_published_at_busbars_own_address() {
         .collect();
 
     assert!(
-        !bindings.contains(&"GRPC"),
-        "busbar published a gRPC interface at its own address, which it does not serve: {}",
+        !bindings.contains(&"WEBSOCKET"),
+        "busbar published a binding at its own address which it does not serve: {}",
         serde_json::to_string_pretty(&served).expect("pretty")
     );
+    for binding in &bindings {
+        assert!(
+            servable_bindings()
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(binding)),
+            "`{binding}` survived and busbar serves {:?}",
+            servable_bindings()
+        );
+    }
+}
+
+/// AND THE OTHER HALF, which is the half that arming this binding is FOR: a backend offering gRPC is
+/// now published as gRPC, at busbar's own gRPC address, because busbar really answers there. Nobody
+/// edited a list to make this true — `servable_bindings()` reads `Plane::A2a`'s wire formats, so
+/// adding the binding to the plane is the single act that flipped it.
+#[test]
+fn a_binding_busbar_does_serve_is_published_at_the_address_it_is_served_on() {
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
+    let grpc = served["supportedInterfaces"]
+        .as_array()
+        .expect("interfaces")
+        .iter()
+        .find(|i| i["protocolBinding"] == "GRPC")
+        .expect("the backend offered GRPC and busbar serves it, so it must survive");
     assert_eq!(
-        bindings,
-        vec!["JSONRPC"],
-        "exactly the bindings busbar serves, and no others"
+        grpc["url"], "gateway.acme.example:443",
+        "a gRPC interface must publish an authority a channel can be opened against, never a URL"
     );
 }
 
@@ -171,7 +213,7 @@ fn a_card_offering_nothing_busbar_can_serve_is_refused_rather_than_served_interf
     let obj = card.as_object_mut().expect("object");
     obj.insert(
         "supportedInterfaces".to_string(),
-        json!([{ "url": format!("{BACKEND}/a2a/grpc"), "protocolBinding": "GRPC" }]),
+        json!([{ "url": format!("{BACKEND}/a2a/ws"), "protocolBinding": "WEBSOCKET" }]),
     );
     let err = rewrite_card(&card, BACKEND, PUBLIC, "planner", None)
         .expect_err("nothing servable must refuse");
@@ -182,7 +224,7 @@ fn a_card_offering_nothing_busbar_can_serve_is_refused_rather_than_served_interf
             ref served,
         } => {
             assert_eq!(agent_id, "planner");
-            assert_eq!(offered, &vec!["GRPC".to_string()]);
+            assert_eq!(offered, &vec!["WEBSOCKET".to_string()]);
             assert!(
                 served.iter().any(|b| b.eq_ignore_ascii_case("jsonrpc")),
                 "the refusal must say what busbar DOES serve: {served:?}"
@@ -190,7 +232,7 @@ fn a_card_offering_nothing_busbar_can_serve_is_refused_rather_than_served_interf
         }
         other => panic!("got {other:?}"),
     }
-    assert!(err.to_string().contains("GRPC"), "{err}");
+    assert!(err.to_string().contains("WEBSOCKET"), "{err}");
 }
 
 #[test]

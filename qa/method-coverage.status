@@ -44,7 +44,27 @@
 # implemented
 # ---------------------------------------------------------------------------
 
-# (none yet -- see the paragraph above)
+# A2A over gRPC, busbar answering. Ten of the service's eleven rpcs, each watched green on the
+# publisher's own instrument: `scripts/a2a-subject/boot.sh --tck` against a busbar built from this
+# commit, TCK pinned at 5996b79f9cefa6fc390980e383e358a66fb9e49e. The suite's own per-transport
+# table read `grpc: 0/72 (72 skipped)` before this leg armed and reads `grpc: 62/72 (4 skipped)`
+# after it, and the requirement behind each line below is recorded beside it.
+#
+# GetExtendedAgentCard IS DELIBERATELY ABSENT from this block. It is the eleventh rpc, it is wired
+# like the other ten, and it answers UNIMPLEMENTED -- because busbar does not serve an extended
+# agent card, and CORE-CAP-003 is passable only by an implementation that does not have the verb.
+# The suite records CARD-EXT-001/002 as SKIPPED on every transport, so no instrument has watched
+# that cell do anything for a customer, and a cell here says a customer can.
+a2a|grpc|server|client|SendMessage = implemented                      # CORE-SEND-001/002/003
+a2a|grpc|server|client|SendStreamingMessage = implemented             # STREAM-ORDER-001..004
+a2a|grpc|server|client|GetTask = implemented                          # CORE-GET-001/002
+a2a|grpc|server|client|ListTasks = implemented                        # CORE-LIST-001..005
+a2a|grpc|server|client|CancelTask = implemented                       # CORE-CANCEL-001/002/003
+a2a|grpc|server|client|SubscribeToTask = implemented                  # STREAM-SUB-001..004
+a2a|grpc|server|client|CreateTaskPushNotificationConfig = implemented  # PUSH-CREATE-001/002
+a2a|grpc|server|client|GetTaskPushNotificationConfig = implemented     # PUSH-GET-001/002
+a2a|grpc|server|client|ListTaskPushNotificationConfigs = implemented   # PUSH-LIST-001
+a2a|grpc|server|client|DeleteTaskPushNotificationConfig = implemented  # PUSH-DEL-001/002
 
 # ---------------------------------------------------------------------------
 # waived

@@ -27,6 +27,23 @@ All notable changes to Busbar are documented here. The format is based on
   whose `params._meta` omits its protocol version or its client capabilities answers `400` with
   `-32602` rather than having either inferred for it.
 
+- **Busbar serves A2A over gRPC, and its agent card says so.** The A2A specification defines three
+  bindings of one agent, and Busbar answered only the JSON-RPC one. It now also serves the gRPC
+  binding, at `/lf.a2a.v1.A2AService/*` on the same listener as everything else (cleartext HTTP/2:
+  no second port, no second TLS configuration, no second address to firewall), and the card served
+  at `/.well-known/agent-card.json` advertises `protocolBinding: "GRPC"` beside `"JSONRPC"` so a
+  conformant client can select it. A gRPC interface publishes an AUTHORITY rather than a URL,
+  because that is what a gRPC channel is opened against.
+
+  It is the same endpoint, not a second one. A gRPC call goes through the same audience check, the
+  same per-key authorisation, the same catalogue, the same durable task store, the same budget and
+  the same audit chain as the JSON-RPC call beside it: there is one admission path and one task
+  store, so "what happened" has one answer whichever binding a caller used. The protobuf types and
+  the service definition are the A2A project's own, generated from the `a2a.proto` it publishes.
+
+  Nothing changes for a deployment that does not front agents: without an `agents:` block and a
+  `public_url` there is no A2A plane and no gRPC route.
+
 - **The MCP tool surface answers, in both directions.** `server/discover`, `tools/list`,
   `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`,
   `resources/read` and `completion/complete`

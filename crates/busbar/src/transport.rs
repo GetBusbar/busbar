@@ -27,13 +27,22 @@
 //! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
 //! it a codec's property (it is not — the codec must never learn it).
 //!
-//! ## ONE VARIANT, ON PURPOSE
+//! ## THE SECOND VARIANT, DRIVEN
 //!
-//! This lands the axis with a single variant for what exists today and nothing else. `Stdio` and
-//! `Grpc` are later units and are deliberately absent: an enum with two speculative variants nobody
-//! has driven a request through is a design nobody has tested. If the shape is wrong it is wrong
-//! here, where the cost is one enum and the sites the compiler names — the same "prove the interface
-//! with one subclass" move that landed the parent IR.
+//! The axis landed with a single variant for what existed then and nothing else, on the rule that an
+//! enum with speculative variants nobody has driven a request through is a design nobody has tested.
+//! [`Transport::Grpc`] is the first variant added under that rule, and it is added because a request
+//! now arrives on it: busbar serves the A2A specification's gRPC binding at
+//! `/lf.a2a.v1.A2AService/*`, over the same admission, the same catalogue and the same durable task
+//! store the JSON-RPC binding uses. `Stdio` is still absent for the same reason `Grpc` was: nothing
+//! drives it yet.
+//!
+//! What the second variant BUYS is the thing the one-variant step could only claim. A2A is one
+//! dialect over several channels, and the two channels differ in a way no codec can be asked to
+//! know: an HTTP request body IS the codec's request wire, and a gRPC request body is a
+//! length-prefixed protobuf frame carrying a message whose canonical JSON mapping is that wire. That
+//! difference is FRAMING, it lives here, and the A2A codec below it never learns which channel
+//! spoke.
 //!
 //! ## THE ONE QUESTION THIS STEP DELIBERATELY DOES NOT ANSWER
 //!
@@ -58,6 +67,17 @@ pub(crate) enum Transport {
     /// response may be buffered, SSE-framed or binary event-stream framed; that choice belongs to
     /// the codec and the ingress writer, not here, which is why one variant covers all seven cells.
     Http,
+    /// ONE gRPC call in, one message or one message STREAM out — the A2A specification's third
+    /// binding, served at the path the `.proto`'s own package and service name dictate
+    /// (`/lf.a2a.v1.A2AService/*`) rather than at any path busbar chose.
+    ///
+    /// It is a variant rather than a flavour of [`Transport::Http`] even though it rides HTTP/2,
+    /// because the two differ in exactly the thing this axis exists to name: the FRAMING. On
+    /// `Http` the request body is the codec's request wire; here it is a length-prefixed protobuf
+    /// frame whose message must be transcoded to that wire before any codec sees it, and the reply
+    /// must be transcoded back and terminated with a `grpc-status` trailer rather than an HTTP
+    /// status. Nothing below this line knows that, which is the property being bought.
+    Grpc,
 }
 
 impl Transport {
@@ -67,6 +87,10 @@ impl Transport {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",
+            // The A2A card's `protocolBinding` for this leg is `GRPC` and the plane's wire-format
+            // name is `grpc`; one lower-case spelling, so a per-transport conformance number read
+            // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
+            Transport::Grpc => "grpc",
         }
     }
 

@@ -89,3 +89,42 @@ refuse.
    `is_documentation()`, and `100.64/10` is CGNAT — the guard refuses all of them, correctly.
 
 Until then the release ships with these three RED and says so.
+
+---
+
+## `GRPC-ERR-001` — recorded 2026-08-12, NOT waived
+
+**METHOD.** `scripts/a2a-subject/boot.sh --tck` against a busbar built from this commit, TCK pinned
+at `5996b79f9cefa6fc390980e383e358a66fb9e49e`, on the run that first armed the gRPC binding. MUST
+row from the suite's own stdout:
+
+```
+│ MUST        │     74 │     30 │      10 │   114 │
+```
+
+Per-transport, from the same report: `grpc: 62/72 (4 skipped)`, where it read `grpc: 0/72 (72
+skipped)` before this binding existed. `GRPC-ERR-001` is the ONLY requirement failing on the gRPC
+transport and no other, verbatim:
+
+```
+✗ GRPC-ERR-001 (grpc): gRPC error does not contain google.rpc.ErrorInfo in trailing metadata
+  (grpc-status-details-bin)
+```
+
+**WHAT IT ASKS FOR.** A refused gRPC call must carry a `google.rpc.Status` in the
+`grpc-status-details-bin` trailer, holding a `google.rpc.ErrorInfo` whose `reason` names the A2A
+error. busbar answers the correct `grpc-status` and `grpc-message` for every error in the
+specification's table — `GRPC-ERR-002` and `GRPC-ERR-003` both pass — and carries the same
+`ErrorInfo` on the JSON-RPC binding, in `error.data`. What is missing is only the protobuf-encoded
+copy of it in the trailer.
+
+**WHY IT IS NOT CLOSED IN THIS UNIT.** The trailer's payload is `google.rpc.Status` and
+`google.rpc.ErrorInfo`, and neither is in this tree: the vendored `a2a.proto` brings `google.api`
+and nothing else. Closing it means either a new dependency carrying the canonical Google protos, or
+hand-encoding two protobuf messages beside the service — and hand-writing a wire fact is exactly
+what adopting the publisher's own generated types was meant to end. Which of those to take is a
+dependency decision rather than a coding one.
+
+**WHAT IS NOT DONE ABOUT IT, DELIBERATELY.** The requirement is not marked, skipped or excluded. It
+runs, it fails, it is counted in the MUST row above, and it is the reason that row is not two
+higher.

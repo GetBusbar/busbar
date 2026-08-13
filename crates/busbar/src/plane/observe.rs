@@ -34,10 +34,11 @@
 //! Two questions could have been answered by comparing planes, and both are answered by the spine
 //! instead:
 //!
-//! * *Does this plane emit here, or from inside its own handler?* — [`super::Plane::sole_wire_format`].
-//!   A plane with one dialect can be labelled before the body is read; a plane with several cannot,
-//!   because which dialect spoke is a fact only its reader knows. That is why the LLM plane is not
-//!   observed here: not "it is the LLM plane", but "it speaks six dialects".
+//! * *Which dialect was spoken?* — [`super::PlaneDispatch::wire_format_of`], off the CLAIM the path
+//!   matched. A plane whose bindings each have their own door can be labelled here even when it
+//!   speaks several, because the door declares what is spoken at it. The LLM plane still cannot be:
+//!   not "it is the LLM plane", but "it has no door at all" — it is the residual, it claims no path,
+//!   and it labels its own requests from inside its handler where the dialect it spoke is known.
 //! * *Which plane is this?* — [`super::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
 //!
@@ -72,10 +73,17 @@ pub(crate) async fn observe(
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
     // and a sibling path (`/mcpx` beside a `/mcp` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.
-    let plane = app.planes.mounted_plane_of(req.uri().path());
+    let path = req.uri().path();
+    let plane = app.planes.mounted_plane_of(path);
     // Resolved BEFORE the request is consumed, and both facts together, so the emit below needs no
     // second decision: either this boundary can label the request or it cannot.
-    let labels = plane.and_then(|p| p.sole_wire_format().map(|wire| (p, wire)));
+    //
+    // The dialect comes off the CLAIM, not off the plane. A plane that speaks one dialect answers
+    // the same either way; a plane that speaks several — A2A, since its gRPC binding armed — can
+    // still be labelled here because each of its bindings has its own door and each door declares
+    // what is spoken at it. Asking the plane would answer `None` for exactly those planes and
+    // silently stop counting them.
+    let labels = plane.zip(app.planes.wire_format_of(path));
     let Some((plane, wire)) = labels else {
         return next.run(req).await;
     };

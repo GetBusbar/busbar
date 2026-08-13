@@ -413,6 +413,26 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
 }
 
 impl Wire {
+    /// THE SAME TWO FACTS, AS THE gRPC BINDING SUPPLIES THEM.
+    ///
+    /// [`Wire`]'s fields are private because the extractor is the security property — an extractor
+    /// that can hold only these two owned strings cannot forward a third header by accident. That
+    /// property survives here: this constructor takes the two facts and nothing else, so the gRPC
+    /// binding has no more of the caller's request in its hands than the HTTP one does.
+    ///
+    /// The content type is `None` rather than `application/grpc`, and the distinction is the whole
+    /// point of [`Wire::refuse`]'s first gate: that gate asks "is the body this endpoint is about to
+    /// parse JSON?", and by the time this exists the protobuf frame has already been decoded and
+    /// re-rendered AS JSON by the caller of this function. Declaring the gRPC media type here would
+    /// have the JSON reader refuse a body it can read, in the name of a header that describes a
+    /// framing this value is downstream of.
+    pub(super) fn for_grpc(version: String) -> Self {
+        Wire {
+            content_type: None,
+            version: Some(version),
+        }
+    }
+
     /// THE REFUSAL THIS REQUEST'S HEADERS EARN, or `None` when they earn none.
     ///
     /// `Null` as the JSON-RPC `id` throughout, and that is the specification's instruction rather
@@ -636,7 +656,7 @@ pub(crate) async fn rpc(
 /// same meter, same audit, same relay — which is why the difference is a two-variant value passed
 /// into one function rather than two handlers that happen to look alike. A second copy of the
 /// sequence is a second place for the egress gate or the push-callback guard to go missing.
-enum Target {
+pub(super) enum Target {
     /// `POST /a2a/agents/{id}` — the caller named the agent in the path.
     Named(String),
     /// `POST /a2a` — the plane's own endpoint, the one busbar's Agent Card publishes. The agent is
@@ -646,7 +666,7 @@ enum Target {
 use Target::{FromCatalogue, Named};
 
 /// THE INBOUND CALL, both endpoints, one sequence.
-async fn invoke(
+pub(super) async fn invoke(
     app: Arc<App>,
     gov: crate::governance::GovCtx,
     principal: crate::auth::AuthPrincipal,
@@ -1914,6 +1934,25 @@ pub(crate) fn mount(
             RouteMethod::Post,
             RouteAuth::Key,
             plane_rpc,
+        )
+        // THE gRPC BINDING, mounted the same way and therefore declaring the same bar.
+        //
+        // It is a `CoreRouter::route` and not a `route_service`, and that is the whole answer to
+        // "how does a tonic service satisfy `CoreRouteTable`": it does not enter the tree as a
+        // pre-built router at all. `super::grpc::serve` is an ordinary axum handler that builds the
+        // generated `A2aServiceServer` per request, around this request's already-authenticated
+        // principal — so this line declares `RouteAuth::Key` in the act that wires it, exactly like
+        // the four above it, and there is no router in the tree that the table does not describe.
+        //
+        // The PATH is the `.proto`'s, not busbar's: a gRPC client is handed an authority and derives
+        // the path from the service descriptor, so this binding cannot be served under
+        // `MOUNT_PATH`. `PlaneDispatch` claims it for this plane for the same reason every other
+        // path here is claimed — that is where the RFC 8707 audience check finds its audience.
+        .route(
+            super::grpc::route_path(),
+            RouteMethod::Post,
+            RouteAuth::Key,
+            super::grpc::serve,
         )
 }
 

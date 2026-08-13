@@ -98,6 +98,12 @@ pub(crate) mod observe;
 /// envelope. A literal spelled per site is how those two answers start to differ.
 pub(crate) const WIRE_JSONRPC: &str = "jsonrpc";
 
+/// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
+/// once, by [`crate::a2a::serve::servable_bindings`], into the `GRPC` an agent card advertises — so
+/// the card cannot claim a binding the plane does not list, which is the whole reason that function
+/// reads this list rather than writing one of its own.
+pub(crate) const WIRE_GRPC: &str = "grpc";
+
 /// One governance plane. The variant set is the only thing a new plane adds here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Plane {
@@ -190,8 +196,16 @@ impl Plane {
             Plane::Llm => crate::proto::KNOWN_PROTOCOLS,
             // JSON-RPC 2.0, over any of three transports.
             Plane::Mcp => &[WIRE_JSONRPC],
-            // JSON-RPC 2.0. One wire format today.
-            Plane::A2a => &[WIRE_JSONRPC],
+            // JSON-RPC 2.0 and the specification's gRPC binding — two bindings of ONE agent, which
+            // is how the specification itself models them (`supportedInterfaces[]`, not three
+            // agents). Adding the second entry is what makes a served card advertise `GRPC`, and it
+            // is deliberately the ONLY act that does: `serve::servable_bindings` reads this list, so
+            // a binding cannot be advertised without the plane admitting it speaks it.
+            //
+            // It also mechanically promotes this plane past `has_superset_ir`'s threshold, which is
+            // the design's own rule ("a plane earns a superset IR at its SECOND wire format")
+            // firing by code rather than by memory. Nothing suppresses it.
+            Plane::A2a => &[WIRE_JSONRPC, WIRE_GRPC],
         }
     }
 
@@ -236,12 +250,50 @@ impl Plane {
 /// A non-LLM plane claims a path only when the operator has MOUNTED it. A deployment that never
 /// enabled MCP cannot have a request routed onto the MCP plane by URL shape alone: a plane exists
 /// because it is configured, not because its name appears in a path.
+///
+/// ## WHY A PLANE MAY CLAIM MORE THAN ONE PATH
+///
+/// A plane's paths used to be one `Option<String>` each, which was right while every plane spoke one
+/// binding over one channel. A2A's gRPC binding broke that, and not by preference: a gRPC client
+/// derives the request path from the `.proto`'s package and service name and can be handed nothing
+/// else — `grpc.insecure_channel` takes an AUTHORITY, never a path prefix — so busbar's second A2A
+/// binding is served at `/lf.a2a.v1.A2AService/*` and cannot be served under `/a2a`.
+///
+/// The alternative was to leave that path unclaimed, and it is worth naming what that would have
+/// cost, because it is a security property rather than a tidiness one: [`Self::admission_for`]
+/// resolves the RFC 8707 audience THROUGH this table, so an unclaimed path is a path where no
+/// token's `aud` is checked. The gRPC binding would then have admitted a token minted for any other
+/// resource — the exact confused-deputy hole the mount-side audience exists to close. A plane claims
+/// every path it answers on, or its door is only as strong as its narrowest binding.
+///
+/// The FIRST claim is the plane's CANONICAL mount ([`Self::mount_of`]) — the one an audience is
+/// derived from and the one a handler means when it asks for "its own path".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlaneDispatch {
-    mcp: Option<String>,
-    a2a: Option<String>,
+    mcp: Vec<Claim>,
+    a2a: Vec<Claim>,
     mcp_admission: Option<PlaneAdmission>,
     a2a_admission: Option<PlaneAdmission>,
+}
+
+/// ONE PATH A PLANE ANSWERS ON, and the WIRE FORMAT it is spoken in there.
+///
+/// The wire format is recorded WITH the path rather than derived from the plane, and that is what
+/// keeps the ingress boundary able to label a plane that speaks more than one. [`Plane::wire_formats`]
+/// answers "how many dialects does this plane translate between" — a fact about the plane, and the
+/// threshold [`Plane::has_superset_ir`] reads. It cannot answer "which one is being spoken right
+/// now", because that is a fact about the DOOR the request came through. A plane whose bindings each
+/// have their own door can answer it at the door; one whose bindings share a door cannot, and says so
+/// by declaring the same format on both claims.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Claim {
+    /// The normalised mount path, matched at a segment boundary.
+    path: String,
+    /// The [`Plane::wire_format_names`] entry spoken here. Not a free string: a claim naming a
+    /// format its plane does not list would put a label in the `ingress_protocol` series that no
+    /// plane admits to speaking, which is exactly the kind of coincidence that vocabulary exists to
+    /// prevent. `a_claim_only_names_a_wire_format_its_plane_speaks` holds it.
+    wire: &'static str,
 }
 
 /// What a bearer token presented on a mounted plane must be BOUND to, and where a refused caller is
@@ -311,27 +363,68 @@ impl PlaneDispatch {
     /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
     /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
     /// answers nothing because of a trailing slash.
-    pub(crate) fn mount(mut self, plane: Plane, path: &str) -> Self {
+    ///
+    /// Called more than once for one plane, it ADDS a claim rather than replacing the previous one —
+    /// see the type's note on why a plane may answer on several paths and why leaving one of them
+    /// unclaimed would be an audience hole rather than an inconvenience. The FIRST claim stays
+    /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
+    /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
+    /// sequence cannot grow the table.
+    pub(crate) fn mount(mut self, plane: Plane, path: &str, wire: &'static str) -> Self {
         let normalised = normalise_mount(path);
         if normalised.is_empty() {
             return self;
         }
-        match plane {
-            Plane::Llm => {}
-            Plane::Mcp => self.mcp = Some(normalised),
-            Plane::A2a => self.a2a = Some(normalised),
+        let claims = match plane {
+            Plane::Llm => return self,
+            Plane::Mcp => &mut self.mcp,
+            Plane::A2a => &mut self.a2a,
+        };
+        if !claims.iter().any(|c| c.path == normalised) {
+            claims.push(Claim {
+                path: normalised,
+                wire,
+            });
         }
         self
     }
 
-    /// This plane's mount, or `None` when it is not mounted (always `None` for the residual LLM
-    /// plane). Read by the router to mount the right handler, and by an inbound audience check that
-    /// needs to know its own canonical path.
+    /// This plane's CANONICAL mount, or `None` when it is not mounted (always `None` for the
+    /// residual LLM plane). Read by the router to mount the right handler, and by an inbound
+    /// audience check that needs to know its own canonical path.
+    ///
+    /// The canonical mount is the FIRST claimed, never "the one that matched": a plane's identity —
+    /// the audience a token must be minted for, the base its card publishes — is one string, and
+    /// deriving it from whichever binding a request happened to arrive on would give one deployment
+    /// two audiences and two published endpoints.
     pub(crate) fn mount_of(&self, plane: Plane) -> Option<&str> {
+        self.claims_of(plane).first().map(|c| c.path.as_str())
+    }
+
+    /// THE WIRE FORMAT SPOKEN AT `path`, or `None` when no plane claims it.
+    ///
+    /// This is the `ingress_protocol` label for a request at a plane's door, and it is read off the
+    /// CLAIM rather than off the plane so a plane with several bindings is still labellable. Before
+    /// claims carried a format, the boundary asked the plane and got `None` the moment a second
+    /// dialect landed — which would have silently stopped counting every A2A request on the day the
+    /// gRPC binding armed, and a metric that stops is indistinguishable from traffic that stopped.
+    pub(crate) fn wire_format_of(&self, path: &str) -> Option<&'static str> {
+        Plane::ALL.iter().copied().find_map(|plane| {
+            self.claims_of(plane)
+                .iter()
+                .find(|c| path_is_under(path, &c.path))
+                .map(|c| c.wire)
+        })
+    }
+
+    /// Every path `plane` claims, canonical first. Private: outside this type the distinction that
+    /// matters is "which plane claims this path" ([`Self::mounted_plane_of`]) and "what is this
+    /// plane's own path" ([`Self::mount_of`]), and handing out the list would invite a third reading.
+    fn claims_of(&self, plane: Plane) -> &[Claim] {
         match plane {
-            Plane::Llm => None,
-            Plane::Mcp => self.mcp.as_deref(),
-            Plane::A2a => self.a2a.as_deref(),
+            Plane::Llm => &[],
+            Plane::Mcp => &self.mcp,
+            Plane::A2a => &self.a2a,
         }
     }
 
@@ -390,8 +483,9 @@ impl PlaneDispatch {
     /// would have to remember to join.
     pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<Plane> {
         Plane::ALL.iter().copied().find(|plane| {
-            self.mount_of(*plane)
-                .is_some_and(|mount| path_is_under(path, mount))
+            self.claims_of(*plane)
+                .iter()
+                .any(|claim| path_is_under(path, &claim.path))
         })
     }
 }
