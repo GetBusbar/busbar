@@ -2175,3 +2175,72 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
         "a rolled-back snapshot's gate must match the registry it installed"
     );
 }
+
+/// THE CLOSED-SET CHECK: after EVERY snapshot builder that rewrites `hook_registry`, every field
+/// DERIVED from that registry must equal what a fresh derivation from the installed registry would
+/// produce. This is deliberately written as an INVARIANT over the derived set rather than as a
+/// per-field assertion, because the defect it exists to catch is structural: `requested_signals`
+/// was added to `main.rs`'s `App` construction beside `any_content_hook` and never wired into the
+/// three builders, so a hook registered through `POST /api/v1/admin/hooks` declaring `signals:` got
+/// a `200 OK` and then a candidate payload that silently lacked the signal it declared — the same
+/// FAIL-OPEN shape as a register that leaves the gate chain empty.
+///
+/// WHEN A NEW DERIVED FIELD IS ADDED, EXTEND `assert_hook_derived` BELOW. `service::
+/// rebuild_hook_derived` is now the single place the builders compute the set, so there is exactly
+/// one production site to touch and this test is what fails if it is missed.
+#[test]
+fn hook_derived_fields_follow_the_registry() {
+    // PANIC, never skip: a rig that skips when the cdylib is absent reports green over the code it
+    // was written to cover. Build it (`cargo build -p busbar-hook-test-plugin`) or fail loudly.
+    let env = crate::test_support::test_hook_env(&["test-hook"], Default::default()).expect(
+        "the hook-test plugin cdylib must be built for this test (cargo build -p \
+         busbar-hook-test-plugin); refusing to skip the derived-field invariant",
+    );
+
+    /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
+    /// own registry and compared against what the builder installed.
+    fn assert_hook_derived(app: &crate::state::App, ctx: &str) {
+        assert_eq!(
+            app.any_content_hook,
+            crate::hooks::any_content_hook(&app.hook_registry),
+            "{ctx}: `any_content_hook` disagrees with the registry the snapshot installed"
+        );
+        assert_eq!(
+            app.requested_signals,
+            crate::hooks::requested_signals(&app.hook_registry),
+            "{ctx}: `requested_signals` disagrees with the registry the snapshot installed — a \
+             hook's `signals:` declaration did not take effect on the snapshot that installed it"
+        );
+    }
+
+    let app = TestApp::new().hook_env(env).build();
+    assert_hook_derived(&app, "boot fixture");
+
+    // A hook that exercises BOTH derived scalars at once: a content grant and a signal declaration.
+    let mut declaring = hook(HookKind::Tap, true);
+    declaring.prompt = PromptAccess::Ro;
+    declaring.signals = vec![busbar_api::Signal::CandidateBreakerState];
+
+    let registered = build_with_hook(&app, "declarer", declaring.clone()).expect("registers");
+    assert_hook_derived(&registered, "after build_with_hook (POST/PUT /hooks)");
+    assert!(
+        registered
+            .requested_signals
+            .wants(busbar_api::Signal::CandidateBreakerState),
+        "registering a hook that declares `candidate.breaker_state` must open the compute gate for \
+         the very next request"
+    );
+
+    let deleted = build_without_hook(&registered, "declarer").expect("deletes");
+    assert_hook_derived(&deleted, "after build_without_hook (DELETE /hooks/{name})");
+    assert!(
+        deleted.requested_signals.is_empty(),
+        "deleting the last declaring hook must close the compute gate again"
+    );
+
+    let mut registry = HashMap::new();
+    registry.insert("declarer".to_string(), declaring);
+    let rolled_back =
+        build_with_registry(&app, registry, vec!["declarer".to_string()]).expect("rolls back");
+    assert_hook_derived(&rolled_back, "after build_with_registry (config rollback)");
+}

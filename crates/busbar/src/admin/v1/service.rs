@@ -531,9 +531,6 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     next.config_version = current.config_version.wrapping_add(1);
     let is_global = cfg.global;
     next.hook_registry.insert(name.to_string(), cfg);
-    // The IR compute gate follows the registry it is derived from: a newly registered `prompt: ro`
-    // hook must be able to see content on the very next request.
-    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     if is_global {
         if !next.global_hooks.iter().any(|n| n == name) {
             next.global_hooks.push(name.to_string());
@@ -553,48 +550,9 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
         return Err(AdminError::Validation(e));
     }
-    // Re-resolve the FIRED transports from the new registry so a global hook is live after the swap.
-    next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    next.tap_hooks = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Request,
-    );
-    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Candidate,
-    );
-    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Routing,
-    );
-    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Response,
-    );
-    next.global_gates = crate::hooks::resolve_gate_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    reresolve_plane_gates(&mut next);
+    // Re-resolve every registry-derived field (transports, plane gates, and the two compute gates)
+    // from the new registry so a global hook — and anything it declared — is live after the swap.
+    rebuild_hook_derived(&mut next);
     Ok(next)
 }
 
@@ -611,49 +569,8 @@ pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, Admin
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry.remove(name);
-    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     next.global_hooks.retain(|n| n != name);
-    next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    next.tap_hooks = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Request,
-    );
-    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Candidate,
-    );
-    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Routing,
-    );
-    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Response,
-    );
-    next.global_gates = crate::hooks::resolve_gate_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    reresolve_plane_gates(&mut next);
+    rebuild_hook_derived(&mut next);
     Ok(next)
 }
 
@@ -831,7 +748,6 @@ pub(crate) fn build_with_registry(
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
-    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
     next.global_hooks = global_hooks;
     // FAIL-CLOSED (open-time variant): OPEN every referenced decision/rewrite gate before
     // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being
@@ -839,47 +755,7 @@ pub(crate) fn build_with_registry(
     if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
         return Err(AdminError::Validation(e));
     }
-    next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    next.tap_hooks = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Request,
-    );
-    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Candidate,
-    );
-    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Routing,
-    );
-    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        crate::config::HookStage::Response,
-    );
-    next.global_gates = crate::hooks::resolve_gate_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    reresolve_plane_gates(&mut next);
+    rebuild_hook_derived(&mut next);
     Ok(next)
 }
 
@@ -2468,6 +2344,76 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
 /// OK` to registering a gate that never fires, or keep firing one the operator just deleted. That is
 /// the same fail-open the three `resolve_*` calls above exist to close on the pool plane, and the
 /// registrations themselves are untouched here: only the attach's RESOLUTION is recomputed.
+/// REBUILD EVERY `App` FIELD DERIVED FROM `hook_registry` — the ONE place that knows what those
+/// fields are.
+///
+/// Called by every snapshot builder that rewrites the registry (`build_with_hook`,
+/// `build_without_hook`, `build_with_registry`) as the last step, AFTER the builder has settled
+/// `hook_registry` + `global_hooks` and run its own `preopen_gate_hooks` fail-closed check.
+///
+/// WHY IT IS ONE FUNCTION RATHER THAN THREE COPIES. The three builders previously each re-resolved
+/// the derived set BY HAND, and every new derived field had to be remembered at three call sites —
+/// a structure that had already grown one omission (`requested_signals`, added beside
+/// `any_content_hook` in `main.rs` and never wired into the builders, so a hook registered through
+/// the API declaring `signals:` was handed candidate payloads that silently lacked them until the
+/// next restart). That is the same FAIL-OPEN shape as a register answering `200 OK` while the gate
+/// chain stays empty. With the set named once, adding a derived field to `main.rs`'s `App`
+/// construction has exactly one other place to touch, and `hook_derived_fields_follow_the_registry`
+/// asserts the two agree.
+fn rebuild_hook_derived(next: &mut crate::state::App) {
+    // ── the config-generation SCALARS derived from the registry ──
+    // The IR compute gate follows the registry it is derived from: a newly registered `prompt: ro`
+    // hook must be able to see content on the very next request.
+    next.any_content_hook = crate::hooks::any_content_hook(&next.hook_registry);
+    // The declared-signal bitmask follows it for the identical reason, and `HookCfg::signals`'s own
+    // contract states it outright: declaring a signal is "necessary AND sufficient for it to start
+    // being computed + projected; nothing else is required". A runtime register IS a config apply.
+    next.requested_signals = crate::hooks::requested_signals(&next.hook_registry);
+
+    // ── the RESOLVED transports the request path fires ──
+    next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+    );
+    next.tap_hooks = crate::hooks::resolve_tap_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+        crate::config::HookStage::Request,
+    );
+    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+        crate::config::HookStage::Candidate,
+    );
+    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+        crate::config::HookStage::Routing,
+    );
+    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+        crate::config::HookStage::Response,
+    );
+    next.global_gates = crate::hooks::resolve_gate_hooks(
+        &next.hook_registry,
+        &next.global_hooks,
+        &next.hook_env,
+        next.config_version,
+    );
+    reresolve_plane_gates(next);
+}
+
 fn reresolve_plane_gates(next: &mut crate::state::App) {
     let servers = std::sync::Arc::clone(&next.mcp_servers);
     next.mcp_server_gates = crate::hooks::resolve_container_gates(

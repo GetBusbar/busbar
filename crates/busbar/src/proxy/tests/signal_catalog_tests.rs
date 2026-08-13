@@ -75,6 +75,13 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
         builder = builder.hook("declarer", declaring_hook(signals));
     }
     let app = builder.build();
+    run_decide(&app).await
+}
+
+/// Run `decide_policy_order` once against an ALREADY-BUILT one-lane app, returning the
+/// per-candidate signal bags the policy observed. Split out of [`run_with_declared`] so a test can
+/// hand in a snapshot produced by the ADMIN builders rather than by the `TestApp` fixture.
+async fn run_decide(app: &std::sync::Arc<crate::state::App>) -> Vec<busbar_api::SignalBag> {
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
         policy: std::sync::Arc::new(CapturingCandidatesPolicy { seen: seen.clone() }),
@@ -94,7 +101,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
     let rc = RequestCtx::new(60, 1);
     let v = serde_json::json!({"model": "m0", "messages": [{"role": "user", "content": "hi"}]});
     let _out = decide_policy_order(
-        &app,
+        app,
         &resolved,
         &cands,
         &rc,
@@ -126,6 +133,71 @@ async fn declared_signal_is_computed_and_projected() {
     }
     // Only the declared signal is present — CandidateErrorRate was never asked for.
     assert!(bags[0].get(Signal::CandidateErrorRate).is_none());
+}
+
+/// A hook registered THROUGH THE ADMIN API (`POST /api/v1/admin/hooks`'s pure core,
+/// `service::build_with_hook`) must have its `signals:` declaration take effect on the very next
+/// request — exactly as a hook declared in `config.yaml` does. `HookCfg::signals`'s own contract
+/// says declaring a signal is "necessary AND sufficient for it to start being computed +
+/// projected; nothing else is required", and the runtime-register path is a config apply like any
+/// other.
+///
+/// Without the recompute this is a FAIL-OPEN of the same shape as the `reresolve_plane_gates` and
+/// `tools.hooks:` defects: the operator gets `200 OK`, the hook fires, and every candidate payload
+/// it is handed silently lacks the signal it declared — until the process restarts and `main.rs`
+/// rebuilds the mask from the persisted overlay.
+#[tokio::test]
+async fn admin_registered_hook_signals_take_effect_on_the_next_request() {
+    // PANIC, never skip: a rig that skips when the cdylib is missing reports green over the exact
+    // code it was written to cover. `cargo build -p busbar-hook-test-plugin` (or a `--workspace`
+    // build) is a precondition of this test, not an option.
+    let env = crate::test_support::test_hook_env(&["test-hook"], Default::default()).expect(
+        "the hook-test plugin cdylib must be built for this test (cargo build -p \
+         busbar-hook-test-plugin); refusing to skip the admin-register signal coverage",
+    );
+    let app = TestApp::new()
+        .hook_env(env)
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://localhost",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    // Nothing declared at boot: the baseline the operator is about to change.
+    assert!(
+        run_decide(&app).await[0]
+            .get(Signal::CandidateBreakerState)
+            .is_none(),
+        "no hook declared a signal at boot; the bag must start empty"
+    );
+
+    let registered = crate::admin::v1::service::build_with_hook(
+        &app,
+        "declarer",
+        declaring_hook(vec![Signal::CandidateBreakerState]),
+    )
+    .expect("registering a signal-declaring hook must succeed");
+
+    let bags = run_decide(&std::sync::Arc::new(registered.clone())).await;
+    match bags[0].get(Signal::CandidateBreakerState) {
+        Some(SignalValue::Str(s)) => assert_eq!(s.as_ref(), "closed"),
+        other => panic!(
+            "a hook registered through the admin API declared \
+             `signals: [candidate.breaker_state]`, so the very next request's candidate bag must \
+             carry it; got {other:?}. `App::requested_signals` was not recomputed from the \
+             rewritten `hook_registry`."
+        ),
+    }
+
+    // ...and the mask closes again when the last declaring hook is deleted, so the engine stops
+    // computing a signal nobody asked for.
+    let deleted = crate::admin::v1::service::build_without_hook(&registered, "declarer")
+        .expect("deleting the hook must succeed");
+    assert!(
+        deleted.requested_signals.is_empty(),
+        "deleting the last signal-declaring hook must close the compute gate again"
+    );
 }
 
 /// An UNDECLARED signal is absent from the projected bag (never computed) — the exact "declared
