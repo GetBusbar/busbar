@@ -34,7 +34,8 @@
 //! reason: a redirect is a destination that was never pinned, arriving at the moment the upstream
 //! credential is already on the wire.
 
-use super::ssrf::{PinnedTarget, SsrfPolicy, SsrfRefusal};
+use super::ssrf::{SsrfPolicy, SsrfRefusal};
+use crate::net_guard::PinnedTarget;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
@@ -97,8 +98,11 @@ impl McpConnectionPool {
         policy: SsrfPolicy,
         timeout: Duration,
     ) -> Result<(reqwest::Client, PinnedTarget), SsrfRefusal> {
-        let target = super::ssrf::resolve_and_pin(url, policy).await?;
-        let key = (target.host().to_string(), target.addr());
+        let target = super::ssrf::pin_upstream(url, policy).await?;
+        // THE KEY CONTAINS THE PINNED ADDRESS. Keying by host alone would let a pooled client
+        // re-resolve on its next new connection — the TOCTOU the pin closes, reintroduced by the
+        // cache in front of it. `socket_addr()` is the pinned address, never a fresh lookup.
+        let key = (target.host().to_string(), target.socket_addr());
         if let Ok(map) = self.clients.lock() {
             if let Some(c) = map.get(&key) {
                 return Ok((c.clone(), target));
@@ -130,9 +134,9 @@ fn build_pinned_client(
     timeout: Duration,
 ) -> Result<reqwest::Client, SsrfRefusal> {
     reqwest::Client::builder()
-        .resolve_to_addrs(target.host(), &[target.addr()])
+        .resolve_to_addrs(target.host(), &[target.socket_addr()])
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(super::ssrf::DISPATCH_CONNECT_TIMEOUT)
         .timeout(timeout)
         .tcp_nodelay(true)
         .pool_idle_timeout(Duration::from_secs(90))

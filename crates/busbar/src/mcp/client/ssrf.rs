@@ -4,7 +4,23 @@
 //! DISPATCH-TIME SSRF: an upstream MCP URL is attacker-influenced, so it is validated per request,
 //! resolved, and then CONNECTED TO THE ADDRESS THAT WAS VALIDATED.
 //!
-//! ## Why the existing guard is not enough, stated precisely
+//! ## THE GUARD IS NOT HERE. This module is its dispatch-time CALLER and its VOCABULARY.
+//!
+//! Resolve-then-pin, the address judgement, the redirect refusal and the strict URL recogniser all
+//! live in [`crate::net_guard`], because they were written twice — once here and once for the A2A
+//! card fetch — and a security control with two implementations is a security control with one
+//! copy that gets hardened and one that does not. That is not hypothetical: this module once kept
+//! its own composite address predicate built from imported atoms, and the composite unwrapped IPv6
+//! with `to_ipv4_mapped()` where the shared one uses `to_ipv4()`, so `[::169.254.169.254]` — the
+//! IPv4-COMPATIBLE spelling of the AWS metadata endpoint — matched no v6 mask, unwrapped to
+//! nothing, and was connected to.
+//!
+//! What stays here is what is genuinely THIS caller's: its knobs, and its WORDING. An operator
+//! diagnosing a refusal needs to read "MCP upstream URL", not "a fetch was refused", and the remedy
+//! sentence names `allow_private` on a SERVER registration. [`SsrfRefusal`] is therefore a
+//! rendering of [`crate::net_guard::GuardRefusal`] rather than a second decision about it.
+//!
+//! ## Why the existing startup guards are not enough, stated precisely
 //!
 //! `config_validate`'s provider-base-URL guard vets ONE operator-supplied string ONCE at startup,
 //! and `observability.rs` says in its own comment that DNS rebinding is out of scope for a
@@ -14,23 +30,17 @@
 //! description, and both are re-resolved on every dispatch. Rebinding and TOCTOU are THE threat
 //! rather than an edge case.
 //!
-//! So one piece is reused — the private/link-local/CGNAT/metadata predicate set — and the rest is
-//! new:
+//! ## What this caller sets, and what it refuses to make settable
 //!
 //! - **Scheme allowlist.** `https` always; `http` only where the operator has opted a server into
 //!   private addressing. Everything else — `file:`, `gopher:`, `smb:`, `ftp:`, `data:` — is refused
 //!   by absence rather than by a blocklist, because a blocklist of schemes is a list somebody has to
 //!   keep up with.
-//! - **EVERY resolved address is checked, not the first.** A rebinding resolver answers with a
-//!   public address and a loopback address in one reply and lets the connect pick. Checking the
-//!   first is checking whichever one the resolver put first.
-//! - **RESOLVE-THEN-PIN.** The address that passed the check is the address the connection is made
-//!   to ([`PinnedTarget`]), so a second resolution between check and connect cannot change the
-//!   destination. This is the part a hostname string compare cannot do, and it is why endpoint
-//!   authenticity is established by RESOLVING and pinning rather than by comparing strings.
-//! - **No redirects, ever.** A 3xx is a URL the operator never validated, chosen by the upstream, at
-//!   the moment a credential is already on the wire. The client is built `Policy::none()` and a 3xx
-//!   is surfaced as a refusal rather than followed.
+//! - **No redirects, ever.** [`SsrfPolicy`] lowers to `max_redirects: 0`. A 3xx is a URL the
+//!   operator never validated, chosen by the upstream, at the moment a credential is already on the
+//!   wire.
+//! - **Cloud metadata, whatever `allow_private` says.** The knob relaxes the private/loopback arms
+//!   and nothing else; the metadata arm is decided before the knob is read, in core.
 //!
 //! ## What this module is NOT
 //!
@@ -38,7 +48,7 @@
 //! targets sub-100µs, while dispatch is milliseconds-class and does DNS. This runs on dispatch, and
 //! the separation is what lets it do a blocking-class lookup without breaking the selection number.
 
-use crate::net_guard::is_alternate_ipv4_encoding;
+use crate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
 use std::net::{IpAddr, SocketAddr};
 
 /// The operator's addressing posture for ONE upstream. Per server rather than global, because the
@@ -55,8 +65,37 @@ pub(crate) struct SsrfPolicy {
     pub(crate) allow_private: bool,
 }
 
+impl SsrfPolicy {
+    /// LOWER THIS CALLER'S ONE KNOB INTO THE SHARED POLICY.
+    ///
+    /// The three fields this path does not expose are set here rather than defaulted, because each
+    /// is a decision and a default would hide it. `allow_plaintext: false` — plaintext follows
+    /// `allow_private` on this path and has no separate opt-in, so a public `http://` upstream is
+    /// refused whatever else is set. `max_redirects: 0` — a 3xx is never followed on a dispatch
+    /// that already sent a credential. The body ceiling is `crate::proxy`'s streaming cap, applied
+    /// by the transport as it reads rather than by a length check afterwards, so the value here is
+    /// the same number and not a second opinion about it.
+    pub(crate) fn guard(self) -> GuardPolicy {
+        GuardPolicy {
+            allow_private: self.allow_private,
+            allow_plaintext: false,
+            max_redirects: 0,
+            max_body_bytes: crate::proxy::max_upstream_buffered_bytes(),
+            timeout: DISPATCH_CONNECT_TIMEOUT,
+        }
+    }
+}
+
+/// How long ONE dispatch hop may spend getting a connection up. The overall request ceiling is the
+/// caller's (it varies per tool call); this is the connect-side floor the pool builds every pinned
+/// client with, held beside the policy so the two travel together.
+pub(crate) const DISPATCH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Why a dispatch target was refused. Every arm names the address or scheme, because an SSRF refusal
 /// an operator cannot diagnose is an SSRF refusal an operator disables.
+///
+/// This is the MCP dispatch path's RENDERING of [`GuardRefusal`], not a second judgement: every
+/// value is constructed by the `From` below and by nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsrfRefusal {
     /// The URL had no `http`/`https` scheme, or none at all.
@@ -68,6 +107,13 @@ pub(crate) enum SsrfRefusal {
     /// The host is an alternate IPv4 encoding (`0x7f000001`, `2130706433`, `127.1`) that the OS
     /// resolver expands but a canonical IP-literal check misses.
     ObfuscatedHost(String),
+    /// The host IS a cloud-metadata name. Refused before any lookup and whatever `allow_private`
+    /// says — the name is the destination, and resolving it first would only add a way to be told
+    /// something else.
+    MetadataHostName(String),
+    /// The host is in the `localhost` family RFC 6761 reserves to loopback, and the server is not
+    /// opted into private addressing.
+    LoopbackHostName(String),
     /// DNS resolution failed or returned nothing.
     Unresolvable { host: String, reason: String },
     /// A resolved address is internal (loopback / private / link-local / CGNAT / unique-local) and
@@ -77,6 +123,49 @@ pub(crate) enum SsrfRefusal {
     CloudMetadata { host: String, addr: IpAddr },
     /// The upstream answered a redirect. Never followed — see the module header.
     Redirect { status: u16, location: String },
+    /// A SHARED BOUND THIS PATH DOES NOT SET: the redirect-chain limit and the body ceiling belong
+    /// to a fetch that FOLLOWS redirects and reads a whole document, and dispatch does neither —
+    /// it refuses the first 3xx outright and streams its body under `crate::proxy`'s cap.
+    ///
+    /// Carried rather than flattened into one of the arms above so that if the guard ever hands
+    /// this path a bound it does not set, an operator reads the actual reason instead of a nearby
+    /// one. Rendering the shared refusal verbatim is the honest answer to "this should not happen".
+    Bound(GuardRefusal),
+}
+
+impl From<GuardRefusal> for SsrfRefusal {
+    fn from(g: GuardRefusal) -> Self {
+        match g {
+            GuardRefusal::Scheme { url, .. } => SsrfRefusal::Scheme(url),
+            GuardRefusal::Plaintext { url, .. } => SsrfRefusal::PlaintextToPublicHost(url),
+            GuardRefusal::NoHost(url) => SsrfRefusal::NoHost(url),
+            GuardRefusal::ObfuscatedHost(host) => SsrfRefusal::ObfuscatedHost(host),
+            GuardRefusal::MetadataName(host) => SsrfRefusal::MetadataHostName(host),
+            GuardRefusal::LoopbackName(host) => SsrfRefusal::LoopbackHostName(host),
+            GuardRefusal::Unresolvable { host, reason } => {
+                SsrfRefusal::Unresolvable { host, reason }
+            }
+            // An empty answer and a failed lookup are different FACTS in core and are kept apart
+            // there; this path has always reported them with one sentence, and the sentence is the
+            // part an operator has in a runbook.
+            GuardRefusal::NoAddresses(host) => SsrfRefusal::Unresolvable {
+                host,
+                reason: "resolver returned no addresses".to_string(),
+            },
+            GuardRefusal::InternalAddress { host, addr } => {
+                SsrfRefusal::InternalAddress { host, addr }
+            }
+            GuardRefusal::CloudMetadataAddress { host, addr } => {
+                SsrfRefusal::CloudMetadata { host, addr }
+            }
+            GuardRefusal::Redirect { status, location } => {
+                SsrfRefusal::Redirect { status, location }
+            }
+            other @ (GuardRefusal::TooManyRedirects { .. } | GuardRefusal::BodyTooLarge { .. }) => {
+                SsrfRefusal::Bound(other)
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for SsrfRefusal {
@@ -97,6 +186,15 @@ impl std::fmt::Display for SsrfRefusal {
                 "MCP upstream host `{h}` is an alternate IPv4 encoding the resolver expands; write \
                  the address in dotted-quad form so it can be checked"
             ),
+            SsrfRefusal::MetadataHostName(h) => write!(
+                f,
+                "MCP upstream host `{h}` is a cloud-metadata name; that is refused unconditionally"
+            ),
+            SsrfRefusal::LoopbackHostName(h) => write!(
+                f,
+                "MCP upstream host `{h}` is a loopback name; set this server's `allow_private` if \
+                 that is deliberate"
+            ),
             SsrfRefusal::Unresolvable { host, reason } => {
                 write!(f, "MCP upstream host `{host}` did not resolve: {reason}")
             }
@@ -115,217 +213,63 @@ impl std::fmt::Display for SsrfRefusal {
                 "MCP upstream answered {status} redirecting to `{location}`; redirects are never \
                  followed because the target was never validated and the credential is already sent"
             ),
+            SsrfRefusal::Bound(g) => write!(f, "MCP upstream fetch refused: {g}"),
         }
-    }
-}
-
-/// A destination that has PASSED the check, carrying the exact address the connection must be made
-/// to.
-///
-/// The point of the type is that it cannot be constructed except by [`resolve_and_pin`], so a
-/// dispatch path cannot connect to something that was never checked — the check is not a call
-/// somebody remembers to make, it is the only way to get the value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PinnedTarget {
-    host: String,
-    port: u16,
-    addr: SocketAddr,
-    https: bool,
-}
-
-impl PinnedTarget {
-    /// The hostname, preserved for the `Host` header and TLS SNI. Connecting to a pinned IP while
-    /// presenting the original name is the whole trick: the certificate is still validated against
-    /// the name the operator registered.
-    pub(crate) fn host(&self) -> &str {
-        &self.host
-    }
-
-    // Reached only by the connect/refresh path, which has no verb yet.
-    #[allow(dead_code)]
-    pub(crate) fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// THE ADDRESS TO CONNECT TO. Not re-resolved.
-    pub(crate) fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
-    // Reached only by the connect/refresh path, which has no verb yet.
-    #[allow(dead_code)]
-    pub(crate) fn is_https(&self) -> bool {
-        self.https
-    }
-}
-
-// THE TWO ADDRESS PREDICATES LIVE IN `crate::net_guard`, NOT HERE.
-//
-// This module used to keep its own composite built from three imported atoms, and it drifted from
-// the shared one in three ways at once. It unwrapped IPv6 with `to_ipv4_mapped()` where the shared
-// predicate uses `to_ipv4()`, so `[::169.254.169.254]` — the IPv4-COMPATIBLE spelling of the AWS
-// metadata endpoint — matched no v6 range, unwrapped to nothing, and was connected to.
-// Unconditionally: the metadata arm is meant to refuse before `allow_private` is ever consulted.
-// It also missed Azure WireServer and OCI IMDS entirely, because those sit on ordinary-looking
-// addresses that no range predicate catches, while its own comment claimed to cover them.
-//
-// `net_guard.rs` predicted this in writing before it happened: "a contributor hardening one guard
-// against a new range would silently miss the others." Importing atoms and re-deriving the
-// composite is the same defect as copying the composite. Call the shared predicates.
-
-/// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
-///
-/// Hand-written for the same reason `crate::mcp::split_absolute` is: what is wanted is a STRICT
-/// recogniser. A permissive parser's job is to find a reading that works, and "find a reading that
-/// works" is the opposite of what a security check wants from an attacker-influenced string.
-fn split_url(url: &str) -> Result<(bool, String, u16, String), SsrfRefusal> {
-    let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("http://") {
-        (false, r)
-    } else {
-        return Err(SsrfRefusal::Scheme(url.to_string()));
-    };
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    // Userinfo is refused rather than stripped. `https://evil.test@good.example/` reads as
-    // `good.example` to a parser and as `evil.test` to a human skimming a config diff, and a value
-    // whose two readings differ has no place on a dispatch path.
-    if authority.contains('@') {
-        return Err(SsrfRefusal::NoHost(url.to_string()));
-    }
-    if authority.is_empty() {
-        return Err(SsrfRefusal::NoHost(url.to_string()));
-    }
-    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
-        // Bracketed IPv6 literal.
-        let (h, tail) = inner
-            .split_once(']')
-            .ok_or_else(|| SsrfRefusal::NoHost(url.to_string()))?;
-        let port = match tail.strip_prefix(':') {
-            Some(p) => p
-                .parse::<u16>()
-                .map_err(|_| SsrfRefusal::NoHost(url.to_string()))?,
-            None => default_port(https),
-        };
-        (h.to_string(), port)
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse::<u16>()
-                    .map_err(|_| SsrfRefusal::NoHost(url.to_string()))?,
-            ),
-            None => (authority.to_string(), default_port(https)),
-        }
-    };
-    if host.is_empty() {
-        return Err(SsrfRefusal::NoHost(url.to_string()));
-    }
-    Ok((https, host, port, path.to_string()))
-}
-
-fn default_port(https: bool) -> u16 {
-    if https {
-        443
-    } else {
-        80
     }
 }
 
 /// THE CHECK, minus the I/O: everything decidable from the URL string alone.
 ///
-/// Split out from [`resolve_and_pin`] so the string-shaped refusals are testable without a resolver,
+/// Split out from [`pin_upstream`] so the string-shaped refusals are testable without a resolver,
 /// and so a caller that already resolved (the pool, on a cache hit) re-runs the cheap half.
+///
+/// The ORDER is core's and is the same one the card fetch gets: recognise, then the scheme, then the
+/// structural name refusals with the metadata arm ahead of the knob.
 pub(crate) fn precheck(
     url: &str,
     policy: SsrfPolicy,
 ) -> Result<(bool, String, u16, String), SsrfRefusal> {
-    let (https, host, port, path) = split_url(url)?;
-    if is_alternate_ipv4_encoding(&host) {
-        return Err(SsrfRefusal::ObfuscatedHost(host));
-    }
-    if !https && !policy.allow_private {
-        return Err(SsrfRefusal::PlaintextToPublicHost(url.to_string()));
-    }
+    let guard = policy.guard();
+    let (https, host, port, path) = net_guard::split_url(url)?;
+    net_guard::judge_scheme(url, https, guard)?;
+    net_guard::judge_host_name(&host, guard)?;
     Ok((https, host, port, path))
 }
 
-/// RESOLVE-THEN-PIN. Resolves `url`'s host, refuses if ANY resolved address is inadmissible, and
-/// returns the address the caller must connect to.
+/// RESOLVE-THEN-PIN for one dispatch. Resolves `url`'s host, refuses if ANY resolved address is
+/// inadmissible, and returns the address the caller must connect to.
 ///
 /// Async because it does DNS, and a dispatch path — after selection, before the outbound
-/// `tools/call` — is the one place a per-request DNS lookup belongs.
-pub(crate) async fn resolve_and_pin(
+/// `tools/call` — is the one place a per-request DNS lookup belongs. The judgement and the pin are
+/// [`crate::net_guard`]'s; what is here is the URL this path starts from and the wording it reports
+/// in.
+pub(crate) async fn pin_upstream(
     url: &str,
     policy: SsrfPolicy,
 ) -> Result<PinnedTarget, SsrfRefusal> {
     let (https, host, port, _path) = precheck(url, policy)?;
-    let addrs = lookup(&host, port).await?;
-    check_addresses(&host, &addrs, policy)?;
-    // The FIRST admissible address is pinned. All of them passed, so "first" is a choice between
-    // equals rather than a filter, and taking the first preserves the resolver's own ordering
-    // (which is where happy-eyeballs and geo-DNS preferences live).
-    let addr = *addrs.first().ok_or_else(|| SsrfRefusal::Unresolvable {
-        host: host.clone(),
-        reason: "resolver returned no addresses".to_string(),
-    })?;
-    Ok(PinnedTarget {
-        host,
-        port,
-        addr,
-        https,
-    })
+    Ok(net_guard::resolve_and_pin_async(&host, port, https, policy.guard()).await?)
 }
 
-async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, SsrfRefusal> {
-    // A bare IP literal needs no resolver, and going through one would let a resolver answer a
-    // question that has only one answer.
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| SsrfRefusal::Unresolvable {
-            host: host.to_string(),
-            reason: e.to_string(),
-        })?
-        .collect();
-    if addrs.is_empty() {
-        return Err(SsrfRefusal::Unresolvable {
-            host: host.to_string(),
-            reason: "resolver returned no addresses".to_string(),
-        });
-    }
-    Ok(addrs)
-}
-
-/// Refuse if ANY address in `addrs` is inadmissible. Separated from the resolution so the rebinding
-/// case — a resolver answering with one good address and one bad one — is testable without a
-/// resolver that will do that on demand.
+/// Refuse if ANY address in `addrs` is inadmissible.
+///
+/// Kept as this path's door onto [`net_guard::judge_addresses`] because dispatch carries
+/// `SocketAddr`s (it has a port to connect to) while the judgement is about the ADDRESS. The
+/// ordering that makes `allow_private` safe — metadata before the knob — is core's and is not
+/// restated here.
+// NO PRODUCTION CALLER: the pin path judges through `crate::net_guard` directly, which is the whole
+// point of the unification. This stays because the MCP refusal SUITE drives every range, every
+// metadata endpoint and the mixed-answer case through it, and what those tests prove that core's own
+// suite cannot is that THIS PLANE still renders them in THIS PLANE's words. Deleting it would trade
+// a wording regression for a dead-code warning.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn check_addresses(
     host: &str,
     addrs: &[SocketAddr],
     policy: SsrfPolicy,
 ) -> Result<(), SsrfRefusal> {
-    for sa in addrs {
-        let ip = sa.ip();
-        if crate::net_guard::ip_is_cloud_metadata(&ip) {
-            return Err(SsrfRefusal::CloudMetadata {
-                host: host.to_string(),
-                addr: ip,
-            });
-        }
-        if crate::net_guard::ip_is_internal(&ip) && !policy.allow_private {
-            return Err(SsrfRefusal::InternalAddress {
-                host: host.to_string(),
-                addr: ip,
-            });
-        }
-    }
-    Ok(())
+    let ips: Vec<IpAddr> = addrs.iter().map(|sa| sa.ip()).collect();
+    Ok(net_guard::judge_addresses(host, &ips, policy.guard())?)
 }
 
 /// Turn a response status into a refusal when it is a redirect.
@@ -335,13 +279,7 @@ pub(crate) fn check_addresses(
 /// stops a 3xx being handed to a JSON-RPC parser that would report "invalid response" and hide the
 /// fact that an upstream tried to move the call somewhere else.
 pub(crate) fn refuse_redirect(status: u16, location: Option<&str>) -> Result<(), SsrfRefusal> {
-    if (300..400).contains(&status) {
-        return Err(SsrfRefusal::Redirect {
-            status,
-            location: location.unwrap_or("<absent>").to_string(),
-        });
-    }
-    Ok(())
+    Ok(net_guard::refuse_redirect(status, location)?)
 }
 
 #[cfg(test)]

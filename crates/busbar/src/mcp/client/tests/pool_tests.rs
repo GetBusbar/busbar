@@ -92,7 +92,10 @@ async fn the_pool_key_is_the_pinned_address_and_not_just_the_host() {
         b.host(),
         "the host must be identical for this to prove anything"
     );
-    assert_ne!(a.addr(), b.addr());
+    // `socket_addr()` IS the second half of the pool key. Asserting on it rather than on the bare
+    // IP is the point of this test: two upstreams on one host and two ports must not share a
+    // pinned client, and a key that forgot the port would.
+    assert_ne!(a.socket_addr(), b.socket_addr());
     assert_eq!(pool.len(), 2, "two pinned addresses must be two entries");
 }
 
@@ -130,7 +133,8 @@ async fn the_returned_target_is_the_one_that_passed_the_check() {
         )
         .await
         .unwrap();
-    assert_eq!(target.addr().to_string(), "127.0.0.1:9");
+    assert_eq!(target.socket_addr().to_string(), "127.0.0.1:9");
+    assert_eq!(target.addr().to_string(), "127.0.0.1");
     assert_eq!(target.host(), "127.0.0.1");
 }
 

@@ -1363,9 +1363,6 @@ PLANE_CONCERNS=(
 )
 
 PLANE_LEDGER="
-resolve_and_pin|DEBT|guarded-fetch|mcp/client/ssrf.rs and a2a/fetch.rs each resolve-and-pin their own way; net_guard is the shared home
-PinnedTarget|DEBT|guarded-fetch|two pinned-target types for one DNS-rebinding defence
-split_url|DEBT|guarded-fetch|two hand-rolled URL splitters (mcp/client/ssrf.rs, a2a/pushnotify.rs) that must agree with the HTTP client and with each other
 authorise_egress|DEBT|outbound-credentials|one egress gate per plane; the grant kinds differ, the gate does not
 EgressDenied|DEBT|outbound-credentials|two refusal enums for one refusal
 rpc|DEBT|ingress|mcp/ingress.rs and a2a/ingress.rs each mount their own JSON-RPC entry point
