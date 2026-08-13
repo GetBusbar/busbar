@@ -39,8 +39,8 @@
 # have, so every cell began MISSING, the full list is pinned in qa/method-coverage.missing, and
 # THAT LIST IS THE WORK QUEUE FOR THE REST OF 1.6.0. A cell is claimed here when its leg has been
 # watched green on an instrument -- read the output, not the tick. The first cells to leave the
-# queue are the A2A plane's HTTP+JSON server side, below, and each one names the requirement the
-# publisher's own suite passed on the `[http_json]` parameterisation.
+# queue are the A2A plane's HTTP+JSON and gRPC server sides, below, and each one names the
+# requirement the publisher's own suite passed on that leg's parameterisation.
 
 # ---------------------------------------------------------------------------
 # implemented
@@ -69,6 +69,7 @@
 # be one here: CORE-CAP-003 only runs when the capability is ABSENT, and CARD-EXT-002 skips itself
 # the moment the card is configured, so a busbar that answers this perfectly and one that answers
 # it with garbage produce identical TCK output.
+a2a|jsonrpc|server|client|GetExtendedAgentCard = implemented
 
 # PushNotificationDelivery, busbar as SERVER, over HTTP+JSON -- the outbound POST to a caller's
 # webhook. (The JSON-RPC and gRPC columns are N/A with a reason: there is no delivery rpc.)
@@ -92,6 +93,53 @@
 # owed to every customer whose webhook is https, and NOT on those three going green. Conformance
 # being unobservable here is not permission to leave the capability unbuilt, and it is not
 # permission to claim the three either.
+a2a|http+json|server|server|PushNotificationDelivery = implemented
+
+# ── AND THE ROWS THIS FILE LOST IN A MERGE, RESTORED. ────────────────────────────────────────────
+#
+# The three blocks above and the one below arrived on two branches. The merge that brought them
+# together kept every PROSE block and dropped twelve of the ROWS they were written about, so
+# `pinned_missing_set_is_exact` read twelve cells as having regressed into MISSING while their
+# evidence sat right here. The rows are restored verbatim from the commit that earned them
+# (`c63c966a`, `bba2709a`); nothing new is claimed.
+
+# A2A's HTTP+JSON BINDING, SERVER SIDE. busbar receives these over `POST /a2a/message:send`,
+# `POST /a2a/message:stream`, `GET /a2a/tasks`, `GET /a2a/tasks/{id}`, `POST /a2a/tasks/{id}:cancel`,
+# `POST /a2a/tasks/{id}:subscribe` and the `pushNotificationConfigs` collection, and the card busbar
+# serves advertises the `HTTP+JSON` interface beside `JSONRPC`.
+#
+# THE INSTRUMENT IS THE PUBLISHER'S OWN SUITE, watched, not inferred. `scripts/a2a-subject/boot.sh
+# --tck` boots a busbar built from this commit and runs a2aproject/a2a-tck at its pinned ref against
+# it; the `http_json` transport row went from `3/83 (80 skipped)` to `84/96 (6 skipped)` and every
+# one of these operations has a named requirement passing on the `[http_json]` parameterisation:
+#
+#   SendMessage / SendStreamingMessage  CORE-HIST-001..004, CORE-STREAM-001..003
+#   GetTask                             CORE-HIST-002, CORE-HIST-004
+#   ListTasks                           CORE-LIST-001..005
+#   CancelTask                          CORE-CANCEL-001..003
+#   SubscribeToTask                     STREAM-SUB-002..004, STREAM-ORDER-001..004
+#   Create/Get/List/DeleteTaskPushNotificationConfig
+#                                       PUSH-CREATE-001/002, PUSH-GET-001/002, PUSH-LIST-001,
+#                                       PUSH-DEL-001/002
+#
+# WHAT IS DELIBERATELY NOT CLAIMED HERE, though its route exists:
+#   * `GetExtendedAgentCard` -- not claimed HERE, and the reason moved: this unit armed the routes,
+#     and the verb behind them landed separately. The JSON-RPC cell above is the one an instrument
+#     watched; the HTTP+JSON cell stays in the queue until one watches it there.
+#   * `PushNotificationDelivery` -- PUSH-DELIVER-001/002/003 still FAIL on BOTH bindings, for the
+#     documented SSRF reason. Arming a second binding does not change a security decision.
+#   * every `client` role cell -- busbar speaks JSON-RPC to the backends it fronts. This unit armed
+#     the SERVER side of the binding and nothing else.
+a2a|http+json|server|client|CancelTask = implemented
+a2a|http+json|server|client|CreateTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|DeleteTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|GetTask = implemented
+a2a|http+json|server|client|GetTaskPushNotificationConfig = implemented
+a2a|http+json|server|client|ListTaskPushNotificationConfigs = implemented
+a2a|http+json|server|client|ListTasks = implemented
+a2a|http+json|server|client|SendMessage = implemented
+a2a|http+json|server|client|SendStreamingMessage = implemented
+a2a|http+json|server|client|SubscribeToTask = implemented
 
 # tools/call, busbar as CLIENT, over streamable-HTTP -- the outbound call to a registered upstream.
 # `obligation: issue`: busbar originates this one, so the evidence has to be what busbar PUT ON THE
@@ -126,11 +174,19 @@
 # `CLI.CACHE.TOLERATES-ABSENT-HINTS` fails, by name, because it needs the client to have called
 # `tools/list` and busbar did not call it inside any window this rig can drive: busbar's outbound
 # `tools/list` lives on the trust-refresh path (`mcp/connect.rs`), fired by a scheduled tick or an
-# operator verb, not by the front-door dispatch the driver triggers. The client-side `tools/list`
-# cell therefore stays MISSING and stays in the work queue. It was NOT moved to a waiver to make a
-# number go green, and the rig was NOT taught to poke the admin refresh verb to manufacture the
-# request -- a driver arranged to produce the observation the test wants is not an observation.
-mcp|streamable-http|client|client|tools/call = implemented
+# operator verb, not by the front-door dispatch the driver triggers. THIS instrument therefore says
+# nothing about the client-side `tools/list` cell. It was NOT moved to a waiver to make a number go
+# green, and the rig was NOT taught to poke the admin refresh verb to manufacture the request -- a
+# driver arranged to produce the observation the test wants is not an observation. That cell is
+# claimed further down, on the instrument that DOES drive the trust-refresh path
+# (`connect_tests.rs`, `drift_dispatch_tests.rs`), and the two statements are consistent: one rig
+# cannot see it, another one can.
+#
+# THE CELL ITSELF IS CLAIMED ONCE, in the client-role block below, beside `tools/list`. A second
+# claim here is what `pinned_missing_set_is_exact` calls "claimed twice", and it was one: two
+# branches recorded the same cell on two instruments and both rows survived the merge that brought
+# them together. The evidence above is kept, because it is real and it is about this cell; only the
+# duplicate ROW is gone.
 
 # AND ONE THING THAT LANDED WITHOUT CLAIMING A CELL, RECORDED SO THAT ITS ABSENCE HERE IS NOT READ
 # AS AN OVERSIGHT. `resources/subscribe`, `resources/unsubscribe`,
@@ -325,6 +381,35 @@ mcp|streamable-http|client|client|tools/list = implemented
 # internal identifier. Instrument: the official suite's `tools-call-with-progress`, REQUIRED at this
 # revision, which drives an upstream that reports progress and reads what reached the caller.
 mcp|streamable-http|client|server|notifications/progress = implemented
+
+# ── A2A, busbar as SERVER, over gRPC ────────────────────────────────────────────────────────────
+#
+# A2A over gRPC, busbar answering. Ten of the service's eleven rpcs, each watched green on the
+# publisher's own instrument: `scripts/a2a-subject/boot.sh --tck` against a busbar built from this
+# commit, TCK pinned at 5996b79f9cefa6fc390980e383e358a66fb9e49e. The suite's own per-transport
+# table read `grpc: 0/72 (72 skipped)` before this leg armed and reads `grpc: 62/72 (4 skipped)`
+# after it, and the requirement behind each line below is recorded beside it.
+#
+# GetExtendedAgentCard IS DELIBERATELY ABSENT from this block, and the reason CHANGED IN THE MERGE
+# rather than survived it. On the branch that armed this binding the eleventh rpc answered
+# UNIMPLEMENTED, because busbar served no extended agent card at all. It serves one now -- the
+# JSON-RPC cell above is this release's, landed on the other branch -- and this rpc is wired to the
+# same single ingress as the other ten, so the merged tree really does answer it here.
+#
+# It stays MISSING because NO INSTRUMENT HAS WATCHED IT DO SO. The gRPC leg was scored before the
+# extended card existed, and the suite records CARD-EXT-001/002 as SKIPPED on every transport, so
+# there is no run to read. That is exactly the bar the header sets: a cell is claimed when its leg
+# has been watched green, not when the code that should make it green is in the tree.
+a2a|grpc|server|client|SendMessage = implemented                      # CORE-SEND-001/002/003
+a2a|grpc|server|client|SendStreamingMessage = implemented             # STREAM-ORDER-001..004
+a2a|grpc|server|client|GetTask = implemented                          # CORE-GET-001/002
+a2a|grpc|server|client|ListTasks = implemented                        # CORE-LIST-001..005
+a2a|grpc|server|client|CancelTask = implemented                       # CORE-CANCEL-001/002/003
+a2a|grpc|server|client|SubscribeToTask = implemented                  # STREAM-SUB-001..004
+a2a|grpc|server|client|CreateTaskPushNotificationConfig = implemented  # PUSH-CREATE-001/002
+a2a|grpc|server|client|GetTaskPushNotificationConfig = implemented     # PUSH-GET-001/002
+a2a|grpc|server|client|ListTaskPushNotificationConfigs = implemented   # PUSH-LIST-001
+a2a|grpc|server|client|DeleteTaskPushNotificationConfig = implemented  # PUSH-DEL-001/002
 
 # ---------------------------------------------------------------------------
 # waived

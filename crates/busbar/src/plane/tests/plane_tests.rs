@@ -93,17 +93,21 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 /// representation.
 ///
 /// **A2A EARNED ONE WHEN ITS SECOND BINDING ARMED, and this line moving is the rule working rather
-/// than a test being relaxed.** The threshold was written down before the binding existed, derived
-/// from a list rather than from a `matches!`, precisely so that the promotion would fire MECHANICALLY
-/// on the day the list grew and nobody would have to remember it was owed. HTTP+JSON is that day.
-/// The promotion is not suppressed: it is what `Plane::A2a => &[WIRE_JSONRPC, WIRE_HTTP_JSON]` means.
+/// than a test being relaxed.** The threshold was written down before either extra binding existed,
+/// derived from a list rather than from a `matches!`, precisely so that the promotion would fire
+/// MECHANICALLY on the day the list grew and nobody would have to remember it was owed. HTTP+JSON
+/// was that day and gRPC followed it; `a2a-mcp-on-official-sdks.md` §4 says to expect exactly this
+/// and not to suppress it. Nothing suppresses it: the promotion is what
+/// `Plane::A2a => &[WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC]` means.
 #[test]
 fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
     assert!(Plane::Llm.has_superset_ir());
     assert!(!Plane::Mcp.has_superset_ir());
     assert!(
         Plane::A2a.has_superset_ir(),
-        "A2A serves two bindings of one agent, which is the threshold, stated once and derived"
+        "A2A serves {:?} — bindings of ONE agent, and two of them is the threshold, stated once \
+         and derived",
+        Plane::A2a.wire_format_names()
     );
 }
 
@@ -161,7 +165,7 @@ fn with_nothing_mounted_every_path_is_the_llm_plane() {
 /// sub-paths. This is the one place a prefix match is correct, unlike an auth bypass.
 #[test]
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
-    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp", WIRE_JSONRPC);
     assert_eq!(plane_of(&d, "/mcp"), Plane::Mcp);
     assert_eq!(plane_of(&d, "/mcp/"), Plane::Mcp);
     assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Mcp);
@@ -172,7 +176,7 @@ fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
 /// admin `/api` check already guards and the same class the core route-auth table refuses.
 #[test]
 fn a_prefix_sibling_is_not_the_plane() {
-    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp", WIRE_JSONRPC);
     for path in ["/mcpx", "/mcpx/tools", "/mc", "/xmcp", "/v1/mcp"] {
         assert_eq!(plane_of(&d, path), Plane::Llm, "{path} must not be MCP");
     }
@@ -182,8 +186,8 @@ fn a_prefix_sibling_is_not_the_plane() {
 #[test]
 fn two_mounted_planes_do_not_claim_each_other() {
     let d = PlaneDispatch::default()
-        .mount(Plane::Mcp, "/mcp")
-        .mount(Plane::A2a, "/a2a");
+        .mount(Plane::Mcp, "/mcp", WIRE_JSONRPC)
+        .mount(Plane::A2a, "/a2a", WIRE_JSONRPC);
     assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Mcp);
     assert_eq!(plane_of(&d, "/a2a/tasks/send"), Plane::A2a);
     assert_eq!(plane_of(&d, "/v1/messages"), Plane::Llm);
@@ -194,7 +198,7 @@ fn two_mounted_planes_do_not_claim_each_other() {
 /// not when its name appears in a URL.
 #[test]
 fn an_unmounted_plane_claims_nothing() {
-    let d = PlaneDispatch::default().mount(Plane::A2a, "/a2a");
+    let d = PlaneDispatch::default().mount(Plane::A2a, "/a2a", WIRE_JSONRPC);
     assert_eq!(plane_of(&d, "/mcp"), Plane::Llm);
     assert_eq!(plane_of(&d, "/mcp/tools/list"), Plane::Llm);
 }
@@ -204,7 +208,7 @@ fn an_unmounted_plane_claims_nothing() {
 #[test]
 fn a_mount_is_normalised_before_it_is_matched() {
     for spelling in ["/mcp", "/mcp/", "mcp", "mcp/"] {
-        let d = PlaneDispatch::default().mount(Plane::Mcp, spelling);
+        let d = PlaneDispatch::default().mount(Plane::Mcp, spelling, WIRE_JSONRPC);
         assert_eq!(plane_of(&d, "/mcp"), Plane::Mcp, "spelling {spelling}");
         assert_eq!(
             plane_of(&d, "/mcp/tools/list"),
@@ -219,7 +223,7 @@ fn a_mount_is_normalised_before_it_is_matched() {
 /// two ways to reach the same plane and a precedence question with no good answer.
 #[test]
 fn the_llm_plane_cannot_be_mounted() {
-    let d = PlaneDispatch::default().mount(Plane::Llm, "/llm");
+    let d = PlaneDispatch::default().mount(Plane::Llm, "/llm", WIRE_JSONRPC);
     assert_eq!(
         plane_of(&d, "/llm"),
         Plane::Llm,
@@ -232,16 +236,21 @@ fn the_llm_plane_cannot_be_mounted() {
 /// lets an inbound-audience check know its own canonical path.
 #[test]
 fn a_mount_is_readable_back() {
-    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp", WIRE_JSONRPC);
     assert_eq!(d.mount_of(Plane::Mcp), Some("/mcp"));
     assert_eq!(d.mount_of(Plane::A2a), None);
 }
 
-/// THE BOUNDARY RULE, stated over every plane rather than over the two that happen to satisfy it
-/// today: a plane can be labelled at its door exactly when it speaks ONE wire format, and the two
-/// halves of that sentence come from one list.
+/// `sole_wire_format` ANSWERS EXACTLY WHEN THERE IS ONE ANSWER, stated over every plane rather than
+/// over the two that happen to satisfy it today, with both halves of the sentence read off one list.
+///
+/// It used to be THE boundary rule — "a plane can be labelled at its door exactly when it speaks one
+/// wire format" — and it is no longer, because a plane whose bindings each have their own door can
+/// be labelled at that door whatever the plane speaks in total. What is left is still worth pinning:
+/// this function must never guess when a plane has several dialects, or the guess becomes a metric
+/// label asserting which dialect spoke on evidence nobody had.
 #[test]
-fn a_plane_is_labellable_at_its_door_exactly_when_it_speaks_one_wire_format() {
+fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     for p in Plane::ALL {
         assert_eq!(
             p.sole_wire_format().is_some(),
@@ -260,29 +269,92 @@ fn a_plane_is_labellable_at_its_door_exactly_when_it_speaks_one_wire_format() {
             "{p:?} claims no wire format at all, which is not a plane"
         );
     }
-    // The consequence, spelled out because it is the reason `observe` needs no plane comparison:
-    // the residual is the plane that cannot be labelled at a door, and it is also the only plane
-    // that has no door.
+    // The residual is the plane with no door at all, so it is the one plane no claim can label —
+    // which is why `observe` needs no plane comparison to skip it.
     assert_eq!(Plane::Llm.sole_wire_format(), None);
     assert_eq!(Plane::Mcp.sole_wire_format(), Some("jsonrpc"));
-    // AND A2A IS NOW THE SECOND PLANE THAT CANNOT BE LABELLED AT ITS DOOR. It has a door, and it
-    // speaks two bindings through it, so `plane::observe` passes its traffic through unlabelled and
-    // `a2a::ingress::invoke` emits the label itself with the leg the request actually arrived on.
-    // That is the rule above doing what it was written for, not a plane losing its metrics.
+    // AND A2A IS NOW THE SECOND PLANE THAT CANNOT BE LABELLED FROM THE PLANE ALONE. It speaks
+    // three bindings, so "which dialect DID speak" is not a fact about the plane — it is a fact
+    // about the DOOR, and each claimed path records it. See
+    // `a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on` for the two doors,
+    // and `a2a::ingress::invoke` for the two bindings that share one and label themselves.
     assert_eq!(Plane::A2a.sole_wire_format(), None);
 }
 
-/// EVERY MOUNTABLE PLANE'S DOOR SPEAKS JSON-RPC 2.0. `ingress::native` refuses on a mounted plane
-/// with a JSON-RPC error object without asking WHICH plane, and this is the fact that makes that
-/// correct. Pinned rather than assumed: the day a plane's door speaks something else, this test
-/// fails and the shaping seam is told to grow an arm, instead of quietly answering that plane's
-/// client in a dialect it does not speak — which is the whole failure this unit exists to close.
+/// THE LABEL COMES OFF THE DOOR, WHICH IS WHY A SECOND BINDING DOES NOT SILENCE A PLANE.
 ///
-/// IT ASKS `shaping_wire_format`, NOT `sole_wire_format`, and the difference is the point. A2A now
-/// speaks two bindings, so "which dialect DID speak" has no answer at the door — but an error body
-/// still has to be some shape, and the shape is the plane's FIRST binding. The two questions were
-/// answered by one function until the second binding armed, and reading the labelling question here
-/// would have made every mounted refusal fall through to OpenAI's envelope.
+/// `Plane::sole_wire_format` answers `None` for a plane with several dialects, correctly: WHICH
+/// dialect spoke is not a fact about the plane. It is a fact about the path, and each claimed path
+/// records it — so `observe` still labels every A2A request, and labels the gRPC ones `grpc`.
+///
+/// Without this the promotion above would have silently stopped the `busbar_requests_total` series
+/// for the whole A2A plane on the commit that armed gRPC, and a metric that stops looks exactly like
+/// traffic that stopped.
+///
+/// The `/a2a` door is claimed for `jsonrpc` and answers HTTP+JSON at the same address, which no
+/// claim can distinguish — those two are labelled by `a2a::ingress::invoke` itself, which then marks
+/// the response `plane::observe::Counted` so this boundary does not count them twice.
+#[test]
+fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
+    let d = PlaneDispatch::default()
+        .mount(Plane::A2a, "/a2a", WIRE_JSONRPC)
+        .mount(Plane::A2a, "/lf.a2a.v1.A2AService", WIRE_GRPC);
+    assert_eq!(d.mounted_plane_of("/a2a/agents/x"), Some(Plane::A2a));
+    assert_eq!(d.wire_format_of("/a2a/agents/x"), Some(WIRE_JSONRPC));
+    assert_eq!(
+        d.mounted_plane_of("/lf.a2a.v1.A2AService/SendMessage"),
+        Some(Plane::A2a)
+    );
+    assert_eq!(
+        d.wire_format_of("/lf.a2a.v1.A2AService/SendMessage"),
+        Some(WIRE_GRPC)
+    );
+    // The canonical mount is the FIRST claimed and does not move when a second binding arms: it is
+    // the audience a token must be minted for and the base the card publishes, and a deployment
+    // with two of those has two identities.
+    assert_eq!(d.mount_of(Plane::A2a), Some("/a2a"));
+    // An unclaimed path is nobody's, in both answers.
+    assert_eq!(d.wire_format_of("/v1/chat/completions"), None);
+}
+
+/// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING. The `ingress_protocol` vocabulary
+/// is `Plane::wire_format_names`, and a claim naming something outside it would put a label in that
+/// series no plane accounts for — the same "two planes agreeing by coincidence" failure the shared
+/// vocabulary exists to prevent, from the other direction.
+#[test]
+fn a_claim_only_names_a_wire_format_its_plane_speaks() {
+    for (plane, path, wire) in [
+        (Plane::Mcp, "/mcp", WIRE_JSONRPC),
+        (Plane::A2a, crate::a2a::serve::MOUNT_PATH, WIRE_JSONRPC),
+        (Plane::A2a, crate::a2a::serve::GRPC_MOUNT_PATH, WIRE_GRPC),
+    ] {
+        assert!(
+            plane.wire_format_names().contains(&wire),
+            "{plane:?} is mounted at {path} speaking `{wire}`, which it does not declare: {:?}",
+            plane.wire_format_names()
+        );
+    }
+}
+
+/// EVERY MOUNTABLE PLANE'S DOOR SHAPES ITS REFUSALS AS JSON-RPC 2.0. `ingress::native` refuses on a
+/// mounted plane with a JSON-RPC error object without asking WHICH plane, and this is the fact that
+/// makes that correct. Pinned rather than assumed: the day a plane's canonical binding is something
+/// else, this test fails and the shaping seam is told to grow an arm, instead of quietly answering
+/// that plane's client in a dialect it does not speak.
+///
+/// IT ASKS `shaping_wire_format`, NOT `sole_wire_format`, and the difference is the point. A2A
+/// speaks three bindings, so "which dialect DID speak" has no answer for the plane — but an error
+/// body still has to be some shape, and the shape is the plane's FIRST binding. The two questions
+/// were answered by one function until the second binding armed, and reading the labelling question
+/// here would have made every mounted refusal fall through to OpenAI's envelope.
+///
+/// CANONICAL, not sole, and the weakening is named rather than slipped in. A2A also speaks gRPC, and
+/// an HTTP-layer refusal on that leg — a `401` from the auth middleware, a `413` from the body limit
+/// — does carry a JSON-RPC body a gRPC client will not read. That is not a mis-shaping busbar has to
+/// fix, and fabricating a `grpc-status` there would be worse than leaving it out: the gRPC
+/// specification defines its own HTTP-status-to-gRPC-status mapping for exactly a response that
+/// carries no `grpc-status`, and a client applies it. A wrong trailer would defeat that mapping; an
+/// absent one is what it is written for.
 #[test]
 fn every_mounted_planes_door_dialect_is_jsonrpc() {
     for p in Plane::ALL.iter().copied().filter(|p| *p != Plane::Llm) {
@@ -291,6 +363,13 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
             Some(WIRE_JSONRPC),
             "{p:?} is mountable but its door does not speak JSON-RPC — `ingress::native`'s mounted \
              arm would mis-shape its refusals"
+        );
+        // The same answer read the other way, so the two cannot drift: the canonical binding IS the
+        // first entry of the plane's list, which is what `shaping_wire_format` returns.
+        assert_eq!(
+            p.wire_format_names().first(),
+            Some(&WIRE_JSONRPC),
+            "{p:?} is mountable and its canonical binding is not JSON-RPC"
         );
         assert_eq!(
             crate::ingress::native::envelope_dialect(Ingress::Mounted(p)),
@@ -307,7 +386,7 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
 /// residual; `/mcp` names none and is nevertheless claimed, because the operator mounted it.
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
-    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp", WIRE_JSONRPC);
     assert_eq!(d.ingress_of("/mcp"), Ingress::Mounted(Plane::Mcp));
     assert_eq!(
         d.ingress_of("/mcp/tools/list"),
@@ -343,7 +422,7 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
 /// and an error envelope from disagreeing about the same request.
 #[test]
 fn a_resolved_ingress_names_its_own_wire_format() {
-    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp");
+    let d = PlaneDispatch::default().mount(Plane::Mcp, "/mcp", WIRE_JSONRPC);
     assert_eq!(d.ingress_of("/mcp").wire_format(), Some(WIRE_JSONRPC));
     assert_eq!(
         d.ingress_of("/v1/messages").wire_format(),
@@ -354,7 +433,7 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     // A mount at a path that ALSO names an LLM dialect by shape: the mount wins, both for the
     // envelope and for the label. An operator who mounts a plane over an LLM surface has said which
     // one it is.
-    let over = PlaneDispatch::default().mount(Plane::Mcp, "/v1/messages");
+    let over = PlaneDispatch::default().mount(Plane::Mcp, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
         over.ingress_of("/v1/messages").wire_format(),
         Some(WIRE_JSONRPC)
@@ -366,8 +445,8 @@ fn a_resolved_ingress_names_its_own_wire_format() {
 #[test]
 fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     let d = PlaneDispatch::default()
-        .mount(Plane::Mcp, "/mcp")
-        .mount(Plane::A2a, "/a2a");
+        .mount(Plane::Mcp, "/mcp", WIRE_JSONRPC)
+        .mount(Plane::A2a, "/a2a", WIRE_JSONRPC);
     for path in [
         "/mcp",
         "/mcp/x",

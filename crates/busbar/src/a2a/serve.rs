@@ -213,6 +213,12 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// address down, and it re-entered the moment the plane armed its second binding. See
 /// `a_binding_the_plane_serves_only_at_its_own_mount_is_not_published_at_an_agents_address`.
 ///
+/// THE gRPC BINDING IS OUT FOR THE SAME REASON AND NOT A WEAKER ONE. busbar really does serve it,
+/// so it is on the PLANE'S list — but it is served at `/lf.a2a.v1.A2AService` for the plane, where
+/// the agent is resolved from the caller's catalogue. There is no spelling of a gRPC address that
+/// means "this one fronted agent", so publishing it on an agent's card would name an endpoint that
+/// answers a different question from the one the card was fetched to answer.
+///
 /// IT IS DERIVED FROM THE HANDLER, not spelled: the transport `ingress::rpc` labels its requests
 /// with is the binding it reads, so this answers that transport's name and cannot drift from what
 /// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
@@ -249,10 +255,20 @@ pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String,
     absolute(public_url, &format!("{MOUNT_PATH}/agents/{agent_id}"))
 }
 
-/// THE PLANE'S MOUNT, the one path prefix the A2A plane claims. Every route this plane serves is
-/// under it, and [`crate::plane::PlaneDispatch`] matches on it at a segment boundary, so `/a2ax` is
-/// somebody else's path.
+/// THE PLANE'S MOUNT, the path prefix the A2A plane's HTTP bindings are served under. Every route
+/// this plane serves over HTTP is under it, and [`crate::plane::PlaneDispatch`] matches on it at a
+/// segment boundary, so `/a2ax` is somebody else's path.
 pub(crate) const MOUNT_PATH: &str = "/a2a";
+
+/// THE PATH PREFIX THE gRPC BINDING IS SERVED AT, and busbar did not choose it.
+///
+/// gRPC derives a request path from the `.proto`'s package and service name — `lf.a2a.v1` and
+/// `A2AService` in the a2aproject's own canonical `a2a.proto`, vendored by `a2a-pb` — and a client
+/// is given an AUTHORITY, never a path prefix, so there is no spelling of this that could live under
+/// [`MOUNT_PATH`]. Written as a constant beside the mount it is not under, because "the A2A plane
+/// answers here too" is a fact the mount table has to be told
+/// ([`crate::plane::PlaneDispatch::mount`]) or this binding's tokens go unchecked for audience.
+pub(crate) const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
 /// plane's mount appended, exactly as the sibling plane composes its own.
@@ -268,6 +284,49 @@ pub(crate) const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/a2
 /// audience would open.
 pub(crate) fn canonical_uri(public_url: &str) -> Result<String, ServeError> {
     absolute(public_url, MOUNT_PATH)
+}
+
+/// THE ADDRESS A gRPC CLIENT IS GIVEN for this deployment — the AUTHORITY of `public_url`, and
+/// deliberately not a URL.
+///
+/// A2A models its bindings as interfaces of one agent, each with a `url`, and it is tempting to give
+/// the gRPC interface the same `<public_url>/a2a` the JSON-RPC one carries. That string is not
+/// addressable by any gRPC client: a channel is opened against `host:port` and the RPC path comes
+/// from the service descriptor, so a scheme and a path are at best ignored and at worst a name
+/// resolution failure. The specification's own gRPC binding says the interface url is the endpoint's
+/// authority for exactly this reason.
+///
+/// So the card publishes the authority, and the two facts a caller needs — WHERE to dial and WHAT
+/// to dial for — stay derived from the same `public_url` the JSON-RPC interface and the RFC 8707
+/// audience are derived from. One reading, three bindings.
+pub(crate) fn grpc_endpoint(public_url: &str) -> Result<String, ServeError> {
+    let u = reqwest::Url::parse(public_url)
+        .map_err(|_| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
+    let host = u
+        .host_str()
+        .ok_or_else(|| ServeError::BadPublicUrl(public_url.trim().to_string()))?;
+    match u.port_or_known_default() {
+        Some(port) => Ok(format!("{host}:{port}")),
+        None => Ok(host.to_string()),
+    }
+}
+
+/// THE URL A SERVED CARD PUBLISHES FOR ONE BINDING, which is not the same string for all three.
+///
+/// `http_endpoint` is the busbar address the HTTP bindings answer at — the plane's own endpoint on
+/// busbar's card, a fronted agent's endpoint on a fronted agent's card — and every binding but gRPC
+/// takes it verbatim. gRPC takes [`grpc_endpoint`]; see there for why a URL is not addressable.
+///
+/// It exists as one function because both cards go through it. The first version of the fronted-agent
+/// rewrite wrote the HTTP endpoint into EVERY surviving interface, which was right while `GRPC` was
+/// a binding busbar filtered OUT — and became, the moment the plane started serving gRPC, the very
+/// defect that filter was written to prevent: `{"url": "https://busbar/a2a/agents/x",
+/// "protocolBinding": "GRPC"}`, a gRPC interface at an address no gRPC client can dial.
+fn binding_url(binding: &str, public_url: &str, http_endpoint: &str) -> Result<String, ServeError> {
+    if binding.eq_ignore_ascii_case(crate::plane::WIRE_GRPC) {
+        return grpc_endpoint(public_url);
+    }
+    Ok(http_endpoint.to_string())
 }
 
 /// The absolute URL of this plane's metadata document, as quoted into a `WWW-Authenticate`
@@ -331,7 +390,10 @@ pub(crate) fn rewrite_card(
     // AND THE BINDING IS FILTERED, NOT CARRIED. Once the url is busbar's, the entry's
     // `protocolBinding` is a claim about what BUSBAR speaks at that address. Passing the backend's
     // through published `{"url": "<busbar>/a2a/agents/x", "protocolBinding": "GRPC"}` — a gRPC
-    // interface at an address busbar does not serve gRPC on, and does not implement at all.
+    // interface at an address busbar does not serve gRPC on. busbar now serves gRPC, and this is
+    // STILL that defect: the gRPC binding answers at `/lf.a2a.v1.A2AService` for the plane, not for
+    // one fronted agent, so an agent's card advertising it would send a caller somewhere that
+    // resolves an agent from the catalogue instead of the one whose card it just read.
     // `supportedInterfaces` is an ORDERED list a client selects from, so that is not a cosmetic
     // surplus: a conformant client picking it is directed at busbar for a protocol nothing there
     // answers.
@@ -364,10 +426,25 @@ pub(crate) fn rewrite_card(
                 served: agent_address_bindings(),
             });
         }
+        // AND EACH SURVIVOR IS POINTED AT THE ADDRESS ITS OWN BINDING IS ANSWERED ON. An entry
+        // naming no binding reads as JSON-RPC by the specification's default, which is what the
+        // retain above already relies on, so it takes the HTTP endpoint like the JSON-RPC entries.
+        //
+        // Every survivor takes the HTTP endpoint TODAY, because the retain above admits only the
+        // bindings served at THIS address and gRPC is not one of them. It is written as the general
+        // question anyway — the one `binding_url` answers for busbar's own card — so that the day
+        // `agent_address_bindings` grows an entry, it cannot grow one that publishes a dialable
+        // address for a binding no client can dial.
         for iface in interfaces.iter_mut() {
+            let binding = iface
+                .get("protocolBinding")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             if let Some(iface) = iface.as_object_mut() {
                 if iface.contains_key("url") {
-                    iface.insert("url".to_string(), Value::String(endpoint.clone()));
+                    let url = binding_url(&binding, public_url, &endpoint)?;
+                    iface.insert("url".to_string(), Value::String(url));
                 }
             }
         }
@@ -548,11 +625,15 @@ pub(crate) fn self_card(
 /// specification makes the PREFERRED one. A client that takes the first entry should be steered at
 /// the current protocol version rather than at the compatibility one.
 fn published_interfaces(public_url: &str) -> Result<Vec<Value>, ServeError> {
-    let url = canonical_uri(public_url)?;
+    let http_endpoint = canonical_uri(public_url)?;
     let mut versions: Vec<&str> = served_protocol_versions().to_vec();
     versions.reverse();
     let mut out = Vec::new();
     for binding in servable_bindings() {
+        // THE ADDRESS THIS BINDING IS ANSWERED ON, which is not one string for all three. The two
+        // HTTP bindings take the plane's mount; gRPC takes the AUTHORITY, because a channel is
+        // opened against `host:port` and a URL is not dialable. See [`binding_url`].
+        let url = binding_url(&binding, public_url, &http_endpoint)?;
         for version in &versions {
             // NO `tenant` MEMBER, and that is a statement rather than an omission. The proto marks
             // it optional and defines it as the value a client puts in the request when calling the

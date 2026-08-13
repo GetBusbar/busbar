@@ -20,6 +20,7 @@ fn names_are_stable_and_distinct() {
     assert_eq!(Transport::Http.name(), "http");
     assert_eq!(Transport::JsonRpc.name(), "jsonrpc");
     assert_eq!(Transport::HttpJson.name(), "http+json");
+    assert_eq!(Transport::Grpc.name(), "grpc");
 }
 
 /// THE A2A LEGS' NAMES ARE THE A2A PLANE'S WIRE FORMATS, and this is the assertion that keeps the
@@ -31,7 +32,7 @@ fn names_are_stable_and_distinct() {
 #[test]
 fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
     let wires = crate::plane::Plane::A2a.wire_format_names();
-    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson]
+    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
         .iter()
         .map(|t| t.name())
         .collect();

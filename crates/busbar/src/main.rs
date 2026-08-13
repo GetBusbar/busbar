@@ -3940,12 +3940,30 @@ pub(crate) fn build_app_from_config(
             let mut dispatch = crate::plane::PlaneDispatch::default();
             if let Some(r) = cfg.mcp.as_ref() {
                 dispatch = dispatch
-                    .mount(crate::plane::Plane::Mcp, r.mount_path())
+                    .mount(
+                        crate::plane::Plane::Mcp,
+                        r.mount_path(),
+                        crate::plane::WIRE_JSONRPC,
+                    )
                     .admit(crate::plane::Plane::Mcp, r.admission());
             }
             if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
                 dispatch = dispatch
-                    .mount(crate::plane::Plane::A2a, crate::a2a::serve::MOUNT_PATH)
+                    .mount(
+                        crate::plane::Plane::A2a,
+                        crate::a2a::serve::MOUNT_PATH,
+                        crate::plane::WIRE_JSONRPC,
+                    )
+                    // THE SECOND BINDING'S PATH, claimed by the same act and for the same reason.
+                    // gRPC is served at the path the vendored `a2a.proto` dictates rather than under
+                    // the plane's mount, and a claimed path is where `admission_for` finds the RFC
+                    // 8707 audience — so leaving it out would not merely mislabel the leg, it would
+                    // admit a token minted for some other resource on it.
+                    .mount(
+                        crate::plane::Plane::A2a,
+                        crate::a2a::serve::GRPC_MOUNT_PATH,
+                        crate::plane::WIRE_GRPC,
+                    )
                     .admit(crate::plane::Plane::A2a, admission);
             }
             dispatch

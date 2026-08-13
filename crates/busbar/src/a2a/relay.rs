@@ -835,7 +835,7 @@ fn frame_end(buf: &[u8]) -> Option<(usize, usize)> {
 
 /// The `data:` payload of one SSE frame, concatenated across continuation lines as the specification
 /// requires.
-fn sse_data(frame: &str) -> Option<String> {
+pub(super) fn sse_data(frame: &str) -> Option<String> {
     let mut data = String::new();
     let mut any = false;
     for line in frame.lines() {

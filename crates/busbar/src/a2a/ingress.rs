@@ -425,6 +425,26 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
 }
 
 impl Wire {
+    /// THE SAME TWO FACTS, AS THE gRPC BINDING SUPPLIES THEM.
+    ///
+    /// [`Wire`]'s fields are private because the extractor is the security property — an extractor
+    /// that can hold only these two owned strings cannot forward a third header by accident. That
+    /// property survives here: this constructor takes the two facts and nothing else, so the gRPC
+    /// binding has no more of the caller's request in its hands than the HTTP one does.
+    ///
+    /// The content type is `None` rather than `application/grpc`, and the distinction is the whole
+    /// point of [`Wire::refuse`]'s first gate: that gate asks "is the body this endpoint is about to
+    /// parse JSON?", and by the time this exists the protobuf frame has already been decoded and
+    /// re-rendered AS JSON by the caller of this function. Declaring the gRPC media type here would
+    /// have the JSON reader refuse a body it can read, in the name of a header that describes a
+    /// framing this value is downstream of.
+    pub(super) fn for_grpc(version: String) -> Self {
+        Wire {
+            content_type: None,
+            version: Some(version),
+        }
+    }
+
     /// THE REFUSAL THIS REQUEST'S HEADERS EARN, or `None` when they earn none.
     ///
     /// `Null` as the JSON-RPC `id` throughout, and that is the specification's instruction rather
@@ -669,15 +689,15 @@ use Target::{FromCatalogue, Named};
 
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
-/// `transport` is the leg the request arrived on ([`crate::transport::Transport::JsonRpc`] or
-/// [`crate::transport::Transport::HttpJson`]) and it is carried as a VALUE, never compared. It is
-/// read in exactly one place — the metric label at the end of this function — and the reason it has
-/// to be carried at all is a consequence the second binding's arrival made unavoidable: the plane
-/// ingress boundary (`plane::observe`) labels a request only for a plane with ONE dialect, because
-/// which dialect spoke is a fact only the plane's own reader knows. This plane now has two, so it
-/// labels its own requests from inside, with the leg they came in on, which is what makes a
-/// per-binding number readable from busbar's own telemetry rather than only from a conformance
-/// suite's stdout.
+/// `transport` is the leg the request arrived on — [`crate::transport::Transport::JsonRpc`],
+/// [`crate::transport::Transport::HttpJson`] or [`crate::transport::Transport::Grpc`] — and it is
+/// carried as a VALUE, never compared. It is read in exactly one place, the metric label at the end
+/// of this function, and the reason it has to be carried at all is a consequence the second binding
+/// made unavoidable: `plane::observe` can only name the binding a DOOR declares, and two of this
+/// plane's three are spoken at the same door. Which of them named the operation is a fact only this
+/// plane's own reader has, so this plane labels its own requests from inside, with the leg they came
+/// in on — which is what makes a per-binding number readable from busbar's own telemetry rather than
+/// only from a conformance suite's stdout.
 pub(super) async fn invoke(
     app: Arc<App>,
     gov: crate::governance::GovCtx,
@@ -701,8 +721,8 @@ pub(super) async fn invoke(
         crate::telemetry::outcome_of(answered.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );
-    // AND THE BOUNDARY IS TOLD, so it does not count this request a second time under the plane's
-    // first binding. Everything the boundary still covers — the audience-bound `401`, a `413`, a
+    // AND THE BOUNDARY IS TOLD, so it does not count this request a second time under the binding
+    // its door declares. Everything the boundary still covers — the audience-bound `401`, a `413`, a
     // `404` — reached no handler and therefore carries no marker, which is exactly the set it is
     // there for.
     answered
@@ -2156,6 +2176,25 @@ pub(crate) fn mount(
             RouteMethod::Post,
             RouteAuth::Key,
             plane_rpc,
+        )
+        // THE gRPC BINDING, mounted the same way and therefore declaring the same bar.
+        //
+        // It is a `CoreRouter::route` and not a `route_service`, and that is the whole answer to
+        // "how does a tonic service satisfy `CoreRouteTable`": it does not enter the tree as a
+        // pre-built router at all. `super::grpc::serve` is an ordinary axum handler that builds the
+        // generated `A2aServiceServer` per request, around this request's already-authenticated
+        // principal — so this line declares `RouteAuth::Key` in the act that wires it, exactly like
+        // the four above it, and there is no router in the tree that the table does not describe.
+        //
+        // The PATH is the `.proto`'s, not busbar's: a gRPC client is handed an authority and derives
+        // the path from the service descriptor, so this binding cannot be served under
+        // `MOUNT_PATH`. `PlaneDispatch` claims it for this plane for the same reason every other
+        // path here is claimed — that is where the RFC 8707 audience check finds its audience.
+        .route(
+            super::grpc::route_path(),
+            RouteMethod::Post,
+            RouteAuth::Key,
+            super::grpc::serve,
         )
 }
 

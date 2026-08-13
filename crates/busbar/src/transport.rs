@@ -27,12 +27,19 @@
 //! entire point of A2A's three bindings of ONE agent), and putting it under `handlers/` would make
 //! it a codec's property (it is not — the codec must never learn it).
 //!
-//! ## THREE VARIANTS. THE TWO NEW ONES WERE BOUGHT, NOT GUESSED.
+//! ## FOUR VARIANTS. THE THREE NEW ONES WERE BOUGHT, NOT GUESSED.
 //!
 //! The axis landed with ONE variant for what existed and nothing else, on the argument that an enum
 //! with speculative variants nobody has driven a request through is a design nobody has tested.
-//! `Stdio` and `Grpc` are still absent for exactly that reason: no request rides either. A2A's two
-//! served bindings do, which is the whole of why they are here.
+//! `Stdio` is still absent for exactly that reason: no request rides it. A2A's three served bindings
+//! do, which is the whole of why they are here — and each arrived on the commit that armed it, not
+//! ahead of it.
+//!
+//! What the extra variants BUY is the thing the one-variant step could only claim. A2A is one
+//! dialect over several channels, and the channels differ in ways no codec can be asked to know: an
+//! HTTP request body IS the codec's request wire, and a gRPC request body is a length-prefixed
+//! protobuf frame carrying a message whose canonical JSON mapping is that wire. That difference is
+//! FRAMING, it lives here, and the A2A codec below it never learns which channel spoke.
 //!
 //! ## THE QUESTION THE FIRST STEP DEFERRED, AND THE ANSWER THE INSTRUMENT GAVE
 //!
@@ -57,11 +64,19 @@
 //! point about tidiness. What moved is the A2A plane, which had no `Transport` at all before this.
 //!
 //! **The names are the plane's wire-format names, not a second vocabulary.**
-//! [`Transport::JsonRpc`] and [`Transport::HttpJson`] answer `jsonrpc` and `http+json` — the two
-//! entries of `Plane::A2a.wire_format_names()`, read from the same two constants. That is what lets
-//! this plane label its own requests now that it no longer can be labelled at the ingress boundary
-//! (`Plane::sole_wire_format` answers `None` for a plane with two dialects), and it is why the
-//! label an operator reads in Prometheus is the same word the served agent card advertises.
+//! [`Transport::JsonRpc`], [`Transport::HttpJson`] and [`Transport::Grpc`] answer `jsonrpc`,
+//! `http+json` and `grpc` — the three entries of `Plane::A2a.wire_format_names()`, read from the
+//! same three constants. That is what lets this plane label its own requests now that it no longer
+//! can be labelled from the PLANE at the ingress boundary (`Plane::sole_wire_format` answers `None`
+//! for a plane with several dialects), and it is why the label an operator reads in Prometheus is
+//! the same word the served agent card advertises.
+//!
+//! **Two of the three share a door and one has its own, and that is why both labelling mechanisms
+//! exist.** `jsonrpc` and `http+json` are both spoken at `/a2a`, so the boundary cannot tell them
+//! apart and `a2a::ingress::invoke` labels them from inside with the leg it was handed. gRPC is
+//! spoken at `/lf.a2a.v1.A2AService`, a door of its own, so `PlaneDispatch::wire_format_of` can name
+//! it from the claim before any handler runs — which is what still counts a refusal that reaches no
+//! handler at all.
 
 use crate::handlers::{OpDispatch, OperationHandler};
 use crate::operation::Operation;
@@ -90,6 +105,17 @@ pub(crate) enum Transport {
     /// `result` VERBATIM. That is why arming this one is re-framing rather than translation, and
     /// why the cell below it never learns which of the two it is being spoken over.
     HttpJson,
+    /// ONE gRPC call in, one message or one message STREAM out — the A2A specification's third
+    /// binding, served at the path the `.proto`'s own package and service name dictate
+    /// (`/lf.a2a.v1.A2AService/*`) rather than at any path busbar chose.
+    ///
+    /// It is a variant rather than a flavour of [`Transport::Http`] even though it rides HTTP/2,
+    /// because the two differ in exactly the thing this axis exists to name: the FRAMING. On
+    /// `Http` the request body is the codec's request wire; here it is a length-prefixed protobuf
+    /// frame whose message must be transcoded to that wire before any codec sees it, and the reply
+    /// must be transcoded back and terminated with a `grpc-status` trailer rather than an HTTP
+    /// status. Nothing below this line knows that, which is the property being bought.
+    Grpc,
 }
 
 impl Transport {
@@ -99,18 +125,22 @@ impl Transport {
     ///
     /// Its readers are TESTS today, and that is stated rather than hidden behind a production use
     /// invented to justify it. What it buys is that the axis is ENUMERABLE — the label-uniqueness
-    /// check and the "these two legs are the A2A plane's two wire formats" check both walk it, so
-    /// adding a fourth variant with a duplicate or off-vocabulary name is a failing test rather
-    /// than a metric label nobody notices is wrong.
+    /// check and the "these legs are the A2A plane's wire formats" check both walk it, so adding a
+    /// variant with a duplicate or off-vocabulary name is a failing test rather than a metric label
+    /// nobody notices is wrong.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const ALL: &'static [Transport] =
-        &[Transport::Http, Transport::JsonRpc, Transport::HttpJson];
+    pub(crate) const ALL: &'static [Transport] = &[
+        Transport::Http,
+        Transport::JsonRpc,
+        Transport::HttpJson,
+        Transport::Grpc,
+    ];
 
     /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
     /// the label that says WHICH LEG a request arrived on, which is what makes a per-transport
     /// conformance number readable from busbar's own telemetry now that a second transport is armed.
     ///
-    /// The two A2A legs answer their PLANE'S wire-format names, read from the same two constants
+    /// The three A2A legs answer their PLANE'S wire-format names, read from the same three constants
     /// `Plane::A2a.wire_format_names()` is built from, rather than from strings spelled again here.
     /// That is what makes the metric label, the plane's dialect list and the `protocolBinding` a
     /// served card advertises one vocabulary instead of three that agree today.
@@ -119,6 +149,10 @@ impl Transport {
             Transport::Http => "http",
             Transport::JsonRpc => crate::plane::WIRE_JSONRPC,
             Transport::HttpJson => crate::plane::WIRE_HTTP_JSON,
+            // The A2A card's `protocolBinding` for this leg is `GRPC` and the plane's wire-format
+            // name is `grpc`; one lower-case spelling, so a per-transport conformance number read
+            // off busbar's telemetry and one read off the TCK's own stdout name the same leg.
+            Transport::Grpc => crate::plane::WIRE_GRPC,
         }
     }
 

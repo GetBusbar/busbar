@@ -121,6 +121,43 @@ impl A2aError {
         }
     }
 
+    /// THE gRPC STATUS CODE for this error — the third column of the same A2A section 5.4 table the
+    /// JSON-RPC code and the HTTP status are read out of, transcribed here rather than re-derived
+    /// beside the gRPC service.
+    ///
+    /// It is a `tonic::Code` and not a string because the wire value is a number: a `grpc-status`
+    /// trailer carries the integer, and spelling the name at the boundary would put a second
+    /// mapping between this table and the wire for a client to disagree with.
+    ///
+    /// THE FOUR ROWS THE SPECIFICATION LEAVES BLANK are the standard JSON-RPC errors, which A2A
+    /// gives no gRPC binding because JSON-RPC's envelope does not exist on this transport. They
+    /// still have to answer SOMETHING, so each takes the gRPC status that means the same thing —
+    /// a malformed request is `INVALID_ARGUMENT`, an unknown method is `UNIMPLEMENTED`, a server
+    /// fault is `INTERNAL`. That is a decision about what to SAY where the table is silent, and it
+    /// is made once, here, rather than at each of eleven call sites.
+    pub(crate) fn grpc_status(self) -> tonic::Code {
+        match self {
+            A2aError::TaskNotFound => tonic::Code::NotFound,
+            // THE ROW THE MERGE HAD TO DECIDE. This variant arrived on the branch that built the
+            // extended agent card and this table arrived on the branch that armed the gRPC binding,
+            // so no single branch's compiler ever asked the question. It is the same row
+            // [`Self::status`] answers `FAILED_PRECONDITION` and `http_status` answers 400 with:
+            // the request is well formed and the deployment's configuration cannot satisfy it.
+            A2aError::TaskNotCancelable | A2aError::ExtendedAgentCardNotConfigured => {
+                tonic::Code::FailedPrecondition
+            }
+            A2aError::UnsupportedOperation | A2aError::VersionNotSupported => {
+                tonic::Code::Unimplemented
+            }
+            A2aError::ContentTypeNotSupported => tonic::Code::InvalidArgument,
+            A2aError::InvalidAgentResponse | A2aError::Internal => tonic::Code::Internal,
+            A2aError::MethodNotFound => tonic::Code::Unimplemented,
+            A2aError::Parse | A2aError::InvalidRequest | A2aError::InvalidParams => {
+                tonic::Code::InvalidArgument
+            }
+        }
+    }
+
     /// The `ErrorInfo.reason`, for the A2A-specific errors that have one. Standard JSON-RPC errors
     /// carry NO reason — the specification's own table leaves it unset, and inventing one would put
     /// a string in `error.data` that no conformant client knows.

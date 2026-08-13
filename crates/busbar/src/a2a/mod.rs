@@ -68,6 +68,7 @@ pub(crate) mod catalogue;
 pub(crate) mod config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
+pub(crate) mod grpc;
 pub(crate) mod idmap;
 pub(crate) mod inbound;
 pub(crate) mod ingress;

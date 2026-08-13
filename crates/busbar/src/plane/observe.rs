@@ -34,9 +34,15 @@
 //! Two questions could have been answered by comparing planes, and both are answered by the spine
 //! instead:
 //!
+//! * *Which dialect was spoken?* — [`super::PlaneDispatch::wire_format_of`], off the CLAIM the path
+//!   matched. A plane whose binding has a door of its own is labelled here with that binding's name
+//!   whatever else the plane speaks, because the door declares what is spoken at it. The LLM plane
+//!   still cannot be labelled here: not "it is the LLM plane", but "it has no door at all" — it is
+//!   the residual, it claims no path, and it labels its own requests from inside its handler.
 //! * *Did this request's own handler already label it?* — [`Counted`], a marker the handler puts on
-//!   the response it is labelling. See below for why this replaced asking the plane how many
-//!   dialects it speaks.
+//!   the response it is labelling. Needed as well as the claim, because two of the A2A plane's three
+//!   bindings SHARE the `/a2a` door: the claim can say `jsonrpc` there, and only the reader knows
+//!   whether the request line or a body member named the operation. See below.
 //! * *Which plane is this?* — [`super::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
 //!
@@ -54,9 +60,14 @@
 //! by a rule that fired correctly.
 //!
 //! So the question is now *did the handler already count this one*, answered by a marker the handler
-//! sets, and a request that reached no handler is counted HERE under the plane's FIRST binding —
+//! sets, and a request that reached no handler is counted HERE under the binding ITS DOOR declares —
 //! the same answer `ingress::native` shapes its body in, so a door refusal's metric label and its
 //! envelope name the same binding rather than disagreeing.
+//!
+//! The two mechanisms are not alternatives and the A2A plane needs both. Its gRPC binding has a door
+//! of its own, so a `401` there is counted `grpc` from the claim without any handler running; its
+//! JSON-RPC and HTTP+JSON bindings share `/a2a`, where no claim can say which spoke, so their
+//! requests are labelled by `a2a::ingress::invoke` and marked [`Counted`] so this layer stands down.
 
 use crate::state::AppHandle;
 use axum::extract::{Request, State};
@@ -99,16 +110,18 @@ pub(crate) async fn observe(
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
     // and a sibling path (`/mcpx` beside a `/mcp` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.
-    let plane = app.planes.mounted_plane_of(req.uri().path());
+    let path = req.uri().path();
+    let plane = app.planes.mounted_plane_of(path);
     // Resolved BEFORE the request is consumed, and both facts together, so the emit below needs no
-    // second decision: either this boundary knows which plane and binding to name, or it does not.
-    // The binding is the plane's FIRST — see the header — because a request refused before any
-    // handler never told anybody which of the plane's bindings it meant to speak.
-    let labels = plane.and_then(|p| {
-        super::Ingress::Mounted(p)
-            .shaping_wire_format()
-            .map(|w| (p, w))
-    });
+    // second decision: either this boundary can label the request or it cannot.
+    //
+    // The dialect comes off the CLAIM, not off the plane. A plane that speaks one dialect answers
+    // the same either way; a plane that speaks several — A2A, since HTTP+JSON and gRPC armed — is
+    // still labelled here, with the binding the DOOR declares. Asking the plane would answer `None`
+    // for exactly those planes and silently stop counting them. Where several bindings share one
+    // door the claim names the canonical one, which is also the binding `ingress::native` shapes a
+    // door refusal's body in, so the label and the envelope agree about what was refused.
+    let labels = plane.zip(app.planes.wire_format_of(path));
     let Some((plane, wire)) = labels else {
         return next.run(req).await;
     };

@@ -111,9 +111,11 @@
 #
 #   * THE DELEGATING DIRECTION. busbar's A2A client side is driven by a relay this rig does not
 #     drive from the far end, so `--battery` still runs `--role server`.
-#   * THE gRPC AND HTTP+JSON BINDINGS. busbar's card advertises `JSONRPC` and only `JSONRPC`, so the
-#     TCK skips both and their requirements report as untested rather than as failures busbar has
-#     been given a chance to pass.
+#   * THE HTTP+JSON BINDING. busbar's card advertises `JSONRPC` and `GRPC`, so the TCK arms both and
+#     skips HTTP+JSON, whose requirements still report as untested rather than as failures busbar has
+#     been given a chance to pass. The gRPC leg IS armed: busbar serves `/lf.a2a.v1.A2AService/*` on
+#     its own listener over h2c, the card publishes that binding's authority, and the shim in front
+#     carries the credential on that connection as well as on the HTTP one.
 #   * PUSH DELIVERY. `PUSH-DELIVER-001/002/003` are RED and are WAIVED with the reason recorded in
 #     `testing/a2a-tck/WAIVERS.md`. Read that before "fixing the rig's topology": the suite's
 #     receiver URL is `http://` by literal and busbar refuses a plaintext webhook before it looks at
@@ -641,17 +643,23 @@ same helper the MCP leg does, because busbar's token format is one format across
   report_the_extended_agent_card "http://127.0.0.1:$data_port/a2a" "$bound" "$vendor_port"
 
   # THE SHIM, for the instrument that cannot be handed a header. `run_tck.py` takes `--sut-host` and
-  # nothing else, so for the TCK the credential has to live where a CLIENT holds it, and that is
-  # exactly what `scripts/mcp-subject/credential-shim.mjs` already is: a transparent forwarder that
-  # adds `Authorization` only when the request carries none. Reused, not copied.
+  # nothing else, so for the TCK the credential has to live where a CLIENT holds it: a transparent
+  # forwarder that adds `Authorization` only when the request carries none.
   #
   # AND IT IS NOT STARTED FOR AN INSTRUMENT THAT HOLDS ITS OWN CREDENTIAL. "Adds a credential to any
   # request that has none" is precisely what makes an ANONYMOUS request unrepresentable, and one of
   # the battery's server-role MUSTs is that an anonymous request is refused. See this function's
   # header: with the shim in front, that test was reporting on the shim.
+  #
+  # IT IS THIS PLANE'S OWN AND NO LONGER THE MCP LEG'S, and the reason is the gRPC binding. busbar
+  # serves gRPC on the SAME listener as its HTTP bindings, and the address its card publishes for the
+  # gRPC interface is derived from the same `public_url` as everything else — so the suite dials ONE
+  # port for two protocols, and the MCP leg's shim is an `http.createServer`, i.e. HTTP/1.1 only.
+  # `binding-shim.mjs` serves whichever protocol arrived on the connection, relaying gRPC's
+  # trailers (where `grpc-status` lives) as well as its headers. See that file's own header.
   local through="http://127.0.0.1:$public_port/a2a/agents/$SUBJECT_AGENT_ID"
   if [ "$credential_held_by" = "shim" ]; then
-    node scripts/mcp-subject/credential-shim.mjs "$suite_port" "$data_port" "$bound" \
+    node scripts/a2a-subject/binding-shim.mjs "$suite_port" "$data_port" "$bound" \
       >"$dir/credential-shim.log" 2>&1 &
     SUBJECT_PIDS="$SUBJECT_PIDS $!"
 
