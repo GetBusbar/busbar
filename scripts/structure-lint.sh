@@ -1363,8 +1363,6 @@ PLANE_CONCERNS=(
 )
 
 PLANE_LEDGER="
-authorise_egress|DEBT|outbound-credentials|one egress gate per plane; the grant kinds differ, the gate does not
-EgressDenied|DEBT|outbound-credentials|two refusal enums for one refusal
 rpc|DEBT|ingress|mcp/ingress.rs and a2a/ingress.rs each mount their own JSON-RPC entry point
 refuse|DEBT|ingress|two per-plane refusal shapers; the wire shape of a refusal is not plane-specific
 not_found|DEBT|ingress|two per-plane 404 shapers

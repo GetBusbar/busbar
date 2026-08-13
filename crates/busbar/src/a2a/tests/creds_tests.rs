@@ -327,7 +327,7 @@ fn busbars_own_credential_is_not_spent_for_a_caller_that_holds_no_grant_on_the_b
     let denied = authorise_egress(&caller, "payments", 0).expect_err("no grant, no credential");
     assert_eq!(
         denied,
-        EgressDenied::NoAgentGrant {
+        AgentEgressDenied::NoAgentGrant {
             caller: "k-caller".to_string(),
             agent_id: "payments".to_string(),
         }
@@ -358,6 +358,6 @@ fn a_wildcard_principal_is_granted_every_agent_because_that_is_what_an_omitted_l
     caller.allowed_scopes = Some(Vec::new());
     assert!(matches!(
         authorise_egress(&caller, "planner", 0),
-        Err(EgressDenied::NoAgentGrant { .. })
+        Err(AgentEgressDenied::NoAgentGrant { .. })
     ));
 }
