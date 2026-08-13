@@ -808,6 +808,10 @@
           "optional": true,
           "type": "u64"
         },
+        "hook_content_max_bytes": {
+          "optional": true,
+          "type": "usize"
+        },
         "max_auto_provisioned_groups": {
           "optional": true,
           "type": "usize"

@@ -136,6 +136,29 @@ impl ProtocolWriter for BedrockWriter {
     // default when omitted, and this writer omits an empty `inferenceConfig` entirely). So Bedrock
     // does NOT override `requires_max_tokens` — injecting a default here would silently cap output.
 
+    /// Converse frames a turn as `{role, content: [{text}]}`. A verbatim insert of the reply's
+    /// `{role, content: "…"}` messages would corrupt that block shape — Converse also spells its
+    /// container `messages`, so this override is load-bearing rather than cosmetic.
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        _tools: &[serde_json::Value],
+    ) -> bool {
+        if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
+            return false;
+        }
+        let Some(pairs) = crate::proto::rewrite_text_pairs(messages) else {
+            return false;
+        };
+        let framed: Vec<serde_json::Value> = pairs
+            .into_iter()
+            .map(|(role, text)| serde_json::json!({ "role": role, "content": [{ "text": text }] }))
+            .collect();
+        obj.insert("messages".to_string(), serde_json::Value::Array(framed));
+        true
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         // The reasoning carry has no Bedrock Converse shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.

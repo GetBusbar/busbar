@@ -23,6 +23,38 @@ impl ProtocolWriter for GeminiWriter {
         format!("{GEMINI_PATH_BASE}/{model}:generateContent")
     }
 
+    /// Gemini carries turns in `contents` as `{role, parts: [{text}]}`, and spells the assistant
+    /// role `model`. BOTH the canonical `assistant` and the native `model` are accepted on the reply
+    /// so a hook that echoes the role it was projected — and one written to Gemini's own vocabulary
+    /// — round-trip to `model` rather than falling through to `user` and corrupting every assistant
+    /// turn.
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        _tools: &[serde_json::Value],
+    ) -> bool {
+        if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
+            return false;
+        }
+        let Some(pairs) = crate::proto::rewrite_text_pairs(messages) else {
+            return false;
+        };
+        let framed: Vec<serde_json::Value> = pairs
+            .into_iter()
+            .map(|(role, text)| {
+                let g_role = if role == "assistant" || role == "model" {
+                    "model"
+                } else {
+                    "user"
+                };
+                serde_json::json!({ "role": g_role, "parts": [{ "text": text }] })
+            })
+            .collect();
+        obj.insert("contents".to_string(), serde_json::Value::Array(framed));
+        true
+    }
+
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
 

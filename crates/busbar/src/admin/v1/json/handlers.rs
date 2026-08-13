@@ -2822,6 +2822,10 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             // consumers are live.
             max_keys_per_principal: _,
             max_auto_provisioned_groups: _,
+            // GENUINELY LIVE — the hook seam reads the installed ceiling with a single relaxed
+            // atomic load, and every config apply re-installs it, so a `PUT` takes effect on the
+            // next request without a restart.
+            hook_content_max_bytes: _,
             hard_down_cooldown_secs: _,
             upstream_error_body_max_bytes: _,
             tls_handshake_timeout_secs: _,

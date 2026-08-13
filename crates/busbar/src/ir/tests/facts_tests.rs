@@ -381,12 +381,11 @@ fn the_shape_signals_come_from_the_normalized_ir() {
 /// agreed on must not ALSO become a wire change for the operator's sidecar.
 #[test]
 fn opaque_marker_is_byte_identical_to_the_projection_it_replaces() {
-    assert_eq!(
-        OPAQUE_CONTENT_MARKER,
-        crate::proxy::REDACTED_REASONING_MARKER,
-        "the successor projection must substitute the SAME marker, or the cutover silently \
-         rewrites what every deployed hook sees for an opaque reasoning turn"
-    );
+    // The projection this replaced is GONE, so the comparison can no longer be made against it.
+    // What survives, and is the thing that mattered, is the literal itself: this exact string is
+    // what every deployed hook already receives for an opaque reasoning turn, and the cutover was
+    // not allowed to also be a wire change for the one shape both implementations agreed on.
+    assert_eq!(OPAQUE_CONTENT_MARKER, "[busbar:redacted_reasoning]");
 }
 
 /// Structured tool-result members are content, not silence. A dialect's `{"json": …}`

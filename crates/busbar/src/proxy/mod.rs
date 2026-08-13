@@ -18,10 +18,11 @@ use serde_json::Value;
 
 use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use crate::config::OnExhausted;
-use crate::proto::{
-    convert_headers, openai_family, StatusClass, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE,
-    PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
-};
+// NOTE THE ABSENCE. This module used to import six `PROTO_*` constants for the hook seam's own
+// content flattening. That second implementation is gone: the hook projection reads the IR the
+// protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
+// request SAYS any more.
+use crate::proto::{convert_headers, openai_family, StatusClass};
 use crate::state::{App, WeightedLane};
 use crate::store::{now, Permit};
 
@@ -224,17 +225,12 @@ mod probe_release_owner_tests;
 #[path = "tests/hook_opt_in_projection_tests.rs"]
 mod hook_opt_in_projection_tests;
 
-// CHARACTERISATION tests for the projection↔IR divergences.
-// They pin TODAY's behaviour on both sides, including where today's behaviour is wrong, so the IR
-// unification has to consciously update each one rather than silently pass through it.
-#[cfg(test)]
-#[path = "tests/hook_ir_divergence_characterisation_tests.rs"]
-mod hook_ir_divergence_characterisation_tests;
-
-// THE DIFFERENTIAL TEST between the two implementations of "what is the text in this request":
-// `build_prompt_projection`'s raw-body flattening and the IR the protocol readers produce. Carries
-// the RED (ignored, never deleted) plus the pinned diff list that stops a divergence appearing —
-// or being closed — unnoticed between here and the cutover.
+// THE DIFFERENTIAL TEST, INVERTED. It was built to compare the two implementations of "what is the
+// text in this request" and it went red on nine fixtures. The second implementation is gone, so the
+// same corpus now pins the surviving projection against a golden and re-asserts those nine as the
+// behaviour that SHIPPED — which is where the sibling characterisation suite's content went when it
+// was retired: a file that pinned "both sides, including where today's behaviour is wrong" has
+// nothing left to pin once there is one side.
 #[cfg(test)]
 #[path = "tests/hook_ir_differential_tests.rs"]
 mod hook_ir_differential_tests;
