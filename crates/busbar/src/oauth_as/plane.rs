@@ -148,7 +148,7 @@ impl AsPlane {
             AuthorizationServer::new(config, MemoryStorage::new())
                 // Installed even though nothing on this plane verifies a client signature today:
                 // `oauth-as` refuses every signed credential when no verifier is installed, and the
-                // day `dpop` or `client_assertion` is switched on, a MISSING verifier would be a
+                // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a
                 // silent refusal of every conforming client rather than a build error.
                 .with_es256_verifier(Arc::new(RingEs256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration)),
@@ -157,7 +157,7 @@ impl AsPlane {
         let sessions = Arc::new(super::consent::Sessions::default());
         let service = oauth_as::http::ServiceBuilder::new(Arc::clone(&server))
             .with_subject_resolver(super::consent::subject_resolver(Arc::clone(&sessions)))
-            .with_consent_resolver(super::consent::consent_resolver(
+            .with_approval_resolver(super::consent::approval_resolver(
                 Arc::clone(&sessions),
                 identity.consent_url(),
             ))
