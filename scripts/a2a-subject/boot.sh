@@ -881,25 +881,54 @@ leg_tck() {
   # defects as the expectation). So this leg's verdict cannot be that script's exit code, and the
   # step is piped through `tee` rather than read from `$?`.
   BUSBAR_A2A_ENDPOINT="$SUBJECT_URL" testing/a2a-tck/run-tck.sh subject 2>&1 | tee "$out"
-  assert_tck_number "$out"
+  # SAME PATH ARITHMETIC AS `run-tck.sh`'s own `$OUT` (`${A2A_TCK_OUT:-${A2A_TCK_WORK:-$TMPDIR/a2a-tck-work}/out}`),
+  # duplicated rather than sourced because `run-tck.sh` is a `case` dispatcher with no function this
+  # script can call standalone. If that arithmetic ever moves, this one has to move with it -- there
+  # is no third place either could drift to unnoticed, because `assert_tck_number` below dies loudly
+  # when the file it computes is not there.
+  local work="${A2A_TCK_WORK:-${TMPDIR:-/tmp}/a2a-tck-work}"
+  local report_json="${A2A_TCK_OUT:-$work/out}/subject.json"
+  assert_tck_number "$out" "$report_json"
 }
 
-# READ THE NUMBER OUT OF THE TCK'S OWN STDOUT, and refuse both ways it can be absent.
+# READ THE REQUIREMENT LEVEL, not the transport-parameterised row, and hold it to the PINNED WAIVER
+# SET -- and refuse both ways the report can be absent.
 #
-# AND DO NOT READ `OVERALL COMPATIBILITY`. The TCK prints an `OVERALL COMPATIBILITY: 100.0%` line
-# directly above a table reading `MUST 4 passed / 110 failed of 114` — it is computed from the
-# per-transport rollup, not from the requirement levels, and taken at face value it is the single
-# most dangerous line in this entire gate: it is a printed 100% for an implementation that fails
-# 110 of 114 MUSTs. This function reads the MUST ROW and nothing else, and says so here so nobody
-# later "fixes" it by reading the friendlier number.
+# WHAT WAS WRONG BEFORE. This function used to read the TCK's own `MUST` table row
+# (`83 passed, 26 failed, ... of 114`) and gate on `failed == 0`. That row is not what it looks
+# like: `check-baseline.py`'s pinned control run of the SAME TCK against a2a-go, the reference SDK,
+# shows the identical shape -- 21 of "26 failed" are MUST requirements the suite marks
+# `NOT TESTED` (no scenario in this TCK release exercises them against ANY implementation; verified
+# by diffing this run's per-requirement report against `testing/a2a-tck/baselines/`, where those
+# same 21 ids read `NOT TESTED` for a2a-go too), folded into the TCK's own "Failed" column by the
+# TCK's own summary printer. Reading that row as "busbar failed 26 requirements" was misattributing
+# a pinned-suite limitation, shared by the reference implementation, as a busbar defect count. Only
+# 5 MUST requirements are ever reported `FAIL` (a real, executed, failing assertion) against busbar:
+# `PUSH-DELIVER-001/002/003`, `CARD-EXT-001`, `GRPC-ERR-001` -- exactly the set `WAIVERS.md` names
+# and dates.
+#
+# THE GATE NOW READS `reports/compatibility.json`'s `per_requirement` map (the same file
+# `check-baseline.py` diffs the control legs against), which reports ONE status per requirement
+# rather than one row per transport parameterisation, and separates truly `NOT TESTED` from `FAIL`.
+# `NOT TESTED` requirements are reported, never gated on: they are not evidence about busbar.
+# `FAIL` requirements are gated on the PINNED SET in `testing/a2a-tck/subject-waivers.json` --
+# anything failing OUTSIDE that pin is RED. `WAIVERS.md` documents more than that pin
+# (`CARD-EXT-001` is also marked waived there); this gate deliberately pins only the LOCKED
+# `PUSH-DELIVER` trio, so `CARD-EXT-001` and `GRPC-ERR-001` stay RED here -- named, dated, and
+# understood in `WAIVERS.md`, not silenced by this gate.
 assert_tck_number() {
-  local out="$1"
-  python3 - "$out" <<'PY'
-import re, sys
+  local out="$1" report_json="$2"
+  local waivers="${3:-testing/a2a-tck/subject-waivers.json}"
+  python3 - "$out" "$report_json" "$waivers" <<'PY'
+import json, re, sys
 
-text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+out_path, report_path, waivers_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
-# The MUST row of the TCK's own level table: │ MUST │ passed │ failed │ skipped │ total │
+text = open(out_path, encoding="utf-8", errors="replace").read()
+
+# The MUST row of the TCK's own level table: │ MUST │ passed │ failed │ skipped │ total │. Still
+# read and printed -- it is the suite's own headline number and a reader will look for it -- but it
+# is NOT what this gate decides on; see the function's doc comment for why.
 row = re.search(r"MUST\s*\D+?(\d+)\s*\D+?(\d+)\s*\D+?(\d+)\s*\D+?(\d+)", text)
 if row is None:
     sys.exit(
@@ -910,18 +939,70 @@ if row is None:
 passed, failed, skipped, total = (int(g) for g in row.groups())
 print("")
 print("A2A OFFICIAL TCK vs busbar (the commit under test), from the suite's own stdout:")
-print("  MUST      %d passed, %d failed, %d skipped, of %d" % (passed, failed, skipped, total))
+print("  MUST      %d passed, %d failed, %d skipped, of %d  (suite's own row; folds NOT TESTED" % (passed, failed, skipped, total))
+print("            into 'failed' -- read on for the requirement-level breakdown this gate uses)")
 if total == 0:
     sys.exit("the MUST total is zero: the suite ran nothing. That is not a score.")
-print("  => %d/%d MUST requirements met (%.1f%%)" % (passed, total, 100.0 * passed / total))
 print("")
 print("  NOTE: the suite ALSO prints `OVERALL COMPATIBILITY: 100.0%` above this table. That figure")
-print("  is the per-transport rollup, not the requirement result, and it is 100% while 110 of 114")
-print("  MUSTs fail. It is not this gate's number and must never be quoted as one.")
-if failed:
+print("  is the per-transport rollup, not the requirement result. Neither it nor the MUST row above")
+print("  is this gate's number; both are printed for a human, not read by this script.")
+
+try:
+    with open(report_path, encoding="utf-8") as fh:
+        report = json.load(fh)
+except OSError as exc:
     sys.exit(
-        "\nbusbar failed %d of %d MUST requirements. That is the number this leg exists to\n"
-        "produce, and it is RED until it is zero." % (failed, total)
+        "\nno per-requirement report at %s (%s). The MUST row above is the suite's own summary,\n"
+        "but this gate needs the requirement-level detail to tell a suite limitation from a busbar\n"
+        "defect, and cannot make that call from the summary row alone." % (report_path, exc)
+    )
+except ValueError as exc:
+    sys.exit("\n%s is not valid JSON (%s)." % (report_path, exc))
+
+per = report.get("per_requirement")
+if not isinstance(per, dict) or not per:
+    sys.exit("\n%s carries no `per_requirement` map. The TCK's report shape changed." % report_path)
+
+with open(waivers_path, encoding="utf-8") as fh:
+    pin = json.load(fh)
+waived = set(pin.get("waived") or [])
+if not waived:
+    sys.exit("\n%s pins no waivers at all; refusing to trust an empty pin silently." % waivers_path)
+
+must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
+not_tested = sorted(k for k, v in must.items() if v.get("status") == "NOT TESTED")
+failing = sorted(k for k, v in must.items() if v.get("status") == "FAIL")
+unwaived = sorted(k for k in failing if k not in waived)
+waived_and_failing = sorted(k for k in failing if k in waived)
+waived_but_passing = sorted(k for k in waived if must.get(k, {}).get("status") not in (None, "FAIL"))
+
+print("")
+print("  REQUIREMENT-LEVEL BREAKDOWN (%d MUST requirements, %d NOT TESTED, %d FAIL):"
+      % (len(must), len(not_tested), len(failing)))
+print("    NOT TESTED (suite limitation, not busbar evidence -- confirmed identical against the")
+print("    pinned a2a-go control in testing/a2a-tck/baselines/, so this is not gated):")
+for r in not_tested:
+    print("      %s" % r)
+print("    FAIL, PINNED WAIVED (see WAIVERS.md; expected, not gated):")
+for r in waived_and_failing:
+    print("      %s" % r)
+if waived_but_passing:
+    print("    PINNED WAIVED BUT NOW PASSING (retire from testing/a2a-tck/subject-waivers.json and")
+    print("    WAIVERS.md -- this is good news, not a failure):")
+    for r in waived_but_passing:
+        print("      %s" % r)
+print("    FAIL, UNWAIVED (RED):")
+for r in unwaived:
+    print("      %s" % r)
+if not unwaived:
+    print("      (none)")
+
+if unwaived:
+    sys.exit(
+        "\nbusbar failed %d MUST requirement(s) outside the pinned waiver set: %s.\n"
+        "That is the number this leg exists to produce, and it is RED until it is zero or the\n"
+        "requirement is waived, dated and reasoned, in WAIVERS.md AND the pin." % (len(unwaived), ", ".join(unwaived))
     )
 PY
 }
@@ -1008,6 +1089,12 @@ execute. Read the table above; that is the number this leg exists to produce." ;
   esac
 }
 
+# A THIN WRAPPER so the self-test can hand `assert_tck_number` a disposable pin, without the real
+# `testing/a2a-tck/subject-waivers.json` (or the real report path arithmetic) anywhere near it.
+_assert_tck_number_with_pin() {
+  assert_tck_number "$1" "$2" "$3"
+}
+
 # --selftest: prove the arming rule and the boundary proof BITE, before any verdict from this
 # script is believed. Same discipline as `mcp-conformance.sh --selftest`: a rule whose enforcement
 # is only ever exercised by the real thing is a rule nobody has watched work.
@@ -1084,30 +1171,106 @@ PY
   # is the one shape that would otherwise let an armed leg pass having produced no number.
   local tmp; tmp="$(mktemp)"
   printf 'OVERALL COMPATIBILITY: 100.0%%\nnothing else at all\n' > "$tmp"
-  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
+  if ( assert_tck_number "$tmp" "" ) >/dev/null 2>&1; then
     say "  MISS: TCK output carrying no MUST row was accepted as a result"; failures=$((failures+1))
   else
     say "  ok: TCK output with no MUST row produces no number, and is RED"
   fi
 
-  # RED 6: a MUST row with failures must be RED even when the suite's own `OVERALL COMPATIBILITY`
-  # line says 100%. That combination is not hypothetical — it is verbatim what busbar produces
-  # today.
+  # RED 6: a MUST row is present, but there is no requirement-level report to read. The suite's own
+  # row is not this gate's number precisely because it cannot tell a suite limitation from a busbar
+  # defect on its own -- so an armed leg that produced only the row and no report is RED, not a pass
+  # read off the summary.
   printf 'OVERALL COMPATIBILITY: 100.0%%\n| MUST | 4 | 110 | 0 | 114 |\n' > "$tmp"
-  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
-    say "  MISS: 110 failed MUSTs were accepted because the suite printed 100%"; failures=$((failures+1))
+  if ( assert_tck_number "$tmp" "$tmp.no-such-report.json" ) >/dev/null 2>&1; then
+    say "  MISS: a MUST row with no requirement-level report behind it was accepted"; failures=$((failures+1))
   else
-    say "  ok: failed MUSTs are RED regardless of the suite's OVERALL COMPATIBILITY line"
+    say "  ok: a MUST row with no requirement-level report behind it is RED"
   fi
 
-  # GREEN: a clean MUST row is accepted, so the check above is not one that refuses everything.
-  printf '| MUST | 114 | 0 | 0 | 114 |\n' > "$tmp"
-  if ( assert_tck_number "$tmp" ) >/dev/null 2>&1; then
-    say "  ok: a clean MUST row is accepted"
+  # A minimal, disposable waiver pin used by the next four cases, so they do not depend on --
+  # or drift with -- the real testing/a2a-tck/subject-waivers.json.
+  local pin; pin="$(mktemp)"
+  printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin"
+  local report; report="$(mktemp)"
+
+  # RED 7: an UNWAIVED MUST requirement reports FAIL. Red regardless of the suite's own row, and
+  # regardless of how many other requirements pass.
+  printf '| MUST | 113 | 1 | 0 | 114 |\n' > "$tmp"
+  python3 -c "
+import json
+json.dump({'per_requirement': {
+    'SOME-REQ-001': {'level': 'MUST', 'status': 'FAIL'},
+}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  MISS: an unwaived FAIL requirement was accepted"; failures=$((failures+1))
   else
-    say "  MISS: a clean MUST row was refused"; failures=$((failures+1))
+    say "  ok: an unwaived FAIL requirement is RED"
   fi
-  rm -f "$tmp"
+
+  # GREEN 1: the ONLY FAIL requirement is inside the pin. Green, because that failure is expected
+  # and dated in WAIVERS.md, not because nothing failed.
+  python3 -c "
+import json
+json.dump({'per_requirement': {
+    'PUSH-DELIVER-001': {'level': 'MUST', 'status': 'FAIL'},
+}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  ok: a FAIL requirement inside the pinned waiver set is accepted"
+  else
+    say "  MISS: a pinned, waived FAIL requirement was refused"; failures=$((failures+1))
+  fi
+
+  # GREEN 2: NOT TESTED requirements are never gated on, however many there are -- they are the
+  # suite's own limitation, not evidence about busbar. This is the case that used to be misread as
+  # 21 busbar failures.
+  python3 -c "
+import json
+per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}
+per['PUSH-DELIVER-001'] = {'level': 'MUST', 'status': 'FAIL'}
+json.dump({'per_requirement': per}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  ok: NOT TESTED requirements are reported, not gated on"
+  else
+    say "  MISS: NOT TESTED requirements were treated as failures"; failures=$((failures+1))
+  fi
+
+  # RED 8: an empty pin is refused outright -- an empty waiver file would silently exempt nothing
+  # while looking configured, which is a gate that always passes for the wrong reason.
+  printf '{"waived": []}\n' > "$pin"
+  python3 -c "
+import json
+json.dump({'per_requirement': {
+    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
+}}, open('$report', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  MISS: an empty waiver pin was accepted"; failures=$((failures+1))
+  else
+    say "  ok: an empty waiver pin is refused"
+  fi
+  rm -f "$tmp" "$pin" "$report"
+
+  # GREEN 3: a clean report (no FAIL, no NOT TESTED) is accepted, so none of the checks above is one
+  # that refuses everything.
+  local tmp2; tmp2="$(mktemp)"; local report2; report2="$(mktemp)"; local pin2; pin2="$(mktemp)"
+  printf '| MUST | 114 | 0 | 0 | 114 |\n' > "$tmp2"
+  printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin2"
+  python3 -c "
+import json
+json.dump({'per_requirement': {
+    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
+}}, open('$report2', 'w'))
+"
+  if _assert_tck_number_with_pin "$tmp2" "$report2" "$pin2"; then
+    say "  ok: a clean requirement-level report is accepted"
+  else
+    say "  MISS: a clean requirement-level report was refused"; failures=$((failures+1))
+  fi
+  rm -f "$tmp2" "$report2" "$pin2"
 
   [ "$failures" -eq 0 ] || die "$failures self-test expectation(s) did not hold. No verdict from \
 this script means anything until they do."

@@ -586,6 +586,12 @@ jobs:
           A2A_SUBJECT_TCK_LOG: .a2a-conformance/tck-external.txt
         run: ./scripts/a2a-subject/boot.sh --tck
 
+      # `/home/runner/.a2a-tck/out/` (`$A2A_TCK_WORK/out`, this workflow's own env above) is where
+      # `run-tck.sh` writes `subject.json` -- the requirement-level report `assert_tck_number` now
+      # reads to tell a suite limitation (`NOT TESTED`) from a real, pinned-waivable `FAIL`. It was
+      # never uploaded, so the only way to see WHICH requirements were behind the MUST row's count
+      # was to reproduce the run locally. Included here for the same reason the control legs'
+      # `/home/runner/.a2a-tck/out/` is already uploaded a few jobs up.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -593,6 +599,7 @@ jobs:
           path: |
             .a2a-conformance
             testing/a2a-harness/reports
+            /home/runner/.a2a-tck/out/
           if-no-files-found: warn
 
   # ----------------------------------------------------------------------------- the aggregator

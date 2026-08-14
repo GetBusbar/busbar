@@ -7,7 +7,17 @@ is the whole point of this file.
 
 Read alongside `scripts/a2a-subject/boot.sh` (which produces the number) and `run-tck.sh` (which
 runs the suite). **Nothing here silences a test.** Every waived requirement still runs, still fails,
-and is still counted in the MUST row.
+and is still counted in the suite's own MUST row.
+
+**`testing/a2a-tck/subject-waivers.json` is the machine-checkable PIN of exactly one entry from
+this file's ledger** — the LOCKED `PUSH-DELIVER-001/002/003` trio — and it is what
+`scripts/a2a-subject/boot.sh`'s `assert_tck_number` gates the subject leg on, at the
+REQUIREMENT level (not the suite's own MUST row, which folds `NOT TESTED` requirements — a suite
+limitation shared by the pinned third-party control, see `check-baseline.py` and
+`testing/a2a-tck/baselines/` — into "failed" and is printed for a human but not gated on).
+`CARD-EXT-001`, waived below, and `GRPC-ERR-001`, recorded but not waived, are BOTH deliberately
+absent from that pin: they still fail the subject leg's gate, named, on every run, exactly as this
+file says they should.
 
 ---
 

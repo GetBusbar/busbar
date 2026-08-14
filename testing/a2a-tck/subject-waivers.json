@@ -1,0 +1,9 @@
+{
+  "_comment": "THE PINNED SET the subject leg's gate (scripts/a2a-subject/boot.sh assert_tck_number) is allowed to see FAIL and still call the leg green. Full reasoning, dated, lives in WAIVERS.md -- this file is the machine-checkable pin of exactly one entry from that ledger, not a second copy of the reasoning. A requirement failing OUTSIDE this set is RED, full stop; a requirement in this set that STARTS PASSING is reported (retire it, do not silently keep the waiver); a requirement failing INSIDE this set is the expected, unchanged state.",
+  "_deliberately_not_included": "CARD-EXT-001 (waived 2026-08-12) and GRPC-ERR-001 (recorded, NOT waived) both fail every run for reasons WAIVERS.md documents in full, but neither is in this pin: this file exempts only the LOCKED PUSH-DELIVER trio from the gate. CARD-EXT-001 and GRPC-ERR-001 stay RED here on purpose -- they are named and understood (see WAIVERS.md), not silenced.",
+  "waived": [
+    "PUSH-DELIVER-001",
+    "PUSH-DELIVER-002",
+    "PUSH-DELIVER-003"
+  ]
+}
