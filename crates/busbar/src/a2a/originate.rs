@@ -198,7 +198,10 @@ pub(super) async fn mirror_push_config(
     // so a registration addressed with it would be refused — or, worse, accepted against nothing.
     // No mapping means busbar has not yet learnt the backend's id for this work, and there is
     // nothing to address until it has.
-    let Some(backend_task) = super::idmap::backend_id_for(&task.task_id) else {
+    // THE TASK'S OWN PRINCIPAL. Not a bypass of the scoped lookup — the owner is admitted by it by
+    // definition — and passing it rather than reaching for an unscoped variant is what keeps there
+    // being only one lookup for a future caller to find.
+    let Some(backend_task) = super::idmap::backend_id_for(&task.principal, &task.task_id) else {
         tracing::debug!(
             task = %task.task_id,
             "a2a: the backend has not yet named this task, so there is no registration to mirror"
@@ -295,7 +298,10 @@ pub(super) async fn refresh_listed_tasks(
         .list_scoped(principal)
         .into_iter()
         .filter(|t| t.agent_id == admitted.dispatch.agent_id && !t.state.is_terminal())
-        .filter_map(|t| super::idmap::backend_id_for(&t.task_id).map(|b| (b, t.task_id)))
+        .filter_map(|t| {
+            let backend = super::idmap::backend_id_for(&t.principal, &t.task_id)?;
+            Some((backend, t.task_id))
+        })
         .collect();
     if ours.is_empty() {
         // Nothing this hop could teach busbar. Not making it is not a shortcut: it is refusing to
