@@ -434,9 +434,15 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          # A syntactically-valid dummy. The smoke asserts BOOT + /healthz, which are
+          # Syntactically-valid dummies. The smoke asserts BOOT + /healthz, which are
           # provider-independent; it deliberately never spends a real provider call.
+          # BOTH are required: the image's own baked docker/config.yaml defines an `admin-tokens`
+          # identity provider reading BUSBAR_ADMIN_TOKEN, and since 1.5.3 an unresolvable secret
+          # reference is fatal at boot. That is why the Dockerfile's own documented invocation
+          # passes `-e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN`, and the smoke must run the form the
+          # docs tell a user to run, not a reduced one.
           export ANTHROPIC_KEY=sk-ant-docker-smoke-dummy
+          export BUSBAR_ADMIN_TOKEN=busbar-docker-smoke-dummy-token
 
           probe() {  # probe <label> -> 0 if /healthz answers "ok"
             for _ in $(seq 1 30); do
@@ -449,12 +455,14 @@ jobs:
           }
 
           fail=0
-          work="$(mktemp -d)"
+          # Anchored under RUNNER_TEMP rather than a bare `mktemp -d`: the config below is BIND
+          # MOUNTED into a container, so it has to live on a path the docker daemon can see.
+          work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/busbar-smoke-XXXXXX")"
 
           # --- 1: the bare `docker run` from the Dockerfile header, using the image's own baked
           # --- /etc/busbar/config.yaml. This is the form that exited 1 on 1.5.3.
           docker rm -f busbar-smoke >/dev/null 2>&1 || true
-          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY \
+          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
             busbar-smoke:candidate >/dev/null
           if probe "the bare docker run (image's own config)"; then :; else
             echo "--- docker logs ---"; docker logs busbar-smoke 2>&1 || true; echo "-------------------"
@@ -488,7 +496,7 @@ jobs:
                 - model: claude-sonnet
           YAML
           docker rm -f busbar-smoke >/dev/null 2>&1 || true
-          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY \
+          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
             -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
             busbar-smoke:candidate >/dev/null
           if probe "the documented docker quickstart (read-only config mount)"; then :; else
