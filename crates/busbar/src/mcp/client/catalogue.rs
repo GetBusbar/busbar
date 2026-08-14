@@ -209,6 +209,40 @@ impl PinnedArtifact for TransportPin {
     }
 }
 
+/// READING AN OPERATOR'S `tools.<server>.pin:` INTO THIS PLANE'S ARTIFACT — the whole of what MCP
+/// writes for it. The sequence, and the refusal of a present-but-blank key, are
+/// [`crate::trust::declared`]'s.
+///
+/// Construction, not authorization. It answers only "is there a root to lock", and the answer feeds
+/// the lifecycle rather than a dispatch decision: with no artifact there is nothing to hand
+/// [`Approval::declared`], so the registration can only be [`Approval::registered`] — pending, and
+/// serving nothing. That is a fact about what is CONSTRUCTIBLE, which is why `unpinned` cannot be
+/// talked into serving by a later edit here.
+impl crate::trust::declared::Declares for TransportPin {
+    type Mechanism = crate::mcp::config::McpPinMechanism;
+
+    fn is_a_root(mechanism: Self::Mechanism) -> bool {
+        mechanism.is_a_root()
+    }
+
+    fn artifact(reading: crate::trust::declared::Reading<'_, Self::Mechanism>) -> Option<Self> {
+        use crate::trust::declared::Reading;
+        match reading {
+            // NO ARTIFACT AT ALL for an unrooted registration, which is this plane's ruling and not
+            // core's: `Approval::declared` takes the pin BY VALUE, so "unpinned can never be
+            // approved" stays a fact about what is constructible here rather than a runtime check
+            // somebody could later relax.
+            Reading::NoRoot { .. } => None,
+            // The FINGERPRINT is ignored, and deliberately: an MCP server offers one opaque
+            // transport-layer value and there is no MCP-native manifest fingerprint for an operator
+            // to have approved out of band. The plane passes `None` for it and never reads it back.
+            Reading::Rooted { mechanism, key, .. } => {
+                Some(TransportPin::declared(mechanism.token(), key))
+            }
+        }
+    }
+}
+
 /// One registered upstream's catalogue entry inside a snapshot: the operator's standing approval,
 /// the last observation, and the tools derived from the two.
 #[derive(Clone, Debug)]

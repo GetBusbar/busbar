@@ -25,8 +25,9 @@
 //!
 //! Every registration is built by `AgentRegistration::registered`, which is the fail-closed floor:
 //! `Pending`, no pin approved, no card cached, nothing delegable. A pin an operator DECLARED in
-//! config is deliberately NOT lifted into an approval here — [`super::config::declared_pin`] can
-//! read one, but an approval is a statement about a document that was actually SEEN, and turning a
+//! config is deliberately NOT lifted into an approval here — [`crate::trust::declared`] can read
+//! one off [`super::config::AgentPinCfg::declaration`], but an approval is a statement about a
+//! document that was actually SEEN, and turning a
 //! config value into one at boot would approve a card nobody has fetched. The `connect` verb
 //! captures the fingerprint and a human approves it; that ordering is the trust root, not a
 //! formality.

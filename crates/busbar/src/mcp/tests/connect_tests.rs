@@ -192,7 +192,7 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
     assert_eq!(
         patch.pointer("/tools/servers/fs/pin/key").unwrap(),
         "sha256/OLD=",
-        "the locked pin lands on the field `declared_pin` reads: {patch}"
+        "the locked pin lands on the field the declared-pin reader reads: {patch}"
     );
     assert_eq!(
         patch
