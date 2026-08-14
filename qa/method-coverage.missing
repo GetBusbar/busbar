@@ -21,23 +21,8 @@
 # Regenerate deliberately (read the diff -- a new line is a new gap):
 #   BUSBAR_PIN_MISSING_CELLS=1 cargo test -p busbar --test method_coverage
 #
-a2a|grpc|client|client|CreateTaskPushNotificationConfig
-a2a|grpc|client|client|DeleteTaskPushNotificationConfig
 a2a|grpc|client|client|GetExtendedAgentCard
-a2a|grpc|client|client|GetTaskPushNotificationConfig
-a2a|grpc|client|client|ListTaskPushNotificationConfigs
-a2a|grpc|client|client|ListTasks
-a2a|http+json|client|client|CreateTaskPushNotificationConfig
-a2a|http+json|client|client|DeleteTaskPushNotificationConfig
 a2a|http+json|client|client|GetExtendedAgentCard
-a2a|http+json|client|client|GetTaskPushNotificationConfig
-a2a|http+json|client|client|ListTaskPushNotificationConfigs
-a2a|http+json|client|client|ListTasks
 
-a2a|jsonrpc|client|client|CreateTaskPushNotificationConfig
-a2a|jsonrpc|client|client|DeleteTaskPushNotificationConfig
 a2a|jsonrpc|client|client|GetExtendedAgentCard
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig
-a2a|jsonrpc|client|client|ListTaskPushNotificationConfigs
-a2a|jsonrpc|client|client|ListTasks
 

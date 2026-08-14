@@ -798,3 +798,218 @@ fn both_http_bindings_discover_the_card_at_the_well_known_path() {
         );
     }
 }
+
+// ══ `ListTasks`: THE POLL BEHIND THE LOCAL ANSWER ════════════════════════════════════════════════
+//
+// `super::super::local` answers `ListTasks` from busbar's own store and gives the argument for
+// why the rows are busbar's: busbar issues its own task ids, and the backend's names for the same
+// work are never client-visible. What that section also said out loud is that those rows carry THE
+// LAST STATE THE BACKEND REPORTED and are NOT a live poll. This is the poll — busbar asks the agent
+// what it now holds, refreshes the rows it can match, and then renders its own scoped rows exactly
+// as before.
+//
+// So the cell `a2a|<binding>|client|client|ListTasks` is a real hop with a real consequence, and the
+// three tests below assert the hop while `the_refreshed_state_reaches_the_callers_own_list` asserts
+// the consequence and `a_backend_row_busbar_cannot_match_moves_nothing` asserts the boundary.
+
+/// The caller's `ListTasks`, addressed to the agent whose work it is about.
+fn list_tasks_call() -> serde_json::Value {
+    envelope_for("ListTasks", serde_json::json!({}))
+}
+
+/// Call, and hand back the LAST request busbar asked to have sent — PANICKING unless the count
+/// moved. The submission that opens the task has already made a hop, so "the log is not empty"
+/// would pass for a `ListTasks` that never reached the wire, which is exactly the false green this
+/// battery exists to prevent.
+async fn issued_after(h: &Harness, before: usize, envelope: &serde_json::Value) -> Recorded {
+    let (status, body) = call_agent(h, "planner", envelope).await;
+    let sent = h.sent();
+    assert!(
+        sent.len() > before,
+        "busbar made NO NEW outbound hop for {:?}. It answered {status} with {body}. This verb is \
+         also answered locally, so a `200` proves nothing whatsoever about the client leg.",
+        envelope.get("method")
+    );
+    sent.into_iter().next_back().expect("just checked")
+}
+
+/// A backend that is still WORKING. A task busbar holds as TERMINAL has nothing left to learn, so a
+/// fixture that completed the task would make busbar skip the hop and every test here assert
+/// nothing.
+fn jsonrpc_list_answer(state: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": 0,
+        "result": { "tasks": [{ "id": "BACKEND-OWN-TASK-ID", "kind": "task",
+                                "status": { "state": state } }],
+                    "nextPageToken": "" }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn jsonrpc_client_issues_list_tasks() {
+    let h = harness_on(
+        in_turn(200, vec![backend_working(), jsonrpc_list_answer("working")]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let _ = open_a_task(&h, &envelope()).await;
+    let before = h.sent().len();
+    let sent = issued_after(&h, before, &list_tasks_call()).await;
+    assert_jsonrpc(&sent, "ListTasks");
+}
+
+#[tokio::test]
+async fn http_json_client_issues_list_tasks() {
+    let h = harness_on(
+        in_turn(
+            200,
+            vec![
+                backend_rest_working(),
+                serde_json::json!({ "tasks": [], "nextPageToken": "" }).to_string(),
+            ],
+        ),
+        BINDING_HTTP_JSON,
+    )
+    .await;
+    let _ = open_a_task(&h, &envelope()).await;
+    let before = h.sent().len();
+    let sent = issued_after(&h, before, &list_tasks_call()).await;
+    assert_eq!(
+        sent.http_method, "GET",
+        "A2A binds `ListTasks` to a GET of the collection"
+    );
+    assert_eq!(path_of(&sent), "/a2a/tasks");
+    assert!(
+        sent.body.is_empty(),
+        "a GET carries no body: {:?}",
+        String::from_utf8_lossy(&sent.body)
+    );
+}
+
+#[tokio::test]
+async fn grpc_client_issues_list_tasks() {
+    let answer = as_fixture(&grpc_frame(&a2a_pb::proto::ListTasksResponse {
+        tasks: vec![grpc_task(a2a_pb::proto::TaskState::Working)],
+        ..Default::default()
+    }));
+    let h = harness_on(
+        in_turn(200, vec![grpc_working_answer(), answer]),
+        BINDING_GRPC,
+    )
+    .await;
+    let _ = open_a_task(&h, &v10_envelope()).await;
+    let before = h.sent().len();
+    let sent = issued_after(&h, before, &list_tasks_call()).await;
+    assert_eq!(path_of(&sent), "/lf.a2a.v1.A2AService/ListTasks");
+    let _: a2a_pb::proto::ListTasksRequest = grpc_message(&sent);
+}
+
+/// THE CONSEQUENCE. The backend has moved the task on out of band — no reply to busbar, no stream
+/// event — and the caller's next `ListTasks` says so, because busbar asked.
+///
+/// Before this hop existed the same call answered `working` forever, and `local`'s own header said
+/// why: the store holds the last state busbar OBSERVED, and busbar observes one only while it is
+/// holding a relayed request open.
+#[tokio::test]
+async fn the_refreshed_state_reaches_the_callers_own_list() {
+    let h = harness_on(
+        in_turn(
+            200,
+            vec![backend_working(), jsonrpc_list_answer("completed")],
+        ),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let before = h.sent().len();
+    let _ = issued_after(&h, before, &list_tasks_call()).await;
+    let (status, answer) = call_agent(&h, "planner", &list_tasks_call()).await;
+    assert_eq!(status, 200, "the list must be served: {answer}");
+    let listed = answer
+        .pointer("/result/tasks")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mine = listed
+        .iter()
+        .find(|t| t.get("id").and_then(serde_json::Value::as_str) == Some(task.as_str()))
+        .unwrap_or_else(|| panic!("the caller's own task is not in its own list: {answer}"));
+    assert_eq!(
+        mine.pointer("/status/state")
+            .and_then(serde_json::Value::as_str),
+        Some("TASK_STATE_COMPLETED"),
+        "the state the agent reported must reach the caller's list: {answer}"
+    );
+}
+
+/// **THE BOUNDARY, AND IT IS THE REASON THIS HOP IS SAFE ON A SHARED BACKEND.**
+///
+/// One backend fronts many of busbar's callers, so its `ListTasks` — answered to BUSBAR'S OWN
+/// credential — enumerates work belonging to every tenant busbar ever sent it. The refresh takes a
+/// state from that answer ONLY for a row busbar already holds, that this principal already owns, on
+/// this agent, whose backend id busbar itself recorded. Everything else is ignored in silence.
+///
+/// This drives the case that matters: an answer naming a task id busbar cannot match must move
+/// NOTHING, and in particular must not create a row, so the caller's list is exactly the list it
+/// was.
+#[tokio::test]
+async fn a_backend_row_busbar_cannot_match_moves_nothing() {
+    let stranger = serde_json::json!({
+        "jsonrpc": "2.0", "id": 0,
+        "result": { "tasks": [
+            { "id": "SOMEBODY-ELSES-TASK", "status": { "state": "completed" } },
+            { "id": "ANOTHER-TENANTS-TASK", "status": { "state": "failed" } }
+        ], "nextPageToken": "" }
+    })
+    .to_string();
+    let h = harness_on(
+        in_turn(200, vec![backend_working(), stranger]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &envelope()).await;
+    let before = h.sent().len();
+    let _ = issued_after(&h, before, &list_tasks_call()).await;
+    let (_, answer) = call_agent(&h, "planner", &list_tasks_call()).await;
+    let listed = answer
+        .pointer("/result/tasks")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        listed.len(),
+        1,
+        "a backend's own rows must never become rows in a caller's list: {answer}"
+    );
+    assert_eq!(listed[0]["id"], task);
+    assert_eq!(
+        listed[0]
+            .pointer("/status/state")
+            .and_then(serde_json::Value::as_str),
+        Some("TASK_STATE_WORKING"),
+        "an unmatched backend row must not move the caller's own task: {answer}"
+    );
+}
+
+/// A CALLER WITH NOTHING OUTSTANDING ON THIS AGENT ASKS THE AGENT NOTHING.
+///
+/// The hop is worth making when there is a row it could refresh, and asking a backend to enumerate
+/// its work for a caller with none is a request with no possible consequence. This asserts the
+/// ABSENCE of the hop, which is the only thing that can tell "did not ask" from "asked and the
+/// fixture happened to answer".
+#[tokio::test]
+async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, backend_ok()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let (status, answer) = call_agent(&h, "planner", &list_tasks_call()).await;
+    assert_eq!(status, 200, "the empty list is still served: {answer}");
+    assert!(
+        h.sent().is_empty(),
+        "busbar asked the agent for a list it could learn nothing from: {:?}",
+        h.sent()
+    );
+}

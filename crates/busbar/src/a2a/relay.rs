@@ -1588,11 +1588,22 @@ fn payload_of(result: &serde_json::Value) -> &serde_json::Value {
 /// Anything unreadable stays `Working`: a relay that guessed `completed` from a token it could not
 /// read would close a task that is still running.
 pub(crate) fn reported_task_state(result: &serde_json::Value) -> TaskState {
-    payload_of(result)
+    read_task_state(payload_of(result)).unwrap_or(TaskState::Working)
+}
+
+/// THE STATE ONE TASK DOCUMENT REPORTS, or `None` when it reports none this build can read.
+///
+/// The STRICT reading, and the difference from [`reported_task_state`] is the whole reason it
+/// exists. That one must produce a state because it is recording the outcome of a hop that
+/// definitely happened, so it falls back to `Working`. A reader that is REFRESHING rows from a list
+/// must not: an entry whose state it could not read is an entry it learnt nothing from, and
+/// defaulting there would move a submitted task to `working` on the strength of a token nobody
+/// understood.
+pub(crate) fn read_task_state(payload: &serde_json::Value) -> Option<TaskState> {
+    payload
         .pointer("/status/state")
         .and_then(serde_json::Value::as_str)
         .and_then(wire_state)
-        .unwrap_or(TaskState::Working)
 }
 
 /// ONE READING OF A BACKEND'S STATE TOKEN, in either A2A vocabulary. `None` for a token this build
@@ -2080,3 +2091,11 @@ mod served_methods_tests;
 #[cfg(test)]
 #[path = "tests/client_leg_tests.rs"]
 mod client_leg_tests;
+
+// THE CALLBACK SUBSTITUTION — busbar registering ITS OWN callback with a backend, so the backend
+// never learns the caller's. Mounted here for the reason every block above is: the claim is about a
+// REQUEST ON THE WIRE (and, for the no-leak scan, about every byte of one), and only the shared
+// harness's recording seam can see one.
+#[cfg(test)]
+#[path = "tests/pushback_tests.rs"]
+mod pushback_tests;

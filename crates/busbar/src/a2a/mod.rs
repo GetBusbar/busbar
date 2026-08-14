@@ -74,9 +74,15 @@ pub(crate) mod inbound;
 pub(crate) mod jws;
 pub(crate) mod local;
 pub(crate) mod meter;
+/// THE HOPS BUSBAR ORIGINATES ITSELF, on verbs `local` also answers: the callback substitution and
+/// the task-list poll. One relay, one egress gate, one framing lookup — see the module header.
+pub(crate) mod originate;
 pub(crate) mod pin;
 pub(crate) mod plane;
 pub(crate) mod provenance;
+/// BUSBAR'S OWN CALLBACK, the one it registers with a BACKEND so the backend never learns the
+/// caller's. The substitution [`pushdeliver`] delivers the other half of.
+pub(crate) mod pushback;
 pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 /// THE RECEIVING HOT PATH. Not `ingress` any more, and the rename is the statement: the ingress
