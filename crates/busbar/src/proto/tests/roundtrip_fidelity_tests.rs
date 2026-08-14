@@ -908,8 +908,14 @@ fn anthropic_search_result_reaches_a_foreign_client() {
     });
     let ir = anthropic.reader.read_request(&body).expect("read");
 
-    let crate::ir::IrBlock::Text { text, citations, .. } = &ir.messages[0].content[0] else {
-        panic!("expected the search_result to become a Text block, got {:?}", ir.messages[0].content[0]);
+    let crate::ir::IrBlock::Text {
+        text, citations, ..
+    } = &ir.messages[0].content[0]
+    else {
+        panic!(
+            "expected the search_result to become a Text block, got {:?}",
+            ir.messages[0].content[0]
+        );
     };
     assert!(
         text.contains("Refunds are issued within 30 days."),
@@ -938,7 +944,8 @@ fn anthropic_search_result_reaches_a_foreign_client() {
     let gemini = crate::proto::protocol_for("gemini").expect("gemini");
     let out = gemini.writer.write_request(&ir);
     assert!(
-        out.to_string().contains("Refunds are issued within 30 days."),
+        out.to_string()
+            .contains("Refunds are issued within 30 days."),
         "the passage must reach a Gemini backend: {out}"
     );
 
@@ -1294,8 +1301,14 @@ fn streamed_anthropic_cache_tiers_survive() {
             },
         })
         .expect("message_delta");
-    assert_eq!(frame["usage"]["cache_creation"]["ephemeral_5m_input_tokens"], 10, "{frame}");
-    assert_eq!(frame["usage"]["cache_creation"]["ephemeral_1h_input_tokens"], 20, "{frame}");
+    assert_eq!(
+        frame["usage"]["cache_creation"]["ephemeral_5m_input_tokens"], 10,
+        "{frame}"
+    );
+    assert_eq!(
+        frame["usage"]["cache_creation"]["ephemeral_1h_input_tokens"], 20,
+        "{frame}"
+    );
 }
 
 /// Cohere's separately-billed `search_units` survive a STREAM.

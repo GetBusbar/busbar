@@ -632,8 +632,16 @@ fn read_gemini_grounding_citations(
     let mut out = Vec::new();
     for support in supports {
         let segment = support.get("segment");
-        let start = convert(segment.and_then(|s| s.get("startIndex")).and_then(|v| v.as_i64()));
-        let end = convert(segment.and_then(|s| s.get("endIndex")).and_then(|v| v.as_i64()));
+        let start = convert(
+            segment
+                .and_then(|s| s.get("startIndex"))
+                .and_then(|v| v.as_i64()),
+        );
+        let end = convert(
+            segment
+                .and_then(|s| s.get("endIndex"))
+                .and_then(|v| v.as_i64()),
+        );
         let cited_text = segment
             .and_then(|s| s.get("text"))
             .and_then(|v| v.as_str())

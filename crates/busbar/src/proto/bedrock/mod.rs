@@ -727,7 +727,7 @@ fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value
         }
     }
 
-    (!obj.is_empty()).then(|| serde_json::Value::Object(obj))
+    (!obj.is_empty()).then_some(serde_json::Value::Object(obj))
 }
 
 /// Read the `cache_control` off the LAST block pushed onto an IR content vector, used by the Bedrock
