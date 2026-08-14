@@ -442,14 +442,16 @@ jobs:
       # whole suite disappear. So: the hard floor has slack, and the high-water mark carries the
       # sensitivity, as a warning that costs nothing to be wrong about.
       #
-      # BOTH ARE MEASURED, NOT GUESSED. windows-latest observed `4755 tests passed across the
-      # workspace`. Independently: `cargo test --workspace -- --list` lists 4793 on unix, of which
-      # 10 are `#[ignore]`d and 24 are erased by cfg(unix) gates -> 4759 predicted, 4755 observed.
-      # The two agree to within 4 tests.
+      # BOTH ARE MEASURED, NOT GUESSED — and measured on THIS branch's suite. windows-latest
+      # observed `3387 tests passed across the workspace` for main's 1.5.4 tree (CI run
+      # 31828339952). dev's ci.yml carries 4700/4755 for the larger 1.6.0 suite; when dev promotes
+      # here through qa, its numbers ride along in its own copy of this file and are correct for
+      # the suite they arrive with. Pinning dev's numbers on main's smaller suite makes a required
+      # check permanently red, which is how these two values were first calibrated.
       #
       # RAISE THESE AS THE SUITE GROWS. Lowering either is only correct when a diff explains why.
-      WINDOWS_MIN_TESTS: "4700"
-      WINDOWS_EXPECTED_TESTS: "4755"
+      WINDOWS_MIN_TESTS: "3300"
+      WINDOWS_EXPECTED_TESTS: "3387"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
