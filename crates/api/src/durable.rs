@@ -32,6 +32,16 @@ pub struct DurableOpts {
     /// (mode set AT OPEN, never via a later `chmod` TOCTOU window). Only ever READ under
     /// `#[cfg(unix)]` below, but call sites (main.rs, config/overlay.rs) construct this struct
     /// unconditionally on every platform, so the field itself can't be `#[cfg(unix)]`-gated away.
+    ///
+    /// **ON WINDOWS THIS FIELD IS A NO-OP, and that is a security property that does not carry.**
+    /// There are no mode bits, so the `#[cfg(unix)]` block below never runs and the published file
+    /// gets whatever ACL it inherits from its parent directory. The caller that matters is
+    /// `config/overlay.rs`, whose overlay can hold operator credential material verbatim (a
+    /// `postgres://user:pass@host/db` in `store.settings.url`); on unix that file is 0600, on
+    /// Windows its confidentiality is exactly the confidentiality of the directory holding
+    /// `config.yaml` and nothing here narrows it. An operator deploying on Windows who needs the
+    /// unix guarantee must set the ACL on that directory themselves. Stated here rather than left
+    /// implicit because "we write it 0600" reads as a cross-platform claim and is not one.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub mode: Option<u32>,
     /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`) — the signing-key anti-pre-plant
@@ -86,6 +96,17 @@ fn holding_dir(path: &Path) -> &Path {
 /// fsync the directory that holds `path`, so a rename or an unlink of it is itself durable.
 /// Best-effort by design: the file CONTENTS are already durable at every call site, and not every
 /// platform/filesystem supports opening a directory for fsync.
+///
+/// **ON WINDOWS THIS IS A COMPLETE NO-OP, and it is a silent one — worth naming because nothing in
+/// the code shape shows it.** `File::open` on a DIRECTORY fails on Windows unless the handle is
+/// opened with `FILE_FLAG_BACKUP_SEMANTICS`, so the `if let Ok(..)` below never binds and no fsync
+/// is even attempted; and even with that flag `FlushFileBuffers` on a directory handle is not the
+/// directory-entry barrier `fsync(dirfd)` is on unix. There is no Win32 equivalent to reach for, so
+/// this is a platform gap rather than an omission: on Windows the durability of a publish rests on
+/// NTFS's metadata journal ordering the rename, not on anything this function does. The FILE
+/// CONTENTS half is unaffected and holds everywhere — `sync_all` on the temp runs before the rename
+/// on every platform, so the failure this guards against on Windows is a lost RENAME after a power
+/// loss (the old file survives, or the file is absent), never a torn or half-written one.
 fn sync_holding_dir(path: &Path) {
     let parent = holding_dir(path);
     #[cfg(test)]

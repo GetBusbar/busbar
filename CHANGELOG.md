@@ -92,6 +92,46 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Fixed
 
+- **`transport: stdio` is configurable on Windows at all.** The boot check that requires
+  `command:` to be an absolute path — a real security control, since a bare name is resolved through
+  `PATH` and hands the choice of binary to whoever controls busbar's environment — tested it with
+  `starts_with('/')`, which is the *unix* spelling of "absolute" and only that. On Windows every
+  absolute path an operator can actually write (`C:\...`, a UNC share) fails that test, so every
+  stdio MCP registration was refused at boot and the transport was unusable on a published release
+  target. The check is now `Path::is_absolute`, which asks the same question in each platform's own
+  spelling: byte-identical on unix (it refuses nothing it did not refuse before), and on Windows it
+  accepts drive-qualified and UNC paths while still refusing a bare name, a relative path, and a
+  drive-relative `\foo` — which resolves against the current drive and so is decided by the
+  environment, exactly what the control exists to stop.
+
+- **`GET /admin/plugins` no longer hides an installed plugin on Windows because of its filename's
+  case.** The directory scan matched the platform library extension with a case-SENSITIVE
+  `ends_with(".dll")`. NTFS is case-insensitive — `FOO.DLL` and `foo.dll` are one file, `LoadLibrary`
+  opens either, and an uppercase extension is exactly what a Windows build system or an unzip hands
+  over — so a genuinely installed, genuinely loadable plugin was reported as absent on the one
+  surface an operator uses to answer "did my install land". The match now follows each filesystem's
+  own case rule: folded on Windows, and still exact on unix, where `.SO` names a *different* file the
+  loader would not resolve and claiming otherwise would be the mirror-image error.
+
+- **The Windows platform gaps are written down where an operator reads them, not inferred.**
+  `docs/operations.md` gains a "Running on Windows" section stating plainly that the `0600`/`0700`
+  modes protecting the config overlay, the signing key and the plugin staging directory **do not
+  exist on Windows** (those files inherit the directory ACL, which the operator must set); that the
+  post-rename holding-directory `fsync` is a no-op there; that the crashed-process plugin staging
+  sweep removes nothing; that `BUSBAR_CONFIG` is effectively required because `/etc/busbar/...` is
+  drive-relative on Windows; and that an `env_clear`ed stdio child needs `SystemRoot`/`windir` (and
+  usually `PATH`/`TEMP`) named explicitly in `env:` or it may not start. Each of these was a
+  documented unix guarantee that silently did not carry.
+
+- **Windows now drains in-flight requests on an orderly stop instead of dying mid-request.** The
+  graceful-shutdown future listened for `ctrl_c` and SIGTERM. Windows has no SIGTERM, and
+  `ctrl_c` there is `CTRL_C_EVENT` — an *interactive* Ctrl+C — so every non-interactive stop
+  (`docker stop` on a Windows container, a closing console, a machine shutdown, which arrive as
+  `CTRL_CLOSE_EVENT`/`CTRL_SHUTDOWN_EVENT`) bypassed the drain entirely and the process was killed
+  with requests still in flight. Those two events are now handled, each degrading exactly like the
+  unix arm: a handler that fails to install is logged and its branch parks, so it can never abort
+  the others.
+
 - **A non-image attachment no longer reaches Anthropic as an `image` and gets the request
   rejected.** The Gemini reader mapped **every** `inlineData` onto an image block regardless of mime
   type, and the Anthropic writer emitted `media_type` verbatim and unvalidated — so a Gemini→

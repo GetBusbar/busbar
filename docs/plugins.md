@@ -603,11 +603,21 @@ get code executed, and a compromised or replayed plugin must not load.
 6. **Verified bytes are the loaded bytes.** The tarball is unpacked and verified fully in memory;
    the manifest never touches disk. On Linux the verified library bytes go into a `memfd` and are
    loaded from `/proc/self/fd/N`: zero disk files, no path for anyone to race or swap. On macOS
-   and Windows the verified bytes are written to a fresh file inside a per-process private `0700`
-   staging directory and loaded from there; the file is regenerated from the verified bytes on
-   every load, a pre-existing on-disk library is never loaded, clean shutdown unloads the library
-   and then removes the file, and a boot-time sweep removes staging left by a crashed prior
-   process. There is no time-of-check/time-of-use window between verification and load.
+   and Windows the verified bytes are written to a fresh file inside a per-process private
+   staging directory and loaded from there. On macOS that directory is created `0700` and the file
+   `0600`. **On Windows it is neither**: mode bits do not exist there, so the staging directory and
+   file are created with whatever the inherited ACL grants — in practice the per-user ACL on
+   `%TEMP%`, which is narrower than a world-writable `/tmp` but is NOT the `0700` guarantee, and an
+   operator running busbar as a user whose `%TEMP%` is shared does not get one. The properties that
+   do NOT depend on mode bits hold on every platform: the file is regenerated from the verified
+   bytes on every load, a pre-existing on-disk library is never loaded, and clean shutdown unloads
+   the library and then removes the file. There is no time-of-check/time-of-use window between
+   verification and load. The boot-time sweep of staging left by a **crashed** prior process is
+   **unix-only**: it decides a prior pid is dead with `kill(pid, 0)`, and on Windows that liveness
+   test is not implemented and reports every pid as alive, so the sweep removes nothing. A Windows
+   deployment that crashes therefore accumulates one abandoned staging directory per crash under
+   `%TEMP%`, to be cleared by the OS temp cleaner or by hand. This costs disk, not integrity —
+   nothing on disk is ever trusted input, so an abandoned directory cannot be loaded from.
 7. **The engine stays memory-safe.** The engine crate compiles under `forbid(unsafe_code)`; all
    FFI lives in `busbar-plugin-loader`. The loader also bounds every plugin response (a buggy or
    hostile plugin cannot force an unbounded allocation).

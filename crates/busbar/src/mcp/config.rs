@@ -1084,7 +1084,17 @@ fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
     // happened to be started in — and anyone who can prepend a directory to that `PATH` chooses the
     // program instead of the operator. A relative path has the same problem with the working
     // directory in place of `PATH`.
-    if !program.starts_with('/') {
+    // PLATFORM-CORRECT absoluteness, not `starts_with('/')`. The predicate is the same security
+    // question on every platform — "is this path decided by the operator's text alone, or by
+    // busbar's environment?" — but the SPELLING of an absolute path is not. `starts_with('/')`
+    // answers it only on unix: on Windows it refuses every legitimate absolute path an operator can
+    // write (`C:\...`, `\\?\...`, a UNC share), so the stdio transport was unconfigurable there
+    // outright. `Path::is_absolute` is byte-identical to the old check on unix (an absolute unix path
+    // is exactly one starting `/`), so this narrows nothing and refuses nothing it refused before; on
+    // Windows it accepts drive-qualified and UNC paths while still refusing a bare name (`PATH`
+    // lookup), a relative path, and a DRIVE-RELATIVE one like `\foo` — which resolves against the
+    // current drive and is therefore decided by the environment, exactly the thing being refused.
+    if !std::path::Path::new(program).is_absolute() {
         return Err(format!(
             "{at}: `command: {program}` must be an ABSOLUTE path. A bare name is resolved through \
              `PATH`, which would let whoever controls busbar's environment choose the binary that \
@@ -1092,7 +1102,7 @@ fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
         ));
     }
     if let Some(dir) = def.cwd.as_deref().map(str::trim) {
-        if !dir.starts_with('/') {
+        if !std::path::Path::new(dir).is_absolute() {
             return Err(format!(
                 "{at}: `cwd: {dir}` must be an ABSOLUTE path. A relative one is resolved against \
                  whatever directory busbar was started in, which is not a thing this file can see."

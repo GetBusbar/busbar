@@ -29,6 +29,20 @@
 //!    store credentials and admin tokens; handing that whole set to an operator-configured child
 //!    would make every stdio registration a credential exfiltration primitive, and it would do it
 //!    silently. An operator who needs a variable names it.
+//!
+//!    **WINDOWS OPERATORS MUST NAME MORE VARIABLES THAN UNIX ONES, and the reason is the OS, not
+//!    busbar.** On unix an empty environment is a working environment: the loader finds shared
+//!    objects by absolute `DT_NEEDED`/`ld.so.cache` and needs nothing from `environ`. On Windows the
+//!    process environment is load-bearing for the platform itself — `SystemRoot` and `windir` are
+//!    read during DLL resolution and Winsock initialisation, and interpreter-based children (a Node
+//!    or Python MCP server, which is most of the installed stdio ecosystem) additionally want
+//!    `PATH`, `TEMP`/`TMP` and often `APPDATA`. An `env_clear()`ed child on Windows can therefore
+//!    fail to START, or start and fail the moment it touches a socket, with an error that comes from
+//!    the child rather than from here. The posture is NOT relaxed for Windows: busbar leaking its own
+//!    environment is the thing this decision exists to prevent, and it is the same secret on both
+//!    platforms. The consequence is that a Windows `env:` block is explicit about the platform
+//!    variables the child needs. This is REASONED, NOT OBSERVED — see the UNVERIFIED note in
+//!    `docs/operations.md`; no stdio child has been spawned on a Windows host.
 //! 4. **The arguments come from CONFIG ONLY.** Nothing on the dispatch path can add to, reorder or
 //!    substitute into them — a tool call's `arguments` reach the child as JSON on its stdin, which
 //!    is data, and never as `argv`, which is not.

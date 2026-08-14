@@ -1291,10 +1291,27 @@ pub struct PluginInfo {
 }
 
 /// Is `file` a dynamic-library name for this platform (by extension)?
+///
+/// THE COMPARISON FOLLOWS THE FILESYSTEM'S OWN CASE RULE, which is not the same rule everywhere.
+/// NTFS is case-INSENSITIVE: `FOO.DLL` and `foo.dll` name the same file, `LoadLibrary` opens either,
+/// and an artifact arriving from a Windows build system or an unzip commonly carries an uppercase
+/// extension. A case-SENSITIVE `ends_with(".dll")` therefore reports "no plugins installed" for a
+/// directory that plainly holds one — a silent omission from the operator-facing inventory
+/// (`GET /admin/plugins`), which is the surface an operator uses to answer "did my install land".
+/// On unix the extension is part of the name and `.SO` is a DIFFERENT file from `.so`, so folding
+/// case there would make this claim a file is a library on the strength of a name the loader would
+/// not resolve. One question, each platform's own answer — the same shape as the absolute-path check
+/// in `mcp::config`.
 fn is_library_file(file: &str) -> bool {
-    let ext = if cfg!(target_os = "windows") {
-        ".dll"
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "windows") {
+        // BYTES, not a `&str` slice: `file[file.len() - 4..]` panics when byte `len - 4` is not a
+        // char boundary, and a filename is arbitrary UTF-8 — a plugins directory holding one
+        // non-ASCII name would take down the inventory scan. `.dll` is ASCII, so the byte-suffix
+        // comparison answers exactly the same question with no boundary to land inside.
+        let b = file.as_bytes();
+        return b.len() >= 4 && b[b.len() - 4..].eq_ignore_ascii_case(b".dll");
+    }
+    let ext = if cfg!(target_os = "macos") {
         ".dylib"
     } else {
         ".so"

@@ -217,6 +217,51 @@ fn list_plugin_files_filters_to_libraries_only_and_sorts() {
     );
 }
 
+/// THE EXTENSION MATCH FOLLOWS THE FILESYSTEM'S CASE RULE, and the two rules are opposites.
+///
+/// This scan is what `GET /admin/plugins` renders, so a file it skips is a plugin an operator is
+/// told is not installed. On NTFS `FOO.DLL` and `foo.dll` are ONE file and `LoadLibrary` opens
+/// either, so a case-sensitive `ends_with(".dll")` hides a plugin that is genuinely there — and
+/// uppercase extensions are exactly what a Windows build system or an unzip hands over. On unix the
+/// extension is part of the name, `.SO` is a different file the loader would not resolve, and
+/// claiming it is a library would be the mirror-image error. So the assertion is per platform
+/// rather than one shared expectation, because the correct answers genuinely differ.
+#[test]
+fn the_library_extension_match_uses_this_filesystems_case_rule() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-libext-case-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let upper = if cfg!(target_os = "windows") {
+        "shouty.DLL"
+    } else if cfg!(target_os = "macos") {
+        "shouty.DYLIB"
+    } else {
+        "shouty.SO"
+    };
+    std::fs::write(dir.join(upper), b"not a real library").unwrap();
+    let files = list_plugin_files(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        files,
+        vec![upper.to_string()],
+        "NTFS is case-insensitive: an uppercase extension names a loadable DLL and must be listed"
+    );
+    #[cfg(not(target_os = "windows"))]
+    assert!(
+        files.is_empty(),
+        "unix filenames are case-sensitive: {upper} is not the library the loader would resolve, so \
+         it must not be reported as one (got {files:?})"
+    );
+}
+
 /// `inventory` reports BOTH a real valid plugin AND a garbage same-extension file in the same
 /// directory, correctly distinguishing valid=true/false rather than silently dropping the
 /// invalid one or crashing on it.

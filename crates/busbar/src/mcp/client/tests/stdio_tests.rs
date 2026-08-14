@@ -279,6 +279,45 @@ async fn the_child_environment_is_replaced_and_not_inherited() {
     );
 }
 
+/// A CRLF-TERMINATED CHILD IS UNDERSTOOD, which is the framing a Windows child actually produces.
+///
+/// The framing rule is "one JSON-RPC message per line", and `read_capped_line` splits on `\n` and
+/// keeps everything before it — so a child whose stdout is in Windows TEXT MODE (any C runtime's
+/// default, which is what an `.exe` MCP server built with MSVC gets) hands back a message with a
+/// trailing `\r` still attached. Stripping it is NOT the fix and would be the wrong one: `\r` is
+/// JSON whitespace, so the byte is already harmless everywhere the message is read, and a stripper
+/// would be a second framing rule to keep in sync with the parser. This test is what says that is
+/// TRUE rather than assumed — it asserts the parse, which is the only thing that ever looks at
+/// these bytes. Run on unix because the fixture is `/bin/sh`, but the property under test is the
+/// reader's, not the shell's: the same bytes arrive from a Windows child.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_child_that_ends_its_lines_with_crlf_is_read_as_one_message() {
+    let mut child = StdioChild::spawn(&sh(
+        r#"read line; printf '{"jsonrpc":"2.0","id":1,"result":{"content":[]}}\r\n'"#,
+    ))
+    .await
+    .expect("spawn");
+    let out = child
+        .call(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+            Duration::from_secs(5),
+            &bare_policy(&Default::default()),
+        )
+        .await
+        .expect("a CRLF-terminated answer is still an answer");
+    assert_eq!(
+        out.last(),
+        Some(&b'\r'),
+        "the fixture must actually be exercising CRLF, or this test proves nothing: {out:?}"
+    );
+    assert_eq!(
+        crate::mcp::client::jsonrpc::parse_response(&out, 1),
+        crate::mcp::client::jsonrpc::RpcOutcome::Result(serde_json::json!({"content": []})),
+        "a trailing CR is JSON whitespace and must not turn a good answer into a malformed one"
+    );
+}
+
 /// A child that closes its stdout is an ERROR, not a hang and not an empty success.
 #[cfg(unix)]
 #[tokio::test]

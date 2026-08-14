@@ -297,6 +297,16 @@ fn pid_alive(pid: u32) -> bool {
 /// base whose pid is DEAD (a prior busbar crashed before its clean-shutdown cleanup) is removed -
 /// the files are unlocked once the process died. The current process's own directory and any
 /// live process's directory are left alone. Returns the number of directories removed.
+///
+/// UNIX-ONLY IN EFFECT, and the consequence is stated rather than left in [`pid_alive`]'s comment.
+/// The sweep's whole decision is "is this pid dead", and off unix [`pid_alive`] has no
+/// implementation and answers `true` for every pid — so this function walks the directory and
+/// removes NOTHING on Windows. It is a no-op there, not a weaker sweep. What that costs is disk:
+/// a Windows deployment accumulates one abandoned staging directory per crash until the OS temp
+/// cleaner or an operator removes it. What it does NOT cost is integrity, and that is why the
+/// no-op is tolerable rather than a hole: staging always regenerates the library from the verified
+/// in-memory bytes, so a leftover directory is never trusted input and can never be loaded from.
+/// Closing it needs a real Windows liveness probe (`OpenProcess` + `GetExitCodeProcess`).
 pub fn sweep_dead_staging() -> usize {
     let base = std::env::temp_dir();
     let mut removed = 0usize;
