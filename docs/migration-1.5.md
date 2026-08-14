@@ -272,12 +272,12 @@ so a clean boot means a fully migrated config.
 
 ---
 
-# Migrating from 1.5.0 to 1.5.1
+## Migrating from 1.5.0 to 1.5.1
 
 1.5.1 is a small, targeted breaking change on top of 1.5.0: **busbar no longer auto-generates a
 signing key at boot.**
 
-## What changed, and why
+### What changed, and why
 
 In 1.5.0, if `auth.signing_key` was absent, busbar generated an ed25519 secret on first boot and
 wrote it to `busbar-signing.key` (mode `0600`) beside the config file. That write-on-first-boot
@@ -290,7 +290,7 @@ signing key as the cause.
 1.5.1 removes the auto-generation entirely. `auth.signing_key` is now a plain secret **reference**
 like any other (`{ env: VAR }` / `{ file: /path }`). Busbar only ever resolves it, never creates it.
 
-## Do you need to do anything?
+### Do you need to do anything?
 
 Only if your deployment verifies busbar-signed keys, i.e. `auth.chain` names the built-in `keys`
 module. If it does, and `auth.signing_key` was relying on the old auto-generated
@@ -300,7 +300,7 @@ closed at `--validate`/boot with an actionable error if `keys` is in the chain a
 
 If `auth.chain` never names `keys` (no signed-token verification), nothing changes for you.
 
-## Migration steps
+### Migration steps
 
 1. Generate a key. `--generate-signing-key` has zero side effects: it mints a fresh ed25519 secret
    from the OS RNG and prints it; it does not write any file or touch your config.
@@ -335,7 +335,7 @@ If `auth.chain` never names `keys` (no signed-token verification), nothing chang
    special about a freshly-generated key versus the old auto-generated one; both are just 32
    raw bytes (or 64 hex chars) of ed25519 secret material.
 
-## Fleet note
+### Fleet note
 
 `auth.signing_key` is a **shared secret**: every node that verifies busbar-signed keys must resolve
 the exact same bytes, or nodes will reject each other's tokens. Generate the key **once**, then
@@ -344,7 +344,7 @@ sourced from a central vault, etc.). Do not run `busbar --generate-signing-key` 
 node. Rotating the key revokes every outstanding key fleet-wide, since every node stops being able to
 verify tokens signed with the old secret.
 
-## Quick checklist
+### Quick checklist
 
 - [ ] Does `auth.chain` name `keys`? If not, no action needed.
 - [ ] `busbar --generate-signing-key > /path/to/secret` (or capture the stdout value into your
@@ -355,14 +355,14 @@ verify tokens signed with the old secret.
 
 ---
 
-# Migrating from 1.5.2 to 1.5.3
+## Migrating from 1.5.2 to 1.5.3
 
 1.5.3 is the **break-once config-stability release**. Two independent changes ship in it: a
 **grammar lock** (breaking, mechanical, migrated for you) and a **config consolidation** (soft,
 env-var deprecations). After 1.5.3 the config grammar is frozen and additive-only forever, enforced
 by a CI gate.
 
-## The 1.5.3 config grammar lock
+### The 1.5.3 config grammar lock
 
 One pattern replaces several ad-hoc ones: **every plugin-instance kind is a top-level NAMED
 DEFINITION map (`name → {module, settings, …}`) and is REFERENCED BY BARE NAME everywhere else.**
@@ -468,7 +468,7 @@ purpose.
 
 **Terminology:** "auth module" is now "identity provider" throughout config and docs.
 
-### Quick checklist
+#### Quick checklist
 
 - [ ] `busbar --migrate-config config.yaml > config-1.5.3.yaml`, then `busbar --validate`
 - [ ] `global_hooks:` + every inline hook instance → a top-level `hooks:` definition map + bare-name `pools.hooks:` / `pools.<p>.hooks:` lists
@@ -480,14 +480,14 @@ purpose.
 - [ ] tap `at: route|attempt|completion` → hook `phase: [candidate|routing|response]`
 - [ ] check no pool is named `hooks` or `upstream_credentials`
 
-## 1.5.3 config consolidation
+### 1.5.3 config consolidation
 
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
 config mutability explicit and **durable by default**. Every migrated env var still works for **one release**
 (each logs a deprecation warning). This is a soft migration, not a clean cut. Move each into config.yaml at
 your convenience before the next release removes the env var.
 
-### Env var → config.yaml
+#### Env var → config.yaml
 
 | Deprecated env var | New home in config.yaml |
 |---|---|
@@ -516,7 +516,7 @@ advanced:
   worker_threads: 4
 ```
 
-### Behavior change: durable-by-default config mutation
+#### Behavior change: durable-by-default config mutation
 
 Before 1.5.3, admin-API config changes were **live-only unless** you set `BUSBAR_CONFIG_OVERLAY`, so a group
 or hook provisioned over the API **silently vanished on restart**. Now, with nothing configured, config is
@@ -533,7 +533,7 @@ Two new postures:
   path is merely not writable (a read-only mount) **boots with no overlay** and refuses config
   mutations instead.
 
-### Upgrade action for read-only-config deployments
+#### Upgrade action for read-only-config deployments
 
 If your `config.yaml` lives on a **read-only mount** (e.g. `/etc/busbar` mounted read-only, or a read-only
 container layer), the default overlay path is not writable. Busbar **still starts and serves traffic**;
@@ -556,7 +556,7 @@ it, choose one:
 
 Either resolves the boot refusal. Busbar never silently falls back to the old lose-on-restart behavior.
 
-## 1.5.3 behavior change: `busbar --validate` resolves secret references
+### 1.5.3 behavior change: `busbar --validate` resolves secret references
 
 **What changed.** Through 1.5.2, `--validate` checked that a secret reference was well FORMED and
 stopped there: a config saying `api_key: { env: ANTHROPIC_KEY }` with `ANTHROPIC_KEY` unset printed
