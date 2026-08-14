@@ -163,14 +163,32 @@ jobs:
         # release: the same fail-closed build docker.yml ships). PGO needs the instrumented binary
         # to run ON THE RUNNER to train, so only the targets whose arch matches the runner's are
         # PGO'd: x86_64-linux on the x86_64 ubuntu runner, and aarch64-darwin on the arm64 macos
-        # runner. The cross targets (aarch64-linux built on an x86_64 host, x86_64-darwin on an arm64
-        # host) and windows cannot self-train, so they keep the plain --release build.
+        # runner. x86_64-darwin (cross, on an arm64 macos host) and windows keep the plain
+        # --release build.
+        #
+        # 1.5.4 (#52) — aarch64-unknown-linux-gnu BUILDS ON A NATIVE ARM RUNNER. It used to build on
+        # `ubuntu-latest` (x86_64), which made it the ONE target that cross-compiles through a
+        # `cross` DOCKER CONTAINER. `cross` forwards only a fixed allowlist of env vars into that
+        # container, and there is no `Cross.toml` here to add to it, so the `BUSBAR_RELEASE_PUBKEY`
+        # set on the build step below never reached the compiler. `option_env!` is infallible by
+        # design — it resolved to `None` and the build stayed GREEN — so 1.5.1, 1.5.2 and 1.5.3 all
+        # shipped an ARM Linux tarball with NO embedded release public key, and every correctly
+        # signed first-party plugin was refused on ARM Linux while working on all four other
+        # targets. `ubuntu-24.04-arm` is a GitHub-hosted native ARM64 runner; on it the action
+        # builds with plain cargo, no container, and the env var reaches the compiler like it does
+        # everywhere else. scripts/release-build.sh (the guard added alongside this) is what makes
+        # a missing key fail the build rather than the user, so this can never silently regress.
+        #
+        # Deliberately NOT flipping this target to `pgo: true` in a hotfix: a native runner makes
+        # PGO possible here, but training this target has never run in CI and an untested trainer
+        # in the release path is a new risk. It stays on the plain path — the change is the runner
+        # label and nothing else, so the PGO/non-PGO split is exactly as it was.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             pgo: true
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -180,6 +198,18 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@v7
+
+      # ── THE KEY, ASSERTED BEFORE ANYTHING IS COMPILED, ON EVERY TARGET ──────────────────────────
+      # ONE step, outside the pgo/non-pgo `if:`, so it cannot be right on one build path and missing
+      # on the other — which is precisely how #52 happened. See scripts/release-key-guard.sh for the
+      # full account; the short version is that `option_env!` is infallible, so a build that never
+      # receives BUSBAR_RELEASE_PUBKEY is GREEN and the defect surfaces months later, to a user,
+      # as "this build embeds no busbar release key". This is the only moment it can be loud.
+      - name: Require the release public key (fail-closed, all targets)
+        shell: bash
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+        run: scripts/release-key-guard.sh require
 
       # ── PGO path (host-native targets): the release binaries users download ARE PGO-optimized ──
       # scripts/pgo-build.sh runs the three-phase PGO build (instrumented -> on-host training ->
@@ -237,7 +267,7 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" "$archive" \
             --repo "${GITHUB_REPOSITORY}" --clobber
 
-      # ── Plain path (cross / windows targets that cannot self-train for PGO) ──
+      # ── Plain path (targets that do not self-train for PGO) ──
       # Builds --release for the target (installing the toolchain + cross-linker as
       # needed), tarballs the `busbar` binary, and uploads it to the Release for this tag.
       #
@@ -261,6 +291,28 @@ jobs:
           target: ${{ matrix.target }}
           archive: busbar-$target
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── THE KEY, ASSERTED AGAINST THE SHIPPED BYTES ─────────────────────────────────────────────
+      # The output-side half of the guard, and the one that would actually have gone RED on the real
+      # 1.5.3 aarch64 tarball. The `require` step above proves the variable was SET; only this proves
+      # the compiler kept it. They catch different failures — a build that runs in an environment the
+      # variable does not reach (a `cross` container, a sandboxed builder) passes the first and fails
+      # this one. Runs on BOTH build paths for the same reason `require` does. The archive is the
+      # exact file just uploaded: the PGO path tars it by hand, the plain path's
+      # `archive: busbar-$target` leaves it in the workspace.
+      - name: Assert the shipped artifact embeds the release public key
+        shell: bash
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=(busbar-${{ matrix.target }}.tar.gz busbar-${{ matrix.target }}.zip)
+          [ ${#found[@]} -eq 1 ] || {
+            echo "::error::expected exactly one busbar-${{ matrix.target }} archive, found ${#found[@]}" >&2
+            exit 1
+          }
+          scripts/release-key-guard.sh assert-embedded "${found[0]}"
 
       # Generate a keyless (Sigstore/OIDC) build-provenance attestation binding THIS
       # archive's digest to this workflow run + commit. A user verifies the download with

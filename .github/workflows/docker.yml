@@ -121,6 +121,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # The image binary embeds the release public key for exactly the same reason the release.yml
+      # binaries do, so it gets exactly the same fail-closed guard, from the same script. See
+      # scripts/release-key-guard.sh: `option_env!` is infallible, so an absent variable produces a
+      # GREEN build and a binary that refuses every correctly-signed first-party plugin. This image
+      # was not the #52 victim (it already builds on native runners for both arches), and the point
+      # of putting the guard here anyway is that "which build path happens to be correct today" is
+      # not a property anyone should have to keep track of.
+      - name: Require the release public key (fail-closed)
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+        run: scripts/release-key-guard.sh require
+
       # PGO release build (scripts/pgo-build.sh): instrumented build -> on-host training (native-arch
       # runner, so the musl-static instrumented binary executes locally) -> optimized build.
       # FAIL-CLOSED: PGO is MANDATORY. If any PGO phase fails the script exits non-zero and this
