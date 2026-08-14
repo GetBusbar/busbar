@@ -22,7 +22,7 @@ Point any SDK at one URL, reach any provider, and keep serving when a provider d
   <img src="assets/matrix-light.svg" alt="Six by six matrix of ingress protocol against upstream protocol. All 36 pairs served. The same-protocol diagonal is forwarded byte for byte.">
 </picture>
 
-Six wire protocols, first class on both sides, in either direction. Same-protocol routes are byte-for-byte identical to calling the provider directly, because busbar forwards your original bytes; cross-protocol, every modelled field arrives in the target's native shape.
+Six wire protocols, first class on both sides, in either direction. Same-protocol routes are byte-for-byte identical to calling the provider directly, because Busbar forwards your original bytes; cross-protocol, every modelled field arrives in the target's native shape.
 
 Self-hosted, always. No hosted service, no signup, nothing phones home, and your provider keys stay in your own config on your own machine.
 
@@ -36,24 +36,24 @@ Self-hosted, always. No hosted service, no signup, nothing phones home, and your
   client.chat.completions.create(model="fast", messages=[{"role": "user", "content": "Hi"}])
 ```
 
-That request left as OpenAI, may have been served by Anthropic, and came back as OpenAI. If Anthropic had failed before the first byte, busbar would have moved to the next lane without your client noticing.
+That request left as OpenAI, may have been served by Anthropic, and came back as OpenAI. If Anthropic had failed before the first byte, Busbar would have moved to the next lane without your client noticing.
 
 ## Why not LiteLLM, Kong or Portkey
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/field-dark.svg">
-  <img src="assets/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing busbar with LiteLLM, Kong and Portkey.">
+  <img src="assets/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing Busbar with LiteLLM, Kong and Portkey.">
 </picture>
 
 Same box, same harness, same day, published cell by cell with its own verdict and reason at [onthebench.ai](https://onthebench.ai). Busbar served all 36 ingress and upstream wire-protocol pairs where LiteLLM served 8, Portkey 8 and Kong 4, at 7.3 MiB idle and 5.74 MB of compressed image against 360.77 MB for LiteLLM's.
 
-The full table, with what each row does and does not say, is in the [busbar README](https://github.com/GetBusbar/busbar#why-not-litellm-kong-or-portkey).
+The full table, with what each row does and does not say, is in the [Busbar README](https://github.com/GetBusbar/busbar#why-not-litellm-kong-or-portkey).
 
 ## Repositories
 
 | | |
 |---|---|
-| **[busbar](https://github.com/GetBusbar/busbar)** | The gateway. One static Rust binary, Apache-2.0. |
+| **[Busbar](https://github.com/GetBusbar/busbar)** | The gateway. One static Rust binary, Apache-2.0. |
 | [helm-charts](https://github.com/GetBusbar/helm-charts) · [terraform-provider-busbar](https://github.com/GetBusbar/terraform-provider-busbar) · [pulumi-busbar](https://github.com/GetBusbar/pulumi-busbar) · [provider-busbar](https://github.com/GetBusbar/provider-busbar) | Deploy it: Helm, Terraform, Pulumi, Crossplane. |
 | [busbar-admin](https://github.com/GetBusbar/busbar-admin) · [busbar-go](https://github.com/GetBusbar/busbar-go) · [busbar-python](https://github.com/GetBusbar/busbar-python) · [busbar-js](https://github.com/GetBusbar/busbar-js) | Drive the admin API: a CLI and typed clients. |
 | [store-postgres](https://github.com/GetBusbar/store-postgres) · [store-mysql](https://github.com/GetBusbar/store-mysql) · [store-sqlite](https://github.com/GetBusbar/store-sqlite) · [store-valkey](https://github.com/GetBusbar/store-valkey) | Governance state, shared across a cluster. |

@@ -2,7 +2,7 @@
   <img src="assets/busbar-logo.png" alt="Busbar" width="96" height="96">
 </p>
 
-<h1 align="center">busbar</h1>
+<h1 align="center">Busbar</h1>
 
 <p align="center"><strong>Your AI control plane, in one static Rust binary.</strong><br>
 Point any SDK at one URL, reach any provider, and keep serving when a provider does not.</p>
@@ -21,7 +21,7 @@ Point any SDK at one URL, reach any provider, and keep serving when a provider d
 
 Six wire protocols, first class on both sides: OpenAI, OpenAI Responses, Anthropic, Gemini, Cohere and Bedrock Converse.
 
-Same-protocol routes are byte-for-byte identical to calling the provider directly, because busbar forwards your original bytes rather than re-serializing them. Cross-protocol, every modelled field arrives in the target's native shape.
+Same-protocol routes are byte-for-byte identical to calling the provider directly, because Busbar forwards your original bytes rather than re-serializing them. Cross-protocol, every modelled field arrives in the target's native shape.
 
 Self-hosted, always. No hosted service, no signup, nothing phones home. Your provider keys stay in your config on your machine.
 
@@ -39,7 +39,7 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
   <img src="assets/readme/memory-light.svg" alt="Resident set size flat at 7.3 MiB idle, 22.4 MiB under sustained load, returning to 16.1 MiB when the load stops.">
 </picture>
 
-<sub>busbar 1.5.1, AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.</sub>
+<sub>Busbar 1.5.1, AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03. Same-protocol OpenAI cell. Across all 36 cells idle stayed between 7.32 and 7.42 MiB.</sub>
 
 ---
 
@@ -47,26 +47,24 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/field-dark.svg">
-  <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing busbar with LiteLLM, Kong and Portkey.">
+  <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing Busbar with LiteLLM, Kong and Portkey.">
 </picture>
 
-| <sub>Measured 2026-08-03 · m7g.4xlarge · 4 cores</sub> | <sub>busbar</sub> | <sub>LiteLLM&nbsp;Py</sub> | <sub>LiteLLM&nbsp;Rust</sub> | <sub>Kong</sub> | <sub>Portkey</sub> |
+| | Busbar | LiteLLM&nbsp;Py | LiteLLM&nbsp;Rust | Kong | Portkey |
 |---|---|---|---|---|---|
 | Wire protocol pairs served, of 36 | **36** | 8 | 1 | 4 | 8 |
-| Added latency p99 <sub>µs</sub> | **82** | 8,221 | 106 | 389 | 3,720 |
-| CPU per request, c=8 <sub>µs</sub> | **65** | 6,775 | 89 | 210 | 1,486 |
+| Added latency p99, µs | **82** | 8,221 | 106 | 389 | 3,720 |
+| CPU per request at c=8, µs | **65** | 6,775 | 89 | 210 | 1,486 |
 | Requests/sec, zero failures | **67,837** | 170 | 48,354 | 22,418 | 855 |
-| Time to first token, p50 <sub>µs</sub> | **129** | 9,088 | 181 | 105,907 | 27,908 |
+| Time to first token p50, µs | **129** | 9,088 | 181 | 105,907 | 27,908 |
 | Idle resident memory | **7.3 MiB** | 1,080 MiB | 253 MiB | 403 MiB | 124 MiB |
-
-**What you install, measured today:**
 
 | | Container image | Install |
 |---|---|---|
-| busbar | **5.74 MB**, 3 layers | one **12.4 MiB** static binary |
-| LiteLLM | 360.77 MB, 21 layers | **558 MiB** across 107 packages |
+| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** static binary |
+| LiteLLM | 360.77 MiB, 21 layers | **558 MiB** across 107 packages |
 
-<sub>Registry manifests for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, both linux/amd64. Install figure is `pip install 'litellm[proxy]'` into a clean virtualenv.</sub>
+Measured 2026-08-03 on an m7g.4xlarge pinned to 4 cores. Image sizes are compressed registry layers for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, linux/amd64.
 
 Three things we will say against ourselves:
 
@@ -74,7 +72,7 @@ Three things we will say against ourselves:
 - **LiteLLM Rust is early beta** with a deliberately narrow surface, and its overhead is the same class as ours. The difference there is scope, not speed.
 - **Kong is a general API gateway** with an LLM plugin bolted on. That is why its streaming row reads 106 ms and ours reads 129 µs.
 
-Every cell is published with its own verdict and reason at [onthebench.ai](https://onthebench.ai). The harness is open source, so you can disagree with it in public. &nbsp; [busbar vs LiteLLM](https://getbusbar.com/docs/vs-litellm/)
+Every cell is published with its own verdict and reason at [onthebench.ai](https://onthebench.ai). The harness is open source, so you can disagree with it in public. &nbsp; [Busbar vs LiteLLM](https://getbusbar.com/docs/vs-litellm/)
 
 ---
 
@@ -90,7 +88,7 @@ Your app already speaks one of those six protocols. Change the base URL and the 
   client.chat.completions.create(model="fast", messages=[{"role": "user", "content": "Hi"}])
 ```
 
-That request left as OpenAI, may have been served by Anthropic, and came back as OpenAI. If Anthropic had failed before the first byte, busbar would have moved to the next lane without your client noticing.
+That request left as OpenAI, may have been served by Anthropic, and came back as OpenAI. If Anthropic had failed before the first byte, Busbar would have moved to the next lane without your client noticing.
 
 <details>
 <summary><strong>The same swap in the other five SDKs</strong></summary>
@@ -123,9 +121,42 @@ client = boto3.client("bedrock-runtime", region_name="us-east-1",
 client.converse(modelId="fast", messages=[{"role": "user", "content": [{"text": "Hi"}]}])
 ```
 
-Every one of these was run against busbar 1.5.3 while writing this file. Full route and auth reference: [Protocols](https://getbusbar.com/docs/protocols/).
+Every one of these was run against Busbar 1.5.3 while writing this file. Full route and auth reference: [Protocols](https://getbusbar.com/docs/protocols/).
 
 </details>
+
+---
+
+## Pools, weights and failover
+
+This is the part you cannot easily build yourself. A pool is a weighted group of lanes that share a circuit breaker; a lane that fails before the first byte is replaced mid-request, and the breaker attributes the fault so a bad key benches one lane instead of tripping a healthy one.
+
+```yaml
+providers:
+  anthropic:       { api_key: { env: ANTHROPIC_KEY } }
+  openai:          { api_key: { env: OPENAI_KEY } }
+  bedrock:         { api_key: { env: AWS_KEYPAIR } }   # ACCESS_KEY_ID:SECRET_ACCESS_KEY
+
+models:
+  claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
+  gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
+  claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
+
+pools:
+  fast:
+    members:
+      - { model: claude,     weight: 8 }   # 80 percent of traffic
+      - { model: gpt,        weight: 2 }   # 20 percent
+      - { model: claude-aws, weight: 1 }   # same model, other cloud, picks up load when the others trip
+    breaker:
+      trip: { mode: consecutive, consecutive_n: 3 }
+      base_cooldown_secs: 15
+    failover:
+      timeout_secs: 20
+      max_hops: 2
+```
+
+Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
 
 ---
 
@@ -161,39 +192,6 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 ```
 
 `busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state, so it belongs in CI. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
-
----
-
-## Pools, weights and failover
-
-This is the part you cannot easily build yourself. A pool is a weighted group of lanes that share a circuit breaker; a lane that fails before the first byte is replaced mid-request, and the breaker attributes the fault so a bad key benches one lane instead of tripping a healthy one.
-
-```yaml
-providers:
-  anthropic:       { api_key: { env: ANTHROPIC_KEY } }
-  openai:          { api_key: { env: OPENAI_KEY } }
-  bedrock:         { api_key: { env: AWS_KEYPAIR } }   # ACCESS_KEY_ID:SECRET_ACCESS_KEY
-
-models:
-  claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
-  gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
-  claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
-
-pools:
-  fast:
-    members:
-      - { model: claude,     weight: 8 }   # 80 percent of traffic
-      - { model: gpt,        weight: 2 }   # 20 percent
-      - { model: claude-aws, weight: 1 }   # same model, other cloud, picks up load when the others trip
-    breaker:
-      trip: { mode: consecutive, consecutive_n: 3 }
-      base_cooldown_secs: 15
-    failover:
-      timeout_secs: 20
-      max_hops: 2
-```
-
-Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
 
 ---
 
@@ -271,7 +269,7 @@ spec:
   ports: [ { name: http, port: 80, targetPort: http } ]
 ```
 
-`config: { locked: true }` is what lets the root filesystem be read-only: a mutable config needs a writable overlay path and busbar refuses to boot without one. This Service is cluster-internal and the data plane has no auth chain, so turn on virtual keys before you expose it ([Governance](https://getbusbar.com/docs/guides/governance/)).
+`config: { locked: true }` is what lets the root filesystem be read-only: a mutable config needs a writable overlay path and Busbar refuses to boot without one. This Service is cluster-internal and the data plane has no auth chain, so turn on virtual keys before you expose it ([Governance](https://getbusbar.com/docs/guides/governance/)).
 
 </details>
 

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="340" viewBox="0 0 900 340" role="img" aria-label="Flat memory, and it gives it back">
 <rect width="900" height="340" rx="10" fill="#0d1117"/>
-<text x="28.0" y="40.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" font-weight="650" fill="#e6edf3" text-anchor="start">Flat memory, and it gives it back</text>
-<text x="28.0" y="62.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">Resident set size: 60 s idle at rest, then 300 s of load at c=32, then the load is removed.</text>
+<text x="28.0" y="42.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="21" font-weight="650" fill="#e6edf3" text-anchor="start">Flat memory, and it gives it back</text>
+<text x="28.0" y="66.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#9198a1" text-anchor="start">Resident set size: 60 s idle at rest, then 300 s of load at c=32, then the load is removed.</text>
 <rect x="28.0" y="92.0" width="596.0" height="194.0" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
 <line x1="80" y1="254.0" x2="600" y2="254.0" stroke="#30363d" stroke-width="1" opacity="0.7"/>
 <text x="72.0" y="258.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#6e7681" text-anchor="end">0</text>
@@ -30,5 +30,5 @@
 <rect x="648.0" y="242.0" width="224.0" height="44.0" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
 <text x="662.0" y="264.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#3fb950" text-anchor="start">16.1 MiB</text>
 <text x="662.0" y="278.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#9198a1" text-anchor="start">once the load stopped</text>
-<text x="28.0" y="324.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#6e7681" text-anchor="start">busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
+<text x="28.0" y="324.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#6e7681" text-anchor="start">Busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
 </svg>
