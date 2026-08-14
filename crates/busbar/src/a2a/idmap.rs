@@ -38,6 +38,26 @@
 //!
 //! The map is BOUNDED and evicts oldest-first. An unbounded process-local map keyed by a value a
 //! caller can cause to be created is a memory leak with an external trigger.
+//!
+//! ## THE LOOKUP IS SCOPED, AND THAT IS THIS MODULE'S SHARE OF THE AUTHORIZATION BOUNDARY
+//!
+//! The map is keyed by a task id and NOTHING ELSE, which made it an addressing oracle the moment it
+//! existed. `super::receive` resolves a caller-named task through `taskstore::get_scoped` and says,
+//! in a comment, that "naming somebody else's task id is not a way to read or cancel their work: it
+//! resolves to nothing, the ordinary path runs, and the backend answers about an id it does not
+//! hold". That sentence was FALSE, because the relayed body is composed here, from the same id, with
+//! no principal in scope: a second key naming the first key's task had that id translated to the
+//! backend's, the backend answered about it, and `relay::rewrite_identity` stamped busbar's id back
+//! on. `GetTask` and `CancelTask` therefore crossed the tenancy boundary that `ListTasks` held —
+//! enumeration protected, addressing not, which is the shape of an IDOR.
+//!
+//! So every lookup takes the PRINCIPAL, and the boundary it applies is not a second copy of the
+//! rule: it is [`super::taskstore::TaskRegistry::get_scoped`], the one predicate that already owns
+//! "may this caller see this task", asked here rather than re-derived. A caller that does not own an
+//! id gets no translation, so its request leaves with busbar's own id on it and the backend answers
+//! exactly what it answers for an id that never existed — A2A section 3.3.2's rule that a server
+//! "MUST NOT reveal the existence of resources the client is not authorized to access", obtained by
+//! construction rather than by a check somebody has to remember to write.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -89,8 +109,20 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
     }
 }
 
-/// What the backend calls this task, if busbar has seen it answer about one.
-pub(crate) fn backend_id_for(busbar_id: &str) -> Option<String> {
+/// What the backend calls this task, if busbar has seen it answer about one AND `principal` owns it.
+///
+/// THE ONLY LOOKUP. There is deliberately no unscoped twin: the map is keyed by a task id, so a
+/// lookup that took only an id would let any caller address any caller's task, and a `get_unscoped`
+/// beside this one is a door that a future reader walks through by accident. The two internal
+/// callers ([`super::originate`]) pass the task's OWN `principal`, which is the owner by definition
+/// and therefore always admitted — they are not exceptions to the rule, they are instances of it.
+///
+/// The boundary is [`super::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
+/// One predicate, one owner; see the module header.
+pub(crate) fn backend_id_for(principal: &str, busbar_id: &str) -> Option<String> {
+    super::taskstore::TASKS
+        .get_scoped(principal, busbar_id)
+        .ok()?;
     table().by_busbar_id.get(busbar_id).cloned()
 }
 
@@ -99,13 +131,17 @@ pub(crate) fn backend_id_for(busbar_id: &str) -> Option<String> {
 /// A2A v1.0's `task_id`.
 pub(crate) const TASK_ID_MEMBERS: [&str; 3] = ["id", "taskId", "task_id"];
 
-/// TRANSLATE every busbar task id in a request's `params` back to the backend's.
+/// TRANSLATE every busbar task id in a request's `params` back to the backend's, FOR THIS CALLER.
 ///
 /// Returns `None` when nothing was translated, which is the overwhelmingly common case and the one
 /// that matters: the caller's bytes are then forwarded UNCHANGED rather than re-serialized. A
 /// gateway that round-tripped every request through `serde_json` would silently normalise member
 /// order, number formatting and duplicate keys in somebody else's payload.
-pub(crate) fn translate_request(envelope: &serde_json::Value) -> Option<Vec<u8>> {
+///
+/// `principal` is the authorization boundary, applied through [`backend_id_for`]. An id belonging to
+/// somebody else is left exactly as an id that never existed is left — untranslated — so the two are
+/// indistinguishable to the caller downstream of this function.
+pub(crate) fn translate_request(envelope: &serde_json::Value, principal: &str) -> Option<Vec<u8>> {
     let params = envelope.get("params")?.as_object()?;
     let mut rewritten = params.clone();
     let mut any = false;
@@ -113,7 +149,7 @@ pub(crate) fn translate_request(envelope: &serde_json::Value) -> Option<Vec<u8>>
         let Some(busbar_id) = rewritten.get(member).and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let Some(backend_id) = backend_id_for(busbar_id) else {
+        let Some(backend_id) = backend_id_for(principal, busbar_id) else {
             continue;
         };
         rewritten.insert(member.to_string(), serde_json::Value::String(backend_id));
@@ -152,7 +188,11 @@ pub(crate) fn translate_request(envelope: &serde_json::Value) -> Option<Vec<u8>>
             let Some(busbar_id) = msg.get(member).and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            let Some(backend_id) = backend_id_for(busbar_id) else {
+            // SCOPED FOR THE SAME REASON THE TOP-LEVEL MEMBERS ARE, and this one is a WRITE rather
+            // than a read: `params.message.taskId` is how a caller says "this is the next turn of a
+            // conversation that is already open", so an unscoped translation here appended another
+            // principal's conversation with this caller's message.
+            let Some(backend_id) = backend_id_for(principal, busbar_id) else {
                 continue;
             };
             msg.insert(member.to_string(), serde_json::Value::String(backend_id));

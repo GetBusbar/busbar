@@ -1424,7 +1424,16 @@ async fn admitted(
     // to a backend that has never heard of it. See `super::idmap`: this is the only direction that
     // was missing, and `None` - a request naming no task busbar issued - forwards the caller's OWN
     // BYTES rather than a re-serialization, so nothing else in the envelope is normalised.
-    let relayed_body = super::idmap::translate_request(&envelope).unwrap_or_else(|| body.to_vec());
+    //
+    // SCOPED TO THIS CALLER, and that is what makes the `addressed_task` note above TRUE rather than
+    // merely intended. `addressed_task` refuses to resolve another principal's id, but the relayed
+    // BODY is composed here, and it used to be composed from the same id with no principal in scope
+    // — so a second key naming the first key's task had that id translated to the backend's, the
+    // backend answered about it, and the answer came back wearing busbar's id. `GetTask` and
+    // `CancelTask` crossed the boundary `ListTasks` held. Now an id this caller does not own is left
+    // exactly as an id that never existed is left, and the two answers are the same answer.
+    let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
+        .unwrap_or_else(|| body.to_vec());
 
     if shape.requires_streaming {
         stream_hop(hop_ctx, seam, gate, lease, relayed_body).await

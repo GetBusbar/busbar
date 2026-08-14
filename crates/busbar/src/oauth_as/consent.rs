@@ -49,13 +49,21 @@ use axum::http;
 // URL an operator sees and in the route table.
 use oauth_as::http::{ApprovalDecision, ApprovalRequest};
 
-/// The cookie the consent screen sets and [`subject_resolver`] reads. Scoped to the consent path, so it is
-/// not sent to the token endpoint or to any other plane.
+/// The cookie the consent screen sets and [`subject_resolver`] reads.
+///
+/// Scoped to the two paths that read it — the authorization endpoint and the consent screen — and
+/// to nothing else, so it is not sent to the token endpoint, to the JWKS, or to any other plane on
+/// this origin. The scoping itself lives at the one place that writes the header; see
+/// `routes::session_cookies` for the enumeration and for why it takes two `Set-Cookie`s.
 pub(crate) const SESSION_COOKIE: &str = "busbar_as_session";
 
 /// How long an operator stays logged in to the consent screen. Short: this is not a product session,
 /// it is the window in which one agent finishes one login.
-const SESSION_TTL: Duration = Duration::from_secs(600);
+///
+/// Visible to [`super::routes`] because it is also the cookie's `Max-Age`: a browser that kept
+/// presenting a session this table has already dropped would be sending a dead credential, and two
+/// independently written lifetimes are how those two drift apart.
+pub(crate) const SESSION_TTL: Duration = Duration::from_secs(600);
 
 /// A bound on live sessions, so an unauthenticated flood cannot grow this map. Reaching it evicts
 /// the oldest, which is the correct failure: an operator whose session was evicted logs in again.

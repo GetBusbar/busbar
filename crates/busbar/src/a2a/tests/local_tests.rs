@@ -701,6 +701,287 @@ async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
     );
 }
 
+// ══ THE TENANCY BOUNDARY ON EVERY TASK-ADDRESSING VERB ═══════════════════════════════════════════
+//
+// A2A section 3.3.2: a server "MUST NOT reveal the existence of resources the client is not
+// authorized to access". Section 13.1 requires the check on EVERY Protocol Operations request,
+// scoped to the caller's authorized access boundaries.
+//
+// The defect these lock out was found on `GetTask` — one operation, tested by one person. The
+// failure mode this section exists to prevent is fixing that one and leaving the siblings, so each
+// verb below is probed with TWO principals and asserts BOTH halves. A single-principal test cannot
+// tell perfect scoping from none: it sees an answer and cannot say whose task it was about.
+//
+// The non-owner half is asserted by COMPARISON against the absent-id answer, not by asserting "an
+// error". Status, error code and body shape must all match, because any one of them differing is
+// the existence oracle 3.3.2 forbids.
+
+/// The full answer a caller sees — status, and the JSON body it carries — so the two halves of an
+/// indistinguishability claim are compared on everything observable rather than on a code.
+async fn observable(response: axum::response::Response) -> (u16, serde_json::Value) {
+    let status = response.status().as_u16();
+    (status, body(response).await)
+}
+
+/// `GetTaskPushNotificationConfig`: the owner reads its own config; nobody else can tell that there
+/// is a task to have one.
+#[tokio::test]
+async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    let owner = "key-cfgget-owner";
+    let intruder = "key-cfgget-intruder";
+    open(
+        owner,
+        "cfgget-owned",
+        "ctx-cfgget",
+        TaskState::Working,
+        1_000,
+    );
+    local::create_push_config(
+        Dialect::V10,
+        &envelope(
+            "CreateTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgget-owned", "id": "cfg-1", "url": HOOK }),
+        ),
+        &rpc_id(),
+        owner,
+        seam(),
+        1_000,
+    )
+    .await;
+
+    // THE OWNER CAN.
+    let mine = result(local::get_push_config(
+        Dialect::V10,
+        &envelope(
+            "GetTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgget-owned", "id": "cfg-1" }),
+        ),
+        &rpc_id(),
+        owner,
+    ))
+    .await;
+    assert_eq!(mine["url"], HOOK);
+
+    // THE NON-OWNER CANNOT, and gets the answer an id that never existed gets.
+    let foreign = observable(local::get_push_config(
+        Dialect::V10,
+        &envelope(
+            "GetTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgget-owned", "id": "cfg-1" }),
+        ),
+        &rpc_id(),
+        intruder,
+    ))
+    .await;
+    let absent = observable(local::get_push_config(
+        Dialect::V10,
+        &envelope(
+            "GetTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgget-never-existed", "id": "cfg-1" }),
+        ),
+        &rpc_id(),
+        intruder,
+    ))
+    .await;
+    assert_eq!(
+        foreign, absent,
+        "status, error code and body must be identical for another principal's task and for a task \
+         that does not exist"
+    );
+    assert_eq!(
+        foreign.1.pointer("/error/code"),
+        Some(&serde_json::json!(-32001))
+    );
+}
+
+/// `ListTaskPushNotificationConfigs`: the same two-principal probe on the enumeration-by-task verb.
+/// It is the one whose answer is a LIST, so a non-owner must not be given an empty list either —
+/// an empty list for a task that exists and a refusal for a task that does not are distinguishable.
+#[tokio::test]
+async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    let owner = "key-cfglist-owner";
+    let intruder = "key-cfglist-intruder";
+    open(
+        owner,
+        "cfglist-owned",
+        "ctx-cfglist",
+        TaskState::Working,
+        1_000,
+    );
+    local::create_push_config(
+        Dialect::V10,
+        &envelope(
+            "CreateTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfglist-owned", "id": "cfg-l", "url": HOOK }),
+        ),
+        &rpc_id(),
+        owner,
+        seam(),
+        1_000,
+    )
+    .await;
+
+    let mine = result(local::list_push_configs(
+        Dialect::V10,
+        &envelope(
+            "ListTaskPushNotificationConfigs",
+            serde_json::json!({ "taskId": "cfglist-owned" }),
+        ),
+        &rpc_id(),
+        owner,
+    ))
+    .await;
+    assert_eq!(mine["configs"].as_array().map(Vec::len), Some(1));
+
+    let foreign = observable(local::list_push_configs(
+        Dialect::V10,
+        &envelope(
+            "ListTaskPushNotificationConfigs",
+            serde_json::json!({ "taskId": "cfglist-owned" }),
+        ),
+        &rpc_id(),
+        intruder,
+    ))
+    .await;
+    let absent = observable(local::list_push_configs(
+        Dialect::V10,
+        &envelope(
+            "ListTaskPushNotificationConfigs",
+            serde_json::json!({ "taskId": "cfglist-never-existed" }),
+        ),
+        &rpc_id(),
+        intruder,
+    ))
+    .await;
+    assert_eq!(foreign, absent);
+    assert_eq!(
+        foreign.1.pointer("/error/code"),
+        Some(&serde_json::json!(-32001))
+    );
+}
+
+/// `DeleteTaskPushNotificationConfig`: the WRITE half. A delete that crossed the boundary would not
+/// leak a fact, it would DISARM another principal's callback — so the assertion is on the owner's
+/// row as well as on the answer.
+#[tokio::test]
+async fn delete_push_config_cannot_disarm_another_principals_callback() {
+    let owner = "key-cfgdel-owner";
+    let intruder = "key-cfgdel-intruder";
+    open(
+        owner,
+        "cfgdel-owned",
+        "ctx-cfgdel",
+        TaskState::Working,
+        1_000,
+    );
+    local::create_push_config(
+        Dialect::V10,
+        &envelope(
+            "CreateTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d", "url": HOOK }),
+        ),
+        &rpc_id(),
+        owner,
+        seam(),
+        1_000,
+    )
+    .await;
+
+    let foreign = observable(local::delete_push_config(
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
+        ),
+        &rpc_id(),
+        intruder,
+        1_001,
+    ))
+    .await;
+    let absent = observable(local::delete_push_config(
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgdel-never-existed", "id": "cfg-d" }),
+        ),
+        &rpc_id(),
+        intruder,
+        1_001,
+    ))
+    .await;
+    assert_eq!(foreign, absent);
+
+    // THE CALLBACK IS STILL ARMED, which is the half an answer-only assertion cannot see.
+    assert_eq!(
+        TASKS
+            .get_scoped(owner, "cfgdel-owned")
+            .expect("the owner's row")
+            .push_callback
+            .as_deref(),
+        Some(HOOK)
+    );
+
+    // AND THE OWNER CAN STILL DELETE IT — a boundary that also refused the owner would pass the
+    // test above while breaking the verb.
+    let mine = local::delete_push_config(
+        &envelope(
+            "DeleteTaskPushNotificationConfig",
+            serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
+        ),
+        &rpc_id(),
+        owner,
+        1_002,
+    );
+    assert!(result(mine).await.is_null());
+    assert_eq!(
+        TASKS
+            .get_scoped(owner, "cfgdel-owned")
+            .expect("the owner's row")
+            .push_callback,
+        None
+    );
+}
+
+/// `SubscribeToTask`, BOTH halves in one place. The refusal half already had a test; what was
+/// missing beside it was the owner's, and a scoping test without it cannot distinguish a correct
+/// boundary from a verb that refuses everybody.
+#[tokio::test]
+async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_else() {
+    let owner = "key-sub-both-owner";
+    let intruder = "key-sub-both-intruder";
+    open(owner, "sub-both", "ctx-sub-both", TaskState::Working, 1_000);
+
+    // THE OWNER CAN: no local refusal at all, so the subscribe relays and the backend's events are
+    // the answer.
+    assert!(local::subscribe_refusal(
+        &envelope("SubscribeToTask", serde_json::json!({ "id": "sub-both" })),
+        &rpc_id(),
+        owner
+    )
+    .is_none());
+
+    let foreign = observable(
+        local::subscribe_refusal(
+            &envelope("SubscribeToTask", serde_json::json!({ "id": "sub-both" })),
+            &rpc_id(),
+            intruder,
+        )
+        .expect("a foreign id must be refused"),
+    )
+    .await;
+    let absent = observable(
+        local::subscribe_refusal(
+            &envelope(
+                "SubscribeToTask",
+                serde_json::json!({ "id": "sub-never-existed" }),
+            ),
+            &rpc_id(),
+            intruder,
+        )
+        .expect("an absent id must be refused"),
+    )
+    .await;
+    assert_eq!(foreign, absent);
+}
+
 /// The v0.3 spelling answers in the v0.3 SHAPE. A well-formed document in the other dialect is a
 /// document that version's client cannot read.
 #[tokio::test]

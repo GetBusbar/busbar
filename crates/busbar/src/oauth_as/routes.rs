@@ -140,26 +140,92 @@ async fn consent_screen(
     // The session is opened HERE, not at the POST: the operator has already been authenticated by
     // the admin chain to get this far, so this is the moment the fact is true. The id is opaque and
     // unguessable, and it is the value the cookie carries.
-    let id = new_session_id();
+    //
+    // NO SESSION WITHOUT ENTROPY. `new_session_id` answers `None` when the platform RNG failed, and
+    // the refusal is the point: the previous code substituted an EMPTY id, which `Sessions::open`
+    // would have stored happily and which any request could then present, because an empty cookie
+    // value is not a secret anybody has to guess.
+    let Some(id) = new_session_id() else {
+        return no_entropy();
+    };
     plane.sessions().open(ADMIN_SUBJECT, id.clone());
     let page = consent_page(target);
-    (
-        [
-            (
-                axum::http::header::SET_COOKIE,
-                format!(
-                    "{}={id}; Path={}; HttpOnly; SameSite=Lax; Max-Age=600",
-                    super::consent::SESSION_COOKIE,
-                    plane.identity().consent_path()
-                ),
-            ),
-            // A page naming a client and a scope set is a per-request answer. Cached, it would show
-            // the next request's operator a previous request's decision.
-            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
-        ],
-        axum::response::Html(page),
-    )
-        .into_response()
+
+    let mut response = axum::response::Html(page).into_response();
+    let headers = response.headers_mut();
+    for cookie in session_cookies(plane.identity(), &id) {
+        // `HeaderValue::from_str` rather than an unwrap, and the refusal is not theatre: the `Path`
+        // is derived from the operator's `issuer`, whose path component is not character-checked at
+        // boot, so a control character there would be a response-splitting vector. Refused whole.
+        let Ok(value) = axum::http::HeaderValue::from_str(&cookie) else {
+            return not_representable();
+        };
+        // APPEND, not insert: there is more than one cookie and the second must not replace the
+        // first. See `session_cookies` for why there is more than one.
+        headers.append(axum::http::header::SET_COOKIE, value);
+    }
+    // A page naming a client and a scope set is a per-request answer. Cached, it would show the
+    // next request's operator a previous request's decision.
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// EVERY `Set-Cookie` that opens one consent session, and why there is more than one of them.
+///
+/// A cookie is only sent to the paths RFC 6265 §5.1.4 path-matches, which is a PREFIX match at a
+/// `/` boundary — so a cookie scoped to `/consent` is never sent to `/authorize`. The two paths are
+/// siblings, and the session is read at BOTH:
+///
+/// | reader | path | what reads it |
+/// |---|---|---|
+/// | the approval, and the resource owner behind it | `{issuer}/authorize` | [`super::consent::subject_resolver`] and [`super::consent::approval_resolver`], which `oauth-as` calls from its authorization handler |
+/// | the approval submission | `{issuer}/consent` | [`consent_submit`], which takes the session from the cookie and never from the form |
+///
+/// That is the WHOLE list: it is the two mounts in [`mount`] whose handlers reach a
+/// `session_id(...)` call, and no other mounted path does. The metadata document, the JWKS, the
+/// token endpoint and the registration endpoint never read it — and the token endpoint is the one
+/// that matters, because it is spoken to by the CLIENT rather than by the browser and a session
+/// cookie arriving there would be an operator's credential handed to a party the flow exists to
+/// keep it from.
+///
+/// So the narrowest scope that works is not one path, it is these TWO exact paths — one
+/// `Set-Cookie` each. `Path=/` would be one line shorter and would send this cookie to every route
+/// busbar serves, including the token endpoint above and every data-plane path on the same origin;
+/// `Path={issuer}/` is the same mistake wearing a prefix. Two cookies of one name at two disjoint
+/// paths is unambiguous by construction: no request path can match both, so no request ever carries
+/// two of them, and [`super::consent::session_id`] never has to choose.
+pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) -> [String; 2] {
+    // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
+    // the stricter-looking choice and it would break the `http://` deployment outright — a browser
+    // discards a `Secure` cookie arriving over plain HTTP, so the flow would fail exactly as it did
+    // before this fix, and it would fail in a way that looks like a busbar bug rather than like a
+    // deployment that is not using TLS. An `https:` issuer is the production posture and gets the
+    // attribute; an `http:` one is a developer's loopback and gets a cookie that works.
+    let secure = if identity.issuer().starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    // `SameSite=Lax`, NOT `Strict`. The browser arrives at `/authorize` by a top-level navigation
+    // from the client's own site, which is cross-site: `Strict` withholds the cookie on exactly
+    // that hop and would reintroduce this defect from the other end. `Lax` sends it on a top-level
+    // GET navigation and withholds it from cross-site POSTs, which is what the consent submission
+    // needs — that POST is same-site, issued by a form on this server's own page.
+    //
+    // `Max-Age` is `SESSION_TTL`, so the browser stops presenting a session at the moment the
+    // server stops honouring it; a longer cookie would send a credential that is already dead.
+    let attrs = format!(
+        "HttpOnly{secure}; SameSite=Lax; Max-Age={}",
+        super::consent::SESSION_TTL.as_secs()
+    );
+    let name = super::consent::SESSION_COOKIE;
+    [
+        format!("{name}={id}; Path={}; {attrs}", identity.authorize_path()),
+        format!("{name}={id}; Path={}; {attrs}", identity.consent_path()),
+    ]
 }
 
 /// `POST {issuer}/consent` — the operator approved. Stake ONE approval and hand the browser back to
@@ -303,16 +369,41 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// An unguessable session id. 256 bits from the platform RNG, hex.
-fn new_session_id() -> String {
+/// An unguessable session id. 256 bits from the platform RNG, hex — or `None`.
+///
+/// `None` rather than a fallback string, and that is the whole of the change: the previous version
+/// answered `String::new()` when the RNG failed, and an EMPTY session id is one every caller
+/// already knows. It would have been opened as a live session, set as `busbar_as_session=`, and
+/// accepted from anyone who sent the same empty value. A session id is a bearer credential, and the
+/// only safe answer to "I could not generate a secret" is to not issue one.
+fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 32];
-    // A failure here means the platform has no entropy, which is not a condition to paper over with
-    // a weaker id: the process is already unable to sign anything, so the caller gets a session that
-    // cannot be opened and the operator retries.
     match ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes) {
-        Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
-        Err(_) => String::new(),
+        Ok(()) => Some(bytes.iter().map(|b| format!("{b:02x}")).collect()),
+        Err(_) => None,
     }
+}
+
+/// The platform RNG failed, so no session was opened. A 503 rather than a page that pretends: the
+/// operator's next action is to retry, and the deployment is in a state where it cannot sign a
+/// token either.
+fn no_entropy() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::response::Html(PAGE_NO_SESSION.to_string()),
+    )
+        .into_response()
+}
+
+/// A `Set-Cookie` this deployment's own configuration cannot express as a header value — which
+/// means a control character in the operator's `issuer` path. Refused whole rather than emitted
+/// partially, because a half-written `Set-Cookie` is a response-splitting primitive.
+fn not_representable() -> Response {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        axum::response::Html(PAGE_NO_SESSION.to_string()),
+    )
+        .into_response()
 }
 
 fn not_found() -> Response {
@@ -327,6 +418,12 @@ fn not_found() -> Response {
 /// what a bookmark, a refresh after approval, or a link somebody sent them all produce.
 const PAGE_NO_REQUEST: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
     <p>There is no authorization request waiting. Start the login from your agent.</p>";
+
+/// What the operator sees when this server could not open a session at all. It names no cause: the
+/// two ways to get here are a failed platform RNG and a malformed issuer, and neither is something
+/// a browser should be told about.
+const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+    <p>This server could not start a session. Try again, and tell your operator if it persists.</p>";
 
 /// The consent screen.
 ///
