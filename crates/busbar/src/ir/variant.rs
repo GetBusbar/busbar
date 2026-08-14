@@ -312,9 +312,13 @@ impl IrReq {
                 // labels changes what the model is being asked. The generic dropped-keys warn below
                 // would name it only as an opaque `__busbar_…` key; name it in the caller's own
                 // vocabulary here, exactly as `cachedContent` is named just below.
+                // Keyed off the OpenAI module's OWN const, not a copy of its string: a rename that
+                // did not update a duplicated literal here would silently switch this warn off, and a
+                // signal that can stop signalling without failing to compile is the failure class
+                // this whole section exists to remove.
                 if let Some(n) = ir
                     .extra
-                    .get("__busbar_openai_message_names")
+                    .get(crate::proto::openai_chat::MESSAGE_NAMES_SENTINEL)
                     .and_then(|v| v.as_object())
                     .map(serde_json::Map::len)
                 {

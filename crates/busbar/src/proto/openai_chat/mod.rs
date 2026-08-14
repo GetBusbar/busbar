@@ -86,7 +86,7 @@ const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 /// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
 /// → the name. Keyed by index rather than positional array so a request where only message 7 has a
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
-const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+pub(crate) const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 
 // ── OpenAI wire-format named constants ──────────────────────────────────────
 //
