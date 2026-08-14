@@ -23,21 +23,46 @@ use loom::sync::{Arc, Mutex, RwLock};
 /// `loom::thread::Builder::stack_size` forwards, unconverted, straight through to `generator`'s
 /// `Gn::new_opt(size, f)` -> `Stack::new(size)`, which computes `bytes = size *
 /// size_of::<usize>()` -- i.e. this parameter counts 8-byte WORDS, not bytes, despite the "in
-/// bytes" wording in loom's own public doc comment. The default (`generator::DEFAULT_STACK_SIZE
-/// = 0x1000` words = 32 KiB real) overflowed on the real Linux CI runner's debug-build call depth
-/// (RUST_MIN_STACK has NO effect here -- that's the unrelated OS-thread-stack knob, not this
-/// green-thread mechanism).
+/// bytes" wording in loom's own public doc comment. That much of the old note here was right, and
+/// it is confirmed in `generator-0.8.*/src/stack/mod.rs`. Everything the old note built on top of
+/// it was not, and it is why this gate had never once been observed green:
 ///
-/// KNOWN UNRESOLVED: an earlier value here (6_291_456 words = 48 MiB real) ALSO still overflowed
-/// on the real Linux CI runner (confirmed via a genuine fresh rebuild, not a stale cache -- ruled
-/// out by checking the run's own log for "Compiling busbar v1.5.0" immediately before the
-/// failure), despite passing clean locally every time. macOS's own default hard `ulimit -s`
-/// (~64 MiB) makes anything much bigger untestable on a dev machine -- `generator::Stack::new`
-/// hard-fails past it locally with a DIFFERENT error ("ExceedsMaximumSize"), so this value is
-/// large specifically BECAUSE it cannot be locally validated end-to-end; only a real CI run
-/// proves it. If this ALSO overflows, the words-vs-bytes theory itself needs to be re-examined
-/// (e.g. by instrumenting the actual byte count generator receives), not just increased again.
-const LOOM_STACK_WORDS: usize = 67_108_864; // 512 MiB real, if the words-not-bytes theory holds
+/// 1. **THE SIZE IS NOT A REQUEST, IT IS AN ASSERTION.** `Stack::new` calls
+///    `SysStack::allocate(bytes, true)` and `.expect("failed to alloc sys stack")` on the result,
+///    and `allocate` REFUSES anything larger than `getrlimit(RLIMIT_STACK).rlim_max`
+///    (`StackError::ExceedsMaximumSize`). It does not clamp. So an oversized value is not
+///    "generous margin that only a real runner can prove" -- it is an unconditional abort on every
+///    host whose hard stack limit is finite. macOS's is 64 MiB (`ulimit -Hs` = 65520 KiB), so the
+///    previous 512 MiB value killed this test on every developer machine, 100% of the time; Linux
+///    CI runners report `rlim_max` = unlimited, so the SAME constant allocates there. One constant,
+///    two opposite outcomes, and no host on which both were ever checked.
+///
+/// 2. **THE ABORT DOES NOT EVEN REPORT ITSELF.** When `Gn::new_opt` panics, loom's
+///    `Scheduler::run` unwinds while dropping the spawned closure -- which owns `loom::sync::Arc`s
+///    whose `Drop` calls `Scheduler::with_state` OUTSIDE any model state. That second panic is a
+///    panic in a destructor during cleanup, so the process aborts (SIGABRT) with loom's "cannot
+///    access Loom execution state from outside a Loom model" on top and the real
+///    "failed to alloc sys stack" scrolled off above it. The message that reads like a loom-usage
+///    bug is a red herring; read the FIRST panic in the output, not the last.
+///
+/// 3. **THIS KNOB CANNOT REACH THE MODEL THREAD AT ALL, so it was never the right lever for the
+///    original overflow.** `loom::rt::scheduler::Scheduler::run` spawns thread 0 -- the
+///    `loom::model` closure itself, which is where this file's setup, `join`s and assertions run --
+///    with `spawn_thread(Box::new(f), None)`, a hardcoded `None`. Thread 0 therefore ALWAYS gets
+///    `generator::DEFAULT_STACK_SIZE` (0x1000 words = 32 KiB), and no `Builder::stack_size` here
+///    can change it. Raising this constant to 48 MiB and then to 512 MiB could not have fixed an
+///    overflow of the model body, which is the most likely reading of the earlier CI report that
+///    48 MiB "also still overflowed": the stack that overflowed was not the one being resized.
+///
+/// The value below is therefore small, and chosen to be provable rather than hopeful: 2 MiB is
+/// ~64x the spawned bodies' default and sits far below every hard `RLIMIT_STACK` seen (macOS
+/// 64 MiB, Linux unlimited), so it allocates everywhere. Measured, not assumed: these two bodies,
+/// lifted verbatim into a standalone crate, run clean at the bare 32 KiB default on macOS/arm64
+/// AND Linux/arm64, in BOTH debug and release -- so this is margin over a footprint that already
+/// fits, not a guess at one that does not. If a
+/// future model body genuinely needs more, raise it -- but keep it under 64 MiB or it stops being
+/// runnable on macOS, and do not expect it to affect thread 0.
+const LOOM_STACK_WORDS: usize = 262_144; // 2 MiB real (words x 8), allocatable on every host
 
 /// The `AppHandle` shape under test: a swappable snapshot behind an `RwLock`, read by `load` and
 /// replaced wholesale by `swap` — `crate::state::AppHandle` in miniature, with `config_version`
