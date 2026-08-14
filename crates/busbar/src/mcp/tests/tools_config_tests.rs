@@ -186,6 +186,23 @@ fn both_transports_are_accepted_at_parse() {
     );
 }
 
+/// An ABSOLUTE program path AS THIS PLATFORM SPELLS ONE.
+///
+/// The check under test is `Path::is_absolute`, and absoluteness is spelled differently per
+/// platform: `/bin/true` is absolute on unix but DRIVE-RELATIVE (therefore refused) on Windows.
+/// Hardcoding the unix spelling would make every case below that only wants a VALID command reach
+/// the absolute-path refusal first and pass on the wrong assertion — green while testing nothing it
+/// names. This constant is what keeps each case failing for the reason it claims.
+///
+/// SINGLE-QUOTED, and that is load-bearing rather than style. These are interpolated into a YAML
+/// document. A Windows path is full of backslashes, and YAML's DOUBLE-quoted style would read `\W`
+/// as an escape sequence and fail to parse; the single-quoted style has no backslash escapes at all,
+/// so the scalar arrives byte-for-byte. Quoting the unix spelling the same way keeps one form.
+#[cfg(unix)]
+const ABS_PROGRAM: &str = "'/bin/true'";
+#[cfg(windows)]
+const ABS_PROGRAM: &str = r"'C:\Windows\System32\cmd.exe'";
+
 /// THE SPAWN SAFETY RULES, refused at BOOT where the operator who typed them is standing.
 ///
 /// Each row is a real way to turn "busbar launches this binary" into something else, and each is a
@@ -195,49 +212,49 @@ fn both_transports_are_accepted_at_parse() {
 #[test]
 fn a_stdio_registration_is_refused_unless_it_is_safe_to_spawn() {
     let base = "s:\n  pin: { mechanism: unpinned }\n  transport: stdio\n";
-    let cases: [(&str, &str, &str); 8] = [
+    let cases: [(&str, String, &str); 8] = [
         (
             "no command at all",
-            "",
+            String::new(),
             "needs `command:`",
         ),
         // A BARE NAME IS A `PATH` LOOKUP, so whoever controls busbar's environment picks the binary.
         (
             "a PATH-resolved program",
-            "  command: mcp-fs\n",
+            "  command: mcp-fs\n".to_string(),
             "must be an ABSOLUTE path",
         ),
         (
             "a relative program",
-            "  command: ./mcp-fs\n",
+            "  command: ./mcp-fs\n".to_string(),
             "must be an ABSOLUTE path",
         ),
         (
             "a relative working directory",
-            "  command: /bin/true\n  cwd: ../srv\n",
+            format!("  command: {ABS_PROGRAM}\n  cwd: ../srv\n"),
             "must be an ABSOLUTE path",
         ),
         // A registration that names both has said where its server is TWICE, differently.
         (
             "both a url and a command",
-            "  command: /bin/true\n  url: \"https://x/\"\n",
+            format!("  command: {ABS_PROGRAM}\n  url: \"https://x/\"\n"),
             "reaches no address",
         ),
         // A PIPE HAS NO HEADER BLOCK. Accepting these would drop a credential the operator believes
         // is being applied — silently, on the one path where it cannot be.
         (
             "a token exchange",
-            "  command: /bin/true\n  token_exchange: { token_url: \"https://as/\", subject_token: { env: T } }\n",
+            format!("  command: {ABS_PROGRAM}\n  token_exchange: {{ token_url: \"https://as/\", subject_token: {{ env: T }} }}\n"),
             "has no carrier",
         ),
         (
             "an outbound audience",
-            "  command: /bin/true\n  aud: \"https://backend/\"\n",
+            format!("  command: {ABS_PROGRAM}\n  aud: \"https://backend/\"\n"),
             "mints none",
         ),
         (
             "an environment variable that is not one",
-            "  command: /bin/true\n  env: { \"BAD=NAME\": x }\n",
+            format!("  command: {ABS_PROGRAM}\n  env: {{ \"BAD=NAME\": x }}\n"),
             "not a usable environment variable name",
         ),
     ];
@@ -250,6 +267,33 @@ fn a_stdio_registration_is_refused_unless_it_is_safe_to_spawn() {
             "{what}: the refusal must say `{expected}`, got: {err}"
         );
     }
+}
+
+/// THE ABSOLUTE-PATH CHECK IS PLATFORM-CORRECT, in both directions.
+///
+/// The check was `program.starts_with('/')`, which is the unix spelling of "absolute" and only that.
+/// On Windows it refused EVERY absolute path an operator there can write, so `transport: stdio` was
+/// not merely untested on Windows — it was unconfigurable, while the module's own comments described
+/// the gap as test-coverage-only. This test is what stops the unix spelling coming back: it asserts
+/// the accepted form for the platform it runs on, and that the foreign spelling — which is
+/// drive-relative or root-relative rather than absolute, and so IS decided by the environment — is
+/// still refused.
+#[test]
+fn the_absolute_command_check_uses_this_platforms_spelling_of_absolute() {
+    let base = "s:\n  pin: { mechanism: unpinned }\n  transport: stdio\n";
+
+    // The native spelling is ACCEPTED: no absolute-path complaint.
+    parse(&format!("{base}  command: {ABS_PROGRAM}\n"))
+        .expect("an absolute path in this platform's own spelling must be accepted");
+
+    // The FOREIGN spelling is refused, because on this platform it is not absolute.
+    #[cfg(unix)]
+    let foreign = r"'C:\Windows\System32\cmd.exe'";
+    #[cfg(windows)]
+    let foreign = "'/bin/true'"; // root-relative to the CURRENT DRIVE on Windows, not absolute
+    let err = parse(&format!("{base}  command: {foreign}\n"))
+        .expect_err("a path that is not absolute on THIS platform must be refused");
+    assert!(err.contains("must be an ABSOLUTE path"), "{err}");
 }
 
 /// The SPAWN keys belong to the spawning transport, and a registration reached over the network may

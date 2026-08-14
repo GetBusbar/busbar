@@ -639,8 +639,20 @@ jobs:
           }
 
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
+  #
+  # WINDOWS IS A PUBLISHED RELEASE TARGET, not a nice-to-have: `.github/release-targets.json` ships
+  # `x86_64-pc-windows-msvc`, which is the DEFAULT HOST TARGET of `windows-latest` — so this job
+  # builds the same triple the release does, with no `--target` needed.
+  #
+  # WHAT THIS JOB DOES NOT PROVE, stated so a green check is not over-read. The most
+  # platform-sensitive subsystem in the tree is the stdio MCP transport (process spawn, pipes, child
+  # teardown), and its tests are `#[cfg(unix)]` because the fixture children are `/bin/sh` scripts
+  # (see crates/busbar/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
+  # this job is green while the spawn half is unexecuted on Windows. `cargo test` cannot notice that
+  # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
+  # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.
   windows:
-    name: windows build · test
+    name: windows build · clippy · test
     runs-on: windows-latest
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
@@ -648,8 +660,52 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --verbose
+      # CLIPPY ON WINDOWS, which `build` above does not subsume in either direction. `cargo build`
+      # compiles lib+bin targets only, so a `#[cfg(windows)]` branch reachable only from a test or an
+      # example is never even parsed by it; and clippy carries lint passes rustc does not. The
+      # platform-gated code in this tree is exactly the shape that goes stale unseen — a
+      # `#[cfg(unix)]` import whose `#[cfg(windows)]` twin was never added is a warning HERE and
+      # nowhere else. `-D warnings` matches the workspace-wide RUSTFLAGS this workflow already sets,
+      # so this adds a gate and relaxes none.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --verbose -- -D warnings
       - name: Test
         run: cargo test --workspace --verbose
+      # THE BLIND SPOT, PRINTED INTO THIS RUN'S OWN SUMMARY. Deliberately NOT a gate — it asserts
+      # nothing and cannot fail the job — because what it reports is a known, accepted, written-down
+      # gap and turning it red would only teach people to route around it.
+      #
+      # It exists because of an asymmetry no gate can fix from here: a `#[cfg(unix)]` test compiles
+      # to NOTHING on this runner, so the green check above is green partly because those tests were
+      # never built, let alone run. `cargo test` cannot notice that — a test that does not exist
+      # cannot fail — and the gap is therefore invisible at exactly the moment someone reads the
+      # check mark and concludes "Windows is covered". The comment at the top of this job says so
+      # once, in a file nobody opens while looking at a green tick; this puts the same sentence, with
+      # the CURRENT file list rather than a remembered one, in front of whoever is reading the run.
+      #
+      # `|| true` on the grep: no match is exit 1 for grep, which would fail the step for the BEST
+      # possible reason (no unix-only tests left), and a step that fails on success is worse than no
+      # step at all.
+      - name: Windows blind spots (informational, never a gate)
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Windows blind spots in this run"
+            echo
+            echo "\`cargo test\` above passed. These test items are \`#[cfg(unix)]\`, so on this"
+            echo "runner they compiled to nothing and did NOT run. Green here does not cover them."
+            echo
+            echo '```'
+            grep -rn --include='*.rs' -E '^\s*#!?\[cfg\(unix\)\]' crates/ || true
+            echo '```'
+            echo
+            echo "The largest of these is the stdio MCP transport (spawn, pipes, child teardown):"
+            echo "its fixture children are \`/bin/sh\` scripts. Closing it needs cmd.exe fixtures,"
+            echo "which is real work and not a CI edit. See docs/operations.md, 'Running on Windows'."
+          } >> "$GITHUB_STEP_SUMMARY"

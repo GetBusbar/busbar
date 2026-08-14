@@ -132,6 +132,16 @@ const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 /// Default path to the deployment config file.
+///
+/// A UNIX path, and it is NOT made platform-conditional on purpose. On Windows `/etc/busbar/...` is
+/// drive-relative — it resolves against whatever drive the process is running from — so the default
+/// is not a usable location there and `BUSBAR_CONFIG` is effectively required. That is the right
+/// failure: the miss is loud (the config file is not found, named, at startup, before anything is
+/// served) and the fix is one env var. Inventing a second default like
+/// `C:\ProgramData\busbar\config.yaml` would instead make busbar SILENTLY read a *different* file
+/// per platform, and this constant is the bootstrap of every other trust decision in the process —
+/// "which file is my config" is the one question that must never have a platform-dependent answer
+/// nobody was told about. Documented for operators in `docs/operations.md`.
 const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
 /// Response header name for the W3C Server-Timing field.
 const HEADER_SERVER_TIMING: &str = "server-timing";
@@ -1360,7 +1370,9 @@ async fn serve_listener(
     }
 }
 
-/// Resolve when the process receives a shutdown signal (SIGINT/ctrl_c, or SIGTERM on Unix). Used as
+/// Resolve when the process receives a shutdown signal: SIGINT/ctrl_c everywhere, plus SIGTERM on
+/// unix and CTRL_CLOSE/CTRL_SHUTDOWN on Windows (the events an orderly non-interactive stop
+/// actually delivers on each platform). Used as
 /// the `axum::serve(...).with_graceful_shutdown` future. Never panics: a signal-handler
 /// registration error is logged and the corresponding branch parks forever, so the other branch
 /// still triggers shutdown and a registration failure can never abort a worker.
@@ -1385,7 +1397,51 @@ async fn shutdown_signal() {
         }
     };
 
-    #[cfg(not(unix))]
+    // WINDOWS HAS NO SIGTERM, BUT IT DOES HAVE AN ORDERLY STOP, and `ctrl_c` alone does not hear it.
+    // `tokio::signal::ctrl_c` on Windows is CTRL_C_EVENT only — an interactive Ctrl+C. Every
+    // NON-interactive stop arrives as a different console control event: `docker stop` on a Windows
+    // container and a closing console send CTRL_CLOSE_EVENT, and a machine shutdown sends
+    // CTRL_SHUTDOWN_EVENT. With only the `ctrl_c` arm, all of those bypassed the graceful-shutdown
+    // future entirely and the process was killed with requests still in flight — the drain this
+    // function exists to trigger simply did not run, silently, on the platform's most common stop.
+    // Each arm degrades exactly like the unix one: a registration failure is logged and that branch
+    // parks, so it can never abort the others.
+    // Each event is registered INDEPENDENTLY, and that is the same fail-soft rule the unix arm
+    // states: one registration failing must cost only its own branch. Folding both into one
+    // sequential setup would let a failure on the SECOND discard the first one that had already
+    // succeeded, degrading a partial failure all the way to no coverage instead of to the coverage
+    // that was actually available.
+    #[cfg(windows)]
+    let terminate = async {
+        let close = async {
+            match tokio::signal::windows::ctrl_close() {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        let shutdown = async {
+            match tokio::signal::windows::ctrl_shutdown() {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            _ = close => {}
+            _ = shutdown => {}
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
