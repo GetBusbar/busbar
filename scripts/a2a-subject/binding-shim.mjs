@@ -104,6 +104,20 @@ const h1 = http.createServer((req, res) => {
       // did not commit. It cannot hide a real one either: a busbar that was itself slow to answer
       // headers would still be relayed slowly.
       res.flushHeaders();
+      // A CLIENT THAT WALKS AWAY MUST LOOK LIKE ONE UPSTREAM TOO. Without this, a suite that opens
+      // an SSE stream, reads what it needs and breaks out of the loop — which is what every
+      // streaming test in the suite does — leaves this shim holding an upstream request nobody is
+      // reading, and busbar goes on producing events into it. Measured against an origin that
+      // reports what reached it: the client aborted after three events and the origin never saw
+      // the disconnect at all, still emitting 4s later. Each abandoned stream is a subscription
+      // and a connection busbar keeps alive for a reader that has gone, accumulating across a
+      // 265-test run.
+      //
+      // Guarded on `complete` so an ordinary finished response — where `res` closes AFTER the
+      // upstream ended — is not treated as an abort.
+      res.on('close', () => {
+        if (!upstreamRes.complete) upstream.destroy();
+      });
       upstreamRes.pipe(res);
     },
   );
