@@ -400,6 +400,110 @@ jobs:
             org.opencontainers.image.documentation=https://getbusbar.com/docs/getting-started/
             org.opencontainers.image.licenses=Apache-2.0
 
+      # ═══ PRE-PUBLISH SMOKE TEST — THE IMAGE MUST BOOT BEFORE ANY TAG POINTS AT IT ═══════════════
+      #
+      # WHY THIS EXISTS. Until 1.5.4 the very next step pushed `X.Y.Z` AND `latest` in one action,
+      # and NOTHING anywhere had ever started the image it was pushing. `docker run` was first
+      # executed against v1.5.3 by users. It exited 1 — the FROM-scratch/USER 65532 image cannot
+      # write /etc/busbar, and 1.5.3 refused to boot without a writable config overlay (#50) — and
+      # the only check that would have seen it, verify-deploy.yml's (l), is POST-publication and was
+      # dark behind an unrelated failing check. Production ran a 100%-unbootable `latest` for six
+      # days.
+      #
+      # Post-hoc verification is the wrong instrument for "does it start". The image is built here,
+      # so this is where it can be REFUSED. The build below is the same context, same Dockerfile and
+      # same staged binaries the push uses; buildx's layer cache makes the push's amd64 half a cache
+      # hit, so this costs a container start, not a second build.
+      #
+      # SCOPE, STATED RATHER THAN IMPLIED: this boots the linux/amd64 image, natively, because that
+      # is what this runner can execute without qemu. linux/arm64 is not booted here. The arch is
+      # not what the smoke test is about — both arches are the identical Dockerfile, the identical
+      # uid, the identical /etc/busbar layout and the identical baked config, so #50's failure mode
+      # is arch-independent and reproduces on either. verify-deploy.yml (l) exercises the published
+      # multi-arch manifest afterwards.
+      - name: Build the amd64 image locally (not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: busbar-smoke:candidate
+
+      - name: "SMOKE: the image boots and serves /healthz (both documented quickstart forms)"
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # A syntactically-valid dummy. The smoke asserts BOOT + /healthz, which are
+          # provider-independent; it deliberately never spends a real provider call.
+          export ANTHROPIC_KEY=sk-ant-docker-smoke-dummy
+
+          probe() {  # probe <label> -> 0 if /healthz answers "ok"
+            for _ in $(seq 1 30); do
+              b="$(curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null || true)"
+              [ "$b" = "ok" ] && { echo "PASS: $1 answers 200 'ok' on /healthz"; return 0; }
+              sleep 2
+            done
+            echo "FAIL: $1 never answered 'ok' on /healthz (last body: '${b:-<none>}')"
+            return 1
+          }
+
+          fail=0
+          work="$(mktemp -d)"
+
+          # --- 1: the bare `docker run` from the Dockerfile header, using the image's own baked
+          # --- /etc/busbar/config.yaml. This is the form that exited 1 on 1.5.3.
+          docker rm -f busbar-smoke >/dev/null 2>&1 || true
+          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY \
+            busbar-smoke:candidate >/dev/null
+          if probe "the bare docker run (image's own config)"; then :; else
+            echo "--- docker logs ---"; docker logs busbar-smoke 2>&1 || true; echo "-------------------"
+            echo "::error::SMOKE FAILED: getbusbar/busbar does not boot from a plain \`docker run\`. REFUSING TO PUBLISH. This is the exact defect that shipped as v1.5.3 (#50). See the container log above."
+            fail=1
+          fi
+          # A container that exited is not merely unhealthy, it is the #50 signature — say so
+          # explicitly rather than leaving it as "no answer on /healthz".
+          st="$(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' busbar-smoke 2>/dev/null || echo unknown)"
+          echo "container state: ${st}"
+          case "$st" in
+            exited*) echo "::error::SMOKE FAILED: the container EXITED instead of serving (${st}). REFUSING TO PUBLISH."; fail=1 ;;
+          esac
+          docker rm -f busbar-smoke >/dev/null 2>&1 || true
+
+          # --- 2: the DOCUMENTED quickstart from docs/getting-started.md, verbatim — including the
+          # --- READ-ONLY config mount, which is the specific thing 1.5.3 refused to boot under.
+          cat > "$work/config.yaml" <<'YAML'
+          listen: "0.0.0.0:8080"
+          auth:
+            chain: []
+          providers:
+            anthropic:
+              api_key: { env: ANTHROPIC_KEY }
+          models:
+            claude-sonnet:
+              provider: anthropic
+          pools:
+            default:
+              members:
+                - model: claude-sonnet
+          YAML
+          docker rm -f busbar-smoke >/dev/null 2>&1 || true
+          docker run -d --name busbar-smoke -p 8080:8080 -e ANTHROPIC_KEY \
+            -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
+            busbar-smoke:candidate >/dev/null
+          if probe "the documented docker quickstart (read-only config mount)"; then :; else
+            echo "--- docker logs ---"; docker logs busbar-smoke 2>&1 || true; echo "-------------------"
+            echo "::error::SMOKE FAILED: the documented \`-v \"\$PWD/config.yaml:/etc/busbar/config.yaml:ro\"\` quickstart does not work. REFUSING TO PUBLISH. A new user's first command fails."
+            fail=1
+          fi
+          docker rm -f busbar-smoke >/dev/null 2>&1 || true
+
+          [ "$fail" = 0 ] || exit 1
+          echo "SMOKE PASSED: the image boots and serves /healthz in both documented forms. Safe to publish."
+
+      # Reached ONLY if the smoke test above passed. `docker/metadata-action` puts BOTH the X.Y.Z tag
+      # and `latest` in this one push, so this step is the exact moment a broken image becomes
+      # production — which is why the gate is immediately above it and not in a later job.
       - name: Build and push
         id: push
         uses: docker/build-push-action@v7
