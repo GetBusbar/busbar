@@ -429,6 +429,27 @@ jobs:
   windows:
     name: windows build · test
     runs-on: windows-latest
+    env:
+      # TWO numbers, in ONE place, so a change to either is unmissable in a diff.
+      #
+      # WINDOWS_MIN_TESTS is the HARD floor: below it the job fails. WINDOWS_EXPECTED_TESTS is the
+      # observed high-water mark: below it the job WARNS but still passes.
+      #
+      # Why two rather than one. A single floor pinned at the observed total makes a required check
+      # on `main` fail every time anyone legitimately consolidates or renames a test, which trains
+      # people to edit the number without reading it — and a floor nobody reads is a floor that gets
+      # lowered past a real regression. A single floor with slack, on the other hand, cannot see a
+      # whole suite disappear. So: the hard floor has slack, and the high-water mark carries the
+      # sensitivity, as a warning that costs nothing to be wrong about.
+      #
+      # BOTH ARE MEASURED, NOT GUESSED. windows-latest observed `4755 tests passed across the
+      # workspace`. Independently: `cargo test --workspace -- --list` lists 4793 on unix, of which
+      # 10 are `#[ignore]`d and 24 are erased by cfg(unix) gates -> 4759 predicted, 4755 observed.
+      # The two agree to within 4 tests.
+      #
+      # RAISE THESE AS THE SUITE GROWS. Lowering either is only correct when a diff explains why.
+      WINDOWS_MIN_TESTS: "4700"
+      WINDOWS_EXPECTED_TESTS: "4755"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -436,4 +457,116 @@ jobs:
       - name: Build
         run: cargo build --workspace --verbose
       - name: Test
-        run: cargo test --workspace --verbose
+        # `shell: bash` is REQUIRED and not a style choice: `run:` on a windows runner defaults to
+        # pwsh, where none of the pipeline below parses.
+        shell: bash
+        run: |
+          set -uo pipefail
+          # `tee` keeps the full log in the job output (the point of --verbose) while the same bytes
+          # are captured for the count. PIPESTATUS[0], not $?, is cargo's own exit status.
+          cargo test --workspace --verbose 2>&1 | tee "$RUNNER_TEMP/windows-test.log"
+          rc=${PIPESTATUS[0]}
+
+          # SUM across every test binary, not a single grep line: `test result: ok. N passed`
+          # is printed once PER binary, so a single-line match would floor against one binary and
+          # miss a whole suite vanishing. Sum every binary's `passed` count.
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/windows-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "windows: ${total} tests passed across the workspace (floor: ${WINDOWS_MIN_TESTS}, expected: ${WINDOWS_EXPECTED_TESTS})"
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED on windows (exit ${rc})."
+            exit "$rc"
+          fi
+          # The sensitive half: a drop of even one test is surfaced, without failing a required
+          # check over legitimate churn. A drop nobody can explain is the shape this job exists for.
+          if [ "$total" -lt "$WINDOWS_EXPECTED_TESTS" ]; then
+            echo "::warning::windows ran ${total} tests, ${WINDOWS_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER WINDOWS_EXPECTED_TESTS in this job."
+            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
+          elif [ "$total" -gt "$WINDOWS_EXPECTED_TESTS" ]; then
+            echo "::notice::windows ran ${total} tests, above the recorded ${WINDOWS_EXPECTED_TESTS}. Raise WINDOWS_EXPECTED_TESTS."
+          fi
+          if [ "$total" -lt "$WINDOWS_MIN_TESTS" ]; then
+            echo "::error::the windows portability gate ran ${total} tests, below its floor of ${WINDOWS_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass. Either a suite stopped being built/collected, or a cfg gate erased one."
+            echo "::error::If the drop is intended, LOWER the WINDOWS_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
+
+  # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
+  #
+  # Branch protection should require ONE context per stage, not a growing list that silently drifts
+  # when a job is renamed (the `windows build · test` trap: `main` required a context name that
+  # `dev` had already renamed, so any PR hung forever on a check that could no longer be reported).
+  # With this umbrella, protection never changes as CI evolves, and a renamed or deleted job can
+  # never silently drop out of the gate — it turns this job red instead.
+  #
+  # `if: always()` so it reports even when a need FAILED, was CANCELLED, or was SKIPPED. It then
+  # asserts each need's result itself. The rule on THIS branch's ci.yml is simple: this workflow
+  # has no job-level `if:` anywhere, so every job runs on every trigger, and NOTHING may skip —
+  # a skipped required job must never read as a pass. (dev's ci.yml carries a fast/full tier split
+  # with a documented skip allowlist; when that arrives here via normal promotion it brings its own
+  # umbrella. Until then, any skip is RED.)
+  #
+  # It reports ALL offenders (the loop never short-circuits), reads each need's own `result`
+  # (never a pipe's exit), and fails once at the end with a count.
+  ci-umbrella:
+    name: ci umbrella
+    if: always()
+    needs:
+      - structure-lint
+      - check
+      - openapi-schema
+      - migration-corpus
+      - config-stability
+      - public-hygiene
+      - executable-config-lint
+      - no-default-features
+      - no-plugins-gate
+      - txn-guards
+      - timing
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # jobkey|result — one line per need, read back in the loop below. Every job in this workflow
+      # is listed; adding a job to this file without adding it here leaves it un-gated, which is
+      # why the needs list and this list are adjacent and identical.
+      RESULTS: |
+        structure-lint|${{ needs.structure-lint.result }}
+        check|${{ needs.check.result }}
+        openapi-schema|${{ needs.openapi-schema.result }}
+        migration-corpus|${{ needs.migration-corpus.result }}
+        config-stability|${{ needs.config-stability.result }}
+        public-hygiene|${{ needs.public-hygiene.result }}
+        executable-config-lint|${{ needs.executable-config-lint.result }}
+        no-default-features|${{ needs.no-default-features.result }}
+        no-plugins-gate|${{ needs.no-plugins-gate.result }}
+        txn-guards|${{ needs.txn-guards.result }}
+        timing|${{ needs.timing.result }}
+        windows|${{ needs.windows.result }}
+    steps:
+      - name: Assert every required job reported green (no skip is ever allowed here)
+        run: |
+          set -u
+          fails=0
+          echo "ci umbrella: every job in this workflow must have run and passed."
+          while IFS='|' read -r job result; do
+            [ -n "$job" ] || continue
+            if [ "$result" = "success" ]; then
+              status="OK"
+            else
+              status="RED (${result})"
+              fails=$((fails + 1))
+            fi
+            printf '  %-24s %s\n' "$job" "$status"
+          done <<< "$RESULTS"
+          if [ "$fails" -ne 0 ]; then
+            echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
+            echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."
+            exit 1
+          fi
+          echo "ci umbrella: GREEN"
