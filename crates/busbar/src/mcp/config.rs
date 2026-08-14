@@ -126,10 +126,15 @@ pub(crate) enum McpPinMechanism {
 }
 
 impl McpPinMechanism {
-    /// Does this mechanism require operator-supplied key material? Three of the four are meaningless
-    /// without it, and the fourth is meaningless with it — which is the rule the object form exists
-    /// to make expressible.
-    fn needs_key(self) -> bool {
+    /// Is this mechanism an authenticity ROOT at all — and therefore, does it require
+    /// operator-supplied key material? Three of the four are meaningless without it, and the fourth
+    /// is meaningless with it, which is the rule the object form exists to make expressible.
+    ///
+    /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
+    /// question [`crate::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
+    /// means.
+    pub(crate) fn is_a_root(self) -> bool {
         !matches!(self, McpPinMechanism::Unpinned)
     }
 
@@ -155,6 +160,24 @@ pub(crate) struct ServerPinCfg {
     /// for `unpinned`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) key: Option<String>,
+}
+
+impl ServerPinCfg {
+    /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
+    /// question asked of it is [`crate::trust::declared`]'s, and this plane's answers are its
+    /// [`crate::trust::declared::Declares`] impl in [`super::client::catalogue`].
+    ///
+    /// `fingerprint` is `None` and there is no field for it. An MCP server offers ONE opaque
+    /// transport-layer value and no manifest fingerprint an operator could have approved out of
+    /// band, so this grammar has nothing to put there — which is the arity difference that made the
+    /// artifact a type parameter in the first place.
+    pub(crate) fn declaration(&self) -> crate::trust::declared::Declaration<'_, McpPinMechanism> {
+        crate::trust::declared::Declaration {
+            mechanism: self.mechanism,
+            key: self.key.as_deref(),
+            fingerprint: None,
+        }
+    }
 }
 
 /// `tools.<server>.tools_allow.<tool>` — one approved tool, and the slot its approved schema hash
@@ -1157,14 +1180,14 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // THE PIN, matched against the material its mechanism needs. This is the rule the object form
     // exists to make expressible.
     let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    if def.pin.mechanism.needs_key() && !has_key {
+    if def.pin.mechanism.is_a_root() && !has_key {
         return Err(format!(
             "{at}: `pin.mechanism: {}` needs `pin.key:` — the out-of-band material this \
              registration is verified against. A pin with nothing to verify with is not a pin.",
             def.pin.mechanism.token()
         ));
     }
-    if !def.pin.mechanism.needs_key() && has_key {
+    if !def.pin.mechanism.is_a_root() && has_key {
         return Err(format!(
             "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
              no authenticity root; key material that is never verified against reads to an operator \

@@ -125,6 +125,64 @@ impl PinnedArtifact for CardPin {
     }
 }
 
+/// READING AN OPERATOR'S `agents.<name>.pin:` INTO THIS PLANE'S ARTIFACT — the whole of what A2A
+/// writes for it. The sequence, and the refusal of a present-but-blank key, are
+/// [`crate::trust::declared`]'s.
+///
+/// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
+/// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is
+/// deliberately NOT an error, and it is deliberately not filled in with anything the upstream said.
+impl crate::trust::declared::Declares for CardPin {
+    type Mechanism = super::config::PinMechanism;
+
+    fn is_a_root(mechanism: Self::Mechanism) -> bool {
+        mechanism.is_a_root()
+    }
+
+    fn artifact(reading: crate::trust::declared::Reading<'_, Self::Mechanism>) -> Option<Self> {
+        use super::config::PinMechanism;
+        use crate::trust::declared::Reading;
+        match reading {
+            // NAMED OUT LOUD, which is this plane's ruling and not core's: an operator reading a
+            // registration list must SEE which entries have no root rather than inferring it from
+            // an absent field. It is still impossible to approve — [`approve_registration`] is what
+            // caps it, and [`CardPin::is_a_root`] is the question it asks.
+            Reading::NoRoot { .. } => Some(CardPin::Unpinned),
+            Reading::Rooted {
+                mechanism,
+                key,
+                fingerprint,
+            } => {
+                // NO FINGERPRINT IS NOT AN ERROR AND IS NOT A PIN. Every rooted mechanism on this
+                // plane binds the canonical fingerprint of the card the root signed or served, so a
+                // declaration without one has named a root and approved no document. Fabricating
+                // the missing half would pin the registration to whatever arrives first.
+                let card_fingerprint = fingerprint?.to_string();
+                let key = key.to_string();
+                match mechanism {
+                    PinMechanism::JwsIssuerKey => Some(CardPin::JwsIssuerKey {
+                        issuer_key: key,
+                        card_fingerprint,
+                    }),
+                    PinMechanism::CertSpki => Some(CardPin::CertSpki {
+                        spki: key,
+                        card_fingerprint,
+                    }),
+                    PinMechanism::Mtls => Some(CardPin::Mtls {
+                        spki: key,
+                        card_fingerprint,
+                    }),
+                    // UNREACHABLE BY CONSTRUCTION — `is_a_root` routed this mechanism to `NoRoot`
+                    // above. It is spelled out rather than `_`-ed so a mechanism added to the
+                    // grammar later is a compile error here until it has been given an artifact,
+                    // which is the whole reason `Reading` carries the plane's own enum.
+                    PinMechanism::Unpinned => None,
+                }
+            }
+        }
+    }
+}
+
 /// Why an A2A approval was refused. The plane-neutral refusals pass through unchanged; this adds
 /// exactly the one A2A rule.
 #[derive(Clone, Debug, PartialEq, Eq)]

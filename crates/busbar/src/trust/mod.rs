@@ -468,6 +468,15 @@ pub(crate) mod reverify;
 /// plane supplies one method — the fetch — and nothing above that method knows which plane it is on.
 pub(crate) mod sweep;
 
+/// THE DECLARED PIN, READ ONCE — *"what authenticity root did the operator write down?"*, asked in
+/// one order for every plane.
+///
+/// It lives here for the reason [`validate`] does: the lifecycle owns what an artifact MEANS, and a
+/// plane that also owned the order in which a declaration is turned into one would be the second
+/// half of one machine kept in a different file. A plane supplies its artifact through
+/// [`declared::Declares`] and nothing else.
+pub(crate) mod declared;
+
 /// THE ORDERED REQUEST VALIDATOR — *"is this still what the operator approved?"*, asked once, in one
 /// order, for every protocol.
 ///

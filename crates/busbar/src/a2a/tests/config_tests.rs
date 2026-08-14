@@ -21,6 +21,14 @@ fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
 use crate::a2a::pin::CardPin;
 use crate::config::named_map::NamedMapSection;
 
+/// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
+/// these tests read as the boot path does: the projection is this plane's grammar's
+/// (`AgentPinCfg::declaration`), the sequence is `crate::trust::declared`'s, and the artifact is
+/// this plane's `Declares` impl in `a2a::pin`.
+fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
+    crate::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
+}
+
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
     serde_yaml::from_str::<AgentsCfg>(yaml).map_err(|e| e.to_string())
 }
@@ -133,10 +141,7 @@ fn unpinned_is_registrable_here_and_refused_at_approval() {
     let cfg = parse("planner:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n")
         .expect("unpinned must be registrable");
     let def = cfg.agents.get("planner").unwrap();
-    assert_eq!(
-        crate::a2a::config::declared_pin(def),
-        Some(CardPin::Unpinned)
-    );
+    assert_eq!(declared_pin(def), Some(CardPin::Unpinned));
     assert!(
         !CardPin::Unpinned.is_a_root(),
         "the approval cap is the pin module's ruling, and it must still hold"
@@ -150,18 +155,40 @@ fn a_root_without_a_fingerprint_is_pending_not_invalid() {
     let def = signed(None);
     validate_agent("planner", &def).expect("a fresh registration is valid");
     assert_eq!(
-        crate::a2a::config::declared_pin(&def),
+        declared_pin(&def),
         None,
         "no fingerprint means nothing is declared yet; it must not be fabricated"
     );
 
     let approved = signed(Some("sha256/CARD=="));
     assert_eq!(
-        crate::a2a::config::declared_pin(&approved),
+        declared_pin(&approved),
         Some(CardPin::JwsIssuerKey {
             issuer_key: "MCowBQYDK2VwAyEA".to_string(),
             card_fingerprint: "sha256/CARD==".to_string(),
         })
+    );
+}
+
+/// THE NARROWING the shared reader brought to THIS plane.
+///
+/// Before `crate::trust::declared` owned the sequence, this plane's own reader took
+/// `key.unwrap_or_default()` and would have built a `JwsIssuerKey { issuer_key: "" }` out of a
+/// present-but-blank key; the sibling plane's reader refused one. `validate_agent` refuses it at
+/// boot, so nothing REACHABLE changed — and that is exactly the point: the reader no longer depends
+/// on a check in a different function having run first.
+#[test]
+fn a_present_but_blank_pin_key_declares_nothing_here_too() {
+    let mut def = signed(Some("sha256/CARD=="));
+    def.pin.key = Some("   ".to_string());
+    assert!(
+        validate_agent("planner", &def).is_err(),
+        "boot must still refuse a rooted mechanism with no usable material"
+    );
+    assert_eq!(
+        declared_pin(&def),
+        None,
+        "and the reader must refuse it on its own, not by trusting that boot already did"
     );
 }
 

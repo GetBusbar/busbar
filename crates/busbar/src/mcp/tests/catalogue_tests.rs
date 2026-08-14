@@ -265,6 +265,33 @@ fn an_unpinned_server_never_dispatches() {
     );
 }
 
+/// A `pin.key:` that is PRESENT AND BLANK declares nothing, so the registration is `pending` and
+/// serves nothing — whitespace is not out-of-band material, and a pin with nothing to verify with is
+/// not a pin.
+///
+/// The rule is [`crate::trust::declared`]'s now, and it used to be this plane's alone: the sibling
+/// plane's reader took `key.unwrap_or_default()` and would have built an artifact out of `""`. This
+/// is the check that moving the rule to core did not lose it on the plane it started on.
+#[test]
+fn a_present_but_blank_pin_key_declares_nothing() {
+    let (name, mut def) = server("dev", &["read"], &[]);
+    def.pin = ServerPinCfg {
+        mechanism: McpPinMechanism::CertSpki,
+        key: Some("   ".to_string()),
+    };
+    assert!(
+        crate::mcp::config::validate_server(&name, &def).is_err(),
+        "boot must still refuse a rooted mechanism with no usable material"
+    );
+    assert_eq!(
+        crate::trust::declared::declared_pin::<crate::mcp::client::catalogue::TransportPin>(
+            def.pin.declaration()
+        ),
+        None,
+        "and the reader must refuse it on its own, not by trusting that boot already did"
+    );
+}
+
 /// An ungranted caller naming a real tool and a granted caller naming a fictional one must be told
 /// apart INTERNALLY (the audit row needs the distinction) and answered identically on the wire.
 #[test]

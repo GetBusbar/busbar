@@ -46,7 +46,8 @@
 //! operator believing a control is attached that is not.
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
-// `declared_pin`. The `connect`/`approve` verbs it was waiting for are now mounted
+// [`AgentPinCfg::declaration`], the projection [`crate::trust::declared`] reads this plane's pin
+// through. The `connect`/`approve` verbs it was waiting for are now mounted
 // (`super::verbs`), and they deliberately do NOT consult it: an approval locks the pin that was
 // OBSERVED and verified against the operator's out-of-band root, and the operator attests to it by
 // echoing the fingerprint back. Handing `Approval::approve` a declared pin as the override would
@@ -115,11 +116,17 @@ pub(crate) enum PinMechanism {
 }
 
 impl PinMechanism {
-    /// Does this mechanism require operator-supplied key material?
+    /// Is this mechanism an authenticity ROOT at all — and therefore, does it require
+    /// operator-supplied key material?
     ///
     /// This is the predicate that makes the object form worth having: three of the four mechanisms
     /// are meaningless without material, and the fourth is meaningless WITH it.
-    fn needs_key(self) -> bool {
+    ///
+    /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
+    /// question [`crate::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
+    /// means.
+    pub(crate) fn is_a_root(self) -> bool {
         !matches!(self, PinMechanism::Unpinned)
     }
 
@@ -375,14 +382,14 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
     // THE PIN, matched against the material its mechanism needs. This is the rule the object form
     // exists to make expressible.
     let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    if def.pin.mechanism.needs_key() && !has_key {
+    if def.pin.mechanism.is_a_root() && !has_key {
         return Err(format!(
             "{at}: `pin.mechanism: {}` needs `pin.key:` — the out-of-band material this \
              registration is verified against. A pin with nothing to verify with is not a pin.",
             def.pin.mechanism.token()
         ));
     }
-    if !def.pin.mechanism.needs_key() && has_key {
+    if !def.pin.mechanism.is_a_root() && has_key {
         return Err(format!(
             "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
              no authenticity root; key material that is never verified against reads to an \
@@ -486,31 +493,16 @@ pub(crate) fn policy_for(
     })
 }
 
-/// The pin an operator DECLARED, where they declared a complete one.
-///
-/// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
-/// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is
-/// deliberately NOT an error, and it is deliberately not filled in with anything the upstream said.
-pub(crate) fn declared_pin(def: &AgentDefCfg) -> Option<super::pin::CardPin> {
-    let key = def.pin.key.clone().unwrap_or_default();
-    let fp = def.pin.fingerprint.clone();
-    match (def.pin.mechanism, fp) {
-        (PinMechanism::Unpinned, _) => Some(super::pin::CardPin::Unpinned),
-        (PinMechanism::JwsIssuerKey, Some(card_fingerprint)) => {
-            Some(super::pin::CardPin::JwsIssuerKey {
-                issuer_key: key,
-                card_fingerprint,
-            })
+impl AgentPinCfg {
+    /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
+    /// question asked of it is [`crate::trust::declared`]'s, and this plane's answers are its
+    /// [`crate::trust::declared::Declares`] impl in [`super::pin`].
+    pub(crate) fn declaration(&self) -> crate::trust::declared::Declaration<'_, PinMechanism> {
+        crate::trust::declared::Declaration {
+            mechanism: self.mechanism,
+            key: self.key.as_deref(),
+            fingerprint: self.fingerprint.as_deref(),
         }
-        (PinMechanism::CertSpki, Some(card_fingerprint)) => Some(super::pin::CardPin::CertSpki {
-            spki: key,
-            card_fingerprint,
-        }),
-        (PinMechanism::Mtls, Some(card_fingerprint)) => Some(super::pin::CardPin::Mtls {
-            spki: key,
-            card_fingerprint,
-        }),
-        (_, None) => None,
     }
 }
 

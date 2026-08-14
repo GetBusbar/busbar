@@ -84,9 +84,7 @@ use crate::catalogue::{Caller, CatalogueItem};
 use crate::trust::validate::Grant;
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
-use super::config::{
-    McpPinMechanism, McpServerDefCfg, PromptMessageCfg, ServerPinCfg, ToolsCfg, NAMESPACE_SEP,
-};
+use super::config::{McpServerDefCfg, PromptMessageCfg, ToolsCfg, NAMESPACE_SEP};
 use crate::trust::Approval;
 
 /// THE TWO SCOPE KINDS AN MCP CAPABILITY IS REACHED THROUGH.
@@ -1035,27 +1033,17 @@ fn as_dispatch_refusal(
     }
 }
 
-/// THE ARTIFACT this registration is pinned to, or `None` when the operator named no authenticity
-/// root or supplied no material for the one they named.
-///
-/// Construction, not authorization. It answers only "is there a root to lock", and the answer feeds
-/// the lifecycle rather than a dispatch decision: with no artifact there is nothing to hand
-/// [`crate::trust::Approval::declared`], so the registration can only be
-/// [`crate::trust::Approval::registered`] — pending, and serving nothing. That is a fact about what
-/// is CONSTRUCTIBLE, which is why `unpinned` cannot be talked into serving by a later edit here.
-fn declared_pin(pin: &ServerPinCfg) -> Option<TransportPin> {
-    if matches!(pin.mechanism, McpPinMechanism::Unpinned) {
-        return None;
-    }
-    let key = pin.key.as_deref().filter(|k| !k.trim().is_empty())?;
-    Some(TransportPin::declared(pin.mechanism.token(), key))
-}
-
 fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     // The registration read as the operator's standing INTENT: the identity they pinned out of
     // band, and the digest they approved for each capability. A capability they allowed without
     // approving a digest is absent from the map, which is `pending` — allowed is not approved.
-    let approval = match declared_pin(&def.pin) {
+    //
+    // THE READER IS `crate::trust::declared`'s, for every plane. What this plane supplies is the
+    // `Declares` impl beside `TransportPin` — which mechanisms are roots, and the artifact for each
+    // reading. It supplies no sequence and no blank-key rule, so an operator's `key: "  "` is
+    // refused here by the same line that refuses it on the sibling plane.
+    let approval = match crate::trust::declared::declared_pin::<TransportPin>(def.pin.declaration())
+    {
         Some(pin) => Approval::declared(
             pin,
             def.tools_allow

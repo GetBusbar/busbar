@@ -1383,6 +1383,24 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 
 # The concerns, and where each one's single implementation should end up. `-` for an owner means
 # THERE IS NO SHARED HOME YET, which is itself the finding: the concern has only plane-local copies.
+# RETIRED 2026-08-13: `guarded-fetch`. The unification it named is DONE and was done by an earlier
+# unit: `crate::net_guard` owns the strict URL recogniser, the scheme judgement, the structural name
+# refusals, EXACTLY ONE resolution, the judgement of every answered address, the pin, the redirect
+# refusal, the hop bound and the body cap, and both planes reach it through thin wrappers that keep
+# only their own WORDING (`mcp/client/ssrf.rs`, `a2a/fetch.rs`). Its last row, `transport.rs`, turned
+# out not to be a second guarded fetch at all: the two files sit at DIFFERENT LAYERS and share no
+# operation, which is what the DISTINCT row below records and why the row was reclassified rather
+# than paid. Deleted rather than left with an empty row list, for the reason the `ingress` note
+# gives.
+# RETIRED 2026-08-13: `trust-pinning`. It owned ONE row — `declared_pin` — and GOAL §A2.2 scoped it
+# as "resolve the bare-name collision, then parameterise the one trust lifecycle". Both halves are
+# done: the bare name is gone from both planes, and `crate::trust::declared` now owns the SEQUENCE a
+# declaration is read in (is the mechanism a root at all, then is the material actually there) while
+# a plane supplies one `Declares` impl — its mechanism type, which of them are roots, and its
+# artifact for each reading. The blank-key refusal was MCP's alone before the move and is now both
+# planes', which is a narrowing. `a_third_plane_costs_one_declares_impl_and_nothing_else` drives the
+# whole reader from a plane busbar does not have. Deleted rather than left with an empty row list,
+# for the reason the `ingress` note below gives.
 # RETIRED 2026-08-13: `ingress`. It owned FIVE rows — `rpc`, `refuse`, `not_found`, `metadata` and
 # the `ingress.rs` module itself — and it is the first concern to empty. `crate::ingress::protocol`
 # now owns the sequence (nine of the thirteen steps two JSON-RPC ingresses ran between them, five
@@ -1392,18 +1410,15 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 # what each was always about once the ingress left. The concern is deleted rather than left with an
 # empty row list, because a concern with nothing owed is a heading somebody adds a row under.
 PLANE_CONCERNS=(
-  'guarded-fetch|crates/busbar/src/net_guard.rs|route every attacker-influenced fetch through net_guard: one resolver, one pin, one redirect refusal'
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
   'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
   'plane-config|crates/busbar/src/plane/config.rs|the parse-time plane-boundary rule now lives here once, with its section list DERIVED; what is left is the per-plane config MODULE, whose value rules are genuinely plane-specific'
   'plane-admin-verbs|crates/busbar/src/admin|one admin verb surface parameterised by plane, not one handler set per plane'
-  'trust-pinning|crates/busbar/src/trust|GOAL §A2.2: resolve the bare-name collision, then parameterise the one trust lifecycle'
 )
 
 PLANE_LEDGER="
-declared_pin|DEBT|trust-pinning|the pin declaration read out of config once per plane
 config.rs|DEBT|plane-config|the config module exists once per plane
-transport.rs|DEBT|guarded-fetch|the outbound transport exists once per plane
+transport.rs|DISTINCT|-|mcp/client/transport.rs is JSON-RPC FRAMING on one carrier: it composes a POST from a WireLeg, classifies the server-originated frames on an SSE answer and reduces that answer to its last data payload. It builds no client, resolves no name and pins no address — it asks super::pool for both. a2a/transport.rs is CLIENT CONSTRUCTION: it pins the host to the address net_guard already judged, replaces the client's resolver with one that refuses every name, offers busbar's client certificate and reads the peer SPKI off the accepted handshake. It frames nothing and parses no JSON-RPC. Two LAYERS, one noun — MCP's counterpart of the second is mcp/client/pool.rs and A2A's counterpart of the first is a2a/relay.rs, and neither pair collides. The guarded-fetch decision the row was opened for is already net_guard's on both planes: one resolver, one pin, one redirect refusal, one body cap.
 judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/registry.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
 revalidate|DISTINCT|-|mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other.
 Transport|DISTINCT|-|mcp/config.rs is a config ENUM naming stdio/http/sse; a2a/fetch.rs is a TRAIT abstracting the HTTP client for tests. Unrelated shapes that share a noun.
