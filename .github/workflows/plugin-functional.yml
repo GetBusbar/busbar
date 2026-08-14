@@ -1,0 +1,302 @@
+name: plugin-functional
+
+# plugin-functional.yml — BIDIRECTIONAL, FUNCTIONAL verification of a first-party plugin against a
+# busbar binary. Built ONCE here; called from both directions so there is ONE probe implementation,
+# not two that drift:
+#
+#   Direction A (busbar's own qa-gate segments): busbar_version: this-tree, plugin_ref: <released> —
+#     "does the busbar we are about to ship still load and drive every first-party plugin?"
+#   Direction B (each plugin repo's CI, on PR/release/daily): busbar_version: <latest released>,
+#     plugin_ref: this-tree — "does THIS plugin still work against the busbar that is actually live?"
+#
+# WHAT "WORKS" MEANS HERE, AND WHY IT IS NOT plugin-ci.yml. plugin-ci builds and tests a plugin in
+# its own workspace; it never dlopens the cdylib INTO busbar. plugins.yaml's own header records what
+# that gap cost: seven of ten plugins are `gate: suite` — cargo test only — and headroom's published
+# bundle could not even boot while every workflow was green. So this workflow proves the FUNCTIONAL
+# bar the audit sets: a real busbar binary loads the plugin and it demonstrably does its job.
+#
+#   store   — boot busbar with the plugin as the store, mint a key over the admin API, drive a
+#             request, RESTART, and assert the key + usage survived. Persistence is the whole job.
+#   auth    — boot with the provider in auth.chain against a stub-IdP fixture, do the /auth/token
+#             credential exchange, and assert the minted key authorizes a real request.
+#   hook    — boot with the hook wired on a route, drive a request through it, and assert it
+#             observably fired (a sidecar receipt, or the content-intent declaration + validation).
+#   secrets — boot with a { module: <plugin> } secret reference resolving through a fixture Vault,
+#             and assert busbar USED the resolved value as a live upstream credential.
+#   export  — boot with the exporter pointed at a sink fixture, drive a request, and assert the sink
+#             received the export.
+#
+# THE VERDICT DISCIPLINE, IDENTICAL TO scripts/release-gate. Each probe appends ONE ledger row and
+# never controls flow; verdict.sh diffs the ledger against the ids the run OWED (EXPECTED_IDS,
+# derived from plugin_kind) so a probe that silently did not fire is `did not run` = RED, and ZERO
+# rows is RED. A skip is never a pass. All logic lives in testing/fleet-fixtures/ so every probe is
+# runnable on a laptop against real artifacts — the store probe here was validated exactly that way
+# against the published busbar 1.5.4 + store-sqlite 1.0.4 before this workflow was trusted.
+#
+# HOW A PLUGIN REPO ADOPTS IT (.github/workflows/functional.yml):
+#
+#   name: functional
+#   on:
+#     pull_request:
+#     release: { types: [published] }
+#     schedule: [{ cron: "23 7 * * *" }]   # re-prove daily against whatever busbar is LIVE
+#   jobs:
+#     functional:
+#       uses: GetBusbar/busbar/.github/workflows/plugin-functional.yml@main
+#       with:
+#         plugin_kind: store
+#         plugin_alias: sqlite
+#         plugin_repo: GetBusbar/store-sqlite
+#         plugin_asset_prefix: busbar-store-sqlite
+#         plugin_ref: this-tree          # build THIS plugin from source
+#         plugin_crate: busbar-store-sqlite-plugin
+#         busbar_version: latest         # against the live released busbar
+
+on:
+  workflow_call:
+    inputs:
+      plugin_kind:
+        description: "store | auth | hook | secrets | export — selects the per-kind probe."
+        required: true
+        type: string
+      plugin_alias:
+        description: "The config alias the plugin is wired under (store.module, hook name's module, auth provider name, secret module)."
+        required: true
+        type: string
+      plugin_module:
+        description: "The config `module:` name if it differs from plugin_alias (e.g. a hook's module busbar-webrequest-hook vs its alias). Default: plugin_alias."
+        required: false
+        type: string
+        default: ""
+      plugin_repo:
+        description: "The GetBusbar repo the plugin comes from, e.g. GetBusbar/store-sqlite."
+        required: true
+        type: string
+      plugin_asset_prefix:
+        description: "Release-asset basename before the version, e.g. busbar-store-sqlite. Used on the download path (plugin_ref = a version)."
+        required: false
+        type: string
+        default: ""
+      plugin_ref:
+        description: >-
+          How to obtain the plugin cdylib: a released version (e.g. 1.0.4) downloads the published
+          signed tarball into the plugins dir; "this-tree" builds the cdylib from the calling repo's
+          checked-out source and packs it (Direction B).
+        required: false
+        type: string
+        default: "this-tree"
+      plugin_crate:
+        description: "Cargo package of the plugin cdylib, for the this-tree build path (e.g. busbar-store-sqlite-plugin)."
+        required: false
+        type: string
+        default: ""
+      busbar_version:
+        description: >-
+          Which busbar to probe against: a released version (e.g. 1.5.4) or "latest" downloads the
+          published binary; "this-tree" builds busbar + busbar-plugin-pack from the checked-out
+          busbar source (Direction A, busbar's own qa-gate).
+        required: false
+        type: string
+        default: "latest"
+      runner:
+        description: "Runner label. Must be NATIVE for the artifact under test (a downloaded aarch64 binary needs an arm runner)."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      hook_sidecar:
+        description: "hook kind only: 1 to wire a forwarding hook to a sidecar fixture and assert receipt; 0 for an in-process content-intent hook."
+        required: false
+        type: string
+        default: "0"
+      hook_wiring:
+        description: "hook kind only: tap | gate."
+        required: false
+        type: string
+        default: "tap"
+
+permissions:
+  contents: read
+
+jobs:
+  functional:
+    name: functional (${{ inputs.plugin_kind }} ${{ inputs.plugin_alias }} vs busbar ${{ inputs.busbar_version }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    env:
+      PLUGIN_KIND: ${{ inputs.plugin_kind }}
+      PLUGIN_ALIAS: ${{ inputs.plugin_alias }}
+      PLUGIN_MODULE: ${{ inputs.plugin_module }}
+      PLUGIN_REPO: ${{ inputs.plugin_repo }}
+      PLUGIN_ASSET_PREFIX: ${{ inputs.plugin_asset_prefix }}
+      PLUGIN_REF: ${{ inputs.plugin_ref }}
+      PLUGIN_CRATE: ${{ inputs.plugin_crate }}
+      BUSBAR_VERSION: ${{ inputs.busbar_version }}
+      HOOK_SIDECAR: ${{ inputs.hook_sidecar }}
+      HOOK_WIRING: ${{ inputs.hook_wiring }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LEDGER: ${{ github.workspace }}/functional-ledger.tsv
+    steps:
+      # This repo (busbar) is always checked out: it carries the probe scripts + fixtures, and — on
+      # the Direction A path — the busbar source itself.
+      - name: Check out busbar (probes, fixtures, and this-tree source)
+        uses: actions/checkout@v4
+
+      # The plugin repo's source is only needed on the this-tree build path (Direction B: the calling
+      # plugin repo builds its OWN cdylib). On the release path we download the published tarball and
+      # need no source at all.
+      - name: Check out the plugin source (this-tree build path only)
+        if: ${{ inputs.plugin_ref == 'this-tree' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.plugin_repo }}
+          path: plugin-src
+
+      - name: Install Rust (only when something is built from source)
+        if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
+      # ── guards on the binary's presence and records `did not run`, which verdict.sh reports as RED.
+      - name: Resolve the busbar binary
+        id: busbar
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Prefer rustc's own host triple (present on the build paths); otherwise MAP uname to the
+          # rust triple deterministically. The naive `$(uname -m)-$(uname -s)` gives arm64-Linux,
+          # which is not a real target triple and would fetch a 404-named asset.
+          triple="$(rustc -vV 2>/dev/null | awk '/^host:/{print $2}')"
+          if [ -z "${triple:-}" ]; then
+            case "$(uname -s)/$(uname -m)" in
+              Linux/x86_64)         triple=x86_64-unknown-linux-gnu ;;
+              Linux/aarch64|Linux/arm64) triple=aarch64-unknown-linux-gnu ;;
+              Darwin/x86_64)        triple=x86_64-apple-darwin ;;
+              Darwin/arm64)         triple=aarch64-apple-darwin ;;
+              *) echo "::error::cannot map $(uname -s)/$(uname -m) to a rust target triple"; exit 1 ;;
+            esac
+          fi
+          echo "runner target triple: ${triple}"
+          mkdir -p "${GITHUB_WORKSPACE}/busbar-bin"
+          if [ "$BUSBAR_VERSION" = "this-tree" ]; then
+            cargo build --release -p busbar -p busbar-plugin-pack
+            cp target/release/busbar "${GITHUB_WORKSPACE}/busbar-bin/busbar"
+            echo "pack=${GITHUB_WORKSPACE}/target/release/busbar-plugin-pack" >> "$GITHUB_OUTPUT"
+          else
+            V="$BUSBAR_VERSION"
+            if [ "$V" = "latest" ]; then
+              loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
+                "https://github.com/GetBusbar/busbar/releases/latest" || true)"
+              V="${loc##*/releases/tag/v}"
+            fi
+            V="${V#v}"
+            echo "resolving busbar ${V} for ${triple}"
+            url="https://github.com/GetBusbar/busbar/releases/download/v${V}/busbar-${triple}.tar.gz"
+            curl -fsSL --max-time 120 -o /tmp/busbar.tar.gz "$url"
+            tar xzf /tmp/busbar.tar.gz -C "${GITHUB_WORKSPACE}/busbar-bin"
+          fi
+          chmod +x "${GITHUB_WORKSPACE}/busbar-bin/busbar" 2>/dev/null || true
+          "${GITHUB_WORKSPACE}/busbar-bin/busbar" --version
+          echo "bin=${GITHUB_WORKSPACE}/busbar-bin/busbar" >> "$GITHUB_OUTPUT"
+
+      # ── Resolve the plugin into a plugins dir busbar's plugins.dir points at: EITHER download the
+      # ── published signed tarball, OR build the cdylib from source and pack it with the resolved
+      # ── busbar-plugin-pack. Both leave a *.tar.gz in plugins/.
+      - name: Resolve the plugin
+        id: plugin
+        shell: bash
+        env:
+          PACK: ${{ steps.busbar.outputs.pack }}
+        run: |
+          set -uo pipefail
+          triple="$(rustc -vV 2>/dev/null | awk '/^host:/{print $2}')"
+          if [ -z "${triple:-}" ]; then
+            case "$(uname -s)/$(uname -m)" in
+              Linux/x86_64)         triple=x86_64-unknown-linux-gnu ;;
+              Linux/aarch64|Linux/arm64) triple=aarch64-unknown-linux-gnu ;;
+              Darwin/x86_64)        triple=x86_64-apple-darwin ;;
+              Darwin/arm64)         triple=aarch64-apple-darwin ;;
+              *) echo "::error::cannot map $(uname -s)/$(uname -m) to a rust target triple"; exit 1 ;;
+            esac
+          fi
+          dir="${GITHUB_WORKSPACE}/plugins"
+          mkdir -p "$dir"
+          if [ "$PLUGIN_REF" != "this-tree" ]; then
+            V="${PLUGIN_REF#v}"
+            asset="${PLUGIN_ASSET_PREFIX}-${V}-${triple}.tar.gz"
+            url="https://github.com/${PLUGIN_REPO}/releases/download/v${V}/${asset}"
+            echo "downloading published plugin ${asset}"
+            curl -fsSL --max-time 120 -o "${dir}/${asset}" "$url"
+          else
+            # Build the cdylib from the calling repo's source and pack it. busbar-plugin-pack came
+            # from the this-tree busbar build; if busbar was DOWNLOADED, build pack from this repo's
+            # source (it is a workspace member here).
+            pack="${PACK:-}"
+            if [ -z "$pack" ]; then
+              cargo build --release -p busbar-plugin-pack
+              pack="${GITHUB_WORKSPACE}/target/release/busbar-plugin-pack"
+            fi
+            [ -n "$PLUGIN_CRATE" ] || { echo "::error::plugin_crate is required for the this-tree build path"; exit 1; }
+            cargo build --release --manifest-path plugin-src/Cargo.toml -p "$PLUGIN_CRATE"
+            case "$(uname -s)" in Darwin) ext=dylib ;; *) ext=so ;; esac
+            libname="lib$(echo "$PLUGIN_CRATE" | tr '-' '_').${ext}"
+            lib="plugin-src/target/release/${libname}"
+            [ -f "$lib" ] || lib="$(find plugin-src/target/release -maxdepth 1 -name "*.${ext}" | head -1)"
+            [ -f "$lib" ] || { echo "::error::built cdylib not found for ${PLUGIN_CRATE}"; exit 1; }
+            "$pack" pack --lib "$lib" \
+              --name "${PLUGIN_ASSET_PREFIX:-$PLUGIN_CRATE}" --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" \
+              --version "0.0.0-this-tree" --publisher busbar --license Apache-2.0 \
+              --description "fleet-functional this-tree pack" \
+              --out "${dir}/${PLUGIN_ALIAS}-this-tree.tar.gz" --allow-unsigned
+          fi
+          ls -l "$dir"
+          echo "dir=${dir}" >> "$GITHUB_OUTPUT"
+
+      # ── The probe. `if: always()` so a failed resolve step above does not skip it — instead it
+      # ── guards on the resolved paths and records the ledger row (FAIL / did-not-run) that
+      # ── verdict.sh turns RED. This is the "no check masks another" rule at the workflow level.
+      - name: Run the ${{ inputs.plugin_kind }} functional probe
+        if: always()
+        shell: bash
+        env:
+          BUSBAR_BIN: ${{ steps.busbar.outputs.bin }}
+          PLUGIN_DIR: ${{ steps.plugin.outputs.dir }}
+        run: |
+          set -uo pipefail
+          : > "$LEDGER"
+          bin="${BUSBAR_BIN:-${GITHUB_WORKSPACE}/busbar-bin/busbar}"
+          dir="${PLUGIN_DIR:-${GITHUB_WORKSPACE}/plugins}"
+          module="${PLUGIN_MODULE:-$PLUGIN_ALIAS}"
+          if [ ! -x "$bin" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+            echo "::error::busbar binary or plugin artifact was not resolved; the probe cannot run and will be reported as did-not-run."
+            exit 0
+          fi
+          export BUSBAR_BIN="$bin" PLUGIN_DIR="$dir" LEDGER
+          case "$PLUGIN_KIND" in
+            store)
+              STORE_MODULE="$module" testing/fleet-fixtures/probe-store.sh "$PLUGIN_ALIAS" ;;
+            auth)
+              AUTH_MODULE="$module" testing/fleet-fixtures/probe-auth.sh "$PLUGIN_ALIAS" ;;
+            hook)
+              HOOK_MODULE="$module" HOOK_SIDECAR="$HOOK_SIDECAR" HOOK_KIND="$HOOK_WIRING" \
+                testing/fleet-fixtures/probe-hook.sh "$PLUGIN_ALIAS" ;;
+            secret|secrets)
+              SECRET_MODULE="$module" testing/fleet-fixtures/probe-secret.sh "$PLUGIN_ALIAS" ;;
+            export)
+              EXPORT_MODULE="$module" testing/fleet-fixtures/probe-export.sh "$PLUGIN_ALIAS" ;;
+            *)
+              echo "::error::unknown plugin_kind '${PLUGIN_KIND}'"; exit 0 ;;
+          esac
+
+      # ── The single verdict. `if: always()` and it OWES exactly the id for this kind, so a probe
+      # ── that never fired is `did not run` = RED, and zero rows is RED. This is the required check.
+      - name: Verdict — the plugin is functional, or it is not
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          case "$PLUGIN_KIND" in
+            secret) kind_id="secret" ;;
+            secrets) kind_id="secret" ;;
+            *) kind_id="$PLUGIN_KIND" ;;
+          esac
+          EXPECTED_IDS="${kind_id}:${PLUGIN_ALIAS}" testing/fleet-fixtures/verdict.sh
