@@ -780,8 +780,24 @@ pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
     // while the other scanned it, or removed the directory out from under it — surfacing as an
     // unrelated hooks test failing on "corrupt tar.gz archive" roughly one run in three.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // AND a once-per-process token, because the pid alone is not a process identity over time.
+    // These dirs are deliberately never cleaned up, and under process churn (a full workspace
+    // build spawning thousands of compiler processes while several copies of this binary run) the
+    // OS reuses pids within a session — at which point a fresh run's `create_dir_all` happily
+    // adopts a PREVIOUS run's leftover dir, stale manifests, stale cdylib copies and all. A stale
+    // plugin dir reads exactly like an ABI or staleness defect, which is the worst possible way
+    // for a fixture to fail. One clock read per PROCESS (not per call — see the counter note
+    // above), so two calls in one process still can't collide and two processes with one pid
+    // can't either.
+    static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let token = PROC_TOKEN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    });
     let dir = std::env::temp_dir().join(format!(
-        "busbar-boot-plugins-{}-{tag}-{}",
+        "busbar-boot-plugins-{}-{token:x}-{tag}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));

@@ -284,6 +284,14 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     assert_eq!(status, 200, "the call itself must succeed: {body}");
     assert_eq!(peer.mcp_hits(), 1, "the upstream really was dispatched to");
 
+    // DETACH before the read-back. `CALLS` is process-global and SIBLING tests in this binary
+    // dispatch through it without taking `CALLS_GLOBAL` (they never touch the sink, so they need
+    // no exclusivity) — but while OUR durable plugin is installed, their records write to OUR
+    // ledger file. The plugin's persist is atomic (see `FileStore::mutate`), so those writes can't
+    // tear the reopen below; detaching anyway keeps this test's ledger holding exactly what this
+    // test wrote, so the `records.len()` assertion is about dispatch, not about scheduling.
+    CALLS.set_sink(Arc::new(busbar_store_memory::MemoryStore::new()));
+
     // THE RESTART. A fresh `dlopen` + `busbar_open` over the same on-disk ledger — the only way a
     // durability claim can be made honestly, because a write's `Ok(())` is worth nothing.
     let reopened = open_plugin(&cfg);
@@ -362,6 +370,11 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     .await;
     assert_eq!(status, 404, "an ungranted tool is refused");
     assert_eq!(peer.mcp_hits(), 0, "and the upstream is never contacted");
+
+    // DETACH before the read-back — same isolation as the dispatched-call test above: siblings
+    // record through the process-global `CALLS` without the lock, and this test's ledger must hold
+    // exactly what this test wrote when the reopened handle reads it.
+    CALLS.set_sink(Arc::new(busbar_store_memory::MemoryStore::new()));
 
     let reopened = open_plugin(&cfg);
     let records = reopened

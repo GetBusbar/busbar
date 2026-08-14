@@ -1772,9 +1772,28 @@ async fn dlopen_configure_acks_exact_version() {
         super::await_transport_published("h", &hook, &env).await,
         "the loader must publish a transport for a loadable hook plugin"
     );
-    push_configure(&hook, "h", 7, &env)
-        .await
-        .expect("the plugin acks the pushed version");
+    // The push runs under the SHIPPED 5 s deadline, unchanged (see the header note above: the
+    // cfg(test) 60 s fork is deleted, deliberately). What that deadline cannot distinguish is a
+    // wedged plugin from a saturated HOST: with a full workspace build and sibling test binaries
+    // on every core, the `spawn_blocking` FFI hop plus scheduling can eat the whole budget while
+    // the plugin is perfectly healthy. Production's answer to that is the operator retrying the
+    // admin push; this test's answer is the same, bounded — the exact mirror of
+    // `await_transport_published`'s ATTEMPTS loop one call up. ONLY a deadline-shaped error
+    // retries: a wrong acked version (the defect this test pins) fails on the first answer,
+    // every time, because no retry can turn a wrong ack into a right one.
+    const ATTEMPTS: usize = 4;
+    let mut last = String::new();
+    for _ in 0..ATTEMPTS {
+        match push_configure(&hook, "h", 7, &env).await {
+            Ok(()) => return,
+            Err(e) if e.contains("deadline") || e.contains("unresolvable") => last = e,
+            Err(e) => panic!("the plugin must ack the pushed version exactly: {e}"),
+        }
+    }
+    panic!(
+        "push_configure hit its shipped 5s deadline {ATTEMPTS} times in a row ({last}); that is a \
+         wedged plugin or a hang, not scheduling delay"
+    );
 }
 
 /// ONE `dlopen` per distinct resolution, proven the only way that cannot be faked: the two

@@ -1197,9 +1197,19 @@ pub(crate) async fn await_transport_published(
     /// Enough attempts that only a genuine hang exhausts them (each attempt is bounded by the
     /// production resolve deadline).
     const ATTEMPTS: usize = 24;
+    /// How many FAILED loads (not timeouts — failures) are re-tried before `false` is believed.
+    /// A failed load is deliberately NOT published (see [`resolution::Claim::publish`]) precisely
+    /// so the next caller retries it, and in production the next control-plane touch is that
+    /// caller. Under parallel-suite load the first load can fail TRANSIENTLY — staging I/O or
+    /// `dlopen` against an fd-starved, cache-thrashed host — and this helper used to convert that
+    /// single transient failure into a permanent-looking `false`, flaking every "the loader must
+    /// publish" assertion. Three failures in a row with the host given a beat to recover is an
+    /// unloadable plugin; one is weather.
+    const HARD_FAILURES: usize = 3;
     let Some(key) = resolution::key(name, hook, env) else {
         return false;
     };
+    let mut failed = 0usize;
     for _ in 0..ATTEMPTS {
         if resolution::published(key) {
             return true;
@@ -1209,10 +1219,15 @@ pub(crate) async fn await_transport_published(
             return resolution::published(key);
         }
         // `None` is two different things and only one of them is worth waiting for: a load still
-        // running (the caller's deadline elapsed, the claim is still held) versus a hook that
-        // genuinely does not resolve.
+        // running (the caller's deadline elapsed, the claim is still held) versus a load that
+        // FAILED (the claim was dropped unpublished). The failed arm retries a bounded number of
+        // times — see HARD_FAILURES above — before it is believed.
         if !resolution::in_flight(key) {
-            return false;
+            failed += 1;
+            if failed >= HARD_FAILURES {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
     panic!(

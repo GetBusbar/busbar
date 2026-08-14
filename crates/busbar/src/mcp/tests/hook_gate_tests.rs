@@ -40,7 +40,12 @@ fn gate(settings: serde_json::Value) -> HookCfg {
     HookCfg {
         kind: HookKind::Gate,
         plugin: "test-hook".to_string(),
-        timeout_ms: crate::config::DEFAULT_POLICY_TIMEOUT_MS,
+        // NOT `DEFAULT_POLICY_TIMEOUT_MS` (1 ms) — same reasoning as the A2A twin
+        // (`a2a/tests/hook_gate_tests.rs`): under parallel-suite load the 1 ms deadline fires on
+        // scheduling delay alone, and `on_error: "weighted"` turns the timed-out gate into a
+        // PROCEED, flaking every verdict assertion here. The verdict is under test, not the
+        // deadline; 10 s cannot fire for an in-process dlopen call.
+        timeout_ms: 10_000,
         on_error: "weighted".to_string(),
         prompt: PromptAccess::Ro,
         user: UserAccess::Ro,

@@ -278,8 +278,21 @@ fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    // pid + counter alone is NOT unique over time: these dirs are never cleaned up, and under
+    // process churn the OS reuses pids — observed as `plugins_dir_fingerprint_treats_a_missing_
+    // dir_as_ok_empty` finding a PREVIOUS run's leftover file inside its "really empty" dir and
+    // failing on two honest fingerprints of two different directories. A once-per-process clock
+    // token makes the name unique across pid reuse; the counter keeps it unique within the
+    // process (same idiom, same reasoning as `crate::tests::tmp_plugin_dir`).
+    static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let token = PROC_TOKEN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    });
     let d = std::env::temp_dir().join(format!(
-        "busbar-plugin-admin-{}-{n}-{tag}",
+        "busbar-plugin-admin-{}-{token:x}-{n}-{tag}",
         std::process::id(),
     ));
     std::fs::create_dir_all(&d).unwrap();

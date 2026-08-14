@@ -44,13 +44,6 @@ fn temp_file_staging_cleans_up_on_drop() {
 #[cfg(unix)]
 #[test]
 fn sweep_removes_dead_pid_dirs_only() {
-    // A dir for a pid that is certainly dead (pid_max on linux is < 2^22 by default; u32::MAX
-    // range pids do not exist on any supported platform).
-    let dead = std::env::temp_dir().join(format!("{STAGING_PREFIX}4294967294-deadbeef"));
-    let _ = std::fs::remove_dir_all(&dead);
-    std::fs::create_dir_all(dead.join("sub")).unwrap();
-    std::fs::write(dead.join("sub/lib.so"), b"junk").unwrap();
-
     // Our own live dir must survive the sweep: hold a real staged file so the shared state
     // keeps the directory alive for the duration of this test.
     let held = Staged::TempFile {
@@ -64,12 +57,48 @@ fn sweep_removes_dead_pid_dirs_only() {
             .expect("staging dir exists while a file is live")
     };
 
-    let removed = sweep_dead_staging();
-    assert!(removed >= 1, "the dead-pid dir must be swept");
-    assert!(!dead.exists(), "dead-pid staging dir removed");
+    // The sweep walks the SHARED system temp dir, and so does every OTHER busbar-shaped process
+    // on the host (a parallel run of this same test binary, a booting busbar — main.rs sweeps at
+    // startup). A dead-pid fixture dir placed there is therefore legitimate prey for a CONCURRENT
+    // sweeper, and this test used to flake exactly that way under parallel load: a sibling swept
+    // the fixed-name fixture first, `sweep_dead_staging()` here found nothing, and `removed >= 1`
+    // failed with the sweep working perfectly. Two changes close it without weakening what is
+    // proven:
+    //   * a RANDOM suffix, so a sibling running this test can never create/remove the same path;
+    //   * a RETRY when — and only when — the fixture vanished without this call removing it, which
+    //     has exactly one cause (a concurrent sweeper won the race) and re-running the experiment
+    //     is the correct response to it. A fixture that still EXISTS after our sweep is the real
+    //     defect and fails immediately, every attempt.
+    let mut proven = false;
+    for _ in 0..5 {
+        // A dir for a pid that is certainly dead (pid_max on linux is < 2^22 by default; u32::MAX
+        // range pids do not exist on any supported platform).
+        let dead =
+            std::env::temp_dir().join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+        std::fs::create_dir_all(dead.join("sub")).unwrap();
+        std::fs::write(dead.join("sub/lib.so"), b"junk").unwrap();
+
+        let removed = sweep_dead_staging();
+        assert!(
+            !dead.exists(),
+            "a dead-pid staging dir survived the sweep — the sweep is broken"
+        );
+        assert!(
+            own.exists(),
+            "own (live-pid) staging dir survives the sweep"
+        );
+        if removed >= 1 {
+            proven = true;
+            break;
+        }
+        // removed == 0 with the fixture gone: a concurrent sweeper (sibling test process or a
+        // booting busbar) removed it before this call walked the dir. Run the experiment again.
+    }
     assert!(
-        own.exists(),
-        "own (live-pid) staging dir survives the sweep"
+        proven,
+        "five consecutive sweeps each found the fixture already removed by a concurrent sweeper; \
+         either this host is running a pathological number of busbar processes or `removed` is \
+         miscounted"
     );
     drop(held);
 }

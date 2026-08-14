@@ -424,7 +424,24 @@ fn measure_on_a_fresh_thread() {
 
     // One interval's samples plus allocator slack. Pre-fix this is BURST × ~24 B (tens of MiB) and
     // stays there — the load having stopped changes nothing, which is precisely the reported defect.
-    const TOLERANCE: u64 = 1024 * 1024;
+    //
+    // WHY 8 MiB AND NOT 1 MiB. The bytes retained post-drain live inside the recorder
+    // (`metrics-exporter-prometheus`'s AtomicBucket blocks, folded by `run_upkeep`), and that crate
+    // frees drained blocks through crossbeam-epoch: reclamation is DEFERRED, and under a loaded
+    // machine (`cargo test --workspace` running concurrently) the epoch advances late enough that
+    // a slice of the burst's blocks is still awaiting reclamation when this thread reads its
+    // dealloc counter — plus any block actually freed on ANOTHER thread's epoch flush never lands
+    // on THIS thread's per-thread dealloc counter at all. Measured under that load profile: up to
+    // ~1.30 MiB of phantom retention (24% over the old 1 MiB tolerance) with the fix under test
+    // working correctly. An observation-count assertion would dodge the allocator entirely, but
+    // the samples at that point are inside the external recorder, which exposes no count — so the
+    // byte measure stays, with the tolerance set from BOTH sides:
+    //   * noise side: 8 MiB is ~6x the worst phantom retention observed under full parallel load;
+    //   * signal side: the defect this pins is BURST × ~24 B ≈ 48 MiB (linear, no plateau — see
+    //     the leak note above `drain_pending`), ~6x ABOVE this tolerance. Per observation: the
+    //     tolerance allows ~4.2 B/obs; the defect costs ~24 B/obs. The assertion cannot pass by
+    //     luck on the pre-fix build and cannot fail from reclamation timing on the fixed one.
+    const TOLERANCE: u64 = 8 * 1024 * 1024;
     assert!(
         recovered < TOLERANCE,
         "after {BURST} observations and the traffic stopping, {recovered} bytes were still held \

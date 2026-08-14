@@ -40,6 +40,16 @@ use crate::test_support::TestApp;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 
+/// ONE deadline for the whole leg: the `timeout:` every fixture registration configures AND the
+/// bound `await_log` polls under. They are the same number on purpose — the log wait is waiting for
+/// the same `/bin/sh` child the transport is talking to, so a wait that is STRICTER than the
+/// transport's own budget fails on scheduling delay the transport itself would have absorbed.
+/// Observed exactly that way on loaded Linux CI: with a full workspace build running concurrently,
+/// the child loop was descheduled past `await_log`'s old hard 5 s bound while every issue() had
+/// already succeeded inside its 20 s budget. The bound still PANICS when it elapses — nothing here
+/// can skip — it is merely no longer tighter than the machinery it observes.
+const LEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// A registration busbar reaches by SPAWNING `/bin/sh -c <script>`, with `$LOG` naming a file the
 /// child appends every line it reads to.
 ///
@@ -75,7 +85,7 @@ fn stdio_server(
         env,
         cwd: None,
         refresh_ttl: None,
-        timeout: Some("20s".to_string()),
+        timeout: Some(format!("{}s", LEG_TIMEOUT.as_secs())),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,
             key: Some("sha256/CHILD=".to_string()),
@@ -177,7 +187,8 @@ fn read_log(path: &std::path::Path) -> String {
 /// green over a child that never started. The message names what was being waited for, because the
 /// only useful timeout is one that says what did not happen.
 async fn await_log(path: &std::path::Path, needle: &str, what: &str) -> String {
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + LEG_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
         let log = read_log(path);
         if log.contains(needle) {
             return log;
@@ -185,7 +196,9 @@ async fn await_log(path: &std::path::Path, needle: &str, what: &str) -> String {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!(
-        "the child never wrote {what} (looking for {needle:?}) within 5s.\nWhat it did write:\n{}",
+        "the child never wrote {what} (looking for {needle:?}) within {LEG_TIMEOUT:?} — the same \
+         budget the transport itself gets, so this is a real failure, not scheduling delay.\nWhat \
+         it did write:\n{}",
         read_log(path)
     );
 }

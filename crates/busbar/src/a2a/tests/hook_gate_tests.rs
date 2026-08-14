@@ -25,7 +25,16 @@ fn gate(settings: serde_json::Value) -> HookCfg {
     HookCfg {
         kind: HookKind::Gate,
         plugin: "test-hook".to_string(),
-        timeout_ms: crate::config::DEFAULT_POLICY_TIMEOUT_MS,
+        // NOT `DEFAULT_POLICY_TIMEOUT_MS` (1 ms). These tests assert the gate's VERDICT, not its
+        // latency, and the deadline arm is indistinguishable from the thing under test: on a
+        // loaded machine (`cargo test --workspace` saturating every core) the 1 ms
+        // `tokio::time::timeout` around `policy.decide` fires on pure scheduling delay, and
+        // `on_error: "weighted"` maps a timed-out gate to PROCEED — so reject-all serves a 200
+        // and the battery flakes red with the fix under test working. 10 s is not a tuned number;
+        // it is "never fires for a healthy in-process dlopen call, on any load this side of a
+        // wedged host". The deadline path itself is covered by its own tests, on purpose, where
+        // firing is the point.
+        timeout_ms: 10_000,
         on_error: "weighted".to_string(),
         prompt: PromptAccess::Ro,
         user: UserAccess::Ro,
