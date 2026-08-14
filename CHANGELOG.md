@@ -92,6 +92,23 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Fixed
 
+- **`oauth_as:` can mint an authorization code at all.** The consent session cookie was scoped
+  `Path={issuer}/consent` and read at `{issuer}/authorize` — SIBLING paths, not a prefix and its
+  child, so RFC 6265 path-matching meant the browser never sent the cookie to the endpoint that
+  reads it. Every authorization-code flow, for every client, bounced between `/authorize` and the
+  consent screen forever: approve, redirect back, no session, redirect to consent, repeat. The
+  cookie is now issued once per reading endpoint — one `Set-Cookie` scoped to the authorization
+  endpoint and one to the consent screen, and nothing wider. `Path=/` would have worked and would
+  have sent an operator's session credential to the token endpoint, which is spoken to by the
+  *client*, and to every data-plane path on the same origin.
+
+  Two things found in the same header while fixing it: the cookie now carries `Secure` whenever the
+  issuer is `https:` (it carried it never), and a consent screen served by a host whose platform RNG
+  has failed refuses with a `503` instead of opening a session under an EMPTY id that anybody could
+  present. `HttpOnly`, `SameSite=Lax` and a `Max-Age` equal to the session's own TTL are unchanged —
+  `Lax` deliberately, because `Strict` withholds the cookie on the cross-site top-level navigation
+  that starts the flow and would reintroduce the same defect from the other end.
+
 - **A non-image attachment no longer reaches Anthropic as an `image` and gets the request
   rejected.** The Gemini reader mapped **every** `inlineData` onto an image block regardless of mime
   type, and the Anthropic writer emitted `media_type` verbatim and unvalidated — so a Gemini→

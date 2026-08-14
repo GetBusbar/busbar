@@ -74,3 +74,11 @@ pub(crate) mod signer;
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;
+
+// THE FLOW, driven over a socket through a path-scoping cookie jar. Attached here for the same
+// reason the gating proof is: it spans the mount, the consent route and the `oauth-as` callbacks,
+// and it is only a proof of "this deployment can mint a code" if it holds across all of them at
+// once.
+#[cfg(test)]
+#[path = "tests/flow_tests.rs"]
+mod flow_tests;
