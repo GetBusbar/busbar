@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="512" viewBox="0 0 900 512" role="img" aria-label="One endpoint, every protocol, both directions">
 <rect width="900" height="512" rx="10" fill="#ffffff"/>
-<text x="28.0" y="40.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" font-weight="650" fill="#1f2328" text-anchor="start">One endpoint, every protocol, both directions</text>
-<text x="28.0" y="62.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start">Added latency p99 in microseconds, per ingress and upstream pair. Lower is better. 36 of 36 pairs served.</text>
+<text x="28.0" y="42.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="21" font-weight="650" fill="#1f2328" text-anchor="start">One endpoint, every protocol, both directions</text>
+<text x="28.0" y="66.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#59636e" text-anchor="start">Added latency p99 in microseconds, per ingress and upstream pair. Lower is better. 36 of 36 pairs served.</text>
 <text x="184.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="700" fill="#818b98" text-anchor="end">UPSTREAM</text>
 <text x="248.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#59636e" text-anchor="middle">OpenAI</text>
 <text x="360.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#59636e" text-anchor="middle">Responses</text>
@@ -98,5 +98,5 @@
 <text x="52.0" y="454.5" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start">Same protocol: your original bytes, forwarded, not re-serialized</text>
 <rect x="28.0" y="468.0" width="16.0" height="16.0" rx="4" fill="#dafbe1" stroke="#2da44e" stroke-width="1"/>
 <text x="52.0" y="480.5" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start">Cross protocol: every modelled field arrives in the target's native shape</text>
-<text x="28.0" y="494.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#818b98" text-anchor="start">busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
+<text x="28.0" y="494.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#818b98" text-anchor="start">Busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
 </svg>

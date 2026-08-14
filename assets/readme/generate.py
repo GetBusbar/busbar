@@ -1,19 +1,38 @@
 #!/usr/bin/env python3
-"""Generate the README figures as committed SVG, one file per GitHub theme.
+"""Generate the README figures as committed SVG, and the README's own numbers.
 
-Run: python3 assets/readme/generate.py
+  python3 assets/readme/generate.py                 # redraw the SVGs
+  python3 assets/readme/generate.py --readme        # ...and rewrite README.md's numeric blocks
+  python3 assets/readme/generate.py --check         # exit 1 if either is stale
 
-Every number is read from data.json, which is extracted verbatim from
-https://onthebench.ai/data.json (busbar 1.5.1, AWS m7g.4xlarge, measured
-2026-08-03). Nothing here is typed by hand except labels; refresh data.json
-from onthebench and re-run to update every figure.
+Every number is read from data.json, which is WRITTEN BY the website's
+metrics/onthebench.mjs from https://onthebench.ai/data.json, the same run the
+website's own facts.ts reads:
+
+  node metrics/onthebench.mjs --readme-out <this repo>/assets/readme/data.json
+  python3 assets/readme/generate.py --readme
+
+so one re-measure moves the site and this README together. Image and install
+sizes are a different instrument and come from install.json (install-sizes.py).
+
+The README's figures AND its tables are generated. A figure regenerated beside a
+hand-typed table is a table that goes stale on the next re-measure, which is how
+docs/protocols.md came to be stamped "last verified against 1.2.0" on a 1.6.0
+tree. Nothing here is typed by hand except labels and prose.
+
 No em dashes anywhere in the output (a build gate rejects them).
 """
-import json, os, sys
+import json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
 D = json.load(open(os.path.join(HERE, "data.json")))
-OUT = sys.argv[1] if len(sys.argv) > 1 else HERE
+INSTALL = json.load(open(os.path.join(HERE, "install.json")))
+ARGS = [a for a in sys.argv[1:] if not a.startswith("-")]
+FLAGS = {a for a in sys.argv[1:] if a.startswith("-")}
+DO_README = "--readme" in FLAGS or "--check" in FLAGS
+CHECK = "--check" in FLAGS
+OUT = ARGS[0] if ARGS else HERE
 os.makedirs(OUT, exist_ok=True)
 
 THEMES = {
@@ -62,15 +81,19 @@ def frame(w, h, t, title, sub):
          f'viewBox="0 0 {w} {h}" role="img" aria-label="{esc(title)}">',
          f'<rect width="{w}" height="{h}" rx="10" fill="{t["bg"]}"/>']
     if title:
-        s.append(txt(28, 40, title, 19, "text", weight="650", t=t))
+        s.append(txt(28, 42, title, 21, "text", weight="650", t=t))
     if sub:
-        s.append(txt(28, 62, sub, 11.5, "dim", t=t))
+        s.append(txt(28, 66, sub, 13, "dim", t=t))
     return s
 
 
 SRC = D["source"]
-STAMP = ("busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured "
-         "2026-08-03, published at onthebench.ai")
+# Derived, not typed: the build and the day both come off the run's own stamp, so a
+# re-measure restamps every figure that carries this line.
+_BUILD = SRC["busbar_build"].rsplit(":", 1)[-1]
+_DAY = SRC["busbar_measured_at"][:10]
+STAMP = (f"Busbar {_BUILD} on AWS m7g.4xlarge (Graviton3), 4-core pin, measured "
+         f"{_DAY}, published at onthebench.ai")
 
 
 # ---------------------------------------------------------------- figure 1
@@ -276,10 +299,11 @@ def fig_memory(t):
 
 # ---------------------------------------------------------------- figure 4
 def fig_field(t):
-    W, H = 900, 470
+    W, H = 1040, 604
     cov = D["coverage"]
+    field_day = D["source"]["busbar_measured_at"][:10]
     keys = ["busbar-151", "litellm-python", "litellm-rust", "kong", "portkey"]
-    name = {"busbar-151": "busbar 1.5.1", "litellm-python": "LiteLLM Python 1.94.0",
+    name = {"busbar-151": f"Busbar {_BUILD}", "litellm-python": "LiteLLM Python 1.94.0",
             "litellm-rust": "LiteLLM Rust 6980723", "kong": "Kong 3.9.3",
             "portkey": "Portkey 1.15.2"}
     s = frame(W, H, t, "Why not LiteLLM, Kong or Portkey",
@@ -288,10 +312,14 @@ def fig_field(t):
 
     def panel(x, y, w, h, title, sub):
         s.append(rect(x, y, w, h, "panel", t, rx=8, stroke="grid"))
-        s.append(txt(x + 16, y + 24, title, 12.5, "text", weight="700", t=t))
-        s.append(txt(x + 16, y + 40, sub, 10, "dim", t=t))
+        s.append(txt(x + 20, y + 30, title, 15.5, "text", weight="700", t=t))
+        s.append(txt(x + 20, y + 50, sub, 12, "dim", t=t))
 
-    def bars(x, y, w, rows, fmt, logscale=False, lower_better=True):
+    def bars(x, y, w, rows, fmt, logscale=False, lower_better=True, pitch=38, fs=13):
+        """One labelled bar per row. `pitch` is the row height and `fs` the label size:
+        the install panel carries only two rows but much longer labels (a full image
+        reference), so it gets more of both rather than being squeezed into the
+        five-row geometry the coverage panels need."""
         import math
         vals = [v for _, v in rows]
         if logscale:
@@ -302,44 +330,51 @@ def fig_field(t):
             mx = max(vals)
             frac = [v / mx for _, v in rows]
         for i, ((lab, v), f) in enumerate(zip(rows, frac)):
-            yy = y + i * 30
+            yy = y + i * pitch
             good = i == 0
-            s.append(txt(x, yy + 10, lab, 10.5, "text" if good else "dim",
+            s.append(txt(x, yy + 10, lab, fs, "text" if good else "dim",
                          weight="700" if good else "500", t=t))
             bw = max(0.035 * w, f * w)
-            s.append(rect(x, yy + 15, w, 9, "neutral_soft", t, rx=4.5))
-            s.append(rect(x, yy + 15, bw, 9, "accent" if good else "neutral", t,
-                          rx=4.5))
-            s.append(txt(x + w + 8, yy + 23, fmt(v), 10.5,
+            s.append(rect(x, yy + 18, w, 11, "neutral_soft", t, rx=5.5))
+            s.append(rect(x, yy + 18, bw, 11, "accent" if good else "neutral", t,
+                          rx=5.5))
+            s.append(txt(x + w + 12, yy + 27.5, fmt(v), fs,
                          "accent" if good else "dim", weight="700" if good else "600",
                          mono=True, t=t))
 
+    # Panels A and B: five rows each. Bars start 56px below the panel top so the first
+    # row's label clears the subtitle instead of sitting on its baseline.
     # panel A: protocol coverage
-    panel(28, 86, 420, 208, "Wire protocol pairs actually served",
+    panel(28, 96, 492, 282, "Wire protocol pairs actually served",
           "Of 36 ingress and upstream combinations. Not a provider count")
-    bars(44, 126, 268,
+    bars(48, 166, 316,
          [(name[k], cov[k]["served"]) for k in keys],
          lambda v: f"{v}/36")
 
     # panel B: idle memory
-    panel(460, 86, 412, 208, "Idle resident memory",
+    panel(540, 96, 472, 282, "Idle resident memory",
           "At rest, before any request. Log scale, lower is better")
-    bars(476, 126, 250,
+    bars(560, 166, 286,
          [(name[k], cov[k]["idle_rss_mib"]) for k in keys],
          lambda v: (f"{v:,.1f} MiB" if v < 10 else f"{v:,.0f} MiB"), logscale=True)
 
-    # panel C: image + install size
-    panel(28, 306, 844, 128, "What you actually install",
+    # panel C: image + install size. Two rows, but the labels are full image references,
+    # so they get a larger type size and a taller pitch than the five-row panels above.
+    img = INSTALL["images"]
+    bb_mib, ll_mib = img["busbar"]["compressed_mib"], img["litellm"]["compressed_mib"]
+    panel(28, 398, 984, 168, "What you actually install",
           "Compressed container layers, read from the registry. Lower is better")
-    rows = [("busbar, getbusbar/busbar:latest (1.5.3), linux/amd64", 5.74),
-            ("LiteLLM, ghcr.io/berriai/litellm:main-latest, linux/amd64", 360.77)]
-    bars(44, 346, 520, rows, lambda v: f"{v:,.2f} MB")
-    s.append(txt(700, 372, "63x", 30, "accent", weight="700", mono=True, t=t))
-    s.append(txt(700, 390, "smaller to pull", 10.5, "dim", t=t))
-    s.append(txt(28, H - 16,
-                 "Coverage and memory: onthebench.ai field run, 2026-08-03, AWS "
+    rows = [(f"Busbar, {img['busbar']['image']}, {img['busbar']['platform']}", bb_mib),
+            (f"LiteLLM, {img['litellm']['image']}, {img['litellm']['platform']}", ll_mib)]
+    bars(48, 468, 604, rows, lambda v: f"{v:,.2f} MiB", pitch=48, fs=14)
+    s.append(txt(838, 500, f"{ll_mib / bb_mib:.0f}x", 38, "accent", weight="700",
+                 mono=True, t=t))
+    s.append(txt(838, 522, "smaller to pull", 12.5, "dim", t=t))
+    s.append(txt(28, H - 20,
+                 f"Coverage and memory: onthebench.ai field run, {field_day}, AWS "
                  "m7g.4xlarge (Graviton3), 4-core pin. Image sizes: registry "
-                 "manifests read 2026-08-13.", 10, "faint", t=t))
+                 f"manifests read {INSTALL['hand_measured']['measured_at']}.",
+                 11.5, "faint", t=t))
     s.append("</svg>")
     return "\n".join(s)
 

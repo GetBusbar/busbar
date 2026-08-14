@@ -13,192 +13,228 @@
    "cohere": {
     "served": true,
     "p50": 91,
-    "p99": 102
+    "p99": 102,
+    "idle_rss_mib": 7.39453125
    },
    "openai-responses": {
     "served": true,
     "p50": 138,
-    "p99": 152
+    "p99": 152,
+    "idle_rss_mib": 7.33984375
    },
    "anthropic": {
     "served": true,
     "p50": 94,
-    "p99": 105
+    "p99": 105,
+    "idle_rss_mib": 7.34375
    },
    "openai": {
     "served": true,
     "p50": 73,
-    "p99": 82
+    "p99": 82,
+    "idle_rss_mib": 7.3359375
    },
    "gemini": {
     "served": true,
     "p50": 98,
-    "p99": 109
+    "p99": 109,
+    "idle_rss_mib": 7.3515625
    },
    "bedrock": {
     "served": true,
     "p50": 96,
-    "p99": 107
+    "p99": 107,
+    "idle_rss_mib": 7.35546875
    }
   },
   "anthropic": {
    "gemini": {
     "served": true,
     "p50": 97,
-    "p99": 110
+    "p99": 110,
+    "idle_rss_mib": 7.359375
    },
    "anthropic": {
     "served": true,
     "p50": 78,
-    "p99": 87
+    "p99": 87,
+    "idle_rss_mib": 7.421875
    },
    "cohere": {
     "served": true,
     "p50": 94,
-    "p99": 105
+    "p99": 105,
+    "idle_rss_mib": 7.33984375
    },
    "openai-responses": {
     "served": true,
     "p50": 143,
-    "p99": 158
+    "p99": 158,
+    "idle_rss_mib": 7.33984375
    },
    "bedrock": {
     "served": true,
     "p50": 99,
-    "p99": 111
+    "p99": 111,
+    "idle_rss_mib": 7.3359375
    },
    "openai": {
     "served": true,
     "p50": 96,
-    "p99": 108
+    "p99": 108,
+    "idle_rss_mib": 7.39453125
    }
   },
   "openai-responses": {
    "anthropic": {
     "served": true,
     "p50": 95,
-    "p99": 106
+    "p99": 106,
+    "idle_rss_mib": 7.33984375
    },
    "openai-responses": {
     "served": true,
     "p50": 73,
-    "p99": 82
+    "p99": 82,
+    "idle_rss_mib": 7.33984375
    },
    "gemini": {
     "served": true,
     "p50": 97,
-    "p99": 109
+    "p99": 109,
+    "idle_rss_mib": 7.37109375
    },
    "cohere": {
     "served": true,
     "p50": 91,
-    "p99": 103
+    "p99": 103,
+    "idle_rss_mib": 7.3359375
    },
    "bedrock": {
     "served": true,
     "p50": 96,
-    "p99": 108
+    "p99": 108,
+    "idle_rss_mib": 7.36328125
    },
    "openai": {
     "served": true,
     "p50": 92,
-    "p99": 104
+    "p99": 104,
+    "idle_rss_mib": 7.328125
    }
   },
   "gemini": {
    "gemini": {
     "served": true,
     "p50": 81,
-    "p99": 91
+    "p99": 91,
+    "idle_rss_mib": 7.36328125
    },
    "openai": {
     "served": true,
     "p50": 92,
-    "p99": 104
+    "p99": 104,
+    "idle_rss_mib": 7.3984375
    },
    "bedrock": {
     "served": true,
     "p50": 97,
-    "p99": 108
+    "p99": 108,
+    "idle_rss_mib": 7.390625
    },
    "anthropic": {
     "served": true,
     "p50": 97,
-    "p99": 108
+    "p99": 108,
+    "idle_rss_mib": 7.36328125
    },
    "openai-responses": {
     "served": true,
     "p50": 142,
-    "p99": 157
+    "p99": 157,
+    "idle_rss_mib": 7.35546875
    },
    "cohere": {
     "served": true,
     "p50": 92,
-    "p99": 104
+    "p99": 104,
+    "idle_rss_mib": 7.33984375
    }
   },
   "cohere": {
    "openai-responses": {
     "served": true,
     "p50": 140,
-    "p99": 153
+    "p99": 153,
+    "idle_rss_mib": 7.32421875
    },
    "openai": {
     "served": true,
     "p50": 91,
-    "p99": 102
+    "p99": 102,
+    "idle_rss_mib": 7.33984375
    },
    "cohere": {
     "served": true,
     "p50": 73,
-    "p99": 83
+    "p99": 83,
+    "idle_rss_mib": 7.33984375
    },
    "gemini": {
     "served": true,
     "p50": 93,
-    "p99": 104
+    "p99": 104,
+    "idle_rss_mib": 7.34375
    },
    "anthropic": {
     "served": true,
     "p50": 92,
-    "p99": 103
+    "p99": 103,
+    "idle_rss_mib": 7.33984375
    },
    "bedrock": {
     "served": true,
     "p50": 92,
-    "p99": 102
+    "p99": 102,
+    "idle_rss_mib": 7.34765625
    }
   },
   "bedrock": {
    "openai": {
     "served": true,
     "p50": 122,
-    "p99": 134
+    "p99": 134,
+    "idle_rss_mib": 7.34765625
    },
    "anthropic": {
     "served": true,
     "p50": 116,
-    "p99": 132
+    "p99": 132,
+    "idle_rss_mib": 7.359375
    },
    "bedrock": {
     "served": true,
     "p50": 105,
-    "p99": 120
+    "p99": 120,
+    "idle_rss_mib": 7.39453125
    },
    "openai-responses": {
     "served": true,
     "p50": 171,
-    "p99": 186
+    "p99": 186,
+    "idle_rss_mib": 7.34375
    },
    "gemini": {
     "served": true,
     "p50": 127,
-    "p99": 138
+    "p99": 138,
+    "idle_rss_mib": 7.33203125
    },
    "cohere": {
     "served": true,
     "p50": 111,
-    "p99": 125
+    "p99": 125,
+    "idle_rss_mib": 7.35546875
    }
   }
  },
@@ -1694,6 +1730,8 @@
    "p50": 186,
    "p99": 228,
    "cpu_us": 168.55885078776646,
+   "ttft_p50_us": 308,
+   "ttft_p99_us": 402,
    "rps_1ms": 23365,
    "rps_uncapped": 24771,
    "idle_rss_mib": 25.1640625,
@@ -1715,6 +1753,8 @@
    "p50": 191,
    "p99": 208,
    "cpu_us": 195.65436072829695,
+   "ttft_p50_us": 348,
+   "ttft_p99_us": 566,
    "rps_1ms": 19828,
    "rps_uncapped": 20578,
    "idle_rss_mib": 77.4375,
@@ -1736,6 +1776,8 @@
    "p50": 211,
    "p99": 465,
    "cpu_us": 216.23712715436744,
+   "ttft_p50_us": 10617,
+   "ttft_p99_us": 11022,
    "rps_1ms": 7367,
    "rps_uncapped": 21460,
    "idle_rss_mib": 178.560546875,
@@ -1757,6 +1799,8 @@
    "p50": 521,
    "p99": 1058,
    "cpu_us": 805.4279603071636,
+   "ttft_p50_us": 690,
+   "ttft_p99_us": 1255,
    "rps_1ms": null,
    "rps_uncapped": 5650,
    "idle_rss_mib": 245.11328125,
@@ -1778,6 +1822,8 @@
    "p50": 73,
    "p99": 82,
    "cpu_us": 65.08213217682157,
+   "ttft_p50_us": 129,
+   "ttft_p99_us": 206,
    "rps_1ms": 67245,
    "rps_uncapped": 67837,
    "idle_rss_mib": 7.3359375,
@@ -1799,6 +1845,8 @@
    "p50": 651,
    "p99": 2073,
    "cpu_us": 1048.0572597137013,
+   "ttft_p50_us": 882,
+   "ttft_p99_us": 1594,
    "rps_1ms": null,
    "rps_uncapped": 2654,
    "idle_rss_mib": 52.578125,
@@ -1820,6 +1868,8 @@
    "p50": 274,
    "p99": 294,
    "cpu_us": 276.8166089965398,
+   "ttft_p50_us": 414,
+   "ttft_p99_us": 506,
    "rps_1ms": 14073,
    "rps_uncapped": 14941,
    "idle_rss_mib": 42.8984375,
@@ -1841,6 +1891,8 @@
    "p50": 195,
    "p99": 389,
    "cpu_us": 209.88578695285295,
+   "ttft_p50_us": 105907,
+   "ttft_p99_us": 106313,
    "rps_1ms": 14060,
    "rps_uncapped": 22418,
    "idle_rss_mib": 403.47265625,
@@ -1848,7 +1900,7 @@
    "measured_at": "2026-08-03T22:17:28.000Z"
   },
   "litellm-python": {
-   "display": "LiteLLM \u00b7 Python",
+   "display": "LiteLLM · Python",
    "version": "v1.94.0",
    "lang": "Python",
    "cls": "LLM gateway",
@@ -1862,6 +1914,8 @@
    "p50": 6570,
    "p99": 8221,
    "cpu_us": 6774.91601343785,
+   "ttft_p50_us": 9088,
+   "ttft_p99_us": 11035,
    "rps_1ms": null,
    "rps_uncapped": 170,
    "idle_rss_mib": 1080,
@@ -1869,7 +1923,7 @@
    "measured_at": "2026-08-03T22:17:34.000Z"
   },
   "litellm-rust": {
-   "display": "LiteLLM \u00b7 Rust",
+   "display": "LiteLLM · Rust",
    "version": "6980723",
    "lang": "Rust",
    "cls": "LLM gateway",
@@ -1883,6 +1937,8 @@
    "p50": 92,
    "p99": 106,
    "cpu_us": 88.52931532754322,
+   "ttft_p50_us": 181,
+   "ttft_p99_us": 624,
    "rps_1ms": 47497,
    "rps_uncapped": 48354,
    "idle_rss_mib": 252.62109375,
@@ -1904,6 +1960,8 @@
    "p50": 34086,
    "p99": 1045183,
    "cpu_us": 16956.521739130436,
+   "ttft_p50_us": 697,
+   "ttft_p99_us": 731,
    "rps_1ms": null,
    "rps_uncapped": 38,
    "idle_rss_mib": 84.66796875,
@@ -1925,6 +1983,8 @@
    "p50": 234019,
    "p99": 241890,
    "cpu_us": 228437.5,
+   "ttft_p50_us": 188168,
+   "ttft_p99_us": 199422,
    "rps_1ms": null,
    "rps_uncapped": 20,
    "idle_rss_mib": 612.609375,
@@ -1946,6 +2006,8 @@
    "p50": 1177,
    "p99": 3720,
    "cpu_us": 1486.1198079732833,
+   "ttft_p50_us": 27908,
+   "ttft_p99_us": 30273,
    "rps_1ms": null,
    "rps_uncapped": 855,
    "idle_rss_mib": 123.84765625,
@@ -1967,6 +2029,8 @@
    "p50": 40974,
    "p99": 40993,
    "cpu_us": 396.6942148760331,
+   "ttft_p50_us": 612,
+   "ttft_p99_us": 665,
    "rps_1ms": null,
    "rps_uncapped": 14265,
    "idle_rss_mib": 48.734375,
