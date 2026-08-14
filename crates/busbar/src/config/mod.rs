@@ -1561,10 +1561,13 @@ impl<'de> Deserialize<'de> for PoolCfg {
 /// longer use as a POOL NAME, so ADDING one in a later release retroactively turns a previously-legal
 /// config into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every
 /// FUTURE all-scope knob must therefore land under a reserved `defaults:` sub-key
-/// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever. The same rule
-/// governs the parallel `tools:`/`agents:` sections when they ship (1.6.0): reserve the same two
-/// words in every plane section, even where a plane chooses not to implement one, so the word space is
-/// identical across planes.
+/// (`pools.defaults.<knob>`), which costs one word ONCE and is then additive forever.
+///
+/// THIS IS THE ONLY DECLARATION, on every plane. `tools:` and `agents:` reserve the same two words —
+/// even where a plane does not implement one — and they do it by reading this slice through
+/// [`crate::plane::config::RESERVED_SECTION_KEYS`], not by restating it. A second
+/// `&["hooks", "upstream_credentials"]` literal is exactly how a word comes to be reserved on one
+/// plane and free on another.
 ///
 /// Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 pub(crate) const RESERVED_POOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
@@ -1659,63 +1662,24 @@ impl<'de> Deserialize<'de> for PoolsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // Parse into a raw name→Value map so the reserved keys can be lifted out before the
-        // remaining entries are parsed as pools. A bare list under `hooks` is the all-pools attach;
-        // a bare `own`/`passthrough` scalar under `upstream_credentials` is the all-pools default.
-        let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
-            indexmap::IndexMap::deserialize(deserializer)?;
-        // A RESERVED key whose value is a MAPPING is an attempt to define a POOL by that name
-        // (freeze blocker). Caught here, BEFORE the typed lifts below, so the operator gets
-        // "that name is reserved" instead of a confusing "expected a sequence" type error.
-        for reserved in RESERVED_POOLS_SECTION_KEYS {
-            if raw
-                .get(*reserved)
-                .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
-            {
-                return Err(serde::de::Error::custom(format!(
-                    "a pool may not be named `{reserved}`: that key is RESERVED at the `pools:` \
-                     section level (the all-pools `hooks:` attach list and `upstream_credentials:` \
-                     default). Rename the pool."
-                )));
-            }
-        }
-        let all_pool_hooks: Vec<String> = match raw.shift_remove("hooks") {
-            None => Vec::new(),
-            Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `pools.hooks:` all-pools attach must be a list of hook names: {e}"
-                ))
-            })?,
-        };
-        let all_pool_upstream_credentials = match raw.shift_remove("upstream_credentials") {
-            None => None,
-            Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `pools.upstream_credentials:` all-pools default must be \
-                         `own` or `passthrough`: {e}"
-                ))
-            })?),
-        };
-        let mut pools = HashMap::new();
-        for (name, value) in raw {
-            // A pool named by a RESERVED section key is rejected (freeze blocker): those names are
-            // section-level knobs, not pools. (Lifting them out above already consumed the well-typed
-            // forms; this guard catches the map-valued "I meant a pool" spelling with a precise
-            // message instead of a confusing type error.)
-            if RESERVED_POOLS_SECTION_KEYS.contains(&name.as_str()) {
-                return Err(serde::de::Error::custom(format!(
-                    "a pool may not be named `{name}`: that key is RESERVED at the `pools:` section \
-                     level (the all-pools `hooks:` attach list and `upstream_credentials:` default). \
-                     Rename the pool."
-                )));
-            }
-            let pool: PoolCfg = PoolCfg::deserialize(value).map_err(serde::de::Error::custom)?;
-            pools.insert(name, pool);
-        }
+        // THE SECTION SPLIT is `plane::config`'s, and the pool plane reads its section through the
+        // same six steps in the same order as `tools:` and `agents:` — including the refusal of a
+        // reserved key holding a MAPPING before the typed lifts, which is the step this rule exists
+        // for and the step a per-plane copy is likeliest to lose.
+        //
+        // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
+        // config, where they can see the cross-section references a single entry cannot.
+        let section = crate::plane::config::split_section::<D, PoolCfg>(
+            deserializer,
+            crate::plane::Plane::Llm,
+            |_, _| Ok(()),
+        )?;
         Ok(PoolsCfg {
-            all_pool_hooks,
-            all_pool_upstream_credentials,
-            pools,
+            all_pool_hooks: section.hooks,
+            all_pool_upstream_credentials: section.upstream_credentials,
+            // The pool map is a `HashMap` and its order is never read back; converted here, once,
+            // where the loss of order is visible rather than assumed.
+            pools: section.entries.into_iter().collect::<HashMap<_, _>>(),
         })
     }
 }

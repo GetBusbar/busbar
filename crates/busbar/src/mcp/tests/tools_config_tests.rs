@@ -9,7 +9,7 @@
 //! under test IS the grammar: a test that built `McpServerDefCfg` directly would skip the custom
 //! `Deserialize` where the reserved keys, the section knobs and the value rules all live.
 
-use super::{ToolsCfg, RESERVED_TOOLS_SECTION_KEYS};
+use super::ToolsCfg;
 
 fn parse(yaml: &str) -> Result<ToolsCfg, String> {
     serde_yaml::from_str::<ToolsCfg>(yaml).map_err(|e| e.to_string())
@@ -52,21 +52,13 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     );
 }
 
-/// The reserved word space does NOT vary per plane. Pinned to the pool plane's own constant rather
-/// than to a copy of its contents: an operator who learns the rule once must not discover that a
-/// name legal on one plane is a section knob on another.
-#[test]
-fn the_reserved_section_words_are_identical_to_the_pool_planes() {
-    assert_eq!(
-        RESERVED_TOOLS_SECTION_KEYS,
-        crate::config::RESERVED_POOLS_SECTION_KEYS,
-        "the two reserved section words are one word space across every plane"
-    );
-}
-
+/// The reserved word space does NOT vary per plane, and that is no longer an assertion about two
+/// constants — there is ONE constant, `plane::config::RESERVED_SECTION_KEYS`, and this section is
+/// read through the shared split that consults it. What remains testable, and what this asserts, is
+/// that EVERY word in that set is refused as a server NAME on this plane.
 #[test]
 fn a_server_may_not_be_named_with_a_reserved_section_word() {
-    for reserved in RESERVED_TOOLS_SECTION_KEYS {
+    for reserved in crate::plane::config::RESERVED_SECTION_KEYS {
         let yaml =
             format!("{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n");
         let err = parse(&yaml).expect_err("a reserved name holding a mapping must be refused");

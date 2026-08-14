@@ -14,8 +14,10 @@
 //!
 //! `hooks` and `upstream_credentials` are reserved here for the same reason they are on `pools:` —
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
-//! discover that a name legal on one plane is a section knob on another. Pinned to
-//! [`crate::config::RESERVED_POOLS_SECTION_KEYS`] by a test.
+//! discover that a name legal on one plane is a section knob on another. It is no longer a claim
+//! about two constants that agree: there is ONE declaration
+//! ([`crate::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
 //!
@@ -74,11 +76,6 @@
 //! collision is a LOUD BOOT REFUSAL and never an automatic rename.
 
 use serde::{Deserialize, Serialize};
-
-/// The two words reserved at the `tools:` section level. IDENTICAL to
-/// [`crate::config::RESERVED_POOLS_SECTION_KEYS`] by design, and pinned to it by a test: the whole
-/// point is that the reserved word space does not vary per plane.
-pub(crate) const RESERVED_TOOLS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
 
 /// The separator between a server id and a tool name in the `{server}_{tool}` namespaced routing
 /// key. Stated once because it is the ROUTING KEY: the catalogue builds it, the scope
@@ -864,7 +861,8 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying [`RESERVED_TOOLS_SECTION_KEYS`] alongside the servers.
+/// The top-level `tools:` map, carrying the two [`crate::plane::config::RESERVED_SECTION_KEYS`]
+/// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ToolsCfg {
     /// The ALL-MCP attach list (the reserved `tools.hooks:` key). LIST ⇒ ADDITIVE.
@@ -920,63 +918,21 @@ impl<'de> Deserialize<'de> for ToolsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
-            indexmap::IndexMap::deserialize(deserializer)?;
-
-        // A reserved key holding a MAPPING is somebody trying to define a server by that name.
-        // Caught before the typed lifts so the message names the real problem instead of surfacing
-        // as "expected a sequence".
-        for reserved in RESERVED_TOOLS_SECTION_KEYS {
-            if raw
-                .get(*reserved)
-                .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
-            {
-                return Err(serde::de::Error::custom(format!(
-                    "an MCP server may not be named `{reserved}`: that key is RESERVED at the \
-                     `tools:` section level (the all-MCP `hooks:` attach list and \
-                     `upstream_credentials:` default), on every plane. Rename the server."
-                )));
-            }
-        }
-
-        let all_server_hooks: Vec<String> = match raw.shift_remove("hooks") {
-            None => Vec::new(),
-            Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `tools.hooks:` all-MCP attach must be a list of hook names: {e}"
-                ))
-            })?,
-        };
-        let all_server_upstream_credentials = match raw.shift_remove("upstream_credentials") {
-            None => None,
-            Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `tools.upstream_credentials:` all-MCP default must be `own` or \
-                     `passthrough`: {e}"
-                ))
-            })?),
-        };
-
-        let mut servers = indexmap::IndexMap::new();
-        for (name, value) in raw {
-            if RESERVED_TOOLS_SECTION_KEYS.contains(&name.as_str()) {
-                return Err(serde::de::Error::custom(format!(
-                    "an MCP server may not be named `{name}`: that key is RESERVED at the `tools:` \
-                     section level, on every plane. Rename the server."
-                )));
-            }
-            let def: McpServerDefCfg =
-                McpServerDefCfg::deserialize(value).map_err(serde::de::Error::custom)?;
-            // The VALUE rules, run through the same function the admin write path calls, so the API
-            // rejects exactly what the file rejects.
-            validate_server(&name, &def).map_err(serde::de::Error::custom)?;
-            servers.insert(name, def);
-        }
+        // THE SECTION SPLIT is `plane::config`'s — the reserved-key refusals, the two typed lifts
+        // and the order they happen in are a property of a plane SECTION, not of this plane. What
+        // stays here is the only thing that is this plane's: `validate_server`, the VALUE rules,
+        // run through the same function the admin write path calls so the API rejects exactly what
+        // the file rejects.
+        let section = crate::plane::config::split_section::<D, McpServerDefCfg>(
+            deserializer,
+            crate::plane::Plane::Mcp,
+            validate_server,
+        )?;
 
         Ok(ToolsCfg {
-            all_server_hooks,
-            all_server_upstream_credentials,
-            servers,
+            all_server_hooks: section.hooks,
+            all_server_upstream_credentials: section.upstream_credentials,
+            servers: section.entries,
         })
     }
 }

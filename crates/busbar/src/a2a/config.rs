@@ -14,8 +14,10 @@
 //!
 //! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
 //! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
-//! rule once should not discover that a name legal on one plane is a section knob on another. The
-//! reserved set is closed; a new A2A knob lands under a per-entry key, never as a new section word.
+//! rule once should not discover that a name legal on one plane is a section knob on another. There
+//! is ONE declaration of the pair ([`crate::plane::config::RESERVED_SECTION_KEYS`]) and one reader
+//! of it, so that cannot drift. The reserved set is closed; a new A2A knob lands under a per-entry
+//! key, never as a new section word.
 //!
 //! ## The pin is an OBJECT, and that is the whole trust story compressed into one field
 //!
@@ -56,11 +58,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use serde::{Deserialize, Serialize};
-
-/// The two words reserved at the `agents:` section level. IDENTICAL to
-/// [`crate::config::RESERVED_POOLS_SECTION_KEYS`] by design, and pinned to it by a test: the whole
-/// point is that the reserved word space does not vary per plane.
-pub(crate) const RESERVED_AGENTS_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
 
 /// The default re-verification cadence for a registration that names none: six hours.
 ///
@@ -269,7 +266,8 @@ pub(crate) struct AgentDefCfg {
     pub(crate) hooks: Vec<String>,
 }
 
-/// The top-level `agents:` map, carrying [`RESERVED_AGENTS_SECTION_KEYS`] alongside the agents.
+/// The top-level `agents:` map, carrying the two [`crate::plane::config::RESERVED_SECTION_KEYS`]
+/// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct AgentsCfg {
     /// The ALL-AGENTS attach list (the reserved `agents.hooks:` key). LIST ⇒ ADDITIVE: an agent's
@@ -287,70 +285,29 @@ impl<'de> Deserialize<'de> for AgentsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
-            indexmap::IndexMap::deserialize(deserializer)?;
+        // THE SECTION SPLIT is `plane::config`'s — the reserved-key refusals, the two typed lifts
+        // and the order they happen in are a property of a plane SECTION, not of this plane. What
+        // stays here is what is genuinely this plane's: `validate_agent`, run through the same
+        // function the admin write path calls so the API rejects exactly what the file rejects, and
+        // the passthrough refusal below.
+        let section = crate::plane::config::split_section::<D, AgentDefCfg>(
+            deserializer,
+            crate::plane::Plane::A2a,
+            validate_agent,
+        )?;
 
-        // A reserved key holding a MAPPING is somebody trying to define an agent by that name.
-        // Caught before the typed lifts so the message names the real problem instead of surfacing
-        // as "expected a sequence".
-        for reserved in RESERVED_AGENTS_SECTION_KEYS {
-            if raw
-                .get(*reserved)
-                .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
-            {
-                return Err(serde::de::Error::custom(format!(
-                    "an agent may not be named `{reserved}`: that key is RESERVED at the `agents:` \
-                     section level (the all-agents `hooks:` attach list and \
-                     `upstream_credentials:` default), on every plane. Rename the agent."
-                )));
-            }
-        }
-
-        let all_agent_hooks: Vec<String> = match raw.shift_remove("hooks") {
-            None => Vec::new(),
-            Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `agents.hooks:` all-agents attach must be a list of hook \
-                     names: {e}"
-                ))
-            })?,
-        };
-        let all_agent_upstream_credentials = match raw.shift_remove("upstream_credentials") {
-            None => None,
-            Some(v) => Some(crate::auth::UpstreamCreds::deserialize(v).map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "the reserved `agents.upstream_credentials:` all-agents default must be \
-                     `own`: {e}"
-                ))
-            })?),
-        };
-        // The all-agents DEFAULT is refused for the same reason a per-agent value is, and it is
-        // checked here rather than only per entry because a section default applies to agents that
-        // never spell the key — which is precisely the set an entry-level check cannot see.
-        if all_agent_upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
+        // THE SECTION DEFAULT IS REFUSED HERE and not in the shared split, because it is a rule
+        // about this plane's VALUES: `passthrough` is meaningless to an agent busbar fronts. It is
+        // checked at the section level as well as per entry because a section default applies to
+        // agents that never spell the key — precisely the set an entry-level check cannot see.
+        if section.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough) {
             return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
         }
 
-        let mut agents = indexmap::IndexMap::new();
-        for (name, value) in raw {
-            if RESERVED_AGENTS_SECTION_KEYS.contains(&name.as_str()) {
-                return Err(serde::de::Error::custom(format!(
-                    "an agent may not be named `{name}`: that key is RESERVED at the `agents:` \
-                     section level, on every plane. Rename the agent."
-                )));
-            }
-            let def: AgentDefCfg =
-                AgentDefCfg::deserialize(value).map_err(serde::de::Error::custom)?;
-            // The VALUE rules, run through the same function the admin write path calls, so the
-            // API rejects exactly what the file rejects.
-            validate_agent(&name, &def).map_err(serde::de::Error::custom)?;
-            agents.insert(name, def);
-        }
-
         Ok(AgentsCfg {
-            all_agent_hooks,
-            all_agent_upstream_credentials,
-            agents,
+            all_agent_hooks: section.hooks,
+            all_agent_upstream_credentials: section.upstream_credentials,
+            agents: section.entries,
         })
     }
 }
