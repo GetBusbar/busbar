@@ -8,6 +8,36 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Added
 
+- **A push notification now arrives when the agent finishes, not only when busbar happens to be
+  looking.** A2A tasks are asynchronous by design, and busbar answers the push-notification config
+  verbs itself — so a backend was never told anything, and busbar delivered only on a transition it
+  observed while holding a relayed request or stream open. The exact case push notifications exist
+  for, *do not make me poll*, was the case that delivered nothing: a caller registered a callback,
+  got a `200`, hung up, and heard silence for work that completed an hour later.
+
+  busbar now **substitutes its own callback**. It registers a config of its OWN with the backend —
+  its own `https` address, and a capability token minted for that one task — and keeps the caller's
+  URL and the caller's webhook credential where they were. What the backend learns is a busbar
+  address and an opaque bearer that can move exactly one busbar task; it does not learn the caller's
+  receiver, and it never holds the caller's secret. A push that arrives is authenticated against the
+  token in constant time, recorded through the same transition table and the same per-task hash
+  chain as every other observation, and then delivered to the caller by busbar — through the same
+  SSRF guard, the same re-resolution and the same pin every other delivery goes through.
+
+  The mirroring is one rule over all four verbs: what the caller does to the config busbar holds for
+  it, busbar does to the config busbar holds at the backend. A create arms it, a delete disarms it,
+  and a read reconciles — a read that does not find busbar's own registration re-makes it, which is
+  the only reason issuing the read is worth a hop. `busbar` never offers a backend a plaintext
+  address for itself, and there is no knob to make it.
+
+- **`ListTasks` is a live poll again.** busbar answers `ListTasks` from its own store, and the rows
+  carry the last state the *backend reported* — which meant a task the agent moved on out of band
+  was invisible until somebody happened to read it. busbar now asks the agent for its list first and
+  refreshes the rows it can match. Nothing from the agent's answer is rendered to a caller: a state
+  is taken only for a row busbar already holds, that this principal already owns, on this agent,
+  whose backend id busbar itself recorded — so a shared backend enumerating every tenant's work
+  moves nothing and shows nobody anything.
+
 - **Attachments cross protocols now: documents, audio and video reach the backend instead of being
   destroyed.** Until this release the IR modelled `Text / Thinking / ToolUse / ToolResult / Image /
   Json` and nothing else, so on a **cross-protocol** route an OpenAI caller's `input_audio` or

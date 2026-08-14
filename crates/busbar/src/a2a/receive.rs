@@ -115,12 +115,12 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
 /// A single lock acquisition rather than one per step, because `authorize` and the catalogue must
 /// agree about the same registry state: two acquisitions could straddle a re-verification sweep and
 /// admit against one registration while cataloguing against another.
-struct Admitted {
-    dispatch: Dispatch,
+pub(super) struct Admitted {
+    pub(super) dispatch: Dispatch,
     matched_skill: Option<String>,
     /// THE REGISTRY GENERATION THIS REQUEST WAS ADMITTED UNDER, read under the same lock the
     /// admission was decided under. Carried to the relay gate, where a move is a refusal.
-    generation: u64,
+    pub(super) generation: u64,
     /// The registration's OUTBOUND CREDENTIAL HANDLE, cloned out under the same registry read that
     /// authorised the call. A handle and its lease policy, never a secret: the secret is resolved at
     /// relay time by [`super::creds::mint_from`], whose signature has no parameter an inbound
@@ -128,7 +128,7 @@ struct Admitted {
     ///
     /// Cloned rather than re-read because a second acquisition could straddle a config apply and
     /// mint a credential for a registration that is not the one this call was authorised against.
-    outbound_cred: Option<super::creds::OutboundCredential>,
+    pub(super) outbound_cred: Option<super::creds::OutboundCredential>,
 }
 
 /// THE ADMISSION SEQUENCE, steps 2 and 3, under one registry read.
@@ -987,6 +987,21 @@ async fn admitted(
         let principal = admitted.dispatch.billed_key_id.clone();
         let local = match verb {
             super::local::LocalVerb::ListTasks => {
+                // ── THE POLL `super::local` SAID THIS WAS NOT. The rows stay busbar's and the
+                //    answer stays busbar's, for every reason that section gives; what changes is
+                //    that they are refreshed from the agent FIRST, so a task the backend moved on
+                //    out of band is not invisible until somebody happens to read it. Nothing from
+                //    the backend's answer is rendered — see `refresh_listed_tasks` for the scoping
+                //    rule that makes a shared backend's list unable to move another tenant's row.
+                super::originate::refresh_listed_tasks(
+                    &app,
+                    &admitted,
+                    key,
+                    &principal,
+                    a2a_version,
+                    now,
+                )
+                .await;
                 Some(super::local::list_tasks(&envelope, &rpc_id, &principal))
             }
             super::local::LocalVerb::CreatePushConfig(dialect) => {
@@ -1016,6 +1031,40 @@ async fn admitted(
             }
         };
         if let Some(response) = local {
+            // ── BUSBAR'S OWN CALLBACK, MIRRORED ONTO THE BACKEND. ───────────────────────────────
+            //
+            // The ANSWER above stays busbar's, for every reason `super::local` gives: the
+            // caller's config is a record busbar keeps, addressed by an id busbar issued, and
+            // delivered by busbar. What is added here is the OTHER HALF of that argument, which was
+            // missing and whose absence was a functional hole rather than a caution — a backend
+            // that was never told anything never reported anything, so a task interrupted and
+            // finished out of band delivered NOTHING to a caller that had registered a callback
+            // precisely so it would not have to poll.
+            //
+            // So busbar registers ITS OWN callback, on the BACKEND's own task id, carrying a token
+            // that addresses this one task. The caller's URL and the caller's credential do not
+            // appear on the hop at all — see `super::pushback`, which composes it, and the scan in
+            // its tests that reads every byte.
+            //
+            // ONLY ON A SUCCESSFUL LOCAL ANSWER. A `TaskNotFound` or a refused config named no
+            // registration worth mirroring, and arming a backend for a request busbar just refused
+            // would be busbar acting on a caller's behalf after telling it no.
+            if response.status() == axum::http::StatusCode::OK {
+                if let Some(mirrored) = super::pushback::mirrored_verb(verb) {
+                    if let Some(task) = addressed_task(&envelope, &principal) {
+                        super::originate::mirror_push_config(
+                            &app,
+                            &admitted,
+                            key,
+                            mirrored,
+                            &task,
+                            a2a_version,
+                            now,
+                        )
+                        .await;
+                    }
+                }
+            }
             // AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and resource spelling, so
             // a locally-answered verb is not invisible in the record just because no socket opened.
             crate::admin::audit::AUDIT.record_by(
@@ -1425,7 +1474,7 @@ struct HopContext {
 }
 
 /// The plane, if this deployment has one.
-fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
+pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
     app.a2a.as_ref().map(Arc::clone)
 }
 
@@ -1872,7 +1921,7 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
 ///
 /// A task with no callback never spawns anything: the overwhelmingly common case costs one
 /// `Option` test.
-fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::task::Task) {
+pub(super) fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::task::Task) {
     if task.push_callback.is_none() {
         return;
     }
@@ -2340,6 +2389,21 @@ pub(crate) fn mount(
             RouteMethod::Post,
             RouteAuth::Key,
             plane_rpc,
+        )
+        // BUSBAR'S OWN CALLBACK — the address it hands a BACKEND, so the backend never learns the
+        // caller's. `RouteAuth::None` because the party calling it is a fronted AGENT, which holds
+        // no busbar key and must not be issued one for this; the handler authenticates the request
+        // itself against the per-task token busbar minted, in constant time. See
+        // `super::pushback`, which carries the whole argument.
+        .route(
+            format!(
+                "{}{}",
+                super::serve::MOUNT_PATH,
+                super::pushback::PUSH_PATH_SUFFIX
+            ),
+            RouteMethod::Post,
+            RouteAuth::None,
+            super::pushback::push_notification,
         )
         // THE gRPC BINDING, mounted the same way and therefore declaring the same bar.
         //
