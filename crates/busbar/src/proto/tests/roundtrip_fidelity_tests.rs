@@ -1360,3 +1360,77 @@ fn streamed_cohere_search_units_survive() {
         "{frame}"
     );
 }
+
+/// A BUFFERED response's citations reach a Bedrock client too, not only a streamed one.
+///
+/// The buffered twin of `streamed_citations_reach_a_bedrock_client`. Closing only the streaming half
+/// would have left the identical asymmetry the streaming gap was, merely inverted: sources when the
+/// caller streams and none when it does not.
+#[test]
+fn buffered_citations_reach_a_bedrock_client() {
+    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let ir = cohere
+        .reader
+        .read_response(&json!({
+            "id": "c1",
+            "finish_reason": "COMPLETE",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Paris is the capital."}],
+                "citations": [{
+                    "start": 0, "end": 5, "text": "Paris",
+                    "sources": [{"type": "document", "id": "d1",
+                                 "document": {"title": "Atlas", "url": "https://atlas"}}]
+                }]
+            }
+        }))
+        .expect("read");
+
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let out = bedrock.writer.write_response(&ir);
+    let block = &out["output"]["message"]["content"][0];
+    assert_eq!(
+        block["citationsContent"]["content"][0]["text"], "Paris is the capital.",
+        "the answer text moves INSIDE the citations block, per the Converse union: {out}"
+    );
+    let c = &block["citationsContent"]["citations"][0];
+    assert_eq!(c["title"], "Atlas", "{out}");
+    assert_eq!(c["sourceContent"][0]["text"], "Paris", "{out}");
+    assert_eq!(c["location"]["documentChar"]["start"], 0, "{out}");
+}
+
+/// A text block with NO citations keeps the plain `{"text": …}` shape.
+///
+/// `citationsContent` replaces the `text` member rather than sitting beside it, so emitting it
+/// unconditionally would reshape every ordinary Bedrock response — a wire change for every consumer
+/// in exchange for nothing.
+#[test]
+fn bedrock_uncited_text_keeps_the_plain_shape() {
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let out = bedrock.writer.write_response(&crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: "plain".to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        logprobs: Vec::new(),
+    });
+    assert_eq!(
+        out["output"]["message"]["content"][0]["text"], "plain",
+        "{out}"
+    );
+}

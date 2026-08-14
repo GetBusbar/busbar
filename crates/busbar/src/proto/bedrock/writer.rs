@@ -1004,9 +1004,43 @@ impl ProtocolWriter for BedrockWriter {
 
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text { text, .. } => {
-                    if !text.is_empty() {
+                crate::ir::IrBlock::Text {
+                    text, citations, ..
+                } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Grounding citations, in Converse's native `citationsContent` slot — the
+                    // BUFFERED twin of the `contentBlockDelta.citation` frame the streaming arm
+                    // emits. Without it a Bedrock-ingress client got sources when it asked to stream
+                    // and none when it did not, which is the same request-shape-dependent asymmetry
+                    // the streaming gap was, only inverted.
+                    //
+                    // `citationsContent` REPLACES the plain `text` member for this block (the union
+                    // carries the text INSIDE it, alongside the citations), so it is emitted only
+                    // when at least one citation actually projects — a text block with no citations
+                    // keeps the plain `{"text": …}` shape every existing consumer expects.
+                    let cits: Vec<serde_json::Value> = citations
+                        .iter()
+                        .filter_map(super::write_bedrock_citation)
+                        .collect();
+                    if cits.is_empty() {
+                        if !citations.is_empty() {
+                            tracing::warn!(
+                                dropped = citations.len(),
+                                "dropping citation(s) on a bedrock response egress: none carried a \
+                                 title, url, quoted text or resolvable character location, so there \
+                                 is no populated member for the Converse `Citation` shape"
+                            );
+                        }
                         content_arr.push(serde_json::json!({ "text": text }));
+                    } else {
+                        content_arr.push(serde_json::json!({
+                            "citationsContent": {
+                                "content": [{ "text": text }],
+                                "citations": cits
+                            }
+                        }));
                     }
                 }
 
