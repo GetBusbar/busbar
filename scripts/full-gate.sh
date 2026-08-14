@@ -249,6 +249,14 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   done
 
+  # The equality-ledger printer this script calls in its result section must itself discriminate:
+  # its own selftest proves a broken ledger is REFUSED rather than printed as a clean line.
+  if python3 scripts/capability-equality-summary.py --selftest >/dev/null 2>&1; then
+    printf '  [ok]     the equality-ledger printer refuses a broken ledger (its selftest holds)\n'
+  else
+    printf '  [FAILED] scripts/capability-equality-summary.py --selftest failed -- the ledger line this script prints could lie\n'; bad=1
+  fi
+
   [ "$bad" = 0 ] && { printf '\nfull-gate selftest: discovery, floors and skip-reasons all hold\n'; exit 0; }
   printf '\nSELFTEST FAILED\n'; exit 1
 fi
@@ -277,6 +285,18 @@ for inv in "${RUN[@]}"; do
   # shellcheck disable=SC2086
   run_one "$inv" ${inv}
 done
+
+# ── THE EQUALITY LEDGER ───────────────────────────────────────────────────────────────────────────
+# Owner: "LLM == MCP == A2A -- just different protocols not different pathway through engine at
+# all." The RED enforcement is `crates/busbar/tests/capability_equality.rs` (already run by the
+# cargo gates above); THIS line exists because a cargo test's output is swallowed on green, and the
+# doctrine's gap must be NAMED on every umbrella run, green or red -- the honest-ledger pattern.
+# A ledger that cannot be read is a failure, not a silence: a gap that can no longer be named is a
+# gap on its way to being forgotten.
+printf '\n== equality ledger ==\n'
+if ! python3 scripts/capability-equality-summary.py; then
+  FAILED+=("scripts/capability-equality-summary.py (qa/capability-equality.json is unreadable or does not tile -- the gap can no longer be named)")
+fi
 
 printf '\n== result ==\n'
 if [ "${#FAILED[@]}" -eq 0 ]; then

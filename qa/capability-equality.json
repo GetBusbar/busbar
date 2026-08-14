@@ -1,0 +1,449 @@
+{
+  "comment": [
+    "THE CAPABILITY x PROTOCOL EQUALITY MATRIX -- the equality doctrine, as a pinned instrument.",
+    "",
+    "Owner's ruling (repeated; this file exists so it never has to be repeated again):",
+    "  'breakers, hooks, auditing -- list all the core functionality. outside should ONLY BE",
+    "   Auth, Store, Protocols, i.e. Plugins. Any plugin gets all functionality.",
+    "   LLM == MCP == A2A -- just different protocols not different pathway through engine at all.'",
+    "",
+    "Every CORE CAPABILITY x PROTOCOL PLANE cell is exactly one of:",
+    "  proven          -- with `test`: `<repo-relative test file>::<test fn>`. The gate",
+    "                     (crates/busbar/tests/capability_equality.rs) verifies the file exists and",
+    "                     the fn is in it, so a proven cell cannot outlive its evidence.",
+    "  missing         -- the capability does not reach this plane today, or no test proves it does.",
+    "                     A proof that nobody watched is a claim; MISSING is the honest state until",
+    "                     a named test exists. The missing set is the work queue, and every umbrella",
+    "                     run prints it (scripts/capability-equality-summary.py, wired into",
+    "                     scripts/full-gate.sh) -- green stays green, but the gap is NAMED.",
+    "  not-applicable  -- with `reason`: a one-line argument. N/A is a claim, not an escape; the",
+    "                     gate refuses an n/a cell whose argument is missing or trivial.",
+    "",
+    "The capability list is the one-of-each modules in core -- each a mechanism that exists",
+    "exactly once and that every plane is owed:",
+    "breaker.rs, failover/, hooks/, audit/, governance/, metrics.rs, trust/, net_guard.rs,",
+    "egress_auth/, catalogue.rs, and the disposition pipeline (proto/ Stage 1 -> breaker::classify).",
+    "",
+    "CHANGING THIS FILE: close a cell by flipping it to `proven` WITH the test that proves it, in",
+    "the SAME commit as the test. Regressing a proven cell (its test vanishes or is renamed) is RED.",
+    "Adding a capability or plane without filling its whole row/column is RED (the cross product is",
+    "exact). Do not delete a capability to shrink the queue."
+  ],
+  "capabilities": {
+    "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
+    "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
+    "failover-reroute": "a second interchangeable candidate is tried before the first byte, through the one selection loop (failover::walk)",
+    "hooks-tap": "observe/transform hooks (rewrite, usage projection) run over the plane's payloads",
+    "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
+    "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
+    "governance-budget": "spend on the plane is attributed to the presenting key and budget limits refuse with a Retry-After",
+    "disposition": "the plane's upstream answers are normalized (Stage 1) and classified into Disposition (Stage 2, breaker::classify)",
+    "metrics": "the plane's traffic appears on the real /metrics scrape under its own plane label",
+    "trust-pinning": "the peer's artifact (schema digest / card fingerprint / SPKI) is pinned; drift is detected, demoted and refused",
+    "net-guard": "every outbound destination this role derives is SSRF-guarded through core net_guard (judged-address pinning, metadata refusal)",
+    "egress-auth": "outbound credentials are planned and injected by the one egress mechanism -- never a caller token passed through",
+    "catalogue": "what this caller may SEE is answered by the one core catalogue walk (catalogue::entitled), trust-gated per item"
+  },
+  "planes": {
+    "llm": "model traffic: app -> busbar -> provider, HTTP incl. SSE/binary streams (one plane, both halves)",
+    "mcp-client": "busbar's outbound leg to registered MCP servers -- streamable-HTTP and stdio; where the transport changes the answer, the cell's note says so",
+    "mcp-server": "busbar's MCP front door: inbound methods from clients and agents",
+    "a2a-client": "busbar issuing A2A requests: the relay leg to backend agents (JsonRpc, HttpJson, Grpc -- one relay below the transport axis), originate, card fetch",
+    "a2a-server": "busbar's A2A front door: inbound tasks/messages, plus this role's own outbound webhook push delivery"
+  },
+  "cells": [
+    {
+      "capability": "breaker-trip",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
+    },
+    {
+      "capability": "breaker-trip",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "a failed upstream leg is Err(String) relayed to the caller (mcp/upstream.rs); nothing writes any breaker cell. The stdio crash-loop breaker is process supervision, shares no state with LaneRuntime, and does not count."
+    },
+    {
+      "capability": "breaker-trip",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded. A peer-initiated sampling/createMessage rides the LLM engine and is the llm cell's evidence."
+    },
+    {
+      "capability": "breaker-trip",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "every backend failure is a RelayRefusal rendered as a busbar-attributed 502; nothing records health, on any of the three transports."
+    },
+    {
+      "capability": "breaker-trip",
+      "plane": "a2a-server",
+      "state": "not-applicable",
+      "reason": "inbound role; no upstream availability to record. The anomaly breaker (a2a/anomaly.rs) is behaviour trust, not availability, and must not be conflated with the core breaker."
+    },
+    {
+      "capability": "breaker-fastfail",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
+    },
+    {
+      "capability": "breaker-fastfail",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "no admission call anywhere on the path; a hard-down server costs EVERY call the full timeout (30s default) and a concurrency slot, on both transports."
+    },
+    {
+      "capability": "breaker-fastfail",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "the front door is inbound; admission-before-dispatch has no upstream target on this role. The outbound legs it triggers are the llm and mcp-client cells."
+    },
+    {
+      "capability": "breaker-fastfail",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "the relay re-asks trust before the socket, never availability; a dead backend burns the full timeout per call and produces no operator trip signal."
+    },
+    {
+      "capability": "breaker-fastfail",
+      "plane": "a2a-server",
+      "state": "not-applicable",
+      "reason": "inbound role; there is no dispatch admission against an upstream to make fast. Refusing inbound work is the governance and trust cells' subject, not the breaker's."
+    },
+    {
+      "capability": "failover-reroute",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default"
+    },
+    {
+      "capability": "failover-reroute",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "the seam (failover::walk) is built and proven against synthetic candidates but is cfg(dead_code) with NO production caller; tool_pools: is parsed and validated but read by nothing at dispatch."
+    },
+    {
+      "capability": "failover-reroute",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "inbound role; there is no candidate set to walk. Failover for work this role triggers belongs to the outbound cells (llm, mcp-client)."
+    },
+    {
+      "capability": "failover-reroute",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "agent_pools: parsed and validated, consumed by nothing; one registered backend per agent, one attempt. Task-scoped verbs on an accepted task are pinned to the member that accepted it by design; only fresh submissions are owed reroute, and they do not get it."
+    },
+    {
+      "capability": "failover-reroute",
+      "plane": "a2a-server",
+      "state": "not-applicable",
+      "reason": "inbound role; there is no candidate set to walk on the receiving side. The relay's candidate walk is the a2a-client cell."
+    },
+    {
+      "capability": "hooks-tap",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
+    },
+    {
+      "capability": "hooks-tap",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "grep transform under mcp/: zero production hits. The gate projects content to hooks, but there is no observe/transform (rewrite) path over the upstream leg's payloads."
+    },
+    {
+      "capability": "hooks-tap",
+      "plane": "mcp-server",
+      "state": "missing",
+      "note": "the gate sees content (mcp/tests/hook_gate_tests.rs::mcp_content_reaches_the_gate) but no transform/rewrite path exists for MCP traffic; the tap half of the hook surface is LLM-only today."
+    },
+    {
+      "capability": "hooks-tap",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "no observe/transform hook path over relay/originate payloads; grep transform under a2a/: zero production hits."
+    },
+    {
+      "capability": "hooks-tap",
+      "plane": "a2a-server",
+      "state": "missing",
+      "note": "the gate sees content (a2a/tests/hook_gate_tests.rs::a2a_content_reaches_the_gate) but there is no transform/rewrite path for inbound A2A payloads."
+    },
+    {
+      "capability": "hooks-gate",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
+    },
+    {
+      "capability": "hooks-gate",
+      "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
+      "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions."
+    },
+    {
+      "capability": "hooks-gate",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
+    },
+    {
+      "capability": "hooks-gate",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "originate and push delivery have no hook gate (the '--' row). The relay inherits the inbound gate at receive.rs, but busbar-originated A2A traffic is ungated."
+    },
+    {
+      "capability": "hooks-gate",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
+    },
+    {
+      "capability": "audit-chain",
+      "plane": "llm",
+      "state": "missing",
+      "note": "grep crate::audit under proxy/: zero production hits. Model requests have billing/telemetry but land in NO tamper-evident chain; MCP (calllog) and A2A (provenance) both do. This is the doctrine inverted -- the flagship plane is the unproven one."
+    },
+    {
+      "capability": "audit-chain",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "the front-door call record covers relayed tools/call transactions (mcp-server cell), and upstream.rs uses audit vocab words for refusals, but no test proves a client-leg outcome lands in a chain of its own."
+    },
+    {
+      "capability": "audit-chain",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
+    },
+    {
+      "capability": "audit-chain",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "task provenance chains inbound task events (a2a-server cell); no test proves originate or push-delivery outcomes are chained."
+    },
+    {
+      "capability": "audit-chain",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/provenance_tests.rs::an_untouched_chain_verifies_and_its_links_are_actual_links"
+    },
+    {
+      "capability": "governance-budget",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
+    },
+    {
+      "capability": "governance-budget",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "the transaction is charged at the front door (mcp-server cell); no test proves the upstream leg's spend is separately attributed or limited when busbar itself originates the leg."
+    },
+    {
+      "capability": "governance-budget",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
+    },
+    {
+      "capability": "governance-budget",
+      "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
+    },
+    {
+      "capability": "governance-budget",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
+    },
+    {
+      "capability": "disposition",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
+    },
+    {
+      "capability": "disposition",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "no Stage-1 normalizer produces a CanonicalSignal from a JSON-RPC error or transport failure on this leg; mcp/client/jsonrpc.rs classifies for refusal rendering only, never into StatusClass."
+    },
+    {
+      "capability": "disposition",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition."
+    },
+    {
+      "capability": "disposition",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "a2a/rpcerror.rs classifies for its own refusal rendering, not into StatusClass; RawUpstreamError producers are all LLM-dialect readers plus health.rs."
+    },
+    {
+      "capability": "disposition",
+      "plane": "a2a-server",
+      "state": "not-applicable",
+      "reason": "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition."
+    },
+    {
+      "capability": "metrics",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape."
+    },
+    {
+      "capability": "metrics",
+      "plane": "mcp-client",
+      "state": "missing",
+      "note": "the plane-label series is driven by inbound traffic; no test proves a client-leg-specific series (upstream latency, per-server outcome) exists."
+    },
+    {
+      "capability": "metrics",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+    },
+    {
+      "capability": "metrics",
+      "plane": "a2a-client",
+      "state": "missing",
+      "note": "the plane-label series is driven by inbound traffic; no test proves a relay/originate-leg series (backend latency, per-agent outcome) exists."
+    },
+    {
+      "capability": "metrics",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+    },
+    {
+      "capability": "trust-pinning",
+      "plane": "llm",
+      "state": "not-applicable",
+      "reason": "LLM providers are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema or card to pin. The trust lifecycle governs artifacts a peer authors."
+    },
+    {
+      "capability": "trust-pinning",
+      "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
+    },
+    {
+      "capability": "trust-pinning",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
+    },
+    {
+      "capability": "trust-pinning",
+      "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
+    },
+    {
+      "capability": "trust-pinning",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
+    },
+    {
+      "capability": "net-guard",
+      "plane": "llm",
+      "state": "not-applicable",
+      "reason": "LLM egress targets are operator-configured provider endpoints; no request-authored URL reaches the LLM egress path, so there is no SSRF surface -- which is why grep finds no net_guard consumer under proxy/."
+    },
+    {
+      "capability": "net-guard",
+      "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
+    },
+    {
+      "capability": "net-guard",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "the inbound listener derives no outbound destination of its own; the destinations its work triggers are guarded in the mcp-client and llm cells."
+    },
+    {
+      "capability": "net-guard",
+      "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
+    },
+    {
+      "capability": "net-guard",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
+      "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score."
+    },
+    {
+      "capability": "egress-auth",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/proxy/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
+    },
+    {
+      "capability": "egress-auth",
+      "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
+    },
+    {
+      "capability": "egress-auth",
+      "plane": "mcp-server",
+      "state": "not-applicable",
+      "reason": "this role's only outbound (peer sampling) rides the LLM engine, whose credential injection is the llm cell; inbound caller authentication is the Auth plugin's subject, not egress."
+    },
+    {
+      "capability": "egress-auth",
+      "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
+    },
+    {
+      "capability": "egress-auth",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
+    },
+    {
+      "capability": "catalogue",
+      "plane": "llm",
+      "state": "proven",
+      "test": "crates/busbar/src/tests/endpoints_tests.rs::test_v1_models_restricted_key_sees_only_reachable_names"
+    },
+    {
+      "capability": "catalogue",
+      "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
+    },
+    {
+      "capability": "catalogue",
+      "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
+    },
+    {
+      "capability": "catalogue",
+      "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
+    },
+    {
+      "capability": "catalogue",
+      "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
+    }
+  ]
+}
