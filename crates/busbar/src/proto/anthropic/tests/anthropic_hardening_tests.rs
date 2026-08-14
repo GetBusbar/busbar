@@ -3018,6 +3018,8 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
                 cache_control: None,
 
                 hosted: None,
+
+                strict: None,
             }],
             tool_choice: Some(tc),
             reasoning,

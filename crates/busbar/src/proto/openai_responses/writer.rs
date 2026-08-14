@@ -406,6 +406,13 @@ impl ProtocolWriter for ResponsesWriter {
                 };
                 tool_obj.insert("parameters".to_string(), params);
 
+                // STRICT function calling, flat on a Responses tool (Chat nests it under
+                // `function`). Emitted only when the source stated it, so `None` never becomes an
+                // invented `strict: false`.
+                if let Some(strict) = tool.strict {
+                    tool_obj.insert("strict".to_string(), serde_json::json!(strict));
+                }
+
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
             out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));

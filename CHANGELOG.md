@@ -6,6 +6,35 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every published cross-protocol gap is closed.** `docs/protocols.md` carried a section headed
+  "Known gaps in 1.6.0" whose own opening sentence called its contents *defects measured in the
+  1.6.0 tree*. Publishing a list of your own defects next to a losslessness claim is the wrong
+  artifact: the list is now empty, and the section is an inventory of what closed and which test
+  proves it.
+
+  Anthropic `search_result` blocks now cross as text carrying their source and title (they used to
+  degrade to an empty block, so a caller who paid to retrieve RAG passages got an ungrounded
+  answer). Streamed citations reach a **Bedrock** client through Converse's native
+  `contentBlockDelta.citation` member — the last of the three writers that suppressed a frame its
+  own protocol defines, which made the same request return sources at `stream: false` and none at
+  `stream: true`. Usage sub-buckets (`reasoning_tokens`, Anthropic's separately priced 5m/1h cache
+  tiers, Cohere `search_units`) now survive the **streaming** path as well as the buffered one, so
+  a bill reconciles the same way whichever the caller asked for. Gemini `groundingMetadata` is read
+  into citations, so a Google-Search-grounded answer reaches a foreign client with its provenance
+  instead of as an unattributed paragraph. `tools[].strict` is first-class on `IrTool` and crosses
+  the OpenAI Chat ↔ Responses pair, so a caller who asked for schema-guaranteed tool arguments still
+  has them after a hop. OpenAI `messages[].name` survives a pool-alias re-serialize (it used to be
+  stripped from every message on an otherwise same-protocol route).
+
+  What genuinely cannot cross — a Bedrock guardrail `trace`, Gemini `safetyRatings`,
+  `messages[].name` toward a protocol that does not frame a turn with a participant name, a
+  per-tool `strict` toward a protocol with no such flag — moved to *Fields the target protocol
+  cannot express*, and each one now emits a `warn!` naming the field in the caller's own vocabulary.
+  **The standing rule: a construct either crosses, or it is dropped with a log line that names it.
+  There is no third category.**
+
 ### Added
 
 - **A push notification now arrives when the agent finishes, not only when busbar happens to be
@@ -432,10 +461,12 @@ All notable changes to Busbar are documented here. The format is based on
   hop, so the claim has been narrowed to what is checkable. Same-protocol routes are byte-for-byte
   identical to calling the provider directly, and that is now stated as the stronger claim it is:
   those routes never enter the IR at all, on the request side or the non-stream response side.
-  Cross-protocol, every modelled field arrives in the target's native shape, and
-  [Known gaps in 1.6.0](https://getbusbar.com/docs/protocols/#known-gaps-in-160) lists what does not
-  cross: non-image attachments, citations coming from a Cohere backend, streaming citation deltas,
-  usage sub-buckets such as `reasoning_tokens`, and the response-side safety and guardrail metadata. Two
+  Cross-protocol, every modelled field arrives in the target's native shape. The defect list that
+  audit produced — non-image attachments, citations coming from a Cohere backend, streaming citation
+  deltas, usage sub-buckets such as `reasoning_tokens`, response-side provider metadata, the
+  unnamed `extra` keys, `tools[].strict` / `messages[].name` / Cohere `tool_plan` — has since been
+  worked to zero; see *Every published cross-protocol gap is closed* below, and
+  [Closed in 1.6.0](https://getbusbar.com/docs/protocols/#closed-in-160). Two
   in-repo statements were wrong rather than merely vague and are corrected: `extra` never survives a
   cross-protocol hop for any writer (it is cleared unconditionally at the seam), and same-protocol
   routes do not "use the IR path".

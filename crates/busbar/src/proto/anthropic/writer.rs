@@ -184,6 +184,7 @@ impl ProtocolWriter for AnthropicWriter {
             "messages".to_string(),
             serde_json::Value::Array(messages_array),
         );
+        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_ANTHROPIC);
         if !req.tools.is_empty() {
             let tools_array: Vec<_> = req.tools.iter().map(write_tool).collect();
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
@@ -645,6 +646,11 @@ impl ProtocolWriter for AnthropicWriter {
                         serde_json::json!(crit),
                     );
                 }
+                // The 5m/1h tier split rides the streamed `message_delta.usage` on native Anthropic
+                // exactly as it rides the buffered `usage`. Emitting it only on the buffered path
+                // made the SAME request reconcile per-tier at `stream: false` and collapse to one
+                // cache-write number at `stream: true`.
+                write_cache_creation_tiers(&mut usage_map, &usage.detail);
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert("type".to_string(), serde_json::json!(EVT_MESSAGE_DELTA));
                 data_obj.insert("delta".to_string(), serde_json::Value::Object(delta_obj));
@@ -794,27 +800,7 @@ impl ProtocolWriter for AnthropicWriter {
             );
         }
         // The differently-priced 5m/1h cache-creation tiers, in Anthropic's native nested spelling.
-        // Emitted only when a tier was actually reported, so a response that never had the split
-        // does not acquire an invented one.
-        let mut tiers = serde_json::Map::new();
-        if let Some(t5) = resp.usage.detail.cache_creation_5m_input_tokens {
-            tiers.insert(
-                "ephemeral_5m_input_tokens".to_string(),
-                serde_json::json!(t5),
-            );
-        }
-        if let Some(t1h) = resp.usage.detail.cache_creation_1h_input_tokens {
-            tiers.insert(
-                "ephemeral_1h_input_tokens".to_string(),
-                serde_json::json!(t1h),
-            );
-        }
-        if !tiers.is_empty() {
-            usage_map.insert(
-                "cache_creation".to_string(),
-                serde_json::Value::Object(tiers),
-            );
-        }
+        write_cache_creation_tiers(&mut usage_map, &resp.usage.detail);
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
 
         serde_json::Value::Object(obj)

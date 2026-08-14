@@ -191,6 +191,8 @@ fn test_write_request() {
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: Some(1024),
         temperature: Some(0.7),

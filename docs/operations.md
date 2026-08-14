@@ -556,5 +556,5 @@ durable revocation denylist immediately.
 | `403` from Busbar | The virtual key's `allowed_pools` doesn't include the target. |
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |
 | Startup panic: "not found in providers.yaml" | A `config.yaml` provider name isn't in the catalog. |
-| Cross-protocol responses missing fields | Expected: only the modeled IR subset survives a cross-protocol hop, and the constructs it does not model are listed in [Known gaps in 1.6.0](https://getbusbar.com/docs/protocols/#known-gaps-in-160). Same-protocol routes are byte-for-byte and lose nothing. |
+| Cross-protocol responses missing fields | Expected: only the modeled IR subset survives a cross-protocol hop. Everything the IR does not model is dropped with a `warn!` naming the field, so `grep` the logs for `dropping` on the request id; the constructs with no target-protocol representation at all are listed in [Fields the target protocol cannot express](https://getbusbar.com/docs/protocols/#fields-the-target-protocol-cannot-express). Same-protocol routes are byte-for-byte and lose nothing. |
 | High `busbar_failovers_total` for one lane | That backend is flapping; inspect its `busbar_upstream_failures_total` `disposition`. |

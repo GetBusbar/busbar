@@ -868,3 +868,569 @@ fn cohere_response_citations_reach_a_foreign_client() {
         "Atlas"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1.6.0 GAP CLOSURES — see docs/protocols.md
+//
+// Every test below pins a construct that USED to be dropped on a cross-protocol hop. Each one
+// asserts the value reaches THE OTHER SIDE (a foreign protocol's wire body or wire frame), not
+// merely that the IR held it: "the IR carries it" is exactly the assertion that would have passed
+// while the writers still threw it away.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// An Anthropic `search_result` block's retrieved passages reach a foreign client.
+///
+/// It used to fall into the reader's degrade-to-empty-Text arm, so a caller who paid to retrieve and
+/// attach RAG passages got them replaced with `{"type":"text","text":""}` on every cross-protocol
+/// egress and the model answered from its own memory instead. Unlike a `document`, the payload is
+/// ENTIRELY TEXT by Anthropic's own schema, so there is nothing untranslatable about it — every
+/// protocol in the matrix can carry text.
+///
+/// Both directions are asserted: the passages must cross, AND the same-protocol Anthropic re-emit
+/// must still be byte-exact (the raw block is parked in the unmodeled sentinel, so modelling it here
+/// must not have cost the verbatim round trip).
+#[test]
+fn anthropic_search_result_reaches_a_foreign_client() {
+    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let body = json!({
+        "model": "claude-x",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": [
+            {
+                "type": "search_result",
+                "source": "https://kb/42",
+                "title": "Refund policy",
+                "content": [{"type": "text", "text": "Refunds are issued within 30 days."}],
+                "citations": {"enabled": true}
+            },
+            {"type": "text", "text": "What is the refund window?"}
+        ]}]
+    });
+    let ir = anthropic.reader.read_request(&body).expect("read");
+
+    let crate::ir::IrBlock::Text {
+        text, citations, ..
+    } = &ir.messages[0].content[0]
+    else {
+        panic!(
+            "expected the search_result to become a Text block, got {:?}",
+            ir.messages[0].content[0]
+        );
+    };
+    assert!(
+        text.contains("Refunds are issued within 30 days."),
+        "the retrieved passage must survive, not become an empty placeholder: {text:?}"
+    );
+    assert!(
+        text.contains("Refund policy") && text.contains("https://kb/42"),
+        "the source header must name the result so the model can attribute it: {text:?}"
+    );
+    assert_eq!(
+        citations[0].url.as_deref(),
+        Some("https://kb/42"),
+        "the provenance must ride as a citation so a target that models citations shows it"
+    );
+
+    // CROSS-PROTOCOL, the direction that was broken: an OpenAI backend must receive the passage.
+    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let out = openai.writer.write_request(&ir);
+    let rendered = out["messages"][0]["content"].to_string();
+    assert!(
+        rendered.contains("Refunds are issued within 30 days."),
+        "the passage must reach an OpenAI backend: {out}"
+    );
+
+    // ... and a Gemini backend, whose content shape is different again.
+    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let out = gemini.writer.write_request(&ir);
+    assert!(
+        out.to_string()
+            .contains("Refunds are issued within 30 days."),
+        "the passage must reach a Gemini backend: {out}"
+    );
+
+    // SAME-PROTOCOL: the original block re-emits verbatim out of the unmodeled sentinel, so nothing
+    // about modelling it cross-protocol degraded the Anthropic→Anthropic path.
+    let back = anthropic.writer.write_request(&ir);
+    assert_eq!(
+        back["messages"][0]["content"][0], body["messages"][0]["content"][0],
+        "the Anthropic re-emit must be the ORIGINAL search_result block, byte-exact"
+    );
+}
+
+/// A streamed citation reaches a BEDROCK-ingress client.
+///
+/// The third of the three writers that suppressed `CitationsDelta`. Bedrock ConverseStream's
+/// `ContentBlockDelta` union DOES have a `citation` member, so the suppression was not a protocol
+/// limit — it produced the same "sources at `stream:false`, none at `stream:true`" split the OpenAI
+/// and Cohere writers had.
+#[test]
+fn streamed_citations_reach_a_bedrock_client() {
+    let ev = crate::ir::IrStreamEvent::BlockDelta {
+        index: 3,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            kind: Some("char_location".to_string()),
+            cited_text: Some("Paris".to_string()),
+            title: Some("Atlas".to_string()),
+            url: None,
+            document_index: Some(1),
+            start_index: Some(0),
+            end_index: Some(5),
+            encrypted_index: None,
+            raw: None,
+        }]),
+    };
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let (et, frame) = bedrock
+        .writer
+        .write_response_event(&ev)
+        .expect("Converse has a native `citation` ContentBlockDelta member");
+    assert_eq!(et, "contentBlockDelta");
+    assert_eq!(frame["contentBlockIndex"], 3);
+    let c = &frame["delta"]["citation"];
+    assert_eq!(c["title"], "Atlas");
+    assert_eq!(c["sourceContent"][0]["text"], "Paris");
+    assert_eq!(c["location"]["documentChar"]["documentIndex"], 1);
+    assert_eq!(c["location"]["documentChar"]["start"], 0);
+    assert_eq!(c["location"]["documentChar"]["end"], 5);
+}
+
+/// A page-located citation must not be mislabelled as a character offset on a Bedrock egress.
+///
+/// `IrCitation.start_index` is interpreted PER `kind`; for Anthropic's `page_location` it is a page
+/// NUMBER. Writing `page 7` into `documentChar.start` would be a confident lie rather than a loss,
+/// which is worse — so those citations cross with title and quoted text and no location.
+#[test]
+fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
+    let ev = crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            kind: Some("page_location".to_string()),
+            cited_text: Some("clause 4".to_string()),
+            title: Some("Contract".to_string()),
+            url: None,
+            document_index: Some(0),
+            start_index: Some(7),
+            end_index: Some(8),
+            encrypted_index: None,
+            raw: None,
+        }]),
+    };
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let (_, frame) = bedrock.writer.write_response_event(&ev).expect("frame");
+    let c = &frame["delta"]["citation"];
+    assert_eq!(c["title"], "Contract");
+    assert_eq!(c["sourceContent"][0]["text"], "clause 4");
+    assert!(
+        c.get("location").is_none(),
+        "a PAGE number must not be emitted as a CHARACTER offset: {c}"
+    );
+}
+
+/// A Gemini Google-Search-grounded answer's SOURCES reach a foreign client.
+///
+/// `groundingMetadata` — not `citationMetadata` — is where a grounded Gemini answer puts its
+/// provenance, and nothing read it. A customer could not tell a grounded reply from a hallucinated
+/// one after a hop. This is not a vendor-specific concept: every protocol in the matrix models a
+/// citation.
+#[test]
+fn gemini_grounding_metadata_reaches_a_foreign_client() {
+    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let ir = gemini
+        .reader
+        .read_response(&json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "Paris is the capital."}]},
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [{"web": {"uri": "https://atlas", "title": "Atlas"}}],
+                    "groundingSupports": [{
+                        "segment": {"startIndex": 0, "endIndex": 5, "text": "Paris"},
+                        "groundingChunkIndices": [0]
+                    }]
+                }
+            }],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
+        }))
+        .expect("read");
+    let crate::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
+        panic!("expected a Text block, got {:?}", ir.content[0]);
+    };
+    assert_eq!(citations.len(), 1, "the grounding source must reach the IR");
+    assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
+    assert_eq!(citations[0].title.as_deref(), Some("Atlas"));
+
+    // CROSS-PROTOCOL both ways out: an OpenAI client sees an annotation, an Anthropic client a
+    // citation. Neither receives a bare unattributed paragraph.
+    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let out = openai.writer.write_response(&ir);
+    // NOTE the shape: the BUFFERED writer emits the flat `url_annotations` entry
+    // (`{type,url,title,start_index,end_index}`) while the STREAMING arm emits the nested
+    // `{type, url_citation:{…}}`. That divergence predates this change and is asserted as-is here
+    // rather than quietly "corrected", which would move a wire byte no row of this work covers.
+    assert_eq!(
+        out["choices"][0]["message"]["annotations"][0]["url"], "https://atlas",
+        "the grounding source must reach an OpenAI client: {out}"
+    );
+    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let out = anthropic.writer.write_response(&ir);
+    assert!(
+        out["content"][0]["citations"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "the grounding source must reach an Anthropic client: {out}"
+    );
+}
+
+/// A grounded answer with sources but NO support spans still carries its sources.
+///
+/// Google omits `groundingSupports` on some grounded replies. Requiring them would have silently
+/// re-created the exact gap this closes for that subset of responses.
+#[test]
+fn gemini_grounding_chunks_cross_without_support_spans() {
+    let gemini = crate::proto::protocol_for("gemini").expect("gemini");
+    let ir = gemini
+        .reader
+        .read_response(&json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "hi"}]},
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [{"web": {"uri": "https://a", "title": "A"}},
+                                        {"web": {"uri": "https://b", "title": "B"}}]
+                }
+            }]
+        }))
+        .expect("read");
+    let crate::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
+        panic!("expected a Text block");
+    };
+    assert_eq!(citations.len(), 2, "both sources must cross: {citations:?}");
+    assert_eq!(citations[1].url.as_deref(), Some("https://b"));
+}
+
+/// `tools[].strict` crosses the OpenAI Chat ↔ Responses pair, in both directions.
+///
+/// `strict: true` is a behavioural guarantee (the model's arguments WILL conform to the schema), so
+/// dropping it silently turned validation off while the request still looked accepted. The two
+/// dialects that model it must carry it between themselves.
+#[test]
+fn tool_strict_crosses_the_openai_responses_pair() {
+    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let responses = crate::proto::protocol_for("responses").expect("responses");
+
+    // Chat → Responses.
+    let ir = openai
+        .reader
+        .read_request(&json!({
+            "model": "gpt-x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "f", "parameters": {"type": "object"}, "strict": true
+            }}]
+        }))
+        .expect("read");
+    assert_eq!(ir.tools[0].strict, Some(true));
+    let out = responses.writer.write_request(&ir);
+    assert_eq!(out["tools"][0]["strict"], true, "{out}");
+
+    // Responses → Chat (the flat shape back into the nested one).
+    let ir = responses
+        .reader
+        .read_request(&json!({
+            "model": "gpt-x",
+            "input": "hi",
+            "tools": [{"type": "function", "name": "f", "parameters": {"type": "object"},
+                       "strict": true}]
+        }))
+        .expect("read");
+    assert_eq!(ir.tools[0].strict, Some(true));
+    let out = openai.writer.write_request(&ir);
+    assert_eq!(out["tools"][0]["function"]["strict"], true, "{out}");
+
+    // A caller who said NOTHING must not acquire an invented `strict: false`.
+    let ir = openai
+        .reader
+        .read_request(&json!({
+            "model": "gpt-x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+        }))
+        .expect("read");
+    assert_eq!(ir.tools[0].strict, None);
+    let out = openai.writer.write_request(&ir);
+    assert!(
+        out["tools"][0]["function"].get("strict").is_none(),
+        "an absent flag must stay absent, not become an explicit opt-out: {out}"
+    );
+}
+
+/// OpenAI `messages[].name` survives a same-protocol re-serialize, and never leaks its sentinel.
+///
+/// A pool-alias route rewrites the model and therefore re-serializes rather than forwarding the
+/// caller's bytes — which stripped `name` from every message. No other protocol models a participant
+/// name, so `extra` is the correct scope: it survives here and is NAMED (not silently cleared) at
+/// the cross-protocol seam.
+#[test]
+fn openai_message_name_survives_a_same_protocol_reserialize() {
+    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let ir = openai
+        .reader
+        .read_request(&json!({
+            "model": "gpt-x",
+            "messages": [
+                {"role": "user", "name": "alice", "content": "hi"},
+                {"role": "user", "content": "no name here"},
+                {"role": "user", "name": "bob", "content": "hello"}
+            ]
+        }))
+        .expect("read");
+    let out = openai.writer.write_request(&ir);
+    assert_eq!(out["messages"][0]["name"], "alice", "{out}");
+    assert!(
+        out["messages"][1].get("name").is_none(),
+        "a message with no name must not acquire one: {out}"
+    );
+    assert_eq!(out["messages"][2]["name"], "bob", "{out}");
+    assert!(
+        out.get("__busbar_openai_message_names").is_none(),
+        "the busbar-internal marker must never reach the wire: {out}"
+    );
+}
+
+/// Usage sub-buckets survive on the STREAMING path, not only the buffered one.
+///
+/// The buffered path learned `IrUsageDetail` and the streaming readers/writers kept defaulting it
+/// away, so the SAME request reported a reasoning-token count at `stream:false` and a hard `0` at
+/// `stream:true` — the identical asymmetry that made the streamed-citation gap the worst-shaped one.
+#[test]
+fn streamed_usage_sub_buckets_are_not_zeroed() {
+    let openai = crate::proto::protocol_for("openai").expect("openai");
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = openai.reader.read_response_events(
+        "",
+        &json!({
+            "id": "chatcmpl-1", "object": "chat.completion.chunk", "created": 1, "model": "o3",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30,
+                      "completion_tokens_details": {"reasoning_tokens": 9}}
+        }),
+        &mut state,
+    );
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("a terminal MessageDelta");
+    assert_eq!(
+        usage.detail.reasoning_tokens,
+        Some(9),
+        "the streamed usage chunk carries the same sub-bucket the buffered response does"
+    );
+
+    // And it reaches the other side: an OpenAI-ingress client's terminal chunk carries it natively.
+    let (_, chunk) = openai
+        .writer
+        .write_response_event(&crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail {
+                    reasoning_tokens: Some(9),
+                    ..Default::default()
+                },
+            },
+        })
+        .expect("terminal chunk");
+    assert_eq!(
+        chunk["usage"]["completion_tokens_details"]["reasoning_tokens"], 9,
+        "{chunk}"
+    );
+}
+
+/// Anthropic's separately-priced 5m/1h cache tiers survive a STREAM.
+#[test]
+fn streamed_anthropic_cache_tiers_survive() {
+    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic");
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = anthropic.reader.read_response_events(
+        "message_start",
+        &json!({
+            "type": "message_start",
+            "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x",
+                        "content": [], "stop_reason": null,
+                        "usage": {"input_tokens": 5, "output_tokens": 0,
+                                  "cache_creation_input_tokens": 30,
+                                  "cache_creation": {"ephemeral_5m_input_tokens": 10,
+                                                     "ephemeral_1h_input_tokens": 20}}}
+        }),
+        &mut state,
+    );
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageStart { usage, .. } => usage.as_ref(),
+            _ => None,
+        })
+        .expect("message_start usage");
+    assert_eq!(usage.detail.cache_creation_5m_input_tokens, Some(10));
+    assert_eq!(usage.detail.cache_creation_1h_input_tokens, Some(20));
+
+    // The tier split reaches an Anthropic-ingress client's `message_delta`.
+    let (_, frame) = anthropic
+        .writer
+        .write_response_event(&crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 5,
+                output_tokens: 1,
+                cache_creation_input_tokens: Some(30),
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail {
+                    cache_creation_5m_input_tokens: Some(10),
+                    cache_creation_1h_input_tokens: Some(20),
+                    ..Default::default()
+                },
+            },
+        })
+        .expect("message_delta");
+    assert_eq!(
+        frame["usage"]["cache_creation"]["ephemeral_5m_input_tokens"], 10,
+        "{frame}"
+    );
+    assert_eq!(
+        frame["usage"]["cache_creation"]["ephemeral_1h_input_tokens"], 20,
+        "{frame}"
+    );
+}
+
+/// Cohere's separately-billed `search_units` survive a STREAM.
+///
+/// `search_units` is not a token count at all, so its loss is invisible in a token total that
+/// reconciles perfectly — which is exactly why it needs a test rather than a reviewer.
+#[test]
+fn streamed_cohere_search_units_survive() {
+    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = cohere.reader.read_response_events(
+        "message-end",
+        &json!({
+            "type": "message-end",
+            "delta": {"finish_reason": "COMPLETE",
+                      "usage": {"tokens": {"input_tokens": 4, "output_tokens": 6},
+                                "billed_units": {"search_units": 3}}}
+        }),
+        &mut state,
+    );
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("message-end usage");
+    assert_eq!(usage.detail.search_units, Some(3));
+
+    let (_, frame) = cohere
+        .writer
+        .write_response_event(&crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 4,
+                output_tokens: 6,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::ir::IrUsageDetail {
+                    search_units: Some(3),
+                    ..Default::default()
+                },
+            },
+        })
+        .expect("message-end");
+    assert_eq!(
+        frame["delta"]["usage"]["billed_units"]["search_units"], 3,
+        "{frame}"
+    );
+}
+
+/// A BUFFERED response's citations reach a Bedrock client too, not only a streamed one.
+///
+/// The buffered twin of `streamed_citations_reach_a_bedrock_client`. Closing only the streaming half
+/// would have left the identical asymmetry the streaming gap was, merely inverted: sources when the
+/// caller streams and none when it does not.
+#[test]
+fn buffered_citations_reach_a_bedrock_client() {
+    let cohere = crate::proto::protocol_for("cohere").expect("cohere");
+    let ir = cohere
+        .reader
+        .read_response(&json!({
+            "id": "c1",
+            "finish_reason": "COMPLETE",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Paris is the capital."}],
+                "citations": [{
+                    "start": 0, "end": 5, "text": "Paris",
+                    "sources": [{"type": "document", "id": "d1",
+                                 "document": {"title": "Atlas", "url": "https://atlas"}}]
+                }]
+            }
+        }))
+        .expect("read");
+
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let out = bedrock.writer.write_response(&ir);
+    let block = &out["output"]["message"]["content"][0];
+    assert_eq!(
+        block["citationsContent"]["content"][0]["text"], "Paris is the capital.",
+        "the answer text moves INSIDE the citations block, per the Converse union: {out}"
+    );
+    let c = &block["citationsContent"]["citations"][0];
+    assert_eq!(c["title"], "Atlas", "{out}");
+    assert_eq!(c["sourceContent"][0]["text"], "Paris", "{out}");
+    assert_eq!(c["location"]["documentChar"]["start"], 0, "{out}");
+}
+
+/// A text block with NO citations keeps the plain `{"text": …}` shape.
+///
+/// `citationsContent` replaces the `text` member rather than sitting beside it, so emitting it
+/// unconditionally would reshape every ordinary Bedrock response — a wire change for every consumer
+/// in exchange for nothing.
+#[test]
+fn bedrock_uncited_text_keeps_the_plain_shape() {
+    let bedrock = crate::proto::protocol_for("bedrock").expect("bedrock");
+    let out = bedrock.writer.write_response(&crate::ir::IrResponse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: "plain".to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        logprobs: Vec::new(),
+    });
+    assert_eq!(
+        out["output"]["message"]["content"][0]["text"], "plain",
+        "{out}"
+    );
+}

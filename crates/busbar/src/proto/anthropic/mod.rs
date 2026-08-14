@@ -114,6 +114,12 @@ const VENDOR_NAME: &str = crate::proto::PROTO_ANTHROPIC;
 /// Native Anthropic `document` content block type — a PDF/text attachment the model reads.
 const BLOCK_TYPE_DOCUMENT: &str = "document";
 
+/// Native Anthropic `search_result` content block type — a retrieved RAG passage (source, title and
+/// a text `content[]`) the caller supplies for the model to answer from and cite. Read into a
+/// `Text` block carrying an [`crate::ir::IrCitation`]; see the arm in [`read_block`] for why it is
+/// deliberately NOT in [`is_modeled_anthropic_block_type`].
+const BLOCK_TYPE_SEARCH_RESULT: &str = "search_result";
+
 /// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
 /// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
 /// every raw block 1:1 with no filtering, so a raw-array index always matches the parsed
@@ -380,6 +386,62 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
     }
 }
 
+/// Read Anthropic's 5m/1h cache-creation TIER SPLIT off a wire `usage` object into the neutral
+/// [`crate::ir::IrUsageDetail`].
+///
+/// The two tiers are SLICES of `cache_creation_input_tokens`, never additions to it, but they are
+/// PRICED DIFFERENTLY — collapsing them into the one total leaves a bill that reconciles in aggregate
+/// and cannot be reconciled per line. Factored out of `read_response` so the STREAMING sites
+/// (`message_start` and `message_delta`) read the identical object instead of defaulting the split
+/// away: the same request must not report the tier split at `stream: false` and lose it at
+/// `stream: true`.
+fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::IrUsageDetail {
+    crate::ir::IrUsageDetail {
+        cache_creation_5m_input_tokens: usage_val
+            .and_then(|u| u.get("cache_creation"))
+            .and_then(|c| c.get("ephemeral_5m_input_tokens"))
+            .and_then(|v| v.as_u64()),
+        cache_creation_1h_input_tokens: usage_val
+            .and_then(|u| u.get("cache_creation"))
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(|v| v.as_u64()),
+        ..Default::default()
+    }
+}
+
+/// Write the 5m/1h cache-creation tier split into a wire `usage` map, in Anthropic's native nested
+/// `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}` spelling.
+///
+/// Emitted only when a tier was actually reported, so a response that never had the split does not
+/// acquire an invented one. Shared by the buffered `write_response` and the streaming
+/// `message_delta` arm — the inverse of [`read_cache_tier_detail`], and for the same reason: the
+/// tiers are priced differently, and a stream that loses them yields a bill that reconciles in
+/// aggregate and cannot be reconciled per line.
+fn write_cache_creation_tiers(
+    usage_map: &mut serde_json::Map<String, serde_json::Value>,
+    detail: &crate::ir::IrUsageDetail,
+) {
+    let mut tiers = serde_json::Map::new();
+    if let Some(t5) = detail.cache_creation_5m_input_tokens {
+        tiers.insert(
+            "ephemeral_5m_input_tokens".to_string(),
+            serde_json::json!(t5),
+        );
+    }
+    if let Some(t1h) = detail.cache_creation_1h_input_tokens {
+        tiers.insert(
+            "ephemeral_1h_input_tokens".to_string(),
+            serde_json::json!(t1h),
+        );
+    }
+    if !tiers.is_empty() {
+        usage_map.insert(
+            "cache_creation".to_string(),
+            serde_json::Value::Object(tiers),
+        );
+    }
+}
+
 // Helper functions for IR mapping (used by read_request/write_request)
 fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
@@ -601,6 +663,89 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 cache_control,
             })
         }
+        // A native `search_result` block — the RAG grounding payload a caller supplies so the model
+        // can answer from (and cite) retrieved documents. Shape:
+        // `{"type":"search_result","source":"<uri>","title":"…","content":[{"type":"text","text":"…"}],
+        //   "citations":{"enabled":true}}`.
+        //
+        // It used to fall into the `other =>` degrade-to-empty-Text arm below, so on every
+        // cross-protocol egress the retrieved passages the caller paid to fetch were replaced with an
+        // empty block and the model answered from its own memory instead — the classic "grounding
+        // silently gone" failure, differing from a plain drop only in that the turn kept its slot.
+        //
+        // The payload is ENTIRELY TEXT (`content[]` is a text-block array by Anthropic's own schema),
+        // so unlike a `document` there is no attachment to place: every protocol in the matrix can
+        // express it as text. Project it that way, and carry the provenance as an `IrCitation` on the
+        // block so a target that models citations (OpenAI annotations, Gemini `citationSources`,
+        // Cohere `citations`) still shows the caller's source rather than an unattributed paragraph.
+        //
+        // Deliberately NOT added to `is_modeled_anthropic_block_type`: the raw block stays parked in
+        // the unmodeled sentinel, so an Anthropic→Anthropic hop still splices the ORIGINAL bytes back
+        // (`citations.enabled`, the block's `content[]` structure and any field Anthropic adds later
+        // survive byte-exact). This arm is what the CROSS-protocol egresses read, which is the only
+        // path where the sentinel is cleared.
+        BLOCK_TYPE_SEARCH_RESULT => {
+            let source = obj.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            // Concatenate the text parts in wire order. A non-text part is not possible per the
+            // documented schema; if one ever appears it contributes nothing rather than a sentinel.
+            let body: String = obj
+                .get("content")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            // A HEADER naming the result, so the model reading a foreign protocol's plain text can
+            // still tell one retrieved passage from the next and attribute its answer. Built only
+            // from the fields that are present — an empty header would prepend a bare newline.
+            let mut header = String::new();
+            if !title.is_empty() {
+                header.push_str(title);
+            }
+            if !source.is_empty() {
+                if !header.is_empty() {
+                    header.push_str(" — ");
+                }
+                header.push_str(source);
+            }
+            let text = if header.is_empty() {
+                body
+            } else if body.is_empty() {
+                header
+            } else {
+                format!("{header}\n{body}")
+            };
+            let citations = if source.is_empty() && title.is_empty() {
+                Vec::new()
+            } else {
+                vec![crate::ir::IrCitation {
+                    kind: Some("search_result_location".to_string()),
+                    cited_text: None,
+                    title: (!title.is_empty()).then(|| title.to_string()),
+                    url: (!source.is_empty()).then(|| source.to_string()),
+                    document_index: None,
+                    start_index: None,
+                    end_index: None,
+                    encrypted_index: None,
+                    // No `raw`: the byte-exact same-protocol path is the sentinel splice above, not
+                    // this citation, and parking an Anthropic SEARCH-RESULT object under a citation's
+                    // `raw` would have the Anthropic writer re-emit it as a CITATION on a
+                    // foreign→Anthropic hop — a different wire shape than the one it came from.
+                    raw: None,
+                }]
+            };
+            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            Ok(crate::ir::IrBlock::Text {
+                text,
+                cache_control,
+                citations,
+            })
+        }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
         // reasoning). Map it onto the same typed IR carrier Bedrock's `redactedContent` uses: a
         // `Thinking { redacted: true }` with the opaque bytes in `text` and no signature. The
@@ -710,6 +855,7 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError>
         input_schema,
         cache_control,
         hosted: None,
+        strict: None,
     })
 }
 

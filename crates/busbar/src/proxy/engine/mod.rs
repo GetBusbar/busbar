@@ -439,6 +439,18 @@ async fn translate_response_cross_protocol(
         }
         if let Some(Ok(mut ir)) = decoded {
             if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
+                // RESPONSE-side twin of `IrReq::prepare_for_egress`'s dropped-keys warn. The reader
+                // has just discarded any vendor-scoped response metadata the caller's protocol has
+                // no shape for (a Bedrock guardrail `trace`, a Gemini `safetyRatings`); this is the
+                // one place that still holds the upstream body AND knows the hop is cross-protocol,
+                // so it is where the drop gets named. Same-protocol routes never reach this function.
+                if let Ok(ref upstream_body) = body_json {
+                    crate::proto::warn_untranslatable_response_metadata(
+                        egress_name,
+                        ingress_protocol,
+                        upstream_body,
+                    );
+                }
                 // Token accounting: we are now committed to translating and delivering this body
                 // (every exit from this block is a delivered response). No FirstByteBody on this
                 // buffered path, so bill here — straight from the IR usage the egress reader just

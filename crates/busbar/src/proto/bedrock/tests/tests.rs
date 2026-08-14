@@ -196,6 +196,8 @@ fn test_write_request() {
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: Some(1024),
         temperature: Some(0.7_f64),
@@ -1609,6 +1611,8 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: None,
         temperature: None,
@@ -5020,6 +5024,8 @@ fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest 
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: None,
         temperature: None,
@@ -5398,6 +5404,8 @@ fn test_cache_control_on_tool_emits_cache_point() {
             cache_control: ephemeral(),
 
             hosted: None,
+
+            strict: None,
         }],
     );
     let writer = BedrockWriter;

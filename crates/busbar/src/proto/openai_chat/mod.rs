@@ -69,6 +69,25 @@ const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 /// collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
+/// Busbar-internal `extra` key parking OpenAI's per-message `messages[].name` (the optional
+/// participant name that disambiguates several speakers in one role).
+///
+/// WHY A SENTINEL AND NOT AN `IrMessage` FIELD: `name` has NO representation in ANY other protocol in
+/// the matrix — Anthropic, Gemini, Bedrock, Cohere and even Responses all model a turn as
+/// (role, content) with no participant name — so a first-class IR field would be a field only one
+/// dialect could ever read or write. It rides `extra` instead, which gives exactly the right scope:
+///
+/// * SAME-PROTOCOL (including a pool-alias route that re-serializes rather than forwarding bytes):
+///   the writer reads it back and re-emits `name` on each message, so a participant name no longer
+///   disappears the moment a route rewrites the model. That was a real same-protocol loss.
+/// * CROSS-PROTOCOL: `extra` is cleared at the seam and `ir/variant.rs` names this key in its
+///   dropped-keys warn, so the loss is signalled instead of silent.
+///
+/// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
+/// → the name. Keyed by index rather than positional array so a request where only message 7 has a
+/// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
+pub(crate) const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+
 // ── OpenAI wire-format named constants ──────────────────────────────────────
 //
 // Every magic string the ChatCompletions / streaming protocol needs, in one
@@ -849,6 +868,10 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         input_schema,
         cache_control: None,
         hosted: None,
+        // STRICT function calling. Nested under `function` like `name`/`parameters`, so it is read
+        // off `src` (which already resolved the nested-vs-flat shape). Absent ⇒ `None`, which is NOT
+        // `Some(false)`: "the caller said nothing" must not be re-emitted as an explicit opt-out.
+        strict: src.get("strict").and_then(|v| v.as_bool()),
     })
 }
 

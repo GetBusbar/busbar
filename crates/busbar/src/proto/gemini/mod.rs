@@ -515,9 +515,12 @@ fn read_gemini_citations(
         .and_then(|m| m.get("citationSources"))
         .and_then(|s| s.as_array());
     let Some(sources) = sources else {
-        return Vec::new();
+        // No `citationMetadata`, but a GROUNDED answer carries its sources in the OTHER slot. Fall
+        // through to it rather than returning empty (which is what stripped every Google-Search
+        // grounded answer's sources on the way to a foreign client).
+        return read_gemini_grounding_citations(candidate, anchor_text);
     };
-    sources
+    let mut out: Vec<crate::ir::IrCitation> = sources
         .iter()
         .map(|src| {
             let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
@@ -546,7 +549,151 @@ fn read_gemini_citations(
                 raw: Some(src.clone()),
             }
         })
-        .collect()
+        .collect();
+    // A response can carry BOTH slots (a grounded answer that also cites its own attached corpus).
+    // Append rather than choose, so neither set of sources is dropped for the other's presence.
+    out.extend(read_gemini_grounding_citations(candidate, anchor_text));
+    out
+}
+
+/// Map a Gemini candidate's `groundingMetadata` → neutral [`crate::ir::IrCitation`]s.
+///
+/// THE GAP THIS CLOSES: `groundingMetadata` is where a Google-Search-grounded Gemini answer puts its
+/// SOURCES (`citationMetadata` is the older, corpus-citation slot and is absent on a grounded
+/// answer). Nothing read it, so a grounded answer reached a foreign client as an unattributed
+/// paragraph — the same class of loss as a Cohere RAG answer arriving with its citations stripped,
+/// and the reason a customer could not tell a grounded reply from a hallucinated one after a hop.
+///
+/// This is NOT an untranslatable-vendor-concept: every protocol in the matrix models a citation, so
+/// the sources have somewhere to go on all five foreign egresses.
+///
+/// Shape: `groundingChunks[]` are the sources (`{web: {uri, title}}`, or `{retrievedContext: {…}}`
+/// for a Vertex datastore), and `groundingSupports[]` say WHICH SPAN of the answer each source
+/// backs (`{segment: {startIndex, endIndex, text}, groundingChunkIndices: [i, …]}`). One citation is
+/// emitted per (support, chunk) pair so the span survives; when there are no supports at all (Google
+/// omits them on some grounded replies) one citation per chunk is emitted with no span, because a
+/// source with no offsets is still the answer's provenance and dropping it would be the very loss
+/// this function exists to stop.
+///
+/// `raw` is deliberately `None`: a grounding chunk is NOT a `citationSources[]` entry, and parking
+/// one there would have `write_gemini_citation`'s raw short-circuit re-emit a grounding object in
+/// the citation slot on a foreign→Gemini hop. Same-protocol Gemini traffic is a verbatim byte
+/// passthrough that never reaches a writer, so nothing needs the escape hatch here.
+fn read_gemini_grounding_citations(
+    candidate: &serde_json::Value,
+    anchor_text: Option<&str>,
+) -> Vec<crate::ir::IrCitation> {
+    let Some(gm) = candidate.get("groundingMetadata") else {
+        return Vec::new();
+    };
+    let chunks = gm
+        .get("groundingChunks")
+        .and_then(|c| c.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+
+    // `{web: {uri, title}}` and `{retrievedContext: {uri, title}}` are the two documented chunk
+    // members and carry the same two fields; read whichever is present rather than name only `web`.
+    let chunk_source = |chunk: &serde_json::Value| -> (Option<String>, Option<String>) {
+        let inner = chunk
+            .get("web")
+            .or_else(|| chunk.get("retrievedContext"))
+            .unwrap_or(chunk);
+        (
+            inner
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            inner
+                .get("title")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        )
+    };
+    // `segment.startIndex`/`endIndex` are BYTE offsets into the candidate's full text, the same
+    // convention `citationSources[]` uses — convert with the same helper, and on the streaming path
+    // (no anchor text) leave the wire value rather than mislabel bytes as characters.
+    let convert = |b: Option<i64>| match anchor_text {
+        Some(text) => b.map(|b| gemini_byte_offset_to_char(text, b)),
+        None => b,
+    };
+
+    let supports = gm
+        .get("groundingSupports")
+        .and_then(|s| s.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for support in supports {
+        let segment = support.get("segment");
+        let start = convert(
+            segment
+                .and_then(|s| s.get("startIndex"))
+                .and_then(|v| v.as_i64()),
+        );
+        let end = convert(
+            segment
+                .and_then(|s| s.get("endIndex"))
+                .and_then(|v| v.as_i64()),
+        );
+        let cited_text = segment
+            .and_then(|s| s.get("text"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        for idx in support
+            .get("groundingChunkIndices")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(chunk) = idx.as_u64().and_then(|i| chunks.get(i as usize)) else {
+                continue;
+            };
+            let (url, title) = chunk_source(chunk);
+            if url.is_none() && title.is_none() {
+                continue;
+            }
+            out.push(crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: cited_text.clone(),
+                title,
+                url,
+                document_index: None,
+                start_index: start,
+                end_index: end,
+                encrypted_index: None,
+                raw: None,
+            });
+        }
+    }
+    if out.is_empty() {
+        // Sources with no support spans: still the answer's provenance.
+        for chunk in chunks {
+            let (url, title) = chunk_source(chunk);
+            if url.is_none() && title.is_none() {
+                continue;
+            }
+            out.push(crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: None,
+                title,
+                url,
+                document_index: None,
+                start_index: None,
+                end_index: None,
+                encrypted_index: None,
+                raw: None,
+            });
+        }
+    }
+    out
 }
 
 /// Attach a Gemini candidate's `citationMetadata.citationSources[]` onto the RIGHT Text block(s) of

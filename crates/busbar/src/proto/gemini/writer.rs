@@ -343,6 +343,7 @@ impl ProtocolWriter for GeminiWriter {
         }
 
         // tools → tools[0].functionDeclarations[]
+        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_GEMINI);
         if !req.tools.is_empty() {
             let func_decls: Vec<_> = req
                 .tools

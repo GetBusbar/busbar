@@ -517,6 +517,7 @@ impl ProtocolReader for BedrockReader {
                             input_schema,
                             cache_control: None,
                             hosted: None,
+                            strict: None,
                         });
                     } else if tool_val.get("cachePoint").is_some() {
                         // A `cachePoint` entry in the `toolConfig.tools` array marks the prompt-cache

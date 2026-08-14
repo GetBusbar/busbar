@@ -129,6 +129,90 @@ pub(crate) fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
     matches!(block, crate::ir::IrBlock::Json(_))
 }
 
+/// Signal that this egress dialect cannot express [`crate::ir::IrTool::strict`], naming the tools
+/// whose strict-schema guarantee is being dropped.
+///
+/// `strict: true` is a BEHAVIOURAL contract — OpenAI guarantees the model's tool arguments conform
+/// to the schema exactly, and callers legitimately skip validation because of it. Anthropic, Gemini,
+/// Bedrock and Cohere have no per-tool equivalent (Cohere's `strict_tools` is a request-level switch,
+/// not a per-tool one), so the guarantee genuinely cannot cross — but it was crossing SILENTLY, which
+/// turned "your tool arguments are schema-guaranteed" into "they are not" with nothing said. One warn
+/// per request naming the affected tools, so the drop is at least visible in the logs.
+///
+/// Called by each writer that cannot express the flag; the writers that CAN (OpenAI Chat, Responses)
+/// emit it instead and never call this.
+pub(crate) fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static str) {
+    let named: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.strict.is_some())
+        .map(|t| t.name.as_str())
+        .collect();
+    if named.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        egress = %egress,
+        tools = %named.join(","),
+        "dropping `tools[].strict` on this egress: the target protocol has no per-tool strict-schema \
+         flag, so the model's arguments are NO LONGER GUARANTEED to conform to the tool schema. \
+         Validate tool arguments on this route, or pin the request to an openai/responses lane"
+    );
+}
+
+/// Signal the RESPONSE-side provider metadata that this egress dialect carries and no ingress
+/// dialect can express, so it does not vanish from a translated response with nothing in the logs.
+///
+/// The request side has had this since `IrReq::prepare_for_egress` started naming every cleared
+/// `extra` key; the response side had no equivalent, so a Gemini backend's `safetyRatings` and a
+/// Bedrock backend's guardrail `trace` disappeared on every cross-protocol hop in silence. That
+/// mattered most for the Bedrock trace: an operator running Bedrock Guardrails for COMPLIANCE
+/// EVIDENCE got no assessment record back and nothing said it had been dropped.
+///
+/// These are true target-protocol limits, not unmodelled IR gaps: a guardrail assessment is an AWS
+/// account artifact and a Gemini harm-category rating uses Google's own category vocabulary — no
+/// other protocol in the matrix has a field of that shape to receive them. So the fix is the signal,
+/// not a carrier. (Gemini's OTHER response-side metadata, `groundingMetadata`, IS expressible
+/// everywhere — it is citations — and is now read into `IrCitation`s rather than named here.)
+///
+/// Called ONLY from the cross-protocol response seam, so a same-protocol route — where every one of
+/// these fields survives byte-for-byte — never logs a word about them.
+pub(crate) fn warn_untranslatable_response_metadata(
+    egress: &str,
+    ingress: &str,
+    body: &serde_json::Value,
+) {
+    let present: Vec<&str> = match egress {
+        PROTO_GEMINI => ["safetyRatings"]
+            .into_iter()
+            .filter(|k| {
+                body.get("candidates")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
+            })
+            .collect(),
+        // Bedrock Converse returns the guardrail assessment under a top-level `trace`
+        // (`trace.guardrail`), present only when the request asked for it.
+        PROTO_BEDROCK => ["trace"]
+            .into_iter()
+            .filter(|k| body.get(k).is_some())
+            .collect(),
+        _ => Vec::new(),
+    };
+    if present.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        egress = %egress,
+        ingress = %ingress,
+        fields = %present.join(","),
+        "dropping response-side provider metadata on the cross-protocol seam: the field(s) named \
+         here are vendor-scoped artifacts (a guardrail assessment is an AWS account resource; a \
+         harm-category rating uses Google's own vocabulary) and the caller's protocol has no shape \
+         to receive them. If this metadata is compliance evidence, route the request to a \
+         same-protocol lane, where the upstream body reaches the client verbatim"
+    );
+}
+
 /// Conservative fallback for the `max_tokens` injected at a translation boundary when the source
 /// protocol omitted it (legal for OpenAI) but the target REQUIRES it (Anthropic, Bedrock — see
 /// `ProtocolWriter::requires_max_tokens`). Used only when the lane has no configured
