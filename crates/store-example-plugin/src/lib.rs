@@ -134,14 +134,14 @@ impl FileStore {
     /// persist is an ERROR the caller sees, never a silent `Ok(())`, which is the exact shape of the
     /// defect this fixture proves.
     ///
-    /// The persist is ATOMIC: unique temp file in the same directory, then `rename` over the target.
-    /// A plain `fs::write` truncates before it writes, so a reader on ANOTHER handle (the fleet
-    /// case this fixture exists to model — `self.gate` is per-handle, not per-file) can observe an
-    /// empty or half-written file: observed in practice as `list_mcp_calls` returning zero rows to
-    /// a freshly reopened handle while a still-live handle was mid-record on another thread. rename
-    /// on the same filesystem is atomic on every unix, so a reader sees either the old complete
-    /// state or the new complete state, never a tear. The temp name carries pid + a process-wide
-    /// counter so two live handles can't rename each other's half-written temp into place.
+    /// The persist is ATOMIC, through the one blessed publisher (`busbar_api::durable::write`:
+    /// sibling temp, fsync, rename, temp cleaned on every error path). A plain `fs::write`
+    /// truncates before it writes, so a reader on ANOTHER handle (the fleet case this fixture
+    /// exists to model — `self.gate` is per-handle, not per-file) can observe an empty or
+    /// half-written file: observed in practice as `list_mcp_calls` returning zero rows to a
+    /// freshly reopened handle while a still-live handle was mid-record on another thread. The
+    /// rename publish means a reader sees either the old complete state or the new complete
+    /// state, never a tear.
     fn mutate<T>(&self, f: impl FnOnce(&mut Durable) -> T) -> StoreResult<T> {
         let _guard = self
             .gate
@@ -150,17 +150,7 @@ impl FileStore {
         let mut state = self.load()?;
         let out = f(&mut state);
         let bytes = serde_json::to_vec(&state).map_err(|e| StoreError(e.to_string()))?;
-        static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let tmp = self.path.with_extension(format!(
-            "tmp.{}.{}",
-            std::process::id(),
-            WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::write(&tmp, bytes).map_err(|e| StoreError(e.to_string()))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            StoreError(e.to_string())
-        })?;
+        busbar_api::durable::write(&self.path, &bytes).map_err(|e| StoreError(e.to_string()))?;
         Ok(out)
     }
 

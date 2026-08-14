@@ -162,7 +162,11 @@ def placeholder_for(name, scratch):
     """A placeholder SHAPED like what the variable name implies, so substitution never manufactures
     a validation failure of its own (a port var must not become an unparseable socket address)."""
     u = name.upper()
-    if "PORT" in u:
+    # PORT as a NAME TOKEN (PORT, LISTEN_PORT, SINK_PORT), never as a substring — `EXPORT_MODULE`
+    # contains "PORT" and a substring match turned an exporter NAME into the scalar 8080, which
+    # validates as `unknown exporter '8080'`: a manufactured failure carrying no marker, so the
+    # artifact carve-out could not even recognise its own handiwork.
+    if re.search(r"(?:^|_)PORTS?(?:_|$)", u):
         return "8080"
     if any(t in u for t in ("DIR", "PATH", "WORKDIR", "TMP", "HOME", "ROOT")):
         return os.path.join(scratch, "w")
