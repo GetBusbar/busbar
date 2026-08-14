@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="470" viewBox="0 0 900 470" role="img" aria-label="Why not LiteLLM, Kong or Portkey">
+<rect width="900" height="470" rx="10" fill="#0d1117"/>
+<text x="28.0" y="40.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" font-weight="650" fill="#e6edf3" text-anchor="start">Why not LiteLLM, Kong or Portkey</text>
+<text x="28.0" y="62.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">Same box, same harness, same day, every gateway. Open source harness, per cell verdicts and reasons published at onthebench.ai.</text>
+<rect x="28.0" y="86.0" width="420.0" height="208.0" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="44.0" y="110.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="start">Wire protocol pairs actually served</text>
+<text x="44.0" y="126.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#9198a1" text-anchor="start">Of 36 ingress and upstream combinations. Not a provider count</text>
+<text x="44.0" y="136.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="700" fill="#e6edf3" text-anchor="start">busbar 1.5.1</text>
+<rect x="44.0" y="141.0" width="268.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="141.0" width="268.0" height="9.0" rx="4.5" fill="#3fb950"/>
+<text x="320.0" y="149.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="700" fill="#3fb950" text-anchor="start">36/36</text>
+<text x="44.0" y="166.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">LiteLLM Python 1.94.0</text>
+<rect x="44.0" y="171.0" width="268.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="171.0" width="59.6" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="320.0" y="179.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">8/36</text>
+<text x="44.0" y="196.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">LiteLLM Rust 6980723</text>
+<rect x="44.0" y="201.0" width="268.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="201.0" width="9.4" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="320.0" y="209.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">1/36</text>
+<text x="44.0" y="226.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">Kong 3.9.3</text>
+<rect x="44.0" y="231.0" width="268.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="231.0" width="29.8" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="320.0" y="239.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">4/36</text>
+<text x="44.0" y="256.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">Portkey 1.15.2</text>
+<rect x="44.0" y="261.0" width="268.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="261.0" width="59.6" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="320.0" y="269.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">8/36</text>
+<rect x="460.0" y="86.0" width="412.0" height="208.0" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="476.0" y="110.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="start">Idle resident memory</text>
+<text x="476.0" y="126.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#9198a1" text-anchor="start">At rest, before any request. Log scale, lower is better</text>
+<text x="476.0" y="136.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="700" fill="#e6edf3" text-anchor="start">busbar 1.5.1</text>
+<rect x="476.0" y="141.0" width="250.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="476.0" y="141.0" width="10.7" height="9.0" rx="4.5" fill="#3fb950"/>
+<text x="734.0" y="149.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="700" fill="#3fb950" text-anchor="start">7.3 MiB</text>
+<text x="476.0" y="166.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">LiteLLM Python 1.94.0</text>
+<rect x="476.0" y="171.0" width="250.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="476.0" y="171.0" width="250.0" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="734.0" y="179.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">1,080 MiB</text>
+<text x="476.0" y="196.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">LiteLLM Rust 6980723</text>
+<rect x="476.0" y="201.0" width="250.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="476.0" y="201.0" width="180.4" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="734.0" y="209.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">253 MiB</text>
+<text x="476.0" y="226.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">Kong 3.9.3</text>
+<rect x="476.0" y="231.0" width="250.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="476.0" y="231.0" width="202.8" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="734.0" y="239.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">403 MiB</text>
+<text x="476.0" y="256.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">Portkey 1.15.2</text>
+<rect x="476.0" y="261.0" width="250.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="476.0" y="261.0" width="146.2" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="734.0" y="269.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">124 MiB</text>
+<rect x="28.0" y="306.0" width="844.0" height="128.0" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+<text x="44.0" y="330.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="start">What you actually install</text>
+<text x="44.0" y="346.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#9198a1" text-anchor="start">Compressed container layers, read from the registry. Lower is better</text>
+<text x="44.0" y="356.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="700" fill="#e6edf3" text-anchor="start">busbar, getbusbar/busbar:latest (1.5.3), linux/amd64</text>
+<rect x="44.0" y="361.0" width="520.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="361.0" width="18.2" height="9.0" rx="4.5" fill="#3fb950"/>
+<text x="572.0" y="369.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="700" fill="#3fb950" text-anchor="start">5.74 MB</text>
+<text x="44.0" y="386.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="500" fill="#9198a1" text-anchor="start">LiteLLM, ghcr.io/berriai/litellm:main-latest, linux/amd64</text>
+<rect x="44.0" y="391.0" width="520.0" height="9.0" rx="4.5" fill="#1c2128"/>
+<rect x="44.0" y="391.0" width="520.0" height="9.0" rx="4.5" fill="#7d8590"/>
+<text x="572.0" y="399.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="start">360.77 MB</text>
+<text x="700.0" y="372.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="30" font-weight="700" fill="#3fb950" text-anchor="start">63x</text>
+<text x="700.0" y="390.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="400" fill="#9198a1" text-anchor="start">smaller to pull</text>
+<text x="28.0" y="454.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#6e7681" text-anchor="start">Coverage and memory: onthebench.ai field run, 2026-08-03, AWS m7g.4xlarge (Graviton3), 4-core pin. Image sizes: registry manifests read 2026-08-13.</text>
+</svg>
