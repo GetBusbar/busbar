@@ -50,13 +50,13 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
   <img src="assets/readme/field-light.svg" alt="Wire protocol pairs served, idle resident memory and container image size, comparing busbar with LiteLLM, Kong and Portkey.">
 </picture>
 
-| Measured 2026-08-03 &middot; m7g.4xlarge &middot; 4 cores | busbar | LiteLLM&nbsp;Py | LiteLLM&nbsp;Rust | Kong | Portkey |
+| <sub>Measured 2026-08-03 · m7g.4xlarge · 4 cores</sub> | <sub>busbar</sub> | <sub>LiteLLM&nbsp;Py</sub> | <sub>LiteLLM&nbsp;Rust</sub> | <sub>Kong</sub> | <sub>Portkey</sub> |
 |---|---|---|---|---|---|
 | Wire protocol pairs served, of 36 | **36** | 8 | 1 | 4 | 8 |
-| Added latency p99 | **82 µs** | 8,221 µs | 106 µs | 389 µs | 3,720 µs |
-| CPU per request, c=8 | **65 µs** | 6,775 µs | 89 µs | 210 µs | 1,486 µs |
+| Added latency p99 <sub>µs</sub> | **82** | 8,221 | 106 | 389 | 3,720 |
+| CPU per request, c=8 <sub>µs</sub> | **65** | 6,775 | 89 | 210 | 1,486 |
 | Requests/sec, zero failures | **67,837** | 170 | 48,354 | 22,418 | 855 |
-| Time to first token, streaming p50 | **129 µs** | 9,088 µs | 181 µs | 105,907 µs | 27,908 µs |
+| Time to first token, p50 <sub>µs</sub> | **129** | 9,088 | 181 | 105,907 | 27,908 |
 | Idle resident memory | **7.3 MiB** | 1,080 MiB | 253 MiB | 403 MiB | 124 MiB |
 
 **What you install, measured today:**
@@ -164,6 +164,39 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 ---
 
+## Pools, weights and failover
+
+This is the part you cannot easily build yourself. A pool is a weighted group of lanes that share a circuit breaker; a lane that fails before the first byte is replaced mid-request, and the breaker attributes the fault so a bad key benches one lane instead of tripping a healthy one.
+
+```yaml
+providers:
+  anthropic:       { api_key: { env: ANTHROPIC_KEY } }
+  openai:          { api_key: { env: OPENAI_KEY } }
+  bedrock:         { api_key: { env: AWS_KEYPAIR } }   # ACCESS_KEY_ID:SECRET_ACCESS_KEY
+
+models:
+  claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
+  gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
+  claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
+
+pools:
+  fast:
+    members:
+      - { model: claude,     weight: 8 }   # 80 percent of traffic
+      - { model: gpt,        weight: 2 }   # 20 percent
+      - { model: claude-aws, weight: 1 }   # same model, other cloud, picks up load when the others trip
+    breaker:
+      trip: { mode: consecutive, consecutive_n: 3 }
+      base_cooldown_secs: 15
+    failover:
+      timeout_secs: 20
+      max_hops: 2
+```
+
+Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
+
+---
+
 ## Kubernetes
 
 One container, no sidecar, nothing to run beside it. The image is 5.74 MB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
@@ -241,39 +274,6 @@ spec:
 `config: { locked: true }` is what lets the root filesystem be read-only: a mutable config needs a writable overlay path and busbar refuses to boot without one. This Service is cluster-internal and the data plane has no auth chain, so turn on virtual keys before you expose it ([Governance](https://getbusbar.com/docs/guides/governance/)).
 
 </details>
-
----
-
-## Pools, weights and failover
-
-This is the part you cannot easily build yourself. A pool is a weighted group of lanes that share a circuit breaker; a lane that fails before the first byte is replaced mid-request, and the breaker attributes the fault so a bad key benches one lane instead of tripping a healthy one.
-
-```yaml
-providers:
-  anthropic:       { api_key: { env: ANTHROPIC_KEY } }
-  openai:          { api_key: { env: OPENAI_KEY } }
-  bedrock:         { api_key: { env: AWS_KEYPAIR } }   # ACCESS_KEY_ID:SECRET_ACCESS_KEY
-
-models:
-  claude:      { provider: anthropic, upstream_model: claude-sonnet-4-5, max_concurrent: 40 }
-  gpt:         { provider: openai,    upstream_model: gpt-4o,            max_concurrent: 40 }
-  claude-aws:  { provider: bedrock,   upstream_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" }
-
-pools:
-  fast:
-    members:
-      - { model: claude,     weight: 8 }   # 80 percent of traffic
-      - { model: gpt,        weight: 2 }   # 20 percent
-      - { model: claude-aws, weight: 1 }   # same model, other cloud, picks up load when the others trip
-    breaker:
-      trip: { mode: consecutive, consecutive_n: 3 }
-      base_cooldown_secs: 15
-    failover:
-      timeout_secs: 20
-      max_hops: 2
-```
-
-Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
 
 ---
 
