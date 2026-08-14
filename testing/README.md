@@ -8,7 +8,21 @@ and every pull request.
 |---|---|---|
 | `a2a-harness/` | An independent A2A battery, written from the published specification alone. 85 tests, including adversarial and hostile-peer coverage. | A pinned per-test verdict against two third-party controls |
 | `a2a-tck/` | A wrapper around `a2aproject/a2a-tck`, the specification publisher's own suite: all three transports including gRPC, 36 test modules. Fetched at a pinned commit, never vendored. | A pinned per-requirement verdict against a third-party control |
+| `a2a-supplement/` | **Busbar-authored** coverage of the 21 MUST requirements the pinned TCK declares and has no test for. Reported in a column of its own. | Its own MUST result, never merged into the TCK's |
 | `a2a-governance/` | Budgets, quarantine, trust lifecycle, audit. **Product policy, not protocol.** | Nothing. It reports observations |
+
+## The supplement is a THIRD kind of evidence, and it is the weakest
+
+`a2a-supplement/` exists because **21 of the pinned TCK's 114 MUSTs have no test anywhere in it** —
+empty `test_ids`, empty `transports`, and nothing in its own `tests/` tree. The same gap shows
+against the two committed `a2a-go` control baselines, so it is a property of the suite and not of
+busbar. The arithmetic ceiling on that pin is 93, not 114.
+
+**Its number and the TCK's are never added.** The TCK is the specification publisher's oracle; the
+supplement is the implementer grading their own implementation, which is strictly weaker evidence.
+Adding them would launder the weaker into the stronger. Every report the supplement emits says so
+above its own counts and records it in the JSON. Read `a2a-supplement/README.md` before quoting
+anything from it.
 
 ## Two instruments, on purpose
 

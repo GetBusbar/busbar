@@ -63,9 +63,40 @@ function signCard(card) {
 
 const CARD_PATHS = new Set(["/.well-known/agent-card.json", "/.well-known/agent.json"]);
 
+// OPTIONAL: RECORD WHAT THE SUBJECT ORIGINATES, for the requirements about the CLIENT role.
+//
+// SPEC 3.6.1 ("Clients MUST send the A2A-Version header with each request") is a requirement on
+// the party MAKING a request, and no amount of probing a server's front door can decide it. A
+// gateway is an A2A client on its upstream leg, and this process already sits on exactly that leg
+// — so one append-only JSONL of what arrived here is the observation, taken from a vantage point
+// that already existed rather than by adding a hop to the rig.
+//
+// OFF BY DEFAULT AND INERT WHEN OFF. Every other leg's topology is byte-for-byte what it was: no
+// header is added, removed or reordered, and nothing about the response path changes. Recording is
+// a side effect on a file descriptor, which is why it is safe to leave in the shared vendor rather
+// than forking a second one.
+const RECORD_TO = process.env.A2A_VENDOR_RECORD || "";
+const recordStream = RECORD_TO ? fs.createWriteStream(RECORD_TO, { flags: "a" }) : null;
+
+function record(req, url) {
+  if (!recordStream) return;
+  const query = {};
+  for (const [k, v] of url.searchParams) query[k] = v;
+  recordStream.write(
+    JSON.stringify({
+      at: new Date().toISOString(),
+      method: req.method,
+      path: url.pathname,
+      query,
+      headers: req.headers,
+    }) + "\n",
+  );
+}
+
 http
   .createServer((req, res) => {
     const url = new URL(req.url, "http://x");
+    record(req, url);
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
