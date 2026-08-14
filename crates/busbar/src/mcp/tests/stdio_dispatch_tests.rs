@@ -284,8 +284,14 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         Some(true),
         "a child that died must reach the model as an error result: {first}"
     );
+    // EITHER child-death phrasing: the child exiting is one event that two syscalls can notice
+    // first. When the read side sees EOF the transport says "closed its stdout"; when the child is
+    // already gone as busbar writes (observed on a loaded CI runner), the write fails with
+    // "write to stdio MCP child: Broken pipe". Both are the CHILD failing — the supervisor's
+    // refusals (backoff, quarantine) read differently, and those are what this must not be.
     assert!(
-        text(&first).contains("closed its stdout"),
+        text(&first).contains("closed its stdout")
+            || text(&first).contains("write to stdio MCP child"),
         "the first dispatch must fail on the CHILD, not on the supervisor: {}",
         text(&first)
     );
@@ -308,8 +314,13 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
         let (_, body) = call(&app, &g, "tools/call", params.clone()).await;
         let t = text(&body);
+        // "write to stdio MCP child" (Broken pipe) is the SAME crash noticed by the write syscall
+        // instead of the read — see the phrasing note at (1). The supervisor counts it identically
+        // (any exchange failure calls `crashed()`), so the quarantine arithmetic at (4) holds.
         assert!(
-            t.contains("closed its stdout") || t.contains("restart backoff"),
+            t.contains("closed its stdout")
+                || t.contains("restart backoff")
+                || t.contains("write to stdio MCP child"),
             "an unquarantined crash-looper either crashes again or is in backoff: {t}"
         );
     }
