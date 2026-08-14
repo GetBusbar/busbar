@@ -90,6 +90,20 @@ const h1 = http.createServer((req, res) => {
     },
     (upstreamRes) => {
       res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
+      // THE HEAD IS FLUSHED WHEN IT ARRIVES, NOT WHEN THE FIRST BODY BYTE DOES, and on an SSE
+      // response that is the difference between relaying a stream and reshaping it. `writeHead`
+      // only RECORDS the head; Node sends it with the first `write()`, so without this the shim
+      // holds a `200 text/event-stream` for as long as the agent takes to produce its first event
+      // — and `tasks/resubscribe` on a parked task produces its first event when the task next
+      // moves, which can be arbitrarily long. Measured against an origin that answers headers at
+      // once and its first event 3s later:
+      //     direct at the origin   response head seen after    4ms, first event after 3006ms
+      //     through the shim       response head seen after 3008ms, first event after 3009ms
+      // A client that opens the stream and waits on the head sees the shim's latency as the
+      // subject's, and a suite with a read timeout shorter than that gap scores a stall busbar
+      // did not commit. It cannot hide a real one either: a busbar that was itself slow to answer
+      // headers would still be relayed slowly.
+      res.flushHeaders();
       upstreamRes.pipe(res);
     },
   );
