@@ -10,7 +10,28 @@ name: Verify deploy
 # synchronously and is what `docker pull` actually reads — so every registry assertion here goes
 # straight at registry-1.docker.io / ghcr.io's Distribution API, never hub.docker.com's index.
 #
-# Checks (each independently PASS/FAIL, ANY failure -> exit 1):
+# EVERY CHECK IS INDEPENDENT, AND THAT IS LOAD-BEARING (1.5.4). "Independently PASS/FAIL" used to be
+# a description of the ASSERTIONS, not of the execution: they were plain steps, so the first failure
+# aborted the job and every later check was never run at all. Check (g) reads getbusbar.com, which
+# sits behind Cloudflare and returns 403 to GitHub Actions' datacenter IPs — the page is healthy for
+# every real visitor. From 2026-08-08 (g) failed on all six daily runs, so (h)(i)(j)(k)(l) DID NOT
+# EXECUTE ONCE in that window. (l) boots the published docker image. #50 — an image that exits 1 on
+# `docker run`, live as `latest` — was invisible for six days behind a check crying wolf about a
+# website that was fine.
+#
+# Two structural changes, and neither is "make (g) less strict":
+#   1. Each check carries `continue-on-error: true` and a final GATE step reads all twelve outcomes,
+#      prints every failure together and fails the job. No check can mask another, ever, regardless
+#      of ordering.
+#   2. (g)'s Cloudflare case is a VISIBLE SKIP (log + `::warning::` naming the marketing-side fix)
+#      rather than a failure, so it stops crying wolf — while a 404, a 5xx, or a page that IS served
+#      and shows the wrong version still HARD FAIL, because those are broken for every visitor.
+#
+# And the deeper fix is not in this file: a broken image must not be PUBLISHABLE. docker.yml now
+# boots the image and probes /healthz BEFORE any tag (`X.Y.Z` or `latest`) points at it. This
+# workflow remains the outside-in second opinion it was always meant to be, not the only line.
+#
+# Checks (each independently PASS/FAIL, ALL are run, ANY failure -> exit 1):
 #   (a) registry-1.docker.io has the vX.Y.Z tag, AND `latest` resolves to the SAME manifest digest
 #       as vX.Y.Z (i.e. `latest` was actually retagged onto the new release, not left stale).
 #   (b) ghcr.io/getbusbar/busbar:vX.Y.Z resolves to the SAME digest as the Docker Hub version tag
@@ -175,6 +196,7 @@ jobs:
 
       - name: "(a) registry-1.docker.io: version tag exists, latest == same digest"
         id: dockerhub
+        continue-on-error: true
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -208,6 +230,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(b) ghcr.io carries the SAME digest as the Docker Hub version tag"
+        id: check_b
+        continue-on-error: true
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -227,6 +251,8 @@ jobs:
           fi
 
       - name: "(c) GitHub Release vX.Y.Z exists with expected assets"
+        id: check_c
+        continue-on-error: true
         run: |
           set -euo pipefail
           TAG="${{ steps.ver.outputs.tag }}"
@@ -293,6 +319,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(d) running image's org.opencontainers.image.version label == version"
+        id: check_d
+        continue-on-error: true
         # `docker pull` has no built-in timeout and will sit on a stalled registry indefinitely.
         # A step-level bound fails THIS step with an unambiguous message instead of letting the
         # job-level timeout kill the run with no indication of which check hung.
@@ -310,6 +338,8 @@ jobs:
           fi
 
       - name: "(e) terraform-provider-busbar is published on registry.terraform.io (independent semver)"
+        id: check_e
+        continue-on-error: true
         run: |
           set -euo pipefail
           # MIXED-MODEL distribution versioning: the Terraform provider is a WRAPPER, so it keeps
@@ -351,6 +381,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(f) GetBusbar/helm-charts busbar chart appVersion == vX.Y.Z"
+        id: check_f
+        continue-on-error: true
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -377,31 +409,56 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
+        id: check_g
+        continue-on-error: true
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
           TAG="${{ steps.ver.outputs.tag }}"
           fail=0
           found=0
-          # WHY THE MATCH IS ANCHORED: this used to be `grep -qF "v${V}"`, an unanchored SUBSTRING
-          # search. Verifying 1.5.2 against a page still advertising v1.5.20/v1.5.25 matched and
-          # PASSED — the check reported "the site is serving v1.5.2" while the site showed a
-          # different version entirely. Requiring a non-digit (or end of line) after the version
-          # makes the assertion mean what its name says.
+          # A 403/429 IS A STATEMENT ABOUT US, NOT ABOUT THE SITE. getbusbar.com sits behind
+          # Cloudflare, whose bot rules block GitHub Actions' datacenter IP ranges: the page is
+          # served perfectly to a browser and to any laptop, and returns 403 to this runner. Treating
+          # that as "the site does not advertise the version" is how (g) went red every single day
+          # for six days from 2026-08-08 while the site was healthy the whole time — and, because a
+          # failing step used to abort the job, took (h)-(l) with it, including (l), the docker
+          # quickstart that would have caught #50 on day one. A check that cries wolf daily is a
+          # check nobody reads.
+          #
+          # So a block is a VISIBLE SKIP: announced in the log AND as a `::warning::` annotation that
+          # names the real blocker and the marketing-side fix. Anything else — 404, 5xx, a page that
+          # is served but shows the wrong version — is still a HARD FAIL, because those are visible
+          # to every visitor rather than only to CI.
+          dl_code=000
           for i in $(seq 1 20); do
-            if curl -fsS --max-time 30 "https://getbusbar.com/download/" 2>/dev/null \
-                 | grep -qE "v${V}([^0-9]|\$)"; then
+            dl_code="$(curl -sS --max-time 30 -o /tmp/dl-page.html -w '%{http_code}' \
+              "https://getbusbar.com/download/" 2>/dev/null || echo 000)"
+            # WHY THE MATCH IS ANCHORED: this used to be `grep -qF "v${V}"`, an unanchored SUBSTRING
+            # search. Verifying 1.5.2 against a page still advertising v1.5.20/v1.5.25 matched and
+            # PASSED — the check reported "the site is serving v1.5.2" while the site showed a
+            # different version entirely. Requiring a non-digit (or end of line) after the version
+            # makes the assertion mean what its name says.
+            if [ "$dl_code" = 200 ] && grep -qE "v${V}([^0-9]|\$)" /tmp/dl-page.html; then
               found=1
               break
             fi
-            echo "  ...getbusbar.com/download/ does not yet show v${V} (attempt $i/20), retrying in 15s"
+            # A 403/429 will not become a 200 by waiting: it is an edge rule about WHO is asking, not
+            # a deploy that has not landed yet. Retrying it for five minutes only delays the report.
+            case "$dl_code" in 403|429) break ;; esac
+            echo "  ...getbusbar.com/download/ does not yet show v${V} (HTTP ${dl_code}, attempt $i/20), retrying in 15s"
             sleep 15
           done
+          blocked=0
           if [ "$found" = 1 ]; then
             echo "PASS: getbusbar.com/download/ shows v${V}"
+          elif [ "$dl_code" = 403 ] || [ "$dl_code" = 429 ]; then
+            blocked=1
+            echo "VISIBLE SKIP: getbusbar.com/download/ returned HTTP ${dl_code} to this runner, so the 'site advertises v${V}' assertion could NOT be evaluated. This is an edge/bot block against GitHub's datacenter IPs, not a stale page: a browser is served normally."
+            echo "::warning::(g) PARTIAL: getbusbar.com/download/ returns HTTP ${dl_code} to GitHub Actions runners, so the 'site advertises v${V}' assertion did not run. The /releases/latest resolution below DID run and is authoritative. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /download/, or expose a small unchallenged JSON route carrying the current version, so this can be asserted from CI at all."
           else
-            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
-            echo "::error::(g) getbusbar.com/download/ does not advertise v${V}. Fix: redeploy the marketing site so the download page picks up the new release."
+            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries (HTTP ${dl_code})"
+            echo "::error::(g) getbusbar.com/download/ does not advertise v${V} (HTTP ${dl_code}). This is NOT a bot block (403/429) — every visitor sees it. Fix: redeploy the marketing site so the download page picks up the new release."
             fail=1
           fi
 
@@ -411,10 +468,18 @@ jobs:
           # can be green while every button hands users a stale binary — and they 404 outright if
           # the Release exists but is not flagged 'latest'. Both are user-visible breakage that
           # nothing else in this workflow covers, so resolve what the buttons actually point at.
-          curl -fsS --max-time 30 "https://getbusbar.com/download/" -o /tmp/dl-page.html || {
-            echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links. Fix: redeploy the marketing site."
-            exit 1
-          }
+          # /tmp/dl-page.html was already fetched above. If the edge blocked us there is nothing to
+          # scrape — but that must NOT abort the step, because the /releases/latest resolution below
+          # needs no page at all and is the load-bearing half of this check: it is what catches a
+          # Release that never got flagged 'latest', which makes every button on the site serve the
+          # wrong version.
+          if [ "$blocked" = 1 ]; then
+            echo "VISIBLE SKIP: cannot scrape getbusbar.com/download/'s links (HTTP ${dl_code} to this runner). The /releases/latest resolution below still runs and is authoritative."
+            : > /tmp/dl-page.html
+          elif [ ! -s /tmp/dl-page.html ]; then
+            echo "::error::(g) could not fetch getbusbar.com/download/ to inspect its links (HTTP ${dl_code}) — not a block (403/429) but a genuine failure to serve, which every visitor sees too. Fix: redeploy the marketing site."
+            fail=1
+          fi
           # Where does /releases/latest actually land? That is what every button on the page follows.
           loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' \
             "https://github.com/GetBusbar/busbar/releases/latest" || true)"
@@ -426,7 +491,10 @@ jobs:
             fail=1
           fi
           links="$(grep -oE 'https://github\.com/GetBusbar/busbar/releases/latest/download/[A-Za-z0-9._-]+' /tmp/dl-page.html | sort -u || true)"
-          if [ -z "$links" ]; then
+          if [ -z "$links" ] && [ "$blocked" = 1 ]; then
+            # NOT evidence that the page lacks download links — evidence that we never saw the page.
+            echo "VISIBLE SKIP: no links to check because the page was not served to this runner (HTTP ${dl_code})."
+          elif [ -z "$links" ]; then
             echo "FAIL: no /releases/latest/download/ links found on getbusbar.com/download/"
             echo "::error::(g) the download page exposes NO release download links at all. Fix: check the download page template on the marketing site."
             fail=1
@@ -452,6 +520,8 @@ jobs:
       # ---------------------------------------------------------------------------------------
 
       - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
+        id: check_h
+        continue-on-error: true
         # Bounds the 10-attempt install loop plus the tarball download it performs.
         timeout-minutes: 20
         run: |
@@ -555,6 +625,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(i) install.sh must NOT depend on api.github.com (the 403 that broke it)"
+        id: check_i
+        continue-on-error: true
         run: |
           set -euo pipefail
           # WHY THIS EXISTS SEPARATELY FROM (h): (h) can pass on a runner while failing on every
@@ -584,6 +656,8 @@ jobs:
           echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
 
       - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        id: check_j
+        continue-on-error: true
         # `brew install` builds/downloads and has no timeout of its own.
         timeout-minutes: 20
         run: |
@@ -683,6 +757,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(k) getbusbar.com's own API endpoints answer with real numbers"
+        id: check_k
+        continue-on-error: true
         run: |
           set -euo pipefail
           fail=0
@@ -723,6 +799,8 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(l) the documented quickstart actually runs (binary + docker one-liner)"
+        id: check_l
+        continue-on-error: true
         # Boots two servers; a busbar that starts but never binds would otherwise hang the job.
         timeout-minutes: 15
         run: |
@@ -790,3 +868,59 @@ jobs:
           fi
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
           [ "$fail" = 0 ]
+
+      # ═══ THE GATE. EVERY CHECK IS INDEPENDENT; ALL FAILURES ARE REPORTED, THEN THE JOB FAILS ═══
+      #
+      # WHY THIS EXISTS. Until 1.5.4 these were plain steps, so the FIRST one to fail aborted the
+      # job and every check after it never ran. Check (g) reads getbusbar.com, which sits behind
+      # Cloudflare and 403s GitHub Actions runner IPs — so from 2026-08-08 (g) failed on every
+      # single daily run, and (h)(i)(j)(k)(l) HAVE NOT EXECUTED SINCE. (l) is the docker quickstart.
+      # It is the one check in this repo that boots the published image, and #50 — an image that
+      # exits 1 on `docker run`, in production, for six days — sat behind a check that was dark
+      # because an unrelated check was crying wolf about a healthy website.
+      #
+      # An ordering accident must never decide what gets verified. Each check now carries
+      # `continue-on-error: true`, so it records its outcome and the job continues; this final step
+      # reads all twelve outcomes, prints every failure together, and fails the job if any failed.
+      # `if: always()` so the gate runs even if something above ended the job abnormally — a gate
+      # that can be skipped is not a gate.
+      #
+      # `continue-on-error` makes each individual step render green-with-annotation in the UI; THIS
+      # step is the one whose red means "the release is not verified", and its summary names which
+      # letters failed. `steps.<id>.outcome` is the pre-continue-on-error result, which is why it,
+      # and not `conclusion`, is what is read here.
+      - name: "GATE: every check ran; report all failures"
+        if: always()
+        env:
+          OUTCOMES: |
+            a ${{ steps.dockerhub.outcome }} registry-1.docker.io tags + latest digest
+            b ${{ steps.check_b.outcome }} ghcr.io digest parity
+            c ${{ steps.check_c.outcome }} GitHub Release assets
+            d ${{ steps.check_d.outcome }} running image OCI version label
+            e ${{ steps.check_e.outcome }} terraform registry
+            f ${{ steps.check_f.outcome }} helm chart appVersion
+            g ${{ steps.check_g.outcome }} getbusbar.com advertises this version
+            h ${{ steps.check_h.outcome }} install.sh end-to-end
+            i ${{ steps.check_i.outcome }} install.sh has no api.github.com dependency
+            j ${{ steps.check_j.outcome }} homebrew tap
+            k ${{ steps.check_k.outcome }} site API endpoints
+            l ${{ steps.check_l.outcome }} the documented quickstart (binary + docker)
+        run: |
+          set -uo pipefail
+          failed=""
+          printf '%-3s %-9s %s\n' "" "OUTCOME" "CHECK"
+          while read -r letter outcome desc; do
+            [ -n "${letter:-}" ] || continue
+            printf '(%s) %-9s %s\n' "$letter" "$outcome" "$desc"
+            case "$outcome" in
+              success|skipped) ;;
+              *) failed="${failed}${letter} " ;;
+            esac
+          done <<< "$OUTCOMES"
+          if [ -n "$failed" ]; then
+            echo
+            echo "::error::verify-deploy FAILED. Checks that did not pass: ${failed}— see each step above for its own ::error:: lines and remediation. Every check ran; none was masked by an earlier failure."
+            exit 1
+          fi
+          echo
+          echo "PASS: all twelve consumer checks (a)-(l) ran and passed."

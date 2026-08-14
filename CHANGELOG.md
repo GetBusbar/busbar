@@ -6,6 +6,44 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.4], 2026-08-14
+
+A hotfix. 1.5.3's Docker image does not start, so if you run Busbar in a container, upgrade. There is
+no config change and no behaviour change beyond the two fixes below.
+
+### Fixed
+
+- **The Docker image starts again.** `docker run getbusbar/busbar:1.5.3` exited 1 before binding a
+  port, with "the overlay backend '/etc/busbar/busbar-overlay.json' is not writable". The image runs as
+  an unprivileged user on a read-only `/etc/busbar`, and the documented quickstart mounts your
+  `config.yaml` read-only on top of that, so the config overlay 1.5.3 introduced had nowhere to
+  write — and 1.5.3 treated that as a reason to refuse to start. It no longer does. Busbar boots,
+  serves traffic, warns clearly at startup that it has no durable config overlay, and refuses
+  admin-API config changes outright rather than applying them in memory and losing them on restart. If
+  you want those changes to persist, point `config.overlay.file` at a writable volume; if you never
+  wanted them, `config.locked: true` says so explicitly and silences the warning. A config that
+  explicitly sets `config.overlay: false` while remaining mutable still refuses to start, because that
+  one is a contradiction you can only reach by writing it down. ([#50])
+
+- **First-party plugins verify on ARM Linux.** `busbar-aarch64-unknown-linux-gnu` shipped without the
+  embedded Busbar release public key in 1.5.1, 1.5.2 and 1.5.3, so every correctly signed first-party
+  plugin was refused on ARM Linux — and only there — as unsigned. That target was the one platform
+  built by cross-compiling inside a container the key never reached; it now builds on a native ARM
+  runner. The release build additionally refuses to compile at all without a well-formed key, and
+  asserts the key is present in the finished artifact before it is uploaded, so this cannot recur
+  silently on any platform. ([#52])
+
+### Changed
+
+- The release pipeline boots the container image and checks `/healthz` before any tag, `latest`
+  included, is allowed to point at it. Nothing had ever started the image before publishing it.
+- The post-release verifier runs all of its checks and reports every failure, instead of stopping at
+  the first. A check that could not reach getbusbar.com from CI was aborting the run before the check
+  that boots the published image, which is why the defect above stayed invisible for six days.
+
+[#50]: https://github.com/GetBusbar/busbar/issues/50
+[#52]: https://github.com/GetBusbar/busbar/issues/52
+
 ## [1.5.3], 2026-08-08
 
 This release reshapes the config file, so give yourself a few minutes for the upgrade.

@@ -23,11 +23,12 @@ use super::{
 };
 
 /// The single, actionable message a config mutation gets when there is no writable overlay backend to
-/// record it. With the 1.5.3 boot invariant (`locked` XOR a writable overlay), a MUTABLE busbar always
-/// has a writable overlay, so this is only reachable on a LOCKED (immutable/GitOps) deployment — where
-/// refusing runtime config mutation is exactly the point. Used both as the `persist_*` `None`-path
-/// error (the structural backstop that makes silent non-durable mutation impossible) and by the admin
-/// handlers' early locked-config refusals.
+/// record it. Two deployments reach it, and for both, refusing IS the correct answer: a LOCKED
+/// (immutable/GitOps) busbar, where refusing runtime config mutation is exactly the point; and a
+/// mutable busbar whose overlay backend is not writable (`read_only_backend`, e.g. a read-only config
+/// mount), where the mutation could not be made durable and would silently revert on restart. Used
+/// both as the `persist_*` `None`-path error (the structural backstop that makes silent non-durable
+/// mutation impossible) and by the admin handlers' early locked-config refusals.
 pub(crate) const NO_WRITABLE_OVERLAY_MSG: &str =
     "config mutation refused: this busbar has no writable config overlay. This is expected when \
      `config.locked: true` (an immutable/GitOps deployment) — edit config.yaml and POST /config/reload \
@@ -46,20 +47,43 @@ const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
 pub(crate) struct OverlayResolution {
     /// `true` ⇒ `config.locked: true`: admin-API config mutations are refused at runtime.
     pub(crate) locked: bool,
-    /// The writable file-backend path when the config is MUTABLE; `None` when locked. The boot
-    /// invariant guarantees `locked == path.is_none()` for a config that BOOTED.
+    /// The writable file-backend path when the config is MUTABLE and its backend is writable; `None`
+    /// when locked, and `None` when the config is mutable but its backend turned out to be UNWRITABLE
+    /// (see `read_only_backend`). The boot invariant is therefore
+    /// `(locked || read_only_backend) == path.is_none()` for a config that BOOTED.
     pub(crate) path: Option<PathBuf>,
+    /// `true` ⇒ the config did NOT declare `config.locked: true`, but the resolved overlay backend is
+    /// not writable on this filesystem — the classic case being a config directory mounted read-only
+    /// (`docker run -v ./config.yaml:/etc/busbar/config.yaml:ro`). Busbar boots and serves, but with
+    /// NO durable config overlay: every admin-API config mutation is refused up front with
+    /// [`NO_WRITABLE_OVERLAY_MSG`] rather than applying in RAM and silently reverting on restart. The
+    /// operator is told loudly at boot. Never `true` when `locked` is `true`.
+    pub(crate) read_only_backend: bool,
 }
 
 /// Resolve the config-management posture + overlay backend from the `config:` block (1.5.3), enforcing
-/// the BOOT INVARIANT: `locked` XOR a writable overlay. Returns `Err` (a boot refusal) when the config
-/// is mutable but has no writable backend — the state that used to be silently reachable and let a
-/// mutation apply in RAM only.
+/// the BOOT INVARIANT: no snapshot ever carries a backend path it cannot durably write. What the
+/// invariant actually protects against is a mutation that applies in RAM only and silently reverts on
+/// restart; it is satisfied by handing back `path: None` (which makes every admin-API config mutation
+/// refuse up front with [`NO_WRITABLE_OVERLAY_MSG`]), and does NOT require refusing to boot.
+///
+/// So the two "mutable but no usable backend" states are treated differently, on purpose:
+///
+/// * `config.overlay: false` on a mutable config is a SELF-CONTRADICTORY config the operator wrote by
+///   hand ("mutable, and also no place to store mutations"). It stays a boot `Err`, because the only
+///   way to reach it is to have typed it, and the fix is to edit the file.
+/// * An overlay backend that is not WRITABLE is a property of the ENVIRONMENT, not of the config: a
+///   read-only config mount is a legitimate and common hardening choice, and the documented Docker
+///   quickstart uses exactly that (`-v "$PWD/config.yaml:/etc/busbar/config.yaml:ro"`). Refusing to
+///   boot for it means a hardened deployment cannot serve traffic at all, which is a far worse
+///   outcome than serving with the admin-API config mutations disabled. This degrades: it warns
+///   loudly, sets `read_only_backend`, and returns `path: None`.
 ///
 /// Precedence for a mutable config's backend path: an explicit `config.overlay` wins; else the
 /// deprecated `BUSBAR_CONFIG_OVERLAY` env var (`env_override`, with a deprecation warn); else the
 /// default `busbar-overlay.json` next to the resolved config.yaml. `probe_fs` gates the filesystem
-/// writability check — `true` at boot/reload (so a read-only config dir refuses to boot), `false` for
+/// writability check — `true` at boot/reload (so a read-only config dir degrades to no overlay,
+/// above), `false` for
 /// `--validate` (which must have zero side effects and may run away from the target filesystem).
 pub(crate) fn resolve_backend(
     cfg: &ConfigMgmtCfg,
@@ -79,6 +103,7 @@ pub(crate) fn resolve_backend(
         return Ok(OverlayResolution {
             locked: true,
             path: None,
+            read_only_backend: false,
         });
     }
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -107,17 +132,33 @@ pub(crate) fn resolve_backend(
             .to_string());
     };
     if probe_fs && !is_backend_writable(&p) {
-        return Err(format!(
-            "config is mutable (config.locked: false) but the overlay backend '{}' is not writable \
-             (is the config directory read-only?). A mutable config MUST be able to persist admin-API \
-             changes. Point `config.overlay.file` at a writable path, or set `config.locked: true` for \
-             an immutable/GitOps deployment (which never persists runtime mutations anyway).",
-            p.display()
-        ));
+        // DEGRADE, do not refuse to boot. A read-only config directory is a hardening choice, not a
+        // config error, and a gateway that will not start is strictly worse than a gateway that
+        // serves traffic with admin-API config mutations turned off. `path: None` is what makes the
+        // "off" real: every mutation entry point refuses against a `None` backend, so nothing can
+        // apply in RAM and silently revert. Logged at WARN here (and again at boot in `main`) because
+        // an operator who DID intend to drive this busbar by admin API must not discover it at the
+        // first mutation.
+        tracing::warn!(
+            overlay = %p.display(),
+            "the config overlay backend is NOT WRITABLE (is the config directory mounted read-only?) \
+             — busbar is starting WITHOUT a durable config overlay: it serves traffic normally, but \
+             every admin-API config mutation will be REFUSED, because a change that cannot be \
+             persisted would silently revert on restart. If that is what you want, set \
+             `config.locked: true` to say so explicitly and silence this warning. If you want a \
+             mutable config, point `config.overlay.file` at a writable path (e.g. mount a writable \
+             volume and set `config.overlay.file: /var/lib/busbar/busbar-overlay.json`)."
+        );
+        return Ok(OverlayResolution {
+            locked: false,
+            path: None,
+            read_only_backend: true,
+        });
     }
     Ok(OverlayResolution {
         locked: false,
         path: Some(p),
+        read_only_backend: false,
     })
 }
 
@@ -1064,14 +1105,19 @@ mod config_consolidation_tests {
         assert!(persist_root(res.path.as_deref(), &RootSettings::default()).is_err());
     }
 
-    /// (c) BOOT INVARIANT: a MUTABLE config with the overlay explicitly DISABLED refuses (no writable
-    /// backend). Also the read-only-config-dir edge case (unix): the default path is unwritable, so a
-    /// mutable config refuses with an actionable message.
+    /// (c) BOOT INVARIANT: a MUTABLE config with the overlay explicitly DISABLED refuses. That state
+    /// is self-contradictory and can only be reached by typing it into config.yaml, so the fix is to
+    /// edit the file and the refusal is a boot `Err`.
+    ///
+    /// The neighbouring case — a mutable config whose backend path is simply not WRITABLE (a
+    /// read-only config mount) — is NOT a boot refusal; it degrades to no-overlay. That is a property
+    /// of the environment rather than of the config, and it is covered in
+    /// `tests/overlay_read_only_tests.rs`.
     ///
     /// Pre-1.5.3 nothing enforced "mutable XOR writable overlay" — a mutable config
     /// with no backend booted fine and mutated in RAM only.
     #[test]
-    fn c_mutable_without_a_writable_backend_refuses() {
+    fn c_mutable_with_the_overlay_explicitly_disabled_refuses() {
         let dir = writable_dir("disabled");
         let config_path = dir.join("config.yaml");
         let err = resolve_backend(
@@ -1088,22 +1134,6 @@ mod config_consolidation_tests {
             err.contains("config.locked") || err.contains("no writable overlay"),
             "the refusal must be actionable: {err}"
         );
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let ro = writable_dir("readonly");
-            let ro_config = ro.join("config.yaml");
-            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let err = resolve_backend(&ConfigMgmtCfg::default(), &ro_config, None, true)
-                .expect_err("a read-only config dir must refuse a mutable config");
-            assert!(
-                err.contains("not writable") && err.contains("config.locked"),
-                "the read-only refusal must name the fix (writable path or config.locked): {err}"
-            );
-            // restore so cleanup can proceed
-            let _ = std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755));
-        }
     }
 
     /// (d) Overlay backend PRECEDENCE for the env→config migration: an explicit `config.overlay` WINS;
@@ -2109,3 +2139,9 @@ mod tests {
         assert_eq!(OverlaySection::PluginVersions.as_str(), "plugin_versions");
     }
 }
+
+/// A read-only config mount must not stop busbar from serving: the degrade-and-warn posture, and the
+/// line between it and the config errors that DO still refuse to boot.
+#[cfg(test)]
+#[path = "tests/overlay_read_only_tests.rs"]
+mod overlay_read_only_tests;
