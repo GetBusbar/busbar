@@ -48,6 +48,31 @@ if (!listenPort || !upstreamPort || !token) {
 
 const UPSTREAM = `127.0.0.1:${upstreamPort}`;
 
+// THE UPSTREAM SOCKET IS NEVER POOLED, AND THAT IS A CORRECTNESS FIX RATHER THAN A TUNING CHOICE.
+//
+// Node's GLOBAL agent has `keepAlive: true`, so without an explicit agent this shim kept idle
+// sockets to busbar in a pool and reused them. busbar advertises `Keep-Alive: timeout=5` and closes
+// an idle connection when that elapses — correct, and every well-behaved client honours it. Node's
+// agent does NOT read that header: it hands out a socket busbar has already closed, the write loses
+// the race, and `upstream.on('error')` fires with `ECONNRESET`.
+//
+// WHAT THAT COST, MEASURED RATHER THAN GUESSED. The shim answered `502`, and the connection it had
+// already half-written left the NEXT request on that client connection answering `400` with a
+// ZERO-LENGTH BODY. The official suite's `test_data_model.py` fixture is module-scoped, so one such
+// answer errored its whole module: ten MUST requirements reported `NOT TESTED` having never run,
+// and `JSONRPC-FMT-001` reported `Response is not a JSON object` — ELEVEN requirements scored
+// against busbar for a byte busbar never sent. The same race read as `send_message failed: timed
+// out` on four `STREAM-*` requirements, and it is why two runs of one binary disagreed.
+//
+// THE DISPROOF THAT IT WAS EVER BUSBAR'S. The identical request sequence, with the identical gaps,
+// run TWELVE times straight at busbar's own listener with no shim in the path (the `instrument`
+// credential topology) answered `200` with valid JSON every time. Through the shim, the same
+// sequence produced `502`, an empty-bodied `400` and a read timeout. The defect was in this file.
+//
+// A fresh connection per hop is what a shim in front of a conformance subject owes the reading: it
+// is measurably slower and it cannot manufacture a failure the subject did not commit.
+const upstreamAgent = new http.Agent({ keepAlive: false, maxSockets: Infinity });
+
 // ── THE HTTP/1.1 HALF: the JSON-RPC binding, and every discovery document beside it. ──
 const h1 = http.createServer((req, res) => {
   const headers = { ...req.headers, host: UPSTREAM };
@@ -55,14 +80,31 @@ const h1 = http.createServer((req, res) => {
   if (!alreadyAuthenticated) headers.authorization = `Bearer ${token}`;
 
   const upstream = http.request(
-    { host: '127.0.0.1', port: Number(upstreamPort), path: req.url, method: req.method, headers },
+    {
+      host: '127.0.0.1',
+      port: Number(upstreamPort),
+      path: req.url,
+      method: req.method,
+      headers,
+      agent: upstreamAgent,
+    },
     (upstreamRes) => {
       res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
       upstreamRes.pipe(res);
     },
   );
   // A dead upstream must look like a dead upstream, never like a conformance verdict.
+  //
+  // AND IT MUST NOT CORRUPT THE CONNECTION IT IS ANSWERING ON. Writing a second set of headers
+  // after the upstream response has already begun streaming throws `ERR_HTTP_HEADERS_SENT`, which
+  // desynchronises this client connection and is how the empty-bodied `400` above was produced. If
+  // the answer is already in flight the only honest move is to destroy the connection, so the
+  // client sees a broken transfer rather than a well-formed lie.
   upstream.on('error', (e) => {
+    if (res.headersSent) {
+      res.destroy(e);
+      return;
+    }
     res.writeHead(502, { 'content-type': 'text/plain' });
     res.end(`binding-shim: upstream busbar at ${UPSTREAM} did not answer: ${e}`);
   });
