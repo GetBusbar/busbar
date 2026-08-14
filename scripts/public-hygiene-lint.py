@@ -239,7 +239,7 @@ RULES = [
                 # discouraged: auth-oidc cites `OIDC Core 1.0 §3.1.3.7` correctly.
                 forbid=r"\.md\b|\bRFC\b|\bdocs/|\bhttps?://|\bOIDC\b|\bOpenID\b|\bOAuth\b|\bSAML\b|"
                        r"\bJWT\b|\bJWS\b|\bJOSE\b|\bIETF\b|\bW3C\b|\bECMA\b|\bPOSIX\b|\bUnicode\b|"
-                       r"\bISO[ -]?\d",
+                       r"\bISO[ -]?\d|\bJSON-RPC\b|\bMCP\b|\bA2A\b|\bSEP-\d",
                 path_forbid=r"\.(md|rst|txt|html?)$"),
         ],
     ),
