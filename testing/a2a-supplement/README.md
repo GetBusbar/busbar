@@ -3,15 +3,25 @@
 **This is not the A2A TCK, and nothing in it may ever be counted as a TCK result.**
 
 The official suite in `../a2a-tck` pins `a2aproject/a2a-tck` at
-`5996b79f9cefa6fc390980e383e358a66fb9e49e`. In that suite, **23 of the 114 MUST requirements have
+`5996b79f9cefa6fc390980e383e358a66fb9e49e`. In that suite, **21 of the 114 MUST requirements have
 no test anywhere**: their `test_ids` are empty, their `transports` map is empty, and a `grep -rl`
 over the suite's own `tests/` tree returns nothing for them. The summary counts them among the
-failures; the JSON report calls them `NOT TESTED`. That is not a busbar property — the same 26 and
-27 appear against the two committed `a2a-go` control baselines, which are a different
+failures; the JSON report calls them `NOT TESTED`. That is not a busbar property — the same
+families appear against the two committed `a2a-go` control baselines, which are a different
 implementation by different authors.
 
-So the arithmetic ceiling on that pin is **91, not 114**, and no amount of work on busbar can move
-the other 23. This directory covers as many of them as can honestly be covered from outside.
+So the arithmetic ceiling on that pin is **93, not 114**, and no amount of work on busbar can move
+the other 21. This directory covers all 21: seventeen are decided, one fails, one is partial and
+two are untestable from outside with the mechanism stated.
+
+**A subject run usually reports 22 or 23 `NOT TESTED`, and the extra one or two are NOT this gap.**
+`JSONRPC-SVC-002` and `HTTP_JSON-SVC-002` DO have tests in the pinned suite; those tests time out
+(`httpcore.ReadTimeout` on a fresh connection carrying an `A2A-Extensions` header), the exception
+escapes before `assert_and_record` runs, and nothing is recorded — so they land in the report with
+empty `test_ids`, indistinguishable from a requirement with no test at all. `VER-SERVER-003` does
+the same intermittently under load. **A hang and a coverage gap are not the same finding**, and the
+official report cannot tell them apart; the 21 here were established by grepping the suite's own
+`tests/` tree, not by reading the report.
 
 ## The rule that governs everything here
 
@@ -105,8 +115,13 @@ neither could be contributed as-is.
 ## Proving the checks bite where no control can
 
 `run-supplement.sh`'s controls establish a failure mode for the `AUTH-*` and `VER-SERVER-*`
-families — `a2a-go` and `a2a-python` fail checks busbar passes. They establish **nothing** for three
-families, and that is stated rather than glossed:
+families. `a2a-go` v2.4.0 fails `AUTH-SERVER-002`, `AUTH-SCOPE-001/002`, `AUTH-INTASK-002/003` and
+`VER-SERVER-001` where busbar passes, and `a2a-python` **passes** `AUTH-INTASK-002/003` and
+`VER-SERVER-001` — a third-party implementation passing a check is as important as one failing it,
+because a check that only ever passes the subject that shipped with it is a check nobody has seen
+work on anything else.
+
+They establish **nothing** for three families, and that is stated rather than glossed:
 
 | Family | Why no control decides it |
 |---|---|

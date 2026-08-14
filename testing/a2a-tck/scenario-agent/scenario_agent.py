@@ -277,6 +277,31 @@ class ScenarioExecutor(AgentExecutor):
         if message_id.startswith('tck-reject-task'):
             raise A2AError('rejected')
 
+        # ── NOT A TCK SCENARIO. `a2asup-auth-required` belongs to the SUPPLEMENTARY suite. ──
+        #
+        # SPEC 7.6.1 puts four MUSTs on an agent that needs a client to fulfil an authorization
+        # request, and the official suite has no test for any of them because no fixture it drives
+        # ever enters `TASK_STATE_AUTH_REQUIRED`. Nothing in the TCK sends this prefix, so this
+        # branch is unreachable from the official run and cannot change its number; it exists so
+        # that `testing/a2a-supplement` can observe whether the A2A server under test PRESERVES the
+        # three observable consequences end to end -- a Task rather than a bare Message, the
+        # `auth_required` state, and a status message explaining what is wanted.
+        #
+        # THE MESSAGE TEXT IS NOT ARBITRARY and it is not a marker the checks look for. SPEC 7.6.1
+        # requires "a TaskStatus message explaining the required authorization", so the fixture
+        # supplies a plausible explanation and the checks assert only that SOME non-empty status
+        # message survived. A check that matched this exact string would be testing the fixture.
+        if message_id.startswith('a2asup-auth-required'):
+            await updater.requires_auth(
+                updater.new_agent_message(
+                    [Part(text=(
+                        'Authorization is required before this operation can continue: an OAuth '
+                        'access token for the downstream API, obtained out of band.'
+                    ))]
+                )
+            )
+            return
+
         # No prefix claimed it. The contract says "normal task processing, no special behaviour",
         # and says so out loud rather than silently echoing, so a prefix this agent has not
         # implemented is visible in the transcript instead of passing for a handled one.

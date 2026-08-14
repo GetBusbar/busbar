@@ -36,6 +36,9 @@ def run(target: Target, issuer_key: str | None, verifier_probe=None) -> list[Res
     plan: list[tuple[str, callable]] = [
         ("AUTH-TLS-001", lambda: checks_auth.check_auth_tls_001(target)),
         ("AUTH-SERVER-002", lambda: checks_auth.check_auth_server_002(target)),
+        ("AUTH-INTASK-001", lambda: checks_auth.check_auth_intask_001(target)),
+        ("AUTH-INTASK-002", lambda: checks_auth.check_auth_intask_002(target)),
+        ("AUTH-INTASK-003", lambda: checks_auth.check_auth_intask_003(target)),
         ("AUTH-INTASK-004", lambda: checks_auth.check_auth_intask_004(target)),
         ("AUTH-SCOPE-001", lambda: checks_auth.check_auth_scope_001(target)),
         ("AUTH-SCOPE-002", lambda: checks_auth.check_auth_scope_002(target)),

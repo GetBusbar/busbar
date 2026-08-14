@@ -416,3 +416,170 @@ def check_auth_intask_004(target: Target) -> Result:
         "out-of-band arrangement over a protocol surface that does not exist.",
         [],
     )
+
+
+# ── SPEC 7.6.1, in-task authorization ───────────────────────────────────────────────────────────
+#
+# THE FIXTURE, AND WHY THESE THREE NEED ONE. The other checks in this file provoke their own
+# stimulus: an anonymous request, a forged bearer, a second principal. These three are about what
+# an agent does when IT needs authorization, and no request a client can send makes that happen --
+# the agent has to be the kind of agent that asks. So the subject rig's upstream agent
+# (`testing/a2a-tck/scenario-agent`) grows one branch that parks a task in
+# `TASK_STATE_AUTH_REQUIRED` with an explanation, and what these checks measure is whether the A2A
+# SERVER UNDER TEST preserves the three observable consequences end to end.
+#
+# THAT IS A NARROWER CLAIM THAN THE REQUIREMENT, AND IT IS STATED RATHER THAN IMPLIED. For a
+# gateway, "the agent" in SPEC 7.6.1 is the composition of the gateway and its upstream, and this
+# establishes that the composition behaves correctly when the upstream asks. It does NOT establish
+# that a gateway which itself needs authorization would ask correctly, because this gateway has no
+# such path to drive.
+
+AUTH_REQUIRED_PREFIX = "a2asup-auth-required"
+# The states an implementation might spell `auth_required` as. The proto name is
+# `TASK_STATE_AUTH_REQUIRED` (SPEC 4.1.4); the 0.3 JSON spelling is `auth-required`. Both are
+# accepted because the requirement is about the STATE, not about which of the specification's own
+# two spellings an implementation emits.
+AUTH_REQUIRED_STATES = {
+    "TASK_STATE_AUTH_REQUIRED",
+    "auth-required",
+    "AUTH_REQUIRED",
+    "auth_required",
+}
+
+
+def _ask_for_authorization(target: Target) -> tuple[object, dict, str]:
+    """One Send Message that makes the upstream agent require authorization."""
+    bindings = target.bindings()
+    binding = bindings.get("jsonrpc") or next(iter(bindings.values()))
+    reply = binding.call(
+        "send_message",
+        {
+            "message": {
+                "role": "ROLE_USER",
+                "parts": [{"text": "a2a-supplement in-task authorization probe"}],
+                "messageId": f"{AUTH_REQUIRED_PREFIX}-{uuid.uuid4().hex[:12]}",
+            }
+        },
+        token=target.token,
+    )
+    payload = reply.payload if isinstance(reply.payload, dict) else {}
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else None
+    return reply, (task or {}), getattr(binding, "name", "?")
+
+
+def _no_fixture(req, reply, name: str) -> Result:
+    return Result(
+        req.id,
+        Verdict.NOT_APPLICABLE,
+        "the upstream agent behind this target did not enter an authorization-required state when "
+        "asked to, so there is no in-task authorization to observe. This check needs a subject "
+        f"whose upstream implements the `{AUTH_REQUIRED_PREFIX}` fixture; a target without one is "
+        "reported here rather than passed or failed, because neither verdict would be about the "
+        "requirement.",
+        [f"{name} send_message -> {reply!r}"],
+    )
+
+
+def check_auth_intask_001(target: Target) -> Result:
+    """SPEC 7.6.1: 'the agent ... MUST use a Task to track the operation it is performing'."""
+    req = REQUIREMENTS["AUTH-INTASK-001"]
+    reply, task, name = _ask_for_authorization(target)
+    evidence = [f"{name} send_message -> {reply!r}", f"task = {short(task, 700)}"]
+    if not reply.ok:
+        return _no_fixture(req, reply, name)
+    if not task:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            "the agent answered a request that requires authorization with something that is not "
+            "a Task -- a bare Message, or a document with no `task` member. SPEC 7.6.1 makes a "
+            "Task mandatory for exactly this case, because a bare Message gives the client nothing "
+            "to address a credential or a rejection to.",
+            evidence,
+        )
+    if not task.get("id"):
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            "a Task was returned but it carries no `id`, so nothing can be tracked by it and the "
+            "client cannot address the authorization it is being asked for.",
+            evidence,
+        )
+    return Result(
+        req.id,
+        Verdict.PASS,
+        f"the operation requiring authorization is tracked by a Task, id {task['id']!r}, returned "
+        f"through the {name} binding.",
+        evidence,
+    )
+
+
+def check_auth_intask_002(target: Target) -> Result:
+    """SPEC 7.6.1: 'the agent ... MUST transition the TaskState to TASK_STATE_AUTH_REQUIRED'."""
+    req = REQUIREMENTS["AUTH-INTASK-002"]
+    reply, task, name = _ask_for_authorization(target)
+    evidence = [f"{name} send_message -> {reply!r}", f"task = {short(task, 700)}"]
+    if not reply.ok or not task:
+        return _no_fixture(req, reply, name)
+    state = str((task.get("status") or {}).get("state") or task.get("state") or "")
+    evidence.append(f"observed state = {state!r}")
+    if state not in AUTH_REQUIRED_STATES:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            f"the upstream agent set the task to auth-required and the subject reported it as "
+            f"{state!r}. A client cannot know it is being asked for a credential, so the "
+            f"authorization request is lost.",
+            evidence,
+        )
+    return Result(
+        req.id,
+        Verdict.PASS,
+        f"the task requiring authorization is reported in state {state!r}, which is the state "
+        f"SPEC 7.6.1 names.",
+        evidence,
+    )
+
+
+def check_auth_intask_003(target: Target) -> Result:
+    """SPEC 7.6.1: 'MUST include a TaskStatus message explaining the required authorization,
+    unless the details ... have been negotiated out-of-band or via an extension'."""
+    req = REQUIREMENTS["AUTH-INTASK-003"]
+    reply, task, name = _ask_for_authorization(target)
+    evidence = [f"{name} send_message -> {reply!r}", f"task = {short(task, 700)}"]
+    if not reply.ok or not task:
+        return _no_fixture(req, reply, name)
+    status = task.get("status") or {}
+    message = status.get("message") or {}
+    parts = message.get("parts") or []
+    text = " ".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+    evidence.append(f"status.message = {short(message, 500)}")
+    # THE `unless` CLAUSE DOES NOT APPLY HERE and that is why this is a FAIL rather than a skip:
+    # this suite negotiated nothing out of band and declared no extension, so the escape the
+    # sentence offers is not available to the subject on this connection.
+    if not message:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            "the task is in the authorization-required state and carries NO TaskStatus message. "
+            "The client is told a credential is wanted and not told which one. The `unless` clause "
+            "does not apply: this suite negotiated nothing out of band and declared no extension.",
+            evidence,
+        )
+    if not text:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            f"a TaskStatus message is present but carries no text explaining the required "
+            f"authorization: {short(message, 300)}",
+            evidence,
+        )
+    return Result(
+        req.id,
+        Verdict.PASS,
+        f"the authorization-required task carries a TaskStatus message explaining what is wanted "
+        f"({len(text)} characters, first 80: {text[:80]!r}). The check asserts only that a "
+        f"non-empty explanation survived end to end -- matching the fixture's exact wording would "
+        f"be testing the fixture.",
+        evidence,
+    )

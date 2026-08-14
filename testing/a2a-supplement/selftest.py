@@ -38,7 +38,7 @@ import copy
 import json
 import sys
 
-from a2asup import checks_bind, checks_card, checks_ver
+from a2asup import checks_auth, checks_bind, checks_card, checks_ver
 from a2asup.model import Verdict
 from a2asup.target import Interface, Target
 from a2asup.transport import Reply
@@ -388,9 +388,107 @@ class _PatchRefusing:
         return Reply(ok=True, payload={"task": {"id": "x"}}, http_status=200)
 
 
+def in_task_authorization_mutations() -> None:
+    """The three SPEC 7.6.1 checks, made to fail.
+
+    A control DOES decide these -- `run-supplement.sh control-scenario` drives the fixture
+    directly, with no gateway in the path -- but a control that passes only shows the checks accept
+    a correct subject. These mutations show they reject an incorrect one, which is the half a
+    passing control never establishes.
+    """
+    def target_answering(payload) -> Target:
+        t = Target(label="selftest", card_url="http://selftest.invalid/card", token="tok")
+        t.card = {}
+        t.interfaces = [Interface("http://a/", "jsonrpc", "1.0")]
+        t.bindings = lambda: {  # type: ignore[method-assign]
+            "jsonrpc": FakeBinding(
+                "jsonrpc", {"send_message": Reply(ok=True, payload=payload, http_status=200)}
+            )
+        }
+        return t
+
+    print("\nAUTH-INTASK-001 -- an authorization request answered with a bare Message")
+    expect(
+        "no Task where SPEC 7.6.1 requires one must FAIL",
+        checks_auth.check_auth_intask_001(
+            target_answering({"message": {"role": "ROLE_AGENT", "parts": [{"text": "auth?"}]}})
+        ),
+        {Verdict.FAIL},
+    )
+
+    print("\nAUTH-INTASK-002 -- the task is returned in the wrong state")
+    expect(
+        "a task reported COMPLETED rather than auth-required must FAIL",
+        checks_auth.check_auth_intask_002(
+            target_answering(
+                {"task": {"id": "t1", "status": {"state": "TASK_STATE_COMPLETED"}}}
+            )
+        ),
+        {Verdict.FAIL},
+    )
+    expect(
+        "POSITIVE CONTROL: the auth-required state must PASS",
+        checks_auth.check_auth_intask_002(
+            target_answering(
+                {"task": {"id": "t1", "status": {"state": "TASK_STATE_AUTH_REQUIRED"}}}
+            )
+        ),
+        {Verdict.PASS},
+    )
+
+    print("\nAUTH-INTASK-003 -- auth-required with no explanation")
+    expect(
+        "no TaskStatus message at all must FAIL",
+        checks_auth.check_auth_intask_003(
+            target_answering(
+                {"task": {"id": "t1", "status": {"state": "TASK_STATE_AUTH_REQUIRED"}}}
+            )
+        ),
+        {Verdict.FAIL},
+    )
+    expect(
+        "a TaskStatus message with empty text must FAIL",
+        checks_auth.check_auth_intask_003(
+            target_answering(
+                {
+                    "task": {
+                        "id": "t1",
+                        "status": {
+                            "state": "TASK_STATE_AUTH_REQUIRED",
+                            "message": {"role": "ROLE_AGENT", "parts": [{"text": "  "}]},
+                        },
+                    }
+                }
+            )
+        ),
+        {Verdict.FAIL},
+    )
+    expect(
+        "POSITIVE CONTROL: an explanation must PASS",
+        checks_auth.check_auth_intask_003(
+            target_answering(
+                {
+                    "task": {
+                        "id": "t1",
+                        "status": {
+                            "state": "TASK_STATE_AUTH_REQUIRED",
+                            "message": {
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "an OAuth token for the downstream API"}],
+                            },
+                        },
+                    }
+                }
+            )
+        ),
+        {Verdict.PASS},
+    )
+
+
 def main() -> int:
     print("a2a-supplement SELFTEST -- every check is made to fail on purpose")
     print("A check that does not bite here is a check that reports green over nothing.")
+    in_task_authorization_mutations()
     card_signing_mutations()
     binding_equivalence_mutations()
     versioning_mutations()
