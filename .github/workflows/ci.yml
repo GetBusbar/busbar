@@ -333,7 +333,44 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-        run: cargo test --workspace --locked --verbose
+          # Same two-number floor as the windows job. This is the PRIMARY unix suite; with the
+          # service containers wired it runs a SUPERSET of the windows workspace (it adds the
+          # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run), so it must
+          # never fall BELOW the windows high-water of 4755. MIN carries slack; EXPECTED warns.
+          UNIX_MIN_TESTS: "4700"
+          UNIX_EXPECTED_TESTS: "4783"
+        run: |
+          set -uo pipefail
+          # PIPESTATUS[0] is cargo's own exit; `tee` must not launder a red test run into green.
+          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/unix-test.log"
+          rc=${PIPESTATUS[0]}
+
+          # SUM across every test binary — `test result: ok. N passed` prints once per binary, so a
+          # single-line grep would floor one binary and miss a whole suite (a cfg gate, a dropped
+          # target) compiling to nothing while still printing `ok` and exiting 0.
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/unix-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "unix: ${total} tests passed across the workspace (floor: ${UNIX_MIN_TESTS}, expected: ${UNIX_EXPECTED_TESTS})"
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED on unix (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::warning::unix ran ${total} tests, ${UNIX_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER UNIX_EXPECTED_TESTS in this job."
+            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
+          elif [ "$total" -gt "$UNIX_EXPECTED_TESTS" ]; then
+            echo "::notice::unix ran ${total} tests, above the recorded ${UNIX_EXPECTED_TESTS}. Raise UNIX_EXPECTED_TESTS."
+          fi
+          if [ "$total" -lt "$UNIX_MIN_TESTS" ]; then
+            echo "::error::the unix test suite ran ${total} tests, below its floor of ${UNIX_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass. Either a suite stopped being built/collected, or a cfg gate erased one."
+            echo "::error::If the drop is intended, LOWER the UNIX_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
 
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
@@ -554,7 +591,28 @@ jobs:
       - name: Build (no-default-features)
         run: cargo build --no-default-features --locked --verbose
       - name: Test (no-default-features)
-        run: cargo test --no-default-features --locked --verbose
+        # A reduced-feature build must still RUN tests — a feature gate that erases the whole
+        # no-default-features suite would otherwise print `ok` and exit 0 (vacuous green). The
+        # count here is deliberately a floor of >0 rather than a measured high-water: this build
+        # excludes optional features, so its total legitimately differs from the full workspace and
+        # a tight number would false-red on feature churn. PIPESTATUS[0] is cargo's own exit.
+        run: |
+          set -uo pipefail
+          cargo test --no-default-features --locked --verbose 2>&1 | tee "$RUNNER_TEMP/ndf-test.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/ndf-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "no-default-features: ${total} tests passed"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --no-default-features FAILED (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt 1 ]; then
+            echo "::error::the no-default-features suite ran ZERO tests — a feature gate erased it."
+            echo "::error::A zero-test 'cargo test' prints 'ok' and exits 0. This is NOT a pass."
+            exit 1
+          fi
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops
@@ -657,6 +715,27 @@ jobs:
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    env:
+      # TWO numbers, in ONE place, so a change to either is unmissable in a diff.
+      #
+      # WINDOWS_MIN_TESTS is the HARD floor: below it the job fails. WINDOWS_EXPECTED_TESTS is the
+      # observed high-water mark: below it the job WARNS but still passes.
+      #
+      # Why two rather than one. A single floor pinned at the observed total makes a required check
+      # on `main` fail every time anyone legitimately consolidates or renames a test, which trains
+      # people to edit the number without reading it — and a floor nobody reads is a floor that gets
+      # lowered past a real regression. A single floor with slack, on the other hand, cannot see a
+      # whole suite disappear. So: the hard floor has slack, and the high-water mark carries the
+      # sensitivity, as a warning that costs nothing to be wrong about.
+      #
+      # BOTH ARE MEASURED, NOT GUESSED. windows-latest observed `4755 tests passed across the
+      # workspace`. Independently: `cargo test --workspace -- --list` lists 4793 on unix, of which
+      # 10 are `#[ignore]`d and 24 are erased by cfg(unix) gates -> 4759 predicted, 4755 observed.
+      # The two agree to within 4 tests.
+      #
+      # RAISE THESE AS THE SUITE GROWS. Lowering either is only correct when a diff explains why.
+      WINDOWS_MIN_TESTS: "4700"
+      WINDOWS_EXPECTED_TESTS: "4755"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -675,7 +754,44 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --verbose -- -D warnings
       - name: Test
-        run: cargo test --workspace --verbose
+        # `shell: bash` is REQUIRED and not a style choice: `run:` on a windows runner defaults to
+        # pwsh, where none of the pipeline below parses.
+        shell: bash
+        run: |
+          set -uo pipefail
+          # `tee` keeps the full log in the job output (the point of --verbose) while the same bytes
+          # are captured for the count. PIPESTATUS[0], not $?, is cargo's own exit status.
+          cargo test --workspace --verbose 2>&1 | tee "$RUNNER_TEMP/windows-test.log"
+          rc=${PIPESTATUS[0]}
+
+          # SUM across every test binary, not a single grep line: `test result: ok. N passed`
+          # is printed once PER binary, so a single-line match would floor against one binary and
+          # miss a whole suite vanishing. Sum every binary's `passed` count.
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/windows-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "windows: ${total} tests passed across the workspace (floor: ${WINDOWS_MIN_TESTS}, expected: ${WINDOWS_EXPECTED_TESTS})"
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED on windows (exit ${rc})."
+            exit "$rc"
+          fi
+          # The sensitive half: a drop of even one test is surfaced, without failing a required
+          # check over legitimate churn. A drop nobody can explain is the shape this job exists for.
+          if [ "$total" -lt "$WINDOWS_EXPECTED_TESTS" ]; then
+            echo "::warning::windows ran ${total} tests, ${WINDOWS_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER WINDOWS_EXPECTED_TESTS in this job."
+            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
+          elif [ "$total" -gt "$WINDOWS_EXPECTED_TESTS" ]; then
+            echo "::notice::windows ran ${total} tests, above the recorded ${WINDOWS_EXPECTED_TESTS}. Raise WINDOWS_EXPECTED_TESTS."
+          fi
+          if [ "$total" -lt "$WINDOWS_MIN_TESTS" ]; then
+            echo "::error::the windows portability gate ran ${total} tests, below its floor of ${WINDOWS_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass. Either a suite stopped being built/collected, or a cfg gate erased one."
+            echo "::error::If the drop is intended, LOWER the WINDOWS_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
       # THE BLIND SPOT, PRINTED INTO THIS RUN'S OWN SUMMARY. Deliberately NOT a gate — it asserts
       # nothing and cannot fail the job — because what it reports is a known, accepted, written-down
       # gap and turning it red would only teach people to route around it.
@@ -709,3 +825,92 @@ jobs:
             echo "its fixture children are \`/bin/sh\` scripts. Closing it needs cmd.exe fixtures,"
             echo "which is real work and not a CI edit. See docs/operations.md, 'Running on Windows'."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
+  #
+  # Branch protection should require ONE context per stage, not a growing list that silently drifts
+  # when a job is renamed (the `windows build · test` trap: `main` required a context name that
+  # `dev` had already renamed, so any PR hung forever on a check that could no longer be reported).
+  # With this umbrella, protection never changes as CI evolves, and a renamed or deleted job can
+  # never silently drop out of the gate — it turns this job red instead.
+  #
+  # `if: always()` so it reports even when a need FAILED, was CANCELLED, or was SKIPPED. It then
+  # asserts each need's result itself. The rules, and why:
+  #   * failure / cancelled  → RED, always.
+  #   * skipped              → RED, UNLESS the job is a full-tier-only job AND this is a fast-tier
+  #                            run (a feature-branch push). On qa/main/dev/PR/dispatch every job
+  #                            runs, so on those refs NOTHING may skip — a skipped required job must
+  #                            never read as a pass. This is the whole point of the gate.
+  # Because the umbrella is a required context ONLY on `qa` and `main` (both FULL_TIER), the
+  # allowlist below never fires there: it exists solely so a feature-branch push still gets an
+  # honest-green umbrella without pretending the full tier ran.
+  #
+  # It reports ALL offenders (the loop never short-circuits), reads each need's own `result`
+  # (never a pipe's exit), and fails once at the end with a count.
+  ci-umbrella:
+    name: ci umbrella
+    if: always()
+    needs:
+      - gate-tier
+      - structure-lint
+      - check
+      - openapi-schema
+      - migration-corpus
+      - config-stability
+      - public-hygiene
+      - executable-config-lint
+      - no-default-features
+      - no-plugins-gate
+      - txn-guards
+      - timing
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # 'true' on any run where the full tier is expected to execute: every event except a push,
+      # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
+      # so "expected to run" and "required to have run" cannot drift apart.
+      FULL_TIER: ${{ (github.event_name != 'push') || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref) }}
+      # jobkey|tier|result — tier is 'fast' (always runs) or 'full' (skips on a fast-tier push).
+      RESULTS: |
+        gate-tier|fast|${{ needs.gate-tier.result }}
+        structure-lint|fast|${{ needs.structure-lint.result }}
+        check|fast|${{ needs.check.result }}
+        config-stability|fast|${{ needs.config-stability.result }}
+        public-hygiene|fast|${{ needs.public-hygiene.result }}
+        openapi-schema|full|${{ needs.openapi-schema.result }}
+        migration-corpus|full|${{ needs.migration-corpus.result }}
+        executable-config-lint|full|${{ needs.executable-config-lint.result }}
+        no-default-features|full|${{ needs.no-default-features.result }}
+        no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
+        txn-guards|full|${{ needs.txn-guards.result }}
+        timing|full|${{ needs.timing.result }}
+        windows|full|${{ needs.windows.result }}
+    steps:
+      - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
+        run: |
+          set -u
+          fails=0
+          if [ "$FULL_TIER" = "true" ]; then
+            echo "ci umbrella — FULL tier: every job must have run and passed."
+          else
+            echo "ci umbrella — fast tier: full-tier-only jobs may be skipped; fast-tier jobs must pass."
+          fi
+          while IFS='|' read -r job tier result; do
+            [ -n "$job" ] || continue
+            if [ "$result" = "success" ]; then
+              status="OK"
+            elif [ "$result" = "skipped" ] && [ "$tier" = "full" ] && [ "$FULL_TIER" != "true" ]; then
+              status="skipped (full-tier job on a fast-tier run — allowed)"
+            else
+              status="RED (${result})"
+              fails=$((fails + 1))
+            fi
+            printf '  %-24s %s\n' "$job" "$status"
+          done <<< "$RESULTS"
+          if [ "$fails" -ne 0 ]; then
+            echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
+            echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."
+            exit 1
+          fi
+          echo "ci umbrella: GREEN"

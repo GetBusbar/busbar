@@ -5,6 +5,23 @@
 #   scripts/promote.sh qa main     # promote qa to main (this is what cuts the release)
 #   scripts/promote.sh --selftest  # prove this script's RED and GREEN paths before trusting it
 #
+# WHAT IT REFUSES ON (each refusal is loud, names what it checked, and touches NOTHING):
+#   (a) the required UMBRELLA check-runs are not green on the exact SHA being promoted. Required by
+#       destination: qa needs `ci umbrella`; main needs `ci umbrella` AND `qa-gate umbrella` (which
+#       only a qa-promoted SHA can carry). A MISSING umbrella is unverified, and unverified is red.
+#       Queried via `gh api repos/{owner}/{repo}/commits/<sha>/check-runs`, not a branch name.
+#   (b) the fast-forward is not possible (history rewrite or genuine divergence).
+#   (c) qa->main only: the squash rule has not been applied — more than
+#       PROMOTE_MAX_NONMERGE_COMMITS (default 20) NON-MERGE commits since the last tag boundary.
+#
+# TAGGING POLICY. This script NEVER pushes a git tag, and there is no longer a tag-on-main.yml
+# (deleted): nothing is tagged automatically on push. A version tag is minted in exactly ONE place
+# — release.yml's `promote-release` job — and only at the END of the staged release graph
+# (draft -> build -> per-target contract -> set-equality -> staged consumer verify -> promote
+# image by digest -> flip draft), after a final re-check that the SHA is still green. So a tag can
+# appear only AFTER main is green and only as the OUTPUT of a verified release, never before it.
+# Making this script tag would re-introduce publish-before-verify; it deliberately does not.
+#
 # WHY THIS IS A SCRIPT AND NOT THREE COMMANDS TYPED AT RELEASE TIME.
 #
 # During the 1.5.3 promotion, `git push origin qa:main` was REJECTED as non-fast-forward while
@@ -38,46 +55,124 @@ PUSH_ATTEMPTS="${PROMOTE_PUSH_ATTEMPTS:-5}"
 VERIFY_ATTEMPTS="${PROMOTE_VERIFY_ATTEMPTS:-5}"
 BACKOFF="${PROMOTE_BACKOFF:-3}"
 CHECK_CI=1
+DRY_RUN=0
 
 die() { echo "promote: $*" >&2; exit 1; }
 note() { echo "promote: $*"; }
 
-# --- CI verdict for an exact SHA -------------------------------------------------------------
+# --- umbrella check-run verdict for an exact SHA ---------------------------------------------
 # Branch names are not commits. Asking "is CI green on qa" answers a question about a name; asking
-# "is CI green on 8f80889" answers the question a release actually depends on.
-ci_is_green_for_sha() {
-  local sha="$1" json fails
-  command -v gh >/dev/null 2>&1 || { echo "promote: gh not installed" >&2; return 2; }
-  json="$(gh run list --commit "$sha" --json workflowName,status,conclusion --limit 100 2>/dev/null)" || return 2
-  python3 - "$sha" <<'PY' <<<"$json"
-import json, sys
-runs = json.load(sys.stdin)
-sha = sys.argv[1]
-if not runs:
-    print("promote: NO workflow runs at all for %s." % sha, file=sys.stderr)
-    print("promote: an unverified commit must not be promoted. If CI genuinely did not run for this",
-          file=sys.stderr)
-    print("promote: commit, push it to a branch and let CI run, or re-run CI on it explicitly.",
-          file=sys.stderr)
+# "is the `ci umbrella` check green on 8f80889" answers the question a release actually depends on.
+#
+# We gate on the UMBRELLA check-runs, not on "every workflow run is green". The umbrella jobs
+# (ci.yml's `ci umbrella`, qa-gate.yml's `qa-gate umbrella`) already assert internally that every
+# tier they cover ran and passed — a skipped or vacuous tier turns the umbrella red. So requiring
+# the umbrella by NAME on the exact SHA is the same contract branch protection enforces, verified
+# from the operator's side before the push. A missing umbrella (the workflow never ran on this
+# commit) is UNVERIFIED, and unverified is red — never promoted.
+#
+# `check_runs_verdict` is a PURE function: it reads the check-runs as NDJSON on stdin and the
+# required context names as arguments, and renders the verdict. It carries no network, so the
+# selftest drives it with canned data to prove RED and GREEN before any real promotion trusts it.
+check_runs_verdict() {
+  # Capture the NDJSON from stdin to a temp file FIRST: the python program is delivered on stdin
+  # via the heredoc below, so the data cannot also come from stdin. It is read from argv instead.
+  local tmp status
+  tmp="$(mktemp)"
+  cat > "$tmp"
+  REQUIRED_NL="$(printf '%s\n' "$@")" python3 - "$tmp" <<'PY'
+import json, os, sys
+required = [c for c in os.environ.get("REQUIRED_NL", "").splitlines() if c]
+runs = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if line:
+            runs.append(json.loads(line))
+fails = 0
+for ctx in required:
+    matching = [r for r in runs if r.get("name") == ctx]
+    if not matching:
+        print("promote:   %-20s MISSING (this umbrella never ran on the SHA — UNVERIFIED)" % ctx,
+              file=sys.stderr)
+        fails += 1
+        continue
+    pending = [r for r in matching if r.get("status") != "completed"]
+    if pending:
+        print("promote:   %-20s STILL RUNNING (%s) — wait, do not promote on a guess"
+              % (ctx, pending[0].get("status")), file=sys.stderr)
+        fails += 1
+        continue
+    # A re-run mints a new check-run with the same name; branch protection honours the newest.
+    latest = max(matching, key=lambda r: ((r.get("started_at") or ""), (r.get("id") or 0)))
+    concl = latest.get("conclusion")
+    if concl == "success":
+        print("promote:   %-20s success" % ctx)
+    else:
+        print("promote:   %-20s RED (%s)" % (ctx, concl), file=sys.stderr)
+        fails += 1
+if fails:
+    print("promote: %d required umbrella check(s) are not green on this SHA." % fails, file=sys.stderr)
     sys.exit(1)
-bad = [r for r in runs if r["status"] != "completed"
-       or r["conclusion"] not in ("success", "skipped", "neutral")]
-running = [r for r in bad if r["status"] != "completed"]
-failed = [r for r in bad if r["status"] == "completed"]
-for r in sorted(runs, key=lambda r: r["workflowName"]):
-    print("promote:   %-24s %s/%s" % (r["workflowName"], r["status"], r["conclusion"]))
-if running:
-    print("promote: STILL RUNNING on %s: %s" % (sha, ", ".join(r["workflowName"] for r in running)),
-          file=sys.stderr)
-    print("promote: wait for it. Promoting on a run that has not finished is promoting on a guess.",
-          file=sys.stderr)
-    sys.exit(1)
-if failed:
-    print("promote: FAILED on %s: %s" % (sha, ", ".join(r["workflowName"] for r in failed)),
-          file=sys.stderr)
-    sys.exit(1)
-print("promote: every workflow run for %s is green (%d run(s))." % (sha, len(runs)))
+print("promote: every required umbrella check is green on this SHA.")
 PY
+  status=$?
+  rm -f "$tmp"
+  return "$status"
+}
+
+# The required umbrella contexts for a promotion, keyed by DESTINATION. These are exactly the
+# branch-protection contexts in the audit: qa requires `ci umbrella`; main requires it plus
+# `qa-gate umbrella` (which only a qa-promoted SHA can carry). Keeping this here means the script
+# and the protection config agree by construction.
+required_umbrellas_for_dest() {
+  case "$1" in
+    qa)   printf '%s\n' "ci umbrella" ;;
+    main) printf '%s\n' "ci umbrella" "qa-gate umbrella" ;;
+    *)    printf '%s\n' "ci umbrella" ;;
+  esac
+}
+
+umbrella_is_green_for_sha() {
+  local sha="$1"; shift
+  local ndjson
+  command -v gh >/dev/null 2>&1 || { echo "promote: gh not installed" >&2; return 2; }
+  # --paginate + --jq emits one check-run object per line (NDJSON) across every page, so a commit
+  # with >100 check-runs is handled without hand-rolling pagination.
+  ndjson="$(gh api --paginate "repos/{owner}/{repo}/commits/${sha}/check-runs" \
+            --jq '.check_runs[]' 2>/dev/null)" || {
+    echo "promote: could not read check-runs for ${sha} from the API. Unknown is not green." >&2
+    return 2
+  }
+  printf '%s\n' "$ndjson" | check_runs_verdict "$@"
+}
+
+# --- squash rule (qa -> main only) -----------------------------------------------------------
+# The qa->main hop cuts a release, and a release commit on main must be a SQUASHED release
+# changeset (CONTRIBUTING.md: "squash noisy WIP commits before opening the PR"), not the raw WIP
+# history of a whole development cycle fast-forwarded wholesale. We detect a violation the only way
+# that survives the merge-commit flow: count NON-MERGE commits since the last tag boundary. Merge
+# commits are excluded on purpose — the feature-into-dev merges are expected; it is the unsquashed
+# WIP leaf commits that the rule is about. Above the threshold, refuse with remediation.
+check_squash_rule() {
+  local src_sha="$1" max="${PROMOTE_MAX_NONMERGE_COMMITS:-20}" base n
+  if base="$(git describe --tags --abbrev=0 "$src_sha" 2>/dev/null)"; then
+    n="$(git rev-list --no-merges --count "${base}..${src_sha}")"
+    note "squash rule: last tag boundary is ${base}; ${n} non-merge commit(s) since (threshold ${max})."
+  else
+    base=""
+    n="$(git rev-list --no-merges --count "$src_sha")"
+    note "squash rule: no tag boundary before ${src_sha}; ${n} non-merge commit(s) total (threshold ${max})."
+  fi
+  if [ "$n" -gt "$max" ]; then
+    echo "promote: REFUSING qa->main. ${n} non-merge commits since ${base:-<root>} exceed the squash" >&2
+    echo "promote: threshold of ${max}. A qa->main promotion must carry a SQUASHED release changeset," >&2
+    echo "promote: not a whole cycle of unsquashed WIP. Squash the release changeset on dev, re-promote" >&2
+    echo "promote: dev->qa, then re-run. If this count is genuinely legitimate, override deliberately" >&2
+    echo "promote: with PROMOTE_MAX_NONMERGE_COMMITS=<n>." >&2
+    return 1
+  fi
+  note "squash rule OK."
 }
 
 # --- ancestry --------------------------------------------------------------------------------
@@ -101,6 +196,11 @@ promote() {
 
   note "fetching ${REMOTE}"
   git fetch "$REMOTE" --prune --quiet
+  # Best-effort tag refresh so the squash-rule boundary is current. A rejected/clobbering tag must
+  # NOT abort a promotion — the operator's local tags may legitimately differ from origin's, and the
+  # squash check falls back to whatever tags are already local.
+  git fetch "$REMOTE" --tags --quiet 2>/dev/null \
+    || note "note: tag refresh skipped (local tags differ from ${REMOTE}); squash rule uses local tags."
 
   src_sha="$(remote_sha "$src")"
   [ -n "$src_sha" ] || die "${REMOTE}/${src} does not exist"
@@ -121,11 +221,27 @@ promote() {
   git --no-pager log --oneline "${dst_sha}..${src_sha}" | sed 's/^/promote:   /'
 
   if [ "$CHECK_CI" = 1 ]; then
-    note "checking CI on the exact SHA being promoted (${src_sha})"
-    ci_is_green_for_sha "$src_sha" || die "CI is not green on ${src_sha}; refusing to promote."
+    # The squash rule is a qa->main concern only, and it is checked BEFORE the umbrella query so a
+    # violation is reported even when the umbrellas are green.
+    if [ "$dst" = "main" ]; then
+      check_squash_rule "$src_sha" || die "squash rule violated for qa->main; refusing to promote."
+    fi
+    local required=()
+    while IFS= read -r ctx; do [ -n "$ctx" ] && required+=("$ctx"); done < <(required_umbrellas_for_dest "$dst")
+    note "verifying umbrella checks on the exact SHA being promoted (${src_sha}):"
+    note "  required for ${dst}: ${required[*]}"
+    umbrella_is_green_for_sha "$src_sha" "${required[@]}" \
+      || die "required umbrella checks are not green on ${src_sha}; refusing to promote."
   else
     echo "promote: WARNING: --no-ci-check given. Promoting ${src_sha} to ${dst} WITHOUT" >&2
-    echo "promote: verifying any workflow result. Use this only when you already know why." >&2
+    echo "promote: verifying any umbrella check or the squash rule. Use this only when you" >&2
+    echo "promote: already know why." >&2
+  fi
+
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    note "DRY RUN: every check passed and the fast-forward is legal; would push ${src_sha} -> ${REMOTE}/${dst}."
+    note "DRY RUN: nothing was pushed."
+    return 0
   fi
 
   for (( i = 1; i <= PUSH_ATTEMPTS; i++ )); do
@@ -274,10 +390,55 @@ EOF
   check "silent no-op push is caught" expect-fail env PROMOTE_VERIFY_ATTEMPTS=2 bash -c \
     "cd '$root/work' && PROMOTE_BACKOFF=0 '$SELF' --no-ci-check dev qa"
 
+  # --- umbrella check-run verdict (the pure gate that decides green-on-SHA), driven offline -----
+  # A gate nobody has watched REFUSE is a gate nobody should trust. These feed canned check-runs
+  # NDJSON to the SAME code path the real promotion uses, and prove every verdict.
+  echo "-- umbrella verdict: all required umbrellas green is GREEN --"
+  # shellcheck disable=SC2329  # invoked indirectly through check "$@", below
+  verdict() { printf '%s\n' "$1" | env -u REQUIRED_NL "$SELF" --check-runs-verdict "${@:2}"; }
+  ci_ok='{"name":"ci umbrella","status":"completed","conclusion":"success","id":2}'
+  qg_ok='{"name":"qa-gate umbrella","status":"completed","conclusion":"success","id":3}'
+  ci_bad='{"name":"ci umbrella","status":"completed","conclusion":"failure","id":4}'
+  ci_run='{"name":"ci umbrella","status":"in_progress","conclusion":null,"id":5}'
+  ci_old='{"name":"ci umbrella","status":"completed","conclusion":"failure","id":1}'
+  check "all required umbrellas green passes" expect-pass \
+    verdict "$ci_ok
+$qg_ok" "ci umbrella" "qa-gate umbrella"
+  echo "-- umbrella verdict: a MISSING required umbrella is RED (unverified) --"
+  check "missing umbrella refused" expect-fail \
+    verdict "$ci_ok" "ci umbrella" "qa-gate umbrella"
+  echo "-- umbrella verdict: a FAILED umbrella is RED --"
+  check "failed umbrella refused" expect-fail \
+    verdict "$ci_bad" "ci umbrella"
+  echo "-- umbrella verdict: a STILL-RUNNING umbrella is RED (do not promote on a guess) --"
+  check "running umbrella refused" expect-fail \
+    verdict "$ci_run" "ci umbrella"
+  echo "-- umbrella verdict: the NEWEST re-run wins (green id>failed id) --"
+  check "newest green re-run passes" expect-pass \
+    verdict "$ci_old
+$ci_ok" "ci umbrella"
+
+  # --- squash rule (qa->main), driven against a real throwaway repo -----------------------------
+  echo "-- squash rule: at/under the threshold PASSES, over it is REFUSED --"
+  sq_root="$(mktemp -d)"
+  (
+    cd "$sq_root"
+    git init --quiet; git config user.email s@e.x; git config user.name s
+    echo a > f; git add f; git commit --quiet -m base
+    git tag v0.0.0
+    for i in 1 2 3; do echo "$i" > f; git commit --quiet -am "wip $i"; done
+  )
+  check "3 non-merge commits under threshold 5 passes" expect-pass bash -c \
+    "cd '$sq_root' && PROMOTE_MAX_NONMERGE_COMMITS=5 '$SELF' --squash-check \$(git rev-parse HEAD)"
+  check "3 non-merge commits over threshold 2 refused" expect-fail bash -c \
+    "cd '$sq_root' && PROMOTE_MAX_NONMERGE_COMMITS=2 '$SELF' --squash-check \$(git rev-parse HEAD)"
+  rm -rf "$sq_root"
+
   echo
   if [ "$rc" -eq 0 ]; then
     echo "SELFTEST PASSED: promotes, no-ops, refuses divergence, absorbs a transient rejection,"
-    echo "gives up on a permanent one, and catches a push that did not actually land."
+    echo "gives up on a permanent one, catches a push that did not land, holds the umbrella verdict"
+    echo "to green-on-SHA, and enforces the qa->main squash rule."
   else
     echo "SELFTEST FAILED"
   fi
@@ -289,6 +450,13 @@ main() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --selftest) selftest; exit $? ;;
+      # Internal: render the umbrella verdict from NDJSON check-runs on stdin + contexts as args.
+      # Exposed only so the selftest can drive the pure verdict logic offline. Not for operators.
+      --check-runs-verdict) shift; check_runs_verdict "$@"; exit $? ;;
+      # Internal: run the squash rule against a SHA. Exposed only for the selftest.
+      --squash-check) shift; check_squash_rule "$1"; exit $? ;;
+      # Run every check and prove the fast-forward is legal, but stop BEFORE pushing anything.
+      --dry-run) DRY_RUN=1; shift ;;
       --no-ci-check) CHECK_CI=0; shift ;;
       -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
       -*) die "unknown option $1" ;;

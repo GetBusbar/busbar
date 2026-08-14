@@ -463,7 +463,36 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-        run: cargo test --workspace --locked --verbose
+          # This is the release gate on the exact SHA being cut. Same sum-across-binaries floor as
+          # ci.yml's `check` and `windows` jobs: a suite that compiled to nothing must not let a
+          # release pass having tested nothing. MIN carries slack (unix runs a superset of the
+          # windows 4755 high-water); EXPECTED warns. PIPESTATUS[0] is cargo's own exit.
+          RELEASE_MIN_TESTS: "4700"
+          RELEASE_EXPECTED_TESTS: "4783"
+        run: |
+          set -uo pipefail
+          cargo test --workspace --locked --verbose 2>&1 | tee "$RUNNER_TEMP/release-test.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/release-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "release gate: ${total} tests passed across the workspace (floor: ${RELEASE_MIN_TESTS}, expected: ${RELEASE_EXPECTED_TESTS})"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::cargo test --workspace FAILED in the release gate (exit ${rc})."
+            exit "$rc"
+          fi
+          if [ "$total" -lt "$RELEASE_EXPECTED_TESTS" ]; then
+            echo "::warning::release gate ran ${total} tests, ${RELEASE_EXPECTED_TESTS} were expected."
+            echo "::warning::If tests were legitimately removed or merged, LOWER RELEASE_EXPECTED_TESTS in this job."
+            echo "::warning::If not, something stopped being collected — a cfg gate, a renamed harness, a dropped target."
+          fi
+          if [ "$total" -lt "$RELEASE_MIN_TESTS" ]; then
+            echo "::error::the release gate ran ${total} tests, below its floor of ${RELEASE_MIN_TESTS}."
+            echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
+            echo "::error::This is NOT a pass — a release must not be cut having tested nothing."
+            echo "::error::If the drop is intended, LOWER the RELEASE_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
 
   # -- THE DRAFT ------------------------------------------------------------------------------------
   #
@@ -1070,7 +1099,15 @@ jobs:
   # skip on upstream failure, and therefore skip the promote too -- is exactly the behaviour wanted.
   verify-staged:
     name: consumer verification (STAGED, this is the gate)
-    needs: [plan, verify-assets, stage-image]
+    # verify-set-equality (which itself needs verify-artifact) is a load-bearing dependency, not
+    # decoration: the audit's designed order is build → per-target contract → set-equality →
+    # verify-staged → promote. Without it in this `needs:`, the per-name/per-digest artifact
+    # contract and the built==verified set check would NOT gate the promote chain
+    # (promote-release ← promote-image ← verify-staged), so a failing contract or an incomplete
+    # asset set could still flip the draft public and push the tag — the publish-before-verify
+    # seam this release model exists to close. A failed need SKIPS this gate, which skips promote,
+    # which leaves nothing public.
+    needs: [plan, verify-assets, verify-set-equality, stage-image]
     uses: ./.github/workflows/verify-deploy.yml
     with:
       version: ${{ needs.plan.outputs.version }}
