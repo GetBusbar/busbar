@@ -236,12 +236,46 @@ h2.on('stream', (stream, headers) => {
 const h1Port = h1.listen(0, '127.0.0.1');
 const h2Port = h2.listen(0, '127.0.0.1');
 
+//
+// THE SOCKET IS PAUSED THE INSTANT THE FIRST CHUNK IS IN HAND, AND THAT IS THE WHOLE CORRECTNESS OF
+// THE SPLICE RATHER THAN A TIDINESS. Adding the `data` listener puts the socket in FLOWING mode, and
+// `once` removes the listener but does NOT stop the flow — Node's `resume()` is sticky. `net.connect`
+// is asynchronous, so between the first chunk and the `pipe()` in its callback there is a window in
+// which the socket is still flowing with NOTHING LISTENING, and every byte the client sends in that
+// window is emitted to no one and DISCARDED.
+//
+// THAT WINDOW IS NOT THEORETICAL AND IT IS EXACTLY THE REQUEST BODY. `httpx`/`h11` — the official
+// suite's client stack — writes the request head and the request body as two separate `send()`
+// calls. When the kernel coalesces them into one segment the request survives; when it does not, the
+// SECOND segment is the JSON-RPC body, and it lands in the window. Measured with the dispatcher
+// instrumented, driving `message/stream` ten times through it:
+//
+//     chunks: [('pre', 474, 'POST /a2a/agents/conformance')]                    -> dropped 0
+//     chunks: [('pre', 233, 'POST /a2a/agents/conformance'),
+//              ('WINDOW', 241, '{"jsonrpc":"2.0","id":"3fc66')]                 -> DROPPED 241 bytes
+//
+// WHAT THE LOSS LOOKS LIKE FROM EITHER END, and why it reads as a busbar defect. The h1 half's
+// `req.pipe(upstream)` never sees a body, so `req` never ends, so `upstream` is never written to and
+// never `end()`ed — and a Node `ClientRequest` flushes its head on its FIRST write. busbar therefore
+// accepts a TCP connection and receives ZERO BYTES on it, for ever. Recorded at a byte-level origin
+// standing in for busbar: `body_bytes_arrived: 0` on every lost request. The client waits on a
+// response to a request the origin was never told about, and the suite records
+// `httpcore.ReadTimeout`.
+//
+// MEASURED, BEFORE AND AFTER, with the suite's own client stack against the booted subject:
+//   direct at busbar, no shim   60/60 streams completed        (and 210/210 over a split-write sweep)
+//   through the shim, before    31/60 completed, 29 ReadTimeout, ZERO bytes received on each
+//   through the shim, after     60/60 completed
+// The disproof that it was ever busbar's: busbar answered every one of those 270 direct calls.
 const dispatcher = net.createServer((socket) => {
   socket.on('error', () => {});
   socket.once('data', (chunk) => {
+    socket.pause();
     const port = (chunk.toString('ascii', 0, 3) === 'PRI' ? h2Port : h1Port).address().port;
     const inner = net.connect(port, '127.0.0.1', () => {
       inner.write(chunk);
+      // `pipe()` resumes the socket, so nothing buffered while it was paused is lost — it is
+      // delivered here, in order, behind the chunk that was read off it first.
       socket.pipe(inner);
       inner.pipe(socket);
     });
