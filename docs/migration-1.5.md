@@ -528,13 +528,18 @@ Two new postures:
 - **`config.locked: true`** — an immutable/GitOps deployment. Admin-API config mutations are refused at
   runtime (edit config.yaml + `POST /config/reload` to change config). Set this if you never want runtime
   mutation.
-- **Boot invariant** — a *mutable* config with no writable overlay **refuses to boot**.
+- **Boot invariant** — no snapshot ever carries an overlay backend it cannot durably write. A
+  *mutable* config whose `overlay:` is explicitly disabled **refuses to boot**; one whose backend
+  path is merely not writable (a read-only mount) **boots with no overlay** and refuses config
+  mutations instead.
 
 ### Upgrade action for read-only-config deployments
 
 If your `config.yaml` lives on a **read-only mount** (e.g. `/etc/busbar` mounted read-only, or a read-only
-container layer), the default overlay path is not writable, so an unconfigured mutable busbar will now
-**refuse to boot** with a message naming the fix. Choose one:
+container layer), the default overlay path is not writable. Busbar **still starts and serves traffic**;
+it logs a warning and refuses admin-API config mutations, because a change it cannot persist would
+silently revert on the next restart. No action is required if that is the posture you want. To change
+it, choose one:
 
 1. **Point the overlay at a writable path** (a persistent volume) so runtime mutations are durable:
    ```yaml
@@ -549,7 +554,8 @@ container layer), the default overlay path is not writable, so an unconfigured m
      locked: true
    ```
 
-Either resolves the boot refusal. Busbar never silently falls back to the old lose-on-restart behavior.
+Either gives you a durable overlay or an explicit immutable posture. Busbar never silently falls back
+to the old lose-on-restart behavior.
 
 ## 1.5.3 behavior change: `busbar --validate` resolves secret references
 
