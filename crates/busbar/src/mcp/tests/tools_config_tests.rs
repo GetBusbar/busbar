@@ -172,13 +172,16 @@ fn both_transports_are_accepted_at_parse() {
         "s:\n  url: \"https://x/\"\n  pin: { mechanism: unpinned }\n  transport: streamable_http\n",
     )
     .expect("the network transport is accepted");
-    let cfg = parse(
-        "s:\n  pin: { mechanism: unpinned }\n  transport: stdio\n  command: /usr/local/bin/mcp-fs\n\
+    // `ABS_PROGRAM`, not a hardcoded unix path: `command:` is validated with `Path::is_absolute`,
+    // and `/usr/local/bin/mcp-fs` is DRIVE-RELATIVE on Windows — this test failed on the windows
+    // CI runner with the absolute-path refusal while asserting acceptance. See ABS_PROGRAM's doc.
+    let cfg = parse(&format!(
+        "s:\n  pin: {{ mechanism: unpinned }}\n  transport: stdio\n  command: {ABS_PROGRAM}\n\
          \x20 args: [\"--root\", \"/srv\"]\n",
-    )
+    ))
     .expect("a stdio registration with a command is accepted");
     let s = &cfg.servers["s"];
-    assert_eq!(s.command.as_deref(), Some("/usr/local/bin/mcp-fs"));
+    assert_eq!(s.command.as_deref(), Some(ABS_PROGRAM.trim_matches('\'')));
     assert_eq!(s.args, vec!["--root".to_string(), "/srv".to_string()]);
     assert!(
         s.url.is_empty(),

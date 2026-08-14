@@ -306,10 +306,21 @@ async fn every_issued_verb_reaches_a_real_child_and_is_correlated() {
 
     // AND THE NOTIFICATIONS ARRIVED. Their whole evidence is here: nothing came back, so the only
     // proof they were sent at all is the child's own record of reading them.
+    //
+    // The sentinel is DERIVED from the enum — the LAST issued verb — never hard-coded. A previous
+    // draft waited on `notifications/roots/list_changed` as "the last notification"; then the enum
+    // grew `notifications/elicitation/response` AFTER it, and on a loaded CI runner the wait
+    // matched while the true final line was still one read behind in the child's pipe, failing
+    // the assertion below on exactly that verb. A hard-coded sentinel goes stale silently the day
+    // a variant is appended; `verbs.last()` cannot.
+    let last = verbs
+        .last()
+        .expect("the verb enumeration is non-empty")
+        .method();
     let seen = await_log(
         &log,
-        "notifications/roots/list_changed",
-        "the last notification",
+        &format!("\"method\":\"{last}\""),
+        "the last issued verb",
     )
     .await;
     for verb in &verbs {
