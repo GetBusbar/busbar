@@ -517,6 +517,16 @@ jobs:
       # (h)-(l): THE INSTALL PATHS. Everything above proves artifacts EXIST. Nothing above proves
       # a user can INSTALL. That is how `curl -fsSL https://getbusbar.com/install.sh | sh` shipped
       # broken (403 from api.github.com) with a fully green verifier.
+      #
+      # (h), (i), (k) and (l)'s binary half all fetch getbusbar.com and are therefore subject to
+      # the SAME Cloudflare edge block as (g). They classify it the same way (g) does: HTTP 403/429
+      # to this runner is a statement about WHO is asking, not about the site, so it is a VISIBLE
+      # SKIP (log line + ::warning:: naming the marketing-side fix) — never a FAIL, which is the
+      # cry-wolf that hid #50, and never a silent pass. 404/5xx, an unserved route, or a page that
+      # IS served with the wrong content all remain HARD FAILURES, because every visitor sees
+      # those. Sub-assertions that need no getbusbar.com fetch — (l)'s docker one-liner above all —
+      # STILL RUN when the edge blocks us, so a blocked marketing site can never mask a broken
+      # published artifact again.
       # ---------------------------------------------------------------------------------------
 
       - name: "(h) install.sh end-to-end: the live one-liner actually installs vX.Y.Z"
@@ -537,9 +547,28 @@ jobs:
           # --max-time bounds EACH of the 5 attempts, so the worst case is bounded at ~5*30s plus
           # the 4 inter-attempt delays rather than "one attempt hangs forever and --retry never
           # gets a turn". --retry alone does not imply any per-attempt timeout.
-          if ! curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
-               "https://getbusbar.com/install.sh" -o /tmp/busbar-e2e/install.sh; then
-            echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
+          #
+          # SAME EDGE, SAME CLASSIFICATION AS (g): getbusbar.com sits behind Cloudflare, whose bot
+          # rules 403 GitHub Actions' datacenter IPs while serving every real client normally.
+          # `-f` is dropped so the HTTP code can be INSPECTED instead of collapsed into a generic
+          # curl failure: 403/429 are a statement about WHO is asking, not about the route, so they
+          # are a VISIBLE SKIP — never a FAIL (that is the daily cry-wolf this file exists to end)
+          # and never a silent pass. 404/5xx/no-answer still hard-fail: every visitor sees those.
+          # `--retry-all-errors` is gone on purpose — it spent six retries on a deterministic 403;
+          # plain `--retry` still retries transport errors and transient HTTP (429/5xx).
+          code="$(curl -sSL --max-time 30 --retry 5 --retry-delay 10 \
+               -o /tmp/busbar-e2e/install.sh -w '%{http_code}' \
+               "https://getbusbar.com/install.sh" || echo 000)"
+          if [ "$code" = 403 ] || [ "$code" = 429 ]; then
+            echo "VISIBLE SKIP: https://getbusbar.com/install.sh returned HTTP ${code} to this runner, so the 'live one-liner installs v${V}' assertion could NOT be evaluated from CI. This is an edge/bot block against GitHub's datacenter IPs, not a dead route: a browser and a user's laptop are served normally."
+            echo "::warning::(h) SKIPPED: getbusbar.com/install.sh returns HTTP ${code} to GitHub Actions runners, so the end-to-end install was not exercised from CI. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /install.sh (or expose an unchallenged route for it), so this can be asserted from CI at all."
+            # Leave the block on record for (l): its binary half consumes the binary (h) installs,
+            # and must be able to tell "blocked upstream" apart from "(h) genuinely broke".
+            echo "$code" > /tmp/busbar-e2e/edge-blocked
+            exit 0
+          fi
+          if [ "$code" != 200 ]; then
+            echo "::error::(h) could not fetch https://getbusbar.com/install.sh at all (HTTP ${code}) — not a bot block (403/429) but a genuine failure to serve, which every visitor sees too. The documented one-liner in the README and on the site is dead. Fix: redeploy the marketing site / restore the /install.sh route."
             exit 1
           fi
           [ -s /tmp/busbar-e2e/install.sh ] || {
@@ -634,11 +663,23 @@ jobs:
           # GitHub's own egress is not treated like a stranger's. A green run is therefore NOT
           # evidence. The only durable assertion is the ABSENCE of the fragile dependency in the
           # script we actually serve, which is IP-independent and cannot pass for the wrong reason.
-          curl -fsSL --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \
-            "https://getbusbar.com/install.sh" -o /tmp/busbar-installsh-live || {
-              echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it. Fix: redeploy the marketing site."
-              exit 1
-            }
+          #
+          # SAME EDGE, SAME CLASSIFICATION AS (g): a 403/429 from getbusbar.com is Cloudflare's bot
+          # rules blocking this runner's datacenter IP, not a dead route — the script cannot be
+          # INSPECTED from here, which says nothing about what it contains. VISIBLE SKIP, never a
+          # FAIL and never a silent pass; 404/5xx/no-answer remain hard failures.
+          code="$(curl -sSL --max-time 30 --retry 5 --retry-delay 10 \
+            -o /tmp/busbar-installsh-live -w '%{http_code}' \
+            "https://getbusbar.com/install.sh" || echo 000)"
+          if [ "$code" = 403 ] || [ "$code" = 429 ]; then
+            echo "VISIBLE SKIP: https://getbusbar.com/install.sh returned HTTP ${code} to this runner, so the 'no api.github.com dependency' assertion could NOT be evaluated from CI. This is an edge/bot block against GitHub's datacenter IPs, not a dead route: a browser and a user's laptop are served normally."
+            echo "::warning::(i) SKIPPED: getbusbar.com/install.sh returns HTTP ${code} to GitHub Actions runners, so the served script could not be inspected for the api.github.com dependency from CI. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /install.sh (or expose an unchallenged route for it), so this can be asserted from CI at all."
+            exit 0
+          fi
+          if [ "$code" != 200 ]; then
+            echo "::error::(i) could not fetch https://getbusbar.com/install.sh to inspect it (HTTP ${code}) — not a bot block (403/429) but a genuine failure to serve. Fix: redeploy the marketing site."
+            exit 1
+          fi
           [ -s /tmp/busbar-installsh-live ] || {
             echo "::error::(i) https://getbusbar.com/install.sh served an EMPTY body — nothing to inspect. Fix: redeploy the marketing site."
             exit 1
@@ -769,6 +810,15 @@ jobs:
             ep="$1"; keys="$2"; hint="$3"
             body="$(curl -sS -m 30 -o /tmp/api-body.json -w '%{http_code}' "https://getbusbar.com${ep}" || echo 000)"
             payload="$(cat /tmp/api-body.json 2>/dev/null || true)"
+            # SAME EDGE, SAME CLASSIFICATION AS (g): 403/429 here is Cloudflare's bot rules blocking
+            # this runner's datacenter IP, not the endpoint being down — a visitor's browser gets
+            # the JSON normally. VISIBLE SKIP per endpoint, never a FAIL and never a silent pass;
+            # 404/5xx/non-numeric payloads remain hard failures because every visitor sees those.
+            if [ "$body" = "403" ] || [ "$body" = "429" ]; then
+              echo "VISIBLE SKIP: https://getbusbar.com${ep} returned HTTP ${body} to this runner, so its numeric-count assertion could NOT be evaluated from CI. This is an edge/bot block against GitHub's datacenter IPs, not an endpoint outage: a browser is served normally."
+              echo "::warning::(k) PARTIAL: https://getbusbar.com${ep} returns HTTP ${body} to GitHub Actions runners, so its numeric-count assertion did not run. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /api/*, or expose an unchallenged JSON route, so this can be asserted from CI at all."
+              return 0
+            fi
             if [ "$body" != "200" ]; then
               echo "FAIL: https://getbusbar.com${ep} returned HTTP ${body} (body: ${payload:-<empty>})"
               echo "::error::(k) https://getbusbar.com${ep} returns HTTP ${body}, body ${payload:-<empty>} — expected 200 with a numeric count. ${hint}"
@@ -835,21 +885,41 @@ jobs:
 
           # --- l.1: the binary quickstart from the README / getting-started, using the binary the
           # --- live install.sh produced in (h). Docs promise: `curl -s localhost:8080/healthz` -> ok
-          cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
-          cp /tmp/busbar-e2e/bin/providers.yaml "$work/providers.yaml"
-          pushd "$work" >/dev/null
-          BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar > "$work/busbar.log" 2>&1 &
-          bpid=$!
-          popd >/dev/null
-          if probe "http://127.0.0.1:8080/healthz" "the documented binary quickstart"; then
-            :
+          #
+          # THE TWO HALVES OF (l) HAVE DIFFERENT DEPENDENCIES AND MUST NOT SHARE A FATE. This half
+          # consumes the binary (h) installed, and (h)'s fetch of getbusbar.com/install.sh sits
+          # behind the SAME Cloudflare edge as (g): when the edge 403s this runner, (h) skips and
+          # leaves no binary — which says nothing about whether the quickstart works, so this half
+          # is a VISIBLE SKIP in that case and ONLY that case ((h) drops /tmp/busbar-e2e/edge-blocked
+          # on record). A missing binary with NO edge block on record means (h) genuinely broke, and
+          # that stays a hard fail here too. The docker half below needs only Docker Hub — it is the
+          # one check that boots the published image (the one that would have caught #50), so it
+          # ALWAYS runs regardless of what happened to this half.
+          if [ -x /tmp/busbar-e2e/bin/busbar ] && [ -s /tmp/busbar-e2e/bin/providers.yaml ]; then
+            cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
+            cp /tmp/busbar-e2e/bin/providers.yaml "$work/providers.yaml"
+            pushd "$work" >/dev/null
+            BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar > "$work/busbar.log" 2>&1 &
+            bpid=$!
+            popd >/dev/null
+            if probe "http://127.0.0.1:8080/healthz" "the documented binary quickstart"; then
+              :
+            else
+              echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
+              echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work: the installed busbar ${V} did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes fail. Fix: see the busbar log above — either the minimal config in the docs is no longer valid for this release, or the release binary fails to boot."
+              fail=1
+            fi
+            kill "$bpid" 2>/dev/null || true
+            for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
+          elif [ -f /tmp/busbar-e2e/edge-blocked ]; then
+            blocked_code="$(cat /tmp/busbar-e2e/edge-blocked)"
+            echo "VISIBLE SKIP: the binary-quickstart half has no binary to boot because getbusbar.com/install.sh returned HTTP ${blocked_code} to this runner in (h) — an edge/bot block against GitHub's datacenter IPs, not an install failure. The docker half below still runs."
+            echo "::warning::(l) PARTIAL: the binary-quickstart half did not run because getbusbar.com/install.sh is edge-blocked (HTTP ${blocked_code}) for GitHub Actions runners (see (h)); the docker one-liner half below DID run and is authoritative for the published image. Fix is MARKETING-SIDE: allow GitHub Actions egress through the Cloudflare bot rules for /install.sh, so the binary quickstart can be exercised from CI at all."
           else
-            echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
-            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work: the installed busbar ${V} did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes fail. Fix: see the busbar log above — either the minimal config in the docs is no longer valid for this release, or the release binary fails to boot."
+            echo "FAIL: no installed binary from (h) to boot, and no edge block on record — (h) genuinely failed"
+            echo "::error::(l) the binary-quickstart half could not run because (h) produced no usable busbar binary, and getbusbar.com did NOT block this runner — so that is a real install failure, detailed in (h)'s own errors. The docker half below still runs. Fix: see check (h)."
             fail=1
           fi
-          kill "$bpid" 2>/dev/null || true
-          for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
 
           # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
           # --- image is pinned to :${V} (check (a) already proves :latest == :${V}, so pinning
