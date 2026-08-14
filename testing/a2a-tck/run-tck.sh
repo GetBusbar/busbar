@@ -37,6 +37,8 @@
 #                                    the only control it may be read against. Reported, never
 #                                    pinned.
 #   run-tck.sh subject               the endpoint in BUSBAR_A2A_ENDPOINT; reported, never pinned
+#   run-tck.sh prepare               fetch + install the pinned suite only, and print the paths another
+#                                    instrument can borrow (used by testing/a2a-supplement)
 #   run-tck.sh record-baselines      re-record both control baselines (deliberate act, read the diff)
 set -euo pipefail
 
@@ -190,6 +192,29 @@ case "${1:-}" in
     run_tck "$BUSBAR_A2A_ENDPOINT" subject
     # Deliberately NOT baseline-compared. A subject baseline would pin our own defects as the
     # expectation, which is the failure the control legs exist to avoid importing.
+    ;;
+
+  # PREPARE ONLY: fetch the pinned suite, build its virtualenv, and print the two paths another
+  # instrument needs to borrow them. It exists so that `testing/a2a-supplement` can speak gRPC over
+  # the SPECIFICATION'S OWN generated stubs and validate against the same pinned artefacts, without
+  # a second copy of the pin, a second venv, or a hand-rolled protobuf encoder. One pin, verified in
+  # one place, used by both instruments.
+  prepare)
+    fetch_tck; install_tck
+    # ONE EXTRA DEPENDENCY, INSTALLED HERE AND NOWHERE ELSE: `cryptography`. The supplementary
+    # suite verifies agent-card JWS signatures, which needs asymmetric crypto, and the pinned TCK
+    # does not depend on it. It is added to the WORK virtualenv, never to the pinned checkout --
+    # `fetch_tck` still verifies the commit byte-for-byte and nothing in `$TCK_DIR` is touched.
+    #
+    # AND IT IS FATAL IF IT DOES NOT INSTALL. The alternative -- letting the signing checks report
+    # "could not verify" -- is a suite that silently stops checking signatures the day a wheel
+    # stops building. An unverified signature is never reported as a valid one, so the only honest
+    # options are "verified" and "the run failed".
+    "$VENV/bin/python" -c 'import cryptography' 2>/dev/null \
+      || "$VENV/bin/pip" -q install cryptography \
+      || { echo "could not install cryptography into $VENV; the card-signing checks cannot run" >&2; exit 2; }
+    echo "A2A_TCK_DIR=$TCK_DIR"
+    echo "A2A_TCK_PYTHON=$VENV/bin/python"
     ;;
 
   record-baselines)

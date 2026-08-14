@@ -126,6 +126,9 @@
 # MODES
 #   --battery    the independent battery (testing/a2a-harness) against the booted subject
 #   --tck        the official TCK (testing/a2a-tck) against the booted subject
+#   --supplement busbar-authored coverage of requirements the pinned TCK declares and does NOT
+#                execute (testing/a2a-supplement). REPORTED SEPARATELY, never added to the TCK
+#                number -- see that directory's README for why.
 #   --probe [who] boot and prove the boundary only; print the endpoint and stop. `who` is who holds
 #                the client credential — `shim` (default, the TCK's topology) or `instrument` (the
 #                battery's, with no shim in front of busbar at all).
@@ -541,6 +544,17 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   subject_await "http://127.0.0.1:$agent_port/.well-known/agent-card.json" \
     "the TCK scenario agent" "$dir/scenario-agent.log"
 
+  # `A2A_SUBJECT_RECORD_UPSTREAM` arms the vendor's request recorder — see that file's header. It is
+  # OFF for every leg that does not ask for it, and the vendor is byte-identical in behaviour either
+  # way; what it buys is the only vantage point in this rig from which busbar's CLIENT role is
+  # observable at all (SPEC 3.6.1). The path is derived here rather than passed in so that it lands
+  # in the same scratch directory as every other artefact of this boot.
+  SUBJECT_UPSTREAM_RECORD=""
+  if [ -n "${A2A_SUBJECT_RECORD_UPSTREAM:-}" ]; then
+    SUBJECT_UPSTREAM_RECORD="$dir/upstream-requests.jsonl"
+    : > "$SUBJECT_UPSTREAM_RECORD"
+  fi
+  A2A_VENDOR_RECORD="$SUBJECT_UPSTREAM_RECORD" \
   node scripts/a2a-subject/signing-vendor.mjs "$vendor_port" "$agent_port" "$dir/issuer.spki" \
     >"$dir/signing-vendor.log" 2>&1 &
   SUBJECT_PIDS="$SUBJECT_PIDS $!"
@@ -635,6 +649,39 @@ same helper the MCP leg does, because busbar's token format is one format across
   wrong=$(node "$minter" "$dir/signing.key" "$plain" "${canonical}-not-this-resource") \
     || die "could not mint the wrong-audience counterfactual."
 
+  # ── A SECOND, DISTINCT PRINCIPAL. ──
+  #
+  # Minted the same ordinary way, through the same admin verb, differing only in the name — so it
+  # is a different SUBJECT with the same audience and the same issuer, which is exactly the pair
+  # SPEC 13.1's scoping requirements are about. Nothing about the deployment is relaxed to produce
+  # it; two API keys is the most ordinary thing an operator does.
+  #
+  # WHY IT IS MINTED FOR EVERY BOOT rather than only for the leg that uses it: a credential that
+  # only exists when a particular leg runs is a credential nobody notices has stopped working, and
+  # the boundary proof below is the place a broken minting shows up cheaply. It is unused by the
+  # TCK and battery legs and costs one admin call.
+  local plain_b
+  plain_b=$(curl -s --max-time 15 -X POST "http://127.0.0.1:$admin_port/api/v1/admin/keys" \
+              -H "authorization: Bearer $admin_token" -H 'content-type: application/json' \
+              -d '{"name":"a2a-conformance-subject-second-principal"}' \
+            | python3 -c 'import json,sys
+d = sys.stdin.read()
+try:
+    t = json.loads(d)["token"]
+except Exception:
+    sys.exit("the admin API did not return a second token: %s" % d)
+sys.stdout.write(t)') \
+    || die "the admin API did not mint a SECOND key. AUTH-SCOPE-002 and AUTH-SCOPE-003 cannot be \
+decided with one identity — with a single principal an implementation that scopes perfectly and \
+one that does not scope at all are observationally identical — so this is fatal rather than a \
+reason to run those checks anyway."
+  local bound_b
+  bound_b=$(node "$minter" "$dir/signing.key" "$plain_b" "$canonical") \
+    || die "could not mint the second principal's audience-bound token."
+  [ "$bound" != "$bound_b" ] || die "the two principals' tokens are IDENTICAL, so they are not two \
+principals. Every scoping check would then be comparing an identity with itself and would pass \
+vacuously."
+
   # ── THE REGISTRATION IS PROMOTED, by the operator verbs, before anything is measured. ──
   subject_promote "$admin_port" "$admin_token" "$dir"
   subject_await_serving "$direct" "$bound"
@@ -691,7 +738,48 @@ busbar nobody probed."
   # shellcheck disable=SC2034
   SUBJECT_TOKEN="$bound"
   # shellcheck disable=SC2034
+  SUBJECT_TOKEN_B="$bound_b"
+  # THE OPERATOR SURFACE OF THIS BOOT. Loopback-only and ephemeral (the token is 24 CSPRNG bytes
+  # regenerated every boot), exported so that a check about busbar's role as a CARD VERIFIER can
+  # drive the same operator verbs a human drives -- `PUT /agents/{name}` then `connect`. That is
+  # busbar's documented admin API, not a back door: CARD-SIGN-004 constrains the verifying party,
+  # and the only way to observe a verification from outside is to ask for one.
+  # shellcheck disable=SC2034
+  SUBJECT_ADMIN_BASE="http://127.0.0.1:$admin_port"
+  # shellcheck disable=SC2034
+  SUBJECT_ADMIN_TOKEN="$admin_token"
+  # shellcheck disable=SC2034
+  SUBJECT_VENDOR_URL="http://127.0.0.1:$vendor_port/"
+  # shellcheck disable=SC2034
   SUBJECT_DIR="$dir"
+
+  # BUSBAR'S AGENT-CARD ISSUER KEY, read off the ONE channel busbar publishes it on.
+  #
+  # `main.rs` logs it at plane start, deliberately and with a comment saying why: it is a PUBLIC
+  # key, and a pin is only a trust root if a human can read it off the deployment and hand it to a
+  # counterparty out of band. Reading it here is that operator step, performed by the rig — NOT a
+  # peek inside busbar. Nothing else in this file, and nothing in `testing/a2a-supplement`, reads
+  # busbar's source or its private state; the supplement is handed the same base64 string an
+  # operator would paste into a counterparty's `pin.key:`.
+  #
+  # Absence is NOT fatal here, because the TCK and battery legs do not need it. The supplement leg
+  # checks for it and fails loudly if it is missing, which is where the failure belongs.
+  # shellcheck disable=SC2034
+  SUBJECT_ISSUER_KEY="$(python3 - "$dir/busbar.log" <<'PY'
+import re, sys
+try:
+    text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+except OSError:
+    sys.exit(0)
+# The log line is ANSI-decorated (`issuer_key<ESC>[2m=<ESC>[0m"..."`), so the pattern skips
+# whatever sits between the field name and its value rather than assuming `=` is adjacent.
+hits = re.findall(r'issuer_key.{0,20}?"([A-Za-z0-9+/=]{40,})"', text, re.S)
+print(hits[-1] if hits else "")
+PY
+)"
+  [ -n "$SUBJECT_ISSUER_KEY" ] \
+    && say "   busbar publishes its agent-card issuer key: ${SUBJECT_ISSUER_KEY:0:24}..." \
+    || say "   NOTE: busbar published no agent-card issuer key in its log on this boot."
 }
 
 reap_subject() { [ -n "${SUBJECT_PIDS:-}" ] && kill $SUBJECT_PIDS 2>/dev/null || true; }
@@ -843,6 +931,81 @@ leg_probe() {
   arm_subject "${1:-shim}"
   say "   subject endpoint: $SUBJECT_URL"
   say "   fronted agent:    $SUBJECT_AGENT_URL"
+  # A held boot, for a human who wants to look at the subject with their own tools. Never used by
+  # a gate: it does not terminate.
+  if [ -n "${A2A_SUBJECT_HOLD:-}" ]; then
+    say "   HOLDING (A2A_SUBJECT_HOLD is set). Artefacts in: $SUBJECT_DIR"
+    say "   token A: $SUBJECT_TOKEN"
+    say "   token B: ${SUBJECT_TOKEN_B:-}"
+    say "   issuer key: ${SUBJECT_ISSUER_KEY:-<none>}"
+    while true; do sleep 3600; done
+  fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# THE SUPPLEMENTARY LEG, AND THE ONE RULE THAT GOVERNS IT.
+#
+# `testing/a2a-supplement` is BUSBAR-AUTHORED. The official TCK is not. Those two numbers are
+# reported separately, they are never added, and a supplementary pass is never described as a TCK
+# pass. See `testing/a2a-supplement/README.md` for why the suite exists at all and what would have
+# to be true for it to stop existing.
+#
+# WHY THE INSTRUMENT HOLDS THE CREDENTIAL HERE (`arm_subject instrument`, not `shim`). More than
+# half of what this suite asserts is about which credential gets in: anonymous, forged, principal
+# A, principal B. The credential shim adds an Authorization header to any request that carries
+# none, which makes an ANONYMOUS request unrepresentable — with the shim in front, every AUTH-*
+# check would be reporting on the shim. This is the same reasoning `leg_battery` gives for the same
+# choice, and it is not optional here: it is the difference between measuring busbar and measuring
+# a forwarder.
+leg_supplement() {
+  say "== A2A SUPPLEMENTARY COVERAGE · SUBJECT leg (busbar) =="
+  say "   THIS IS NOT THE OFFICIAL TCK NUMBER. It is busbar-authored coverage of requirements the"
+  say "   pinned TCK declares and does not execute. The two numbers are reported separately and"
+  say "   MUST NOT be added: a suite's author grading their own implementation is weaker evidence"
+  say "   than a third party's, and adding the two would launder the weaker into the stronger."
+  export A2A_SUBJECT_RECORD_UPSTREAM=1
+  arm_subject instrument
+  [ -n "${SUBJECT_TOKEN_B:-}" ] || die "no second principal was minted, so the scoping checks \
+cannot be decided. See boot_busbar_a2a_subject."
+  local rc=0
+  # The UPSTREAM vendor's public key, written by the vendor itself at boot. It is the positive
+  # control for CARD-SIGN-004: without a key that IS trusted, refusing an untrusted one proves
+  # nothing, because a subject that refuses everything would pass.
+  A2ASUP_RIGHT_ISSUER_KEY="$(cat "$SUBJECT_DIR/issuer.spki" 2>/dev/null || true)"
+  export A2ASUP_RIGHT_ISSUER_KEY
+  # THE INTERPRETER IS THE PINNED TCK'S, and that is a deliberate coupling rather than laziness.
+  # The supplement drives the gRPC binding, and it does so through `specification/generated/a2a_pb2`
+  # -- the stubs the SPECIFICATION publishes -- for the same reason `run-tck.sh` wires the
+  # publisher's suite instead of writing a gRPC driver: a hand-rolled protobuf encoder would make
+  # the suite test its own encoder. Borrowing the pinned checkout's venv means the proto this
+  # instrument speaks and the proto the official one speaks are the same bytes at the same pin,
+  # verified in ONE place.
+  local tck_dir tck_python
+  tck_dir="$(testing/a2a-tck/run-tck.sh prepare | sed -n 's/^A2A_TCK_DIR=//p')"
+  tck_python="$(testing/a2a-tck/run-tck.sh prepare | sed -n 's/^A2A_TCK_PYTHON=//p')"
+  [ -x "$tck_python" ] || die "the pinned TCK's interpreter is not at \`$tck_python\`. The \
+supplement borrows it for the specification's own generated gRPC stubs; without it the gRPC \
+binding would have to be hand-encoded, which is the thing neither instrument does."
+  ( cd testing/a2a-supplement && PYTHONPATH="$tck_dir:${PYTHONPATH:-}" "$tck_python" -m a2asup \
+      --label "subject:busbar" \
+      --card-url "$SUBJECT_URL/.well-known/agent-card.json" \
+      --token "$SUBJECT_TOKEN" \
+      --token-b "$SUBJECT_TOKEN_B" \
+      ${SUBJECT_ISSUER_KEY:+--issuer-key "$SUBJECT_ISSUER_KEY"} \
+      ${SUBJECT_UPSTREAM_RECORD:+--upstream-record "$SUBJECT_UPSTREAM_RECORD"} \
+      ${SUBJECT_ADMIN_BASE:+--admin-base "$SUBJECT_ADMIN_BASE"} \
+      ${SUBJECT_ADMIN_TOKEN:+--admin-token "$SUBJECT_ADMIN_TOKEN"} \
+      ${SUBJECT_VENDOR_URL:+--verifier-agent-url "$SUBJECT_VENDOR_URL"} \
+      --json reports/subject.json ) || rc=$?
+  say ""
+  say "   supplement exit $rc"
+  case "$rc" in
+    0) ;;
+    3) die "the supplement could not START — it read no usable agent card, so NOTHING was tested \
+and there is no number from this instrument. That is the absence of a score, not a low one." ;;
+    *) die "the supplementary suite found busbar failing requirements the official TCK does not \
+execute. Read the table above; that is the number this leg exists to produce." ;;
+  esac
 }
 
 # --selftest: prove the arming rule and the boundary proof BITE, before any verdict from this
@@ -954,6 +1117,7 @@ this script means anything until they do."
 case "${1:-}" in
   --battery)  leg_battery ;;
   --tck)      leg_tck ;;
+  --supplement) leg_supplement ;;
   --probe)    leg_probe "${2:-shim}" ;;
   --selftest) selftest ;;
   *) sed -n '/^# MODES/,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
