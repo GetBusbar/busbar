@@ -439,6 +439,7 @@ impl ProtocolReader for CohereReader {
                         input_schema,
                         cache_control: None,
                         hosted: None,
+                        strict: None,
                     });
                 }
             }
@@ -780,7 +781,19 @@ impl ProtocolReader for CohereReader {
                                 .unwrap_or(0),
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
-                            detail: crate::ir::IrUsageDetail::default(),
+                            // `billed_units.search_units` rides the STREAM's terminal
+                            // `message-end.delta.usage` object exactly as it rides the buffered
+                            // `usage` — and it is a SEPARATELY BILLED unit that is not a token count
+                            // at all, so its loss is invisible in a token total that reconciles
+                            // perfectly. Reading it only on the buffered path meant a streamed RAG
+                            // call silently dropped the search charge.
+                            detail: crate::ir::IrUsageDetail {
+                                search_units: u
+                                    .get("billed_units")
+                                    .and_then(|b| b.get("search_units"))
+                                    .and_then(|v| v.as_u64()),
+                                ..Default::default()
+                            },
                         }
                     })
                     .unwrap_or(crate::ir::IrUsage {

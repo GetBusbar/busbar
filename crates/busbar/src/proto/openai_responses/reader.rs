@@ -382,6 +382,7 @@ impl ProtocolReader for ResponsesReader {
                         input_schema: serde_json::Value::Null,
                         cache_control: None,
                         hosted: Some(tool_val.clone()),
+                        strict: None,
                     });
                     continue;
                 }
@@ -406,6 +407,9 @@ impl ProtocolReader for ResponsesReader {
                     input_schema,
                     cache_control: None,
                     hosted: None,
+                    // STRICT function calling. Flat on a Responses tool (the Chat shape nests it
+                    // under `function`). Absent ⇒ `None`, never `Some(false)`.
+                    strict: tool_val.get("strict").and_then(|v| v.as_bool()),
                 });
             }
         }
@@ -1025,7 +1029,18 @@ impl ProtocolReader for ResponsesReader {
                                 // read-side cache field so a streaming Responses terminal preserves
                                 // the cache saving.
                                 cache_read_input_tokens: cached,
-                                detail: crate::ir::IrUsageDetail::default(),
+                                // `output_tokens_details.reasoning_tokens` is on the STREAM's
+                                // terminal `response.completed` usage object exactly as it is on the
+                                // buffered response. Reading it only on the buffered path made the
+                                // same request report reasoning tokens at `stream: false` and a hard
+                                // `0` at `stream: true`.
+                                detail: crate::ir::IrUsageDetail {
+                                    reasoning_tokens: u
+                                        .get("output_tokens_details")
+                                        .and_then(|d| d.get("reasoning_tokens"))
+                                        .and_then(|v| v.as_u64()),
+                                    ..Default::default()
+                                },
                             }
                         })
                         .unwrap_or(crate::ir::IrUsage {

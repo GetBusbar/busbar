@@ -132,6 +132,9 @@ impl ProtocolReader for OpenAiReader {
 
         // Handle messages array
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
+        // Per-message participant names, collected during the loop and parked in `extra` afterwards
+        // (see `MESSAGE_NAMES_SENTINEL`).
+        let mut message_names = serde_json::Map::new();
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
@@ -306,6 +309,17 @@ impl ProtocolReader for OpenAiReader {
                         });
                     }
 
+                    // OpenAI's optional per-message participant `name`. Parked under
+                    // `MESSAGE_NAMES_SENTINEL` keyed by the IR message index (see that const for why
+                    // this is not an `IrMessage` field): it survives a same-protocol re-serialize and
+                    // is NAMED in the cross-protocol dropped-keys warn instead of vanishing.
+                    if let Some(name) = msg_val
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        message_names.insert(messages.len().to_string(), serde_json::json!(name));
+                    }
                     messages.push(crate::ir::IrMessage {
                         role,
                         content: msg_content,
@@ -352,6 +366,15 @@ impl ProtocolReader for OpenAiReader {
             extra.insert(
                 MAX_COMPLETION_TOKENS_SENTINEL.to_string(),
                 serde_json::Value::Bool(true),
+            );
+        }
+        // Park the per-message participant names, only when at least one message carried one, so an
+        // ordinary request's `extra` (and therefore its cross-protocol dropped-keys warn) is
+        // untouched.
+        if !message_names.is_empty() {
+            extra.insert(
+                MESSAGE_NAMES_SENTINEL.to_string(),
+                serde_json::Value::Object(message_names),
             );
         }
 
@@ -692,7 +715,18 @@ impl ProtocolReader for OpenAiReader {
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
-                detail: crate::ir::IrUsageDetail::default(),
+                // The sub-bucket is on the STREAM's usage chunk too (a `stream_options:
+                // {include_usage: true}` stream's final chunk carries the identical `usage` object
+                // the buffered response does). Reading it only on the buffered path made the same
+                // request report reasoning tokens at `stream: false` and a hard `0` at
+                // `stream: true` — the streaming twin of the bug the field was added to fix.
+                detail: crate::ir::IrUsageDetail {
+                    reasoning_tokens: u
+                        .get("completion_tokens_details")
+                        .and_then(|d| d.get("reasoning_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    ..Default::default()
+                },
             }
         });
 

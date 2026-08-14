@@ -652,6 +652,84 @@ fn bedrock_cache_point() -> serde_json::Value {
     serde_json::json!({ "cachePoint": { "type": "default" } })
 }
 
+/// Project an [`crate::ir::IrCitation`] into the Bedrock Converse `Citation` object — the SAME field
+/// set the streaming `ContentBlockDelta`'s `citation` member (`CitationsDelta`) carries, which is why
+/// one helper serves both paths.
+///
+/// The union is `{ title, sourceContent: [{ text }], location }`, where `location` is
+/// `documentChar { documentIndex, start, end }` / `documentPage` / `documentChunk`. Note what is NOT
+/// in it: **there is no URL field anywhere in the Bedrock citation shape** — it models citations INTO
+/// the documents the caller attached, not out to the web. So a web citation's `url` has no native
+/// slot and degrades into `title` (the closest valid native form: the field a Bedrock client renders
+/// as the source's name), and when a real `title` is ALSO present the url cannot ride along and is
+/// dropped with a `warn!` rather than mangled into the title string.
+///
+/// Returns `None` when the citation projects to nothing at all (no title, no url, no quoted text, no
+/// resolvable location) — emitting `{}` would put a member-less union on the wire that a Bedrock SDK
+/// rejects, which is the one thing translation must never do. The caller warns on `None`.
+fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value> {
+    let mut obj = serde_json::Map::new();
+
+    let title = c.title.as_deref().filter(|s| !s.is_empty());
+    let url = c.url.as_deref().filter(|s| !s.is_empty());
+    match (title, url) {
+        (Some(t), Some(u)) => {
+            obj.insert("title".to_string(), serde_json::json!(t));
+            tracing::warn!(
+                url = %u,
+                "dropping citation `url` on a bedrock egress: the Converse `Citation` shape has no \
+                 url field (it cites the request's own documents, not the web), and `title` is \
+                 already carrying the source's name. Route web-search citations to a protocol that \
+                 models a source url (openai, anthropic, gemini, cohere) if the link is load-bearing"
+            );
+        }
+        // No title: the url IS the source's name as far as a reader is concerned, so it takes the
+        // slot rather than being dropped.
+        (None, Some(u)) => {
+            obj.insert("title".to_string(), serde_json::json!(u));
+        }
+        (Some(t), None) => {
+            obj.insert("title".to_string(), serde_json::json!(t));
+        }
+        (None, None) => {}
+    }
+
+    if let Some(quoted) = c.cited_text.as_deref().filter(|s| !s.is_empty()) {
+        obj.insert(
+            "sourceContent".to_string(),
+            serde_json::json!([{ "text": quoted }]),
+        );
+    }
+
+    // `documentChar` is the only location variant the neutral IR can fill honestly: `start_index` /
+    // `end_index` are character offsets for every source that carries them EXCEPT an Anthropic
+    // `page_location` / `content_block_location`, whose `kind` says so — those are page/block
+    // numbers and would be a LIE inside `documentChar`, so they are left unlocated rather than
+    // mislabelled (the title and quoted text still cross).
+    let char_offsets = !matches!(
+        c.kind.as_deref(),
+        Some("page_location") | Some("content_block_location")
+    );
+    if char_offsets {
+        if let (Some(start), Some(end)) = (c.start_index, c.end_index) {
+            if start >= 0 && end >= start {
+                obj.insert(
+                    "location".to_string(),
+                    serde_json::json!({
+                        "documentChar": {
+                            "documentIndex": c.document_index.unwrap_or(0).max(0),
+                            "start": start,
+                            "end": end,
+                        }
+                    }),
+                );
+            }
+        }
+    }
+
+    (!obj.is_empty()).then(|| serde_json::Value::Object(obj))
+}
+
 /// Read the `cache_control` off the LAST block pushed onto an IR content vector, used by the Bedrock
 /// reader to map a native `cachePoint` adjacency back onto the preceding block's first-class IR
 /// `cache_control` field (so a Bedrock->Bedrock and Bedrock->Anthropic round-trip preserves the

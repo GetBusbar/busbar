@@ -852,6 +852,20 @@ pub(crate) struct IrTool {
     /// cross-protocol seam (drop-with-warn), so a hosted tool only ever reaches the Responses writer
     /// (same-protocol Responses->Responses, where the body is forwarded verbatim anyway).
     pub(crate) hosted: Option<Value>,
+    /// STRICT function-calling flag (OpenAI Chat `tools[].function.strict`, Responses
+    /// `tools[].strict`) — "constrain the model's arguments to this schema exactly".
+    ///
+    /// It is a BEHAVIOURAL contract, not bookkeeping: with `strict: true` the caller's downstream
+    /// code may parse the tool arguments without validating them, because OpenAI guarantees schema
+    /// conformance. Dropping it silently turned that guarantee off while the request still looked
+    /// accepted, so the failure surfaced later as a parse error on an argument object nobody had
+    /// asked to be lenient about.
+    ///
+    /// Carried across the OpenAI Chat ↔ Responses pair, which are the two dialects that model it.
+    /// Anthropic, Gemini, Bedrock and Cohere have no per-tool strict flag (Cohere's `strict_tools` is
+    /// a REQUEST-level switch, not a per-tool one), so their writers drop it with a `warn!` naming
+    /// the tools affected — a genuine target-protocol limit, signalled rather than silent.
+    pub(crate) strict: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

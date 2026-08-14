@@ -381,7 +381,11 @@ impl ProtocolReader for AnthropicReader {
                         cache_read_input_tokens: u
                             .get("cache_read_input_tokens")
                             .and_then(|v| v.as_u64()),
-                        detail: crate::ir::IrUsageDetail::default(),
+                        // `message_start.message.usage` carries the same `cache_creation` tier
+                        // object the buffered response does — and this is the frame that reports
+                        // cache writes on an Anthropic stream, so defaulting it away lost the whole
+                        // tier split on every streamed request.
+                        detail: read_cache_tier_detail(Some(u)),
                     });
                 // Capture the stream's native identity so an anthropic→anthropic passthrough
                 // re-emits the exact `message_start.message` an SDK expects (it reads
@@ -515,7 +519,9 @@ impl ProtocolReader for AnthropicReader {
                     cache_read_input_tokens: usage_val
                         .and_then(|u| u.get("cache_read_input_tokens"))
                         .and_then(|v| v.as_u64()),
-                    detail: crate::ir::IrUsageDetail::default(),
+                    // `message_delta.usage` repeats the `cache_creation` tier object when the turn
+                    // wrote cache; read it for the same reason `message_start` does.
+                    detail: read_cache_tier_detail(usage_val),
                 };
                 Some(IrStreamEvent::MessageDelta {
                     stop_reason,
@@ -659,18 +665,9 @@ impl ProtocolReader for AnthropicReader {
             // The 5m/1h cache-creation TIER SPLIT. These are SLICES of
             // `cache_creation_input_tokens`, never additions to it — but the two tiers are PRICED
             // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in
-            // aggregate and cannot be reconciled per line.
-            detail: crate::ir::IrUsageDetail {
-                cache_creation_5m_input_tokens: usage_val
-                    .and_then(|u| u.get("cache_creation"))
-                    .and_then(|c| c.get("ephemeral_5m_input_tokens"))
-                    .and_then(|v| v.as_u64()),
-                cache_creation_1h_input_tokens: usage_val
-                    .and_then(|u| u.get("cache_creation"))
-                    .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-                    .and_then(|v| v.as_u64()),
-                ..Default::default()
-            },
+            // aggregate and cannot be reconciled per line. Shared with the two STREAMING sites so a
+            // stream does not silently lose a split the buffered path reports.
+            detail: read_cache_tier_detail(usage_val),
         };
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the

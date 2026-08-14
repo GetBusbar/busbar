@@ -2846,6 +2846,8 @@ fn req_with_tool(
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: None,
         temperature: None,
@@ -3916,6 +3918,7 @@ fn test_anthropic_to_openai_tool_choice_directions() {
                 input_schema: serde_json::json!({}),
                 cache_control: None,
                 hosted: None,
+                strict: None,
             }],
             ..test_ir_request()
         };

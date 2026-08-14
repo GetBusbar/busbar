@@ -313,6 +313,7 @@ impl ProtocolWriter for CohereWriter {
             serde_json::Value::Array(messages_arr),
         );
 
+        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_COHERE);
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
@@ -663,18 +664,33 @@ impl ProtocolWriter for CohereWriter {
                 // client tracking billing/rate-limit data from the stream is not silently zeroed.
                 // IrUsage is always present (not Option); when upstream supplied nothing it is
                 // zero-valued, which serializes here as a safe `{input_tokens:0,output_tokens:0}`.
+                let mut usage_obj = serde_json::json!({
+                    "tokens": {
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens
+                    }
+                });
+                // The separately-billed search units, in Cohere's native `billed_units` slot — the
+                // same field the buffered writer emits. `search_units` is not a token count at all,
+                // so its absence is invisible in a token total that reconciles perfectly; emitting
+                // it only on the buffered path meant a streamed RAG call under-reported the charge.
+                // Emitted only when the source reported it, so no stream acquires a fabricated
+                // `billed_units` object.
+                if let Some(su) = usage.detail.search_units {
+                    if let Some(uo) = usage_obj.as_object_mut() {
+                        uo.insert(
+                            "billed_units".to_string(),
+                            serde_json::json!({ "search_units": su }),
+                        );
+                    }
+                }
                 Some((
                     "".to_string(),
                     serde_json::json!({
                         "type": ET_MESSAGE_END,
                         "delta": {
                             "finish_reason": cohere_finish_reason,
-                            "usage": {
-                                "tokens": {
-                                    "input_tokens": usage.input_tokens,
-                                    "output_tokens": usage.output_tokens
-                                }
-                            }
+                            "usage": usage_obj
                         }
                     }),
                 ))

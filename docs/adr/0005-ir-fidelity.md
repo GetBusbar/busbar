@@ -20,7 +20,7 @@ caller's intent, the gateway has failed at its one job. Two specific hazards:
    not model a construct, the failure mode is the same hazard one level up: an
    attachment that is not an image has no IR block today and degrades to an empty
    text part, which is flattening by another name. See
-   [protocols.md, Known gaps in 1.6.0](../protocols.md#known-gaps-in-160).
+   [protocols.md, Closed in 1.6.0](../protocols.md#closed-in-160) and [Fields the target protocol cannot express](../protocols.md#fields-the-target-protocol-cannot-express).
 
 ## Decision
 

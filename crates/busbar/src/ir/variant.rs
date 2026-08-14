@@ -303,6 +303,30 @@ impl IrReq {
                         fill_blocks(&mut m.content);
                     }
                 }
+                // OpenAI `messages[].name` — the per-message participant name, parked by the OpenAI
+                // Chat reader under its own sentinel (see `MESSAGE_NAMES_SENTINEL`). No other
+                // protocol in the matrix models a participant name at all: Anthropic, Gemini,
+                // Bedrock, Cohere and Responses each frame a turn as (role, content) and nothing
+                // else. So this is a genuine target-protocol limit rather than an unmodelled IR gap
+                // — but it was crossing SILENTLY, and a multi-speaker transcript losing its speaker
+                // labels changes what the model is being asked. The generic dropped-keys warn below
+                // would name it only as an opaque `__busbar_…` key; name it in the caller's own
+                // vocabulary here, exactly as `cachedContent` is named just below.
+                if let Some(n) = ir
+                    .extra
+                    .get("__busbar_openai_message_names")
+                    .and_then(|v| v.as_object())
+                    .map(serde_json::Map::len)
+                {
+                    tracing::warn!(
+                        ingress = %prep.ingress_protocol,
+                        messages = n,
+                        "dropping OpenAI `messages[].name` on the cross-protocol seam: no target \
+                         protocol models a per-message participant name, so a multi-speaker \
+                         transcript reaches the backend with its speaker labels removed. Put the \
+                         speaker in the message TEXT, or route to an openai lane"
+                    );
+                }
                 if ir.extra.contains_key("cachedContent") {
                     tracing::warn!(
                         ingress = %prep.ingress_protocol,

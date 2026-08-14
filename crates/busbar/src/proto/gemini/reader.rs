@@ -505,6 +505,7 @@ impl ProtocolReader for GeminiReader {
                             input_schema: parameters,
                             cache_control: None,
                             hosted: None,
+                            strict: None,
                         });
                     }
                 }

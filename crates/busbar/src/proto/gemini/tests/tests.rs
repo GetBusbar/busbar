@@ -4508,6 +4508,7 @@ fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
         input_schema: serde_json::json!({"type": "object", "properties": {}}),
         cache_control: None,
         hosted: None,
+        strict: None,
     });
     // Typed field says: force this ONE specific tool.
     req.tool_choice = Some(crate::ir::IrToolChoice::Tool {
@@ -5117,6 +5118,8 @@ fn test_write_request_strips_rejected_schema_keywords() {
         cache_control: None,
 
         hosted: None,
+
+        strict: None,
     });
     let wire = {
         let __w = GeminiWriter;

@@ -31,8 +31,17 @@ impl ProtocolWriter for OpenAiWriter {
             }));
         }
 
+        // Per-message participant names parked by this protocol's own reader (see
+        // `MESSAGE_NAMES_SENTINEL`). Present only on a SAME-protocol path — the cross-protocol seam
+        // clears `extra` — which is exactly the scope `name` can survive in, since no other protocol
+        // models it.
+        let message_names = req
+            .extra
+            .get(MESSAGE_NAMES_SENTINEL)
+            .and_then(|v| v.as_object());
+
         // Add regular messages
-        for msg in &req.messages {
+        for (msg_idx, msg) in req.messages.iter().enumerate() {
             let role_str = match msg.role {
                 crate::ir::IrRole::User => "user",
                 crate::ir::IrRole::Assistant => "assistant",
@@ -112,6 +121,19 @@ impl ProtocolWriter for OpenAiWriter {
                 "role": role_str,
                 "content": content_val,
             });
+
+            // Re-emit the participant `name` this message arrived with. Without this a pool-alias
+            // route (which rewrites the model and therefore re-serializes instead of forwarding the
+            // caller's bytes) silently stripped `name` from every message on an otherwise
+            // same-protocol OpenAI→OpenAI hop.
+            if let Some(name) = message_names
+                .and_then(|m| m.get(&msg_idx.to_string()))
+                .and_then(|v| v.as_str())
+            {
+                if let Some(o) = msg_obj.as_object_mut() {
+                    o.insert("name".to_string(), serde_json::json!(name));
+                }
+            }
 
             // Emit tool_calls for ANY message carrying ToolUse blocks, not only assistant ones.
             // A ToolUse on a non-assistant role is unusual but legal in the IR; gating this on the
@@ -376,6 +398,14 @@ impl ProtocolWriter for OpenAiWriter {
                 };
                 function_obj.insert("parameters".to_string(), params);
 
+                // STRICT function calling, in its native nested slot. Emitted only when the source
+                // actually stated it — `None` means "the caller said nothing", and materializing
+                // that as `strict: false` would be busbar inventing an explicit opt-out the caller
+                // never wrote.
+                if let Some(strict) = tool.strict {
+                    function_obj.insert("strict".to_string(), serde_json::json!(strict));
+                }
+
                 let mut tool_obj = serde_json::Map::new();
                 tool_obj.insert("type".to_string(), serde_json::json!(TOOL_TYPE_FUNCTION));
                 tool_obj.insert(
@@ -420,7 +450,10 @@ impl ProtocolWriter for OpenAiWriter {
             // The max-completion-tokens sentinel is a busbar-internal marker consumed above
             // (it selected the cap's emitted key); it is NOT a real OpenAI field, so skip it here so
             // it never leaks onto the wire (which would be an invalid body and a proxy tell).
-            if key == MAX_COMPLETION_TOKENS_SENTINEL {
+            // Both busbar-internal markers are consumed above (one selected the cap's emitted key,
+            // the other re-attached `messages[].name`); neither is a real OpenAI field, so neither
+            // may reach the wire — that would be an invalid body AND a proxy tell.
+            if key == MAX_COMPLETION_TOKENS_SENTINEL || key == MESSAGE_NAMES_SENTINEL {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -689,6 +722,19 @@ impl ProtocolWriter for OpenAiWriter {
                                 uo.insert(
                                     "prompt_tokens_details".to_string(),
                                     serde_json::json!({ "cached_tokens": cache_read }),
+                                );
+                            }
+                        }
+                        // The reasoning SUB-BUCKET, in OpenAI's native
+                        // `completion_tokens_details.reasoning_tokens` slot — the same field the
+                        // buffered writer emits. Emitted only when the source actually reported it
+                        // (`None` means "this provider said nothing", which is NOT `Some(0)`), so a
+                        // non-reasoning stream carries no fabricated details object.
+                        if let Some(rt) = usage.detail.reasoning_tokens {
+                            if let Some(uo) = usage_obj.as_object_mut() {
+                                uo.insert(
+                                    "completion_tokens_details".to_string(),
+                                    serde_json::json!({ "reasoning_tokens": rt }),
                                 );
                             }
                         }

@@ -74,6 +74,7 @@ fn test_write_request() {
             input_schema: serde_json::json!({}),
             cache_control: None,
             hosted: None,
+            strict: None,
         }],
         max_tokens: Some(1024),
         temperature: Some(0.7),
@@ -4222,6 +4223,8 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
             cache_control: None,
 
             hosted: None,
+
+            strict: None,
         }],
         max_tokens: None,
         temperature: None,
@@ -4562,6 +4565,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
                 input_schema: serde_json::json!({}),
                 cache_control: None,
                 hosted: None,
+                strict: None,
             }],
             ..Default::default()
         };

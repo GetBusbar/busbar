@@ -104,6 +104,16 @@ impl ProtocolWriter for BedrockWriter {
         "/model"
     }
 
+    /// Bedrock's `ContentBlockDelta.citation` member is a SINGLE `CitationsDelta` object per frame
+    /// (the union holds one citation, not an array), so a multi-citation `CitationsDelta` — e.g. one
+    /// Gemini chunk batching several `citationSources[]` — must be fanned out into one
+    /// `contentBlockDelta` frame each at the framing seam rather than serialized as an array a
+    /// Bedrock SDK's union decoder rejects. Same constraint, same mechanism as Anthropic's
+    /// `citations_delta`. See `StreamTranslate`.
+    fn max_citations_per_delta(&self) -> Option<usize> {
+        Some(1)
+    }
+
     /// Converse's `cachePoint` marker is validated per-model: Anthropic Claude accepts it, Amazon
     /// Nova 400s with "extraneous key [cachePoint] is not permitted". Cross-protocol cache asks
     /// therefore need the lane's `prompt_caching` capability assertion before this writer may
@@ -585,6 +595,7 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
+        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_BEDROCK);
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
@@ -845,10 +856,45 @@ impl ProtocolWriter for BedrockWriter {
                         "delta": { "reasoningContent": { "redactedContent": redacted } }
                     }),
                 )),
-                // Bedrock ConverseStream has no streaming-citation delta shape; suppress
-                // rather than emit a non-native frame (the citation is preserved in the IR and
-                // re-emitted by any protocol that does model streaming citations).
-                crate::ir::IrDelta::CitationsDelta(_) => None,
+                // Streamed grounding citations. Bedrock ConverseStream's `ContentBlockDelta` union
+                // DOES have a `citation` member (a `CitationsDelta` with the same
+                // `{title, sourceContent, location}` field set as the buffered `Citation`), arriving
+                // interleaved with `text` deltas at the SAME `contentBlockIndex` — so this arm used to
+                // suppress a frame the protocol defines, and the SAME request against the SAME backend
+                // returned sources at `stream: false` and none at `stream: true`. Nothing about the
+                // request explained that difference to the caller.
+                //
+                // `max_citations_per_delta()` is overridden to `Some(1)` for this writer, so
+                // `StreamTranslate` has already fanned a multi-citation delta out to one citation per
+                // event by the time it reaches here; `first()` is therefore the whole delta, and the
+                // debug_assert pins the invariant rather than silently truncating if the seam changes.
+                crate::ir::IrDelta::CitationsDelta(cits) => {
+                    debug_assert!(
+                        cits.len() <= 1,
+                        "bedrock writer expects the citation fan-out to have split multi-citation \
+                         deltas (max_citations_per_delta() == Some(1))"
+                    );
+                    let c = cits.first()?;
+                    match super::write_bedrock_citation(c) {
+                        Some(citation) => Some((
+                            ET_CONTENT_BLOCK_DELTA.to_string(),
+                            serde_json::json!({
+                                "contentBlockIndex": index,
+                                "delta": { "citation": citation }
+                            }),
+                        )),
+                        // Every neutral field was empty, so there is no member to put in the union
+                        // and an empty `{}` would be a malformed frame. Drop it, but say so.
+                        None => {
+                            tracing::warn!(
+                                "dropping a streamed citation on a bedrock egress: it carried no \
+                                 title, url, quoted text or resolvable character location, so there \
+                                 is no populated member for the Converse `citation` delta union"
+                            );
+                            None
+                        }
+                    }
+                }
                 // Bedrock Converse has no logprobs shape; dropped.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
             },
