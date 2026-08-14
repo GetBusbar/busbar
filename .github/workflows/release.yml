@@ -306,10 +306,16 @@ jobs:
           BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          found=(busbar-${{ matrix.target }}.tar.gz busbar-${{ matrix.target }}.zip)
+          # `shopt -s nullglob` does NOT help here: it only drops patterns that contain a wildcard,
+          # and these are literal filenames, so both words stayed in the array whether or not the
+          # file existed and the count was unconditionally 2. Test for the file instead.
+          found=()
+          for candidate in "busbar-${{ matrix.target }}.tar.gz" "busbar-${{ matrix.target }}.zip"; do
+            [ -f "$candidate" ] && found+=("$candidate")
+          done
           [ ${#found[@]} -eq 1 ] || {
             echo "::error::expected exactly one busbar-${{ matrix.target }} archive, found ${#found[@]}" >&2
+            ls -la busbar-${{ matrix.target }}* 2>/dev/null || true
             exit 1
           }
           scripts/release-key-guard.sh assert-embedded "${found[0]}"
