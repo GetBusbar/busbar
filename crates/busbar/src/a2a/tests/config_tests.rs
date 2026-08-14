@@ -5,7 +5,7 @@
 
 use crate::a2a::config::{
     policy_for, validate_agent, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism,
-    DEFAULT_REVERIFY_TTL, RESERVED_AGENTS_SECTION_KEYS,
+    DEFAULT_REVERIFY_TTL,
 };
 
 /// The section-level attach list as `config_validate` judges it: the shared rule in
@@ -285,22 +285,14 @@ fn a_bare_hook_name_is_accepted_on_both_lists() {
     validate_section_hooks(&["agent-sanitizer".to_string()]).expect("likewise at section level");
 }
 
-/// The reserved word space is IDENTICAL across planes. This is the assertion, not a comment: the
-/// A2A section reserves exactly what the pool section reserves, even though A2A does not use both.
-#[test]
-fn the_reserved_section_words_are_identical_to_the_pool_planes() {
-    assert_eq!(
-        RESERVED_AGENTS_SECTION_KEYS,
-        crate::config::RESERVED_POOLS_SECTION_KEYS,
-        "a word reserved on one plane and free on another is exactly the surprise the rule exists \
-         to prevent"
-    );
-}
-
 /// An agent may not be NAMED by a reserved word, in either spelling.
+///
+/// The word SET is no longer a per-plane constant to compare against the pool plane's — there is one
+/// declaration, `plane::config::RESERVED_SECTION_KEYS`, and this section is read through the shared
+/// split that consults it. What stays testable is that every word in it is refused HERE.
 #[test]
 fn an_agent_may_not_be_named_by_a_reserved_word() {
-    for reserved in RESERVED_AGENTS_SECTION_KEYS {
+    for reserved in crate::plane::config::RESERVED_SECTION_KEYS {
         let err = parse(&format!(
             "{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n"
         ))

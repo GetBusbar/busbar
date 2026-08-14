@@ -1409,15 +1409,26 @@ PLANE_ROOTS="mcp=crates/busbar/src/mcp a2a=crates/busbar/src/a2a"
 # this revision's envelope rules and `a2a/receive.rs` is that plane's receiving hot path, which is
 # what each was always about once the ingress left. The concern is deleted rather than left with an
 # empty row list, because a concern with nothing owed is a heading somebody adds a row under.
+# RETIRED 2026-08-14: `plane-config`. It owned ONE row — `config.rs` — and the row was TWO claims
+# wearing one name. The first was real and is now PAID: the section SPLIT (refuse a reserved key
+# holding a mapping BEFORE the typed lifts, lift `hooks`, lift `upstream_credentials`, then walk the
+# remainder refusing a reserved NAME, parse, run the plane's value rules) was written THREE times —
+# `config/mod.rs`'s `PoolsCfg`, `mcp/config.rs`'s `ToolsCfg`, `a2a/config.rs`'s `AgentsCfg` — and is
+# now `crate::plane::config::split_section`, which owns the ORDER and every SENTENCE while a plane
+# supplies only which plane it is, the type one registration parses into and its own value rules.
+# The reserved word space went the same way: one declaration, aliased nowhere, so the two per-plane
+# constants and the two tests that compared them are gone. The second claim was that a shared
+# FILENAME is a shared concern, and it is not — see the DISTINCT row below, which is what is left
+# once the duplication is actually gone. Deleted rather than left with an empty row list, for the
+# reason the `ingress` note gives.
 PLANE_CONCERNS=(
   'outbound-credentials|crates/busbar/src/egress_auth|one lease/mint with the grant kinds as parameters, not a copy per plane'
   'metering|crates/busbar/src/governance|one attribution + admission, taken from governance rather than restated per plane'
-  'plane-config|crates/busbar/src/plane/config.rs|the parse-time plane-boundary rule now lives here once, with its section list DERIVED; what is left is the per-plane config MODULE, whose value rules are genuinely plane-specific'
   'plane-admin-verbs|crates/busbar/src/admin|one admin verb surface parameterised by plane, not one handler set per plane'
 )
 
 PLANE_LEDGER="
-config.rs|DEBT|plane-config|the config module exists once per plane
+config.rs|DISTINCT|-|The parse ORDER these two files shared is gone: plane::config::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections (pools:, tools:, agents:) are read through it, so the pre-lift refusal cannot be present on one plane and missing on another. What is left in each file is that plane's GRAMMAR and nothing else. mcp/config.rs declares tools: a stdio/http/sse transport, a spawned child's environment and argv, an OAuth token exchange, the tools_allow, prompts and resources maps, and the server-underscore-tool published-name collision check. a2a/config.rs declares agents: a four-mechanism card pin, busbar's own client TLS identity, a re-verification cadence with a recovery backoff, and the refusal of upstream_credentials: passthrough. They share no type, no field, no value rule, no sentence and no caller; what they share is a filename, which on every plane says the same true and un-actionable thing - this is where that section's grammar is written. Renaming either would move the noun without moving a decision, which is why this is a signed claim and not a rename.
 transport.rs|DISTINCT|-|mcp/client/transport.rs is JSON-RPC FRAMING on one carrier: it composes a POST from a WireLeg, classifies the server-originated frames on an SSE answer and reduces that answer to its last data payload. It builds no client, resolves no name and pins no address — it asks super::pool for both. a2a/transport.rs is CLIENT CONSTRUCTION: it pins the host to the address net_guard already judged, replaces the client's resolver with one that refuses every name, offers busbar's client certificate and reads the peer SPKI off the accepted handshake. It frames nothing and parses no JSON-RPC. Two LAYERS, one noun — MCP's counterpart of the second is mcp/client/pool.rs and A2A's counterpart of the first is a2a/relay.rs, and neither pair collides. The guarded-fetch decision the row was opened for is already net_guard's on both planes: one resolver, one pin, one redirect refusal, one body cap.
 judge|DISTINCT|-|mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/registry.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects.
 revalidate|DISTINCT|-|mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other.
