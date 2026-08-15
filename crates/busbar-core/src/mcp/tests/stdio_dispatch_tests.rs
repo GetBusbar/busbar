@@ -297,21 +297,44 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         text(&first)
     );
 
-    // (2) THE BACKOFF, ON THE DISPATCH PATH. Immediately after the crash, the same call is refused
-    // by the supervisor and NOTHING IS SPAWNED. This is the assertion that could not have been
-    // written before the arm existed: the only way to reach it is through a real `tools/call`.
+    // (2) THE BACKOFF, ON THE DISPATCH PATH. After a crash, a dispatch inside the backoff window
+    // is refused by the supervisor and NOTHING IS SPAWNED. This is the assertion that could not
+    // have been written before the arm existed: the only way to reach it is through a real
+    // `tools/call`.
+    //
+    // ON A LOADED MACHINE the first 100ms window can already have elapsed by the time the next
+    // dispatch lands (observed under the full parallel workspace run); that dispatch then crashes
+    // a FRESH child — the same crash phrasing as (1) — and each further crash DOUBLES the window
+    // (100 → 200 → 400ms), so an immediate follow-up must observe the refusal within a crash or
+    // two. The loop is bounded and every crash it spends is counted into `crashes_so_far`, so the
+    // quarantine arithmetic at (4) stays exact rather than becoming a different test that happens
+    // to pass. What is NOT tolerated: any text that is neither a child crash nor the supervisor's
+    // backoff refusal.
     let (_, second) = call(&app, &g, "tools/call", params.clone()).await;
+    let mut observed = text(&second);
+    let mut crashes_so_far: u32 = 1;
+    while !observed.contains("restart backoff") && crashes_so_far < 4 {
+        assert!(
+            observed.contains("closed its stdout") || observed.contains("write to stdio MCP child"),
+            "a dispatch after a crash is refused by the supervisor (backoff) or fails on a fresh \
+             child, never anything else: {observed}"
+        );
+        crashes_so_far += 1;
+        let (_, retry) = call(&app, &g, "tools/call", params.clone()).await;
+        observed = text(&retry);
+    }
     assert!(
-        text(&second).contains("restart backoff"),
+        observed.contains("restart backoff"),
         "a dispatch inside the backoff window must be refused by the supervisor, not by a second \
-         fork: {}",
-        text(&second)
+         fork: {observed}"
     );
 
-    // (3) FOUR MORE CRASHES, each after its own backoff has elapsed. The default policy is 100ms
-    // doubling, so waiting out 100/200/400/800 is enough for crashes 2, 3, 4 and 5. The wait is
-    // generous rather than exact: this test is about the ORDER of the transitions.
-    for wait_ms in [120u64, 240, 480, 960] {
+    // (3) THE REMAINING CRASHES up to the breaker's five, each after its own backoff has elapsed.
+    // The default policy is 100ms doubling, so waiting out 1.2 × 100·2^(n-1) after crash `n` is
+    // enough to cause crash `n+1`. The wait is generous rather than exact: this test is about the
+    // ORDER of the transitions.
+    for n in crashes_so_far..5 {
+        let wait_ms = 120u64 << (n - 1);
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
         let (_, body) = call(&app, &g, "tools/call", params.clone()).await;
         let t = text(&body);
