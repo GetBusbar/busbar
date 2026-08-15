@@ -4,25 +4,110 @@
 # registration, which is the composition root's knowledge and no one else's).
 #
 # NOTE ON THE PUBLIC SURFACE: this crate is `publish = false` and its `pub` items are NOT a
-# semver contract. The visibility here exists for the `busbar` binary and the protocol crates;
-# it is widened by the compiler's demands, not by design intent, and may narrow again at any time.
+# semver contract. Visibility here is what the lib/bin seam and the protocol crates need — it
+# was widened at the compiler's demand, not by design intent, and may narrow again at any time.
+# The security-relevant internals (the audit sink, the token signer, the durable statics, the
+# trust sweeper) stay `pub(crate)` behind the `boot` module's entry points; see src/boot.rs.
+#
+# Per-dependency rationale lives where it always did: the workspace table and the `busbar`
+# manifest this list was split from (crates/busbar/Cargo.toml, pre-split history).
 [package]
 name = "busbar-core"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
+description = "The busbar engine library: protocol registry, planes, governance, trust, audit, store, config — everything the thin `busbar` binary and the protocol crates link against."
+license = "Apache-2.0"
 
 [lib]
 name = "busbar_core"
 path = "src/lib.rs"
 
+[dependencies]
+busbar-api = { path = "../api" }
+busbar-store-memory = { path = "../store-memory" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-sign = { path = "../plugin-sign" }
+busbar-secret-ref = { path = "../secret-ref" }
+busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
+busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
+reqwest = { workspace = true, features = ["http2"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+schemars = { workspace = true, optional = true }
+loom = { workspace = true, optional = true }
+ring = { workspace = true }
+base64 = { workspace = true }
+oauth-as = { workspace = true }
+sonic-rs = { workspace = true }
+serde_yaml = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+metrics-util = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-http = { workspace = true }
+hyper-rustls = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+ed25519-dalek = { workspace = true }
+crc32fast = { workspace = true }
+async-trait = { workspace = true }
+a2a-lf = { workspace = true }
+a2a-pb = { workspace = true }
+rmcp = { workspace = true }
+tonic = { workspace = true }
+tonic-types = { workspace = true }
+prost = { workspace = true }
+httpdate = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+
 [features]
-# Mirrors of `busbar`'s feature axes: the `#[cfg(feature = ...)]` sites live in the library, so
-# the library declares the features and the binary forwards them. Empty until the move commit.
+# The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
+# the `busbar` binary forwards them (busbar/<feature> = ["busbar-core/<feature>"]).
+#
+# NOTE (recorded so it is not forgotten): keeping `dep:busbar-auth-admin-tokens` here leaves the
+# `admin-tokens` match arm IN CORE — exactly the shape the design doc calls "one step short of its
+# own claim". Moving that registration to the binary is step 4's job; this split is what makes it
+# possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking"]
-auth-admin-tokens = []
-hooks-ranking = []
-openapi-schema = []
-loom-model = []
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+hooks-ranking = ["dep:busbar-hooks-ranking"]
+openapi-schema = ["dep:schemars"]
+loom-model = ["dep:loom"]
 txn-fence-red = []
+# Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
+# the bin enables it from its [dev-dependencies] edge only.
+test-support = []
+
+[dev-dependencies]
+busbar-store-example-plugin = { path = "../store-example-plugin" }
+tokio = { workspace = true, features = ["test-util"] }
+reqwest = { workspace = true, features = ["json"] }
+axum = { workspace = true, features = ["http1"] }
+http-body-util = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+rcgen = { workspace = true }
+proptest = { workspace = true }
+oauth-as = { workspace = true, features = ["test-util"] }

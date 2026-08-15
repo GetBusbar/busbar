@@ -318,6 +318,58 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 name = "busbar"
 version = "1.6.0"
 dependencies = [
+ "axum",
+ "busbar-core",
+ "busbar-plugin-loader",
+ "busbar-store-example-plugin",
+ "bytes",
+ "criterion",
+ "futures",
+ "http-body-util",
+ "metrics",
+ "reqwest 0.12.28",
+ "serde_json",
+ "serde_yaml_ng",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "busbar-api"
+version = "1.5.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "smallvec",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-admin-tokens"
+version = "1.5.0"
+dependencies = [
+ "busbar-api",
+]
+
+[[package]]
+name = "busbar-auth-static-plugin"
+version = "1.5.0"
+dependencies = [
+ "busbar-api",
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-core"
+version = "1.6.0"
+dependencies = [
  "a2a-lf",
  "a2a-pb",
  "async-trait",
@@ -333,7 +385,6 @@ dependencies = [
  "busbar-store-memory",
  "bytes",
  "crc32fast",
- "criterion",
  "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
@@ -369,8 +420,6 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.11.0",
  "sonic-rs",
- "tikv-jemalloc-ctl",
- "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
  "tonic",
@@ -379,36 +428,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "busbar-api"
-version = "1.5.0"
-dependencies = [
- "async-trait",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "smallvec",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-auth-admin-tokens"
-version = "1.5.0"
-dependencies = [
- "busbar-api",
-]
-
-[[package]]
-name = "busbar-auth-static-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-api",
- "busbar-plugin-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
