@@ -473,6 +473,29 @@ pub(crate) fn rewrite_card(
         inbound_security_requirement(),
     );
 
+    // ── THE EXTENDED-CARD CAPABILITY, claimed. The verb is BUSBAR'S at this address. ──
+    //
+    // `GetExtendedAgentCard` is answered by busbar itself, before the catalogue is consulted
+    // (`receive.rs`), on every inbound path — including this fronted agent's. The backend's own
+    // capability declaration is about the BACKEND's endpoint and rides through the passthrough
+    // untouched otherwise, so a backend that (correctly, about itself) declared nothing left this
+    // card DENYING a capability the address it points at actually serves. SPEC 3.3.4 makes the
+    // false declaration a MUST violation in both directions: a client either misses the
+    // authenticated capabilities or, told `false`, must be answered `UnsupportedOperationError` by
+    // an endpoint that would happily serve the card. The declaration follows the verb, and the
+    // verb here is busbar's — the same rule that already replaces the auth posture above.
+    match out.get_mut("capabilities") {
+        Some(Value::Object(caps)) => {
+            caps.insert("extendedAgentCard".to_string(), Value::Bool(true));
+        }
+        _ => {
+            out.insert(
+                "capabilities".to_string(),
+                json!({ "extendedAgentCard": true }),
+            );
+        }
+    }
+
     // ── AND THEN EVERY OTHER STRING IN THE DOCUMENT, at every depth. ──
     //
     // A sweep rather than a longer list of field names, because the hazard is a member busbar has
@@ -674,14 +697,26 @@ fn self_card_document(public_url: &str, skills: Vec<Value>) -> Result<Value, Ser
              authorises, meters and records every task. The agents themselves are not listed on \
              the public card — an authenticated caller is shown the ones it may reach.",
         "version": env!("CARGO_PKG_VERSION"),
-        "provider": { "organization": "busbar" },
+        // BOTH members, because the proto marks BOTH `REQUIRED` (`AgentProvider.url`,
+        // `AgentProvider.organization` — google.api.field_behavior). A card carrying the
+        // organization alone was an incomplete AgentProvider on every conformant reader, and the
+        // extended card inherits this member through the one builder.
+        "provider": { "organization": "busbar", "url": "https://getbusbar.com" },
         "supportedInterfaces": published_interfaces(public_url)?,
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["text/plain", "application/json"],
+        // NO `stateTransitionHistory`, and its absence is the fix rather than an omission — the
+        // same fix, one member over, as the top-level `protocolVersion` above. The 1.0
+        // `AgentCapabilities` (SPEC 1.4 makes `a2a.proto` normative) defines exactly `streaming`,
+        // `push_notifications`, `extensions` and `extended_agent_card`; `state_transition_history`
+        // was removed in the revision, so no ProtoJSON reader can parse it and the specification's
+        // strict schema refuses a card that carries it — which is what kept the TCK's
+        // `CARD-EXT-001` red after the other two members were fixed. The BEHAVIOUR the old member
+        // claimed is unchanged and still served: task history is returned per request under
+        // `historyLength`, which needs no capability flag.
         "capabilities": {
             "streaming": true,
             "pushNotifications": true,
-            "stateTransitionHistory": true,
             "extendedAgentCard": true,
         },
         "skills": skills,

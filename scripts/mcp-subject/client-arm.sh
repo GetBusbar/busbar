@@ -98,6 +98,74 @@ post() {
 post '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
   20 tools/list
 
+# THE LIST THAT CROSSES. The front-door `tools/list` above never reaches the peer — busbar answers
+# it from the operator's own catalogue, which is correct and is exactly why the CLI.* transcript
+# used to contain no `tools/list` at all: `CLI.CACHE.TOLERATES-ABSENT-HINTS` read that silence as
+# "client did not call tools/list even against an honest server" about a client that provably does.
+# busbar's client direction sends one on exactly one path: the connect/refresh drift check
+# (`mcp::connect::refresh`), which fetches the upstream's LIVE tool list to compare against the
+# operator's approved digests. That is an OPERATOR's verb, so this script drives it as the operator
+# — `POST /api/v1/admin/tools/probe/connect`, against the `probe` registration `boot.sh` points at
+# the same fake peer. `probe` and not `seam`, deliberately: the refresh re-hashes what the peer
+# serves and lands as DRIFT against the fixture digest, and a drift demotion on `seam` would
+# quarantine the registration every SEAM.* clause dispatches through. The transcript the suite
+# judges is written by the peer before busbar reaches any verdict about the answer.
+#
+# Skipped silently when the admin surface is not in the environment — an operator pointing this
+# battery at something that is not the booted subject has no admin half to drive, and the scenario
+# then reports the absence honestly instead of this script inventing a credential.
+#
+# RETRIED, up to three times, and the retry is the operator's own move rather than a soft gate.
+# The shared hostile peer tears sockets down as a matter of course (`half-answer` kills each
+# request; a mode change destroys the previous test's leftovers), and busbar's next send can ride
+# a connection that died under it — one transient `error sending request` against a peer that is
+# healthy again a moment later. An operator whose connect failed transiently presses the button
+# again. Nothing here can fake the verdict: the transcript the scenario reads records only
+# requests that genuinely ARRIVED at the peer, so a retry that still never reaches it leaves the
+# same honest silence, and the scenario reports it.
+# ONLY WHEN THE SUITE ASKS FOR IT (`MCP_ARM_LISTING=1`, set by the one scenario that reads a
+# listing off the transcript), and the restraint is load-bearing: the admin plane RATE-LIMITS
+# mutations per minute, `connect` is a mutation, and driving it on every one of the fourteen CLI
+# arms (each with retries) exhausted the budget before CLI.CACHE.TOLERATES-ABSENT-HINTS -- the one
+# scenario that needs the listing -- got its turn: rate_limited for the whole window, read as
+# "client did not call tools/list even against an honest server". Gating on the MODE was the first
+# attempt and was still wrong: three scenarios run the honest mode, and the two that do not read a
+# listing burned the window and then their own 20-second failsafe waiting out a rate limit only
+# the third needed to wait for. Every other scenario judges the `tools/call` below and never reads
+# a listing.
+if [ "${MCP_ARM_LISTING:-}" = "1" ] && [ -n "${MCP_SUBJECT_ADMIN_URL:-}" ] && [ -n "${MCP_SUBJECT_ADMIN_TOKEN:-}" ]; then
+  # RETRIED AGAINST THE REAL ORACLE. What the scenario reads is the PEER'S TRANSCRIPT, and this
+  # script holds the transcript's path ($transcript) — so the loop stops on the fact that matters
+  # (a `tools/list` genuinely ARRIVED at the peer) rather than on a proxy for it. Falls back to the
+  # trust view's `"failure":null` when no transcript was armed. Nothing here can fake the verdict:
+  # the transcript is written by the peer on arrival, so a retry that never reaches it leaves the
+  # same honest silence, and the scenario reports it.
+  landed() {
+    if [ -n "$transcript" ]; then
+      [ -f "$transcript" ] && grep -q '"method":"tools/list"' "$transcript"
+    else
+      case "${view:-}" in *'"failure":null'*) return 0 ;; *) return 1 ;; esac
+    fi
+  }
+  # UP TO ~75 SECONDS OF PATIENCE, and the number is the rate limiter's, not ours. `connect` sits
+  # in the admin plane's CONFIG mutation class — a fixed 10-per-minute window — and the boot-time
+  # arming legitimately spends exactly 10 on a fast machine less than a minute before this scenario
+  # runs, so the honest first attempt can land in a spent window and be told "retry next minute".
+  # An operator told that waits the minute; so does this script. The suite's failsafe for the cache
+  # scenario is sized above this ceiling.
+  for attempt in 1 2 3 4 5 6 7; do
+    printf 'client-arm: POST admin tools/probe/connect, attempt %s (drives busbar'"'"'s own tools/list at the back door)\n' "$attempt" >&2
+    view=$(curl -s --max-time 15 -X POST "$MCP_SUBJECT_ADMIN_URL/api/v1/admin/tools/probe/connect" \
+             -H "authorization: Bearer $MCP_SUBJECT_ADMIN_TOKEN" || true)
+    printf '%s\n' "$view" >&2
+    landed && { printf 'client-arm: tools/list confirmed at the peer (attempt %s)\n' "$attempt" >&2; break; }
+    case "$view" in
+      *rate_limited*) sleep 12 ;;
+      *) sleep 1 ;;
+    esac
+  done
+fi
+
 # THE CALL THAT CROSSES. `echo` is the bare name `subject_write_config` publishes for the battery's
 # hostile peer (`publish_as: echo`), because that is the tool `fakepeer/fake-server.mjs` has always
 # exposed and busbar's routing key `{server}_{tool}` cannot compose a name with no separator in it.
@@ -107,5 +175,22 @@ post '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.model
 # shorter than busbar's own per-upstream deadline would answer that question with curl instead of
 # with busbar. 45s is comfortably longer than the 10s deadline the seam registration configures and
 # comfortably longer than any honest call, so what ends this request is always busbar.
-post '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hello from the client-role leg"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
-  45 tools/call echo
+# RETRIED ON EXACTLY ONE SIGNATURE: busbar answering that its own upstream leg could not even be
+# SENT (`error sending request`) -- the pooled-connection reuse race, in which nothing reached the
+# peer at all. Every other answer, including every hostile mode's deliberate breakage, is taken as
+# it stands: those scenarios judge what DID cross, and a stall or a torn socket is the crossing.
+# A retry here can fake nothing -- the transcript the suite judges records only real arrivals.
+for call_attempt in 1 2 3; do
+  answer=$(curl -s --max-time 45 -X POST "$url" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -H 'mcp-method: tools/call' \
+    -H 'mcp-protocol-version: 2026-07-28' \
+    -H 'mcp-name: echo' \
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hello from the client-role leg"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' || true)
+  printf 'client-arm: POST tools/call echo (attempt %s)\n%s\n' "$call_attempt" "$answer" >&2
+  case "$answer" in
+    *'error sending request'*) sleep 1 ;;
+    *) break ;;
+  esac
+done

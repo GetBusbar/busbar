@@ -84,6 +84,53 @@ subject_free_ports() {
 # is `{server}_{tool}`: `test` + `simple_text` is the `test_simple_text` the suite asks for, produced
 # by the real namespacing rather than around it. See `diagnostic-upstream.mjs` for why the spec
 # authors' own reference server cannot be dropped in here unchanged.
+# THE APPROVED DIGEST OF ONE FIXTURE TOOL — looked up from `$dir/digests.txt`, which
+# `subject_collect_digests` wrote by asking each fixture upstream what it ACTUALLY serves and
+# hashing it exactly as busbar's rug-pull defence does (`tool-digest.mjs`, cross-language-pinned).
+#
+# WHY THE APPROVALS ARE REAL DIGESTS AND NOT LABELS. `schema_hash:` is the operator's approved
+# digest, and `mcp::connect::refresh` compares it against the live observation — on the operator's
+# `connect` verb and, unattended, on the trust sweep. The placeholder strings this replaced
+# ("sha256:diagnostic-simple-text") could never match anything an upstream serves, so the FIRST
+# successful observation of any registration was a drift and the registration was QUARANTINED —
+# busbar's defence working exactly as built, against a rig that lied about what it had approved.
+# Whether any given battery test survived was then a race between the suite's progress and the
+# 30-second sweep tick: fast machines usually won it, the CI runner lost it on every push, and the
+# five SEAM.* clauses reported "the seam was never crossed" about a subject that crosses it
+# correctly. An approval that is TRUE is the fix; everything else is rearranging the race.
+dg() {
+  awk -v s="$1" -v t="$2" '$1==s && $2==t {print $3}' "$SUBJECT_DIGESTS"
+}
+
+# Ask every fixture upstream for its served tool list and record each tool's busbar-digest, AFTER
+# proving the node re-implementation still agrees with busbar's (`--selftest`, see tool-digest.mjs).
+subject_collect_digests() {
+  local dir="$1" upstream_port="$2"
+  SUBJECT_DIGESTS="$dir/digests.txt"
+  node scripts/mcp-subject/tool-digest.mjs --selftest \
+    || die "tool-digest.mjs no longer agrees with busbar's digest layout; no approval it writes \
+can be trusted. Re-align it with mcp::client::catalogue::tool_digest and the pinned fixture."
+  : > "$SUBJECT_DIGESTS"
+  local sid
+  for sid in test json slow failing protocol confirm multi greeter; do
+    node scripts/mcp-subject/tool-digest.mjs "http://127.0.0.1:$upstream_port/mcp/$sid" \
+      | sed "s/^/$sid /" >> "$SUBJECT_DIGESTS" \
+      || die "could not digest the served tool list of the '$sid' fixture registration."
+  done
+  # The hostile seam peer serves its HONEST list until a test arms a mode, and boot happens before
+  # any test: what is approved is the honest `echo`, which is exactly what an operator fronting
+  # this peer would have seen and vouched for. `probe` fronts the same peer at the same digest.
+  if [ -n "${MCP_SEAM_UPSTREAM_URL:-}" ]; then
+    node scripts/mcp-subject/tool-digest.mjs "$MCP_SEAM_UPSTREAM_URL" \
+      | sed "s/^/seam /" >> "$SUBJECT_DIGESTS" \
+      || die "could not digest the seam peer's honest tool list."
+    node scripts/mcp-subject/tool-digest.mjs "$MCP_SEAM_UPSTREAM_URL" \
+      | sed "s/^/probe /" >> "$SUBJECT_DIGESTS" \
+      || die "could not digest the seam peer's honest tool list for the probe registration."
+  fi
+  say "   fixture digests recorded: $(wc -l < "$SUBJECT_DIGESTS" | tr -d ' ') approvals in $SUBJECT_DIGESTS"
+}
+
 subject_write_config() {
   local dir="$1" mcp_port="$2" data_port="$3" admin_port="$4" upstream_port="$5"
   cat > "$dir/providers.yaml" <<'YAML'
@@ -118,7 +165,11 @@ tools:
   # namespacing with nothing bypassed -- the same trick the `test` server already uses, and the same
   # reason the header of this file gives for it.
   json:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/json"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -129,7 +180,7 @@ tools:
         # publishes the OPERATOR's schema, never the upstream's -- so this is a test of the \`tools:\`
         # grammar carrying \$defs / \$anchor / \$ref / allOf / if-then-else without flattening them.
         schema_2020_12_tool:
-          schema_hash: "sha256:diagnostic-json-schema-2020-12"
+          schema_hash: "$(dg json schema_2020_12_tool)"
           description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613, SEP-2106)"
           input_schema:
             \$schema: "https://json-schema.org/draft/2020-12/schema"
@@ -162,7 +213,11 @@ tools:
             additionalProperties: false
 
   test:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/test"
     # The upstream is on loopback and speaks plaintext. allow_private is what an operator must say
     # out loud to permit that, and saying it here is honest rather than convenient: the SSRF guard
     # refuses a private address by default and this registration genuinely is an internal one.
@@ -176,22 +231,22 @@ tools:
     # every listed tool to carry one, which is the same requirement read from the other side.
     tools_allow:
       simple_text:
-        schema_hash: "sha256:diagnostic-simple-text"
+        schema_hash: "$(dg test simple_text)"
         description: "Returns a single text content block."
       image_content:
-        schema_hash: "sha256:diagnostic-image-content"
+        schema_hash: "$(dg test image_content)"
         description: "Returns a single image content block."
       audio_content:
-        schema_hash: "sha256:diagnostic-audio-content"
+        schema_hash: "$(dg test audio_content)"
         description: "Returns a single audio content block."
       embedded_resource:
-        schema_hash: "sha256:diagnostic-embedded-resource"
+        schema_hash: "$(dg test embedded_resource)"
         description: "Returns an embedded resource content block."
       multiple_content_types:
-        schema_hash: "sha256:diagnostic-multiple-content-types"
+        schema_hash: "$(dg test multiple_content_types)"
         description: "Returns text, image and resource content blocks together."
       error_handling:
-        schema_hash: "sha256:diagnostic-error-handling"
+        schema_hash: "$(dg test error_handling)"
         description: "Always reports a tool-level error."
       # ── SEP-2322 / MRTR: THE ASKS BUSBAR MAKES OF ITS OWN CALLER ──────────────────────────────
       #
@@ -222,7 +277,7 @@ tools:
       # that a real deployment would declare an ask because it wants a confirmation gate, not
       # because a suite asked for one.
       input_required_result_elicitation:
-        schema_hash: "sha256:diagnostic-input-required-elicitation"
+        schema_hash: "$(dg test input_required_result_elicitation)"
         description: "Asks the caller for a name before it runs."
         ask_caller:
           # The KEY IS ASSERTED BY NAME by sep-2322-elicitation-incomplete. It is not decorative.
@@ -242,7 +297,7 @@ tools:
       # No \`ask_caller:\` -- what is judged is whether busbar carries the upstream's progress
       # through to its own caller, and an ask would put a different exchange in the way.
       tool_with_progress:
-        schema_hash: "sha256:diagnostic-tool-with-progress"
+        schema_hash: "$(dg test tool_with_progress)"
         description: "Reports progress while it runs."
       # SEP-2575, the \`server-stateless\` scenario. Four of its checks reported "Not testable"
       # because these three tools were not exposed, and the suite counts an untestable check as a
@@ -254,7 +309,7 @@ tools:
       # failure collapses to. The ask lives here rather than in the fixture for the same reason every
       # other one does — busbar composes the demand in its OWN name and never relays the upstream's.
       missing_capability:
-        schema_hash: "sha256:diagnostic-missing-capability"
+        schema_hash: "$(dg test missing_capability)"
         description: "Requires the caller's sampling capability before it runs."
         ask_caller:
           - llm_answer:
@@ -268,7 +323,7 @@ tools:
       # INDEPENDENT top-level JSON-RPC request, so an \`ask_caller:\` here would be the very thing
       # being tested for.
       streaming_elicitation:
-        schema_hash: "sha256:diagnostic-streaming-elicitation"
+        schema_hash: "$(dg test streaming_elicitation)"
         description: "Returns a result whose stream carries no independent requests."
       # ── SEP-2663 COMPOSITION: \`test\` + \`tool_with_task\` = \`test_tool_with_task\` ─────────────
       #
@@ -285,7 +340,7 @@ tools:
       # an ask keyed \`user_name\` to the tool argument of that name, and the upstream echoes it —
       # see \`tool_with_task\` in diagnostic-upstream.mjs.
       tool_with_task:
-        schema_hash: "sha256:diagnostic-tool-with-task"
+        schema_hash: "$(dg test tool_with_task)"
         description: "Gathers a name, then escalates to a task that greets it."
         task_support: required
         ask_caller:
@@ -318,7 +373,7 @@ tools:
       # the reason the mismatch rule is a MUST rather than a nicety: if the header and the body can
       # disagree, the proxy rate-limits one tenant while the server runs the call for another.
       header_param:
-        schema_hash: "sha256:diagnostic-header-param"
+        schema_hash: "$(dg test header_param)"
         description: "Echoes a parameter that is mirrored into an Mcp-Param request header."
         input_schema:
           type: object
@@ -340,7 +395,7 @@ tools:
       # SRV.TOOLS.OUTPUTSCHEMA-CONFORMS vacuous for busbar and blinded every validating client: with
       # no schema on the wire there is nothing to check a structured result against.
       structured_report:
-        schema_hash: "sha256:diagnostic-structured-report"
+        schema_hash: "$(dg test structured_report)"
         description: "Returns a structured report alongside its text."
         input_schema:
           type: object
@@ -357,10 +412,10 @@ tools:
           required: ["subject", "status", "findings"]
           additionalProperties: false
       logging_tool:
-        schema_hash: "sha256:diagnostic-logging-tool"
+        schema_hash: "$(dg test logging_tool)"
         description: "Exercises the request-scoped, logLevel-gated log channel."
       input_required_result_sampling:
-        schema_hash: "sha256:diagnostic-input-required-sampling"
+        schema_hash: "$(dg test input_required_result_sampling)"
         description: "Asks the caller's model for a completion before it runs."
         ask_caller:
           - capital_question:
@@ -371,13 +426,13 @@ tools:
                   - role: user
                     content: { type: text, text: "What is the capital of France?" }
       input_required_result_list_roots:
-        schema_hash: "sha256:diagnostic-input-required-list-roots"
+        schema_hash: "$(dg test input_required_result_list_roots)"
         description: "Asks the caller for its roots before it runs."
         ask_caller:
           - client_roots:
               method: roots/list
       input_required_result_request_state:
-        schema_hash: "sha256:diagnostic-input-required-request-state"
+        schema_hash: "$(dg test input_required_result_request_state)"
         description: "Asks for input and seals the exchange with request state."
         ask_caller:
           - confirmation:
@@ -390,7 +445,7 @@ tools:
                   properties:
                     confirm: { type: boolean }
       input_required_result_multiple_inputs:
-        schema_hash: "sha256:diagnostic-input-required-multiple-inputs"
+        schema_hash: "$(dg test input_required_result_multiple_inputs)"
         description: "Asks for three kinds of input in one round."
         ask_caller:
           # THREE KEYS AND THREE DISTINCT METHODS. sep-2322-multiple-inputs-incomplete asserts both
@@ -415,7 +470,7 @@ tools:
             client_roots:
               method: roots/list
       input_required_result_multi_round:
-        schema_hash: "sha256:diagnostic-input-required-multi-round"
+        schema_hash: "$(dg test input_required_result_multi_round)"
         description: "Asks in two ordered rounds before it runs."
         # TWO ROUNDS. sep-2322-multi-round-r2 additionally requires the second requestState to
         # DIFFER from the first; that is a property of the seal (a fresh nonce and an incremented
@@ -440,7 +495,7 @@ tools:
                   properties:
                     confirm: { type: boolean }
       input_required_result_tampered_state:
-        schema_hash: "sha256:diagnostic-input-required-tampered-state"
+        schema_hash: "$(dg test input_required_result_tampered_state)"
         description: "Asks for input under integrity-protected request state."
         ask_caller:
           - confirmation:
@@ -453,7 +508,7 @@ tools:
                   properties:
                     ok: { type: boolean }
       input_required_result_capabilities:
-        schema_hash: "sha256:diagnostic-input-required-capabilities"
+        schema_hash: "$(dg test input_required_result_capabilities)"
         description: "Asks only for what the caller declared it can do."
         # DECLARES ONE OF EACH, deliberately. sep-2322-respect-client-capabilities calls this tool
         # declaring sampling and omitting elicitation, and fails on EITHER an elicitation ask
@@ -586,7 +641,11 @@ tools:
   # \`greet\` IS THE SIXTH, AND IT IS REACHED THE OTHER WAY. It is the one name the suite asks for
   # that contains no separator, so no server id composes it — see \`greeter:\` below.
   slow:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/slow"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -598,7 +657,7 @@ tools:
       # -32021 there, which is the correct answer for a different declaration and the wrong one for
       # this tool.
       compute:
-        schema_hash: "sha256:diagnostic-slow-compute"
+        schema_hash: "$(dg slow compute)"
         description: "Sleeps for the requested number of seconds and then returns a result."
         task_support: optional
         input_schema:
@@ -612,7 +671,11 @@ tools:
               description: "A label echoed back in the result."
 
   failing:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/failing"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -628,12 +691,16 @@ tools:
       # extension declared it creates a task, the task runs, and the run reports failure — so the
       # terminal status is \`completed\` with \`result.isError\`, never \`failed\`.
       job:
-        schema_hash: "sha256:diagnostic-failing-job"
+        schema_hash: "$(dg failing job)"
         description: "Always reports a tool-execution error."
         task_support: required
 
   protocol:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/protocol"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -643,12 +710,16 @@ tools:
       # nothing ran and there is no tool output to report. The task settles \`failed\` with an
       # inlined error{code,message} and no \`result\` at all.
       error_job:
-        schema_hash: "sha256:diagnostic-protocol-error-job"
+        schema_hash: "$(dg protocol error_job)"
         description: "Fails at the protocol level rather than reporting a tool error."
         task_support: optional
 
   confirm:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/confirm"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -663,7 +734,7 @@ tools:
       # \`ask_caller:\` would produce the wrong shape on the wire for the same operator intent, which
       # is exactly why they are two lists and not one list with a mode.
       delete:
-        schema_hash: "sha256:diagnostic-confirm-delete"
+        schema_hash: "$(dg confirm delete)"
         description: "Deletes the named file once the caller has confirmed."
         task_support: optional
         task_ask_caller:
@@ -685,7 +756,11 @@ tools:
               description: "The file to delete."
 
   multi:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/multi"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -696,7 +771,7 @@ tools:
       # listed, then answers the second and requires it to complete. Two SEPARATE rounds would park
       # on one key at a time and the partial case would never arise.
       input:
-        schema_hash: "sha256:diagnostic-multi-input"
+        schema_hash: "$(dg multi input)"
         description: "Runs once the caller has answered both parallel input requests."
         task_support: optional
         task_ask_caller:
@@ -745,7 +820,11 @@ tools:
   # The server id \`greeter\` is not decorative either: it is the proof that the default would have
   # been \`greeter_greet\` and that \`publish_as\` is what makes it \`greet\`.
   greeter:
-    url: "http://127.0.0.1:$upstream_port/mcp"
+    # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
+    url: "http://127.0.0.1:$upstream_port/mcp/greeter"
     allow_private: true
     pin:
       mechanism: cert_spki
@@ -753,7 +832,7 @@ tools:
     tools_allow:
       greet:
         publish_as: greet
-        schema_hash: "sha256:diagnostic-greet"
+        schema_hash: "$(dg greeter greet)"
         description: "Returns a greeting for the supplied name."
         input_schema:
           type: object
@@ -802,7 +881,7 @@ YAML
     tools_allow:
       echo:
         publish_as: echo
-        schema_hash: "sha256:battery-seam-echo"
+        schema_hash: "$(dg seam echo)"
         description: "Returns the string it was given."
         input_schema:
           type: object
@@ -810,8 +889,42 @@ YAML
             text:
               type: string
               description: "The text to echo."
+
+  # ── THE CLIENT-ROLE PROBE: the registration \`client-arm.sh\` refreshes ─────────────────────────
+  #
+  # The CLI.* scenarios judge what BUSBAR-AS-A-CLIENT puts on the wire, and busbar's client
+  # direction sends a \`tools/list\` on exactly one path: the connect/refresh leg
+  # (\`mcp::connect::refresh\`), which fetches an upstream's LIVE tool list to compare against the
+  # operator's approved digests. The front-door \`tools/list\` never reaches any peer — busbar
+  # answers it from the operator's own catalogue, correctly — so a rig that drives only the front
+  # door leaves \`CLI.CACHE.TOLERATES-ABSENT-HINTS\` reporting "client did not call tools/list even
+  # against an honest server" about a client that provably does.
+  #
+  # A REGISTRATION OF ITS OWN, pointed at the SAME hostile peer, and the separation is the
+  # load-bearing part. The refresh it exists to receive re-hashes what the peer actually serves and
+  # compares it against the approved digest below. Against the honest baseline the observation is
+  # CLEAN — the approval is the honest \`echo\`'s real digest — but the CLI scenarios drive this
+  # refresh under HOSTILE modes too, and \`rugpull\` serves a changed schema: that observation lands
+  # as DRIFT and \`connect\` records a durable demotion, which is busbar-the-client detecting a
+  # rug-pull, i.e. the very behaviour that scenario judges. On \`probe\` the demotion costs nothing
+  # (no scenario dispatches through \`probe\`, and the next honest connect is the agreeing
+  # observation that clears it). On \`seam\` it would quarantine the one registration every SEAM.*
+  # clause dispatches through, mid-run, from an unrelated leg. The transcript the CLI scenarios
+  # read is written by the peer BEFORE any verdict busbar reaches about the answer, so the judged
+  # bytes are unaffected by the demotion.
+  probe:
+    url: "$MCP_SEAM_UPSTREAM_URL"
+    allow_private: true
+    timeout: 10s
+    pin:
+      mechanism: cert_spki
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      echo:
+        schema_hash: "$(dg probe echo)"
+        description: "Returns the string it was given."
 YAML
-    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline)"
+    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline; refresh probe: probe)"
   fi
 }
 
@@ -907,7 +1020,22 @@ busbar built FROM THIS COMMIT; if the build step did not produce one, that is th
   SUBJECT_PIDS="$!"
   say "   diagnostic upstream on $upstream_port"
 
+  # Listening, before anything asks it for a tool list. `000` is curl's "no connection".
+  local upstream_waited=0
+  until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$upstream_port/mcp")" != "000" ]; do
+    upstream_waited=$((upstream_waited+1))
+    [ "$upstream_waited" -lt 30 ] || { tail -20 "$dir/upstream.log" >&2; die "the diagnostic upstream did not come up."; }
+    sleep 1
+  done
+
+  subject_collect_digests "$dir" "$upstream_port"
   subject_write_config "$dir" "$mcp_port" "$data_port" "$admin_port" "$upstream_port"
+  # A lookup that missed writes `schema_hash: ""`, which busbar may refuse for its own reasons;
+  # this names the actual defect — the digest table and the config disagree about a tool.
+  if grep -n 'schema_hash: ""' "$dir/config.yaml" >&2; then
+    die "a fixture tool has no digest in $SUBJECT_DIGESTS; the registration above would be armed \
+with an empty approval."
+  fi
 
   # An admin credential for THIS boot only, from the OS CSPRNG. Never a fixed string: the admin
   # plane is loopback-only here, and a fixed token in a public repository is a habit that eventually
@@ -952,6 +1080,39 @@ token to, and a made-up one would be refused."
 
   prove_the_boundary_is_intact "$direct" "$plain" "$bound" "$wrong"
 
+  # ── THE FIRST LOOK, TAKEN BY THE OPERATOR, NOW ─────────────────────────────────────────────────
+  #
+  # `connect` every registration once, before any scenario runs, and REQUIRE it to land `approved`.
+  # Two things this buys, and both are the honest version of something the rig used to get by
+  # racing:
+  #
+  #   1. PROOF THE APPROVALS ARE TRUE. The digests written above came from the fixtures' own served
+  #      lists; if any of that machinery is wrong, this loop fails the boot naming the registration,
+  #      instead of the drift surfacing minutes later as a quarantine that reads like a scattering
+  #      of unrelated scenario failures.
+  #   2. A STAMPED LEDGER. The unattended trust sweep re-checks a registration when it has NEVER
+  #      been checked or when its `refresh_ttl:` (default 6h) lapses. Un-connected, every
+  #      registration was due on the sweep's FIRST 30-second tick — mid-battery, with the hostile
+  #      seam peer armed in whatever mode the current test chose, so what the sweep observed (and
+  #      therefore whether the whole seam family was quarantined mid-run) depended on which test the
+  #      tick landed in. Checked HERE, while the peer serves its honest baseline, nothing is due
+  #      again for six hours and no tick can re-observe the seam mid-attack. The defence is not
+  #      weakened: the same sweep runs, the same comparison bites, and a real drift on an operator's
+  #      deployment quarantines exactly as before.
+  local connect_subjects="test json slow failing protocol confirm multi greeter"
+  [ -n "${MCP_SEAM_UPSTREAM_URL:-}" ] && connect_subjects="$connect_subjects seam probe"
+  local s view
+  for s in $connect_subjects; do
+    view=$(curl -s --max-time 45 -X POST "http://127.0.0.1:$admin_port/api/v1/admin/tools/$s/connect" \
+             -H "authorization: Bearer $admin_token")
+    case "$view" in
+      *'"state":"approved"'*) ;;
+      *) die "the boot-time connect of '$s' did not land approved — the rig's approvals disagree \
+with what the fixture actually serves: $view" ;;
+    esac
+  done
+  say "   all $(echo "$connect_subjects" | wc -w | tr -d ' ') registrations connected and approved; next unattended re-check is refresh_ttl away"
+
   node scripts/mcp-subject/credential-shim.mjs "$mcp_port" "$data_port" "$bound" \
     >"$dir/credential-shim.log" 2>&1 &
   SUBJECT_PIDS="$SUBJECT_PIDS $!"
@@ -972,4 +1133,15 @@ same token directly. That is a finding about the shim, not about busbar."
   # is pointed at, and the pids it must reap. Deliberately not `local`.
   # shellcheck disable=SC2034
   SUBJECT_URL="$canonical"
+
+  # AND THE ADMIN SURFACE, for the one leg that needs an OPERATOR's verb rather than a caller's:
+  # `client-arm.sh` drives `POST /api/v1/admin/tools/probe/connect` so busbar's client direction
+  # emits the `tools/list` the CLI.* scenarios exist to judge. The token is this boot's own
+  # CSPRNG-minted one — handing it to a sibling script of this harness is the operator using their
+  # own credential, not a credential escaping: it never reaches the suite, the peer or any
+  # transcript.
+  # shellcheck disable=SC2034
+  SUBJECT_ADMIN_URL="http://127.0.0.1:$admin_port"
+  # shellcheck disable=SC2034
+  SUBJECT_ADMIN_TOKEN="$admin_token"
 }

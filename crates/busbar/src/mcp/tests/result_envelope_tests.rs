@@ -15,9 +15,10 @@
 //! property. `cacheScope` must be `private` because every answer here is computed under the
 //! CALLER'S GRANT: `public` licenses a shared intermediary to serve one caller's authorized
 //! catalogue to a caller who holds none of it, which is the grant boundary being crossed by a
-//! cache. `ttlMs` must be `0` because this deployment has no invalidation channel — `listChanged`
-//! is `false` under a stateless revision — so any positive window is a promise of freshness the
-//! server cannot keep, and a client honouring it would keep offering a de-approved tool.
+//! cache. `ttlMs` must be `0` because the one invalidation channel this deployment has —
+//! `subscriptions/listen`, the reason `listChanged` is advertised `true` — is opt-in and
+//! per-caller, so any positive window is a promise of freshness kept only for the clients that
+//! subscribed, and a client honouring it would keep offering a de-approved tool.
 //!
 //! `supportedVersions` on `server/discover` is asserted to be the SAME list the ingress refuses an
 //! unsupported version against, not merely a non-empty list: the two are what a client correlates

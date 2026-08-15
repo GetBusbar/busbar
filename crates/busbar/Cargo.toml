@@ -206,6 +206,9 @@ a2a-lf = { workspace = true }
 a2a-pb = { workspace = true }
 rmcp = { workspace = true }
 tonic = { workspace = true }
+# `google.rpc.{Status,ErrorInfo}` and the trailer that carries them. See the workspace table: taken
+# for A2A section 10.6's ErrorInfo-in-`grpc-status-details-bin` MUST and for nothing else.
+tonic-types = { workspace = true }
 # The protobuf runtime, for the gRPC binding in the DELEGATING direction. See the workspace table for
 # why it is named here rather than reached through tonic: busbar's outbound hop is its own
 # resolve-then-pin transport, so the length-prefixed frame is composed here.

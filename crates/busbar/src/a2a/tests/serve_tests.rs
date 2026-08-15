@@ -600,6 +600,82 @@ fn busbars_own_endpoint_is_not_a_leak_when_it_shares_a_host_with_the_backend() {
     );
 }
 
+/// A FRONTED AGENT'S CARD CLAIMS THE EXTENDED-CARD CAPABILITY, because the VERB at that address is
+/// busbar's. `GetExtendedAgentCard` is answered by busbar itself before the catalogue is consulted,
+/// on every inbound path — so a backend that (correctly, about its own endpoint) declared nothing
+/// used to leave the served card DENYING a capability its address actually serves. SPEC 3.3.4 cuts
+/// both ways: a card saying `false`-or-absent obliges the endpoint to answer
+/// `UnsupportedOperationError`, and an endpoint that serves the card obliges the declaration. The
+/// declaration follows the verb, exactly as the auth posture already does.
+#[test]
+fn a_fronted_agents_card_claims_the_extended_card_capability_busbar_serves() {
+    // The backend declares only what is true about ITSELF: streaming, and no extended card.
+    let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
+    assert_eq!(
+        served.pointer("/capabilities/extendedAgentCard"),
+        Some(&json!(true)),
+        "busbar answers GetExtendedAgentCard at this address, so the card it serves there must \
+         say so: {served}"
+    );
+    // The backend's own true claims still ride through: the override is one member, not a rewrite
+    // of the backend's capability set.
+    assert_eq!(
+        served.pointer("/capabilities/streaming"),
+        Some(&json!(true)),
+        "the backend's own declared capabilities survive: {served}"
+    );
+
+    // And a backend card with NO capabilities member at all still gains the claim.
+    let mut bare = backend_card();
+    bare.as_object_mut().expect("object").remove("capabilities");
+    let served = rewrite_card(&bare, BACKEND, PUBLIC, "planner", None).expect("rewrite");
+    assert_eq!(
+        served.pointer("/capabilities/extendedAgentCard"),
+        Some(&json!(true)),
+        "a capability-less backend card still serves busbar's verb: {served}"
+    );
+}
+
+/// EVERY `capabilities` MEMBER BUSBAR PUBLISHES IS ONE THE NORMATIVE PROTO DEFINES.
+///
+/// SPEC 1.4 makes `a2a.proto` the normative definition of every structure on the wire, and its
+/// `AgentCapabilities` has exactly four fields: `streaming`, `push_notifications`, `extensions`
+/// and `extended_agent_card`. The 1.0 revision REMOVED `state_transition_history`, and the
+/// specification's own strict schema (`a2a.json`, the artifact the TCK's `CARD-EXT-001` validates
+/// the extended card against) refuses a card that still carries it — a member a ProtoJSON reader
+/// cannot even parse is a claim no conformant client can read. busbar kept publishing it, and that
+/// single member was the last thing keeping `CARD-EXT-001` red.
+///
+/// Asserted on BOTH documents, because SPEC 3.1.11 tells a client to replace one with the other:
+/// a member that vanished on authentication would be the same class of silent claim change the
+/// one-builder test above exists to prevent.
+#[test]
+fn every_published_capability_is_one_the_normative_proto_defines() {
+    let proto_members = [
+        "streaming",
+        "pushNotifications",
+        "extensions",
+        "extendedAgentCard",
+    ];
+    let card = backend_card();
+    let public = self_card(PUBLIC, None).expect("the public card builds");
+    let extended =
+        extended_card(PUBLIC, &[entitled("planner", BACKEND, &card)], None).expect("it builds");
+    for (name, doc) in [("public", &public), ("extended", &extended)] {
+        let caps = doc["capabilities"]
+            .as_object()
+            .expect("a capabilities object");
+        for member in caps.keys() {
+            assert!(
+                proto_members.contains(&member.as_str()),
+                "the {name} card publishes `capabilities.{member}`, which the normative \
+                 `a2a.proto` `AgentCapabilities` does not define — no ProtoJSON reader can parse \
+                 it and the specification's strict schema refuses the card for it"
+            );
+        }
+    }
+}
+
 // ══ THE EXTENDED AGENT CARD ══════════════════════════════════════════════════════════════════════
 
 fn entitled<'a>(agent_id: &'a str, backend_url: &'a str, card: &'a Value) -> EntitledAgent<'a> {

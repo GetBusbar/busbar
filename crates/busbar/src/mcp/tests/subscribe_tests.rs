@@ -412,6 +412,63 @@ async fn discover_advertises_the_method_that_dispatch_accepts() {
     );
 }
 
+/// `server/discover` DECLARES the capability the listen stream DELIVERS, per category.
+///
+/// The half `discover_advertises_the_method_that_dispatch_accepts` cannot see: a client does not
+/// look for `subscriptions/listen` in a method list, it looks at `capabilities.*.listChanged` —
+/// that is the field the specification gives it to decide whether change notifications exist at
+/// all. Advertising `false` there while `subscriptions/listen` serves a working stream is an
+/// UNDECLARED surface: no conforming client will ever open it, and one that probes the method
+/// anyway has been told by the declaration to expect `-32601`, so a stream response reads as a
+/// hang. The official battery's CONC.SUBSCRIPTION-ACK-FIRST failed on exactly that disagreement.
+///
+/// Asserted per category against what `subscribe::accept` actually narrows to: the three
+/// list-changed kinds are declared, and `resources.subscribe` stays `false` because
+/// `resourceSubscriptions` is narrowed away — a declaration and a delivery that must keep agreeing
+/// in both directions.
+#[tokio::test]
+async fn discover_declares_the_capabilities_the_listen_stream_delivers() {
+    let (url, _h) = serve(ONE_TOOL).await;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "server/discover",
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }},
+    });
+    let response: serde_json::Value = reqwest::Client::new()
+        .post(&url)
+        .header("mcp-protocol-version", PROTOCOL_VERSION)
+        .header("mcp-method", "server/discover")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let caps = response
+        .pointer("/result/capabilities")
+        .expect("discover names its capabilities");
+    for category in ["tools", "prompts", "resources"] {
+        assert_eq!(
+            caps.pointer(&format!("/{category}/listChanged")),
+            Some(&serde_json::json!(true)),
+            "`subscriptions/listen` delivers `{category}` list-changed notifications, but \
+             discover declares the capability absent — an undeclared surface no client will \
+             ever open: {caps}"
+        );
+    }
+    assert_eq!(
+        caps.pointer("/resources/subscribe"),
+        Some(&serde_json::json!(false)),
+        "`resourceSubscriptions` is narrowed away by the stream, so declaring it here would \
+         promise a notification that never comes: {caps}"
+    );
+}
+
 /// **THE FREEZE IS LIFTED, AND THIS IS THE CASE THAT PROVED IT.**
 ///
 /// This was `a_revoked_key_keeps_being_served_until_the_lifetime_bound`, a CHARACTERISATION test

@@ -455,6 +455,15 @@ battery_subject() {
     MCP_SUBJECT_CLIENT_CMD="bash $(pwd)/scripts/mcp-subject/client-arm.sh $seam_control $SUBJECT_URL"
     export MCP_SUBJECT_CLIENT_CMD
 
+    # THE ADMIN HALF OF THE CLIENT ARM. busbar's client direction sends `tools/list` on exactly one
+    # path — the connect/refresh drift check — and that path is an OPERATOR's verb, so the arm
+    # script needs the admin surface of the busbar booted above. Through the environment rather
+    # than argv, because the suite records and prints launch commands and a credential in argv is a
+    # credential in every transcript. See client-arm.sh for what it drives and boot.sh for why the
+    # refresh lands on the `probe` registration rather than on `seam`.
+    export MCP_SUBJECT_ADMIN_URL="$SUBJECT_ADMIN_URL"
+    export MCP_SUBJECT_ADMIN_TOKEN="$SUBJECT_ADMIN_TOKEN"
+
     # THE ALWAYS-FAILING TOOL, named here for the same reason `run-control.sh` names
     # `always_fails` for the python control: the harness contains no knowledge of any subject, so the
     # ARMING script is the one place a subject's own tool name may be written. Without it

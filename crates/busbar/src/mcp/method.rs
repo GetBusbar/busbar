@@ -127,15 +127,17 @@ const CACHE_SCOPE: &str = "private";
 ///
 /// A POSITIVE ttl is a promise that the answer will still be true for that long, and this server
 /// cannot make it. The registry is versioned and the operator can move it at any moment: an
-/// approval revoked, a pin bumped, a rug-pull quarantine landing between two requests. There is
-/// also no channel to correct a stale cache with — `listChanged` is advertised `false` because this
-/// revision is stateless and there is no stream to notify over — so a client that cached for a
-/// minute would keep OFFERING a de-approved tool for a minute. Dispatch would still refuse the
-/// call it produced (the generation re-check is per request and does not consult any cache), so the
-/// cost is a confusing refusal rather than an unauthorized call. That is exactly why the honest
-/// answer is `0` and not a comfortable-looking `60000`: a cache hint that lies is worse than none,
-/// and `0` is not the absence of a hint — it is the schema's own way of stating "no freshness
-/// window", which is the true statement about a catalogue with no invalidation channel.
+/// approval revoked, a pin bumped, a rug-pull quarantine landing between two requests. The
+/// invalidation channel that exists — `subscriptions/listen`, which is why `listChanged` is now
+/// advertised `true` — is OPT-IN and per-caller: a client that never opened a stream has no
+/// correction coming, so a positive ttl would be a promise kept only for the clients that
+/// subscribed. A client that cached for a minute would keep OFFERING a de-approved tool for a
+/// minute. Dispatch would still refuse the call it produced (the generation re-check is per
+/// request and does not consult any cache), so the cost is a confusing refusal rather than an
+/// unauthorized call. That is exactly why the honest answer is `0` and not a comfortable-looking
+/// `60000`: a cache hint that lies is worse than none, and `0` is not the absence of a hint — it
+/// is the schema's own way of stating "no freshness window", which is the true statement about a
+/// catalogue whose only invalidation channel is one the caller may not have opened.
 const CACHE_TTL_MS: i64 = 0;
 
 /// Everything a method needs, gathered once so no handler reaches for a global.
@@ -486,9 +488,22 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             // Advertised as present only when this caller can actually reach one. A capability
             // advertised to a caller who holds nothing under it is an invitation to a refusal.
             "capabilities": {
-                "tools": { "listChanged": false },
-                "prompts": { "listChanged": false },
-                "resources": { "listChanged": false, "subscribe": false },
+                // `listChanged: true` on all three, because `subscriptions/listen` DELIVERS all
+                // three: `super::subscribe` narrows a requested filter to exactly
+                // {tools,prompts,resources}ListChanged and emits each on the caller's own stream
+                // when the grant-scoped catalogue slice moves. This flag is the field a client
+                // reads to decide whether change notifications exist AT ALL — advertising `false`
+                // beside a working stream is an undeclared surface no conforming client will ever
+                // open, and one that probed the method anyway was told by this very document to
+                // expect `-32601`, so the stream response read as a hang. The declaration and the
+                // delivery are pinned to each other by
+                // `discover_declares_the_capabilities_the_listen_stream_delivers`.
+                "tools": { "listChanged": true },
+                "prompts": { "listChanged": true },
+                // `subscribe: false` is still the true half: `resourceSubscriptions` is narrowed
+                // away in the acknowledgement, because a resource's CONTENTS change at the
+                // upstream that owns them and busbar is not told when they do.
+                "resources": { "listChanged": true, "subscribe": false },
                 // Present because `completion/complete` is IMPLEMENTED and answers correctly, which
                 // is what the capability declares. It is not a claim that this deployment has
                 // suggestions to give — see `completion_complete` for why the answer is the empty

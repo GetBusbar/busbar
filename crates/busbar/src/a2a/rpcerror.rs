@@ -39,7 +39,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
 
 /// The ProtoJSON type URL a `google.rpc.ErrorInfo` is tagged with, as A2A section 5.4 requires it.
-const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+pub(crate) const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 
 /// The domain every A2A `ErrorInfo` carries. Fixed by the specification, never this deployment's.
 const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";

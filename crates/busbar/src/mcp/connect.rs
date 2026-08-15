@@ -650,7 +650,7 @@ fn ledger_of(cache: &CatalogueCache, id: &str) -> crate::trust::reverify::Ledger
 /// Deliberately mirrors the ledger half of [`crate::trust::reverify::settle`] and stops there: the
 /// half `settle` adds on top is the recovery hold, which this plane's `observe` cannot express. See
 /// the stated difference above.
-fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool) {
+pub(crate) fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool) {
     let Ok(sid) = ServerId::new(id) else {
         return;
     };

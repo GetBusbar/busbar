@@ -321,3 +321,60 @@ async fn a_null_id_and_a_missing_id_are_uncorrelated_rather_than_results() {
         );
     }
 }
+
+/// THE LEG'S OWN TIMEOUT BITES, whatever timeout the destination's CACHED client was built with.
+///
+/// `McpConnectionPool::client_for` caches one `reqwest::Client` per pinned destination, and a
+/// client-level timeout is baked in at construction — so the FIRST caller's deadline silently
+/// became every later caller's. Concretely: the connect/refresh path touches an upstream with its
+/// own 30-second budget, and every subsequent dispatch to that upstream then waited 30 seconds
+/// instead of the `timeout:` the operator wrote on the registration. An operator's per-server
+/// deadline that only applies when nobody looked at the server first is not a deadline; it is a
+/// race. The fix is a PER-REQUEST timeout on the send itself, which is what this test pins: a
+/// stalling upstream whose cached client was built generous must still fail the tight leg fast.
+#[tokio::test]
+async fn the_legs_timeout_binds_the_send_even_when_the_cached_client_was_built_looser() {
+    // A server that accepts and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                // Read and hold the socket open for ever; never write a byte back.
+                while sock.read(&mut buf).await.unwrap_or(0) > 0 {}
+            });
+        }
+    });
+    let url = format!("http://{addr}/mcp");
+
+    let pool = McpConnectionPool::new();
+    // FIRST TOUCH: a generous caller (the refresh path's shape) builds and caches the client.
+    let _ = pool
+        .client_for(&url, private_ok(), Duration::from_secs(300))
+        .await
+        .expect("the pinned client builds");
+
+    // SECOND TOUCH: a dispatch with a tight per-server deadline. The deadline must be the LEG'S.
+    let request = tools_list(&url, 1, None);
+    let started = std::time::Instant::now();
+    let outcome = HttpTransport::send(
+        &leg(&pool, private_ok(), Duration::from_millis(300)),
+        &request,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(
+        outcome.is_err(),
+        "a stalled upstream must fail the send, not hang it"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the leg asked for 300ms and waited {elapsed:?}: the cached client's timeout won over \
+         the leg's, so the operator's per-server `timeout:` is only honoured when nothing else \
+         touched the destination first"
+    );
+}

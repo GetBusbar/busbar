@@ -15,9 +15,10 @@ this file's ledger** — the LOCKED `PUSH-DELIVER-001/002/003` trio — and it i
 REQUIREMENT level (not the suite's own MUST row, which folds `NOT TESTED` requirements — a suite
 limitation shared by the pinned third-party control, see `check-baseline.py` and
 `testing/a2a-tck/baselines/` — into "failed" and is printed for a human but not gated on).
-`CARD-EXT-001`, waived below, and `GRPC-ERR-001`, recorded but not waived, are BOTH deliberately
-absent from that pin: they still fail the subject leg's gate, named, on every run, exactly as this
-file says they should.
+`CARD-EXT-001` and `GRPC-ERR-001` were both deliberately absent from that pin while they failed —
+they failed the subject leg's gate, named, on every run, exactly as this file said they should —
+and BOTH ARE NOW FIXED (2026-08-15; their entries below record what changed). The gate expects
+them green.
 
 ---
 
@@ -70,7 +71,9 @@ control that fired.
 **DENOMINATOR.** `114 − 21 = 93`. That is the achievable ceiling on this pin, and the target is 100%
 of it. 3 of the 93 (`PUSH-DELIVER-001/002/003`, below) are a deliberate security refusal — busbar
 never accepts a plaintext webhook callback — waived-red permanently, never a gap. Public claim:
-**83/93** until higher.
+**90/93** (2026-08-15, `CARD-EXT-001` and `GRPC-ERR-001` fixed; the only remaining reds are the
+PUSH-DELIVER trio, which is the security refusal above — the number does not go higher on this pin
+without accepting plaintext callbacks).
 
 **WHAT WOULD RETIRE THIS ENTRY.** The pinned TCK growing a second credential (for the `AUTH-*`/scoping
 families) and an upstream vantage point (for `VER-CLIENT-*`) — see "Upstreaming" in
@@ -170,7 +173,26 @@ Until then the release ships with these three RED and says so.
 
 ---
 
-## `CARD-EXT-001` — waived 2026-08-12
+## `CARD-EXT-001` — waived 2026-08-12, FIXED 2026-08-15
+
+**FIXED 2026-08-15.** The waiver below is retained as the record of why this row was once red; it
+no longer waives anything. What settled it was reading the schema divergence the right way round:
+SPEC 1.4 makes `a2a.proto` the NORMATIVE definition of every wire structure and the prose/sample
+card informative, and the strict validator behind this requirement is generated from the proto. Of
+the three members the validator rejected, two had already been fixed on the proto's side of the
+divergence (`protocolVersion` removed, `securityRequirements` spelled as the proto spells it) —
+the third, `capabilities.stateTransitionHistory`, was a member the 1.0 `AgentCapabilities` simply
+does not define: no ProtoJSON reader can parse it, so publishing it served nobody. busbar's card
+now carries only proto-defined capability members
+(`crates/busbar/src/a2a/serve.rs::self_card_document`, pinned by
+`every_published_capability_is_one_the_normative_proto_defines`), and the behaviour the old member
+claimed is unchanged — task history is served per request under `historyLength`, which needs no
+flag. Verified 2026-08-15: `CARD-EXT-001` PASS on all three transports
+(`run-tck.sh` subject leg), and the served card passes the suite's own strict `Agent Card` schema.
+The sample-card divergence recorded below remains upstream's to resolve; busbar no longer sits on
+the losing side of it.
+
+### The original waiver record (historical)
 
 **WHAT CHANGED, AND WHY THE NUMBER MOVED THE WAY IT DID.** busbar now implements
 `GetExtendedAgentCard` / `agent/getAuthenticatedExtendedCard` and its card declares
@@ -246,7 +268,21 @@ suit one instrument's reading, and the reading is not the one clients implement.
 resolution, in whichever direction it goes.
 ---
 
-## `GRPC-ERR-001` — recorded 2026-08-12, NOT waived
+## `GRPC-ERR-001` — recorded 2026-08-12, FIXED 2026-08-15
+
+**FIXED 2026-08-15.** The dependency decision recorded below was taken: the canonical
+`google.rpc.{Status,ErrorInfo}` types come from `tonic-types` — the tonic project's own crate,
+whose entire dependency set (`prost`, `prost-types`, `tonic`) was already in the lock, so the new
+supply-chain surface is that one crate and nothing behind it. A refused gRPC call now carries the
+protobuf `google.rpc.Status` in the `grpc-status-details-bin` trailer with a `google.rpc.ErrorInfo`
+detail — TRANSCRIBED from the same ProtoJSON `ErrorInfo` the JSON-RPC binding already carries in
+`error.data` (one section 5.4 table, one fact, re-encoded; a relayed backend's `metadata` survives
+into the trailer), never re-derived beside the service
+(`crates/busbar/src/a2a/grpc.rs::error_info_of`, pinned by
+`an_a2a_refusal_carries_error_info_in_the_status_details_trailer` and its no-invented-reason
+control). Verified 2026-08-15: `GRPC-ERR-001` PASS (`run-tck.sh` subject leg).
+
+### The original record (historical)
 
 **METHOD.** `scripts/a2a-subject/boot.sh --tck` against a busbar built from this commit, TCK pinned
 at `5996b79f9cefa6fc390980e383e358a66fb9e49e`, on the run that first armed the gRPC binding. MUST

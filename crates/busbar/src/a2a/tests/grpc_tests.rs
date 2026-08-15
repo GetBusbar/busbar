@@ -100,6 +100,65 @@ fn an_unknown_json_rpc_code_falls_back_to_the_http_status() {
     assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
+/// AN A2A REFUSAL CARRIES ITS `google.rpc.ErrorInfo` IN THE STATUS DETAILS — the protobuf copy,
+/// in `grpc-status-details-bin`, of the same fact the JSON-RPC binding already carries in
+/// `error.data`. A2A section 10.6 makes it a MUST ("implementations MUST include a
+/// google.rpc.ErrorInfo message in the status.details array"), and it is the TCK's `GRPC-ERR-001`
+/// — the one requirement that kept the gRPC transport off 72/72.
+///
+/// TRANSCRIBED FROM THE ENVELOPE, not re-derived from the code, and the distinction is the design:
+/// the JSON error object arriving here already carries the ProtoJSON `ErrorInfo` that
+/// `rpcerror::body` built from the one section 5.4 table — or that a fronted backend relayed,
+/// metadata and all. Re-deriving from the code would be a second copy of the table for the two to
+/// disagree over, and would drop a relayed backend's metadata on the floor.
+#[test]
+fn an_a2a_refusal_carries_error_info_in_the_status_details_trailer() {
+    use tonic_types::StatusExt as _;
+    let err = serde_json::json!({
+        "code": -32001,
+        "message": "no task with id t-404",
+        "data": [{
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "domain": "a2a-protocol.org",
+            "reason": "TASK_NOT_FOUND",
+            "metadata": { "taskId": "t-404" },
+        }],
+    });
+    let status = status_for_error(&err, axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    let details = status.get_error_details();
+    let info = details.error_info().unwrap_or_else(|| {
+        panic!(
+            "an A2A-specific refusal must carry google.rpc.ErrorInfo in \
+             grpc-status-details-bin (A2A 10.6, GRPC-ERR-001); the trailer held: {:?}",
+            status.details()
+        )
+    });
+    assert_eq!(info.reason, "TASK_NOT_FOUND");
+    assert_eq!(info.domain, "a2a-protocol.org");
+    assert_eq!(
+        info.metadata.get("taskId").map(String::as_str),
+        Some("t-404"),
+        "a relayed refusal's metadata survives into the protobuf copy"
+    );
+}
+
+/// AND A STANDARD JSON-RPC ERROR CARRIES NONE, because the specification's own table leaves its
+/// reason unset — an invented reason would put a string on the wire no conformant client knows.
+/// The control without which the test above cannot tell "transcribed from the envelope" from
+/// "invented for every refusal".
+#[test]
+fn a_standard_json_rpc_error_carries_no_error_info_in_the_trailer() {
+    use tonic_types::StatusExt as _;
+    let err = serde_json::json!({ "code": -32602, "message": "params are malformed" });
+    let status = status_for_error(&err, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        status.get_error_details().error_info().is_none(),
+        "a standard JSON-RPC error has no ErrorInfo row in section 5.4, so the trailer must not \
+         invent one"
+    );
+}
+
 /// SSE FRAMES ARE TAKEN WHOLE OR NOT AT ALL. A frame split across two network chunks must not be
 /// delivered as two, and a buffer holding half a frame must yield nothing rather than a truncated
 /// one — which is what a naive line-split does and how a stream loses its first event.
