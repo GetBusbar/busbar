@@ -970,6 +970,10 @@
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
         },
+        "roots": {
+          "optional": true,
+          "type": "Vec<RootCfg>"
+        },
         "timeout": {
           "optional": true,
           "type": "String"
@@ -1779,6 +1783,21 @@
         },
         "group": {
           "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "RootCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "name": {
+          "optional": true,
+          "type": "String"
+        },
+        "uri": {
+          "optional": false,
           "type": "String"
         }
       },

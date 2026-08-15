@@ -295,6 +295,25 @@ pub(crate) async fn rpc(
             wire_refusal: None,
             body: &body,
         },
+        // THE NOTIFICATION OBSERVER. `notifications/roots/list_changed` is the one inbound
+        // notification this plane acts on: the caller has announced that its filesystem roots are
+        // no longer what they were, so every outstanding roots-bearing `requestState` sealed for
+        // this principal stops verifying (see `crate::mcp::roots`). The principal is the SAME value
+        // `method::caller_ask_decision` binds state to — the authenticated key id, or the one
+        // honest constant on an ungoverned deployment — because an epoch compared under a different
+        // name than it was sealed under is an epoch that never matches or always does.
+        {
+            let epochs = app.mcp_roots_epochs.clone();
+            let notify_principal = gov
+                .key
+                .as_ref()
+                .map_or_else(|| "<ungoverned>".to_string(), |k| k.id.clone());
+            move |method: &str, _value: &serde_json::Value| {
+                if method == crate::mcp::roots::METHOD_NOTIFY_ROOTS_LIST_CHANGED {
+                    epochs.note_change(&notify_principal);
+                }
+            }
+        },
         |value, id, method| async move {
             rpc_dispatch(&app, &handle, &gov, &principal, headers, value, id, method).await
         },

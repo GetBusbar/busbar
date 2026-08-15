@@ -580,28 +580,38 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     let outcome = super::inputreq::drive(
         &runner.server_id,
         runner.max_rounds,
-        |round, _satisfaction| {
+        |round, satisfaction| {
             super::upstream::call(
                 &runner.pool,
                 &runner.authorised,
                 &arguments,
                 u64::from(round),
+                satisfaction,
             )
         },
-        move || {
-            handle
+        {
+            let handle = Arc::clone(&handle);
+            let server_id = server_id.clone();
+            move || {
+                handle
+                    .load()
+                    .mcp_catalogue
+                    .server(&server_id)
+                    .map(|s| s.grants)
+                    .unwrap_or_default()
+            }
+        },
+        // The SAME satisfier as the synchronous path, for the same reason both run one loop: an
+        // upstream's roots ask from inside a task is the identical decision, judged from the
+        // identical live snapshot. See `super::roots::satisfy_upstream_ask`.
+        |ask| {
+            let roots = handle
                 .load()
                 .mcp_catalogue
                 .server(&server_id)
-                .map(|s| s.grants)
-                .unwrap_or_default()
-        },
-        |ask| {
-            Err(format!(
-                "busbar holds the `{}` grant for this server but has no satisfier for that ask in \
-                 this release; the ask terminates here and is not proxied to you",
-                ask.kind
-            ))
+                .map(|s| s.roots.clone())
+                .unwrap_or_default();
+            super::roots::satisfy_upstream_ask(ask, &server_id, &roots)
         },
         // NOT CHARGED PER ROUND, and this is the one place the task path deliberately differs from
         // the synchronous one. The caller's budget was charged ONCE, synchronously, at task

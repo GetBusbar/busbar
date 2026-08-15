@@ -189,11 +189,68 @@ fn status() -> BTreeMap<String, Claim> {
     parse_status(&read("qa/method-coverage.status")).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// The cells owed an implementation that do not have one.
+/// RECORDED IMPOSSIBILITIES — `qa/WAIVERS.md`, the third input, and the resolution of the owner's
+/// 2026-08-14 ruling that THE STATUS FILE'S WAIVER LIST STAYS EMPTY.
+///
+/// The ruling split the old waiver list three ways, and each destination is machine-checked:
+///
+/// - a waiver whose own reasoning was a PRODUCT DECISION is not a waiver — it is owed work, and it
+///   went back into `qa/method-coverage.missing`, the pinned work queue;
+/// - a cell that got BUILT is `implemented` in the status file, on an instrument;
+/// - what remains is a cell that CANNOT be built without defecting from the specification, the
+///   conformance suite, or a security property — a recorded impossibility, argued in one paragraph
+///   in `qa/WAIVERS.md`, which this parser reads.
+///
+/// The parse is deliberately narrow: a row is `- \`<exact-cell-id>\` — <argument>`, the id must be
+/// exact (globs are refused for the same one-line-retires-a-transport reason the status parser
+/// refuses them), and the argument must be a real paragraph — a floor is enforced below, because an
+/// impossibility that fits in a clause is an assertion, not an argument.
+fn recorded_impossibilities() -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (n, line) in read("qa/WAIVERS.md").lines().enumerate() {
+        let Some(rest) = line.strip_prefix("- `") else {
+            continue;
+        };
+        let Some((id, tail)) = rest.split_once('`') else {
+            panic!("qa/WAIVERS.md line {}: unterminated cell id", n + 1);
+        };
+        let argument = tail
+            .strip_prefix(" — ")
+            .unwrap_or_else(|| {
+                panic!(
+                    "qa/WAIVERS.md line {}: a recorded impossibility is `- \\`<cell-id>\\` — \
+                     <argument>`; the em-dash and the argument are not optional",
+                    n + 1
+                )
+            })
+            .trim();
+        if id.contains('*') || id.contains('?') {
+            panic!(
+                "qa/WAIVERS.md line {}: `{id}` contains a wildcard. EXACT cell ids only — a glob \
+                 is how a whole transport disappears in one line.",
+                n + 1
+            );
+        }
+        if out.insert(id.to_string(), argument.to_string()).is_some() {
+            panic!("qa/WAIVERS.md line {}: `{id}` is recorded twice", n + 1);
+        }
+    }
+    out
+}
+
+/// The cells owed an implementation that do not have one. A recorded impossibility is not owed:
+/// its obligation is discharged by the argument in `qa/WAIVERS.md`, exactly as a status-file waiver
+/// used to discharge it — the record moved, the accounting did not weaken, and
+/// [`recorded_impossibilities_are_exact_and_argued`] is what keeps the new record honest.
 fn missing(cells: &[Cell], claims: &BTreeMap<String, Claim>) -> Vec<Cell> {
+    let impossibilities = recorded_impossibilities();
     cells
         .iter()
-        .filter(|c| c.na_reason.is_none() && !claims.contains_key(&c.id))
+        .filter(|c| {
+            c.na_reason.is_none()
+                && !claims.contains_key(&c.id)
+                && !impossibilities.contains_key(&c.id)
+        })
         .cloned()
         .collect()
 }
@@ -311,6 +368,53 @@ fn every_na_cell_says_why_it_is_na() {
             "{} is marked N/A with reason {reason:?}. Mark N/A WITH A REASON — an unexplained \
              absent cell is indistinguishable from an oversight, which is the failure mode.",
             c.id
+        );
+    }
+}
+
+/// THE IMPOSSIBILITY RECORD'S OWN GATE. `qa/WAIVERS.md` silences cells exactly as the status
+/// file's waiver list used to, so it gets the same discipline the status file gets, plus the one
+/// the ruling added: an entry must ARGUE.
+#[test]
+fn recorded_impossibilities_are_exact_and_argued() {
+    let (_, cells) = inventory();
+    let ids: BTreeSet<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+    let claims = status();
+    let impossibilities = recorded_impossibilities();
+
+    assert!(
+        !impossibilities.is_empty(),
+        "qa/WAIVERS.md records no impossibilities at all. The parser reading nothing is \
+         indistinguishable from the file recording nothing, and either way every formerly-waived \
+         impossible cell would have silently become MISSING-but-unpinned."
+    );
+    for (id, argument) in &impossibilities {
+        assert!(
+            ids.contains(id.as_str()),
+            "qa/WAIVERS.md records `{id}`, which is not in the inventory. A stale record excuses \
+             nothing and hides that the method it named was renamed or removed upstream."
+        );
+        assert!(
+            !claims.contains_key(id),
+            "`{id}` is recorded as impossible in qa/WAIVERS.md AND claimed in \
+             qa/method-coverage.status. One statement is false; delete it."
+        );
+        assert!(
+            argument.len() >= 120,
+            "`{id}`: the recorded argument is {} characters. An impossibility is a strong claim — \
+             the owner's ruling was 100% coverage — and it is carried by a one-paragraph argument, \
+             not an assertion: {argument:?}",
+            argument.len()
+        );
+    }
+    // And an impossibility is not ALSO in the work queue: a cell cannot be simultaneously
+    // impossible and owed.
+    let pinned = pinned_missing();
+    for id in impossibilities.keys() {
+        assert!(
+            !pinned.contains(id),
+            "`{id}` is recorded as impossible AND pinned as owed work in \
+             qa/method-coverage.missing. One statement is false; delete it."
         );
     }
 }
@@ -489,9 +593,12 @@ fn status_parser_refuses_the_three_ways_a_waiver_lies() {
     // The gate must move in both directions or it is decorative: a cell with a claim is NOT
     // missing, and the same cell without one IS.
     let (_, cells) = inventory();
+    // Excluding the recorded impossibilities, which are not owed and would make the first
+    // assertion below false for a reason that is not about the claims map.
+    let impossibilities = recorded_impossibilities();
     let victim = cells
         .iter()
-        .find(|c| c.na_reason.is_none())
+        .find(|c| c.na_reason.is_none() && !impossibilities.contains_key(&c.id))
         .expect("at least one cell is owed an implementation");
     let empty = BTreeMap::new();
     assert!(

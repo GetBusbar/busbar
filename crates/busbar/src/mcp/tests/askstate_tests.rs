@@ -33,6 +33,9 @@ fn state() -> AskState {
         nonce: nonce().expect("entropy"),
         issued_at: NOW,
         ttl_secs: DEFAULT_TTL_SECS,
+        // The battery's baseline state is NOT roots-bearing; the epoch's own behaviour is judged
+        // end to end in `roots_changed_tests.rs`.
+        roots_epoch: None,
     }
 }
 

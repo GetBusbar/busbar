@@ -111,6 +111,10 @@ pub(crate) struct Authorised {
     /// busbar waits for an answer — is judged against the operator's grants rather than against a
     /// default nobody chose. See `super::client::peer`.
     pub(crate) grants: super::config::ServerRequestGrants,
+    /// The operator-declared filesystem roots this server may be told about when it asks
+    /// `roots/list` — the satisfier behind `grants.roots`, lifted from the same snapshot the
+    /// grants are. Empty on a server-scoped verb, which never enters the ask loop.
+    pub(crate) roots: Vec<super::config::RootCfg>,
     /// The credential MODE this server is configured with.
     pub(crate) credential: UpstreamCredential,
     /// The INBOUND principal, carried through so the credential planner re-derives the same
@@ -229,6 +233,7 @@ pub(crate) fn authorise(
         stdio: server.stdio.clone(),
         policy,
         grants: server.grants,
+        roots: server.roots.clone(),
         credential,
         caller,
         timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
@@ -303,6 +308,9 @@ pub(crate) fn authorise_verb(
             allow_private: server.upstream.allow_private,
         },
         grants: server.grants,
+        // A server-scoped verb never enters the ask loop, so there is nothing here for a
+        // satisfier to read; the empty list is the honest value rather than a lookup skipped.
+        roots: Vec::new(),
         credential,
         caller,
         timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
@@ -372,11 +380,17 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
 /// The plan is re-derived here rather than carried from [`authorise`] because the caller's grant is
 /// re-read per round — see the module header. `authorise` proves the gate ran before any I/O; this
 /// proves it runs again on the round that actually spends.
+///
+/// `satisfaction` is the answer to the PREVIOUS round's `InputRequiredResult`, built by the granted
+/// satisfier and threaded back through [`super::inputreq::drive`]'s loop — `None` on the first
+/// round and after any round the upstream answered normally. It rides onto the retry as MRTR's own
+/// `inputResponses`/`requestState` continuation.
 pub(crate) async fn call(
     pool: &McpConnectionPool,
     auth: &Authorised,
     arguments: &serde_json::Value,
     request_id: u64,
+    satisfaction: Option<serde_json::Value>,
 ) -> Result<Round, String> {
     // A `tools/call` NAMES A TOOL, so this leg must carry one. The refusal is a `String` and not a
     // panic because `Authorised` is constructible for a server-scoped verb too, and the type cannot
@@ -398,7 +412,18 @@ pub(crate) async fn call(
     };
     // The namespaced name is stripped to the bare tool inside the builder — the upstream has never
     // heard of busbar's namespacing and would answer `-32602` to it.
-    let outbound = jsonrpc::tools_call(&auth.url, key, arguments, request_id, bearer.as_deref());
+    let outbound = jsonrpc::tools_call(
+        &auth.url,
+        key,
+        arguments,
+        request_id,
+        bearer.as_deref(),
+        // The `roots` capability is declared exactly when this deployment can answer it for THIS
+        // server: the operator granted the ask AND declared what may be disclosed. See
+        // `jsonrpc::tools_call` for why declaring anything else would be dishonest either way.
+        auth.grants.roots && !auth.roots.is_empty(),
+        satisfaction.as_ref(),
+    );
     // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
     // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
     // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.
@@ -512,6 +537,13 @@ mod upstream_support;
 #[cfg(test)]
 #[path = "tests/upstream_join_tests.rs"]
 mod upstream_join_tests;
+
+// A GRANTED, OPERATOR-DECLARED `roots/list` ask, satisfied on the wire — the coverage instrument
+// for `mcp|streamable-http|client|server|roots/list`. Beside the join tests because its witness is
+// the same recording peer.
+#[cfg(test)]
+#[path = "tests/roots_satisfy_tests.rs"]
+mod roots_satisfy_tests;
 
 // THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
 // because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the

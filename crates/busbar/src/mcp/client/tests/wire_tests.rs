@@ -35,6 +35,8 @@ fn the_outbound_name_is_the_un_namespaced_tool() {
         &serde_json::json!({"path": "/tmp/x"}),
         1,
         None,
+        false,
+        None,
     );
     let body = body_of(&req);
     // The upstream has never heard of `filesystem_read_file` and would answer -32602 to it.
@@ -73,6 +75,8 @@ fn the_mirrored_headers_agree_with_the_body_they_mirror() {
         &serde_json::json!({}),
         9,
         Some("tok"),
+        false,
+        None,
     );
     let body = body_of(&req);
     assert_eq!(header(&req, "mcp-method"), body["method"].as_str());
@@ -102,6 +106,8 @@ fn there_is_no_session_header_on_any_request() {
             &serde_json::json!({}),
             2,
             Some("t"),
+            false,
+            None,
         ),
     ] {
         assert!(header(&req, "mcp-session-id").is_none());

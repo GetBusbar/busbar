@@ -105,6 +105,8 @@ fn wire_for(mode: &UpstreamCredential) -> (OutboundRequest, Vec<u8>) {
         &serde_json::json!({"amount": 100}),
         7,
         auth.as_deref(),
+        false,
+        None,
     );
     (req, exchange_body)
 }
@@ -229,6 +231,8 @@ fn every_field_is_scanned() {
         &serde_json::json!({"k": "BODYMARK"}),
         1,
         Some("AUTHMARK"),
+        false,
+        None,
     );
     let OutboundRequest { url, headers, body } = &req;
     let wire = req.wire_bytes();

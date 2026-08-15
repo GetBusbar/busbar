@@ -201,7 +201,19 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// that is not JSON, and a gate placed after the parse answers "your body is not JSON" forever and
 /// never tells the caller the thing to fix is a header. Then the parse, then the envelope, then
 /// the protocol.
-pub(crate) async fn serve<W, F, Fut>(words: &W, req: Request<'_>, dispatch: F) -> Response
+/// `notify` is the plane's NOTIFICATION OBSERVER, called with the method name and the whole parsed
+/// body exactly when the envelope is a well-formed notification, before the unconditional `202`.
+/// It observes and it cannot answer — the return type is `()` — because JSON-RPC 2.0 section 4.1's
+/// MUST NOT reply has no exception for a notification a plane found interesting. A plane with
+/// nothing to observe passes `|_, _| {}`, which is what A2A does and what MCP did until
+/// `notifications/roots/list_changed` gave it something a received notification honestly moves
+/// (see `crate::mcp::roots`).
+pub(crate) async fn serve<W, F, Fut>(
+    words: &W,
+    req: Request<'_>,
+    notify: impl FnOnce(&str, &Value),
+    dispatch: F,
+) -> Response
 where
     W: Words,
     F: FnOnce(Value, Value, String) -> Fut,
@@ -238,7 +250,12 @@ where
     // has no exception for a notification that is also wrong about something else.
     let (id, method) = match jsonrpc::read(&value) {
         Ok(Envelope::Request { id, method }) => (id, method),
-        Ok(Envelope::Notification { .. }) => return jsonrpc::accepted(),
+        Ok(Envelope::Notification { method }) => {
+            // The observer runs and then the answer is the unconditional `202` regardless of what
+            // it saw: acting is permitted, answering is not.
+            notify(&method, &value);
+            return jsonrpc::accepted();
+        }
         // (8) The DECISION is the reader's, so both planes make it the same way; the WORDS are the
         // protocol's, because a refusal rendered in another dialect's shape is a body its own
         // conformance suite rejects by schema.

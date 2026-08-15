@@ -99,6 +99,7 @@ fn cfg_with(
             transport: None,
             aud: None,
             grants: Default::default(),
+            roots: Vec::new(),
             allow_private: false,
             token_exchange: None,
             max_input_required_rounds: None,

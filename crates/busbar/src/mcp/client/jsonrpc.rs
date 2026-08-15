@@ -105,12 +105,25 @@ impl OutboundRequest {
 /// `authorization` is the ALREADY-PLANNED credential header value (see `super::egress`). It arrives
 /// as a plain `String` rather than as a caller context, which is rule 1 in the type system: this
 /// function has no access to the caller's busbar key and therefore no way to send it.
+/// `continuation` is the answer to an upstream's `InputRequiredResult` that busbar decided to
+/// satisfy: an object carrying `inputResponses` and (when the upstream sealed one) `requestState`,
+/// built by the granted satisfier and echoed here onto the RETRY of the same logical call — which
+/// is MRTR's own continuation shape, the one busbar's ingress reads at
+/// `crate::mcp::method`'s `inputResponses` sites. `None` is every first round and every call whose
+/// upstream asked nothing, and produces a byte-identical request to what this builder always sent.
+/// `advertise_roots` declares the `roots` client capability in `_meta`. TRUE exactly when the
+/// registration holds a `grants.roots` AND an operator declared `tools.<server>.roots` — the two
+/// facts that make busbar genuinely able to answer, because MRTR forbids a server sending an ask
+/// the client has not declared, and declaring a capability busbar would then refuse invites an
+/// upstream to build a call sequence around a refusal.
 pub(crate) fn tools_call(
     url: &str,
     key: &ToolKey,
     arguments: &serde_json::Value,
     request_id: u64,
     authorization: Option<&str>,
+    advertise_roots: bool,
+    continuation: Option<&serde_json::Value>,
 ) -> OutboundRequest {
     // The UN-namespaced name: see the module header.
     let name = key.tool();
@@ -128,7 +141,17 @@ pub(crate) fn tools_call(
         })
         .ok()
         .flatten();
-    let body = serde_json::json!({
+    // busbar declares NO client capabilities BY DEFAULT. Sampling and elicitation are
+    // deny-by-default per server, and declaring a capability we then refuse to honour invites an
+    // upstream to build a call sequence around it. Declaring the empty set is the honest statement
+    // of a client that will not be answering — and `roots` joins it exactly when the operator made
+    // the statement true (see `advertise_roots` above).
+    let capabilities = if advertise_roots {
+        serde_json::json!({ "roots": {} })
+    } else {
+        serde_json::json!({})
+    };
+    let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
         "method": "tools/call",
@@ -138,14 +161,25 @@ pub(crate) fn tools_call(
             "_meta": {
                 META_PROTOCOL_VERSION: PROTOCOL_VERSION,
                 META_PROGRESS_TOKEN: progress_token,
-                // busbar declares NO client capabilities. Sampling, elicitation and roots are
-                // deny-by-default per server, and declaring a capability we then refuse to
-                // honour invites an upstream to build a call sequence around it. Declaring the empty
-                // set is the honest statement of a client that will not be answering.
-                META_CLIENT_CAPABILITIES: {},
+                META_CLIENT_CAPABILITIES: capabilities,
             },
         },
     });
+    if let Some(continuation) = continuation {
+        // EXACTLY TWO members cross, by name. The continuation value is built by busbar's own
+        // satisfier, but copying it wholesale into `params` would still make that builder a second
+        // author of this envelope — and the day it carries a third member, that member ships
+        // without anyone deciding it should.
+        if let (Some(params), Some(responses)) = (
+            body["params"].as_object_mut(),
+            continuation.get("inputResponses"),
+        ) {
+            params.insert("inputResponses".to_string(), responses.clone());
+            if let Some(state) = continuation.get("requestState") {
+                params.insert("requestState".to_string(), state.clone());
+            }
+        }
+    }
     envelope(url, "tools/call", Some(name), body, authorization)
 }
 

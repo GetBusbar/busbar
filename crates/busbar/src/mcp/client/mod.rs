@@ -64,7 +64,9 @@
 //! as unreachable security-relevant code that read as shipped, and it is back with a caller rather
 //! than with an `#![allow(dead_code)]` — which is the only difference that ever mattered. The
 //! INBOUND direction (busbar itself launched as a child by an agent, serving MCP on its own stdin)
-//! is deliberately not built; `qa/method-coverage.status` carries the waiver and the reason.
+//! is not built YET: its old waiver's own text called it "a product decision, not a technical
+//! block", so per the 2026-08-14 waiver-list-to-zero ruling the whole family is owed work, pinned
+//! in `qa/method-coverage.missing` as the queue's next unit.
 //!
 //! What is still NOT wired, and is stated rather than softened:
 //!

@@ -277,6 +277,10 @@ pub(crate) struct ServerEntry {
     /// The grants for the asks an upstream can come back with — sampling, elicitation, roots.
     /// Deny-by-default by construction.
     pub(crate) grants: super::config::ServerRequestGrants,
+    /// The operator-declared filesystem roots this upstream may be told about when it asks
+    /// `roots/list` — the satisfier behind `grants.roots`. Empty ⇒ a granted ask is refused as
+    /// unsatisfiable, naming `tools.<server>.roots`.
+    pub(crate) roots: Vec<super::config::RootCfg>,
     /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
     /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
@@ -1075,6 +1079,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         pin_mechanism: def.pin.mechanism.token(),
         approval,
         grants: def.grants,
+        roots: def.roots.clone(),
         max_input_required_rounds: def
             .max_input_required_rounds
             .unwrap_or(super::config::DEFAULT_MAX_INPUT_REQUIRED_ROUNDS),

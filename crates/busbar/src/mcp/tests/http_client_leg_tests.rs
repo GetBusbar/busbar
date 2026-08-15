@@ -63,10 +63,12 @@ const SERVER: &str = "fs";
 /// WAIVED and why. What is left is what busbar must be able to send over streamable HTTP, and it is
 /// exactly what this battery drives.
 ///
-/// The six waivers this subtracts are the SEP-2575 ones — `initialize`, `notifications/initialized`,
-/// `ping`, `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe` — and they are read
-/// from the file rather than listed here, so a waiver that is ever lifted puts its method straight
-/// back into this set.
+/// The eight subtractions are the SEP-2575 removals — `initialize`, `notifications/initialized`,
+/// `ping`, `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe` and the two HTTP
+/// pseudo-verbs — and since the 2026-08-14 waiver-list-to-zero ruling they live in `qa/WAIVERS.md`
+/// as RECORDED IMPOSSIBILITIES rather than as status-file waivers (the status file's waiver list
+/// is empty by ruling). Both files are read rather than listed here, so an impossibility that is
+/// ever lifted — a revision restoring a method — puts it straight back into this set.
 fn owed_here() -> BTreeSet<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let inventory: serde_json::Value = serde_json::from_str(
@@ -76,6 +78,8 @@ fn owed_here() -> BTreeSet<String> {
     .expect("qa/method-inventory.json parses");
     let status = std::fs::read_to_string(root.join("qa/method-coverage.status"))
         .expect("qa/method-coverage.status must be present");
+    let impossibilities =
+        std::fs::read_to_string(root.join("qa/WAIVERS.md")).expect("qa/WAIVERS.md must be present");
     let waived: BTreeSet<String> = status
         .lines()
         .map(|l| l.split('#').next().unwrap_or("").trim().to_string())
@@ -88,6 +92,15 @@ fn owed_here() -> BTreeSet<String> {
             id.strip_prefix("mcp|streamable-http|client|client|")
                 .map(str::to_string)
         })
+        // The recorded impossibilities, in qa/WAIVERS.md's own row grammar (`- `, backticked id,
+        // ` — `, argument), whose full discipline is enforced by
+        // `method_coverage::recorded_impossibilities_are_exact_and_argued`.
+        .chain(impossibilities.lines().filter_map(|l| {
+            l.strip_prefix("- `")
+                .and_then(|rest| rest.split_once('`'))
+                .and_then(|(id, _)| id.strip_prefix("mcp|streamable-http|client|client|"))
+                .map(str::to_string)
+        }))
         .collect();
     let owed: BTreeSet<String> = inventory["cells"]
         .as_array()

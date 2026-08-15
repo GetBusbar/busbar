@@ -28,12 +28,13 @@
 //! because a caller cancelled; `initialize` is here because a CHILD PROCESS demands one. Which
 //! brings us to the asymmetry with the HTTP leg, which is the one design decision in this file:
 //!
-//! ## WHY `initialize`, `ping` AND `logging/setLevel` ARE BUILT HERE AND WAIVED ON THE HTTP LEG
+//! ## WHY `initialize`, `ping` AND `logging/setLevel` ARE BUILT HERE AND IMPOSSIBLE ON THE HTTP LEG
 //!
-//! `qa/method-coverage.status` waives `mcp|streamable-http|client|client|initialize` (and
+//! `qa/WAIVERS.md` records `mcp|streamable-http|client|client|initialize` (and
 //! `notifications/initialized`, `ping`, `logging/setLevel`, `resources/subscribe`,
-//! `resources/unsubscribe`) as *removed by SEP-2575*. That waiver is correct for HTTP and WRONG for
-//! stdio, and the difference is not a preference:
+//! `resources/unsubscribe`) as *removed by SEP-2575* — recorded impossibilities, not waivers,
+//! since the waiver list went to zero. That record is correct for HTTP and WRONG for stdio, and
+//! the difference is not a preference:
 //!
 //! - Over streamable HTTP, busbar's peer is a server that speaks the same revision busbar's own
 //!   front door serves. That revision deleted the handshake, so there is nothing to send.

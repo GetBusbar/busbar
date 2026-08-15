@@ -96,6 +96,7 @@ fn stdio_server(
         resource_templates_allow: Default::default(),
         aud: None,
         grants,
+        roots: Vec::new(),
         allow_private: false,
         token_exchange: None,
         max_input_required_rounds: None,

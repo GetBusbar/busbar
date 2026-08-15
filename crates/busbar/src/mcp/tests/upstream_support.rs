@@ -138,6 +138,12 @@ pub(super) enum Behaviour {
     /// that wants its demand delivered to busbar's caller does not have to be conformant, and this
     /// is the cheapest way to be non-conformant in the useful direction.
     HalfConformantAsk,
+    /// A CONFORMANT `roots/list` ask, and then the tool result — the cooperative peer the granted
+    /// satisfier needs. The FIRST request is answered with an `InputRequiredResult` naming
+    /// `roots/list` under the key `workspace` and carrying an opaque `requestState`; a request that
+    /// arrives CARRYING `inputResponses` is answered with a result that echoes what the peer was
+    /// told, so the test reads busbar's disclosure off the peer's own transcript.
+    AsksForRoots,
     /// A JSON-RPC error.
     Errors,
 }
@@ -326,6 +332,33 @@ async fn mcp_endpoint(
                 "requestState": "upstream-opaque-state-blob",
             },
         }),
+        Behaviour::AsksForRoots => {
+            let answered = state
+                .log
+                .lock()
+                .unwrap()
+                .mcp
+                .last()
+                .map(|r| r.json().pointer("/params/inputResponses").is_some())
+                .unwrap_or(false);
+            if answered {
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "content": [{ "type": "text", "text": "ROOTS RECEIVED" }] },
+                })
+            } else {
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "resultType": "input_required",
+                        "inputRequests": {
+                            "workspace": { "method": "roots/list", "params": {} },
+                        },
+                        "requestState": "peer-opaque-roots-state",
+                    },
+                })
+            }
+        }
         Behaviour::Errors => serde_json::json!({
             "jsonrpc": "2.0", "id": id,
             "error": { "code": -32003, "message": "the upstream declined" },
@@ -421,6 +454,7 @@ pub(super) fn exchanging_server(
         // spendable at another.
         aud: Some(peer.mcp_url()),
         grants: ServerRequestGrants::default(),
+        roots: Vec::new(),
         max_input_required_rounds: None,
         max_caller_ask_rounds: None,
         // Loopback: the peer is on 127.0.0.1, which every fail-closed default refuses until the

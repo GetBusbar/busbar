@@ -179,6 +179,7 @@ pub(crate) mod method;
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
 pub(crate) mod outputschema;
 pub(crate) mod resource;
+pub(crate) mod roots;
 pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
