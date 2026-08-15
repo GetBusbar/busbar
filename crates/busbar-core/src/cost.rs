@@ -416,8 +416,8 @@ impl CostModel {
     }
 
     /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
-    #[cfg(test)]
-    pub(crate) fn flat(price_per_request_cents: i64) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
             rates: None,
             groups: Vec::new(),

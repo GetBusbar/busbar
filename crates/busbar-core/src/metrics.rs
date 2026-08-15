@@ -391,8 +391,8 @@ fn recorder_builder(
 /// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
 /// configured `buffer_seconds`; there is deliberately no arg-less initializer outside tests, so no
 /// build path can install metrics without a named retention window.
-#[cfg(test)]
-pub(crate) fn init() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn init() {
     let _ = ENABLED.set(true);
     init_with(Duration::from_secs(3600));
 }

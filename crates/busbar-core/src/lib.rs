@@ -17,6 +17,14 @@
 // that introduces an `unsafe` block fails to build rather than slipping in unreviewed.
 #![forbid(unsafe_code)]
 
+// The telemetry recovery tests (src/tests/telemetry_tests.rs) measure per-thread jemalloc
+// counters, and the SHIPPED binary runs on jemalloc — so the lib's TEST binary declares the same
+// allocator, keeping those measurements real rather than vacuously zero. Test-only: the library
+// itself declares no allocator (that is the BINARY's property, and only one crate in a link may).
+#[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 
 pub mod a2a;
 pub mod admin;
@@ -82,6 +90,9 @@ pub mod trust;
 // `busbar_core::X` path resolving unchanged, and each item's crate-root VISIBILITY is exactly what
 // the lib/bin seam demanded — nothing widened for convenience.
 pub mod appbuild;
+#[cfg(test)]
+#[path = "tests/tests.rs"]
+mod tests;
 pub mod preflight;
 pub mod router;
 

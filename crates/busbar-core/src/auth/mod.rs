@@ -214,8 +214,8 @@ impl fmt::Debug for AdminAuthChain {
 impl AdminAuthChain {
     /// The empty chain (admin-tokens-only, or the open dev posture) — no external admin plugin, so
     /// the admin chain always runs inline. The default for tests and builtin-only builds.
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn empty() -> Self {
         Self {
             modules: std::collections::HashMap::new(),
             has_plugin: false,
@@ -366,8 +366,8 @@ impl AuthMiddleware {
     /// the compiled-in `test-groups-module` resolve). Panics on a plugin-name entry — a test that
     /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
-    #[cfg(test)]
-    pub(crate) fn new_builtin(cfg: &AuthCfg) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_builtin(cfg: &AuthCfg) -> Self {
         Self::new(
             cfg,
             &busbar_plugin_loader::PluginRegistry::empty(),

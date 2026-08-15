@@ -195,8 +195,8 @@ impl std::fmt::Debug for LoginMethods {
 
 impl LoginMethods {
     /// The empty map (no hosted login) — the default for tests and configs with no `identity-providers:`.
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn empty() -> Self {
         Self {
             methods: IndexMap::new(),
         }

@@ -63,6 +63,9 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# tests/cli_validate.rs builds signed plugin tarball fixtures.
+busbar-plugin-sign = { path = "../plugin-sign" }
+hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
 

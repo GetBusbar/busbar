@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// an operator to ignore the one that matters, so `hydrate_all`'s restore-error match keys on this
 /// to pick `tracing::warn!` vs `tracing::error!`. Module-level (not inlined in the match guard) so
 /// it's unit-testable; see the boot tests.
-fn is_audit_restore_read_hiccup(e: &str) -> bool {
+pub(crate) fn is_audit_restore_read_hiccup(e: &str) -> bool {
     e.starts_with("audit restore read failed")
 }
 

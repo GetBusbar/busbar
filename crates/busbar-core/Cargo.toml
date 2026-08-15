@@ -111,3 +111,10 @@ serde_json = { workspace = true }
 rcgen = { workspace = true }
 proptest = { workspace = true }
 oauth-as = { workspace = true, features = ["test-util"] }
+
+# The telemetry recovery tests read per-thread jemalloc counters; the lib's TEST binary therefore
+# runs on the same allocator the shipped binary does (see the cfg(test) global_allocator in
+# lib.rs). Dev-only and target-gated exactly as the binary's dependency is.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true }

@@ -1,3 +1,8 @@
+// Compiled three ways: under this crate's own cfg(test) (users: the in-crate test trees), under
+// the `test-support` FEATURE (users: a dependent crate's tests — the bin's), and never in a
+// production build. In the feature-only build the in-crate users are absent, so the fixture set
+// reads as dead to rustc; that is the compilation mode, not rot.
+#![cfg_attr(not(test), allow(dead_code))]
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
@@ -1711,3 +1716,43 @@ pub(crate) mod plugin_store;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+
+/// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
+/// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
+/// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic
+/// unwinds straight past the manual restore. `Drop` runs during unwind too, so holding the prior
+/// value in a guard and restoring it there is safe regardless of whether the body between
+/// construction and drop panics.
+pub struct EnvVarGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+
+impl EnvVarGuard {
+    /// Snapshot `key`'s current value (restored on drop). Does not itself set anything — callers
+    /// `std::env::set_var` afterward.
+    pub fn capture(key: &'static str) -> Self {
+        Self {
+            key,
+            prior: std::env::var_os(key),
+        }
+    }
+}
+
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+/// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
+/// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.
+pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver {
+    crate::config::secret::SecretResolver::builtins_only()
+}
