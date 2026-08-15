@@ -54,6 +54,18 @@ FONT = ("ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',"
         "Helvetica,Arial,sans-serif")
 MONO = "ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace"
 
+# One size scale for every figure. Everything below used to be a one-off
+# (9.5, 10, 10.5, 11, 11.5, 12.5, 13, 15, 15.5, 19, 21, 26, 30, 38...); now
+# every txt() call picks one of these six, and nothing renders below 12px.
+SZ = dict(
+    TITLE=22,    # figure title
+    HEAD=16,     # panel/section headings inside a figure
+    LABEL=14,    # axis labels, legends, row/column headers, callouts, body text
+    VALUE=15,    # mono numeric values: cell readings, bar values, stat cards
+    STAT=28,     # hero callout numbers (tile big numbers, headline percentages)
+    CAPTION=12,  # ticks, units, fine print, provenance stamps
+)
+
 
 def esc(s):
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
@@ -81,9 +93,9 @@ def frame(w, h, t, title, sub):
          f'viewBox="0 0 {w} {h}" role="img" aria-label="{esc(title)}">',
          f'<rect width="{w}" height="{h}" rx="10" fill="{t["bg"]}"/>']
     if title:
-        s.append(txt(28, 42, title, 21, "text", weight="650", t=t))
+        s.append(txt(28, 42, title, SZ["TITLE"], "text", weight="650", t=t))
     if sub:
-        s.append(txt(28, 66, sub, 13, "dim", t=t))
+        s.append(txt(28, 66, sub, SZ["LABEL"], "dim", t=t))
     return s
 
 
@@ -109,19 +121,20 @@ def fig_matrix(t):
               "Added latency p99 in microseconds, per ingress and upstream pair. "
               "Lower is better. 36 of 36 pairs served.")
 
-    s.append(txt(x0 - 12, y0 - 34, "UPSTREAM", 10, "faint", anchor="end",
+    s.append(txt(x0 - 12, y0 - 34, "UPSTREAM", SZ["CAPTION"], "faint", anchor="end",
                  weight="700", t=t))
     for j, eg in enumerate(order):
         cx = x0 + j * (cw + gap) + cw / 2
-        s.append(txt(cx, y0 - 34, label[eg], 11.5, "dim", anchor="middle",
+        s.append(txt(cx, y0 - 34, label[eg], SZ["LABEL"], "dim", anchor="middle",
                      weight="600", t=t))
     s.append(f'<g transform="translate(38,{y0 + 3 * (ch + gap)}) rotate(-90)">'
-             + txt(0, 0, "INGRESS", 10, "faint", anchor="middle", weight="700", t=t)
+             + txt(0, 0, "INGRESS", SZ["CAPTION"], "faint", anchor="middle",
+                   weight="700", t=t)
              + "</g>")
 
     for i, ing in enumerate(order):
         cy = y0 + i * (ch + gap)
-        s.append(txt(x0 - 16, cy + ch / 2 + 4, label[ing], 11.5, "dim",
+        s.append(txt(x0 - 16, cy + ch / 2 + 4, label[ing], SZ["LABEL"], "dim",
                      anchor="end", weight="600", t=t))
         for j, eg in enumerate(order):
             c = D["matrix"][ing][eg]
@@ -129,25 +142,26 @@ def fig_matrix(t):
             same = ing == eg
             if same:
                 s.append(rect(cx, cy, cw, ch, "accent", t, rx=7))
-                s.append(txt(cx + cw / 2, cy + 20, f'{c["p99"]} µs', 13,
+                s.append(txt(cx + cw / 2, cy + 20, f'{c["p99"]} µs', SZ["VALUE"],
                              t["bg"], anchor="middle", weight="700", mono=True, t=t))
-                s.append(txt(cx + cw / 2, cy + 34, "your bytes", 9.5, t["bg"],
-                             anchor="middle", weight="600", opacity="0.85", t=t))
+                s.append(txt(cx + cw / 2, cy + 34, "your bytes", SZ["CAPTION"],
+                             t["bg"], anchor="middle", weight="600", opacity="0.85",
+                             t=t))
             else:
                 s.append(rect(cx, cy, cw, ch, "accent_soft", t, rx=7,
                               stroke="accent_line", sw=1))
-                s.append(txt(cx + cw / 2, cy + 27, f'{c["p99"]} µs', 13,
+                s.append(txt(cx + cw / 2, cy + 27, f'{c["p99"]} µs', SZ["VALUE"],
                              "accent", anchor="middle", weight="600", mono=True, t=t))
 
     ly = y0 + 6 * (ch + gap) + 12
     s.append(rect(28, ly, 16, 16, "accent", t, rx=4))
     s.append(txt(52, ly + 12.5, "Same protocol: your original bytes, forwarded, "
-                 "not re-serialized", 11.5, "dim", t=t))
+                 "not re-serialized", SZ["LABEL"], "dim", t=t))
     s.append(rect(28, ly + 26, 16, 16, "accent_soft", t, rx=4,
                   stroke="accent_line"))
     s.append(txt(52, ly + 38.5, "Cross protocol: every modelled field arrives in "
-                 "the target's native shape", 11.5, "dim", t=t))
-    s.append(txt(28, H - 18, STAMP, 10, "faint", t=t))
+                 "the target's native shape", SZ["LABEL"], "dim", t=t))
+    s.append(txt(28, H - 18, STAMP, SZ["CAPTION"], "faint", t=t))
     s.append("</svg>")
     return "\n".join(s)
 
@@ -174,9 +188,10 @@ def fig_perf(t):
     for k, (big, lab, sub) in enumerate(tiles):
         x = tx + k * (tw + 12)
         s.append(rect(x, ty, tw, 84, "panel", t, rx=8, stroke="grid"))
-        s.append(txt(x + 16, ty + 38, big, 26, "accent", weight="700", mono=True, t=t))
-        s.append(txt(x + 16, ty + 58, lab, 11.5, "text", weight="600", t=t))
-        s.append(txt(x + 16, ty + 74, sub, 10.5, "dim", t=t))
+        s.append(txt(x + 16, ty + 38, big, SZ["STAT"], "accent", weight="700",
+                     mono=True, t=t))
+        s.append(txt(x + 16, ty + 58, lab, SZ["LABEL"], "text", weight="600", t=t))
+        s.append(txt(x + 16, ty + 74, sub, SZ["CAPTION"], "dim", t=t))
 
     # throughput vs concurrency curve
     px, py, pw, ph = 28, 210, 844, 140
@@ -201,7 +216,7 @@ def fig_perf(t):
         v = ymax * frac
         s.append(f'<line x1="{gx}" y1="{Y(v):.1f}" x2="{gx + gw}" y2="{Y(v):.1f}" '
                  f'stroke="{t["grid"]}" stroke-width="1" opacity="0.7"/>')
-        s.append(txt(gx - 10, Y(v) + 4, f"{int(v / 1000)}k", 10, "faint",
+        s.append(txt(gx - 10, Y(v) + 4, f"{int(v / 1000)}k", SZ["CAPTION"], "faint",
                      anchor="end", mono=True, t=t))
     pts = " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in zip(xs, ys))
     s.append(f'<polyline points="{pts}" fill="none" stroke="{t["accent"]}" '
@@ -213,26 +228,28 @@ def fig_perf(t):
     pxx, pyy = X(math.log2(peak["conc"])), Y(peak["rps"])
     s.append(f'<circle cx="{pxx:.1f}" cy="{pyy:.1f}" r="5.5" fill="{t["bg"]}" '
              f'stroke="{t["accent"]}" stroke-width="2.5"/>')
-    s.append(txt(pxx + 12, pyy - 6, f'{dg["frontier"][-1]["rps"]:,} req/s', 12,
-                 "text", weight="700", mono=True, t=t))
-    s.append(txt(pxx + 12, pyy + 9, "peak, no failures", 10, "dim", t=t))
+    s.append(txt(pxx + 12, pyy - 6, f'{dg["frontier"][-1]["rps"]:,} req/s',
+                 SZ["LABEL"], "text", weight="700", mono=True, t=t))
+    # Nudged further below the marker than the pre-scale offset (+9) so the
+    # larger caption clears the nearly-flat line just right of the peak.
+    s.append(txt(pxx + 12, pyy + 22, "peak, no failures", SZ["CAPTION"], "dim", t=t))
     for r in rungs:
         if r["conc"] in (1, 8, 64, 512, 4096):
             s.append(txt(X(math.log2(r["conc"])), gy + gh + 18, f'c={r["conc"]}',
-                         10, "faint", anchor="middle", mono=True, t=t))
-    s.append(txt(gx, py + 20, "REQUESTS/SEC BY CONCURRENCY", 9.5, "faint",
+                         SZ["CAPTION"], "faint", anchor="middle", mono=True, t=t))
+    s.append(txt(gx, py + 20, "REQUESTS/SEC BY CONCURRENCY", SZ["CAPTION"], "faint",
                  weight="700", t=t))
     f1 = next(f for f in dg["frontier"] if f["bound_ms"] == 1)
     pct = 100.0 * f1["rps"] / dg["frontier"][-1]["rps"]
     cx = gx + gw + 26
-    s.append(txt(cx, gy + 34, f'{pct:.0f}%', 28, "accent", weight="700",
+    s.append(txt(cx, gy + 34, f'{pct:.0f}%', SZ["STAT"], "accent", weight="700",
                  mono=True, t=t))
-    s.append(txt(cx, gy + 54, "of that rate is still held", 10.5, "text",
+    s.append(txt(cx, gy + 54, "of that rate is still held", SZ["CAPTION"], "text",
                  weight="600", t=t))
-    s.append(txt(cx, gy + 68, f'inside a 1 ms p99 budget', 10.5, "dim", t=t))
-    s.append(txt(cx, gy + 82, f'({f1["rps"]:,} req/s at c={f1["conc"]})', 10.5,
-                 "dim", mono=True, t=t))
-    s.append(txt(28, H - 16, STAMP, 10, "faint", t=t))
+    s.append(txt(cx, gy + 68, f'inside a 1 ms p99 budget', SZ["CAPTION"], "dim", t=t))
+    s.append(txt(cx, gy + 82, f'({f1["rps"]:,} req/s at c={f1["conc"]})',
+                 SZ["CAPTION"], "dim", mono=True, t=t))
+    s.append(txt(28, H - 16, STAMP, SZ["CAPTION"], "faint", t=t))
     s.append("</svg>")
     return "\n".join(s)
 
@@ -264,20 +281,20 @@ def fig_memory(t):
     for v in (0, 10, 20):
         s.append(f'<line x1="{gx}" y1="{Y(v):.1f}" x2="{gx + gw}" y2="{Y(v):.1f}" '
                  f'stroke="{t["grid"]}" stroke-width="1" opacity="0.7"/>')
-        s.append(txt(gx - 8, Y(v) + 4, f"{v}", 10, "faint", anchor="end",
+        s.append(txt(gx - 8, Y(v) + 4, f"{v}", SZ["CAPTION"], "faint", anchor="end",
                      mono=True, t=t))
-    s.append(txt(gx - 8, Y(20) - 12, "MiB", 9.5, "faint", anchor="end", t=t))
+    s.append(txt(gx - 8, Y(20) - 12, "MiB", SZ["CAPTION"], "faint", anchor="end", t=t))
     # load window shading
     ls, le = 60, 60 + m["load_s"]
     s.append(f'<rect x="{X(ls):.1f}" y="{gy:.1f}" width="{X(le) - X(ls):.1f}" '
              f'height="{gh:.1f}" fill="{t["accent"]}" opacity="0.07"/>')
-    s.append(txt((X(ls) + X(le)) / 2, gy + 12, "LOAD, c=32", 9.5, "faint",
+    s.append(txt((X(ls) + X(le)) / 2, gy + 12, "LOAD, c=32", SZ["CAPTION"], "faint",
                  anchor="middle", weight="700", t=t))
     pts = " ".join(f'{X(p["t_s"]):.1f},{Y(p["rss_mib"]):.1f}' for p in ser)
     s.append(f'<polyline points="{pts}" fill="none" stroke="{t["accent"]}" '
              f'stroke-width="2" stroke-linejoin="round"/>')
     for tt in (0, 120, 240, 360, 420):
-        s.append(txt(X(min(tt, tmax)), gy + gh + 18, f"{tt}s", 10, "faint",
+        s.append(txt(X(min(tt, tmax)), gy + gh + 18, f"{tt}s", SZ["CAPTION"], "faint",
                      anchor="middle", mono=True, t=t))
 
     stats = [
@@ -290,9 +307,10 @@ def fig_memory(t):
     for k, (big, lab) in enumerate(stats):
         y = sy + k * 50
         s.append(rect(sx, y, 224, 44, "panel", t, rx=8, stroke="grid"))
-        s.append(txt(sx + 14, y + 22, big, 15, "accent", weight="700", mono=True, t=t))
-        s.append(txt(sx + 14, y + 36, lab, 10, "dim", t=t))
-    s.append(txt(28, H - 16, STAMP, 10, "faint", t=t))
+        s.append(txt(sx + 14, y + 22, big, SZ["VALUE"], "accent", weight="700",
+                     mono=True, t=t))
+        s.append(txt(sx + 14, y + 36, lab, SZ["CAPTION"], "dim", t=t))
+    s.append(txt(28, H - 16, STAMP, SZ["CAPTION"], "faint", t=t))
     s.append("</svg>")
     return "\n".join(s)
 
@@ -312,14 +330,14 @@ def fig_field(t):
 
     def panel(x, y, w, h, title, sub):
         s.append(rect(x, y, w, h, "panel", t, rx=8, stroke="grid"))
-        s.append(txt(x + 20, y + 30, title, 15.5, "text", weight="700", t=t))
-        s.append(txt(x + 20, y + 50, sub, 12, "dim", t=t))
+        s.append(txt(x + 20, y + 30, title, SZ["HEAD"], "text", weight="700", t=t))
+        s.append(txt(x + 20, y + 50, sub, SZ["CAPTION"], "dim", t=t))
 
-    def bars(x, y, w, rows, fmt, logscale=False, lower_better=True, pitch=38, fs=13):
-        """One labelled bar per row. `pitch` is the row height and `fs` the label size:
-        the install panel carries only two rows but much longer labels (a full image
-        reference), so it gets more of both rather than being squeezed into the
-        five-row geometry the coverage panels need."""
+    def bars(x, y, w, rows, fmt, logscale=False, lower_better=True, pitch=38):
+        """One labelled bar per row. `pitch` is the row height; label and value
+        both use the shared LABEL/VALUE sizes regardless of panel, so only the
+        row spacing (not the type) differs between the five-row coverage panels
+        and the two-row install panel below, which carries longer labels."""
         import math
         vals = [v for _, v in rows]
         if logscale:
@@ -332,13 +350,13 @@ def fig_field(t):
         for i, ((lab, v), f) in enumerate(zip(rows, frac)):
             yy = y + i * pitch
             good = i == 0
-            s.append(txt(x, yy + 10, lab, fs, "text" if good else "dim",
+            s.append(txt(x, yy + 10, lab, SZ["LABEL"], "text" if good else "dim",
                          weight="700" if good else "500", t=t))
             bw = max(0.035 * w, f * w)
             s.append(rect(x, yy + 18, w, 11, "neutral_soft", t, rx=5.5))
             s.append(rect(x, yy + 18, bw, 11, "accent" if good else "neutral", t,
                           rx=5.5))
-            s.append(txt(x + w + 12, yy + 27.5, fmt(v), fs,
+            s.append(txt(x + w + 12, yy + 27.5, fmt(v), SZ["VALUE"],
                          "accent" if good else "dim", weight="700" if good else "600",
                          mono=True, t=t))
 
@@ -359,22 +377,22 @@ def fig_field(t):
          lambda v: (f"{v:,.1f} MiB" if v < 10 else f"{v:,.0f} MiB"), logscale=True)
 
     # panel C: image + install size. Two rows, but the labels are full image references,
-    # so they get a larger type size and a taller pitch than the five-row panels above.
+    # so they get a taller pitch than the five-row panels above (same type sizes).
     img = INSTALL["images"]
     bb_mib, ll_mib = img["busbar"]["compressed_mib"], img["litellm"]["compressed_mib"]
     panel(28, 398, 984, 168, "What you actually install",
           "Compressed container layers, read from the registry. Lower is better")
     rows = [(f"Busbar, {img['busbar']['image']}, {img['busbar']['platform']}", bb_mib),
             (f"LiteLLM, {img['litellm']['image']}, {img['litellm']['platform']}", ll_mib)]
-    bars(48, 468, 604, rows, lambda v: f"{v:,.2f} MiB", pitch=48, fs=14)
-    s.append(txt(838, 500, f"{ll_mib / bb_mib:.0f}x", 38, "accent", weight="700",
-                 mono=True, t=t))
-    s.append(txt(838, 522, "smaller to pull", 12.5, "dim", t=t))
+    bars(48, 468, 604, rows, lambda v: f"{v:,.2f} MiB", pitch=48)
+    s.append(txt(838, 500, f"{ll_mib / bb_mib:.0f}x", SZ["STAT"], "accent",
+                 weight="700", mono=True, t=t))
+    s.append(txt(838, 522, "smaller to pull", SZ["CAPTION"], "dim", t=t))
     s.append(txt(28, H - 20,
                  f"Coverage and memory: onthebench.ai field run, {field_day}, AWS "
                  "m7g.4xlarge (Graviton3), 4-core pin. Image sizes: registry "
                  f"manifests read {INSTALL['hand_measured']['measured_at']}.",
-                 11.5, "faint", t=t))
+                 SZ["CAPTION"], "faint", t=t))
     s.append("</svg>")
     return "\n".join(s)
 
