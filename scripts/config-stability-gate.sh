@@ -50,10 +50,12 @@ GEN="scripts/config-schema.py"
 # `SecretRef` (its own crate) and `UpstreamCreds` (auth/mod.rs) came to be config grammar that no
 # fingerprint covered. A gate whose reach is a directory glob covers where types live, not what they
 # are, and both of those types moved out from under it.
-SNAPSHOT="crates/busbar/src/config/config-schema.snapshot.json"
+# Core split (step 3.7): the config grammar lives in the engine library crate.
+CORE="crates/busbar/src"
+SNAPSHOT="${CORE}/config/config-schema.snapshot.json"
 # The per-path break-waiver file (see config-schema.py load_waivers). A COMMITTED file, deliberately
 # not an env var: every excused break is a reviewable line in the PR diff. Empty by default.
-WAIVERS="crates/busbar/src/config/config-schema.waivers"
+WAIVERS="${CORE}/config/config-schema.waivers"
 BASELINE_REF="${CONFIG_SCHEMA_BASELINE_REF:-HEAD}"
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }

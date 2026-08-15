@@ -311,7 +311,10 @@ if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 
 hdr "no synchronous plugin FFI is called inline from an async fn"
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src -name '*.rs' -not -path '*/tests/*' | sort)
+# Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
+CORE="crates/busbar/src"
+BIN="crates/busbar/src"
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — the loop below is "for each file, assert no inline FFI", which is VACUOUSLY TRUE
 # over zero files. Rename `crates/busbar` (a normal refactor), move the engine, or mistype the root,
@@ -323,12 +326,12 @@ SCAN_FLOOR=100
 if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
   hdr "result"
   note "blocking-ffi-lint FAILED — SCAN ROOT EMPTY OR MOVED"
-  note "found ${#CANDIDATES[@]} non-test .rs files under crates/busbar/src, expected >= ${SCAN_FLOOR}."
+  note "found ${#CANDIDATES[@]} non-test .rs files under ${CORE}, expected >= ${SCAN_FLOOR}."
   note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
   note "If the engine crate legitimately moved, update the find root above AND this floor together."
   exit 1
 fi
-note "scan set: ${#CANDIDATES[@]} files under crates/busbar/src (floor ${SCAN_FLOOR})"
+note "scan set: ${#CANDIDATES[@]} files under ${CORE} (floor ${SCAN_FLOOR})"
 
 hits=""
 for f in "${CANDIDATES[@]}"; do

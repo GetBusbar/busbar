@@ -65,26 +65,29 @@ from pathlib import Path
 # A path is a directory (every `*.rs` directly inside it) or a single file. A path that does not
 # exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
 # un-freeze its grammar, which is the exact failure this gate exists to prevent.
+# Core split (step 3.7): every tracked grammar source lives in the engine library crate root.
+CORE = "crates/busbar/src"
+
 SOURCES = [
-    "crates/busbar/src/config",
+    f"{CORE}/config",
     "crates/secret-ref/src/lib.rs",
-    "crates/busbar/src/auth/mod.rs",
-    "crates/busbar/src/a2a/config.rs",
+    f"{CORE}/auth/mod.rs",
+    f"{CORE}/a2a/config.rs",
     # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,
     # because the alternative is the hole this list already closed once for `a2a/`: the type name
     # would appear in the snapshot as an opaque string and every field inside it — including the
     # `default_grant` CEILING that decides what a self-registered client may ever hold — would be
     # free to change without the additive-only gate noticing.
-    "crates/busbar/src/oauth_as/config.rs",
-    "crates/busbar/src/a2a/creds.rs",
-    "crates/busbar/src/mcp/config.rs",
+    f"{CORE}/oauth_as/config.rs",
+    f"{CORE}/a2a/creds.rs",
+    f"{CORE}/mcp/config.rs",
     # `tool_pools:` / `agent_pools:` — the failover grammar, which is CORE's rather than either
     # plane's (one type, two sections). Added WITH the block for the reason stated for `oauth_as:`
     # above: `config/mod.rs` names the type, so without this line `CandidatePoolCfg` would appear in
     # the snapshot as an opaque string and `members:`/`repeatable:` — the latter being the SAFETY
     # declaration that decides whether an operation with effects may be performed twice — would be
     # free to change without the additive-only gate noticing.
-    "crates/busbar/src/failover/mod.rs",
+    f"{CORE}/failover/mod.rs",
 ]
 
 
