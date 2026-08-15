@@ -1,26 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="400" viewBox="0 0 900 400" role="img" aria-label="Fast, and it stays fast under load">
 <rect width="900" height="400" rx="10" fill="#ffffff"/>
-<text x="28.0" y="42.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="21" font-weight="650" fill="#1f2328" text-anchor="start">Fast, and it stays fast under load</text>
-<text x="28.0" y="66.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#59636e" text-anchor="start">Same protocol OpenAI cell. Added latency is the gateway leg minus the same call taken straight to the mock.</text>
+<text x="28.0" y="42.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="22" font-weight="650" fill="#1f2328" text-anchor="start">Fast, and it stays fast under load</text>
+<text x="28.0" y="66.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#59636e" text-anchor="start">Same protocol OpenAI cell. Added latency is the gateway leg minus the same call taken straight to the mock.</text>
 <rect x="28.0" y="86.0" width="268.0" height="84.0" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
-<text x="44.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="26" font-weight="700" fill="#1a7f37" text-anchor="start">73 µs</text>
-<text x="44.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#1f2328" text-anchor="start">added latency p50</text>
-<text x="44.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start">p99 82 µs</text>
+<text x="44.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="28" font-weight="700" fill="#1a7f37" text-anchor="start">73 µs</text>
+<text x="44.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">added latency p50</text>
+<text x="44.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">p99 82 µs</text>
 <rect x="308.0" y="86.0" width="268.0" height="84.0" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
-<text x="324.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="26" font-weight="700" fill="#1a7f37" text-anchor="start">65.1 µs</text>
-<text x="324.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#1f2328" text-anchor="start">gateway CPU per request</text>
-<text x="324.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start">measured at c=8</text>
+<text x="324.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="28" font-weight="700" fill="#1a7f37" text-anchor="start">65.1 µs</text>
+<text x="324.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">gateway CPU per request</text>
+<text x="324.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">measured at c=8</text>
 <rect x="588.0" y="86.0" width="268.0" height="84.0" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
-<text x="604.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="26" font-weight="700" fill="#1a7f37" text-anchor="start">67,837</text>
-<text x="604.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#1f2328" text-anchor="start">requests/sec sustained</text>
-<text x="604.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start">at c=64, zero failures</text>
+<text x="604.0" y="124.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="28" font-weight="700" fill="#1a7f37" text-anchor="start">67,837</text>
+<text x="604.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1f2328" text-anchor="start">requests/sec sustained</text>
+<text x="604.0" y="160.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">at c=64, zero failures</text>
 <rect x="28.0" y="210.0" width="844.0" height="140.0" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
 <line x1="88" y1="320.0" x2="682" y2="320.0" stroke="#d0d7de" stroke-width="1" opacity="0.7"/>
-<text x="78.0" y="324.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="end">0k</text>
+<text x="78.0" y="324.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="end">0k</text>
 <line x1="88" y1="280.0" x2="682" y2="280.0" stroke="#d0d7de" stroke-width="1" opacity="0.7"/>
-<text x="78.0" y="284.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="end">39k</text>
+<text x="78.0" y="284.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="end">39k</text>
 <line x1="88" y1="240.0" x2="682" y2="240.0" stroke="#d0d7de" stroke-width="1" opacity="0.7"/>
-<text x="78.0" y="244.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="end">79k</text>
+<text x="78.0" y="244.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="end">79k</text>
 <polyline points="88.0,309.6 133.7,301.6 179.4,282.4 225.1,260.4 270.8,254.4 316.5,253.0 362.2,252.2 407.8,252.7 453.5,256.8 499.2,262.5 544.9,266.4 590.6,269.0 636.3,270.4 682.0,272.8" fill="none" stroke="#1a7f37" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="88.0" cy="309.6" r="3" fill="#1a7f37"/>
 <circle cx="133.7" cy="301.6" r="3" fill="#1a7f37"/>
@@ -37,17 +37,17 @@
 <circle cx="636.3" cy="270.4" r="3" fill="#1a7f37"/>
 <circle cx="682.0" cy="272.8" r="3" fill="#1a7f37"/>
 <circle cx="362.2" cy="252.2" r="5.5" fill="#ffffff" stroke="#1a7f37" stroke-width="2.5"/>
-<text x="374.2" y="246.2" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#1f2328" text-anchor="start">67,837 req/s</text>
-<text x="374.2" y="261.2" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#59636e" text-anchor="start">peak, no failures</text>
-<text x="88.0" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="middle">c=1</text>
-<text x="225.1" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="middle">c=8</text>
-<text x="362.2" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="middle">c=64</text>
-<text x="499.2" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="middle">c=512</text>
-<text x="636.3" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10" font-weight="400" fill="#818b98" text-anchor="middle">c=4096</text>
-<text x="88.0" y="230.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#818b98" text-anchor="start">REQUESTS/SEC BY CONCURRENCY</text>
+<text x="374.2" y="246.2" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#1f2328" text-anchor="start">67,837 req/s</text>
+<text x="374.2" y="274.2" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">peak, no failures</text>
+<text x="88.0" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="middle">c=1</text>
+<text x="225.1" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="middle">c=8</text>
+<text x="362.2" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="middle">c=64</text>
+<text x="499.2" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="middle">c=512</text>
+<text x="636.3" y="338.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#818b98" text-anchor="middle">c=4096</text>
+<text x="88.0" y="230.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#818b98" text-anchor="start">REQUESTS/SEC BY CONCURRENCY</text>
 <text x="708.0" y="274.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="28" font-weight="700" fill="#1a7f37" text-anchor="start">99%</text>
-<text x="708.0" y="294.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="600" fill="#1f2328" text-anchor="start">of that rate is still held</text>
-<text x="708.0" y="308.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start">inside a 1 ms p99 budget</text>
-<text x="708.0" y="322.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start">(67,245 req/s at c=32)</text>
-<text x="28.0" y="384.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="10" font-weight="400" fill="#818b98" text-anchor="start">Busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
+<text x="708.0" y="294.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start">of that rate is still held</text>
+<text x="708.0" y="308.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">inside a 1 ms p99 budget</text>
+<text x="708.0" y="322.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">(67,245 req/s at c=32)</text>
+<text x="28.0" y="384.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#818b98" text-anchor="start">Busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
 </svg>
