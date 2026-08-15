@@ -79,7 +79,9 @@ tower = { workspace = true }
 # `io-util` stays for the reason it always did: the TLS and transport batteries read and write
 # sockets with `AsyncReadExt` / `AsyncWriteExt`, which is unrelated to child processes — though the
 # stdio wire now uses those traits on pipes as well.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "process"] }
+# `io-std` joined the slice for the MCP STDIO SERVE MODE (`--mcp-stdio`): the process's own
+# stdin/stdout ARE the transport there, so `tokio::io::{stdin, stdout}` is genuinely referenced.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

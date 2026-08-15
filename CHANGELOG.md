@@ -37,6 +37,24 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Added
 
+- **`busbar --mcp-stdio`: the MCP plane served on the process's own stdin/stdout.** An MCP host (a
+  Claude Desktop-class client) can now run busbar as a child process: newline-delimited JSON-RPC on
+  the pipes, no listener bound, EOF on stdin is a clean shutdown that first drains in-flight
+  answers. It is a TRANSPORT BINDING, not a second server — every frame runs the same ingress
+  sequence and the same dispatch as the HTTP endpoint, with the mirrored routing headers derived
+  from the body exactly as the conformance battery's own stdio→HTTP adapter derives them.
+  Governance is a boot-time session credential (`BUSBAR_MCP_STDIO_CREDENTIAL`), judged by the same
+  audience pre-filter, the same auth chain and the same verdict resolution as the HTTP door, so the
+  whole session runs as one key and budgets, audit attribution and hooks apply to every frame; a
+  governed deployment refuses to serve an uncredentialed session at all (nonzero exit). The
+  persistent channel carries what streamable HTTP cannot: operator `ask_caller` gates travel as
+  live `elicitation/create` / `roots/list` / `sampling/createMessage` requests, a request's log and
+  progress frames arrive as real notifications, `notifications/cancelled` aborts an in-flight
+  dispatch, subscriptions ride the channel with their acknowledgement first, and task transitions
+  are pushed as `notifications/tasks`. This lands the entire 36-cell `mcp|stdio|server|*` family of
+  the coverage matrix; the in-house conformance battery, driven natively over stdio against this
+  serve mode, reports 42 pass / 0 fail on the server role.
+
 - **A push notification now arrives when the agent finishes, not only when busbar happens to be
   looking.** A2A tasks are asynchronous by design, and busbar answers the push-notification config
   verbs itself — so a backend was never told anything, and busbar delivered only on a transition it

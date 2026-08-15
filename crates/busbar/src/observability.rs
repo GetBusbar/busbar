@@ -409,12 +409,23 @@ fn log_levels() -> (
     )
 }
 
-pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
+/// `stdout_reserved`: the MCP STDIO SERVE MODE's one logging requirement. In `--mcp-stdio` the
+/// process's stdout IS the protocol channel — `STDIO.STDOUT-ONLY-MCP` forbids anything on it that
+/// is not a JSON-RPC message — so every log line moves to stderr, which is where the transport
+/// spec sends a server's diagnostics anyway. The listener modes keep stdout, unchanged.
+pub(crate) fn init_logging(otlp_endpoint: Option<&str>, stdout_reserved: bool) {
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::Layer as _;
     let (stderr_filter, otlp_filter) = log_levels();
+    let make_writer = if stdout_reserved {
+        BoxMakeWriter::new(std::io::stderr)
+    } else {
+        BoxMakeWriter::new(std::io::stdout)
+    };
     let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(make_writer)
         .with_target(false)
         .with_filter(stderr_filter);
 

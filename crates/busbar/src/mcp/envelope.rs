@@ -326,8 +326,10 @@ pub(crate) async fn rpc(
 /// `None` means step 13: the method vocabulary does not carry this method, which is
 /// `crate::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
 /// for an unimplemented method and did not have to change when the table gained entries.
+/// `pub(in crate::mcp)` because the STDIO SERVE MODE (`super::stdio_serve`) runs THIS function —
+/// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
 #[allow(clippy::too_many_arguments)]
-async fn rpc_dispatch(
+pub(in crate::mcp) async fn rpc_dispatch(
     app: &Arc<crate::state::App>,
     handle: &std::sync::Arc<crate::state::AppHandle>,
     gov: &crate::governance::GovCtx,
@@ -708,7 +710,7 @@ fn header_mismatch(id: Option<serde_json::Value>, description: &str) -> Response
 ///
 /// Visible to the method table for exactly that reason: a second builder in `method.rs` would be a
 /// second place for a status and a code to disagree, and the pair is the whole contract.
-pub(super) fn error_response(
+pub(in crate::mcp) fn error_response(
     status: StatusCode,
     id: Option<serde_json::Value>,
     code: i64,

@@ -257,7 +257,7 @@ pub(super) fn envelope(
 /// needed — but "in practice never" is exactly the branch that rots, so the encoder is written and
 /// exercised rather than assumed away. The decision is on the VALUE, never on a flag, so an encoded
 /// and a plain name cannot both describe the same request.
-fn encode_sentinel(name: &str) -> String {
+pub(in crate::mcp) fn encode_sentinel(name: &str) -> String {
     use base64::Engine as _;
     if name
         .bytes()

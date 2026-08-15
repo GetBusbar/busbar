@@ -213,6 +213,10 @@ fn handle_cli_flags() -> Option<i32> {
             }
             Some(0)
         }
+        // The STDIO SERVE MODE is not an exit-and-print flag: it proceeds to the ordinary boot and
+        // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
+        // stdin/stdout. Recognised here so it is not refused as an unknown argument.
+        Some("--mcp-stdio") => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
@@ -251,6 +255,12 @@ ENVIRONMENT:
 
 Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+    --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
+                        JSON-RPC) instead of binding any listener — for an MCP host that runs
+                        busbar as a child process. Requires the `mcp:` block; on a deployment with
+                        a configured `auth.chain`, BUSBAR_MCP_STDIO_CREDENTIAL must carry a
+                        credential the chain admits (audience-bound to mcp.canonical_uri), and the
+                        whole session runs as that key — budgets, audit and hooks apply
 
 ENDPOINTS (once running, listen address from config.yaml `listen`):
     POST /<model>/v1/messages              Anthropic-format ingress (single model)
@@ -571,6 +581,14 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
+/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the MCP plane on the
+/// process's own stdin/stdout (see `mcp::stdio_serve`). A scanner like `safe_mode_requested`
+/// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
+/// replacing the run.
+fn mcp_stdio_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == "--mcp-stdio")
+}
+
 /// A store READ failure and a chain-VERIFICATION failure on audit restore are different events: the
 /// first is a hiccup, the second is tamper evidence. Reporting both as "chain verification" trains
 /// an operator to ignore the one that matters, so `run()`'s restore-error match keys on this to pick
@@ -859,7 +877,12 @@ async fn run() {
 
     // Install the tracing subscriber now (stderr fmt always; OTLP export if configured) so all
     // subsequent startup and request-path logging is captured.
-    observability::init_logging(otlp_cfg.as_ref().map(|o| o.url.as_str()));
+    // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
+    // `init_logging`'s `stdout_reserved`.
+    observability::init_logging(
+        otlp_cfg.as_ref().map(|o| o.url.as_str()),
+        mcp_stdio_requested(std::env::args()),
+    );
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -1275,6 +1298,25 @@ async fn run() {
             crate::a2a::verify::ReverifySweeper { plane, live },
             shutdown_tx.subscribe(),
         ));
+    }
+
+    // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
+    // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
+    // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
+    // it binds no listener at all (a child that opened ports would be a network server its
+    // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
+    // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
+    // tail: the final budget/metering flush, then the tracer.
+    if mcp_stdio_requested(std::env::args()) {
+        let code = mcp::stdio_serve::serve_stdio(app_handle.clone()).await;
+        if let Some(gov) = app_handle.load().governance.clone() {
+            let n = gov.flush_budgets();
+            tracing::info!(flushed = n, "budget counters flushed on shutdown");
+            let m = gov.flush_metering();
+            tracing::info!(flushed = m, "metering rows flushed on shutdown");
+        }
+        observability::shutdown_tracing();
+        std::process::exit(code);
     }
 
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with

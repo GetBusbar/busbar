@@ -1635,19 +1635,19 @@ pub(crate) async fn auth_middleware(
         .await
     };
 
-    // THE SINGLE DATA-PLANE GATE — one match over the chain verdict, with NO branch anywhere on
-    // admin-token presence. `resolved` (an engine-arm VirtualKey) drives enforcement when present;
-    // otherwise a group-carrying principal is re-keyed through `role_bindings`.
-    match verdict {
-        // `chain:[]` (no keys arm, no IdP) → admit ANONYMOUS. `AuthPrincipal(None)` AND an empty
-        // `GovCtx` are ALWAYS inserted so downstream `Extension<GovCtx>` / `Extension<AuthPrincipal>`
-        // extraction never 500s `MissingExtension` on the exact open case this refactor enables.
-        ChainVerdict::Open => {
-            req.extensions_mut().insert(AuthPrincipal(None));
-            req.extensions_mut()
-                .insert(crate::governance::GovCtx::default());
+    // THE SINGLE DATA-PLANE GATE — one resolution of the chain verdict, with NO branch anywhere on
+    // admin-token presence. The DECISION lives in [`resolve_data_plane_identity`], shared with the
+    // stdio serve mode's boot-time session bind, so "who does this credential make you" cannot be
+    // answered differently on the two transports; only the WORDING of a refusal differs here
+    // (an RFC 6750 challenge or a native envelope, where the stdio binding words it on stderr).
+    match resolve_data_plane_identity(&app, verdict) {
+        Ok((principal, gov)) => {
+            // ALWAYS inserted — including `AuthPrincipal(None)` + empty `GovCtx` on the open front
+            // door — so downstream `Extension` extraction never 500s `MissingExtension`.
+            req.extensions_mut().insert(principal);
+            req.extensions_mut().insert(gov);
         }
-        ChainVerdict::Denied => {
+        Err(IdentityRefusal::Denied) => {
             // On an audience-bound plane the refusal is an RFC 6750 challenge, not a vendor-shaped
             // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
             // place the discovery loop's next step was ever going to come from. `Absent` (no
@@ -1668,50 +1668,81 @@ pub(crate) async fn auth_middleware(
             }
             return Err(unauthorized_with_completion_taps(&app, &path));
         }
-        ChainVerdict::Identified {
-            module,
-            principal,
-            resolved,
-        } => {
-            // Enforcement rides the RESOLVED principal. An engine arm (keys / SigV4) already resolved
-            // the enforced `VirtualKey` → use it directly. Otherwise (a plugin/IdP principal) fall
-            // back to the group RE-KEY: synthesize a key from the roles' `role_bindings` grants. A
-            // DISABLED vkey never reaches here as `Identified` (the keys arm denies it), so it can
-            // never be re-admitted through synth.
-            let bindings = app.role_bindings.get(&module);
-            let gov_key = resolved
-                .or_else(|| crate::governance::synthesize_principal_key(&principal, bindings));
-            // FAIL-CLOSED for a GROUP principal (asserted roles) that earned NO enforcement key WHEN
-            // this module HAS a `role_bindings` table (governance is configured for it): its roles
-            // were supposed to define its data-plane access and defined none (an unbound role, or an
-            // explicit `allowed_pools: []`). Admitting it `key: None` would hand it UNRESTRICTED pool
-            // access — an unacceptable widening, and a regression against the
-            // pre-1.5.2 active-governance path (`test_role_bound_principal_governed_like_a_virtual_key`).
-            // This reconciles the two pre-refactor behaviors under one gate: with NO bindings table
-            // for the module (no governance configured — `bindings.is_none()`), a role principal is
-            // admitted UNGOVERNED (`key: None`), exactly as the old static/inert path did
-            // (`test_chain_accepts_all_carriers_and_native_401`); a plain vkey (`resolved: Some`) or a
-            // ROLELESS principal never trips the guard. So the spec's "gov_key may be None → still
-            // inserted" holds except where an operator's configured bindings deny this principal.
-            if gov_key.is_none() && !principal.roles.is_empty() && bindings.is_some() {
-                if let Some(adm) = admission.as_ref() {
-                    return Err(challenge::refuse(
-                        challenge::ChallengeError::InsufficientScope,
-                        &adm.resource_metadata,
-                        "The authenticated principal carries no grant on this resource.",
-                        None,
-                    ));
-                }
-                return Err(unauthorized_with_completion_taps(&app, &path));
+        Err(IdentityRefusal::NoGrant) => {
+            if let Some(adm) = admission.as_ref() {
+                return Err(challenge::refuse(
+                    challenge::ChallengeError::InsufficientScope,
+                    &adm.resource_metadata,
+                    "The authenticated principal carries no grant on this resource.",
+                    None,
+                ));
             }
-            req.extensions_mut().insert(AuthPrincipal(Some(principal)));
-            req.extensions_mut()
-                .insert(crate::governance::GovCtx { key: gov_key });
+            return Err(unauthorized_with_completion_taps(&app, &path));
         }
     }
 
     drop(_mw.take());
     Ok(next.run(req).await)
+}
+
+/// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
+/// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
+/// and the stdio serve mode a boot-time stderr sentence and a nonzero exit — which is the same
+/// decision/vocabulary split `crate::ingress::protocol::CoreRefusal` documents for the ingress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityRefusal {
+    /// The chain denied the credential: a `Reject`, an all-`Pass` on a configured chain, or a
+    /// signed key that stopped verifying.
+    Denied,
+    /// The principal authenticated but its roles earned NO enforcement key while this module has a
+    /// `role_bindings` table. Admitting it `key: None` would hand it UNRESTRICTED access, so it is
+    /// refused — the same fail-closed rule stated at length below.
+    NoGrant,
+}
+
+/// WHO A CHAIN VERDICT MAKES YOU on the data plane — the one resolution of verdict →
+/// (principal, governance context), shared by the HTTP auth middleware and the stdio serve mode's
+/// boot-time session bind so the two transports cannot come to different answers.
+///
+/// - `Open` (`chain: []`, no keys arm) admits ANONYMOUS: `AuthPrincipal(None)` and an empty
+///   `GovCtx`, the explicit open-front-door posture the boot banner warns about.
+/// - `Identified` rides the RESOLVED key when an engine arm (keys / SigV4) produced one; otherwise
+///   a group-carrying principal is re-keyed through `role_bindings` via
+///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
+///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
+/// - FAIL-CLOSED for a GROUP principal (asserted roles) that earned NO enforcement key WHEN its
+///   module HAS a `role_bindings` table (governance is configured for it): its roles were supposed
+///   to define its data-plane access and defined none (an unbound role, or an explicit
+///   `allowed_pools: []`). Admitting it `key: None` would hand it UNRESTRICTED pool access — the
+///   regression `test_role_bound_principal_governed_like_a_virtual_key` pins. With NO bindings
+///   table for the module (`bindings.is_none()`), a role principal is admitted UNGOVERNED
+///   (`key: None`), exactly as the old static/inert path did
+///   (`test_chain_accepts_all_carriers_and_native_401`); a plain vkey (`resolved: Some`) or a
+///   ROLELESS principal never trips the guard.
+pub(crate) fn resolve_data_plane_identity(
+    app: &crate::state::App,
+    verdict: ChainVerdict,
+) -> Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal> {
+    match verdict {
+        ChainVerdict::Open => Ok((AuthPrincipal(None), crate::governance::GovCtx::default())),
+        ChainVerdict::Denied => Err(IdentityRefusal::Denied),
+        ChainVerdict::Identified {
+            module,
+            principal,
+            resolved,
+        } => {
+            let bindings = app.role_bindings.get(&module);
+            let gov_key = resolved
+                .or_else(|| crate::governance::synthesize_principal_key(&principal, bindings));
+            if gov_key.is_none() && !principal.roles.is_empty() && bindings.is_some() {
+                return Err(IdentityRefusal::NoGrant);
+            }
+            Ok((
+                AuthPrincipal(Some(principal)),
+                crate::governance::GovCtx { key: gov_key },
+            ))
+        }
+    }
 }
 
 /// Does the request carry an inbound AWS SigV4 `Authorization` header (`AWS4-HMAC-SHA256 ...`)? Cheap

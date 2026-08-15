@@ -184,6 +184,10 @@ pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;
+/// THE STDIO SERVE MODE: busbar as an MCP server on its own stdin/stdout — the same serve
+/// sequence, the same dispatch, a second transport binding. See the module header for the
+/// boot-time governance design.
+pub(crate) mod stdio_serve;
 /// `subscriptions/listen` — THE SERVER-TO-CLIENT CHANNEL of this revision. The GET stream was
 /// removed and the channel MOVED onto a method; see the module header for why that is not the same
 /// thing as the channel being deleted.
