@@ -68,17 +68,113 @@ red to waive, only an absent measurement. Recording them here is the same discip
 (named, dated, with evidence) applied to a different failure mode: a suite that never ran, not a
 control that fired.
 
-**DENOMINATOR.** `114 − 21 = 93`. That is the achievable ceiling on this pin, and the target is 100%
-of it. 3 of the 93 (`PUSH-DELIVER-001/002/003`, below) are a deliberate security refusal — busbar
-never accepts a plaintext webhook callback — waived-red permanently, never a gap. Public claim:
-**90/93** (2026-08-15, `CARD-EXT-001` and `GRPC-ERR-001` fixed; the only remaining reds are the
-PUSH-DELIVER trio, which is the security refusal above — the number does not go higher on this pin
-without accepting plaintext callbacks).
+**DENOMINATOR.** `114 − 21 = 93`. That was read as the achievable ceiling on this pin, but 5 more of
+the 93 turn out to be self-excluding for a different reason — see "The 5 SKIPPED MUSTs" immediately
+below — which moves the true ceiling to **88**. 3 of those 88 (`PUSH-DELIVER-001/002/003`, further
+below) are a deliberate security refusal — busbar never accepts a plaintext webhook callback —
+waived-red permanently, never a gap. Public claim: **85/88** (2026-08-15, corrected the same day
+`CARD-EXT-001` and `GRPC-ERR-001` were fixed: the prior **90/93** silently counted the 5 SKIPPED
+MUSTs below as if they were 5 more passes, when in fact none of them is exercised at all. The only
+requirements this pin ever asks busbar to be RED on are the PUSH-DELIVER trio — the number does not
+go higher without accepting plaintext callbacks).
 
 **WHAT WOULD RETIRE THIS ENTRY.** The pinned TCK growing a second credential (for the `AUTH-*`/scoping
 families) and an upstream vantage point (for `VER-CLIENT-*`) — see "Upstreaming" in
 `testing/a2a-supplement/README.md` — and re-pinning at a commit that carries tests for these 21.
 Until then this is a property of the suite, not of busbar, and is recorded rather than chased.
+
+---
+
+## The 5 SKIPPED MUSTs — recorded 2026-08-15, not waivers, self-excluding by busbar's own served capabilities
+
+**These 5 are not a busbar waiver either, and they are a different shape of impossibility than the 21
+above.** The 21 above have no test at all. These 5 have a real, executing test — each one appears in
+the suite's own `SKIPPED` column, never in `FAILED` — but the test's own precondition is a fact about
+the AGENT CARD busbar serves, and that fact can never hold against busbar, on any backend, on this
+pin.
+
+```
+CORE-CAP-001   CORE-CAP-002   CORE-CAP-003   CORE-CAP-004   CARD-EXT-002
+```
+
+**METHOD.** `scripts/a2a-subject/boot.sh --tck` against a busbar built from commit
+`6f48a84738c0a0af925a236d81e7f6a7752e6f8c` (this pin), TCK pinned at
+`5996b79f9cefa6fc390980e383e358a66fb9e49e`. Suite's own MUST row:
+
+```
+│ MUST        │     85 │     24 │       5 │   114 │
+```
+
+`reports/subject.json`'s `per_requirement` map carries exactly these 5 at `status: "SKIPPED"`,
+`level: "MUST"` — no others. The suite's own JUnit report (`reports/junitreport.xml`) carries each
+one's skip message verbatim, quoted below rather than paraphrased.
+
+**WHY: BUSBAR'S SERVED CARD IS FIXED, AND THAT IS THE MECHANISM.** The agent card the TCK reads is
+busbar's OWN card — `serve::self_card`, served at the root well-known path
+(`crates/busbar/src/a2a/receive.rs:85`) — not the fronted backend's. `self_card_document`
+(`crates/busbar/src/a2a/serve.rs:685`) hard-codes:
+
+```rust
+"capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "extendedAgentCard": true,
+},
+```
+
+with no `extensions` member at all, unconditionally, for every deployment — because streaming,
+push-notification delivery and the extended card are gateway-level features busbar itself provides
+(`a2a/pushdeliver.rs`, the SSE relay, and `serve::extended_card`), not properties of whichever agent
+happens to be behind it. `rewrite_card`, which serves the PER-AGENT address, forces
+`extendedAgentCard: true` for the identical reason (`crates/busbar/src/a2a/serve.rs:489`) and passes
+`streaming`/`pushNotifications` through from the backend untouched — but the TCK subject leg points
+`--sut-host` at the plane root (`BUSBAR_A2A_ENDPOINT="$SUBJECT_URL"` in `boot.sh::leg_tck`, since
+`run_tck.py` takes no per-agent path), so the card it reads is the root one, always fully capable.
+
+**EACH ONE, WITH THE SUITE'S OWN SKIP REASON:**
+
+- **`CORE-CAP-001`** — *"Push operations return error when not supported."* Skip:
+  `"Agent supports push notifications"`. busbar always does.
+- **`CORE-CAP-002`** — *"Streaming operations return error when not supported."* Skip:
+  `"Agent supports streaming"`. busbar always does.
+- **`CORE-CAP-003`** — *"Extended agent card returns error when not supported."* Skip:
+  `"Agent supports extended agent card"`. busbar always does — this is the same flip
+  `CARD-EXT-001`'s waiver record above already named: this test "skips itself the moment the
+  capability IS supported. It was passing because busbar did not have it."
+- **`CARD-EXT-002`** — *"Extended card not configured returns ExtendedAgentCardNotConfiguredError."*
+  Skip: `"Extended card is configured (returned successfully); test does not apply"`. The test's own
+  docstring says it plainly: *"By design this test can only pass or skip — it never fails."* A
+  correctly-implemented extended card can only ever make it skip.
+- **`CORE-CAP-004`** — *"Required extension missing returns ExtensionSupportRequiredError."* Skip:
+  `"Agent card does not declare urn:a2a:tck:required-extension as required"`. This one is a
+  different mechanism from the other four: it is not that busbar always HAS the capability, but that
+  busbar has never built the A2A extensions mechanism at all — `self_card_document` has no
+  `extensions` member, and there is no operator surface anywhere in `crates/busbar/src/a2a` to
+  declare one as required (`grep -rn "extensions" crates/busbar/src/a2a` turns up nothing that reads
+  or serves a capability extension list). An agent that declares no required extension has none to be
+  missing, so `ExtensionSupportRequiredError` is unreachable — correctly, not by accident, but this is
+  the one row here that is an absent FEATURE rather than a permanent architectural stance. If a
+  customer ever needs A2A extensions, this is where that work would start; it is not owed by this
+  unit and nothing here treats its absence as a defect.
+
+**WHY NONE OF THESE IS FIXED BY ARMING THE RIG.** The rig already boots a real busbar and fronts a
+real backend (`testing/a2a-tck/scenario-agent`); nothing about the fixture is why these skip. Making
+`CORE-CAP-001/002/003` or `CARD-EXT-002` observe their precondition would require busbar to CLAIM it
+lacks a capability it genuinely has — a false card, which is the exact defect `CARD-EXT-001`'s waiver
+above was written to stop repeating in the other direction. Making `CORE-CAP-004` run would require
+building an extensions subsystem, which is a product decision, not a rig fix. None of the four
+"always-on" rows is a busbar defect: the suite is asserting behaviour for a capability-absent state
+that a working gateway will never be in.
+
+**WHAT IS NOT DONE ABOUT IT, DELIBERATELY.** No capability is turned off, and no fake required
+extension is added, to manufacture a pass. `self_card_document` and `rewrite_card` are unmodified by
+this entry.
+
+**WHAT WOULD RETIRE THIS ENTRY.** For `CORE-CAP-001/002/003` and `CARD-EXT-002`: the pinned TCK
+growing a companion test that asserts the PRESENT-capability path (the suite has no such test today —
+the same "coverage-gap" shape as the 21 untested MUSTs above), or a re-pin that adds one. There is no
+change busbar can honestly make on its own to retire these four. For `CORE-CAP-004`: busbar building
+extensions support, at which point this becomes a real, gated pass/fail like any other MUST.
 
 ---
 
