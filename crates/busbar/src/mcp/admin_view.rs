@@ -306,6 +306,17 @@ impl PlaneTrust for McpServers {
         // the two wrote the durable record, an operator's own remedy would be the one act that
         // could not clear a quarantine.
         crate::mcp::demotion::settle(&subject.demotions, &subject.entry.id, report.state);
+        // AND THE SAME LEDGER STAMP, for the same one-observation-one-set-of-books reason. Without
+        // it a registration the operator just looked at was still `NeverChecked` to the unattended
+        // timer, which re-fetched it on its very next tick — a second contact the operator's look
+        // had already satisfied, landing at a moment nobody chose. A refusal above stamps nothing:
+        // nothing was contacted, exactly as the sweep records it.
+        crate::mcp::connect::stamp(
+            &subject.sightings,
+            &subject.entry.id,
+            crate::store::now_ms(),
+            !report.drift.is_empty(),
+        );
         Ok(trust_view(&report, &subject.entry, &subject.cfg))
     }
 }

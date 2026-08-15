@@ -37,7 +37,13 @@ fn poisoned() -> serde_json::Value {
 
 /// A live server with governance, an admin token, one registered MCP upstream, and the shared
 /// sightings cache the verbs write into.
-async fn serve(peer: &Peer) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn serve(
+    peer: &Peer,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<CatalogueCache>,
+) {
     let gov = Arc::new(
         crate::governance::GovState::new_with_signer(
             Arc::new(crate::governance::MemoryStore::new()),
@@ -49,6 +55,7 @@ async fn serve(peer: &Peer) -> (std::net::SocketAddr, tokio::task::JoinHandle<()
         )
         .unwrap(),
     );
+    let sightings = Arc::new(CatalogueCache::new());
     let app = TestApp::new()
         .governance(gov)
         .mcp(&mcp_cfg())
@@ -59,7 +66,7 @@ async fn serve(peer: &Peer) -> (std::net::SocketAddr, tokio::task::JoinHandle<()
                 &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
             ),
         )
-        .with_mcp_sightings(Arc::new(CatalogueCache::new()))
+        .with_mcp_sightings(Arc::clone(&sightings))
         .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -67,7 +74,7 @@ async fn serve(peer: &Peer) -> (std::net::SocketAddr, tokio::task::JoinHandle<()
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    (addr, handle)
+    (addr, handle, sightings)
 }
 
 /// The same server, but with the registration configured `upstream_credentials: passthrough`.
@@ -125,7 +132,7 @@ async fn request(
 async fn the_trust_verbs_report_the_drift_an_operator_has_to_work() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
-    let (addr, server) = serve(&peer).await;
+    let (addr, server, _sightings) = serve(&peer).await;
 
     // ── CONNECT ─────────────────────────────────────────────────────────────────────────────────
     let (status, body) = request(addr, reqwest::Method::POST, "/tools/fs/connect").await;
@@ -197,7 +204,7 @@ async fn the_trust_verbs_report_the_drift_an_operator_has_to_work() {
 async fn an_unregistered_server_is_not_found_on_every_verb() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
-    let (addr, server) = serve(&peer).await;
+    let (addr, server, _sightings) = serve(&peer).await;
 
     for (method, path) in [
         (reqwest::Method::POST, "/tools/nope/connect"),
@@ -285,7 +292,7 @@ pub(crate) async fn drive_mcp_verb_errors() {
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
 
     // NotFound / UnknownResource, on all three verbs.
-    let (addr, server) = serve(&peer).await;
+    let (addr, server, _sightings) = serve(&peer).await;
     for (method, path) in [
         (reqwest::Method::POST, "/tools/nope/connect"),
         (reqwest::Method::GET, "/tools/nope/changes"),
@@ -300,5 +307,56 @@ pub(crate) async fn drive_mcp_verb_errors() {
     let (addr, server) = serve_passthrough(&peer).await;
     let (status, _) = request(addr, reqwest::Method::POST, "/tools/fs/connect").await;
     assert_eq!(status, 400);
+    server.abort();
+}
+
+/// AN OPERATOR'S CONNECT RESETS THE UNATTENDED CLOCK. The sweep re-checks a registration when its
+/// ledger says `NeverChecked` or the `refresh_ttl:` lapsed, and `connect` takes EXACTLY the
+/// observation the sweep takes — same fetch, same re-hash, same `demotion::settle`. It used to
+/// take everything about that observation EXCEPT the ledger stamp, so a registration an operator
+/// had just looked at was still `NeverChecked` to the timer and was re-fetched on the sweep's very
+/// next tick — a second contact the operator's look should have satisfied, landing at a moment
+/// nobody chose. One observation, two actors, one set of books.
+#[tokio::test]
+async fn a_connect_stamps_the_ledger_so_the_sweep_is_not_still_due() {
+    use crate::mcp::client::identity::ServerId;
+    use crate::trust::reverify::{due, Due, Policy};
+
+    crate::metrics::init();
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
+    let (addr, server, sightings) = serve(&peer).await;
+
+    // The control: before any look, the timer's answer is NeverChecked — due now.
+    let fresh = sightings
+        .load()
+        .server(&ServerId::new("fs").unwrap())
+        .map(|s| s.ledger.clone())
+        .unwrap_or_default();
+    let policy = Policy {
+        ttl_ms: 3_600_000,
+        recovery_backoff_ms: 0,
+    };
+    let now = crate::store::now_ms();
+    assert_eq!(
+        due(&fresh, &policy, now, false),
+        Due::NeverChecked,
+        "an unlooked-at registration is due, which is the fail-closed default"
+    );
+
+    let (status, body) = request(addr, reqwest::Method::POST, "/tools/fs/connect").await;
+    assert_eq!(status, 200, "{body}");
+
+    let stamped = sightings
+        .load()
+        .server(&ServerId::new("fs").unwrap())
+        .map(|s| s.ledger.clone())
+        .expect("the connect observed the server, so the cache has an entry");
+    assert_eq!(
+        due(&stamped, &policy, crate::store::now_ms(), false),
+        Due::No,
+        "the operator just looked; the unattended timer must not immediately look again \
+         (ledger: {stamped:?})"
+    );
+
     server.abort();
 }

@@ -98,6 +98,47 @@ post() {
 post '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
   20 tools/list
 
+# THE LIST THAT CROSSES. The front-door `tools/list` above never reaches the peer — busbar answers
+# it from the operator's own catalogue, which is correct and is exactly why the CLI.* transcript
+# used to contain no `tools/list` at all: `CLI.CACHE.TOLERATES-ABSENT-HINTS` read that silence as
+# "client did not call tools/list even against an honest server" about a client that provably does.
+# busbar's client direction sends one on exactly one path: the connect/refresh drift check
+# (`mcp::connect::refresh`), which fetches the upstream's LIVE tool list to compare against the
+# operator's approved digests. That is an OPERATOR's verb, so this script drives it as the operator
+# — `POST /api/v1/admin/tools/probe/connect`, against the `probe` registration `boot.sh` points at
+# the same fake peer. `probe` and not `seam`, deliberately: the refresh re-hashes what the peer
+# serves and lands as DRIFT against the fixture digest, and a drift demotion on `seam` would
+# quarantine the registration every SEAM.* clause dispatches through. The transcript the suite
+# judges is written by the peer before busbar reaches any verdict about the answer.
+#
+# Skipped silently when the admin surface is not in the environment — an operator pointing this
+# battery at something that is not the booted subject has no admin half to drive, and the scenario
+# then reports the absence honestly instead of this script inventing a credential.
+#
+# RETRIED, up to three times, and the retry is the operator's own move rather than a soft gate.
+# The shared hostile peer tears sockets down as a matter of course (`half-answer` kills each
+# request; a mode change destroys the previous test's leftovers), and busbar's next send can ride
+# a connection that died under it — one transient `error sending request` against a peer that is
+# healthy again a moment later. An operator whose connect failed transiently presses the button
+# again. Nothing here can fake the verdict: the transcript the scenario reads records only
+# requests that genuinely ARRIVED at the peer, so a retry that still never reaches it leaves the
+# same honest silence, and the scenario reports it.
+if [ -n "${MCP_SUBJECT_ADMIN_URL:-}" ] && [ -n "${MCP_SUBJECT_ADMIN_TOKEN:-}" ]; then
+  for attempt in 1 2 3; do
+    printf 'client-arm: POST admin tools/probe/connect, attempt %s (drives busbar'"'"'s own tools/list at the back door)\n' "$attempt" >&2
+    view=$(curl -s --max-time 45 -X POST "$MCP_SUBJECT_ADMIN_URL/api/v1/admin/tools/probe/connect" \
+             -H "authorization: Bearer $MCP_SUBJECT_ADMIN_TOKEN" || true)
+    printf '%s\n' "$view" >&2
+    # `"failure":null` is the trust view saying the CONTACT LANDED — whatever the drift verdict
+    # was. A drifted observation under a hostile mode is a landed contact and is exactly what the
+    # rugpull scenario wants to see; only a failed contact is worth a second press.
+    case "$view" in
+      *'"failure":null'*) break ;;
+    esac
+    sleep 1
+  done
+fi
+
 # THE CALL THAT CROSSES. `echo` is the bare name `subject_write_config` publishes for the battery's
 # hostile peer (`publish_as: echo`), because that is the tool `fakepeer/fake-server.mjs` has always
 # exposed and busbar's routing key `{server}_{tool}` cannot compose a name with no separator in it.

@@ -54,11 +54,22 @@ const SUB_KEY = 'io.modelcontextprotocol/subscriptionId';
 
 let callCount = 0;
 
+// Both writers refuse a stdout that has already ENDED, because two modes end it on purpose
+// (`half-answer`, `truncate`): a later request writing to the ended stream is an unhandled
+// `ERR_STREAM_WRITE_AFTER_END` that kills this process mid-conversation -- and through the HTTP
+// mirror that death cascaded into its parent and blacked out every remaining seam verdict. The
+// TRANSCRIPT still records what would have been sent: the observation channel stays honest even
+// when the wire is deliberately dead.
 function out(obj) {
   record('server->client', obj);
+  if (process.stdout.writableEnded) return;
   process.stdout.write(`${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n`);
 }
-function raw(text) { record('server->client-raw', text); process.stdout.write(text); }
+function raw(text) {
+  record('server->client-raw', text);
+  if (process.stdout.writableEnded) return;
+  process.stdout.write(text);
+}
 
 // Operations for which the spec REQUIRES caching hints on a complete result.
 const CACHEABLE = new Set([

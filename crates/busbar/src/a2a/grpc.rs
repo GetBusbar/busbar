@@ -232,14 +232,59 @@ fn status_for_error(error: &Value, http: axum::http::StatusCode) -> Status {
         .and_then(Value::as_str)
         .unwrap_or("the request was refused")
         .to_string();
-    match error
+    let code = match error
         .get("code")
         .and_then(Value::as_i64)
         .and_then(super::rpcerror::A2aError::from_code)
     {
-        Some(a2a) => Status::new(a2a.grpc_status(), message),
-        None => Status::new(status_for_http(http).code(), message),
+        Some(a2a) => a2a.grpc_status(),
+        None => status_for_http(http).code(),
+    };
+    match error_info_of(error) {
+        Some(details) => {
+            use tonic_types::StatusExt as _;
+            Status::with_error_details(code, message, details)
+        }
+        None => Status::new(code, message),
     }
+}
+
+/// THE `google.rpc.ErrorInfo` THIS REFUSAL ALREADY CARRIES, transcribed into the protobuf shape the
+/// `grpc-status-details-bin` trailer holds — A2A section 10.6's MUST, and the TCK's `GRPC-ERR-001`.
+///
+/// TRANSCRIBED, NEVER RE-DERIVED. The JSON error object arriving here carries the ProtoJSON
+/// `ErrorInfo` that [`super::rpcerror::body`] built from the one section 5.4 table — or that a
+/// fronted backend relayed, metadata and all. Reading it off the envelope keeps one source of
+/// truth: a second reason table beside this function would be two copies for a revision to split,
+/// and rebuilding from the code alone would drop a relayed backend's `metadata` on the floor.
+///
+/// `None` for an error carrying no `ErrorInfo`, and that is the correct trailer for it: the
+/// standard JSON-RPC errors have no reason in the specification's own table, so inventing one here
+/// would put a string on the wire no conformant client knows.
+fn error_info_of(error: &Value) -> Option<tonic_types::ErrorDetails> {
+    let info = error
+        .get("data")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|d| {
+            d.get("@type").and_then(Value::as_str) == Some(super::rpcerror::ERROR_INFO_TYPE)
+        })?;
+    let metadata: std::collections::HashMap<String, String> = info
+        .get("metadata")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut details = tonic_types::ErrorDetails::new();
+    details.set_error_info(
+        info.get("reason").and_then(Value::as_str).unwrap_or(""),
+        info.get("domain").and_then(Value::as_str).unwrap_or(""),
+        metadata,
+    );
+    Some(details)
 }
 
 /// The gRPC status an HTTP status means, as the gRPC specification's own HTTP-to-status table

@@ -398,6 +398,47 @@ const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => ({
   inputSchema: { type: "object", properties: {} },
 }));
 
+// ── ONE SERVER IDENTITY PER REGISTRATION, SERVED BY PATH ────────────────────────────────────────
+//
+// boot.sh registers this process EIGHT TIMES, one server id per composed wire name, and until this
+// map existed every registration answered `tools/list` with the SAME flat list of every fixture
+// tool. That made every registration's honest observation a DRIFT by construction: busbar's
+// rug-pull defence counts a tool SERVED but not APPROVED as drift (`trust::Approval::drift_against`
+// — an `added` name), so the first successful unattended refresh quarantined all eight
+// registrations, thirty seconds into every run, and whether any given battery test survived was a
+// race between the suite's progress and `SWEEP_TICK`. On the slower CI runner the seam suite lost
+// that race on every push; on a fast laptop it usually won. A gate whose verdict depends on which
+// side of a 30-second tick it ran is not a gate.
+//
+// So each registration now points at `/mcp/<server-id>` and is answered EXACTLY the tool set its
+// `tools_allow:` approves — which is simply what eight honest separate servers would serve. The
+// bare `/mcp` path keeps the full list, so anything pointing at the old address still sees the old
+// behaviour.
+const SUBSETS = {
+  json: ["schema_2020_12_tool"],
+  slow: ["compute"],
+  failing: ["job"],
+  protocol: ["error_job"],
+  confirm: ["delete"],
+  multi: ["input"],
+  greeter: ["greet"],
+  // `test` is everything the other seven do not claim: the content, MRTR, header, structured and
+  // logging fixtures, exactly the set boot.sh's `test:` registration approves.
+  test: Object.keys(TOOLS).filter(
+    (name) =>
+      !["schema_2020_12_tool", "compute", "job", "error_job", "delete", "input", "greet"].includes(
+        name,
+      ),
+  ),
+};
+
+function toolListFor(url) {
+  const m = /^\/mcp\/([a-z_]+)(?:\?|$)/.exec(url || "");
+  const subset = m && SUBSETS[m[1]];
+  if (!subset) return TOOL_LIST;
+  return TOOL_LIST.filter((t) => subset.includes(t.name));
+}
+
 const send = (res, status, payload) => {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -445,7 +486,7 @@ const sendStream = (res, id, tool, progressToken) => {
 const rpcError = (res, status, id, code, message) =>
   send(res, status, { jsonrpc: "2.0", id, error: { code, message } });
 
-createServer((req, res) => {
+const server = createServer((req, res) => {
   if (req.method !== "POST") {
     res.writeHead(405, { allow: "POST" });
     res.end();
@@ -479,7 +520,7 @@ createServer((req, res) => {
           resultType: "complete",
           ttlMs: 0,
           cacheScope: "private",
-          tools: TOOL_LIST,
+          tools: toolListFor(req.url),
         },
       });
     }
@@ -519,6 +560,11 @@ createServer((req, res) => {
     }
     return rpcError(res, 404, id, -32601, `method ${msg.method} is not implemented`);
   });
-}).listen(PORT, "127.0.0.1", () => {
+});
+// Same rule as the seam peer's HTTP face: never FIN an idle keep-alive connection under the
+// subject's pooled client -- Node's five-second default made a reused connection race the FIN and
+// fail with `error sending request` before any byte reached this process.
+server.keepAliveTimeout = 0;
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`diagnostic upstream listening on 127.0.0.1:${PORT}`);
 });

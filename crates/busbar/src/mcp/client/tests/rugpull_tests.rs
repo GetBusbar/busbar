@@ -190,6 +190,33 @@ fn every_upstream_controlled_field_moves_the_digest() {
     }
 }
 
+/// THE CROSS-LANGUAGE PIN. `scripts/mcp-subject/tool-digest.mjs` re-implements this digest in node
+/// so the conformance rig can write HONEST approvals — the digest of what its fixture upstreams
+/// actually serve — instead of placeholder strings that quarantine every registration at the first
+/// unattended sweep. Two implementations of one byte layout WILL drift silently unless a shared
+/// fixture pins them to a shared constant, so this test and that script's `--selftest` assert the
+/// SAME digest of the SAME fixture, and boot.sh refuses to arm when the node side disagrees.
+/// Change the digest layout and this constant deliberately, in both places, or the rig fails loudly
+/// at boot — which is the correct failure mode.
+#[test]
+fn the_digest_of_the_cross_language_pin_fixture_is_pinned() {
+    let fixture = tool(
+        "pin",
+        "the cross-language digest pin",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "type": "string" }, "n": { "type": "integer" } },
+            "required": ["a"],
+            "additionalProperties": false
+        }),
+    );
+    assert_eq!(
+        tool_digest(&fixture),
+        "sha256:9a5b7d6295550c8e7a74b6c3068639c5497d2fc0856d554d2ce8cee17f30fd5d",
+        "the digest layout moved; update this constant AND tool-digest.mjs's selftest together"
+    );
+}
+
 /// The digest is LENGTH-PREFIXED, so a name and a description cannot be re-split to forge the same
 /// byte stream.
 #[test]

@@ -87,7 +87,13 @@ impl HttpTransport {
             .client_for(&req.url, leg.policy, leg.timeout)
             .await
             .map_err(TransportError::Refused)?;
-        let mut builder = client.post(&req.url);
+        // THE LEG'S DEADLINE, ON THE REQUEST. The pooled client is cached per destination and a
+        // client-level timeout is baked in at construction, so the FIRST caller's deadline would
+        // silently become every later caller's — the refresh path's 30-second budget overriding
+        // the `timeout:` the operator wrote on the registration, or vice versa, decided by which
+        // path touched the destination first. A request-level timeout overrides the client's for
+        // exactly this send, so every leg gets the deadline it asked for.
+        let mut builder = client.post(&req.url).timeout(leg.timeout);
         for (name, value) in &req.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }

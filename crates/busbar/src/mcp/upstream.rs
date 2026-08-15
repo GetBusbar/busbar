@@ -495,6 +495,10 @@ pub(super) async fn exchange(
     let form = req.form_fields();
     let response = client
         .post(&req.token_url)
+        // The CALLER'S deadline, on the request: the pooled client is cached per destination with
+        // whatever timeout its first builder passed, and this call site must not inherit somebody
+        // else's. See `HttpTransport::send`, which states the rule for the dispatch path.
+        .timeout(timeout)
         .form(&form)
         .send()
         .await

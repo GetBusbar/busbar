@@ -223,6 +223,16 @@ tonic = { version = "0.14", default-features = false }
 # 0.14 is already in `Cargo.lock` and already in the shipped artifact (a2a-pb, tonic and
 # opentelemetry-otlp all depend on it). What changes is that busbar can say its name.
 prost = { version = "0.14", default-features = false, features = ["std"] }
+# The tonic project's own `google.rpc` types (`Status`, `ErrorInfo`) and the richer-error model
+# that puts them in the `grpc-status-details-bin` trailer. Taken for exactly one MUST: A2A section
+# 10.6 requires every A2A-specific gRPC refusal to carry a `google.rpc.ErrorInfo` in
+# `status.details` (the TCK's `GRPC-ERR-001`), and neither message is in the tree — the vendored
+# `a2a.proto` brings `google.api` and nothing else. The alternative was hand-encoding two protobuf
+# messages beside the service, and hand-writing a wire fact is what adopting the publisher's own
+# generated types was meant to end. Same authors and same workspace as `tonic` itself, and its
+# whole dependency set (`prost`, `prost-types`, `tonic`) is already in the lock, so the new
+# supply-chain surface is this one crate.
+tonic-types = "0.14"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"

@@ -120,21 +120,64 @@ function deliver(status, contentType, text) {
   } else {
     frames.push(text);
   }
-  for (const f of frames) {
-    if (f.trim() === '') continue;
-    let parsed;
-    try { parsed = JSON.parse(f); } catch {
-      process.stderr.write(`bridge: non-JSON body (HTTP ${status}): ${f.slice(0, 400)}\n`);
-      continue;
-    }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'jsonrpc' in parsed) {
-      emit(parsed);
-    } else {
-      process.stderr.write(
-        `bridge: HTTP ${status} body is not a JSON-RPC message: ${f.slice(0, 400)}\n`,
-      );
-    }
+  for (const f of frames) deliverFrame(status, f);
+}
+
+/** One frame's worth of body: a JSON-RPC message to stdout, anything else to stderr. */
+function deliverFrame(status, f) {
+  if (f.trim() === '') return;
+  let parsed;
+  try { parsed = JSON.parse(f); } catch {
+    process.stderr.write(`bridge: non-JSON body (HTTP ${status}): ${f.slice(0, 400)}\n`);
+    return;
   }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'jsonrpc' in parsed) {
+    emit(parsed);
+  } else {
+    process.stderr.write(
+      `bridge: HTTP ${status} body is not a JSON-RPC message: ${f.slice(0, 400)}\n`,
+    );
+  }
+}
+
+/**
+ * An SSE body, unpacked AS IT ARRIVES rather than after it ends — because some of them never end.
+ *
+ * `subscriptions/listen` answers with a stream that stays open for the subscription's whole
+ * lifetime (busbar's bound is five minutes), whose FIRST frame is the acknowledgement the
+ * ordering MUST is about. This function used to be `await res.text()`, which resolves only when
+ * the body ends — so the acknowledgement busbar had put on the wire within milliseconds sat in
+ * this process's buffer until the battery's 8-second wait expired, and CONC.SUBSCRIPTION-ACK-FIRST
+ * reported "no acknowledgement and no error response" against a subject that had answered
+ * correctly. A transcript defect in the adapter, reading exactly like a defect in the subject —
+ * the same class of finding this file's header records for the missing `Mcp-Name`.
+ *
+ * The parse is the same one `deliver` applies to a buffered stream: `data:` lines become frames,
+ * everything else is SSE furniture (`event:`, comments, blank separators) and is dropped. Bytes
+ * are decoded incrementally so a UTF-8 sequence split across two chunks survives.
+ */
+async function deliverStreaming(status, body) {
+  const decoder = new TextDecoder();
+  let pending = '';
+  const takeLine = (line) => {
+    const m = /^data:\s?(.*)$/.exec(line.replace(/\r$/, ''));
+    if (m) deliverFrame(status, m[1]);
+  };
+  try {
+    for await (const chunk of body) {
+      pending += decoder.decode(chunk, { stream: true });
+      let i;
+      while ((i = pending.indexOf('\n')) >= 0) {
+        takeLine(pending.slice(0, i));
+        pending = pending.slice(i + 1);
+      }
+    }
+  } catch (e) {
+    // A stream that dies mid-flight is the peer's fact to report, not this file's to repair.
+    process.stderr.write(`bridge: SSE stream from ${url} ended abnormally: ${e}\n`);
+  }
+  pending += decoder.decode();
+  if (pending !== '') takeLine(pending);
 }
 
 /**
@@ -153,8 +196,13 @@ async function forward(raw) {
     process.stderr.write(`bridge: POST ${url} failed: ${e}\n`);
     return;
   }
+  const contentType = res.headers.get('content-type') || '';
+  if (/text\/event-stream/i.test(contentType) && res.body) {
+    await deliverStreaming(res.status, res.body);
+    return;
+  }
   const text = await res.text();
-  deliver(res.status, res.headers.get('content-type'), text);
+  deliver(res.status, contentType, text);
 }
 
 // FRAMING, ON BYTES. Lines are split on 0x0A and forwarded as Buffers, never as re-encoded strings:
