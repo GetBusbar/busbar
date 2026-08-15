@@ -43,8 +43,11 @@
 //!   HERE, off by default, and confined by a ceiling the registrant cannot move.
 //! * **CIMD** — the `SHOULD`, and **NOT IMPLEMENTED IN THIS CHANGE**. Said here rather than left to
 //!   be discovered, because a plane that serves the deprecated mechanism and not its replacement is
-//!   a gap somebody has to know about. `oauth-as` 0.9.0 has no CIMD support and no client-resolution
-//!   hook, so the seam is `Storage::get_client`: a `client_id` that parses as an HTTPS URL and is
+//!   a gap somebody has to know about. `oauth-as` 0.9.2 added a CIMD *validator* behind an
+//!   off-by-default `cimd` feature busbar does not enable, and it is a validator ONLY: the library
+//!   does not fetch, and it still exposes no client-resolution hook — so the shape below is
+//!   unchanged by that release or by 0.9.3, and what the feature would save is the validation, not
+//!   the seam. That seam is `Storage::get_client`: a `client_id` that parses as an HTTPS URL and is
 //!   absent from the store is fetched, validated (`client_id` equal to the URL, `redirect_uris`
 //!   matched against the request) and materialised as an ephemeral [`oauth_as::client::Client`]
 //!   under the SAME [`policy::default_grant_scopes`] ceiling registration uses. That fetch is an
