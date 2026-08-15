@@ -103,7 +103,24 @@ impl HttpTransport {
             .await
             // `without_url()`: a reqwest error's Display carries the URL, and an operator may have
             // embedded userinfo in it. Same treatment the OAuth minter gives its errors.
-            .map_err(|e| TransportError::Io(e.without_url().to_string()))?;
+            //
+            // AND THE CAUSE CHAIN, because the top-level Display alone is `error sending request`
+            // for a whole family of distinct failures — connection refused, connection reset by
+            // the peer, a timed-out connect — and a log line that cannot tell those apart is a log
+            // line that cannot be acted on (three separate rounds of conformance triage were spent
+            // re-deriving which one it was). The chain carries no URL: it is the transport layer's
+            // own words about the socket.
+            .map_err(|e| {
+                let e = e.without_url();
+                let mut msg = e.to_string();
+                let mut source = std::error::Error::source(&e);
+                while let Some(cause) = source {
+                    msg.push_str(": ");
+                    msg.push_str(&cause.to_string());
+                    source = cause.source();
+                }
+                TransportError::Io(msg)
+            })?;
         let status = resp.status().as_u16();
         let location = resp
             .headers()

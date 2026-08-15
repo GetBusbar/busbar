@@ -123,15 +123,17 @@ post '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.model
 # again. Nothing here can fake the verdict: the transcript the scenario reads records only
 # requests that genuinely ARRIVED at the peer, so a retry that still never reaches it leaves the
 # same honest silence, and the scenario reports it.
-# ONLY FOR THE MODES WHOSE SCENARIO READS THE LISTING, and the restraint is load-bearing: the
-# admin plane RATE-LIMITS mutations per minute, `connect` is a mutation, and driving it on every
-# one of the fourteen CLI arms (each with retries) exhausted the budget before
-# CLI.CACHE.TOLERATES-ABSENT-HINTS — the one scenario that needs the listing — got its turn:
-# `{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next
-# minute"}}` for the whole window, read as "client did not call tools/list even against an honest
-# server". The hostile modes' scenarios judge the `tools/call` above and never read a listing.
-case "$mode" in honest|no-cache-hints)
-if [ -n "${MCP_SUBJECT_ADMIN_URL:-}" ] && [ -n "${MCP_SUBJECT_ADMIN_TOKEN:-}" ]; then
+# ONLY WHEN THE SUITE ASKS FOR IT (`MCP_ARM_LISTING=1`, set by the one scenario that reads a
+# listing off the transcript), and the restraint is load-bearing: the admin plane RATE-LIMITS
+# mutations per minute, `connect` is a mutation, and driving it on every one of the fourteen CLI
+# arms (each with retries) exhausted the budget before CLI.CACHE.TOLERATES-ABSENT-HINTS -- the one
+# scenario that needs the listing -- got its turn: rate_limited for the whole window, read as
+# "client did not call tools/list even against an honest server". Gating on the MODE was the first
+# attempt and was still wrong: three scenarios run the honest mode, and the two that do not read a
+# listing burned the window and then their own 20-second failsafe waiting out a rate limit only
+# the third needed to wait for. Every other scenario judges the `tools/call` below and never reads
+# a listing.
+if [ "${MCP_ARM_LISTING:-}" = "1" ] && [ -n "${MCP_SUBJECT_ADMIN_URL:-}" ] && [ -n "${MCP_SUBJECT_ADMIN_TOKEN:-}" ]; then
   # RETRIED AGAINST THE REAL ORACLE. What the scenario reads is the PEER'S TRANSCRIPT, and this
   # script holds the transcript's path ($transcript) — so the loop stops on the fact that matters
   # (a `tools/list` genuinely ARRIVED at the peer) rather than on a proxy for it. Falls back to the
@@ -163,7 +165,6 @@ if [ -n "${MCP_SUBJECT_ADMIN_URL:-}" ] && [ -n "${MCP_SUBJECT_ADMIN_TOKEN:-}" ];
     esac
   done
 fi
-;; esac
 
 # THE CALL THAT CROSSES. `echo` is the bare name `subject_write_config` publishes for the battery's
 # hostile peer (`publish_as: echo`), because that is the tool `fakepeer/fake-server.mjs` has always

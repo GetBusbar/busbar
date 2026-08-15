@@ -31,13 +31,18 @@ function fakeLaunch() {
  * Run the subject's client against the fake server in a given mode, wait for
  * the client process to exit, and return the observed transcript.
  */
-async function driveClient(ctx, mode, { failsafeMs = 20000 } = {}) {
+async function driveClient(ctx, mode, { failsafeMs = 20000, armListing = false } = {}) {
   if (!ctx.target.hasClientRole) ctx.skip('target has no client role configured');
   const dir = mkdtempSync(join(tmpdir(), 'mcp-battery-'));
   const transcript = join(dir, 'transcript.jsonl');
   const peer = ctx.target.spawnClient(fakeLaunch(), {
     MCP_FAKE_MODE: mode,
     MCP_FAKE_TRANSCRIPT: transcript,
+    // Asked for EXPLICITLY by the one scenario that reads a listing off the transcript
+    // (CLI.CACHE.TOLERATES-ABSENT-HINTS). Driving a listing out of a gateway-shaped subject is an
+    // operator verb behind a small per-minute mutation budget, so a launcher that armed it on
+    // every test spent the budget before the scenario that needed it got its turn.
+    ...(armListing ? { MCP_ARM_LISTING: '1' } : {}),
   });
   let exited = true;
   try {
@@ -74,7 +79,7 @@ test({
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'honest');
     const requests = obs.fromClient.filter((m) => m.id !== undefined && m.method);
-    if (requests.length === 0) ctx.skip('client sent no requests to the fake server');
+    if (requests.length === 0) ctx.skip(`client sent no requests to the fake server; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
     for (const r of requests) {
       const meta = (r.params && r.params._meta) || {};
       ctx.assert('BASE.META.REQUIRED-FIELDS', meta[PV] !== undefined,
@@ -102,7 +107,7 @@ test({
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'honest');
     const requests = obs.fromClient.filter((m) => m.id !== undefined && m.method);
-    if (requests.length === 0) ctx.skip('client sent no requests');
+    if (requests.length === 0) ctx.skip(`client sent no requests; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
     const seen = new Set();
     const reused = [];
     for (const r of requests) {
@@ -241,7 +246,7 @@ test({
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'mrtr-undeclared');
     const requests = obs.fromClient.filter((m) => m.method && m.id !== undefined);
-    if (requests.length === 0) ctx.skip('client sent no requests');
+    if (requests.length === 0) ctx.skip(`client sent no requests; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
     const declaredSampling = requests.some(
       (r) => (((r.params || {})._meta || {})[CC] || {}).sampling !== undefined,
     );
@@ -335,8 +340,8 @@ test({
     // is doing so). The failsafe is a ceiling on waiting for the driver to EXIT, not a slackening
     // of anything asserted: the transcript judged below is still only what genuinely reached the
     // peer.
-    const withHints = await driveClient(ctx, 'honest', { failsafeMs: 120000 });
-    const without = await driveClient(ctx, 'no-cache-hints', { failsafeMs: 120000 });
+    const withHints = await driveClient(ctx, 'honest', { failsafeMs: 120000, armListing: true });
+    const without = await driveClient(ctx, 'no-cache-hints', { failsafeMs: 120000, armListing: true });
     const listedWithHints = withHints.fromClient.some((m) => m.method === 'tools/list');
     // The driver's stderr rides the skip, because this skip is a GATE FAILURE under MCP_NO_SKIPS
     // and "did not call" has two very different causes — a client that genuinely never lists, and
